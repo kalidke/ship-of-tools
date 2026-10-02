@@ -787,6 +787,7 @@ async fn supervise(
     loop {
         let reason = match spawn_source(&host).await {
             Ok(mut child) => {
+                let _child_guard = crate::shutdown::ChildGuard::new();
                 let mut stdout = child.stdout.take().map(|s| BufReader::new(s).lines());
                 let mut stderr = child.stderr.take().map(|s| BufReader::new(s).lines());
                 // ssh's own words for why the source died, kept only until
@@ -794,6 +795,12 @@ async fn supervise(
                 let mut stderr_line: Option<String> = None;
                 loop {
                     tokio::select! {
+                        // The daemon is shutting down: nothing kills this child at
+                        // `process::exit`, so it is killed here.
+                        _ = crate::shutdown::fired() => {
+                            let _ = child.kill().await;
+                            return;
+                        }
                         line = next_or_pending(&mut stdout) => {
                             match line {
                                 Ok(Some(line)) => {

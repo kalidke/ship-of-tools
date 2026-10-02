@@ -251,6 +251,8 @@ to it, so presence there is not health. Logic lives in a new standalone
 `scripts/sot-local-daemon.ps1` (start/`-Stop`), tested by
 `scripts/tests/test-local-daemon.ps1` on the Windows CI leg.
 
+> **Amended 2026-10-02 (0.6.6):** the paragraph above, which says the daemon outlives the launcher and every frontend respawn and that its capsules are re-adopted after a shutdown-and-relaunch, is superseded for the last window's close. Closing the window now ends this computer's sessions; a relaunch (exit 75 or 76) and a restart of the daemon still keep them. See ADR 0050.
+
 Three properties this slice relies on without building them further: (1)
 the daemon is started with a plain `Start-Process`; it outlives the
 launcher and every frontend respawn only when the launcher itself runs

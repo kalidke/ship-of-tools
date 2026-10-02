@@ -47,6 +47,36 @@ enum Conn {
 struct ChildGuard {
     child: std::process::Child,
     last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// Set for a forwarded call that a caller may cut short; see [`Track`].
+    track: Option<std::sync::Arc<Track>>,
+    /// Counts the child among the live ones until `Drop` has reaped it.
+    _live: Option<crate::shutdown::ChildGuard>,
+}
+
+/// How a forwarding caller reaches the ssh child a dial thread owns: the
+/// child's pid once it exists (0 before and after), and a flag that tells a
+/// thread that has not spawned yet not to bother.
+struct Track {
+    sig: &'static crate::shutdown::Signal,
+    pid: std::sync::atomic::AtomicU32,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
+impl Track {
+    /// Kill the child, if there is one yet; the dial thread's blocking read
+    /// then fails and its `ChildGuard` reaps it.
+    fn cancel(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.cancelled.store(true, SeqCst);
+        #[cfg(unix)]
+        {
+            let pid = self.pid.load(SeqCst);
+            if pid != 0 {
+                // SAFETY: plain signal to the ssh child this forward started.
+                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            }
+        }
+    }
 }
 
 impl ChildGuard {
@@ -63,6 +93,9 @@ impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if let Some(track) = &self.track {
+            track.pid.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 
@@ -115,7 +148,7 @@ impl Conn {
                         }
                     });
                 }
-                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child, last_stderr })))
+                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child, last_stderr, track: None, _live: None })))
             }
         }
     }
@@ -173,7 +206,26 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
 /// short-lived, but the wire protocol allows it) are skipped rather than
 /// treated as a protocol violation.
 pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: serde_json::Value) -> Result<serde_json::Value, String> {
-    let (mut w, r, guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
+    dial_and_call_tracked(endpoint, self_host, req_op, payload, None)
+}
+
+fn dial_and_call_tracked(
+    endpoint: &str,
+    self_host: &str,
+    req_op: &str,
+    payload: serde_json::Value,
+    track: Option<std::sync::Arc<Track>>,
+) -> Result<serde_json::Value, String> {
+    let (mut w, r, mut guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
+    if let (Some(track), Some(g)) = (&track, guard.as_mut()) {
+        use std::sync::atomic::Ordering::SeqCst;
+        g._live = Some(track.sig.guard());
+        g.track = Some(std::sync::Arc::clone(track));
+        track.pid.store(g.child.id(), SeqCst);
+        if track.cancelled.load(SeqCst) {
+            return Err(format!("{endpoint}: cancelled"));
+        }
+    }
     let mut br = std::io::BufReader::new(r);
 
     // Folds the ssh child's last non-empty stderr line into `msg` on any
@@ -225,23 +277,45 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
 /// A guest daemon's `comm.file` forward to its folder's hub (0031 B1): the
 /// request as given, the hub's payload verbatim. [`dial_and_call`] sets no
 /// deadline of its own, so the call runs on its own thread and no answer
-/// within `within` is an error; a call that outlives the bound leaves its
-/// thread to end when the connection does.
+/// within `within` is an error, and so is the shutdown signal firing first;
+/// either way the ssh child is killed before this returns, and the thread
+/// ends with the connection.
 pub fn forward_comm_file(
     endpoint: &str,
     self_host: &str,
     req: &sot_protocol::CommFileReq,
     within: std::time::Duration,
+    sig: &'static crate::shutdown::Signal,
 ) -> Result<serde_json::Value, String> {
     let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
     let (tx, rx) = std::sync::mpsc::channel();
     let (e, h) = (endpoint.to_string(), self_host.to_string());
-    std::thread::spawn(move || {
-        let _ = tx.send(dial_and_call(&e, &h, sot_protocol::op::COMM_FILE, payload));
+    let track = std::sync::Arc::new(Track {
+        sig,
+        pid: std::sync::atomic::AtomicU32::new(0),
+        cancelled: std::sync::atomic::AtomicBool::new(false),
     });
-    rx.recv_timeout(within).unwrap_or_else(|_| {
-        Err(format!("{endpoint}: no reply to {} within {}s", sot_protocol::op::COMM_FILE, within.as_secs()))
-    })
+    let dial_track = std::sync::Arc::clone(&track);
+    std::thread::spawn(move || {
+        let _ = tx.send(dial_and_call_tracked(&e, &h, sot_protocol::op::COMM_FILE, payload, Some(dial_track)));
+    });
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let step = deadline.saturating_duration_since(std::time::Instant::now()).min(std::time::Duration::from_millis(50));
+        match rx.recv_timeout(step) {
+            Ok(done) => return done,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(format!("{endpoint}: the forward thread ended")),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if sig.is_fired() {
+            track.cancel();
+            return Err(format!("{endpoint}: the daemon is shutting down"));
+        }
+        if std::time::Instant::now() >= deadline {
+            track.cancel();
+            return Err(format!("{endpoint}: no reply to {} within {}s", sot_protocol::op::COMM_FILE, within.as_secs()));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -429,6 +503,46 @@ mod tests {
             err.contains("ssh:hub") && err.contains("hello"),
             "the error must name the endpoint and the step that failed, got: {err}"
         );
+    }
+
+    /// A forwarded comm.file call is cut short by its own timeout or by the
+    /// shutdown signal, and either way the ssh child dies and is no longer counted.
+    #[cfg(unix)]
+    #[test]
+    fn forward_comm_file_kills_its_ssh_child_on_timeout_and_on_shutdown() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = EnvGuard::capture("PATH");
+        let req: sot_protocol::CommFileReq = serde_json::from_value(serde_json::json!({"from": "a", "to": "b", "text": "t"})).expect("a CommFileReq");
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) == 0 };
+        for by_shutdown in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let pid_file = dir.path().join("pid");
+            write_ssh_script(dir.path(), &format!("echo $$ > '{}'\nexec sleep 30\n", pid_file.display()));
+            prepend_to_path(dir.path());
+            let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+            let within = std::time::Duration::from_secs(if by_shutdown { 20 } else { 1 });
+            let firer = std::thread::spawn({
+                let pid_file = pid_file.clone();
+                move || {
+                    if by_shutdown {
+                        assert!(wait_for_marker(&pid_file));
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        sig.fire();
+                    }
+                }
+            });
+            let began = std::time::Instant::now();
+            let result = forward_comm_file("ssh:hub", "self", &req, within, sig);
+            firer.join().unwrap();
+            assert!(result.is_err());
+            assert!(began.elapsed() < std::time::Duration::from_secs(5), "the forward outlived its bound");
+            let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+            let gone = (0..100).any(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                !alive(pid) && sig.live() == 0
+            });
+            assert!(gone, "the ssh child survived (shutdown={by_shutdown}) or is still counted");
+        }
     }
 
     #[test]

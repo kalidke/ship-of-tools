@@ -22,6 +22,7 @@ mod comm_inbox;
 mod comm_wake;
 mod comm_registry_lock;
 mod concept;
+mod durable;
 mod file_io;
 mod files_mode;
 mod handlers;
@@ -30,18 +31,27 @@ mod http_serve;
 mod julia;
 mod kernel;
 mod lane_bridge;
+// The lease core lands before the accept loop and start that call it.
+#[allow(dead_code)]
+mod lease;
 mod mathjax;
 mod monitor;
 mod paths;
 mod pluto;
 mod proxy;
 mod reauth;
+#[cfg(target_os = "linux")]
+mod row_scope_aim;
 mod awareness;
 mod repl;
 mod server;
 mod session;
 mod session_state;
+// The end and the child signal land before the shutdown that calls them.
+#[allow(dead_code)]
+mod shutdown;
 mod site_serve;
+mod startup;
 mod status_cli;
 mod stdio_bridge;
 mod topology_cli;

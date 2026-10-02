@@ -243,7 +243,7 @@ impl Kernel {
         self.inner
             .supervisor_started
             .get_or_init(|| async move {
-                tokio::spawn(supervisor_loop(kernel_project, project_root, status));
+                tokio::spawn(supervisor_loop(kernel_project, project_root, status, crate::shutdown::process()));
             })
             .await;
     }
@@ -275,22 +275,28 @@ async fn submit_and_await(
 /// answers hello and then dies (or dies before ever answering), record
 /// `Dead` with the appropriate backoff, sleep, repeat — until `status`
 /// closes (every `Kernel` handle sharing it has been dropped), at which
-/// point this returns and the task ends.
-async fn supervisor_loop(kernel_project: PathBuf, project_root: PathBuf, status: watch::Sender<Status>) {
+/// point this returns and the task ends. It also ends when `sig` fires, and
+/// never respawns after.
+async fn supervisor_loop(
+    kernel_project: PathBuf,
+    project_root: PathBuf,
+    status: watch::Sender<Status>,
+    sig: &'static crate::shutdown::Signal,
+) {
     let mut backoff: Option<Duration> = None;
     loop {
-        if status.is_closed() {
+        if status.is_closed() || sig.is_fired() {
             return;
         }
         let _ = status.send(Status::Starting);
-        let (reached_running, reason) = run_one_generation(&kernel_project, &project_root, &status).await;
+        let (reached_running, reason) = run_one_generation(&kernel_project, &project_root, &status, sig).await;
         if reached_running {
             // A generation that answered hello resets the ladder — the NEXT
             // failure (whenever it comes) is a fresh first failure, not a
             // continuation of whatever backoff preceded this success.
             backoff = None;
         }
-        if status.is_closed() {
+        if status.is_closed() || sig.is_fired() {
             return;
         }
         let next_backoff = match backoff {
@@ -300,8 +306,21 @@ async fn supervisor_loop(kernel_project: PathBuf, project_root: PathBuf, status:
         backoff = Some(next_backoff);
         tracing::warn!(reason = %reason, next_retry_in = ?next_backoff, "kernel unavailable; will retry after backoff");
         let _ = status.send(Status::Dead { reason });
-        tokio::time::sleep(next_backoff).await;
+        tokio::select! {
+            _ = tokio::time::sleep(next_backoff) => {}
+            _ = sig.fired() => return,
+        }
     }
+}
+
+/// The program a generation spawns. Tests point one kernel project at a stub.
+fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
+    #[cfg(test)]
+    if let Some((_, bin)) = tests::STUB_BIN.lock().unwrap().iter().find(|(p, _)| p == kernel_project) {
+        return Ok((bin.clone(), "test stub"));
+    }
+    let _ = kernel_project;
+    crate::julia::resolve_bin()
 }
 
 /// Resolve + spawn one child, fold `kernel.hello` into the same
@@ -320,8 +339,9 @@ async fn run_one_generation(
     kernel_project: &Path,
     project_root: &Path,
     status: &watch::Sender<Status>,
+    sig: &'static crate::shutdown::Signal,
 ) -> (bool, String) {
-    let (julia_bin, source) = match crate::julia::resolve_bin() {
+    let (julia_bin, source) = match julia_bin(kernel_project) {
         Ok(v) => v,
         Err(reason) => return (false, reason),
     };
@@ -356,6 +376,7 @@ async fn run_one_generation(
         Ok(c) => c,
         Err(e) => return (false, format!("spawn {julia_bin} failed: {e}")),
     };
+    let _child_guard = sig.guard();
 
     let mut stdin = match child.stdin.take() {
         Some(s) => s,
@@ -397,6 +418,12 @@ async fn run_one_generation(
     loop {
         tokio::select! {
             biased;
+            // The daemon is shutting down: nothing kills this child at
+            // `process::exit`, so it is killed here.
+            _ = sig.fired() => {
+                let _ = child.kill().await;
+                return (published_running, "the daemon is shutting down".to_string());
+            }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
             // function returning drops `child` (`kill_on_drop`) and
@@ -546,6 +573,41 @@ fn log_hello(payload: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Program-path override per kernel project, so no test touches the process env.
+    pub(super) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
+
+    /// The shutdown signal kills the kernel child and the loop neither
+    /// respawns nor leaves a guard counted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_kills_the_kernel_child_and_never_respawns() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("spawns");
+        let stub = dir.path().join("stub-julia");
+        std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let project = dir.path().join("kp");
+        std::fs::create_dir(&project).unwrap();
+        STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let (status, _keep) = watch::channel(Status::Starting);
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+        let began = std::time::Instant::now();
+        while sig.live() == 0 {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the supervisor loop outlived the shutdown")
+            .expect("supervisor task");
+        assert_eq!(sig.live(), 0);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "respawned after the fire");
+    }
 
     #[test]
     fn kernel_unavailable_display_is_composable() {

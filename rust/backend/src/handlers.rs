@@ -3663,6 +3663,70 @@ fn has_root_relative_refs(html: &str) -> bool {
     false
 }
 
+/// Run one `quarto render` to its end. `None` means `sig` fired first: the
+/// render's whole process group (quarto, and the engines its executable chunks
+/// start) is killed and reaped before this returns.
+async fn run_quarto(
+    program: &str,
+    cwd: &std::path::Path,
+    file_name: &std::ffi::OsStr,
+    out_name: &str,
+    execute: bool,
+    sig: &'static crate::shutdown::Signal,
+) -> std::io::Result<Option<std::process::Output>> {
+    use tokio::io::AsyncReadExt;
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.current_dir(cwd)
+        .arg("render")
+        .arg(file_name)
+        .arg("--to")
+        .arg("html")
+        .arg("--embed-resources")
+        .arg("--output")
+        .arg(out_name);
+    if !execute {
+        cmd.arg("--no-execute");
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let mut child = cmd.spawn()?;
+    let _child_guard = sig.guard();
+    let (mut out, mut errs) = (child.stdout.take(), child.stderr.take());
+    let work = async {
+        let (mut so, mut se) = (Vec::new(), Vec::new());
+        let read_out = async {
+            if let Some(o) = out.as_mut() {
+                let _ = o.read_to_end(&mut so).await;
+            }
+        };
+        let read_err = async {
+            if let Some(e) = errs.as_mut() {
+                let _ = e.read_to_end(&mut se).await;
+            }
+        };
+        let (_, _, status) = tokio::join!(read_out, read_err, child.wait());
+        status.map(|status| std::process::Output { status, stdout: so, stderr: se })
+    };
+    tokio::select! {
+        done = work => done.map(Some),
+        // The daemon is shutting down: nothing kills this child at
+        // `process::exit`, so it is killed here.
+        _ = sig.fired() => {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                // SAFETY: plain signal to the group this function created.
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
+            let _ = child.kill().await;
+            Ok(None)
+        }
+    }
+}
+
 /// `quarto.open` — render a Quarto/markdown doc to a self-contained HTML on
 /// the backend host (which has quarto + the RAM) and return the bytes, base64.
 /// `execute = false` (`o`) = `--no-execute`: fast, quarto-only, no code run.
@@ -3710,21 +3774,12 @@ pub async fn handle_quarto_open(
     let out_name = format!("__sot-qmd-{req_id}.html");
     let html_path = parent.join(&out_name);
 
-    let mut cmd = tokio::process::Command::new("quarto");
-    cmd.current_dir(parent)
-        .arg("render")
-        .arg(file_name)
-        .arg("--to")
-        .arg("html")
-        .arg("--embed-resources")
-        .arg("--output")
-        .arg(&out_name);
-    if !req.execute {
-        cmd.arg("--no-execute");
-    }
-
-    let output = match cmd.output().await {
-        Ok(o) => o,
+    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, crate::shutdown::process()).await {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            let _ = tokio::fs::remove_file(&html_path).await;
+            return err("the daemon is shutting down".to_string(), "shutting_down");
+        }
         Err(e) => {
             return err(
                 format!("failed to spawn quarto (is it installed on this host?): {e}"),
@@ -4679,6 +4734,22 @@ pub async fn handle_workspace_create(
     );
     ws_seed.runtime = runtime;
     ws_seed.account = std::sync::Mutex::new(account);
+    // The run gate, before the row exists: a refused create leaves nothing
+    // to roll back. Held through the start below, so a shutdown that
+    // closes the gate meanwhile waits for this create to finish.
+    let start_permit = match workspaces.begin_start(&ws_seed.workspace_id) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            let payload = json!({
+                "error": format!("capsule workspace could not be started: {refusal}"),
+                "code": "capsule_spawn_failed",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    };
     let ws_handle = workspaces.insert(ws_seed);
     if let Err(e) = crate::workspaces::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
@@ -4817,6 +4888,7 @@ pub async fn handle_workspace_create(
         }
     }
     }
+    drop(start_permit);
 
     let res = WorkspaceCreateRes {
         workspace_id: ws_handle.workspace_id.clone(),
@@ -4848,25 +4920,30 @@ pub async fn handle_workspace_create(
 /// ADR 0042 slice L1a (Codex review finding 3): whether a capsule
 /// workspace's row (and its persisted toml) may be safely removed by
 /// `workspace.destroy`.
-enum CapsuleDestroyOutcome {
+pub(crate) enum CapsuleDestroyOutcome {
     /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
     /// `AlreadyEnded` — see `capsule_workspace::EndRunOutcome`) — the row
     /// may be removed; the state directory never is. Human-readable
     /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
     /// stays portable and unit-testable.
-    #[cfg_attr(not(windows), allow(dead_code))]
     Removable(String),
     /// Not confirmed (unreachable/starting/failed/refused/unknown) — the
     /// row and toml MUST be kept: never orphan a live run, never claim
     /// "ended" for one that wasn't.
     Kept { detail: String },
+    /// Another path removed the row before this end reached its run: not
+    /// ours to end, and nothing of it is kept.
+    AlreadyRemoved,
 }
+
+/// What `workspace.destroy` answers for [`CapsuleDestroyOutcome::AlreadyRemoved`].
+const ALREADY_REMOVED: &str = "workspace was removed before its capsule run could be ended";
 
 /// Maps a `capsule_workspace::EndRunOutcome` to whether `workspace.destroy`
 /// may remove the row. Pure/portable so it's unit-testable without a real
 /// Windows lane; `#[cfg(test)]` below is its only caller off Windows.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
+pub(crate) fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
     use crate::capsule_workspace::EndRunOutcome as O;
     match o {
         O::RecordVerified => CapsuleDestroyOutcome::Removable("run ended and verified".to_string()),
@@ -4923,7 +5000,7 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
 /// through unexamined so it stays locked across the reset below too
 /// (ADR 0043 decision 33, Codex review round 2) — dropped only once this
 /// function returns, whichever arm it takes.
-async fn end_default_row_run(
+pub(crate) async fn end_default_row_run(
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
     workspace_id: &str,
@@ -4980,6 +5057,8 @@ async fn end_default_row_run(
 /// `end_run` has a real lane to ask, rather than falling straight to its
 /// own fence/leg proof. A resume failure is logged and never fails the
 /// call — `end_run`'s own arms decide the outcome regardless.
+/// `resume_first` false skips that resume: a window's close ends rows
+/// without resuming any (`shutdown::end_rows`).
 ///
 /// Every mutation runs under the row's own guard, from the first probe
 /// through the outcome this returns — a terminal `Phase` mark alone
@@ -4993,7 +5072,7 @@ async fn end_default_row_run(
 /// call here AND whatever the caller does with a confirmed outcome
 /// (row removal, or the default row's own reset) afterward. The caller
 /// holds it through that follow-up, then drops it.
-async fn destroy_capsule_workspace(
+pub(crate) async fn destroy_capsule_workspace(
     workspace_id: &str,
     reason: &str,
     agent_kind: &str,
@@ -5001,6 +5080,7 @@ async fn destroy_capsule_workspace(
     slug: &str,
     project_root: &std::path::Path,
     workspaces: &Workspaces,
+    resume_first: bool,
 ) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
@@ -5064,15 +5144,25 @@ async fn destroy_capsule_workspace(
                 );
             };
             let held = guard.blocking_lock_owned();
-            match crate::capsule_workspace::resume_locked(
-                &state_root,
-                &workspace_id,
-                &agent_kind,
-                &agent_name,
-                &slug,
-                &project_root,
-                workspaces_for_guard.clone(),
-            ) {
+            // Without the resume, its membership recheck still runs, so the
+            // "row already gone" arm below holds for an end with no resume.
+            let resumed = if resume_first {
+                crate::capsule_workspace::resume_locked(
+                    &state_root,
+                    &workspace_id,
+                    &agent_kind,
+                    &agent_name,
+                    &slug,
+                    &project_root,
+                    workspaces_for_guard.clone(),
+                )
+            } else {
+                workspaces_for_guard
+                    .resolve(Some(&workspace_id))
+                    .map(|_| "not resumed")
+                    .ok_or_else(|| "unknown workspace".to_string())
+            };
+            match resumed {
                 // BLOCKER (Codex review, 2026-09-11): a pending resume can
                 // outlive deletion. `resume_locked` returns this exact
                 // sentinel phase ONLY when it just spawned a fresh
@@ -5134,12 +5224,9 @@ async fn destroy_capsule_workspace(
             // exact sentinel string. A `None` guard here is the "row
             // already gone" race above, reusing the SAME NotFound kind —
             // never mistaken for a missing state dir.
-            Ok((Err(e), held)) if held.is_none() && e.kind() == std::io::ErrorKind::NotFound => (
-                CapsuleDestroyOutcome::Kept {
-                    detail: "workspace was removed before its capsule run could be ended".to_string(),
-                },
-                None,
-            ),
+            Ok((Err(e), held)) if held.is_none() && e.kind() == std::io::ErrorKind::NotFound => {
+                (CapsuleDestroyOutcome::AlreadyRemoved, None)
+            }
             Ok((Err(e), held)) if e.kind() == std::io::ErrorKind::NotFound => {
                 (CapsuleDestroyOutcome::Kept { detail: "state_dir_missing".to_string() }, held)
             }
@@ -5212,7 +5299,31 @@ fn default_row_end_response(
             )
         }
         CapsuleDestroyOutcome::Kept { detail } => (capsule_end_not_reached_payload(&detail), false),
+        CapsuleDestroyOutcome::AlreadyRemoved => (capsule_end_not_reached_payload(ALREADY_REMOVED), false),
     }
+}
+
+/// Remove a row's tomls from disk so neither registration path brings the
+/// workspace back on next daemon startup: `scan_disk` reads the modern
+/// workspaces/ toml, and the ADR-0013 migration reads the legacy
+/// sessions/ toml. A missing file is success; `false` means a remove
+/// failed (logged).
+pub(crate) fn remove_row_files(slug: &str) -> bool {
+    let mut toml_removed = true;
+    for toml_path in [
+        crate::workspaces::toml_path_for(slug),
+        crate::workspaces::legacy_toml_path_for(slug),
+    ] {
+        match std::fs::remove_file(&toml_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
+                toml_removed = false;
+            }
+        }
+    }
+    toml_removed
 }
 
 pub async fn handle_workspace_destroy(
@@ -5265,6 +5376,7 @@ pub async fn handle_workspace_destroy(
             &ws.slug,
             &ws.project_root,
             workspaces,
+            true,
         )
         .await;
         let (payload, confirmed_ended) =
@@ -5322,6 +5434,7 @@ pub async fn handle_workspace_destroy(
             &slug,
             &ws.project_root,
             workspaces,
+            true,
         )
         .await;
         match outcome {
@@ -5337,6 +5450,13 @@ pub async fn handle_workspace_destroy(
                         op::WORKSPACE_DESTROY,
                         capsule_end_not_reached_payload(&detail),
                     ),
+                    None,
+                )]);
+            }
+            CapsuleDestroyOutcome::AlreadyRemoved => {
+                tracing::info!(workspace_id = %workspace_id, "workspace.destroy: already removed by another end");
+                return Ok(vec![(
+                    Frame::res(req_id, op::WORKSPACE_DESTROY, capsule_end_not_reached_payload(ALREADY_REMOVED)),
                     None,
                 )]);
             }
@@ -5368,25 +5488,9 @@ pub async fn handle_workspace_destroy(
         );
     }
 
-    // Remove the tomls from disk so neither registration path brings the
-    // workspace back on next daemon startup: `scan_disk` reads the modern
-    // workspaces/ toml, and the ADR-0013 migration reads the legacy
-    // sessions/ toml. Best-effort: a missing file is success; a remove
-    // error is logged + reported but doesn't block the in-memory removal.
-    let mut toml_removed = true;
-    for toml_path in [
-        crate::workspaces::toml_path_for(&slug),
-        crate::workspaces::legacy_toml_path_for(&slug),
-    ] {
-        match std::fs::remove_file(&toml_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
-                toml_removed = false;
-            }
-        }
-    }
+    // Best-effort: a remove error is logged + reported but doesn't block
+    // the in-memory removal.
+    let toml_removed = remove_row_files(&slug);
 
     // Drop from in-memory registry last. The Arc<Workspace> dropped
     // here is also the one holding the kernel/repl handles; when the
@@ -5725,7 +5829,7 @@ pub(crate) async fn file_comm(
                 Err(e) => return Err(crate::comm_inbox::refusal::hosts_toml_unreadable(e)),
             };
             let endpoint = endpoint.map_err(|e| crate::comm_inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
-            crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within).map_err(|e| {
+            crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within, crate::shutdown::process()).map_err(|e| {
                 let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(&e);
                 crate::comm_inbox::refusal::hub_did_not_answer(&endpoint, e)
             })
@@ -7412,7 +7516,7 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// the registry couldn't be pruned. Writes via a temp file + atomic rename so
 /// a concurrent bash mutator (comm-join / comm-status / …) can't see a torn
 /// file.
-fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
+pub(crate) fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
     remove_comm_agents_for_workspace_bounded(agent_name, workspace_id, host, COMM_PRUNE_LOCK_BOUND)
 }
 
@@ -10040,12 +10144,14 @@ mod workspace_destroy_default_row_tests {
             "local",
             std::path::Path::new("/p/local"),
             &reg,
+            true,
         )
         .await;
         // The guard IS taken now (Codex review: the deleted fast path's
         // `None` bypassed it) -- dropped once this proof has run.
         assert!(held.is_some(), "a terminal row must take the same row guard every other row does");
         match outcome {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(_) => {}
             CapsuleDestroyOutcome::Kept { detail } => {
                 panic!(
@@ -10233,6 +10339,7 @@ mod workspace_destroy_default_row_tests {
     fn starting_outcome_maps_to_a_retryable_kept_not_not_running() {
         let outcome = capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::Starting);
         match outcome {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Kept { detail } => {
                 assert_eq!(detail, "supervisor is starting; retry");
             }
@@ -10250,6 +10357,7 @@ mod workspace_destroy_default_row_tests {
         let outcome =
             capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::AlreadyEnded);
         match outcome {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert!(
                     !detail.contains("verified"),
@@ -10279,6 +10387,7 @@ mod workspace_destroy_default_row_tests {
             );
         }
         match capsule_destroy_outcome_of(O::NotEnded("end_run failed: boom".to_string())) {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Kept { detail } => assert_eq!(detail, "end_run failed: boom"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 panic!("NotEnded must never map to Removable: {detail}");
@@ -10295,6 +10404,7 @@ mod workspace_destroy_default_row_tests {
     fn terminal_outcome_is_removable_not_kept() {
         use crate::capsule_workspace::EndRunOutcome as O;
         match capsule_destroy_outcome_of(O::Terminal) {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert!(
                     detail.contains("terminal"),
@@ -10314,6 +10424,7 @@ mod workspace_destroy_default_row_tests {
     fn unheld_outcome_is_removable_not_kept() {
         use crate::capsule_workspace::EndRunOutcome as O;
         match capsule_destroy_outcome_of(O::Unheld) {
+            CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
                 assert_eq!(detail, "no supervisor held the row");
             }
@@ -10371,5 +10482,47 @@ mod workspace_destroy_default_row_tests {
         );
         assert!(payload.get("kept").and_then(|v| v.as_str()).is_some());
         assert!(confirmed_ended);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod quarto_shutdown_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    /// The shutdown signal kills the render's whole process group, engines included.
+    #[tokio::test]
+    async fn shutdown_kills_the_quarto_render_and_its_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("engine.pid");
+        let stub = dir.path().join("stub-quarto");
+        std::fs::write(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let task = tokio::spawn(async move {
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+        });
+        let began = std::time::Instant::now();
+        while sig.live() == 0 || !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        sig.fire();
+        let done = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the render outlived the shutdown")
+            .expect("render task")
+            .expect("run_quarto");
+        assert!(done.is_none(), "a killed render has no output");
+        assert_eq!(sig.live(), 0);
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            // SAFETY: signal 0 only probes the pid.
+            unsafe { libc::kill(engine, 0) != 0 }
+        });
+        assert!(gone, "the engine child survived the shutdown");
     }
 }

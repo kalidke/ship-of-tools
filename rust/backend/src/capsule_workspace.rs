@@ -1422,6 +1422,432 @@ mod capsule_sibling_present_tests {
     }
 }
 
+/// A4b: a row's own systemd scope is the kill domain of everything the row
+/// started, including a descendant that left the agent's process group
+/// (`setsid`), which the leg's `killpg` cannot reach. The scope's unit name
+/// is the record: `sot-row-<state_dir_hash>-<uuid>.scope`, held by systemd.
+#[cfg(target_os = "linux")]
+pub(crate) mod row_scope {
+    use crate::row_scope_aim::{aim, prefix};
+    use sot_log::state_dir::state_dir_hash;
+    use std::io::ErrorKind;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+    /// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
+    pub(crate) const SCOPE_EMPTY_BOUND: Duration = Duration::from_secs(10);
+    /// The row's remembered scopes, one cgroup rel per line, in its state
+    /// dir. Written at capture, before any stop or kill, and removed only
+    /// once an end proves every listed scope empty or gone, so neither a
+    /// retry nor a restarted daemon counts the row ended while a scope it
+    /// captured may still hold processes.
+    pub(crate) const SCOPES_FILE: &str = "row-scopes";
+
+    #[cfg(test)]
+    thread_local! {
+        /// A unit test's fake cgroup root; never `/sys/fs/cgroup`.
+        pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// The cgroup2 root every end aims at.
+    pub(crate) fn root() -> PathBuf {
+        #[cfg(test)]
+        if let Some(root) = TEST_ROOT.with(|r| r.borrow().clone()) {
+            return root;
+        }
+        PathBuf::from(CGROUP_ROOT)
+    }
+
+    /// `systemd-run --unit` value for a new scoped supervisor of this row.
+    pub(crate) fn unit_name(state_dir: &Path) -> String {
+        format!("{}{}.scope", prefix(&state_dir_hash(state_dir)), uuid::Uuid::now_v7().simple())
+    }
+
+    /// This process's own cgroup2 path, the `0::` line of `/proc/self/cgroup`.
+    pub(crate) fn own_rel() -> Option<String> {
+        rel_of(&std::fs::read_to_string("/proc/self/cgroup").ok()?)
+    }
+
+    fn rel_of(proc_cgroup: &str) -> Option<String> {
+        proc_cgroup.lines().find_map(|l| l.strip_prefix("0::")).map(|rel| rel.trim().to_string())
+    }
+
+    /// The scope of the supervisor `pid`, captured before the end and
+    /// listed in [`SCOPES_FILE`] before anything is stopped or killed.
+    pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(format!("/proc/{pid}/cgroup")) {
+            Ok(text) => capture_from(root, state_dir, &text),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// The `0::` path of `proc_cgroup` when its leaf is a scope of this
+    /// row and `cgroup.kill` is there to end it, listed durably in
+    /// [`SCOPES_FILE`]; `Ok(None)` ends the row exactly as before this
+    /// module (an unscoped or older row, a frontend-spawned drawer, a
+    /// kernel before 5.14). `Err` is a failed write: nothing is killed.
+    pub(crate) fn capture_from(root: &Path, state_dir: &Path, proc_cgroup: &str) -> Result<Option<String>, String> {
+        let Some(rel) = rel_of(proc_cgroup) else { return Ok(None) };
+        let leaf = rel.rsplit('/').next().unwrap_or("");
+        if !(leaf.starts_with(&prefix(&state_dir_hash(state_dir))) && leaf.ends_with(".scope")) {
+            return Ok(None);
+        }
+        if let Err(e) = std::fs::metadata(at(root, &rel).join("cgroup.kill")) {
+            if e.kind() == ErrorKind::NotFound {
+                tracing::warn!(
+                    scope = %rel,
+                    "capsule workspace: no cgroup.kill (Linux before 5.14); a child that left the agent's \
+                     process group survives this row's end"
+                );
+                return Ok(None);
+            }
+        }
+        remember(state_dir, std::slice::from_ref(&rel))?;
+        Ok(Some(rel))
+    }
+
+    /// The scopes [`SCOPES_FILE`] lists; an absent file lists none.
+    pub(crate) fn listed(state_dir: &Path) -> Result<Vec<String>, String> {
+        let path = state_dir.join(SCOPES_FILE);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("read {path:?}: {e}")),
+        }
+    }
+
+    /// Adds `rels` to [`SCOPES_FILE`], durably.
+    fn remember(state_dir: &Path, rels: &[String]) -> Result<(), String> {
+        let mut all = listed(state_dir)?;
+        let before = all.len();
+        for rel in rels {
+            if !all.contains(rel) {
+                all.push(rel.clone());
+            }
+        }
+        if all.len() == before {
+            return Ok(());
+        }
+        rewrite(state_dir, &all)
+    }
+
+    /// [`SCOPES_FILE`] lists exactly `rels`, durably; none removes it.
+    fn rewrite(state_dir: &Path, rels: &[String]) -> Result<(), String> {
+        let path = state_dir.join(SCOPES_FILE);
+        let written = if rels.is_empty() {
+            crate::durable::remove(&path)
+        } else {
+            crate::durable::write(&path, format!("{}\n", rels.join("\n")).as_bytes())
+        };
+        written.map_err(|e| format!("record the row's scopes in {path:?}: {e}"))
+    }
+
+    /// Kill every scope [`SCOPES_FILE`] lists, plus `captured` and every
+    /// sibling scope of this row beside it (an adopted leg's older scope),
+    /// then wait up to `bound` for each to be empty or gone.
+    pub(crate) fn end(
+        root: &Path,
+        own_rel: &str,
+        state_dir: &Path,
+        captured: Option<&str>,
+        bound: Duration,
+    ) -> Result<(), String> {
+        let hash = state_dir_hash(state_dir);
+        let mut scopes = listed(state_dir)?;
+        if let Some(rel) = captured {
+            let parent = &rel[..rel.rfind('/').unwrap_or(0)];
+            let dir = at(root, parent);
+            let entries = std::fs::read_dir(&dir).map_err(|e| format!("list {dir:?}: {e}"))?;
+            for entry in entries {
+                let name = entry.map_err(|e| format!("list {dir:?}: {e}"))?.file_name();
+                let name = name.to_string_lossy();
+                let scope = format!("{parent}/{name}");
+                if name.starts_with(&prefix(&hash)) && name.ends_with(".scope") && !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
+        }
+        if scopes.is_empty() {
+            return Ok(());
+        }
+        end_set(root, own_rel, state_dir, &hash, scopes, bound)
+    }
+
+    fn end_set(
+        root: &Path,
+        own_rel: &str,
+        state_dir: &Path,
+        hash: &str,
+        scopes: Vec<String>,
+        bound: Duration,
+    ) -> Result<(), String> {
+        remember(state_dir, &scopes)?;
+        for scope in &scopes {
+            aim(scope, own_rel, hash)?;
+            match std::fs::write(at(root, scope).join("cgroup.kill"), "1") {
+                Ok(()) => {}
+                Err(e) if gone(&e) => {}
+                Err(e) => return Err(format!("kill {scope}: {e}")),
+            }
+        }
+        let deadline = Instant::now() + bound;
+        loop {
+            let mut left = Vec::new();
+            for scope in &scopes {
+                if populated(root, scope)? {
+                    left.push(scope.clone());
+                }
+            }
+            if left.is_empty() {
+                return rewrite(state_dir, &[]);
+            }
+            if Instant::now() >= deadline {
+                rewrite(state_dir, &left)?;
+                return Err(format!("the row's scope did not empty within {bound:?}: {left:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Only an absent `cgroup.events` (the scope is gone) or a line
+    /// `populated 0` is empty; any other read error is an `Err`.
+    fn populated(root: &Path, rel: &str) -> Result<bool, String> {
+        match std::fs::read_to_string(at(root, rel).join("cgroup.events")) {
+            Ok(text) => Ok(!text.lines().any(|l| l.trim() == "populated 0")),
+            Err(e) if gone(&e) => Ok(false),
+            Err(e) => Err(format!("read {rel}/cgroup.events: {e}")),
+        }
+    }
+
+    /// NotFound or `ENODEV`: the cgroup was removed.
+    fn gone(e: &std::io::Error) -> bool {
+        e.kind() == ErrorKind::NotFound || e.raw_os_error() == Some(libc::ENODEV)
+    }
+
+    fn at(root: &Path, rel: &str) -> PathBuf {
+        root.join(rel.trim_start_matches('/'))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// `root{rel}` as a fake cgroup: an empty `cgroup.kill` and the
+        /// given `cgroup.events`. Never under `/sys/fs/cgroup`.
+        fn fake_scope(root: &Path, rel: &str, events: &str) -> PathBuf {
+            let dir = root.join(rel.trim_start_matches('/'));
+            std::fs::create_dir_all(&dir).expect("mkdir fake scope");
+            std::fs::write(dir.join("cgroup.kill"), "").expect("write cgroup.kill");
+            std::fs::write(dir.join("cgroup.events"), events).expect("write cgroup.events");
+            dir
+        }
+
+        const OWN: &str = "/a/app.slice/run-u1.scope";
+
+        #[test]
+        fn scope_aim_refuses_everything_but_this_rows_scope() {
+            let state = tempfile::tempdir().expect("tempdir");
+            let h = state_dir_hash(state.path());
+            for (target, own, accepted) in crate::row_scope_aim::aim_table(&h) {
+                let verdict = aim(&target, &own, &h);
+                assert_eq!(
+                    verdict.is_ok(),
+                    accepted,
+                    "aim {} {target:?} with own {own:?}: {verdict:?}",
+                    if accepted { "refused" } else { "accepted" }
+                );
+            }
+        }
+
+        #[test]
+        fn capture_finds_only_this_rows_scope() {
+            let (state, other_state, root) =
+                (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (h, other) = (state_dir_hash(state.path()), state_dir_hash(other_state.path()));
+            let ours = format!("/a/app.slice/sot-row-{h}-x.scope");
+            fake_scope(root.path(), &ours, "populated 1\n");
+            let theirs = format!("/a/app.slice/sot-row-{other}-x.scope");
+            fake_scope(root.path(), &theirs, "populated 1\n");
+            let no_kill = format!("/a/app.slice/sot-row-{h}-y.scope");
+            std::fs::create_dir_all(root.path().join(no_kill.trim_start_matches('/'))).unwrap();
+            let at = |text: String| capture_from(root.path(), state.path(), &text).expect("capture");
+
+            assert_eq!(at(format!("0::{ours}\n")), Some(ours.clone()), "this row's scope");
+            assert_eq!(at("0::/a/app.slice/run-u5.scope\n".to_string()), None, "a run-u scope");
+            assert_eq!(at(format!("0::{theirs}\n")), None, "another row's scope");
+            assert_eq!(at(format!("12:pids:{ours}\n1:name=systemd:{ours}\n")), None, "v1 lines only");
+            assert_eq!(at(format!("0::{no_kill}\n")), None, "no cgroup.kill");
+        }
+
+        #[test]
+        fn scope_end_kills_every_scope_of_this_row_and_nothing_else() {
+            let (state, other_state, root) =
+                (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (h, other) = (state_dir_hash(state.path()), state_dir_hash(other_state.path()));
+            let a = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{h}-a.scope"), "populated 0\nfrozen 0\n");
+            let b = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{h}-b.scope"), "populated 0\nfrozen 0\n");
+            let c = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{other}-c.scope"), "populated 0\nfrozen 0\n");
+
+            let rel = format!("/a/app.slice/sot-row-{h}-a.scope");
+            end(root.path(), OWN, state.path(), Some(&rel), Duration::from_millis(200)).expect("end");
+            let kill = |d: &Path| std::fs::read_to_string(d.join("cgroup.kill")).unwrap();
+            assert_eq!(kill(&a), "1", "the captured scope was not killed");
+            assert_eq!(kill(&b), "1", "a sibling scope of this row was not killed");
+            assert_eq!(kill(&c), "", "another row's scope was killed");
+        }
+
+        #[test]
+        fn scope_that_does_not_empty_keeps_the_row_not_ended() {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let h = state_dir_hash(state.path());
+            let rel = format!("/a/app.slice/sot-row-{h}-a.scope");
+            let dir = fake_scope(root.path(), &rel, "populated 1\nfrozen 0\n");
+            let bound = Duration::from_millis(100);
+
+            let err = end(root.path(), OWN, state.path(), Some(&rel), bound).expect_err("end on a populated scope");
+            assert!(err.contains("did not empty"), "{err}");
+            end(root.path(), OWN, state.path(), None, bound).expect_err("a retry on a still-populated scope");
+            std::fs::write(dir.join("cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
+            end(root.path(), OWN, state.path(), None, bound).expect("a retry once emptied");
+            end(root.path(), OWN, state.path(), None, bound).expect("a second retry");
+
+            let fresh = tempfile::tempdir().unwrap();
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(fresh.path()));
+            let dir = fake_scope(root.path(), &rel, "populated 1\n");
+            end(root.path(), OWN, fresh.path(), Some(&rel), bound).expect_err("end on a populated scope");
+            std::fs::remove_dir_all(&dir).unwrap();
+            end(root.path(), OWN, fresh.path(), None, bound).expect("a scope that is gone is empty");
+        }
+
+        #[test]
+        fn scope_events_unreadable_is_not_empty() {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+            let dir = root.path().join(rel.trim_start_matches('/'));
+            std::fs::create_dir_all(dir.join("cgroup.events")).unwrap();
+            std::fs::write(dir.join("cgroup.kill"), "").unwrap();
+            end(root.path(), OWN, state.path(), Some(&rel), Duration::from_millis(100))
+                .expect_err("an unreadable cgroup.events is not an empty scope");
+        }
+
+        /// A row whose authority and leg are both proven absent, so
+        /// `end_run`'s unreachable arm reaches its `Unheld` answer.
+        fn absent_row(state_dir: &Path) {
+            let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
+            sot_log::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
+            let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
+            std::fs::create_dir_all(&voyage_root).expect("voyage root");
+            std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
+        }
+
+        /// Points `root()` at a fake cgroup root for this test's thread.
+        struct FakeRoot;
+        impl FakeRoot {
+            fn at(root: &Path) -> Self {
+                TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.to_path_buf()));
+                FakeRoot
+            }
+        }
+        impl Drop for FakeRoot {
+            fn drop(&mut self) {
+                TEST_ROOT.with(|r| *r.borrow_mut() = None);
+            }
+        }
+
+        #[test]
+        fn row_scope_file_written_at_capture_before_any_kill() {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let _root = FakeRoot::at(root.path());
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+            let dir = fake_scope(root.path(), &rel, "populated 0\n");
+            let kill = || std::fs::read_to_string(dir.join("cgroup.kill")).unwrap();
+
+            // Capture lists the scope on disk and kills nothing.
+            let text = format!("0::{rel}\n");
+            assert_eq!(capture_from(root.path(), state.path(), &text), Ok(Some(rel.clone())));
+            assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "the file after capture");
+            assert_eq!(kill(), "", "capture killed");
+            // A capture-then-return arm (the transport error, Failed,
+            // Refused, OutcomeUnknown, Starting) returns here; the file
+            // stays, and the next capture adds nothing twice.
+            assert_eq!(capture_from(root.path(), state.path(), &text), Ok(Some(rel.clone())));
+            assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "the file after a second capture");
+
+            // The supervisor-outcome arms: the file lists the scope when
+            // the stop runs, and the kill comes only after it.
+            let mut at_stop = None;
+            crate::capsule_workspace::runtime::stop_then_end_scope(state.path(), Some(&rel), root.path(), &crate::capsule_workspace::row_scope::own_rel().unwrap_or_default(), || {
+                at_stop = Some((listed(state.path()), kill()))
+            })
+            .expect("end an empty scope");
+            assert_eq!(at_stop, Some((Ok(vec![rel.clone()]), String::new())), "the file and kill at the stop");
+            assert_eq!(kill(), "1", "the scope was not killed after the stop");
+            assert!(!state.path().join(SCOPES_FILE).exists(), "a proven-empty end left the file");
+        }
+
+        #[test]
+        fn every_not_ended_scope_path_keeps_the_file() {
+            let bound = Duration::from_millis(100);
+            for fault in ["aim refusal", "kill write error", "events read error", "parent-dir list error"] {
+                let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+                let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+                let dir = root.path().join(rel.trim_start_matches('/'));
+                let mut own = OWN.to_string();
+                match fault {
+                    "aim refusal" => {
+                        fake_scope(root.path(), &rel, "populated 1\n");
+                        own = rel.clone();
+                    }
+                    "kill write error" => {
+                        std::fs::create_dir_all(dir.join("cgroup.kill")).unwrap();
+                        std::fs::write(dir.join("cgroup.events"), "populated 0\n").unwrap();
+                    }
+                    "events read error" => {
+                        std::fs::create_dir_all(dir.join("cgroup.events")).unwrap();
+                        std::fs::write(dir.join("cgroup.kill"), "").unwrap();
+                    }
+                    _ => {
+                        std::fs::create_dir_all(root.path().join("a")).unwrap();
+                        std::fs::write(root.path().join("a/app.slice"), "").unwrap();
+                    }
+                }
+                let captured = capture_from(root.path(), state.path(), &format!("0::{rel}\n"));
+                assert_eq!(captured, Ok(Some(rel.clone())), "{fault}: capture");
+                end(root.path(), &own, state.path(), Some(&rel), bound).expect_err(fault);
+                assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "{fault}: the file after the end");
+                end(root.path(), &own, state.path(), None, bound).expect_err(&format!("{fault}: a retry ended"));
+                assert_eq!(listed(state.path()), Ok(vec![rel.clone()]), "{fault}: the file after the retry");
+            }
+        }
+
+        #[test]
+        fn scope_file_left_by_a_killed_daemon_is_ended_by_the_next_end() {
+            use crate::capsule_workspace::EndRunOutcome;
+            let root = tempfile::tempdir().unwrap();
+            let _root = FakeRoot::at(root.path());
+            for (events, ends) in [("populated 0\n", true), ("populated 1\n", false)] {
+                let state = tempfile::tempdir().unwrap();
+                absent_row(state.path());
+                let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+                let dir = fake_scope(root.path(), &rel, events);
+                // Only the file: no in-process state names this scope.
+                std::fs::write(state.path().join(SCOPES_FILE), format!("{rel}\n")).unwrap();
+
+                let outcome = crate::capsule_workspace::end_run(state.path(), "test reason", true);
+                assert_eq!(std::fs::read_to_string(dir.join("cgroup.kill")).unwrap(), "1", "{events}: not killed");
+                if ends {
+                    assert!(matches!(outcome, Ok(EndRunOutcome::Unheld)), "{events}: {outcome:?}");
+                    assert!(!state.path().join(SCOPES_FILE).exists(), "{events}: the file stayed");
+                } else {
+                    assert!(matches!(outcome, Ok(EndRunOutcome::NotEnded(_))), "{events}: {outcome:?}");
+                    assert_eq!(listed(state.path()), Ok(vec![rel]), "{events}: the file after NotEnded");
+                }
+            }
+        }
+    }
+}
+
 /// Every platform `sotd` ships for. The gate this module carried until
 /// the supervisor-epoch ruling was never about what macOS can do:
 /// `sot-capsule supervise` is built and shipped in the macOS release
@@ -1457,7 +1883,7 @@ mod runtime {
         StartMode, FOREIGN_PHASE, LANE_CONCURRENCY, MAX_RESTARTS_PER_WINDOW, NESTING_ENV_VARS_TO_SCRUB,
         NEVER_STARTED_PHASE, RESTART_BACKOFFS, RESTART_WINDOW, UNREACHABLE_PHASE,
     };
-    use crate::workspaces::Workspaces;
+    use crate::workspaces::{StartPermit, Workspaces};
     use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
@@ -1600,6 +2026,7 @@ mod runtime {
     /// unlike the root check above this one DOES need `state_dir`, since
     /// nesting is a property of THIS row, not of the machine.
     fn spawn_detached_supervisor(
+        _permit: &StartPermit,
         sot_capsule_exe: &Path,
         state_dir: &Path,
         mode: StartMode,
@@ -1686,9 +2113,11 @@ mod runtime {
                     .arg("--quiet")
                     .arg("--collect")
                     .arg("--description")
-                    .arg(format!("sot-capsule {workspace_id}"))
-                    .arg("--")
-                    .arg(sot_capsule_exe);
+                    .arg(format!("sot-capsule {workspace_id}"));
+                // A4b: the unit name is the row's scope record.
+                #[cfg(target_os = "linux")]
+                c.arg("--unit").arg(super::row_scope::unit_name(state_dir));
+                c.arg("--").arg(sot_capsule_exe);
                 c
             } else {
                 Command::new(sot_capsule_exe)
@@ -2074,8 +2503,32 @@ mod runtime {
         use sot_log::supervisor_client::EndRunOutcome as O;
         use sot_log::wire::SupervisorPhase;
 
-        let status = match sot_log::supervisor_client::query_status(state_dir) {
-            Ok((status, _process)) => status,
+        // A4b: the row's remembered scopes (`row_scope::SCOPES_FILE`)
+        // are ended after the graceful end when a supervisor answers, and
+        // before `Unheld` when none does, so no retry and no restarted
+        // daemon counts the row ended while a scope may hold processes.
+        #[cfg(target_os = "linux")]
+        let (root, own) = (super::row_scope::root(), super::row_scope::own_rel().unwrap_or_default());
+        #[cfg(not(target_os = "linux"))]
+        let (root, own) = (PathBuf::new(), String::new());
+
+        let (status, scope) = match sot_log::supervisor_client::query_status(state_dir) {
+            Ok((status, process)) => {
+                // A4b: the challenged supervisor's own scope, captured
+                // and listed durably before the end that makes it exit; a
+                // failed write kills nothing.
+                #[cfg(target_os = "linux")]
+                let scope = match super::row_scope::capture(&root, state_dir, process.pid()) {
+                    Ok(scope) => scope,
+                    Err(d) => return Ok(R::NotEnded(d)),
+                };
+                #[cfg(not(target_os = "linux"))]
+                let scope: Option<String> = {
+                    let _ = process;
+                    None
+                };
+                (status, scope)
+            }
             Err(e) => {
                 // Recoverability (ADR 0043 decision 33): a row is
                 // removed only after a confirmed end or a PROVEN absence
@@ -2152,7 +2605,17 @@ mod runtime {
                 // fence-stage failure keeps the ORIGINAL "lane
                 // unreachable" text (`e`), unchanged.
                 return match absence_proof(state_dir) {
-                    Ok(true) => Ok(R::Unheld),
+                    Ok(true) => {
+                        // A4b: scopes an earlier end listed are proven
+                        // empty before the row is counted ended.
+                        #[cfg(target_os = "linux")]
+                        if let Err(d) =
+                            super::row_scope::end(&root, &own, state_dir, None, super::row_scope::SCOPE_EMPTY_BOUND)
+                        {
+                            return Ok(R::NotEnded(d));
+                        }
+                        Ok(R::Unheld)
+                    }
                     Ok(false) => Err(std::io::Error::other("a leg is running with no authority")),
                     Err(NotProven::LegCheckFailed(detail)) => Err(std::io::Error::other(detail)),
                     Err(NotProven::FenceUnavailable) => Err(std::io::Error::other(e.to_string())),
@@ -2171,7 +2634,11 @@ mod runtime {
                 // `supervisor.rs`'s `handle_command`). Skip the doomed
                 // round trip; retry the stop instead of fabricating a
                 // verified outcome this call never actually observed.
-                stop_and_warn(state_dir, "already ended (EndedNoRespawn) before this call");
+                if let Err(d) =
+                    stop_and_end_scope(state_dir, "already ended (EndedNoRespawn) before this call", scope.as_deref(), &root, &own)
+                {
+                    return Ok(R::NotEnded(d));
+                }
                 return Ok(R::AlreadyEnded);
             }
             SupervisorPhase::Terminal => {
@@ -2185,7 +2652,15 @@ mod runtime {
                 // This is therefore NOT a confirmed end on its own — the
                 // SAME independent [`absence_proof`] the unreachable arm
                 // above uses decides whether the row is actually Removable.
-                stop_and_warn(state_dir, "the authority was terminal before this call reached it");
+                if let Err(d) = stop_and_end_scope(
+                    state_dir,
+                    "the authority was terminal before this call reached it",
+                    scope.as_deref(),
+                    &root,
+                    &own,
+                ) {
+                    return Ok(R::NotEnded(d));
+                }
                 return match absence_proof(state_dir) {
                     Ok(true) => Ok(R::Terminal),
                     Ok(false) => {
@@ -2209,14 +2684,14 @@ mod runtime {
         let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(match outcome {
-            O::RecordVerified => {
-                stop_and_warn(state_dir, "end_run confirmed verified");
-                R::RecordVerified
-            }
-            O::RecordClosed => {
-                stop_and_warn(state_dir, "end_run confirmed closed");
-                R::RecordClosed
-            }
+            O::RecordVerified => match stop_and_end_scope(state_dir, "end_run confirmed verified", scope.as_deref(), &root, &own) {
+                Ok(()) => R::RecordVerified,
+                Err(d) => R::NotEnded(d),
+            },
+            O::RecordClosed => match stop_and_end_scope(state_dir, "end_run confirmed closed", scope.as_deref(), &root, &own) {
+                Ok(()) => R::RecordClosed,
+                Err(d) => R::NotEnded(d),
+            },
             O::Failed(detail) => R::NotEnded(format!("end_run failed: {detail}")),
             O::Refused(detail) => R::NotEnded(format!("end_run refused: {detail}")),
             O::OutcomeUnknown => R::NotEnded(
@@ -2388,6 +2863,32 @@ mod runtime {
         }
     }
 
+    /// [`stop_and_warn`], then (Linux, A4b) end the row's remembered
+    /// scopes and the one [`end_run`] captured, so a descendant that left
+    /// the agent's process group ends with the row. `Err` keeps the row
+    /// not ended.
+    fn stop_and_end_scope(state_dir: &Path, why: &'static str, scope: Option<&str>, root: &Path, own: &str) -> Result<(), String> {
+        stop_then_end_scope(state_dir, scope, root, own, || stop_and_warn(state_dir, why))
+    }
+
+    /// The graceful `stop`, then the scope end: a live supervisor is never
+    /// hard-killed ahead of its graceful end, and the kill only finds what
+    /// the protocol could not reach. `stop` is a parameter so a unit test
+    /// can see the scope file at the stop.
+    pub(super) fn stop_then_end_scope(state_dir: &Path, scope: Option<&str>, root: &Path, own: &str, stop: impl FnOnce()) -> Result<(), String> {
+        stop();
+        #[cfg(target_os = "linux")]
+        {
+            use super::row_scope::{end, SCOPE_EMPTY_BOUND};
+            end(root, own, state_dir, scope, SCOPE_EMPTY_BOUND)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (state_dir, scope, root, own);
+            Ok(())
+        }
+    }
+
     /// Spawn a capsule's supervisor authority AND hand it to a watchdog
     /// task together (ADR 0042 L1a, Codex review finding 6: "hand every
     /// spawned Child to a waiter task") — the daemon has become ADR
@@ -2412,6 +2913,7 @@ mod runtime {
     /// land inside it. The phase this settles to is what the caller
     /// reports.
     pub fn spawn_and_watch(
+        permit: &StartPermit,
         sot_capsule_exe: &Path,
         state_dir: &Path,
         mode: StartMode,
@@ -2440,7 +2942,7 @@ mod runtime {
             .map(|ws| (ws.agent(), ws.account()))
             .unwrap_or_default();
         let child = spawn_detached_supervisor(
-            sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
+            permit, sot_capsule_exe, state_dir, mode, agent_argv, cwd, agent_name, &workspace_id, &slug, &agent_kind, &account,
         )?;
         // The supervisor authors its own identity; this daemon only
         // LEARNS it, here, from the first status the settle draws out.
@@ -2513,12 +3015,16 @@ mod runtime {
         slug: &str,
         workspaces: Workspaces,
     ) -> Result<&'static str, String> {
+        // The run gate first, held to return: a refused start locates and
+        // spawns nothing.
+        let permit = workspaces.begin_start(workspace_id)?;
         let state_dir = super::state_dir_for(state_root, workspace_id);
         let exe = match sot_capsule_exe() {
             Ok(exe) => exe,
             Err(e) => return Err(format!("could not locate sot-capsule.exe next to this daemon: {e}")),
         };
         spawn_and_watch(
+            &permit,
             &exe,
             &state_dir,
             mode,
@@ -2530,6 +3036,15 @@ mod runtime {
             workspaces.clone(),
         )
         .map_err(|e| format!("capsule supervisor spawn failed: {e}"))
+    }
+
+    /// Mints a fresh voyage on the row's live authority — a run start, so
+    /// it passes the gate first. The ONLY `supervisor_client::reset` call
+    /// outside tests; the retire arm of [`ensure_started`] and
+    /// `reauth::mint_replacement_voyage` both come through here.
+    pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
+        let _permit = workspaces.begin_start(workspace_id)?;
+        sot_log::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
     }
 
     /// Bound for [`settle_after_spawn`] — the ONE deadline every spawn
@@ -3014,9 +3529,9 @@ mod runtime {
                 }
             }
             // The second of the two resets in this tree, and the other is
-            // `reauth::mint_replacement_voyage`. Its doc comment carries
-            // the long form.
-            return LockedStep::Done(match sot_log::supervisor_client::reset(&state_dir) {
+            // `reauth::mint_replacement_voyage`; both go through
+            // [`reset_run`]. Its doc comment carries the long form.
+            return LockedStep::Done(match reset_run(&workspaces, workspace_id, &state_dir) {
                 // Mints a fresh voyage on the SAME epoch; the observer's next round supersedes the latch.
                 Ok(_new_voyage) => Ok(Some(())),
                 Err(e) => Err(format!("capsule workspace reset (after retiring an ended run) failed: {e}")),
@@ -3331,6 +3846,16 @@ mod runtime {
                         );
                         tokio::time::sleep(backoff).await;
                         restart_times.push(Instant::now());
+                        // The run gate, asked after the backoff so a
+                        // closing or held-back gate is read as it is now.
+                        // Held through this leg's settle below.
+                        let permit = match workspaces.begin_start(&workspace_id) {
+                            Ok(permit) => permit,
+                            Err(refusal) => {
+                                tracing::info!(workspace_id = %workspace_id, %refusal, "capsule supervisor watchdog: restart refused by the run gate -- not restarting");
+                                return;
+                            }
+                        };
                         // ADR 0043 decision 29: a process spawn never runs
                         // on a Tokio worker. Clones are the closure's OWN
                         // copies (`'static` + `Send`, required across the
@@ -3358,6 +3883,7 @@ mod runtime {
                             .unwrap_or_default();
                         let spawn_result = tokio::task::spawn_blocking(move || {
                             spawn_detached_supervisor(
+                                &permit,
                                 &exe,
                                 &dir,
                                 StartMode::Resume,
@@ -3369,10 +3895,11 @@ mod runtime {
                                 &agent_kind_for_spawn,
                                 &account_for_spawn,
                             )
+                            .map(|child| (child, permit))
                         })
                         .await;
                         match spawn_result {
-                            Ok(Ok(child)) => {
+                            Ok(Ok((child, permit))) => {
                                 // Settle BEFORE this guard drops — the
                                 // SAME shared wait `spawn_and_watch`
                                 // itself uses; see `settle_after_spawn`'s
@@ -3398,6 +3925,7 @@ mod runtime {
                                 if let (Ok((_phase, observation)), Some(ws)) = (settled, workspaces.resolve(Some(&workspace_id))) {
                                     observe_with_adoption(&ws, observation);
                                 }
+                                drop(permit);
                                 leg_opt = Some(child);
                             }
                             Ok(Err(e)) if e.kind() == ErrorKind::Unsupported => {
@@ -4498,6 +5026,106 @@ mod headless_size_gate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `source` without its `#[cfg(test)]` modules and its comment lines.
+    /// A module ends at the first `}` line at its own indentation; counting
+    /// braces would miscount the ones inside string literals.
+    fn without_test_modules(source: &str) -> String {
+        let mut out = String::new();
+        let mut lines = source.lines().peekable();
+        while let Some(line) = lines.next() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            let next_is_mod = lines.peek().is_some_and(|next| {
+                let next = next.trim_start();
+                next.starts_with("mod ") || next.starts_with("pub mod ") || next.starts_with("pub(crate) mod ")
+            });
+            if trimmed == "#[cfg(test)]" && next_is_mod {
+                let header = lines.next().unwrap_or_default();
+                if header.trim_end().ends_with(';') || header.trim_end().ends_with('}') {
+                    continue;
+                }
+                let close = format!("{}}}", &header[..header.len() - header.trim_start().len()]);
+                for skipped in lines.by_ref() {
+                    if skipped.trim_end() == close {
+                        break;
+                    }
+                }
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    // #8: every run start passes the gate. The compiler enumerates spawns
+    // through `spawn_detached_supervisor`'s permit parameter; this pins
+    // what it cannot see — that the one reset is behind the gate, that
+    // every spawn call hands a permit, and that a closing gate refuses
+    // before anything is located or dialled.
+    #[test]
+    fn every_run_start_path_takes_a_permit() {
+        let mut faults = Vec::new();
+
+        let reg = crate::workspaces::Workspaces::new();
+        assert!(reg.close_gate_and_settle(std::time::Instant::now()));
+        let root = tempfile::tempdir().unwrap();
+        let refusal = "workspace ws-gate-1 cannot start: this computer's backend is shutting down".to_string();
+        let started = start_supervisor(
+            root.path(), "ws-gate-1", StartMode::Start, &["true".to_string()], root.path(), "", "gate", reg.clone(),
+        );
+        if started != Err(refusal.clone()) {
+            faults.push(format!("start_supervisor with the gate closing answered {started:?}"));
+        }
+        let reset = reset_run(&reg, "ws-gate-1", &state_dir_for(root.path(), "ws-gate-1"));
+        if reset != Err(refusal.clone()) {
+            faults.push(format!("reset_run with the gate closing answered {reset:?}"));
+        }
+
+        let reset_needle = "supervisor_client::reset(";
+        let spawn_needle = "spawn_detached_supervisor(";
+        let mut resets = 0;
+        let mut spawn_calls = 0;
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = without_test_modules(&std::fs::read_to_string(&path).unwrap());
+            for (pos, _) in text.match_indices(reset_needle) {
+                resets += 1;
+                let enclosing = text[..pos].rfind("fn ").map(|at| &text[at + 3..]).unwrap_or("");
+                if !enclosing.starts_with("reset_run(") {
+                    faults.push(format!("{}: supervisor_client::reset called outside reset_run", path.display()));
+                }
+            }
+            for (pos, _) in text.match_indices(spawn_needle) {
+                let args = text[pos + spawn_needle.len()..].trim_start();
+                if text[..pos].ends_with("fn ") {
+                    if !args.starts_with("_permit: &StartPermit,") {
+                        faults.push(format!("{}: spawn_detached_supervisor does not take a permit first", path.display()));
+                    }
+                    continue;
+                }
+                spawn_calls += 1;
+                let first = args.split(',').next().unwrap_or("");
+                if !first.contains("permit") {
+                    faults.push(format!("{}: a spawn_detached_supervisor call passes {first:?} first", path.display()));
+                }
+            }
+        }
+        if resets != 1 {
+            faults.push(format!("supervisor_client::reset occurs {resets} times outside tests, not once"));
+        }
+        if spawn_calls < 2 {
+            faults.push(format!("found {spawn_calls} spawn_detached_supervisor calls; the scan is not seeing the spawns"));
+        }
+        assert!(faults.is_empty(), "{faults:#?}");
+    }
 
     #[test]
     fn state_dir_joins_workspaces_and_the_id() {

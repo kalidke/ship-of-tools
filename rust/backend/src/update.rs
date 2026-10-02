@@ -381,7 +381,7 @@ async fn run_check_once(
                 // Re-check after the grace sleep: a client that attached in
                 // the window must not have its session killed.
                 if clients.count() == 0 {
-                    std::process::exit(0);
+                    std::process::exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
                 }
                 tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
             } else if armed {
@@ -552,7 +552,7 @@ pub async fn handle_update_apply(
     tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(1500)).await;
         tracing::info!("update.apply: exiting now");
-        std::process::exit(0);
+        std::process::exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
     });
 
     let res = UpdateApplyRes {
@@ -570,6 +570,17 @@ pub async fn handle_update_apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An update's exit is a restart (75), never a requested shutdown (0),
+    /// which the launchers read as "stay down".
+    #[test]
+    fn update_exit_code_is_restart() {
+        let src = include_str!("update.rs");
+        let body = &src[..src.find("#[cfg(test)]").expect("the test module")];
+        assert!(!body.contains(&format!("process::exit({})", 0)), "update.rs exits 0, a requested shutdown");
+        let restart = format!("process::exit({})", "sot_protocol::ops::lease::EXIT_UPDATE_RESTART");
+        assert_eq!(body.matches(&restart).count(), 2, "both update exits are restarts");
+    }
 
     fn topo(text: &str) -> sot_protocol::topology::Topology {
         sot_protocol::topology::parse(text).expect("fixture must parse")

@@ -37,7 +37,7 @@ hero:
 
 <div class="sot-section">
   <h2>Your machines as one workspace</h2>
-  <p class="sot-why">The backend runs where the data and GPUs are; the window runs on your laptop or desktop and attaches over SSH. Sessions, REPLs and agents keep running on the server when the lid closes or the window restarts, and several windows can attach to one backend. See <a href="./start/remote">Going remote</a>.</p>
+  <p class="sot-why">The backend runs where the data and GPUs are; the window runs on your laptop or desktop and attaches over SSH. Sessions, REPLs and agents keep running on a remote server when the lid closes or the window restarts (closing the window ends the sessions of a backend on the same computer, not those of a remote one), and several windows can attach to one backend. See <a href="./start/remote">Going remote</a>.</p>
 </div>
 
 <div class="sot-section">

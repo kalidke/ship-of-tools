@@ -20,10 +20,10 @@
 // `--project-root`), constructed at startup whether or not a toml
 // exists for it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -630,6 +630,51 @@ impl Workspace {
 #[derive(Clone, Default)]
 pub struct Workspaces {
     inner: Arc<RwLock<Inner>>,
+    /// The run gate, beside the registry rather than inside it: a start
+    /// asks it before taking any row's guard, and the shutdown waits on it
+    /// without holding the registry.
+    gate: Arc<(Mutex<RunGate>, Condvar)>,
+}
+
+/// Which run starts may begin. Every start of a capsule run
+/// takes a [`StartPermit`] at its primitive (`start_supervisor`, the
+/// watchdog's restart, `reset_run`), so the shutdown can close the gate
+/// and then wait for the starts already past it.
+#[derive(Default)]
+struct RunGate {
+    /// Set once by the shutdown; refuses every start from then on.
+    closing: bool,
+    /// Rows registered at a pending start, refused until their window
+    /// comes back or the pending start cleans them up.
+    held_back: HashSet<String>,
+    /// Permits not yet dropped.
+    in_flight: usize,
+}
+
+impl RunGate {
+    /// Why `workspace_id` may not start now, if it may not. One arm per
+    /// reason, first match wins.
+    fn refusal(&self, workspace_id: &str) -> Option<&'static str> {
+        if self.closing {
+            Some("this computer's backend is shutting down")
+        } else if self.held_back.contains(workspace_id) {
+            Some("this session is waiting for its window to come back")
+        } else {
+            None
+        }
+    }
+}
+
+/// One run start in flight. Dropping it ends the start as far as the gate
+/// is concerned.
+pub struct StartPermit(Arc<(Mutex<RunGate>, Condvar)>);
+
+impl Drop for StartPermit {
+    fn drop(&mut self) {
+        let (gate, settled) = &*self.0;
+        gate.lock().unwrap_or_else(|e| e.into_inner()).in_flight -= 1;
+        settled.notify_all();
+    }
 }
 
 #[derive(Default)]
@@ -887,6 +932,46 @@ impl Workspaces {
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone(),
         )
+    }
+
+    /// Admits one run start for `workspace_id`, or refuses it with a text
+    /// that names the workspace and the reason.
+    pub fn begin_start(&self, workspace_id: &str) -> Result<StartPermit, String> {
+        let mut gate = self.gate.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(reason) = gate.refusal(workspace_id) {
+            return Err(format!("workspace {workspace_id} cannot start: {reason}"));
+        }
+        gate.in_flight += 1;
+        Ok(StartPermit(self.gate.clone()))
+    }
+
+    /// Refuses starts for `ids` until [`Self::release_held_back`].
+    // The pending start calls these; it lands after the gate.
+    #[allow(dead_code)]
+    pub fn hold_back(&self, ids: impl IntoIterator<Item = String>) {
+        self.gate.0.lock().unwrap_or_else(|e| e.into_inner()).held_back.extend(ids);
+    }
+
+    #[allow(dead_code)]
+    pub fn release_held_back(&self) {
+        self.gate.0.lock().unwrap_or_else(|e| e.into_inner()).held_back.clear();
+    }
+
+    /// Closes the gate for good, then waits until every permit has dropped
+    /// or `deadline` passes. BLOCKING. True iff no start is still in flight.
+    // The shutdown calls this; it lands after the gate.
+    #[allow(dead_code)]
+    pub fn close_gate_and_settle(&self, deadline: Instant) -> bool {
+        let (gate, settled) = &*self.gate;
+        let mut gate = gate.lock().unwrap_or_else(|e| e.into_inner());
+        gate.closing = true;
+        while gate.in_flight > 0 {
+            let Some(left) = deadline.checked_duration_since(Instant::now()).filter(|d| !d.is_zero()) else {
+                return false;
+            };
+            gate = settled.wait_timeout(gate, left).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        true
     }
 
     /// Current default workspace id, if one has been set. Consumed by
@@ -2023,6 +2108,46 @@ fn toml_unquote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_gate_table() {
+        let reg = Workspaces::new();
+        // Open: every id is admitted.
+        assert!(reg.begin_start("ws-a-1").is_ok());
+        assert!(reg.begin_start("ws-b-2").is_ok());
+
+        // Held back: that id only, with a text naming it; release admits it again.
+        reg.hold_back(["ws-a-1".to_string()]);
+        let refused = reg.begin_start("ws-a-1").err().expect("a held-back id is refused");
+        assert!(refused.contains("ws-a-1"), "{refused}");
+        assert!(refused.contains("this session is waiting for its window to come back"), "{refused}");
+        assert!(reg.begin_start("ws-b-2").is_ok());
+        reg.release_held_back();
+        assert!(reg.begin_start("ws-a-1").is_ok());
+
+        // Settle returns true once a held permit drops.
+        let permit = reg.begin_start("ws-b-2").expect("open gate");
+        let dropper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(permit);
+        });
+        assert!(reg.close_gate_and_settle(Instant::now() + std::time::Duration::from_secs(5)));
+        dropper.join().unwrap();
+
+        // Closing refuses every id, held back or not.
+        for id in ["ws-a-1", "ws-b-2", "ws-new-3"] {
+            let refused = reg.begin_start(id).err().expect("a closing gate refuses every start");
+            assert!(refused.contains(id), "{refused}");
+            assert!(refused.contains("this computer's backend is shutting down"), "{refused}");
+        }
+
+        // Settle returns false at the deadline while a permit is held.
+        let reg = Workspaces::new();
+        let _held = reg.begin_start("ws-a-1").expect("open gate");
+        let started = Instant::now();
+        assert!(!reg.close_gate_and_settle(started + std::time::Duration::from_millis(200)));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+    }
 
     #[test]
     fn workspace_from_label_uses_slug_and_tmux_convention() {

@@ -123,6 +123,21 @@ fn ping_read_deadline() -> std::time::Duration {
         .unwrap_or(PING_READ_DEADLINE)
 }
 
+/// `SOT_TEST_DAEMON_LOCK_WAIT_MS` overrides [`sot_protocol::ops::lease::DAEMON_LOCK_WAIT`]
+/// for tests — the same `OnceLock` convention as [`ping_read_deadline`].
+/// Unset in every real deployment.
+fn daemon_lock_wait() -> std::time::Duration {
+    static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_DAEMON_LOCK_WAIT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(sot_protocol::ops::lease::DAEMON_LOCK_WAIT)
+}
+
 /// Write one frame to a connection with a bounded timeout (ADR 0027, reaper
 /// half 2). On timeout we return an error so `handle_connection` unwinds and
 /// drops the connection: a peer that hasn't drained a single frame in
@@ -141,7 +156,7 @@ where
 /// Timeout-parameterized core of [`write_frame_to`], split out so the reaper's
 /// drop-on-stuck-peer behavior is unit-testable in milliseconds rather than the
 /// production `WRITE_TIMEOUT`.
-async fn write_frame_within<W>(
+pub(crate) async fn write_frame_within<W>(
     tx: &mut W,
     frame: &Frame,
     blob: Option<&[u8]>,
@@ -466,6 +481,22 @@ fn project_comm_registry(bytes: &[u8]) -> String {
 }
 
 pub async fn run(opts: Opts) -> Result<()> {
+    // Lock first: one daemon per state root, held until this process ends
+    // (a kill included), so a successor never reads the registry while its
+    // predecessor is still shutting down. With no state root there is no
+    // record to fence, the same posture as the resume skip below.
+    let _daemon_lock = match sot_log::state_dir::sot_state_dir() {
+        Some(state_root) => Some(lock_daemon(&state_root, opts.socket.as_deref()).await?),
+        None => {
+            tracing::warn!(
+                "daemon lock skipped, running unfenced: could not resolve this machine's state root \
+                 ({} unset)",
+                crate::capsule_workspace::STATE_ROOT_HINT
+            );
+            None
+        }
+    };
+
     // ADR 0046 decision 1: resolve this daemon's declared host at boot,
     // fatal if it can't be named, so the failure is a boot error rather
     // than a per-hello one. Pin the (bare, S4) own-listener endpoint from
@@ -633,33 +664,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         );
     }
 
-    // ADR 0042 slice L1a: adopt every REGISTERED capsule workspace's
-    // supervisor on this daemon's own startup — the counterpart of the
-    // tmux-session ensure block just above, for the OTHER runtime. This
-    // naturally covers the default workspace too when it is a capsule
-    // (just marked/preserved above): one registry pass, one code path,
-    // no separate "spawn the default's own supervisor" step. `sot-capsule
-    // supervise --resume` decides adopt-vs-spawn itself (ADR 0041's
-    // start-mode table), including for a workspace whose state directory
-    // does not exist yet at all ("no leg at all -> spawn a new leg").
-    // Codex review finding 10: runs OFF the startup critical path (a
-    // detached task, never awaited) with its own bounded concurrency —
-    // see `capsule_workspace::resume_all`'s own doc. Ungated since the
-    // macOS wiring lane: every NEW workspace resolves to `"capsule"` on
-    // every host this daemon builds for (ADR 0042 L6 / this repo's B6
-    // lane, ADR 0046 decision 5), so every host has rows to resume —
-    // plus any surviving `"tmux"` row from before the flip, which this
-    // scan still ignores exactly as before.
-    if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
-        tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
-    } else {
-        tracing::warn!(
-            "capsule workspace resume-scan skipped: could not resolve this machine's state root \
-             ({} unset)",
-            crate::capsule_workspace::STATE_ROOT_HINT
-        );
-    }
-
 
     // When the backend is launched with `--label`, stamp our identity into
     // `~/.config/sot/sessions/<slug>.toml` so Sessions mode (frontend)
@@ -764,6 +768,14 @@ pub async fn run(opts: Opts) -> Result<()> {
     // destroy; each connection subscribes and writes a `workspace.changed`
     // evt frame so the Sessions strip refreshes live (mirror preview.changed).
     let (ws_events_tx, _ws_events_rx) = broadcast::channel::<WorkspaceChanged>(64);
+
+    // The start (ADR 0042 slice L1a's resume, now behind `held.json`):
+    // resume every registered capsule row, or end them all without a
+    // resume (`startup::begin`). Here because a Cleanup's ends publish on
+    // the workspace bus, and before any listener binds, so the record is
+    // in the leases before the first grant.
+    let leases = crate::startup::begin(sot_log::state_dir::sot_state_dir(), &workspaces, &ws_events_tx);
+    tokio::spawn(crate::lease::ticker(leases.clone()));
 
     // Topology write path (plan §B "Editing the master list"): one store
     // per daemon holding the last successfully parsed `hosts.toml`, and a
@@ -888,10 +900,11 @@ pub async fn run(opts: Opts) -> Result<()> {
         let cl = clients.clone();
         let tps = topology_store.clone();
         let tpe = topo_changed_tx.clone();
+        let le = leases.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
                 path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
-                tpe,
+                tpe, le,
             )
             .await
         }));
@@ -906,6 +919,57 @@ pub async fn run(opts: Opts) -> Result<()> {
     let (res, _idx, _rest) = futures_util::future::select_all(tasks).await;
     res.context("listener task panicked")??;
     Ok(())
+}
+
+/// Takes `<state_root>/daemon.lock`, trying every 250 ms. A busy lock with
+/// a daemon answering on `socket` refuses at once; a busy lock with nobody
+/// answering is a predecessor still shutting down, waited for up to
+/// [`daemon_lock_wait`]. Either error ends `main` with exit 1.
+async fn lock_daemon(
+    state_root: &std::path::Path,
+    socket: Option<&std::path::Path>,
+) -> Result<sot_log::fence::DaemonLock> {
+    let lock_path = sot_log::fence::daemon_lock_path(state_root);
+    let deadline = tokio::time::Instant::now() + daemon_lock_wait();
+    let mut logged = false;
+    loop {
+        if let Some(lock) = sot_log::fence::try_lock_daemon(state_root)
+            .with_context(|| format!("open the daemon lock {}", lock_path.display()))?
+        {
+            return Ok(lock);
+        }
+        if let Some(path) = socket.filter(|p| socket_answers(p)) {
+            anyhow::bail!(
+                "another daemon on this computer holds {} and answers on {}; refusing to start",
+                lock_path.display(),
+                path.display()
+            );
+        }
+        if !logged {
+            tracing::info!(
+                lock = %lock_path.display(),
+                "waiting for the previous daemon on this computer to finish shutting down"
+            );
+            logged = true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "the previous daemon on this computer still holds {} after {:?}",
+                lock_path.display(),
+                daemon_lock_wait()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+/// Whether a daemon answers on the session socket: on Unix a connect
+/// succeeds, on Windows a client open of the pipe name succeeds.
+fn socket_answers(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    return std::os::unix::net::UnixStream::connect(path).is_ok();
+    #[cfg(windows)]
+    return std::fs::OpenOptions::new().read(true).write(true).open(path).is_ok();
 }
 
 /// Refuses when a daemon still answers on the socket at `path`. Unlinking
@@ -979,6 +1043,7 @@ async fn run_local(
     clients: Clients,
     topology_store: Arc<crate::topology_store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
+    leases: Arc<crate::lease::Leases>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -1020,8 +1085,16 @@ async fn run_local(
         .with_context(|| format!("bind {socket_path:?}"))?;
     tracing::info!(socket = ?socket_path, "listening (local)");
 
-    loop {
-        let stream: LocalStream = listener.accept().await.context("accept on sot socket")?;
+    // The accept loop ends when a shutdown begins: shutdown step 1 stops
+    // accepting by dropping the listener and unlinking the socket, on the
+    // same wake as the deciding departure, before any row is touched.
+    let decided = loop {
+        let stream: LocalStream = tokio::select! {
+            accepted = listener.accept() => accepted.context("accept on sot socket")?,
+            () = leases.gone() => break tokio::time::Instant::now(),
+        };
+        let peer_identity = crate::lease::accepted_peer(&stream);
+        let le = leases.clone();
         let s = session.clone();
         let tok = token.clone();
         let mj = mathjax.clone();
@@ -1045,7 +1118,7 @@ async fn run_local(
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
                 rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe,
-                cl, tps, tpe, "local", None,
+                cl, tps, tpe, "local", None, peer_identity, le,
             )
             .await
             {
@@ -1054,7 +1127,18 @@ async fn run_local(
                 tracing::info!(transport = "local", "connection closed");
             }
         });
+    };
+    drop(listener);
+    // The listener's drop already unlinks it; this covers a listener
+    // that does not.
+    #[cfg(unix)]
+    match std::fs::remove_file(&socket_path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(socket = ?socket_path, error = %e, "shutdown: socket not unlinked");
+        }
+        _ => {}
     }
+    crate::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 
 
@@ -1130,6 +1214,8 @@ async fn handle_connection<R, W>(
     topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
     transport: &'static str,
     peer: Option<String>,
+    peer_identity: sot_log::challenge::PeerAuthOutcome,
+    leases: Arc<crate::lease::Leases>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -1185,6 +1271,22 @@ where
                     f,
                     expected_token.as_deref(),
                     &workspaces,
+                )
+                .await;
+            }
+            // A lease (1.2) is a connection of its own: it never enters
+            // the hello-gated loop, the reaper or any handler.
+            if f.kind == Kind::Req && f.op == op::FE_LEASE {
+                tracing::info!(transport, ?peer_identity, "fe.lease — a lease connection");
+                let state_root = sot_log::state_dir::sot_state_dir();
+                return crate::lease::hold(
+                    buffered,
+                    tx,
+                    f,
+                    peer_identity,
+                    expected_token.as_deref(),
+                    &leases,
+                    state_root.as_deref(),
                 )
                 .await;
             }
