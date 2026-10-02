@@ -3663,6 +3663,70 @@ fn has_root_relative_refs(html: &str) -> bool {
     false
 }
 
+/// Run one `quarto render` to its end. `None` means `sig` fired first: the
+/// render's whole process group (quarto, and the engines its executable chunks
+/// start) is killed and reaped before this returns.
+async fn run_quarto(
+    program: &str,
+    cwd: &std::path::Path,
+    file_name: &std::ffi::OsStr,
+    out_name: &str,
+    execute: bool,
+    sig: &'static crate::shutdown::Signal,
+) -> std::io::Result<Option<std::process::Output>> {
+    use tokio::io::AsyncReadExt;
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.current_dir(cwd)
+        .arg("render")
+        .arg(file_name)
+        .arg("--to")
+        .arg("html")
+        .arg("--embed-resources")
+        .arg("--output")
+        .arg(out_name);
+    if !execute {
+        cmd.arg("--no-execute");
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let mut child = cmd.spawn()?;
+    let _child_guard = sig.guard();
+    let (mut out, mut errs) = (child.stdout.take(), child.stderr.take());
+    let work = async {
+        let (mut so, mut se) = (Vec::new(), Vec::new());
+        let read_out = async {
+            if let Some(o) = out.as_mut() {
+                let _ = o.read_to_end(&mut so).await;
+            }
+        };
+        let read_err = async {
+            if let Some(e) = errs.as_mut() {
+                let _ = e.read_to_end(&mut se).await;
+            }
+        };
+        let (_, _, status) = tokio::join!(read_out, read_err, child.wait());
+        status.map(|status| std::process::Output { status, stdout: so, stderr: se })
+    };
+    tokio::select! {
+        done = work => done.map(Some),
+        // The daemon is shutting down: nothing kills this child at
+        // `process::exit`, so it is killed here.
+        _ = sig.fired() => {
+            #[cfg(unix)]
+            if let Some(pid) = child.id() {
+                // SAFETY: plain signal to the group this function created.
+                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            }
+            let _ = child.kill().await;
+            Ok(None)
+        }
+    }
+}
+
 /// `quarto.open` — render a Quarto/markdown doc to a self-contained HTML on
 /// the backend host (which has quarto + the RAM) and return the bytes, base64.
 /// `execute = false` (`o`) = `--no-execute`: fast, quarto-only, no code run.
@@ -3710,21 +3774,12 @@ pub async fn handle_quarto_open(
     let out_name = format!("__sot-qmd-{req_id}.html");
     let html_path = parent.join(&out_name);
 
-    let mut cmd = tokio::process::Command::new("quarto");
-    cmd.current_dir(parent)
-        .arg("render")
-        .arg(file_name)
-        .arg("--to")
-        .arg("html")
-        .arg("--embed-resources")
-        .arg("--output")
-        .arg(&out_name);
-    if !req.execute {
-        cmd.arg("--no-execute");
-    }
-
-    let output = match cmd.output().await {
-        Ok(o) => o,
+    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, crate::shutdown::process()).await {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            let _ = tokio::fs::remove_file(&html_path).await;
+            return err("the daemon is shutting down".to_string(), "shutting_down");
+        }
         Err(e) => {
             return err(
                 format!("failed to spawn quarto (is it installed on this host?): {e}"),
@@ -10428,5 +10483,47 @@ mod workspace_destroy_default_row_tests {
         );
         assert!(payload.get("kept").and_then(|v| v.as_str()).is_some());
         assert!(confirmed_ended);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod quarto_shutdown_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    /// The shutdown signal kills the render's whole process group, engines included.
+    #[tokio::test]
+    async fn shutdown_kills_the_quarto_render_and_its_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("engine.pid");
+        let stub = dir.path().join("stub-quarto");
+        std::fs::write(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let task = tokio::spawn(async move {
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+        });
+        let began = std::time::Instant::now();
+        while sig.live() == 0 || !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        sig.fire();
+        let done = tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the render outlived the shutdown")
+            .expect("render task")
+            .expect("run_quarto");
+        assert!(done.is_none(), "a killed render has no output");
+        assert_eq!(sig.live(), 0);
+        let gone = (0..50).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            // SAFETY: signal 0 only probes the pid.
+            unsafe { libc::kill(engine, 0) != 0 }
+        });
+        assert!(gone, "the engine child survived the shutdown");
     }
 }
