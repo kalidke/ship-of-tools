@@ -661,7 +661,28 @@ case_marker_artifact_audit_blocks_unsurfaced_result() {
         ITT "Write:::/tmp/brief.md" $'SITREP: wrote the design brief\n\nThe plan is in /tmp/brief.md.')"
     [ -n "$out" ] && printf '%s' "$out" | jq -e '.decision=="block" and (.reason|test("show-result")) and (.reason|test("never surfaced"))' >/dev/null \
         || { echo "    no artifact-audit block: '$out'"; return 1; }
-    expect done/-/-/-/d state
+    expect working/user/-/-/d state
+}
+# A marker turn whose artifact audit blocks has not ended: the row keeps its
+# floor (and the Stop hook's `stop_at` mark) until the Stop that lets it end,
+# which sends `stop` and clears both.
+case_marker_audit_block_keeps_the_turn_until_its_last_stop() {
+    seed idle; W "$GENUINE"
+    local out marker=$'SITREP: wrote the third brief\n\nThe plan is in /tmp/brief3.md.'
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" SOT_TEST_CLAUDE_FINDINGS='{"findings":[{"kind":"artifact","message":"badge /tmp/brief3.md"}]}' \
+        ITT "Write:::/tmp/brief3.md" "$marker")"
+    printf '%s' "$out" | jq -e '.decision=="block"' >/dev/null || { echo "    no audit block: '$out'"; return 1; }
+    expect working/user/-/-/d held || return 1
+    [[ "$(stop_mark)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] || { echo "    no stop_at after the block: '$(stop_mark)'"; return 1; }
+    out="$(PATH="$CLAUDE_STUB_DIR:$PATH" ITT "Write:::/tmp/brief3.md" "$marker" true)"
+    [ -z "$out" ] || { echo "    the continuation blocked: '$out'"; return 1; }
+    expect done/-/-/-/d ended || return 1
+    [ -z "$(stop_mark)" ] || { echo "    stop_at survived the ending Stop: '$(stop_mark)'"; return 1; }
+}
+case_stop_deletes_the_stop_mark() {
+    seed_facts '{"floor":"user","stop_at":"2026-09-08T00:00:00Z"}'
+    "$ST" stop >/dev/null
+    [ -z "$(stop_mark)" ] || { echo "    stop_at survived stop: '$(stop_mark)'"; return 1; }
 }
 case_marker_artifact_audit_clean_when_shown() {
     seed idle; W "$GENUINE"
@@ -688,7 +709,9 @@ case_marker_artifact_audit_skipped_in_continuation() {
 # its marker nor floored; the turn end that passes stamps. With no unread mail
 # a marker turn is exactly as before.
 MAIL_BLOCK="{\"decision\":\"block\",\"reason\":\"New sot-comm mail for @$NAME — run comm-poll.sh now, act on it, then end the turn.\"}"
-row_all() { jq -c --arg n "$NAME" '.agents[$n]' "$REGISTRY"; }
+# A Stop that blocks leaves the Stop hook's own `stop_at` mark, so the row is compared without it.
+row_all() { jq -c --arg n "$NAME" '.agents[$n] | del(.stop_at)' "$REGISTRY"; }
+stop_mark() { jq -r --arg n "$NAME" '.agents[$n].stop_at // ""' "$REGISTRY"; }
 poll_mail() { "$SCRIPTS_DIR/comm-poll.sh" >/dev/null 2>&1; }
 # ---- a held marker turn keeps its marker (B1 fix-up 8) ----
 # The turn end that passes stamps from the LAST marker anywhere in the logical
@@ -821,7 +844,7 @@ case_marker_audit_block_with_read_mail_is_byte_identical() {
         ITT "Write:::/tmp/brief2.md" $'SITREP: wrote the second brief\n\nThe plan is in /tmp/brief2.md.')"
     [ "$out" = '{"decision":"block","reason":"Your closing block names a result that was never surfaced: [artifact] badge /tmp/brief2.md -- badge it now via the show-result skill (show-result <path>), then end the turn. Your row is already stamped from the marker -- do not write a second sitrep block."}' ] \
         || { echo "    '$out'"; return 1; }
-    expect done/-/-/-/d state && [ "$(summ)" = "wrote the second brief" ] || { echo "    summary '$(summ)'"; return 1; }
+    expect working/user/-/-/d state && [ "$(summ)" = "wrote the second brief" ] || { echo "    summary '$(summ)'"; return 1; }
 }
 
 # ---- races: the read-decide-write decides against the row as it is UNDER the lock ----
@@ -945,6 +968,8 @@ check "(e) a real prompt after a marker turn starts a new turn" case_a_real_prom
 check "(f) a feedback record the hook did not record reads as a prompt" case_feedback_the_hook_did_not_record_reads_as_a_prompt
 check "(g) the recorded text without isMeta reads as a prompt" case_feedback_without_ismeta_reads_as_a_prompt
 check "mail filed mid-turn blocks that turn's marker end" case_mail_filed_mid_turn_blocks_the_marker_end
+check "a marker turn's audit block keeps the turn and its stop mark until the Stop that ends it" case_marker_audit_block_keeps_the_turn_until_its_last_stop
+check "stop deletes the Stop hook's stop_at mark" case_stop_deletes_the_stop_mark
 check "a marker turn with its mail read prints nothing and stamps as before" case_marker_turn_with_read_mail_is_unchanged
 check "a marker turn's artifact-audit block is byte-identical with its mail read" case_marker_audit_block_with_read_mail_is_byte_identical
 check "race: a done committed while stop waits for the lock is kept" case_race_done_committed_while_stop_waits_is_kept

@@ -33,7 +33,10 @@ const MAX_SPREAD: Duration = Duration::from_secs(3);
 /// instead of the prompt (checked before each prompt, so the file must exist
 /// before the row starts). While `spin` exists a background loop redraws the
 /// line above the top rule every 0.2 s with a counter, the cursor staying put.
-fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path) -> PathBuf {
+/// A footer line under the lower rule, like Claude Code's background-agent
+/// footer, is drawn once; while `foot` exists the loop also redraws it every
+/// 0.2 s with a counter.
+fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
@@ -47,8 +50,8 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path) -> Path
              echo 'Allow this action? (y/n)'\n\
              while [ -f '{dialog}' ]; do sleep 0.1; done\n\
            fi\n\
-           printf '%s\\n\\342\\235\\257\\302\\240\\n%s\\033[1A\\033[3G' \"$rule\" \"$rule\"\n\
-           ( n=0; while :; do if [ -f '{spin}' ]; then n=$((n+1)); printf '\\0337\\033[2A\\r spinner %d\\0338' $n; fi; sleep 0.2; done ) &\n\
+           printf '%s\\n\\342\\235\\257\\302\\240\\n%s\\n footer 0\\033[2A\\033[3G' \"$rule\" \"$rule\"\n\
+           ( n=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\0338' $n; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
            IFS= read -r line\n\
            kill $spid\n\
@@ -60,6 +63,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path) -> Path
          done\n",
         dialog = dialog.display(),
         spin = spin.display(),
+        foot = foot.display(),
         log = log.display(),
     );
     std::fs::write(&claude, script).expect("write stub claude");
@@ -103,6 +107,7 @@ struct Row {
     log: PathBuf,
     dialog: PathBuf,
     spin: PathBuf,
+    foot: PathBuf,
     stub_dir: PathBuf,
 }
 
@@ -156,7 +161,8 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
     let dialog = env._tmp.path().join("dialog");
     let spin = env._tmp.path().join("spin");
-    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin);
+    let foot = env._tmp.path().join("foot");
+    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin, &foot);
     if in_dialog {
         std::fs::write(&dialog, b"").unwrap();
     }
@@ -176,7 +182,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     next_id += 1;
     assert_eq!(join.payload["ok"], true, "agent.join failed: {:?}", join.payload);
     poll_for_phase(&mut conn, &mut next_id, &ws, "ready", BOUND.max(Duration::from_secs(60))).await;
-    Row { env, conn, next_id, ws, log, dialog, spin, stub_dir }
+    Row { env, conn, next_id, ws, log, dialog, spin, foot, stub_dir }
 }
 
 /// An idle row is woken by one appended line, and only once.
@@ -219,6 +225,85 @@ async fn a_working_row_is_not_typed_into_until_it_rests() {
     assert_eq!(pings(&row.log), 0, "typed into a working row");
     std::fs::remove_file(&row.spin).unwrap();
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the row coming to rest");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// An idle row whose background-agent footer ticks below the input box is
+/// still woken: the hold watches only the rows through the box's lower rule.
+#[tokio::test]
+async fn an_idle_row_with_a_ticking_footer_is_woken() {
+    let _serial = SERIAL.lock().await;
+    let row = start("cwf", None, false).await;
+    std::fs::write(&row.foot, b"").unwrap();
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} with a ticking footer");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// UTC `%Y-%m-%dT%H:%M:%SZ` for now plus `off` seconds.
+fn iso_at(off: i64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("clock").as_secs() as i64;
+    let out = std::process::Command::new("date")
+        .args(["-u", "-d", &format!("@{}", now + off), "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .expect("run date");
+    String::from_utf8(out.stdout).expect("utf8").trim().to_string()
+}
+
+/// Sets `agents.HANDLE` in the harness's registry, creating it if absent;
+/// written to a temp file and renamed.
+fn set_entry(env: &Env, entry: serde_json::Value) {
+    let path = env.comm_root.join("registry.json");
+    let mut doc: serde_json::Value = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_else(|| serde_json::json!({ "agents": {} }));
+    doc["agents"][HANDLE] = entry;
+    let tmp = env.comm_root.join("registry.json.tmp");
+    std::fs::create_dir_all(&env.comm_root).expect("mkdir comm root");
+    std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
+    std::fs::rename(&tmp, &path).expect("rename registry");
+}
+
+/// A row whose Stop hook is running (a fresh `stop_at`) is not typed into,
+/// and is woken once the hook's `stop` has deleted the mark.
+#[tokio::test]
+async fn a_row_whose_stop_hook_is_running_is_not_typed_into() {
+    let _serial = SERIAL.lock().await;
+    let row = start("cws", None, false).await;
+    set_entry(&row.env, serde_json::json!({ "state": "working", "floor": "user", "status_at": iso_at(0), "stop_at": iso_at(0) }));
+    append_mail(&row.env, 1);
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "typed into a row whose Stop hook is running");
+    set_entry(&row.env, serde_json::json!({ "state": "done", "done": true, "status_at": iso_at(0) }));
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the mark going");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// A mark past STOP_HOOK_BOUND (60 s) holds nothing: Esc, an API error or a
+/// killed hook ends a turn with no `stop`.
+#[tokio::test]
+async fn a_stop_mark_past_the_bound_does_not_hold_the_wake() {
+    let _serial = SERIAL.lock().await;
+    let row = start("cwb", None, false).await;
+    set_entry(&row.env, serde_json::json!({ "state": "working", "floor": "user", "status_at": iso_at(0), "stop_at": iso_at(-61) }));
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "an old mark held the wake");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// A Stop that never ends releases the row when its mark expires. The mark
+/// is 40 s old, so with STOP_HOOK_BOUND = 60 it expires 20 s in: the row is
+/// held through THREE_TICKS (8 s) and woken after, well inside the hang guard.
+#[tokio::test]
+async fn an_unfinished_stop_releases_the_row_within_the_bound() {
+    let _serial = SERIAL.lock().await;
+    let row = start("cwu", None, false).await;
+    set_entry(&row.env, serde_json::json!({ "state": "working", "floor": "user", "status_at": iso_at(0), "stop_at": iso_at(-40) }));
+    append_mail(&row.env, 1);
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 0, "typed into a row inside the bound");
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?} of the mark expiring");
     row.env.kill_daemon_bounded().await;
 }
 

@@ -105,10 +105,12 @@ case "$_rc" in
        exit 0 ;;
 esac
 
-# Every Stop ends with `stop`, whatever else this hook did first (the marker
-# stamp, the nudge continuation): it sets `done` only when `floor` was `user`
-# and neither `question` nor `waiting` is set, then clears `floor` — a fact
-# already set (by the marker, or an earlier declaration) survives untouched.
+# A Stop that lets the turn end sends `stop` (it sets `done` only when `floor`
+# was `user` and neither `question` nor `waiting` is set, then clears `floor`);
+# a Stop that blocks never does, so `floor` marks the turn until the Stop that
+# ends it. A fact already set (by the marker, or an earlier declaration)
+# survives untouched. `stop` also deletes `stop_at`, the mark this hook stamps
+# at its start for the comm wake (comm/PROTOCOL.md, Waking).
 turn_floor() { [ -x "$STATUS" ] && "$STATUS" stop >/dev/null 2>&1 || true; }
 # Every block this hook prints goes through print_block, which also records
 # its exact reason, one JSON string per line, in $fb_file (named below): the
@@ -186,6 +188,10 @@ fi
 if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
 fi
+
+# The comm wake holds the row while this mark is under a minute old, `stop` deletes it, and the 1 s lock wait means a mark that lands at all lands inside the daemon's 1.5 s hold.
+stop_mark() { registry_replace 'if .agents[$n] then .agents[$n].stop_at = $t else . end' --arg n "$NAME" --arg t "$(now_iso)"; }
+( . "$FE_LIB" >/dev/null 2>&1 && SOT_LOCK_WAIT_SECS=1 with_lock stop_mark ) >/dev/null 2>&1 || true
 
 # Clear the heartbeat's own throttle stamp for this session key (same key
 # formula as comm-status-heartbeat.sh's _hb_key) so a tick left over from
@@ -429,16 +435,12 @@ if [ -n "$marker_state" ]; then
     # Explicit: the marker IS the model's report. `waiting` sets the fact;
     # every other marker clears it (comm-status.sh's declaration reduction).
     [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
-    # Every Stop still ends with `stop` (ADR 0044 amendment): it clears
-    # `floor` and sets `done` only when floor was user AND neither `question`
-    # nor `waiting` is set — the fact the marker just set survives untouched.
-    turn_floor
 
     # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from
     # the marker above -- this only catches a result the closing block named
     # (or produced) but never badged into the nav pane. Loop guard first: a
     # stop-hook continuation never gets a second nudge.
-    [ "$(jqget '.stop_hook_active // false')" = "true" ] && exit 0
+    [ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
     AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
     if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
         findings="$(SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
@@ -457,6 +459,9 @@ if [ -n "$marker_state" ]; then
             [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
         fi
     fi
+    # Every Stop that lets the turn end sends `stop` (ADR 0044 amendment); the
+    # audit's block above leaves `floor` set, so the turn is not over yet.
+    turn_floor
     exit 0
 fi
 

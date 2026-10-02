@@ -7156,7 +7156,7 @@ fn unix_now_secs() -> u64 {
 
 /// The same fixed-width shape for any instant — what `comm.file`'s heartbeat
 /// cutoff is built with, so it compares as a string against `last_seen`.
-fn iso8601_utc_from_secs(secs: u64) -> String {
+pub(crate) fn iso8601_utc_from_secs(secs: u64) -> String {
     // Days since the Unix epoch and seconds-of-day.
     let days = (secs / 86_400) as i64;
     let sod = secs % 86_400;
@@ -7257,7 +7257,7 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 /// before its rename, and the scripts' `ensure_home` its skeleton before its
 /// link), but no zero-byte read has ever been observed. Non-empty
 /// bytes are never retried, parseable or not.
-fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_registry_fresh(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
     read_registry_fresh_with(path, std::thread::sleep)
 }
 

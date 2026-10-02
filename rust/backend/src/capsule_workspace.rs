@@ -4185,14 +4185,16 @@ pub mod headless {
     /// screen on that same client with `is_free(lines, cursor, agent)`, and
     /// only then type `line` and Enter as [`write_and_enter`] does. A screen
     /// that is not free gets no hold (it still costs the attach); one that is
-    /// must then hold identical (lines and cursor) for `still_for`, else it
-    /// is a working row and nothing is typed. Never takes the pen unless the prompt is free and
+    /// must then hold identical (the cursor, and every row through the line
+    /// under it) for `still_for`, else it is a working row and nothing is
+    /// typed. `is_free` is asked of the first frame and again immediately
+    /// before typing. Never takes the pen unless the prompt is free and
     /// still, and never retries.
     pub fn wake_if_free(
         state_dir: &Path,
         controller_id: &str,
         line: &[u8],
-        is_free: fn(&[String], Option<(u16, u16)>, &str) -> bool,
+        is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
         agent: &str,
         still_for: Duration,
         op_budget: Duration,
@@ -4214,9 +4216,9 @@ pub mod headless {
             while still && held_from.elapsed() < still_for {
                 std::thread::sleep(POLL_INTERVAL);
                 client.pump();
-                still = client.screen().cursor_position() == cursor && wake_lines(&client) == first;
+                still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(&client), cursor.0) == held_rows(&first, cursor.0);
             }
-            if still {
+            if still && is_free(&first, Some(cursor), agent) {
                 type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
                     .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
             } else {
@@ -4285,6 +4287,15 @@ pub mod headless {
     fn wake_lines(client: &Client) -> Vec<String> {
         let (_, cols) = client.screen().size();
         client.screen().rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
+    }
+
+    /// The rows the wake's hold compares: from the top of the screen through
+    /// the line under the cursor, which for claude is the input box's lower
+    /// rule. Claude Code draws a background-agent footer below the box that
+    /// ticks every second at rest, while a working turn's spinner is always
+    /// above the box.
+    pub(crate) fn held_rows(lines: &[String], cursor_row: u16) -> &[String] {
+        &lines[..lines.len().min(cursor_row as usize + 2)]
     }
 
     /// Reads the current, visible screen of the row at `state_dir` as a

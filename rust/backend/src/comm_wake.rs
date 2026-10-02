@@ -10,17 +10,25 @@
 //!
 //! A working row keeps its input box live with the cursor at the prompt, so
 //! one frame cannot tell it from a row at rest. The screen is told apart by
-//! holding: a row is typed into only if its screen stays identical for
-//! [`STILL_FOR`] (a working row's spinner redraws several times a second).
+//! holding: a row is typed into only if the rows through the input box's lower
+//! rule stay identical for [`STILL_FOR`] (a working row's spinner, always above
+//! the box, redraws several times a second). The rows below the box are not
+//! watched: Claude Code draws a background-agent footer there that ticks every
+//! second at rest.
+//! A row whose registry entry carries a `stop_at` mark under [`STOP_HOOK_BOUND`]
+//! old is running its Stop hook, which shows a free, still prompt; it is skipped,
+//! asked before the hold and again after it.
 //! The prompt glyph is `❯`, or on Windows either `❯` or `>` (Claude Code's
 //! fallback when its unicode check fails, which on Windows depends on the
 //! environment). On both OSes the line sits directly between the input box's
 //! two rules and the glyph is followed by U+00A0, the main prompt's own mark
 //! (menus and dialog inputs draw an ASCII space); on Windows a bare glyph also
 //! counts until the NBSP is shown to survive ConPTY (`NBSP_ON_WINDOWS`). A row at rest whose
-//! screen never holds still (a live clock, an animation) is never woken; this
-//! fails closed and its end-of-turn check still reads the mail.
-//! The converse fails open: a working row whose screen happens not to change
+//! rows through the box never hold still (a live clock, an animation) is never woken, and neither is a row
+//! whose Stop ended without `stop` (Esc, an API error, a killed hook) for at most
+//! the bound + [`TICK`] + [`STILL_FOR`]; this fails closed and its end-of-turn check still reads the mail.
+//! The converse fails open: a working row with no fresh mark (no hooks, the mark
+//! not written, a hook run past the bound) whose rows through the box hold still
 //! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
 //! A permission menu is not free by construction (its options use an ASCII
 //! space and it is never boxed), though it holds still. The menu fixtures are
@@ -42,6 +50,10 @@ use crate::workspaces::Workspaces;
 pub const TICK: Duration = Duration::from_secs(2);
 /// Mail still unread this long after a wake gets one more line.
 const REPEAT_AFTER: Duration = Duration::from_secs(600);
+/// The Stop hook's longest run (its auditor call is capped at 45 s; Codex kills the hook at 10 s). A row whose
+/// registry entry carries a `stop_at` mark within this of now is running its Stop hook and is not typed into; an
+/// older mark is a Stop that never ended (Esc, an API error, a killed hook).
+const STOP_HOOK_BOUND: Duration = Duration::from_secs(60);
 const WAKE_LINE: &[u8] = b"[sot-comm] you have mail: run comm-poll.sh";
 const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
@@ -196,6 +208,20 @@ fn counts(line: &[u8], handle: &str) -> bool {
     };
     v.get("to").and_then(|t| t.as_str()) == Some(handle)
         && v.get("from").and_then(|f| f.as_str()) != Some(handle)
+}
+
+/// Whether the registry says `handle`'s Stop hook is running: its `stop_at` mark lies within
+/// [`STOP_HOOK_BOUND`] of `now_secs`, either side. Both ends are `%Y-%m-%dT%H:%M:%SZ`, so string order is time order.
+fn stop_hook_running(registry: &[u8], handle: &str, now_secs: u64) -> bool {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(registry) else {
+        return false;
+    };
+    let Some(at) = v.get("agents").and_then(|a| a.get(handle)).and_then(|e| e.get("stop_at")).and_then(|s| s.as_str()) else {
+        return false;
+    };
+    let iso = crate::handlers::iso8601_utc_from_secs;
+    let bound = STOP_HOOK_BOUND.as_secs();
+    at >= iso(now_secs.saturating_sub(bound)).as_str() && at <= iso(now_secs + bound).as_str()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -355,11 +381,16 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     if crate::capsule_workspace::phase_of(state_dir) != ready {
         return Step::Skip;
     }
+    let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let registry = crate::handlers::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
+        prompt_free(l, c, a) && !stop_hook_running(&registry, handle, now)
+    };
     match wake_if_free(
         state_dir,
         CONTROLLER_ID,
         WAKE_LINE,
-        prompt_free,
+        &free,
         agent,
         STILL_FOR,
         OP_BUDGET,
@@ -378,6 +409,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capsule_workspace::headless::held_rows;
 
     fn lines(l: &[&str]) -> Vec<String> {
         l.iter().map(|s| s.to_string()).collect()
@@ -710,6 +742,56 @@ mod tests {
     #[test]
     fn linux_rest_capture_is_free() {
         assert!(on(&LINUX_IDLE, (8, 2), false));
+    }
+
+    /// Two live captures of a claude row at rest, scrubbed, one second apart: a background agent's footer below the box ticks (`3m 9s` to `3m 11s`); every other row is identical.
+    fn footer_frame(text: &str) -> Vec<String> {
+        text.lines().filter(|l| !l.starts_with("cols=")).map(String::from).collect()
+    }
+
+    #[test]
+    fn the_agent_footer_is_not_watched() {
+        let a = footer_frame(include_str!("../tests/fixtures/comm_wake/footer-frame-a.txt"));
+        let b = footer_frame(include_str!("../tests/fixtures/comm_wake/footer-frame-b.txt"));
+        assert_eq!((a.len(), b.len()), (75, 75));
+        for windows in [false, true] {
+            assert!(prompt_free_on(&a, Some((67, 2)), "claude", windows));
+        }
+        assert_ne!(a, b, "the whole-frame hold saw the footer tick");
+        assert_eq!(held_rows(&a, 67), held_rows(&b, 67));
+        assert_eq!(held_rows(&a, 67).len(), 69);
+        assert!(is_rule(&held_rows(&a, 67)[68]));
+    }
+
+    #[test]
+    fn the_spinner_above_the_box_is_watched() {
+        let mut linux = LINUX_TURN_A;
+        linux[5] = "✢ Levitating… (57s · ↓ 3.4k tokens)";
+        assert_ne!(held_rows(&lines(&linux), 8), held_rows(&lines(&LINUX_TURN_A), 8));
+        let mut win = WIN_TURN_A;
+        win[3] = "✢ Prestidigitating… (39s · ↓ 584 tokens)";
+        assert_ne!(held_rows(&lines(&win), 7), held_rows(&lines(&WIN_TURN_A), 7));
+    }
+
+    #[test]
+    fn a_stop_mark_holds_only_inside_the_bound() {
+        let now = 1_800_000_000;
+        let iso = crate::handlers::iso8601_utc_from_secs;
+        let at = |off: i64| iso((now as i64 + off) as u64);
+        let reg = |entry: &str| format!(r#"{{"agents":{{"h":{entry}}}}}"#).into_bytes();
+        let mark = |off: i64| reg(&format!(r#"{{"floor":"user","stop_at":"{}"}}"#, at(off)));
+        for off in [0, -60, 60] {
+            assert!(stop_hook_running(&mark(off), "h", now), "offset {off}");
+        }
+        for off in [-61, 61] {
+            assert!(!stop_hook_running(&mark(off), "h", now), "offset {off}");
+        }
+        assert!(!stop_hook_running(&reg(r#"{"floor":"user"}"#), "h", now));
+        assert!(!stop_hook_running(&reg(r#"{"stop_at":null}"#), "h", now));
+        assert!(!stop_hook_running(&reg(r#"{"stop_at":5}"#), "h", now));
+        assert!(!stop_hook_running(&mark(0), "other", now));
+        assert!(!stop_hook_running(b"", "h", now));
+        assert!(!stop_hook_running(b"{", "h", now));
     }
 
     #[test]

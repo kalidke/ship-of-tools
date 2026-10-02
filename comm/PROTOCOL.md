@@ -427,8 +427,9 @@ or on Windows `❯` or `>`, the latter being Claude Code's fallback when its
 unicode check fails), followed by a no-break space, between the input box's
 two rules (on every OS; on Windows a bare glyph too, for now), so a grey
 suggestion or any other decoration does not count as a draft, while a draft
-counts unless its cursor sits at its very start, and the screen must then hold
-still for a second and a half before anything is typed, so a working
+counts unless its cursor sits at its very start, and the screen down to the
+input box's lower rule (the background-agent footer below it is not watched)
+must then hold still for a second and a half before anything is typed, so a working
 session is not typed into while its screen is still changing — the daemon
 types one fixed line, `[sot-comm] you have mail: run
 comm-poll.sh`, and Enter. The daemon does this, not the frontend or the
@@ -436,7 +437,11 @@ sender — several frontends can show one row and each would type, and a
 closed window would leave the row deaf. It types a fixed notice, never the
 message itself: a pasted message is never marked read, so it would show
 again. One line per new batch of mail; one more if it is
-still unread ten minutes later at a free prompt. A busy session needs no
+still unread ten minutes later at a free prompt. A row whose registry entry
+carries a `stop_at` under a minute old is running its Stop hook and is not typed
+into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
+and the hook reads the mail itself. A turn ended by Esc or an API error runs no
+Stop, so a mark over a minute old holds nothing. A busy session needs no
 typing: its end-of-turn check will not let a turn finish while unread mail
 waits. That check reads the inbox before anything else, so a turn that closes
 with a report marker is held too, and its row is stamped only at the turn end

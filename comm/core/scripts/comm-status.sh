@@ -14,7 +14,8 @@
 #            nothing.
 #   stop     a turn just ended (sent at EVERY Stop, after any marker stamp
 #            below has already run): sets `done` when `floor` was `user` and
-#            neither `question` nor `waiting` is set, then clears `floor`.
+#            neither `question` nor `waiting` is set, then clears `floor` and
+#            the Stop hook's `stop_at` mark.
 #
 # Five verbs are DECLARATIONS — the model's own word (the Stop hook's marker
 # stamp and the two yield hooks send these too, on the model's behalf):
@@ -126,7 +127,7 @@ status_txn() {
             | (if $o == "user" then del(.question, .done) else . end)
           elif $st == "stop" then
             (if .floor == "user" and .question == null and .waiting == null then .done = true else . end)
-            | del(.floor)
+            | del(.floor, .stop_at)
           else   # declarations — blocked/waiting set their own fact and never
                   # copy their text into .note: aliasing it to the question
                   # left that text as the summary fallback long after the

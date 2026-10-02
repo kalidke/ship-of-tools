@@ -1,0 +1,76 @@
+      31 +ck brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the l
+         +n fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a while the q
+      32 +umps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and th
+         +er the lazy dog and then
+      33 +lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a whi
+         +g and then rests a while th
+      34  hen rests a while the quick brown fox jumps over the lazy dog and then rests a while the quick b
+          ts a while the quick brown
+      35  ile the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps
+           quick brown fox jumps o
+      36  brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy
+          ox jumps over the lazy dog a
+
+  Ran 1 shell command
+
+● nd then rests a while the quick brown fox jumps over the lazy dog and then rests a while the quick brown
+   rests a while
+
+   the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps overa
+  - ick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog a
+    wn fox jumps ov
+  - jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rest
+    ver the lazy d
+  -  lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a while the q
+    og and then rests a while the quick brown fox ju
+
+  sts a while the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over
+  hile the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps ove
+
+   brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and the
+  fox jumps over the lazy dog and then rests a while the quick brown fo
+
+   the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a wh
+  zy dog and then rests a while the quick brown fox jumps over the lazy
+
+  n rests a while the quick brown fox jumps over the laz
+
+● Ran 1 stop hook
+  ⎿  uick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the l
+  own fox jumps
+
+  Ran 2 shell commands
+
+❯ dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a while
+
+● ests a while the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps ov
+  while the quick brown fox jumps over the lazy dog and then rests a while the quick brown f
+
+  Ran 4 shell commands
+
+● mps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and then rests a while
+  r the lazy dog and then rests a while thea
+
+   and then rests a while the quick brown fox jumps over the lazy dog and then rests a while the quick browna
+  en rests a while the quick brown fox jumps over the lazy dog and then rests a while the quic
+  s a while the quick brown fox jumps over the lazy dog and then rests a while the quick brown fox jumps o
+  le the quick brown fox jumps over the lazy dog and then rests aa
+
+  rown fox jumps over the lazy dog and then rests a while the quick brown fox jumps over the lazy dog and the
+  x jumps over the lazy dog and then rests a whilea
+  -  over the lazy dog and then rests a while the quicka
+  - he lazy dog and then rests a while the
+  -  dog and then rests a while the qui
+                                                                                                                  +1 file edited before this session (show)
+  rests a while the quick brown fox jumps over the lazy dog and the
+                                                                                                                                                                   ✔ Update installed · Restart to update
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.285 | demo:main | 0 uncommitted
+  Session: 1k (in:1k out:1k) | $0.00
+  ⏵⏵ auto mode on · 2 shells · 1 memory · ← for agents
+
+  ● main
+  ◯ helper  Reading the source tree                                                                                                                                               3m 11s · ↓ 76.4k tokens
+cols=203 rows=75 cursor=67,2 runtime=capsule
