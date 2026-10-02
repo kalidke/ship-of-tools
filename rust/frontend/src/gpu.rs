@@ -746,6 +746,23 @@ fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
     }
 }
 
+/// A second close exits at once with `code` (0), and the leave in progress
+/// takes that code: winit still runs `about_to_wait` while it shuts down, and
+/// its poll exits with the leave's own code, so no restart code outlives a
+/// close.
+fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
+    if let Some(l) = leaving {
+        l.exit_code = code;
+    }
+    code
+}
+
+/// The slot maximization gives the whole area, if any. While a leave has a
+/// line to show, none: the nav pane draws that line (`nav_pinned_rows`).
+fn maximize_slot(maximized: bool, focus: PaneFocus, leave_line: bool) -> Option<crate::settings::Slot> {
+    (maximized && !leave_line).then(|| focus.slot())
+}
+
 /// Whether the redraw that set `should_exit` ends the event loop. A window
 /// that is leaving exits only from `about_to_wait`'s poll, with its own
 /// exit code once the acks are in. The capture harness never leases and
@@ -16335,7 +16352,13 @@ impl State {
                 self.nav_prompt = Some(NavPrompt::ConfirmQuit { keep: false });
                 self.window.request_redraw();
             }
-            ExitStep::Now { code } => self.finish_exit(event_loop, code),
+            ExitStep::Now { code } => {
+                // A leave already queued (a Close after a Keep) is written
+                // before the runtime and its streams go.
+                self.leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
+                let code = close_now(self.leaving.as_mut(), code);
+                self.finish_exit(event_loop, code);
+            }
             ExitStep::Ignore => {}
             ExitStep::Supersede => self.leave(event_loop, LeaveIntent::Close, 0),
             ExitStep::Leave { intent, code } => self.leave(event_loop, intent, code),
@@ -16615,7 +16638,8 @@ impl State {
         let mode = self.mode;
         let focus = self.focus;
         let help_context = self.help_context();
-        let maximized = self.maximized;
+        let maximize_slot =
+            maximize_slot(self.maximized, focus, self.leaving.as_ref().and_then(|l| l.line()).is_some());
         // State-nav selected-session contrast lever, snapshotted for the draw
         // closure (it mustn't borrow `self`).
         let contrast_dim = self.contrast_dim;
@@ -17293,12 +17317,8 @@ impl State {
                 // pane absorbs the area; zero-sized siblings' paint
                 // paths no-op (the pty.open/resize guard at
                 // `cols >= 2 && rows >= 2` similarly keeps the BL
-                // backend safe). Toggle: Ctrl+z.
-                let maximize_slot = if maximized {
-                    Some(focus.slot())
-                } else {
-                    None
-                };
+                // backend safe). Toggle: Ctrl+z. A leave's line restores the
+                // panes (`maximize_slot`).
                 let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
                 // Names preserved so the rest of the closure reads
                 // unchanged: nav = old TL (left column), preview = old
@@ -24654,6 +24674,45 @@ mod tests {
             assert_eq!(exit_intent(QuitKey, leaving), Now { code: 0 });
             assert_eq!(exit_intent(Relaunch(75), leaving), Ignore);
         }
+    }
+
+    #[test]
+    fn second_close_during_handover_exits_zero_on_every_path() {
+        use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
+        let t0 = std::time::Instant::now();
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let mut leaving = Some(Leaving::new(LeaveIntent::Handover, 75, vec![("h".to_string(), rx)], t0));
+        // The second close, as `request_quit` applies it.
+        let ExitStep::Now { code } = exit_intent(ExitReason::WindowClose, leaving.as_ref().map(|l| l.intent)) else {
+            panic!("a second close exits at once");
+        };
+        assert_eq!(close_now(leaving.as_mut(), code), 0);
+        // The handover's ack is then ready, and winit still runs
+        // `about_to_wait`: its poll exits with the leave's code.
+        ack.send(LeaveOutcome::Replied(0)).unwrap();
+        assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
+        assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
+    }
+
+    #[test]
+    fn leave_count_shows_with_nav_collapsed() {
+        use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
+        let area = ratatui::layout::Rect::new(0, 0, 160, 48);
+        let preset = crate::settings::LayoutPreset::default_ultrawide();
+        let nav = |slot| crate::layout::compute(area, &preset, false, slot).rect_for(crate::settings::Slot::Nav);
+        assert_eq!(nav(maximize_slot(true, PaneFocus::Preview, false)).width, 0, "a maximized preview hides nav");
+        // A leave whose reply carried a count.
+        let t0 = std::time::Instant::now();
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let mut leaving = Leaving::new(LeaveIntent::Close, 0, vec![("h".to_string(), rx)], t0);
+        ack.send(LeaveOutcome::Replied(7)).unwrap();
+        assert_eq!(leaving.poll(t0), LeaveStep::Show);
+        // One frame, laid out as `redraw` lays it out with the preview maximized.
+        let line = leaving.line();
+        let rect = nav(maximize_slot(true, PaneFocus::Preview, line.is_some()));
+        let (_, _, whole) = nav_pinned_rows(None, None, line.as_deref(), rect.width as usize, rect.height as usize);
+        assert!(whole, "the count line is drawn whole in a {}x{} nav pane", rect.width, rect.height);
+        assert_eq!(leaving.presented(t0), vec![("h".to_string(), 7)], "and acked");
     }
 
     #[test]

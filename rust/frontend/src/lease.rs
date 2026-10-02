@@ -61,6 +61,8 @@ pub enum Standing {
 enum HolderCmd {
     Leave(LeaveIntent, oneshot::Sender<LeaveOutcome>),
     NoticeSeen(u32),
+    /// Answered once every command queued before it is written.
+    Written(oneshot::Sender<()>),
 }
 
 /// How one lease's leave ended. A zero count is only a real reply of 0.
@@ -86,13 +88,16 @@ struct Book {
     leaving: Option<LeaveIntent>,
     /// Lease handshakes in flight (`Handshake`).
     inflight: usize,
-    /// Where such a late lease's ack joins the `Leaving` wait; open while a
-    /// handshake is in flight, so the leave is not done until it closes.
+    /// Where a handshake in flight puts its one outcome for the `Leaving`
+    /// wait (`set`); open while one is in flight, so the leave is not done
+    /// until it closes.
     late: Option<mpsc::UnboundedSender<PendingAck>>,
+    /// The runtime the holders run on, for a forced exit's wait
+    /// (`deliver_queued`).
+    rt: Option<tokio::runtime::Handle>,
 }
 
-/// A lease handshake in flight. Its drop, after the grant's `set`, counts
-/// it down; the last one closes a leave's late-grant channel.
+/// A lease handshake in flight. Its drop, after its `set`, counts it down; the last one closes a leave's late-grant channel.
 struct Handshake<'a>(&'a Leases);
 
 impl Drop for Handshake<'_> {
@@ -121,7 +126,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, rt: None }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -149,12 +154,20 @@ impl Leases {
 
     fn set(&self, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
         let mut book = self.book.lock().unwrap();
-        // A grant from a handshake in flight when the window began to leave:
-        // this lease leaves at once too, and its ack joins the same wait. A
-        // failed send drops `tx`, which the wait records as a failure.
-        if let (Some(intent), Some(late), Some(h)) = (book.leaving, &book.late, &holder) {
+        // A handshake in flight when the window began to leave gives the
+        // leave exactly one outcome: a grant leaves at once too, and its ack
+        // joins the same wait (a failed send drops `tx`, which the wait
+        // records as a failure); any other end is not confirmed.
+        if let (Some(intent), Some(late)) = (book.leaving, &book.late) {
             let (tx, rx) = oneshot::channel();
-            let _ = h.send(HolderCmd::Leave(intent, tx));
+            match &holder {
+                Some(h) => {
+                    let _ = h.send(HolderCmd::Leave(intent, tx));
+                }
+                None => {
+                    let _ = tx.send(LeaveOutcome::Failed(format!("the lease was not granted: {standing:?}")));
+                }
+            }
             let _ = late.send((host.clone(), rx));
         }
         book.slots.insert(host.clone(), Slot { standing, holder });
@@ -224,6 +237,7 @@ impl Leases {
         match res.outcome {
             LeaseOutcome::Granted => {
                 let holder = spawn_holder(rx, tx);
+                self.book.lock().unwrap().rt.get_or_insert_with(tokio::runtime::Handle::current);
                 self.set(host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 tracing::info!(%host, not_ended = res.not_ended, "window lease: granted");
                 Ok(res.not_ended)
@@ -306,6 +320,42 @@ impl Leases {
         leaving.late = Some(late);
         Some(leaving)
     }
+
+    /// A forced exit's last step: block until every holder has written each
+    /// leave already queued to it (the write, not the reply), at most `bound`
+    /// in all, so the stream's EOF never overtakes a queued Close.
+    pub fn deliver_queued(&self, bound: Duration) {
+        let rt = self.book.lock().unwrap().rt.clone();
+        if let Some(rt) = rt {
+            rt.block_on(self.written(bound));
+        }
+    }
+
+    /// `deliver_queued`'s wait. The hosts still unwritten at the bound are
+    /// named in one warn line, and the exit goes on.
+    async fn written(&self, bound: Duration) {
+        let waits: Vec<(HostKey, oneshot::Receiver<()>)> = {
+            let book = self.book.lock().unwrap();
+            book.slots
+                .iter()
+                .filter_map(|(host, slot)| {
+                    let (tx, rx) = oneshot::channel();
+                    slot.holder.as_ref()?.send(HolderCmd::Written(tx)).ok()?;
+                    Some((host.clone(), rx))
+                })
+                .collect()
+        };
+        let deadline = tokio::time::Instant::now() + bound;
+        let mut unwritten = Vec::new();
+        for (host, rx) in waits {
+            if !matches!(tokio::time::timeout_at(deadline, rx).await, Ok(Ok(()))) {
+                unwritten.push(host);
+            }
+        }
+        if !unwritten.is_empty() {
+            tracing::warn!(hosts = ?unwritten, "window lease: exiting before every queued leave was written");
+        }
+    }
 }
 
 /// How long the leaving line holds, from the presented frame that drew it,
@@ -316,6 +366,8 @@ pub const NOT_ENDED_EXIT_HOLD: Duration = Duration::from_secs(3);
 pub const NOT_ENDED_PRESENT_WAIT: Duration = Duration::from_secs(2);
 /// How often the window polls the acks while leaving.
 pub const LEAVE_POLL: Duration = Duration::from_millis(250);
+/// How long a forced exit waits for the queued leaves to be written.
+pub const LEAVE_WRITE_WAIT: Duration = Duration::from_secs(1);
 
 /// A window on its way out: waiting for the daemons' acks, then for a frame
 /// to show what they left to say.
@@ -323,8 +375,8 @@ pub struct Leaving {
     pub intent: LeaveIntent,
     pub exit_code: i32,
     pending: Vec<PendingAck>,
-    /// Acks of leases granted after the leave began (`Leases::set`); None
-    /// once closed, when no handshake is in flight.
+    /// The outcomes of handshakes in flight when the leave began
+    /// (`Leases::set`); None once closed, when no handshake is in flight.
     late: Option<mpsc::UnboundedReceiver<PendingAck>>,
     outcomes: Vec<(HostKey, LeaveOutcome)>,
     deadline: Instant,
@@ -480,8 +532,9 @@ struct LeaveReport {
     warn: Vec<(HostKey, LeaveOutcome)>,
 }
 
-/// The largest count any reply carried shows, and each nonzero count is
-/// acked once a frame has drawn the line whole. A failure, an invalid reply
+/// The sum of the counts the replies carried shows (each daemon reports its
+/// own in one reply), and each nonzero count is acked once a frame has drawn
+/// the line whole. A failure, an invalid reply
 /// or no reply is warned and, but for a handover (the relaunched window's own
 /// lease shows its standing), adds its intent's line below the count.
 fn leave_report(intent: LeaveIntent, outcomes: &[(HostKey, LeaveOutcome)]) -> LeaveReport {
@@ -499,7 +552,7 @@ fn leave_report(intent: LeaveIntent, outcomes: &[(HostKey, LeaveOutcome)]) -> Le
         LeaveIntent::Keep => Some(LEAVE_UNCONFIRMED_KEEP),
         LeaveIntent::Handover => None,
     };
-    let count = not_ended_line(report.acks.iter().map(|(_, n)| *n).max().unwrap_or(0));
+    let count = not_ended_line(report.acks.iter().map(|(_, n)| *n).sum());
     let lines: Vec<String> = count.into_iter().chain(unconfirmed.map(str::to_string)).collect();
     report.line = (!lines.is_empty()).then(|| lines.join("\n"));
     report
@@ -569,6 +622,9 @@ where
                             if codec::write_frame(&mut tx, &frame, None).await.is_err() {
                                 break;
                             }
+                        }
+                        HolderCmd::Written(done) => {
+                            let _ = done.send(());
                         }
                     }
                 }
@@ -999,9 +1055,9 @@ mod tests {
         // A handshake started after the leave is refused, and never connects.
         assert!(leases.before_data_connection(&c, &pc, None).await.is_err());
         assert!(tokio::time::timeout(Duration::from_millis(200), lc.accept()).await.is_err(), "a lease after the leave");
-        // Both acks are in the one wait: 7 from each, and the largest shows.
+        // Both acks are in the one wait: 7 from each, and their sum shows.
         assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
-        assert_eq!(leaving.line(), not_ended_line(7));
+        assert_eq!(leaving.line(), not_ended_line(14));
         drop((leaving, leases));
         let seen_b = finish(fake_b, &log_b).await;
         assert!(seen_b.len() == 2 && is_leave(&seen_b[0], "keep"), "the late lease got the keep before eof: {seen_b:?}");
@@ -1094,8 +1150,8 @@ mod tests {
 
     #[tokio::test]
     async fn failed_leave_send_is_not_confirmed() {
-        // a replies 7; c's handshake ends with a holder already gone, so the
-        // leave cannot be sent to it; b, in flight, keeps the leave open.
+        // a and b reply 7 each; c's handshake ends with a holder already gone,
+        // so the leave cannot be sent to it; b, in flight, keeps the leave open.
         let (la, pa) = bind("deadsenda");
         let (lb, pb) = bind("deadsendb");
         let (log_a, _, fake_a) = leave_fake(la, None, Some("keep"), Duration::ZERO);
@@ -1117,10 +1173,63 @@ mod tests {
         assert_eq!(in_flight.await.unwrap().unwrap(), 0);
         assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
         let line = leaving.line().unwrap();
-        assert!(line.contains(LEAVE_UNCONFIRMED_KEEP) && line.contains(&not_ended_line(7).unwrap()), "{line}");
+        assert!(line.contains(LEAVE_UNCONFIRMED_KEEP) && line.contains(&not_ended_line(14).unwrap()), "{line}");
         drop((leaving, leases));
         assert_eq!(finish(fake_a, &log_a).await.len(), 2);
         assert_eq!(finish(fake_b, &log_b).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn inflight_handshake_not_granted_is_not_confirmed() {
+        // The daemon never answers the lease; the handshake ends at the reply
+        // wait, after the window began to close.
+        let (listener, path) = bind("inflightnogrant");
+        let (asked_tx, asked) = oneshot::channel();
+        let (open, open_rx) = oneshot::channel();
+        let (_, _, fake) = leave_fake(listener, Some((asked_tx, open_rx)), Some("close"), Duration::ZERO);
+        let host = "local".to_string();
+        let mut leases = Leases::new(false, vec![host.clone()]);
+        Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(300);
+        let in_flight = {
+            let (leases, host) = (leases.clone(), host.clone());
+            tokio::spawn(async move { leases.before_data_connection(&host, &path, None).await })
+        };
+        asked.await.unwrap();
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        assert!(in_flight.await.unwrap().is_err(), "the handshake timed out");
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show, "a handshake in flight yields an outcome");
+        assert_eq!(leaving.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE));
+        fake.abort();
+        drop(open);
+    }
+
+    #[test]
+    fn forced_exit_delivers_the_queued_close() {
+        // The window's runtime runs only inside its `block_on`s, as if the
+        // exit came before the holder's next turn; dropping it is the exit.
+        let daemon = tokio::runtime::Runtime::new().unwrap();
+        let window = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (log, _, fake, path) = daemon.block_on(async {
+            let (listener, path) = bind("forcedexit");
+            let (log, replied, fake) = leave_fake(listener, None, Some("keep"), Duration::ZERO);
+            (log, replied, fake, path)
+        });
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        window.block_on(async {
+            assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+            let mut keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
+            assert_eq!(poll_out(&mut keep).await, LeaveStep::Show, "the daemon accepted the keep");
+        });
+        // An X queues a Close; a second X exits at once.
+        let _close = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        window.block_on(leases.written(LEAVE_WRITE_WAIT));
+        drop(window);
+        let seen = daemon.block_on(finish(fake, &log));
+        assert!(
+            seen.len() == 3 && is_leave(&seen[0], "keep") && is_leave(&seen[1], "close"),
+            "the queued close reaches the daemon before eof: {seen:?}"
+        );
     }
 
     #[tokio::test]
@@ -1159,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_outcomes_show_the_largest_count() {
+    fn mixed_outcomes_show_the_sum() {
         let t0 = Instant::now();
         let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
         let (ta, ra) = oneshot::channel();
@@ -1170,10 +1279,20 @@ mod tests {
         drop(tb);
         tc.send(LeaveOutcome::Replied(3)).unwrap();
         assert_eq!(l.poll(t0), LeaveStep::Show);
-        // Both lines: the largest count, hidden neither by the failure nor by
-        // the smaller count, then the failure's own line.
-        assert_eq!(l.line(), Some(format!("{}\n{LEAVE_UNCONFIRMED_CLOSE}", not_ended_line(7).unwrap())));
+        // Both lines: the sum of the counts, hidden by neither the failure
+        // nor the other count, then the failure's own line.
+        assert_eq!(l.line(), Some(format!("{}\n{LEAVE_UNCONFIRMED_CLOSE}", not_ended_line(10).unwrap())));
         // Each count is acked once a frame draws the line whole.
+        assert_eq!(l.presented(t0), vec![(a.clone(), 7), (c.clone(), 3)]);
+
+        // Two daemons reply 7 and 3: the line shows 10, and both are acked.
+        let (ta, ra) = oneshot::channel();
+        let (tc, rc) = oneshot::channel();
+        let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(a.clone(), ra), (c.clone(), rc)], t0);
+        ta.send(LeaveOutcome::Replied(7)).unwrap();
+        tc.send(LeaveOutcome::Replied(3)).unwrap();
+        assert_eq!(l.poll(t0), LeaveStep::Show);
+        assert_eq!(l.line(), not_ended_line(10));
         assert_eq!(l.presented(t0), vec![(a, 7), (c, 3)]);
     }
 
