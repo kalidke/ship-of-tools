@@ -597,3 +597,29 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
     assert_scope_empties(&scope, Duration::from_secs(5)).await;
 }
+
+/// A row with no run record (never started, or the anchor, which runs
+/// nothing) has nothing to end: a close counts it ended without the
+/// orphan proof. A row that ran and whose end cannot be proven still
+/// counts not ended (`refused_end_reaches_the_window`).
+#[tokio::test]
+async fn never_run_rows_count_as_ended() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("neverrun");
+    let never_root = env._tmp.path().join("never-project");
+    std::fs::create_dir_all(&never_root).expect("mkdir the never-started row's project");
+    env.seed_capsule_toml("ws-never-0001", "never-run", &never_root, "claude");
+    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_id, _sd) = create_row(&env, &mut conn, &mut next_id, "ran").await;
+    drop(conn);
+    let (mut w, _) = Window::open(&env.socket_path).await;
+    let ack = w.ask("close", EXIT_WITHIN).await;
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    let said = daemon.said();
+    assert_eq!(ack["not_ended"], 0, "the anchor and a never-started row were counted not ended: {ack:?}: {said}");
+    assert!(!said.contains("not ended"), "a row with no run record was warned about: {said}");
+    assert!(held_record(&env).is_none(), "{:?}", held_record(&env));
+    assert!(!row_toml(&env, "never-run").exists(), "the never-started row was not forgotten");
+    assert!(!row_toml(&env, "ran").exists(), "the ended row was not forgotten");
+}
