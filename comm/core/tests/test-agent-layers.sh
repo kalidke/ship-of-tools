@@ -163,6 +163,13 @@ req 2 "no chain at all"                              "$R_TREE_TEXT"
 mkdir -p "$WORK/badawk"; printf '#!/bin/sh\nexit 1\n' > "$WORK/badawk/awk"; chmod +x "$WORK/badawk/awk"
 res="$( PATH="$WORK/badawk:$PATH"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
 case "$res" in "rc=2|"*"$R_TREE_TEXT"*) ok "require: an awk that exits 1 with no output is refused" ;; *) bad "require: an awk that exits 1 with no output is refused (got: $res)" ;; esac
+# wtbl WANT DESC LINE... : the layers a Windows chain counts, through the records filter
+# (each LINE is `<exe><TAB><command line>`, caller first, the capsule last).
+wtbl() {
+    local want="$1" desc="$2" got; shift 2
+    got="$(printf '%s\n' "$@" | _sot_win_records | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
+    eq "windows table: $desc" "$got" "$want"
+}
 # winreq WANT_RC DESC TEXT SOTD_RC LINE... : sot_require_agent over a stub sotd.exe on a "Windows" host.
 winreq() {
     local want="$1" desc="$2" text="$3" src="$4" res; shift 4
@@ -179,6 +186,10 @@ winreq 2 "exit 2 is refused and says to update sotd"   "update sotd" 2 "bash.exe
 winreq 2 "exit 1 is refused and says to update sotd"   "update sotd" 1 "${WALK[@]}"
 winreq 2 "node.exe with an empty command line is refused"   "$R_TREE_TEXT" 0 "bash.exe${TAB}bash.exe -c x" "node.exe${TAB}" "${WALK[@]:1}"
 winreq 2 "a !truncated line is refused"                "$R_TREE_TEXT" 3 "bash.exe${TAB}bash.exe -c x" '!truncated'
+wtbl 2 "node.exe cli.js with no arguments over a native claude.exe whose command line is unreadable" \
+    "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}" "node.exe${TAB}node.exe C:\\n\\node_modules\\@anthropic-ai\\claude-code\\cli.js" "sot-capsule.exe${TAB}sot-capsule.exe run"
+wtbl 1 "a standalone claude.exe with an unreadable command line is one layer" \
+    "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}" "sot-capsule.exe${TAB}sot-capsule.exe run"
 
 # --- 1c. the two non-Linux parsers, as stdin filters (Linux walks /proc, so they run nowhere else) ---
 pipes() { tr "$US" '|' | tr '\n' ' ' | sed 's/ $//'; }
@@ -403,18 +414,54 @@ for kind in child nodechild; do
     mkdir -p "$SOT_COMM_HOME/state"; ASKQ="$SOT_COMM_HOME/state/askq-agl-q-$kind.marker"; : > "$ASKQ"
     NC_IN='{"tool_name":"AskUserQuestion","tool_use_id":"agl-q-'"$kind"'"}' nochange "the heartbeat on an AskUserQuestion answer ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-q-$kind" bash "$FLAT/comm-status-heartbeat.sh"
     if [ -f "$ASKQ" ]; then ok "child: the AskUserQuestion marker survives the heartbeat ($kind)"; else bad "child: the AskUserQuestion marker survives the heartbeat ($kind)"; fi
+    # The PreToolUse hook of that dialog writes no marker for a child either.
+    NC_IN='{"tool_name":"AskUserQuestion","tool_use_id":"agl-qb-'"$kind"'"}' nochange "the AskUserQuestion PreToolUse hook ($kind)" "$kind" run_k bash "$HOOKS_DIR/comm-status-blocked.sh"
+    if [ ! -e "$SOT_COMM_HOME/state/askq-agl-qb-$kind.marker" ]; then ok "child: the AskUserQuestion PreToolUse hook writes no marker ($kind)"; else bad "child: the AskUserQuestion PreToolUse hook writes no marker ($kind)"; fi
 done
 # The row's own agent does consume it (the answer earns the prompt).
 ASKQ="$SOT_COMM_HOME/state/askq-agl-q-own.marker"; : > "$ASKQ"
 printf '%s' '{"tool_name":"AskUserQuestion","tool_use_id":"agl-q-own"}' | CLAUDE_CODE_SESSION_ID=agl-nc-q-own chain own "$SELF_ROW" bash "$FLAT/comm-status-heartbeat.sh" >/dev/null 2>&1 || true
 if [ ! -f "$ASKQ" ]; then ok "own: the heartbeat consumes the AskUserQuestion marker"; else bad "own: the heartbeat consumes the AskUserQuestion marker"; fi
+# The row's own agent: the PreToolUse hook stamps blocked and the marker appears (written by
+# comm-status.sh, not by the hook); the heartbeat's PostToolUse consumes it. A manual
+# `comm-status.sh blocked` carries no tool_use_id and writes no marker.
+QM="$SOT_COMM_HOME/state/askq-agl-qb-own.marker"; rm -f "${QM:?}"
+printf '%s' '{"tool_name":"AskUserQuestion","tool_use_id":"agl-qb-own"}' | CLAUDE_CODE_SESSION_ID=agl-qb-own chain own "$SELF_ROW" bash "$HOOKS_DIR/comm-status-blocked.sh" >/dev/null 2>&1 || true
+if [ -f "$QM" ]; then ok "own: the AskUserQuestion PreToolUse hook leaves its marker"; else bad "own: the AskUserQuestion PreToolUse hook leaves its marker"; fi
+printf '%s' '{"tool_name":"AskUserQuestion","tool_use_id":"agl-qb-own"}' | CLAUDE_CODE_SESSION_ID=agl-qb-own2 chain own "$SELF_ROW" bash "$FLAT/comm-status-heartbeat.sh" >/dev/null 2>&1 || true
+if [ ! -e "$QM" ]; then ok "own: the heartbeat's PostToolUse consumes that marker"; else bad "own: the heartbeat's PostToolUse consumes that marker"; fi
+nq0="$(ls "$SOT_COMM_HOME/state" | grep -c '^askq-' || true)"
+run own "$SELF_ROW" "$STATUS" blocked "a manual question"; eq "own: a manual comm-status.sh blocked succeeds" "$RC" 0
+eq  "own: a manual comm-status.sh blocked writes no marker" "$(ls "$SOT_COMM_HOME/state" | grep -c '^askq-' || true)" "$nq0"
+run own "$SELF_ROW" "$STATUS" working y; run own "$SELF_ROW" "$STATUS" waiting x   # leave the row as it was
+# A child neither spawns nor despawns rows: every form refuses, whatever --task says,
+# and the comm home (registry, inboxes, the row's own entry) is byte for byte as it was.
+for v in "--name h $WORK" "--name h $WORK --task t" "h $WORK" "h $WORK --task t" "$WORK" "--name h $WORK --endpoint unix:/nonexistent"; do
+    for kind in child nodechild; do
+        before="$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")"
+        run "$kind" "$SELF_ROW" "$SCRIPTS_DIR/comm-spawn.sh" $v
+        eq  "child: comm-spawn.sh $v ($kind) exits 1" "$RC" 1
+        has "child: comm-spawn.sh $v ($kind) names the cause" "$OUT" "has no comm identity"
+        if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-spawn.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-spawn.sh $v ($kind) changed the comm home"; fi
+    done
+done
+for v in "h" "$ROW" "h --endpoint unix:/nonexistent" "--endpoint unix:/nonexistent h"; do
+    for kind in child nodechild; do
+        before="$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")"
+        run "$kind" "$SELF_ROW" "$SCRIPTS_DIR/comm-despawn.sh" $v
+        eq  "child: comm-despawn.sh $v ($kind) exits 1" "$RC" 1
+        has "child: comm-despawn.sh $v ($kind) names the cause" "$OUT" "has no comm identity"
+        if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-despawn.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-despawn.sh $v ($kind) changed the comm home"; fi
+    done
+done
 # A fresh comm home: a refused child makes no registry skeleton.
 H2="$WORK/home2"; mkdir -p "$H2"
 before="$(snap "$H2")"
 for v in "$POLL" "$STATUS working q" "$SCRIPTS_DIR/comm-leave.sh"; do
     ( export SOT_COMM_HOME="$H2"; chain child "$SELF_LEG" $v ) >/dev/null 2>&1 || true
 done
-for v in "$SCRIPTS_DIR/comm-context.sh" "$SCRIPTS_DIR/comm-session-start.sh"; do
+for v in "$SCRIPTS_DIR/comm-context.sh" "$SCRIPTS_DIR/comm-session-start.sh" "$SCRIPTS_DIR/comm-relay.sh send @$PEER x" "$SCRIPTS_DIR/comm-bootstrap.sh some-row" \
+         "$SCRIPTS_DIR/comm-spawn.sh --name h $WORK" "$SCRIPTS_DIR/comm-despawn.sh h"; do
     ( export SOT_COMM_HOME="$H2"; chain child "$SELF_LEG" $v ) >/dev/null 2>&1 || true
 done
 if [ "$(snap "$H2")" = "$before" ]; then ok "child: no registry skeleton in a fresh comm home"; else bad "child: a refused verb made files in a fresh comm home: $(snap "$H2" | tr '\n' ' ' | cut -c1-300)"; fi
