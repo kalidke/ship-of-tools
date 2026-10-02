@@ -153,8 +153,9 @@ pub fn save(host: &HostKey, m: &SessionMemory) -> Result<()> {
     Ok(())
 }
 
-/// Process-wide serial lock plus a temp `XDG_STATE_HOME`, for tests that
-/// reach `state_path` and must not touch the real state dir.
+/// Process-wide serial lock plus a temp `XDG_STATE_HOME` (and, on Windows,
+/// `LOCALAPPDATA` and `USERPROFILE`), for tests that reach `state_path` and
+/// must not touch the real state dir.
 #[cfg(test)]
 pub(crate) mod test_env {
     use std::path::PathBuf;

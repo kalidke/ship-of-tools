@@ -119,8 +119,8 @@ migration mechanism, not two.
    `TransportError::LinkDown` ("the host's link is down; no ssh was
    started") is returned by a lane dial over ssh while that host's
    `LinkGate` is down, before any child is spawned (`LaneError::LinkDown`
-   in the attach worker). The attach worker's supervisor and voyage
-   dials in `converge_on_ready` never retry it on their own clock: every worker pauses
+   in the attach worker). The attach worker's supervisor dial in `run_worker`
+   and its voyage dials in `converge_on_ready` never retry it on their own clock: every worker pauses
    on it. The other connect sites (the voyage probe for an absent supervisor,
    the steady-state supervisor re-dial, the quit-transaction re-dial) treat it as a failed dial under
    their existing pacing; no ssh starts. Only the host's control transport writes

@@ -534,8 +534,8 @@ pub enum TransportError {
     Unreachable(std::io::Error),
     /// ADR 0045 decision 4: the host's link is down — its control
     /// transport's last attempt got no hello reply — so no ssh was
-    /// started. The attach worker's supervisor and voyage dials
-    /// in `converge_on_ready` pause on it rather than retry on their own
+    /// started. The attach worker's supervisor dial in `run_worker` and its
+    /// voyage dials in `converge_on_ready` pause on it rather than retry on their own
     /// clock; every other connect site treats it as a failed dial under its
     /// existing pacing.
     #[error("the host's link is down; no ssh was started")]
