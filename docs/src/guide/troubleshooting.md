@@ -25,6 +25,9 @@ Press **`F5`** to reconnect. The daemon replays what you missed or sends a
 fresh snapshot; agent sessions and the REPL keep running on the backend while
 you are away. See [Going remote](../start/remote.md#Reconnecting).
 
+Keys typed into a session pane while its host is disconnected are not sent
+later; the pane's top line says how many were discarded.
+
 ## A pane stays at `connecting…`
 
 The status line under the pane names the reason the capsule gave. `capsule busy

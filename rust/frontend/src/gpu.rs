@@ -3936,6 +3936,87 @@ fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> u
     incoming_len.min(room)
 }
 
+/// Session-pane input held while `pane_feed == PaneFeed::Pending` (ADR 0042
+/// L1b fix 2), and the count a disconnect threw away (never replayed).
+#[derive(Default)]
+struct PanePendingInput {
+    /// For the attach to flush; capped at `TAKE_QUEUE_CAP`.
+    bytes: Vec<u8>,
+    /// Inputs in `bytes`, so a discard can say how many.
+    inputs: usize,
+    /// Inputs discarded this outage; > 0 paints the notice.
+    discarded: usize,
+}
+
+impl PanePendingInput {
+    fn queue(&mut self, b: &[u8]) {
+        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
+        let take = pending_input_room(self.bytes.len(), b.len(), cap);
+        self.bytes.extend_from_slice(&b[..take]);
+        self.inputs += 1;
+    }
+
+    fn discard(&mut self) {
+        self.discarded += self.inputs;
+        self.bytes.clear();
+        self.inputs = 0;
+    }
+
+    /// Hands the bytes to the attach; also ends the notice.
+    fn take(&mut self) -> Vec<u8> {
+        std::mem::take(self).bytes
+    }
+
+    fn notice(&self) -> Option<String> {
+        let n = self.discarded;
+        match n {
+            0 => None,
+            1 => Some("link down: 1 keystroke discarded, not sent".to_string()),
+            _ => Some(format!("link down: {n} keystrokes discarded, not sent")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pane_input_tests {
+    use super::*;
+
+    #[test]
+    fn pane_input_discard_counts_and_never_flushes() {
+        let mut q = PanePendingInput::default();
+        q.queue(b"a");
+        q.queue(b"b");
+        q.queue(b"c");
+        q.discard();
+        assert_eq!(
+            q.notice().as_deref(),
+            Some("link down: 3 keystrokes discarded, not sent")
+        );
+        assert!(q.take().is_empty());
+    }
+
+    #[test]
+    fn pane_input_take_ends_the_outage() {
+        let mut q = PanePendingInput::default();
+        q.queue(b"a");
+        q.discard();
+        q.queue(b"x");
+        assert_eq!(q.take(), b"x");
+        assert_eq!(q.notice(), None);
+    }
+
+    #[test]
+    fn pane_input_one_keystroke_is_singular() {
+        let mut q = PanePendingInput::default();
+        q.queue(b"a");
+        q.discard();
+        assert_eq!(
+            q.notice().as_deref(),
+            Some("link down: 1 keystroke discarded, not sent")
+        );
+    }
+}
+
 // ADR 0045 decision 1 (Codex review, lane B5 discharge); reshaped by C3 as
 // amended (isolation-plan.md §3, dev/output/c3-second-connection-
 // amendment.md §1): `ResolvedDial` — which transport a host's CONTROL
@@ -5180,8 +5261,11 @@ struct State {
     /// buffered for the DEPARTING row must never reach whatever the new
     /// one turns out to be. Capped at `sot_log::fe_client::TAKE_QUEUE_CAP`
     /// (8 KiB, the same bound the take-transaction queue uses) — a
-    /// runaway paste while waiting must not grow unbounded.
-    pane_pending_input: Vec<u8>,
+    /// runaway paste while waiting must not grow unbounded. Discarded
+    /// (never replayed) when the pane's host disconnects, and input typed
+    /// while that host is down is discarded too; the count is shown in the
+    /// pane until the next attach takes the buffer.
+    pane_input: PanePendingInput,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -6708,7 +6792,7 @@ impl State {
             pane_attach_episode_warnings: 0,
             pane_attach_presented: false,
             pane_feed: PaneFeed::Pending,
-            pane_pending_input: Vec::new(),
+            pane_input: PanePendingInput::default(),
             term_size: None,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -10128,7 +10212,7 @@ impl State {
         // ADR 0042 slice L1b fix 2: a switch always invalidates whatever
         // was buffered for the DEPARTING target — it must never leak
         // into the row we're about to select.
-        self.pane_pending_input.clear();
+        self.pane_input = PanePendingInput::default();
         // ADR 0042 shrink round (rule A): the frontend ALWAYS asks the
         // daemon first — no more cache-hit fast path that attached
         // straight from a cached `workspace_runtime` entry. That fast
@@ -10366,18 +10450,26 @@ impl State {
     /// it's allowed to go). Excess bytes are silently dropped, matching
     /// the take queue's own cap behavior.
     fn queue_pane_pending_input(&mut self, bytes: &[u8]) {
-        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
-        let take = pending_input_room(self.pane_pending_input.len(), bytes.len(), cap);
-        self.pane_pending_input.extend_from_slice(&bytes[..take]);
+        self.pane_input.queue(bytes);
+        if self.pane_host_down() {
+            self.pane_input.discard();
+        }
     }
 
-    /// Flushes `pane_pending_input` through the capsule client's own
+    /// True while the session pane's host is known to be disconnected.
+    fn pane_host_down(&self) -> bool {
+        self.bl_pane_target
+            .as_ref()
+            .is_some_and(|(h, _)| self.host_connected.get(h) == Some(&false))
+    }
+
+    /// Flushes `pane_input` through the capsule client's own
     /// `send_input` — call once `pane_feed` resolves to `Capsule`.
     fn flush_pane_pending_input_to_capsule(&mut self) {
-        if self.pane_pending_input.is_empty() {
+        let bytes = self.pane_input.take();
+        if bytes.is_empty() {
             return;
         }
-        let bytes = std::mem::take(&mut self.pane_pending_input);
         if let Some(t) = self.pane_attach_term.as_mut() {
             t.send_input(&bytes);
         }
@@ -10386,7 +10478,7 @@ impl State {
     /// ADR 0042 slice L1b fix 2/3, narrowed post-notmux (every row is a
     /// capsule; there is no tmux fallback anymore): routes session-pane
     /// input bytes to the capsule client's own `send_input`, or queues
-    /// in `pane_pending_input` while resolution is still `Pending`. The
+    /// in `pane_input` while resolution is still `Pending`. The
     /// ONE routing point every input source (typed keystrokes, LLM-pane
     /// paste, ROI paste) shares, so a future source only has to call
     /// this rather than re-derive the branch.
@@ -13190,6 +13282,13 @@ impl State {
                     } // if event_host == self.active_host
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
+                    if self
+                        .bl_pane_target
+                        .as_ref()
+                        .is_some_and(|(h, _)| *h == event_host)
+                    {
+                        self.pane_input.discard();
+                    }
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
                     } else {
@@ -15116,7 +15215,7 @@ impl State {
                                     .unwrap_or(false)
                             {
                                 self.pane_attach_term = None;
-                                self.pane_pending_input.clear();
+                                self.pane_input = PanePendingInput::default();
                                 self.bl_pane_target = None;
                                 self.pane_feed = PaneFeed::Pending;
                             }
@@ -16445,7 +16544,8 @@ impl State {
         // needs a persistent, non-clobberable reason when this row's
         // host has a known-broken dial — same priority tier as a live
         // client's own failure.
-        .or_else(|| self.pane_dial_error.clone());
+        .or_else(|| self.pane_dial_error.clone())
+        .or_else(|| self.pane_input.notice());
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
         // own parser being ready (`pump_pane_attach_term`'s "checkpoint
