@@ -5,7 +5,8 @@
 //! A lease is a dedicated connection whose first frame is `fe.lease`; the
 //! connection is the handle, so a lease's generation never goes on the
 //! wire. This module is the pure core the connection's holder calls: it
-//! does no IO but the record write, and it never looks a process up. The
+//! does no IO but the record's read at construction and its write, and it
+//! never looks a process up. The
 //! peer's identity arrives already read from the OS at accept, and a
 //! restart's plan is a function of the record and this boot alone.
 //!
@@ -187,6 +188,12 @@ struct State {
     /// The deciding departure was a `fe.leaving{close}`: its window waits
     /// for the shutdown's count (shutdown step 6).
     closer_waits: bool,
+    /// A startup Cleanup is running over a record that says `closing` or
+    /// names another boot, from construction until [`Leases::finish_cleanup`].
+    /// No grant rewrites the record meanwhile (a grant still answers the
+    /// window), so a kill mid-Cleanup re-runs the Cleanup at the next
+    /// start, which fails toward close.
+    startup_cleanup: bool,
 }
 
 impl State {
@@ -275,6 +282,14 @@ impl Leases {
         record: Option<PathBuf>,
     ) -> (Self, mpsc::UnboundedReceiver<StartEvent>) {
         let (starts, events) = mpsc::unbounded_channel();
+        let startup_cleanup = match record.as_deref().map(read_record) {
+            Some(Ok(Some(rec))) => {
+                let other_boot =
+                    own_boot.as_deref().is_some_and(|own| !own.is_empty() && !rec.boot.is_empty() && own != rec.boot);
+                rec.closing || other_boot
+            }
+            _ => false,
+        };
         let state = State {
             own_boot,
             path: record,
@@ -289,6 +304,7 @@ impl Leases {
             not_ended: 0,
             forget: Vec::new(),
             closer_waits: false,
+            startup_cleanup,
         };
         let leases = Leases {
             state: Arc::new(Mutex::new(state)),
@@ -355,7 +371,8 @@ impl Leases {
         });
         let cleared = if qualified { st.pending.take() } else { None };
         st.held.push((gen, who));
-        if let Err(e) = st.persist() {
+        let written = if st.startup_cleanup { Ok(()) } else { st.persist() };
+        if let Err(e) = written {
             st.held.pop();
             (st.handover_until_ms, st.awaited, st.hold_until_ms, st.close_at_hold) = undo;
             if qualified {
@@ -485,6 +502,7 @@ impl Leases {
     /// until its own step 5.
     pub(crate) fn finish_cleanup(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
+        st.startup_cleanup = false;
         if st.pending.as_ref().is_some_and(|p| p.expired) {
             st.pending = None;
         }
@@ -555,11 +573,13 @@ impl Leases {
     }
 
     /// One tick of the 1 s ticker: [`Leases::tick`], and what the ticker
-    /// does with its answer.
+    /// does with its answer. The rows were resumed at the start, so a
+    /// pending start that expires with no qualifying lease is a close.
     pub(crate) fn step(&self, now_ms: u64) -> Tick {
         let tick = self.tick(now_ms);
         if tick == Tick::Cleanup {
-            tracing::info!("a pending start expired with no qualifying lease");
+            tracing::info!("a pending start expired with no qualifying lease: shutting down as a close");
+            self.begin_close();
         }
         tick
     }
@@ -954,6 +974,42 @@ mod tests {
         fn on_disk(&self) -> Option<HeldRecord> {
             read_record(&self.path).expect("the record parses")
         }
+    }
+
+    #[test]
+    fn lease_during_startup_cleanup_keeps_the_record() {
+        let closing = HeldRecord { closing: true, ..empty() };
+        let other_boot = HeldRecord { boot: "boot-b".into(), holders: vec![id(9)], ..empty() };
+        for (what, rec) in [("closing", closing), ("another boot", other_boot)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(bounds::HELD_RECORD_FILE);
+            write_or_delete(&path, &rec).unwrap();
+            let (leases, _starts) = Leases::new(Some(BOOT.into()), Some(path.clone()));
+            let who = id(1);
+            let (outcome, _) = leases.grant(&req(&who), &peer(&who), true, T0);
+            assert_eq!(outcome, LeaseOutcome::Granted, "{what}: a grant still answers the window");
+            assert_eq!(
+                read_record(&path).unwrap(),
+                Some(rec.clone()),
+                "{what}: a grant during the startup Cleanup rewrote the record"
+            );
+            leases.finish_cleanup(0, Vec::new()).unwrap();
+            let after = read_record(&path).unwrap().expect("the holder is recorded once the Cleanup finishes");
+            assert_eq!(after.holders, vec![who], "{what}");
+            assert!(!after.closing, "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_expiry_shuts_down() {
+        let f = fixture(Some(BOOT));
+        f.leases.install_pending(T0 + 10, Qualify::Any).unwrap();
+        assert_eq!(f.leases.step(T0 + 20), Tick::Cleanup);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), f.leases.gone()).await.is_ok(),
+            "a pending start that expired with no qualifying lease did not shut down"
+        );
+        assert!(f.on_disk().expect("the record").closing, "the shutdown did not record closing");
     }
 
     #[test]
