@@ -58,7 +58,7 @@ context while you read; switching away leaves Julia and terminal processes runni
 
 | Action | Key |
 |--------|-----|
-| Move focus between panes (spatial) | `Ctrl+Arrow` |
+| Move focus between the panes on screen (spatial; hidden panes are skipped) | `Ctrl+Arrow` |
 | Navigate within the focused pane | plain `Arrow` |
 | Maximize the focused pane | `Alt+=` |
 | Wide-preview: hide the LLM column, hand its width to the preview | `Alt++` |
