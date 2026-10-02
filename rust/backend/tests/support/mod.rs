@@ -907,7 +907,9 @@ pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) 
 /// command-line quoting to get wrong); a path is embedded as a
 /// single-quoted literal with its quotes doubled, and matched with
 /// `.ToLower().Contains(...)`, never `-like`, since a path may hold `[`.
-/// Empty when PowerShell itself cannot be run.
+/// Empty when PowerShell itself cannot be run. The script ends with an
+/// empty line: `-Command -` runs a multi-line statement read from stdin
+/// only once an empty line follows it.
 #[cfg(windows)]
 pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
     use std::io::Write;
@@ -926,7 +928,8 @@ pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
                Write-Output ('{{0}} {{1}}' -f $_.ProcessId, $kind)\n\
              }}\n\
            }}\n\
-         }}\n",
+         }}\n\
+         \n",
         exe = lit(&sot_capsule_exe()),
         root = lit(state_root),
     );
