@@ -788,6 +788,11 @@ before the supervisor publishes it is terminal, not slow.
     dropped; before the first attach the wait is the fixed 250 ms. The frontend's own start
     is unchanged — it still spawns the client on the `attach_direct` reply — and the first
     paint waits for the checkpoint (LU6a).
+    **AMENDED 2026-10-01, the doubling backoff covers every failed dial.** The fixed 250 ms
+    is the `Status` poll on a live connection only; a failed dial waits the doubling backoff
+    (250 ms → 4 s, reset by an attach), before or after the first attach, because over an
+    ssh lane every dial is a login. The "pre-attach backoff" this ADR's "Deleted here"
+    lists name was a local-pipe dial, where the fixed interval cost nothing.
 
 29. **A process spawn never runs on a Tokio worker.** `start_supervisor` (the create
     handler and `resume_all`) and the watchdog's restart spawn run under `spawn_blocking`.

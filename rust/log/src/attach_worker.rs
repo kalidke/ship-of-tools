@@ -527,10 +527,9 @@ const FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND: Duration = TEARDOWN_AGGREGATE_DEADLIN
 /// already-connected, already-`hello`'d supervisor lane, polls `Status`
 /// on that SAME connection every [`fe_client::RECONNECT_BACKOFF_INITIAL`]
 /// (a FIXED interval — Codex review round finding 6: this loop is
-/// steady-state polling of a lane that is actively ANSWERING, never a
-/// reconnect attempt, so [`ReconnectState::retry_with_backoff`]'s
-/// doubling — which stays reserved for genuine reconnect waits in
-/// [`run_worker`]'s own outer episode loop — never applies here) until
+/// steady-state polling of a lane that is actively ANSWERING, so
+/// [`ReconnectState::retry_with_backoff`]'s doubling does not apply to
+/// that poll; it does apply to the wait after a failed voyage dial) until
 /// the report says `Ready` with a voyage id AND the voyage lane itself
 /// accepts a connection. Every answered `Status`, whatever its phase,
 /// clears [`ReconnectState::clear_unresponsive`] (finding 2) — an outage
@@ -654,11 +653,9 @@ fn converge_on_ready<E: Endpoint>(
             // ADR 0045 decision 4: classified the SAME way as the
             // supervisor-lane connect above it in `run_worker` — a
             // refusal is terminal, its code named; the two uncertain
-            // arms clear the health window's clock and retry at this
-            // loop's own fixed per-round interval (unchanged from the
-            // plain "not yet available" wait below, since this is a
-            // bounded Status-polling round, not the episode-level
-            // backoff `ReconnectState::retry_with_backoff` governs).
+            // arms clear the health window's clock and wait the doubling
+            // `ReconnectState::retry_with_backoff` (ADR 0043 decision 28:
+            // over an ssh lane every failed dial is a login).
             Err(e) => match classify_transport(e) {
                 LaneError::Refused { code, detail } => {
                     let msg = if code == "no_bridge" {
@@ -676,7 +673,7 @@ fn converge_on_ready<E: Endpoint>(
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
-                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -686,7 +683,7 @@ fn converge_on_ready<E: Endpoint>(
                         return ReadyOutcome::Terminal("voyage pipe: access denied".to_string());
                     }
                     emit(WorkerEvent::Status(format!("voyage pipe not yet available: {io}")));
-                    match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
+                    match wait_for_retry_or_shutdown(cmd_rx, reconnect.retry_with_backoff(), held) {
                         WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                         WaitOutcome::Continue => continue,
                     }
@@ -3052,6 +3049,73 @@ mod tests {
             ReadyOutcome::ShouldExit => panic!("expected Ready(v2), got ShouldExit"),
             ReadyOutcome::Shutdown => panic!("expected Ready(v2), got Shutdown"),
         }
+    }
+
+    /// Counts [`Endpoint::connect_voyage_unchallenged`] calls and fails every one.
+    struct CountingUnreachableEndpoint {
+        voyage_dials: AtomicUsize,
+    }
+    impl Endpoint for CountingUnreachableEndpoint {
+        type Client = ScriptedReadyClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            self.voyage_dials.fetch_add(1, Ordering::AcqRel);
+            Err(crate::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet")))
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("converge_on_ready never reconnects the supervisor lane itself")
+        }
+        fn challenge(
+            &self,
+            _conn: &Self::Client,
+            _exchange: &mut dyn crate::exchange::IdentityExchange,
+            _deadline: Instant,
+        ) -> ChallengeOutcome<Self::Process> {
+            unreachable!("converge_on_ready never challenges")
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("converge_on_ready never authenticates")
+        }
+    }
+
+    /// ADR 0043 decision 28: a failed voyage dial waits the doubling backoff
+    /// even before the row's first attach (over an ssh lane each dial is a
+    /// login), so 2 s of `Ready` + `Unreachable` holds at most 4 dials
+    /// (at 0, 0.25, 0.75 and 1.75 s), not one per 250 ms.
+    #[test]
+    fn a_failed_voyage_dial_backs_off_before_the_first_attach() {
+        let v = "11111111-1111-1111-1111-111111111111";
+        let ready = SupervisorReply::StatusOk { pid: 1, created: 1, voyage: Some(v.to_string()), leg: Some(1), phase: SupervisorPhase::Ready };
+        let conn = ScriptedReadyClient::new((0..40).map(|_| ready.clone()).collect());
+        let ep = CountingUnreachableEndpoint { voyage_dials: AtomicUsize::new(0) };
+
+        let (msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(2000));
+            let _ = msg_tx.send(WorkerMsg::Shutdown);
+        });
+        let mut reconnect = ReconnectState::new();
+        let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
+        let mut quit = QuitDispatcher::new();
+        let mut outstanding = OutstandingSlot::new();
+        let outcome = converge_on_ready::<CountingUnreachableEndpoint>(
+            &ep,
+            conn,
+            FrameReader::new(),
+            "sot-capsule-row-r4d",
+            &cmd_rx,
+            &mut reconnect,
+            &mut held,
+            &mut quit,
+            &mut outstanding,
+            None,
+            &|_e| {},
+        );
+        stopper.join().unwrap();
+        assert!(matches!(outcome, ReadyOutcome::Shutdown), "the test ends the loop with Shutdown");
+        let dials = ep.voyage_dials.load(Ordering::Acquire);
+        assert!(dials <= 4, "at most 4 voyage dials in 2 s, got {dials}");
     }
 
     /// Answers the `attach` request with one scripted `attach_refused`
