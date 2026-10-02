@@ -1081,7 +1081,10 @@ impl<E: Endpoint> AttachWorker<E> {
         // message right back here, and letting the `Result` drop
         // unused drops it immediately.
         let gen = self.attach_gen.load(Ordering::Acquire);
-        let _ = self.msg_tx.send(WorkerMsg::Input(bytes, reservation, gen));
+        if self.msg_tx.send(WorkerMsg::Input(bytes, reservation, gen)).is_err() {
+            // The worker has exited: the input is never delivered.
+            self.discarded.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(())
     }
 
@@ -2269,12 +2272,12 @@ fn run_steady_state<E: Endpoint + Sync>(
                     match take.role() {
                     Role::Watching => {
                         for action in take.on_input_while_watching(&bytes) {
-                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                            apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                         }
                     }
                     Role::Taking | Role::Resizing => {
                         for action in take.on_input_while_pending(&bytes) {
-                            apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                            apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                         }
                     }
                     Role::Driving => {
@@ -2283,7 +2286,7 @@ fn run_steady_state<E: Endpoint + Sync>(
                             // input already outstanding queues the next one
                             // rather than dropping it.
                             for action in take.queue_while_driving(&bytes) {
-                                apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
+                                apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                             }
                         } else {
                             send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
@@ -2398,6 +2401,23 @@ fn send_new_input<E: Endpoint>(
     send_wire_input::<E>(attach_conn, controller_id, take_epoch, idem_key, bytes);
 }
 
+/// [`apply_single_take_action`] for the actions a typed input produced:
+/// an input dropped whole is counted in the worker's one discard counter.
+fn apply_input_action<E: Endpoint>(
+    action: TakeAction,
+    attach_conn: &E::Client,
+    controller_id: &str,
+    emit: &dyn Fn(WorkerEvent),
+    discarded: &AtomicUsize,
+) {
+    if action == TakeAction::InputDropped {
+        discarded.fetch_add(1, Ordering::AcqRel);
+        emit(WorkerEvent::InputsDiscarded);
+    } else {
+        apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
+    }
+}
+
 /// Dispatches one `TakeAction`. `SendInput` no longer exists as a
 /// variant (Codex review round, finding 3: flushing the queue is never
 /// bundled with `take_ok`'s own actions) — every input send in this
@@ -2421,6 +2441,8 @@ fn apply_single_take_action<E: Endpoint>(action: TakeAction, attach_conn: &E::Cl
         TakeAction::QueueDiscarded => {
             emit(WorkerEvent::Status("input discarded \u{2014} the pen never arrived in time".to_string()));
         }
+        // Counted by `apply_input_action`, which has the counter.
+        TakeAction::InputDropped => {}
         TakeAction::GeometryUnrepresentable => {
             emit(WorkerEvent::Status("window size not representable by this session".to_string()));
         }
@@ -2674,6 +2696,27 @@ fn handle_attach_frame<E: Endpoint>(
 mod tests {
     use super::*;
     use crate::client::PeerIdentity;
+
+    /// An input sent after the worker has exited is never delivered, and
+    /// is counted.
+    #[test]
+    fn an_input_sent_after_the_worker_exited_is_counted() {
+        let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
+        drop(msg_rx);
+        let worker = AttachWorker::<TestEndpoint> {
+            msg_tx,
+            ingress_bytes: Arc::new(AtomicUsize::new(0)),
+            attach_gen: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicUsize::new(0)),
+            ingress_bound: 64,
+            queued_bytes: Arc::new(QueuedBytes::new()),
+            viewed: Arc::new(AtomicBool::new(true)),
+            worker_handle: None,
+            _endpoint: PhantomData,
+        };
+        assert_eq!(worker.send_input(b"x".to_vec()), Ok(()));
+        assert_eq!(worker.inputs_discarded(), 1);
+    }
 
     /// The manager's own ruling on top of Codex round 2: the ingress
     /// bound limits ACCUMULATION, never a single send. An input bigger
@@ -3522,6 +3565,31 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(discarded.load(Ordering::SeqCst), 0, "a current input clears the count");
+
+        tx.send(WorkerMsg::Shutdown).unwrap();
+        let outcome = worker.join().expect("the worker thread must not panic");
+        assert!(matches!(outcome, SteadyOutcome::Shutdown));
+    }
+
+    /// A current input that finds the take queue full is dropped whole and
+    /// counted, so no typed key vanishes uncounted.
+    #[test]
+    fn an_input_dropped_whole_by_a_full_take_queue_is_counted() {
+        let attach_state = Arc::new(StallState::default());
+        let sup_state = Arc::new(StallState::default());
+        let attach_conn = Arc::new(StallClient(Arc::clone(&attach_state)));
+        let sup_conn = StallClient(Arc::clone(&sup_state));
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        let discarded = Arc::new(AtomicUsize::new(0));
+        let worker = spawn_stall_steady(rx, attach_conn, sup_conn, 0, Arc::clone(&discarded));
+
+        tx.send(input_msg(&vec![b'a'; crate::fe_client::TAKE_QUEUE_CAP], 0)).unwrap();
+        tx.send(input_msg(b"z", 0)).unwrap();
+        let started = Instant::now();
+        while discarded.load(Ordering::SeqCst) != 1 {
+            assert!(started.elapsed() < WORKER_TICK * 5, "the dropped input was never counted");
+            thread::sleep(Duration::from_millis(5));
+        }
 
         tx.send(WorkerMsg::Shutdown).unwrap();
         let outcome = worker.join().expect("the worker thread must not panic");

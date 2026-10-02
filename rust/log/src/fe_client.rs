@@ -101,6 +101,9 @@ pub enum TakeAction {
     /// context that no longer exists." The caller surfaces this in the
     /// UI; it must never be a silent drop.
     QueueDiscarded,
+    /// A non-empty input found the queue full and was dropped whole; the
+    /// worker counts it in its one discard counter.
+    InputDropped,
     /// `resize_refused{out_of_budget}`: "keeps the pen and reports the
     /// geometry unrepresentable." Promotes to [`Role::Driving`] anyway
     /// (the pen is still held; only the geometry failed) so the queue
@@ -176,17 +179,25 @@ impl TakeTransaction {
     }
 
     /// Appends `bytes` to the hold queue, capped at [`TAKE_QUEUE_CAP`].
-    /// Returns `true` iff this call caused bytes to be discarded (the
-    /// caller surfaces [`TakeAction::QueueDiscarded`] exactly once per
-    /// discarding call, never once per dropped byte).
-    fn push_queue(&mut self, bytes: &[u8]) -> bool {
+    /// Returns the discard actions this call caused: none, or
+    /// [`TakeAction::QueueDiscarded`] exactly once per discarding call
+    /// (never once per dropped byte), plus [`TakeAction::InputDropped`]
+    /// when a non-empty input found the queue full and was dropped whole.
+    fn push_queue(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
         let room = TAKE_QUEUE_CAP.saturating_sub(self.queue.len());
         let take = room.min(bytes.len());
         self.queue.extend_from_slice(&bytes[..take]);
         if take > 0 {
             self.queued_inputs += 1;
         }
-        take < bytes.len()
+        let mut actions = Vec::new();
+        if take < bytes.len() {
+            actions.push(TakeAction::QueueDiscarded);
+            if take == 0 {
+                actions.push(TakeAction::InputDropped);
+            }
+        }
+        actions
     }
 
     /// The first input while WATCHING: enters TAKING, holds `bytes`, and
@@ -197,9 +208,7 @@ impl TakeTransaction {
         self.checkpoint_retry_started_at = None;
         self.next_retry_at = None;
         let mut actions = vec![TakeAction::SendTake];
-        if self.push_queue(bytes) {
-            actions.push(TakeAction::QueueDiscarded);
-        }
+        actions.extend(self.push_queue(bytes));
         actions
     }
 
@@ -209,11 +218,7 @@ impl TakeTransaction {
     /// already outstanding.
     pub fn on_input_while_pending(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
         debug_assert!(matches!(self.role, Role::Taking | Role::Resizing));
-        if self.push_queue(bytes) {
-            vec![TakeAction::QueueDiscarded]
-        } else {
-            vec![]
-        }
+        self.push_queue(bytes)
     }
 
     /// Keystrokes arriving while DRIVING with an input ALREADY
@@ -223,11 +228,7 @@ impl TakeTransaction {
     /// via [`Self::take_queued`] once the outstanding reply resolves.
     pub fn queue_while_driving(&mut self, bytes: &[u8]) -> Vec<TakeAction> {
         debug_assert_eq!(self.role, Role::Driving);
-        if self.push_queue(bytes) {
-            vec![TakeAction::QueueDiscarded]
-        } else {
-            vec![]
-        }
+        self.push_queue(bytes)
     }
 
     /// `take_ok{take_epoch}`: RESIZING, and send `resize` ALONE — the
@@ -1039,6 +1040,16 @@ mod tests {
         t.on_resize_ok();
         let bytes = t.take_queued().expect("queue had bytes");
         assert_eq!(bytes.len(), TAKE_QUEUE_CAP);
+    }
+
+    #[test]
+    fn an_input_dropped_whole_on_a_full_queue_is_reported() {
+        let mut t = TakeTransaction::new();
+        t.on_input_while_watching(&vec![b'a'; TAKE_QUEUE_CAP]);
+        let actions = t.on_input_while_pending(b"z");
+        assert!(actions.contains(&TakeAction::InputDropped));
+        let partly = TakeTransaction::new().on_input_while_watching(&vec![b'x'; TAKE_QUEUE_CAP + 1]);
+        assert!(!partly.contains(&TakeAction::InputDropped), "a partly queued input is not a whole drop");
     }
 
     #[test]
