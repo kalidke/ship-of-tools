@@ -189,7 +189,7 @@ const GROUP_COMMIT_WINDOW: Duration = Duration::from_millis(50);
 const GROUP_COMMIT_BYTES: usize = 256 * 1024;
 /// The producer quiet this long with output pending means commit now.
 const OUTPUT_IDLE: Duration = Duration::from_millis(2);
-/// No idle commit sooner than this after the last output commit (at most 100 idle commits/s).
+/// No idle commit sooner than this after the last fsync `flush_output!` made (at most 100 idle commits/s).
 const MIN_COMMIT_GAP: Duration = Duration::from_millis(10);
 
 /// Whether the main loop commits pending output now: always at the group
