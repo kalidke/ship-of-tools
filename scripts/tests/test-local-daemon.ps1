@@ -344,6 +344,213 @@ try {
             Check 'derived pipe gone after stop' (Wait-PipeGone $pipeName6) 'pipe still answering after -Stop'
         }
     }
+
+    # ---- 7-8: a fake daemon (C#, compiled once) that can bind late and exit by itself ----
+    # Add-Type -OutputAssembly is Windows PowerShell 5.1 only, which is what
+    # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
+    Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
+    if ($null -eq $envSaved) { $envSaved = @{} }
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_LOG')) {
+        if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
+    }
+    $fakeLocalAppData = Join-Path $root 'fakelocal'
+    New-Item -ItemType Directory -Force -Path (Join-Path $fakeLocalAppData 'sot') | Out-Null
+    $env:LOCALAPPDATA = $fakeLocalAppData
+    $fakeSrc = @'
+using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Text;
+using System.Threading;
+
+public static class FakeSotd
+{
+    static string logPath;
+    static object logLock = new object();
+    static string outcome = "granted";
+
+    static void Log(string s)
+    {
+        if (string.IsNullOrEmpty(logPath)) { return; }
+        lock (logLock) { File.AppendAllText(logPath, s + "\n"); }
+    }
+
+    static int EnvInt(string name, int dflt)
+    {
+        string v = Environment.GetEnvironmentVariable(name);
+        int n;
+        if (!string.IsNullOrEmpty(v) && int.TryParse(v, out n)) { return n; }
+        return dflt;
+    }
+
+    static void Serve(object o)
+    {
+        NamedPipeServerStream srv = (NamedPipeServerStream)o;
+        bool sent = false;
+        try
+        {
+            StreamReader r = new StreamReader(srv, new UTF8Encoding(false));
+            string line;
+            while ((line = r.ReadLine()) != null)
+            {
+                sent = true;
+                Log(line);
+                if (line.Contains("\"op\":\"fe.lease\""))
+                {
+                    byte[] b = new UTF8Encoding(false).GetBytes(
+                        "{\"v\":2,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
+                    srv.Write(b, 0, b.Length);
+                    srv.Flush();
+                }
+            }
+        }
+        catch (Exception) { }
+        if (sent) { Log("eof"); }
+        try { srv.Dispose(); } catch (Exception) { }
+    }
+
+    public static int Main(string[] a)
+    {
+        string name = null;
+        for (int i = 0; i + 1 < a.Length; i++)
+        {
+            if (a[i] == "--socket") { name = a[i + 1]; }
+        }
+        if (name == null) { return 2; }
+        const string prefix = "\\\\.\\pipe\\";
+        if (name.StartsWith(prefix)) { name = name.Substring(prefix.Length); }
+        logPath = Environment.GetEnvironmentVariable("FAKE_SOTD_LOG");
+        string oc = Environment.GetEnvironmentVariable("FAKE_SOTD_LEASE_OUTCOME");
+        if (!string.IsNullOrEmpty(oc)) { outcome = oc; }
+        int exitAfter = EnvInt("FAKE_SOTD_EXIT_AFTER_MS", -1);
+        int bindDelay = EnvInt("FAKE_SOTD_BIND_DELAY_MS", 0);
+        if (exitAfter >= 0)
+        {
+            Thread t = new Thread(delegate () { Thread.Sleep(exitAfter); Environment.Exit(0); });
+            t.IsBackground = true;
+            t.Start();
+        }
+        if (bindDelay > 0) { Thread.Sleep(bindDelay); }
+        while (true)
+        {
+            NamedPipeServerStream srv = new NamedPipeServerStream(
+                name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte);
+            srv.WaitForConnection();
+            Thread w = new Thread(Serve);
+            w.IsBackground = true;
+            w.Start(srv);
+        }
+    }
+}
+'@
+    $fakeBinDir = Join-Path $root 'fakebin'
+    New-Item -ItemType Directory -Force -Path $fakeBinDir | Out-Null
+    $fakeExe = Join-Path $fakeBinDir 'sotd.exe'
+    $compiled = $false
+    try {
+        Add-Type -TypeDefinition $fakeSrc -OutputAssembly $fakeExe -OutputType ConsoleApplication
+        $compiled = Test-Path -LiteralPath $fakeExe
+    } catch { $compileErr = $_.Exception.Message }
+    Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
+
+    function Clear-FakeEnv {
+        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_LOG')) {
+            Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
+        }
+    }
+    function New-FakePrefix([string]$Name) {
+        $p = Join-Path $root $Name
+        New-Fixture -Prefix $p -WithCapsule -SotdSource $fakeExe
+        return $p
+    }
+    function Stop-FakeOn([string]$Pipe) {
+        Get-DaemonProcs (Get-PipePath $Pipe) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+
+    if ($compiled) {
+        Write-Host "`n=== 7. EnsureKeepsWaitingDaemon: a late bind is waited for, never killed ===" -ForegroundColor Cyan
+        Clear-FakeEnv
+        $env:FAKE_SOTD_BIND_DELAY_MS = '7000'
+        $p7 = New-FakePrefix 'p7'
+        $pipe7 = New-TestPipeName
+        $sw7 = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            $out7 = & $script -Prefix $p7 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7 -ProjectRoot $root 6>&1 2>&1
+            $exit7 = $LASTEXITCODE
+            $sec7 = $sw7.Elapsed.TotalSeconds
+            Check '7: exit code 0 after the late bind' ($exit7 -eq 0) "got $exit7; log: $out7"
+            Check '7: waited at least 6s' ($sec7 -ge 6) "took $sec7 s"
+            Check '7: logged the waiting line' ((($out7 -join ' ')) -match 'waiting for the backend') "log was: $out7"
+            Check '7: never stopped the spawn' (-not ((($out7 -join ' ')) -match 'stopping pid')) "log was: $out7"
+            Check '7: the fake is alive after' (@(Get-DaemonProcs (Get-PipePath $pipe7)).Count -eq 1) 'the fake daemon is gone'
+        } finally {
+            Stop-FakeOn $pipe7
+            Clear-FakeEnv
+        }
+
+        Write-Host "`n=== 8. StopWaitsForSelfShutdown: -Stop waits while a shutdown is under way ===" -ForegroundColor Cyan
+        $heldPath = Join-Path $fakeLocalAppData 'sot\held.json'
+        Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
+
+        # (a) -FrontendKilled, and the fake exits by itself after 6 s.
+        Clear-FakeEnv
+        $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
+        $p8a = New-FakePrefix 'p8a'
+        $pipe8a = New-TestPipeName
+        try {
+            $null = & $script -Prefix $p8a -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8a -ProjectRoot $root 6>&1 2>&1
+            Check '8a: the fake started' (@(Get-DaemonProcs (Get-PipePath $pipe8a)).Count -eq 1) 'the fake daemon did not start'
+            $sw8a = [System.Diagnostics.Stopwatch]::StartNew()
+            $out8a = & $script -Stop -FrontendKilled -Prefix $p8a -PipeName $pipe8a 6>&1 2>&1
+            $exit8a = $LASTEXITCODE
+            $sec8a = $sw8a.Elapsed.TotalSeconds
+            Check '8a: exit code 0' ($exit8a -eq 0) "got $exit8a; log: $out8a"
+            Check '8a: waited between 3s and 30s' (($sec8a -ge 3) -and ($sec8a -le 30)) "took $sec8a s"
+            Check '8a: said the daemon exited by itself' ((($out8a -join ' ')) -match 'exited by itself') "log was: $out8a"
+            Check '8a: did not kill' (-not ((($out8a -join ' ')) -match 'killing pid')) "log was: $out8a"
+        } finally {
+            Stop-FakeOn $pipe8a
+            Clear-FakeEnv
+        }
+
+        # (b) no switch, but held.json says the daemon is closing.
+        Clear-FakeEnv
+        $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
+        Set-Content -LiteralPath $heldPath -Value '{"v":1,"holders":[],"handover_until_ms":null,"closing":true,"not_ended":0,"forget":[]}' -Encoding ASCII
+        $p8b = New-FakePrefix 'p8b'
+        $pipe8b = New-TestPipeName
+        try {
+            $null = & $script -Prefix $p8b -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8b -ProjectRoot $root 6>&1 2>&1
+            $sw8b = [System.Diagnostics.Stopwatch]::StartNew()
+            $out8b = & $script -Stop -Prefix $p8b -PipeName $pipe8b 6>&1 2>&1
+            $exit8b = $LASTEXITCODE
+            $sec8b = $sw8b.Elapsed.TotalSeconds
+            Check '8b: exit code 0' ($exit8b -eq 0) "got $exit8b; log: $out8b"
+            Check '8b: waited between 3s and 30s' (($sec8b -ge 3) -and ($sec8b -le 30)) "took $sec8b s"
+            Check '8b: said the daemon exited by itself' ((($out8b -join ' ')) -match 'exited by itself') "log was: $out8b"
+            Check '8b: did not kill' (-not ((($out8b -join ' ')) -match 'killing pid')) "log was: $out8b"
+        } finally {
+            Stop-FakeOn $pipe8b
+            Clear-FakeEnv
+            Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
+        }
+
+        # (c) control: no knob, no switch, no record -- killed at once.
+        Clear-FakeEnv
+        $p8c = New-FakePrefix 'p8c'
+        $pipe8c = New-TestPipeName
+        try {
+            $null = & $script -Prefix $p8c -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8c -ProjectRoot $root 6>&1 2>&1
+            $sw8c = [System.Diagnostics.Stopwatch]::StartNew()
+            $out8c = & $script -Stop -Prefix $p8c -PipeName $pipe8c 6>&1 2>&1
+            $sec8c = $sw8c.Elapsed.TotalSeconds
+            Check '8c: killed the daemon' ((($out8c -join ' ')) -match 'killing pid') "log was: $out8c"
+            Check '8c: killed at once (under 5s)' ($sec8c -lt 5) "took $sec8c s"
+        } finally {
+            Stop-FakeOn $pipe8c
+            Clear-FakeEnv
+        }
+    }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still

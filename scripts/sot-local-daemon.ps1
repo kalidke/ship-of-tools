@@ -61,6 +61,11 @@
 # that's still exiting can leave the pipe briefly unconnectable without
 # actually being gone yet).
 #
+# -Stop first waits (up to $DaemonLockWaitSeconds) for the daemon to finish
+# its own shutdown when one is under way -- -FrontendKilled, or held.json
+# says closing -- because a kill mid-shutdown cuts it short. Only a daemon
+# still there after the wait is killed.
+#
 # -Stop: sotd installs no signal/console-control handler on either platform
 # (grepped: no SIGTERM/ctrl_c handling in rust/backend/src/*.rs) and exposes
 # no clean-stop IPC op. Linux's own "graceful" stop is systemd's UNHANDLED
@@ -99,8 +104,12 @@
 # Windows branch -- a known gap, not fixed here (see the ADR amendment). If
 # the spawned process exits before the pipe comes up, that's logged with its
 # exit code and the wait stops early rather than spinning out the full
-# bound; if the pipe never comes up within the bound, the process we just
-# spawned is stopped so a hung daemon can't accumulate across retries.
+# bound (unless the pipe answers: a spawn that exits counts as up iff it
+# does). A spawn is never killed: when a previous daemon is still shutting
+# down, the new one waits on the daemon lock and its own 150 s bound ends it,
+# so killing it here would only cut a successor off. The ensure waits up to
+# $LaunchWaitSeconds for the pipe and, if it never answers, leaves the
+# process running and exits 1.
 #
 # Standalone + parameterized (mirrors scripts/sot-apply.ps1's own -Prefix
 # test-override convention) so this is independently testable without the
@@ -137,8 +146,16 @@ param(
     # Named-pipe basename override (tests, so a test run never collides with
     # a real per-user daemon, and so a -Stop-only test needs no real binary
     # on disk). Default: queried from the resolved sotd.exe (see header).
-    [string]$PipeName
+    [string]$PipeName,
+    # Set by shutdown-sot.ps1 when it just ended the frontend: the daemon is
+    # then ending this computer's sessions by itself, and -Stop waits for it.
+    [switch]$FrontendKilled
 )
+
+# Bounds the launcher and the daemon agree on (rust/protocol/src/ops.rs;
+# scripts/tests/installer-state.sh checks both values against it).
+$LaunchWaitSeconds = 160        # = ops.rs lease::LAUNCH_WAIT
+$DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
 
 $ErrorActionPreference = 'Continue'
 
@@ -289,6 +306,27 @@ if ($Stop) {
         Write-LocalDaemonLog "stop: not running (no sotd.exe with pipe $PipeName)"
         exit 0
     }
+    # Is a shutdown under way? held.json lives in the state root the daemon
+    # derives (state_dir.rs): LOCALAPPDATA, else USERPROFILE\AppData\Local, plus \sot.
+    $closing = $false
+    try {
+        $stateBase = $env:LOCALAPPDATA
+        if (-not $stateBase) { $stateBase = Join-Path $env:USERPROFILE 'AppData\Local' }
+        $heldPath = Join-Path (Join-Path $stateBase 'sot') 'held.json'
+        $closing = ((Get-Content -Raw -LiteralPath $heldPath | ConvertFrom-Json).closing -eq $true)
+    } catch { $closing = $false }
+    if ($FrontendKilled -or $closing) {
+        Write-LocalDaemonLog "stop: waiting up to ${DaemonLockWaitSeconds}s for the daemon to finish its own shutdown (frontendKilled=$([bool]$FrontendKilled) closing=$closing)"
+        $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (@(Get-LocalDaemonProcess).Count -gt 0 -and $waitSw.Elapsed.TotalSeconds -lt $DaemonLockWaitSeconds) {
+            Start-Sleep -Milliseconds 500
+        }
+        $procs = @(Get-LocalDaemonProcess)
+        if ($procs.Count -eq 0) {
+            Write-LocalDaemonLog "stop: the daemon exited by itself"
+            exit 0
+        }
+    }
     foreach ($p in $procs) {
         Write-LocalDaemonLog "stop: killing pid=$($p.ProcessId)"
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
@@ -375,26 +413,31 @@ try {
 }
 Write-LocalDaemonLog "spawned pid=$($proc.Id)"
 
-# Bounded wait for the pipe to come up -- same 20x250ms=5s shape the remote
-# path already uses (launch-sot.ps1's socket-wait loop) for an analogous
-# "did the daemon we just started actually bind" check. Stops early (a) if
-# the process already exited (nothing to wait for) or (b) once the pipe
-# answers.
+# Wait for the pipe to come up, up to $LaunchWaitSeconds: a previous daemon
+# may still be shutting down, and the one just spawned waits on the daemon
+# lock behind it. Stops early once the pipe answers, or when the process
+# exited without the pipe answering. A spawn is never killed here.
 $up = $false
-for ($i = 0; $i -lt 20; $i++) {
+$waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+$loggedWait = $false
+while ($waitSw.Elapsed.TotalSeconds -lt $LaunchWaitSeconds) {
     Start-Sleep -Milliseconds 250
+    if (Test-SotPipeOpen $PipeName) { $up = $true; break }
     $proc.Refresh()
     if ($proc.HasExited) {
+        if (Test-SotPipeOpen $PipeName) { $up = $true; break }
         Write-LocalDaemonLog "REFUSED: $daemonExe exited during startup (code=$($proc.ExitCode))"
         exit 1
     }
-    if (Test-SotPipeOpen $PipeName) { $up = $true; break }
+    if (-not $loggedWait -and $waitSw.Elapsed.TotalSeconds -ge 3) {
+        Write-LocalDaemonLog "waiting for the backend (a previous one may still be shutting down)"
+        $loggedWait = $true
+    }
 }
 if ($up) {
     Write-LocalDaemonLog "pipe=$PipePath"
     exit 0
 } else {
-    Write-LocalDaemonLog "did not come up on $PipePath within 5s - stopping pid=$($proc.Id) so it cannot accumulate"
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Write-LocalDaemonLog "did not come up on $PipePath within ${LaunchWaitSeconds}s - leaving pid=$($proc.Id) running"
     exit 1
 }

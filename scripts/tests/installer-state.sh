@@ -592,6 +592,12 @@ case_start "launcher_bounds_match_ops"
 OPS_WAIT="$(sed -n 's/.*pub const LAUNCH_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops.rs")"
 LIB_WAIT="$(sed -n 's/^SOT_LAUNCH_WAIT_S=\([0-9]*\).*/\1/p' "$LIB")"
 check "the library's launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$LIB_WAIT"
+PS_DAEMON="$(dirname "$0")/../sot-local-daemon.ps1"
+OPS_LOCK="$(sed -n 's/.*pub const DAEMON_LOCK_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops.rs")"
+PS_WAIT="$(sed -n 's/^\$LaunchWaitSeconds = \([0-9]*\).*/\1/p' "$PS_DAEMON")"
+PS_LOCK="$(sed -n 's/^\$DaemonLockWaitSeconds = \([0-9]*\).*/\1/p' "$PS_DAEMON")"
+check "sot-local-daemon.ps1 launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$PS_WAIT"
+check "sot-local-daemon.ps1 daemon-lock wait is ops.rs DAEMON_LOCK_WAIT" "$OPS_LOCK" "$PS_LOCK"
 
 # ---------------------------------------------------------------------------
 # sot-apply fixtures: an install prefix with a real sot-apply, a git checkout
