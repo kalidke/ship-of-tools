@@ -123,6 +123,21 @@ fn ping_read_deadline() -> std::time::Duration {
         .unwrap_or(PING_READ_DEADLINE)
 }
 
+/// `SOT_TEST_DAEMON_LOCK_WAIT_MS` overrides [`sot_protocol::ops::lease::DAEMON_LOCK_WAIT`]
+/// for tests — the same `OnceLock` convention as [`ping_read_deadline`].
+/// Unset in every real deployment.
+fn daemon_lock_wait() -> std::time::Duration {
+    static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_DAEMON_LOCK_WAIT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(sot_protocol::ops::lease::DAEMON_LOCK_WAIT)
+}
+
 /// Write one frame to a connection with a bounded timeout (ADR 0027, reaper
 /// half 2). On timeout we return an error so `handle_connection` unwinds and
 /// drops the connection: a peer that hasn't drained a single frame in
@@ -466,6 +481,22 @@ fn project_comm_registry(bytes: &[u8]) -> String {
 }
 
 pub async fn run(opts: Opts) -> Result<()> {
+    // Lock first: one daemon per state root, held until this process ends
+    // (a kill included), so a successor never reads the registry while its
+    // predecessor is still shutting down. With no state root there is no
+    // record to fence, the same posture as the resume skip below.
+    let _daemon_lock = match sot_log::state_dir::sot_state_dir() {
+        Some(state_root) => Some(lock_daemon(&state_root, opts.socket.as_deref()).await?),
+        None => {
+            tracing::warn!(
+                "daemon lock skipped, running unfenced: could not resolve this machine's state root \
+                 ({} unset)",
+                crate::capsule_workspace::STATE_ROOT_HINT
+            );
+            None
+        }
+    };
+
     // ADR 0046 decision 1: resolve this daemon's declared host at boot,
     // fatal if it can't be named, so the failure is a boot error rather
     // than a per-hello one. Pin the (bare, S4) own-listener endpoint from
@@ -906,6 +937,57 @@ pub async fn run(opts: Opts) -> Result<()> {
     let (res, _idx, _rest) = futures_util::future::select_all(tasks).await;
     res.context("listener task panicked")??;
     Ok(())
+}
+
+/// Takes `<state_root>/daemon.lock`, trying every 250 ms. A busy lock with
+/// a daemon answering on `socket` refuses at once; a busy lock with nobody
+/// answering is a predecessor still shutting down, waited for up to
+/// [`daemon_lock_wait`]. Either error ends `main` with exit 1.
+async fn lock_daemon(
+    state_root: &std::path::Path,
+    socket: Option<&std::path::Path>,
+) -> Result<sot_log::fence::DaemonLock> {
+    let lock_path = sot_log::fence::daemon_lock_path(state_root);
+    let deadline = tokio::time::Instant::now() + daemon_lock_wait();
+    let mut logged = false;
+    loop {
+        if let Some(lock) = sot_log::fence::try_lock_daemon(state_root)
+            .with_context(|| format!("open the daemon lock {}", lock_path.display()))?
+        {
+            return Ok(lock);
+        }
+        if let Some(path) = socket.filter(|p| socket_answers(p)) {
+            anyhow::bail!(
+                "another daemon on this computer holds {} and answers on {}; refusing to start",
+                lock_path.display(),
+                path.display()
+            );
+        }
+        if !logged {
+            tracing::info!(
+                lock = %lock_path.display(),
+                "waiting for the previous daemon on this computer to finish shutting down"
+            );
+            logged = true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "the previous daemon on this computer still holds {} after {:?}",
+                lock_path.display(),
+                daemon_lock_wait()
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+/// Whether a daemon answers on the session socket: on Unix a connect
+/// succeeds, on Windows a client open of the pipe name succeeds.
+fn socket_answers(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    return std::os::unix::net::UnixStream::connect(path).is_ok();
+    #[cfg(windows)]
+    return std::fs::OpenOptions::new().read(true).write(true).open(path).is_ok();
 }
 
 /// Refuses when a daemon still answers on the socket at `path`. Unlinking
