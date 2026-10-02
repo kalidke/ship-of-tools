@@ -822,7 +822,7 @@ try {
             $gone13 = @(@($tmp13) + $old13 | Where-Object { -not (Test-Path -LiteralPath $_) })
             $want13 = @(@($tmp13) + @($old13 | Select-Object -First 3))
             Check '13: the deleted files are exactly the oldest, in order' (($gone13 -join ',') -ceq ($want13 -join ',')) "deleted: $($gone13 -join ', ')"
-            Check '13: the held log is kept with one line naming it' (($run13 | Out-String -Width 4096) -match ('kept log ' + [regex]::Escape((Split-Path -Leaf $out13)) + ': \S')) "log: $run13"
+            Check '13: the held log is kept with one line naming it' (($run13 | Out-String -Width 4096) -match ('kept log [^\r\n]*[\\/]' + [regex]::Escape((Split-Path -Leaf $out13)) + ': \S')) "log: $run13"
             $held13text = ''
             if (Test-Path -LiteralPath $out13) {
                 $fs13 = New-Object System.IO.FileStream($out13, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -933,7 +933,7 @@ try {
                 try { $text14 = (New-Object System.IO.StreamReader($fs14)).ReadToEnd() } finally { $fs14.Dispose() }
             } catch { $text14 = "unreadable: $($_.Exception.Message)" }
             Check '14: the held file survives and holds its lines' ($text14 -ceq "known-line-14`r`nafter-14`r`n") "held file text: '$text14'"
-            Check '14: one line names the kept file and its error' (($run14 | Out-String -Width 4096) -match ('kept log ' + [regex]::Escape((Split-Path -Leaf $out14)) + ': \S')) "log: $run14"
+            Check '14: one line names the kept file and its error' (($run14 | Out-String -Width 4096) -match ('kept log [^\r\n]*[\\/]' + [regex]::Escape((Split-Path -Leaf $out14)) + ': \S')) "log: $run14"
         } finally {
             if ($held14) { $held14.Dispose() }
             Stop-FakeOn $pipe14
