@@ -1287,6 +1287,23 @@ impl MarkdownPreview {
         self.body_line_h * self.scale
     }
 
+    /// Bottom, px below the viewport top, of the last laid-out line that fits
+    /// whole in a `visible_px`-tall viewport scrolled `scroll_px` in: the chrome
+    /// clips there so no row is drawn sliced. `visible_px` when none fits whole.
+    pub fn whole_line_bottom(&self, scroll_px: f32, visible_px: f32) -> f32 {
+        let fit = self
+            .buffer
+            .layout_runs()
+            .map(|r| r.line_top + r.line_height - scroll_px)
+            .take_while(|&bot| bot <= visible_px + 0.5)
+            .fold(0.0_f32, f32::max);
+        if fit > 0.0 {
+            fit
+        } else {
+            visible_px
+        }
+    }
+
     /// Body em (font size) in physical pixels. Used by the math-paint
     /// pass to size SVG bitmaps relative to body text: a MathJax SVG
     /// reports `width="N ex"` and the pixel width is `N * ex_factor *
@@ -1498,6 +1515,19 @@ impl MarkdownPreview {
 mod tests {
     use super::*;
     use cosmic_text::FontSystem;
+
+    #[test]
+    fn whole_line_bottom_drops_a_partial_last_line() {
+        let src = (0..50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let p = MarkdownPreview::new_plain(&mut FontSystem::new(), &src, 800.0, 1.0);
+        let h = p.line_height();
+        assert!((p.whole_line_bottom(0.0, 10.5 * h) - 10.0 * h).abs() < 0.5);
+        assert!((p.whole_line_bottom(3.0 * h, 10.5 * h) - 10.0 * h).abs() < 0.5);
+        assert_eq!(p.whole_line_bottom(0.0, 0.5 * h), 0.5 * h);
+    }
 
     fn make_preview(source: &str) -> MarkdownPreview {
         make_preview_with_figures(source, FigureMetricsMap::new())

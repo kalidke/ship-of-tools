@@ -18186,6 +18186,13 @@ impl State {
         // no inset arithmetic of its own.
         let scalebar_draw = self.build_scalebar(png_rect, image_rect);
 
+        // The preview text is laid out at its own line pitch, so the cell-grid
+        // bottom rarely lands on a line boundary; clip at the last whole line.
+        let md_clip_bottom = md_rect.y
+            + crate::text::EXTRA_TOP_PAD_PX
+            + self
+                .preview_md
+                .whole_line_bottom(preview_scroll_px, md_rect.h - crate::text::EXTRA_TOP_PAD_PX);
         let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
         if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
             extras.push(crate::text::ExtraArea {
@@ -18223,7 +18230,7 @@ impl State {
                 x: md_rect.x,
                 y: md_rect.y,
                 right: md_rect.x + md_rect.w,
-                bottom: md_rect.y + md_rect.h,
+                bottom: md_clip_bottom,
                 clip_left: None,
                 clip_top: None,
                 color: (220, 220, 220),
