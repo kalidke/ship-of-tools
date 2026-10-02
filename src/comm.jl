@@ -620,11 +620,16 @@ function install_comm(; clis = [:claude, :codex])
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 
+    unhooked = String[]
     for cli in clis
         _stage!(problems, "adapter $cli") do
-            _install_adapter(Symbol(cli))
+            _install_adapter(Symbol(cli); unhooked = unhooked)
         end
     end
+    # Never silent about an account the hooks did not reach (each line was
+    # also warned where it happened; this is the one place they are listed).
+    isempty(unhooked) || @warn "The comm hooks are NOT in these Claude settings — a session there does not report its work state:\n  " *
+                               join(unhooked, "\n  ")
     isempty(problems) ||
         error("sot-comm install INCOMPLETE — " * join(problems, "; ") *
               "; no version stamp written, `sot-fe version` reports this install as unknown")
@@ -773,7 +778,7 @@ function _prune_deprecated_skills!(skillsroot::AbstractString)
     end
 end
 
-function _install_adapter(cli::Symbol)
+function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
     problems = String[]
     if cli === :claude
         srcdir = joinpath(COMM_SRC, "adapters", "claude")
@@ -784,7 +789,7 @@ function _install_adapter(cli::Symbol)
             _install_launchers(joinpath(srcdir, "bin"))
         end
         _stage!(problems, "claude hooks") do
-            _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home())
+            _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home(); unhooked = unhooked)
         end
         # Named accounts get skills via the shared-folder symlink the
         # daemon creates at spawn (`rust/backend/src/accounts.rs::
@@ -970,14 +975,19 @@ function _dirkey(d::AbstractString)
     return rstrip(normpath(r), ['/', '\\'])
 end
 
-# `dir` is `root` or lies below it (path components, not string prefix).
+# `dir` is `root` or lies below it, by the path as written OR by where it
+# really is (`_dirkey`). The rule this guards FORBIDS, so either reading is
+# enough: a linked account folder resolves outside `root`, and a not-yet-
+# created dir under a linked HOME matches only as written.
 function _is_under(dir::AbstractString, root::AbstractString)
-    p, r = splitpath(_dirkey(dir)), splitpath(_dirkey(root))
-    return length(p) >= length(r) && p[1:length(r)] == r
+    within(p, r) = length(p) >= length(r) && p[1:length(r)] == r
+    written(d) = splitpath(rstrip(normpath(abspath(d)), ['/', '\\']))
+    return within(written(dir), written(root)) ||
+           within(splitpath(_dirkey(dir)), splitpath(_dirkey(root)))
 end
 
 """
-    _claude_settings_targets(home, claude_dir) -> Vector{String}
+    _claude_settings_targets(home, claude_dir; unhooked = String[]) -> Vector{String}
 
 Every Claude account's settings.json the comm hooks go into, as the REAL
 files to write, each once, in this order: `claude_dir` (the install's own
@@ -996,9 +1006,10 @@ under `.claude-auth`: a real file there would permanently shadow the shared
 settings.json the daemon links in at spawn (`ensure_account_links` leaves
 any existing entry alone). Any other dir without one is skipped. A dangling link, or a path that resolves to
 something other than a regular file, is skipped with a warning and never
-created through.
+created through. Every skipped folder or file is also pushed onto `unhooked` with its reason.
 """
-function _claude_settings_targets(home::AbstractString, claude_dir::AbstractString)
+function _claude_settings_targets(home::AbstractString, claude_dir::AbstractString;
+                                  unhooked::Vector{String} = String[])
     dirs = [claude_dir, joinpath(home, ".claude")]
     auth = joinpath(home, ".claude-auth")
     create_dir = _is_under(claude_dir, auth) ? joinpath(home, ".claude") : claude_dir
@@ -1006,6 +1017,7 @@ function _claude_settings_targets(home::AbstractString, claude_dir::AbstractStri
         isdir(auth) ? readdir(auth) : String[]  # sorted
     catch err
         @warn "could not list the Claude accounts folder — no account settings merged; add the comm hooks to each by hand" dir = auth error = err
+        push!(unhooked, "$auth (the accounts folder could not be listed)")
         String[]
     end
     for name in names
@@ -1014,6 +1026,7 @@ function _claude_settings_targets(home::AbstractString, claude_dir::AbstractStri
             _is_account_name(name) && isdir(dir) && push!(dirs, dir)
         catch err
             @warn "could not read this Claude account folder — skipped; add the comm hooks to it by hand" dir = dir error = err
+            push!(unhooked, "$dir (could not be read)")
         end
     end
     dirs = unique(_dirkey, dirs)
@@ -1026,6 +1039,9 @@ function _claude_settings_targets(home::AbstractString, claude_dir::AbstractStri
                     push!(targets, path)  # the one dir where a missing file is created fresh
                 elseif _is_under(dir, auth)
                     @info "no settings.json in this Claude account folder — skipped, none created (the daemon links the shared one in at the account's first spawn)" dir = dir
+                    push!(unhooked, "$dir (no settings.json; none created — the backend links the shared one in at the account's first spawn)")
+                elseif isdir(dir)
+                    push!(unhooked, "$dir (no settings.json; none created)")
                 end
                 continue
             end
@@ -1036,11 +1052,13 @@ function _claude_settings_targets(home::AbstractString, claude_dir::AbstractStri
             end
             if real === nothing || !isfile(real)
                 @warn "settings.json is a dangling link or not a regular file — skipped; add the comm hooks to it by hand" file = path
+                push!(unhooked, "$path (a dangling link or not a regular file)")
                 continue
             end
             real in targets || push!(targets, real)
         catch err
             @warn "could not read this Claude folder's settings.json — skipped; add the comm hooks to it by hand" file = joinpath(dir, "settings.json") error = err
+            push!(unhooked, "$(joinpath(dir, "settings.json")) (could not be read)")
         end
     end
     return targets
@@ -1070,7 +1088,8 @@ never under `~/.claude-auth`; an
 unparseable one, or any file when `jq` is unavailable, is left alone and
 the exact JSON to add by hand is printed. No-op if `srchooks` is absent.
 """
-function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString)
+function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString;
+                              unhooked::Vector{String} = String[])
     isdir(srchooks) || return nothing
     bin = joinpath(comm_home(), "bin")
     installed = [f for f in readdir(srchooks) if isfile(joinpath(srchooks, f))]
@@ -1086,15 +1105,17 @@ function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractStr
     # ends up matching the current set declaratively, then add each via a
     # non-clobbering merge.
     failed = String[]
-    for settings in _claude_settings_targets(homedir(), claude_dir)
+    for settings in _claude_settings_targets(homedir(), claude_dir; unhooked = unhooked)
         try
-            _remove_stale_comm_hooks!(settings)
+            ok = _remove_stale_comm_hooks!(settings)
             for (event, script, matcher) in _COMM_STATE_HOOKS
-                _add_comm_hook!(event, script, settings; matcher = matcher)
+                ok = _add_comm_hook!(event, script, settings; matcher = matcher) && ok
             end
+            ok || push!(unhooked, "$settings (not merged — see the warnings above)")
         catch err
             @warn "could not merge the comm hooks into this settings.json — skipped; add them by hand" file = settings error = err
             push!(failed, settings)
+            push!(unhooked, "$settings (merge failed: $(sprint(showerror, err)))")
         end
     end
     isempty(failed) || error("could not merge the comm hooks into: " * join(failed, ", "))
@@ -1135,7 +1156,8 @@ Idempotently add a Claude Code hook for `event` (`"UserPromptSubmit"`,
 `settings`, preserving all existing config. Uses `jq` so the
 merge is structural, not a clobbering rewrite. Falls back to printing the
 exact JSON to add by hand when jq is missing or the file can't be parsed —
-never overwrites a file it could not safely read.
+never overwrites a file it could not safely read. Returns `false` when it
+warned and left the file as it was, `true` otherwise (already present, added).
 
 A MISSING `settings.json` (e.g. a fresh `~/.claude` that has never been run
 yet) gets a fresh `{}` created first, so the install still gets the hook
@@ -1154,7 +1176,7 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
 
     if Sys.which("jq") === nothing
         @warn "jq not found — add the comm $event hook to settings.json by hand" file = settings entry = manual
-        return nothing
+        return false
     end
     if !isfile(settings)
         mkpath(dirname(settings))
@@ -1189,14 +1211,14 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
         !isempty(tmp) && isfile(tmp) && rm(tmp; force = true)
         false
     end
-    ok || return nothing
+    ok || return false
 
     # Detect whether jq actually changed anything (already-present → no-op).
     changed = read(tmp, String) != read(settings, String)
     if !changed
         rm(tmp; force = true)
         @info "comm $event hook already present in settings.json" file = settings
-        return nothing
+        return true
     end
     # A bare rename, not `mv(...; force = true)`: that form falls back to
     # REMOVING settings.json first when a plain rename fails (e.g. the file
@@ -1208,10 +1230,10 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, settings
     catch err
         isfile(tmp) && rm(tmp; force = true)
         @warn "could not update settings.json (in use?) — leaving the previous copy in place; add the comm $event hook by hand" file = settings entry = manual error = err
-        return nothing
+        return false
     end
     @info "Added comm $event hook to settings.json" file = settings command = cmd
-    return nothing
+    return true
 end
 
 # The current comm wiring as jq data: one [event, command, matcher-or-""] per hook.
@@ -1244,9 +1266,11 @@ preserved, including a user's own script whose name merely resembles a comm one
 (only commands under `.sot-comm/bin/` are comm commands), even one sharing a group with a comm command. A current hook is left
 in place, so a re-run rewrites nothing. No-op if `jq` is missing or settings.json
 is absent/unparseable (a fresh `~/.claude` has nothing to prune yet either way).
+Returns `false` when the file could not be pruned (no `jq`, or an error), `true` otherwise.
 """
 function _remove_stale_comm_hooks!(settings::AbstractString)
-    (Sys.which("jq") === nothing || !isfile(settings)) && return nothing
+    Sys.which("jq") === nothing && return false
+    isfile(settings) || return true  # nothing to prune; the add creates it
     # Remove each comm command that is not current (see the docstring), one
     # by one; a group is dropped only when that leaves it empty, then any
     # event whose group list is now empty.
@@ -1272,17 +1296,18 @@ function _remove_stale_comm_hooks!(settings::AbstractString)
         changed = read(tmp, String) != read(settings, String)
         if !changed
             rm(tmp; force = true)
-            return nothing
+            return true
         end
         # Bare rename, not `mv(...; force = true)` — see _add_comm_hook!'s
         # comment on the same line for why.
         Base.Filesystem.rename(tmp, settings)
         @info "Retired stale comm hooks from settings.json" file = settings
+        return true
     catch err
         @warn "could not prune comm hooks from settings.json — leaving it untouched" file = settings error = err
         !isempty(tmp) && isfile(tmp) && rm(tmp; force = true)
+        return false
     end
-    return nothing
 end
 
 """

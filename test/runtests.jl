@@ -992,6 +992,65 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "_install_claude_hooks: an account folder that is a link counts as inside .claude-auth" begin
+        jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
+        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+        mktempdir() do home
+            default = joinpath(home, ".claude", "settings.json")
+            mkpath(dirname(default)); write(default, "{}")
+            elsewhere = joinpath(home, "disk", "team")
+            mkpath(elsewhere)
+            mkpath(joinpath(home, ".claude-auth"))
+            team = joinpath(home, ".claude-auth", "team")
+            symlink(elsewhere, team)
+            srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
+            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                ShipTools._install_claude_hooks(srchooks, team)
+                @test isempty(readdir(elsewhere))
+                for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                    @test count(==(ShipTools._hook_command(script)), cmds(default, ev)) == 1
+                end
+            end
+        end
+    end
+
+    @testset "install: the closing summary names every settings file left without the hooks" begin
+        mktempdir() do home
+            default = joinpath(home, ".claude", "settings.json")
+            mkpath(dirname(default)); write(default, "{}")
+            lockd = joinpath(home, ".claude-auth", "lockd", "settings.json")
+            mkpath(dirname(lockd))
+            write(lockd, "{}")
+            chmod(lockd, 0o444)
+            empty = joinpath(home, ".claude-auth", "empty")
+            mkpath(empty)
+            try
+                restrained = try open(lockd, "a") do _ end; false catch; true end
+                if !restrained
+                    @test_skip false
+                else
+                    withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                            "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                        logger = Test.TestLogger(min_level = Base.CoreLogging.Warn)
+                        Base.CoreLogging.with_logger(logger) do
+                            ShipTools.update_comm(clis = [:claude])
+                        end
+                        summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
+                        @test length(summaries) == 1
+                        msg = string(only(summaries).message)
+                        @test occursin(lockd, msg)
+                        @test occursin(empty, msg)
+                        @test !occursin(default, msg)
+                        @test read(lockd, String) == "{}"   # left exactly as it was
+                    end
+                end
+            finally
+                chmod(lockd, 0o644)
+            end
+        end
+    end
+
     @testset "installer prunes the retired session-start aliases and ccbe" begin
         # Both adapters route through _install_skills: the Codex-only path
         # that never carried resource files must not silently return.
