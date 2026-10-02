@@ -418,6 +418,7 @@ choice_row() {  # <name> <manifest systemd|none> <owner this|other> <systemctl 1
     elif grep -q '^sotd ' "$d/log"; then how="nohup"
     else how="none"; fi
     check "$1 (rc 0, started by $5)" "0 $5" "$ENS_RC $how"
+    [ "$5" != nohup ] || check "$1: the log is under its prefix" "yes" "$([ -f "$prefix/logs/sotd.log" ] && echo yes || echo no)"
     reap_stub "$d"
 }
 choice_row no-manifest none this 1 nohup
@@ -433,6 +434,7 @@ check "a daemon that binds after 12 s is waited for" "0" "$ENS_RC"
 case "$ENS_ERR" in *"waiting for the backend"*) check "the waiting line is printed" ok ok ;; *) check "the waiting line is printed" "a waiting line" "$ENS_ERR" ;; esac
 alive=no; kill -0 "$(cat "$d/pid")" 2>/dev/null && alive=yes
 check "the started daemon is still alive" "yes" "$alive"
+check "the log is under its prefix" "yes" "$([ -f "$d/prefix/logs/sotd.log" ] && echo yes || echo no)"
 reap_stub "$d"
 
 # ---------------------------------------------------------------------------
@@ -442,6 +444,15 @@ STUB_EXIT=3 run_ensure "$d" "$d/prefix" 0
 check "a start that exits without binding returns 1" "1" "$ENS_RC"
 case "$ENS_ERR" in *"exited (3)"*) check "the exit code is named" ok ok ;; *) check "the exit code is named" "exited (3)" "$ENS_ERR" ;; esac
 check "and does so in under 5 s" "yes" "$([ "$ENS_SECS" -lt 5 ] && echo yes || echo "no (${ENS_SECS}s)")"
+check "the log is under its prefix" "yes" "$([ -f "$d/prefix/logs/sotd.log" ] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "no_shared_tmp_log"
+# Built in two pieces so this file's own text never matches.
+shared="/tmp/sotd"; shared="$shared.log"
+for f in "$LIB" "$0"; do
+    check "$(basename "$f") names no shared $shared" "0" "$(grep -cF "$shared" "$f" || true)"
+done
 
 # ---------------------------------------------------------------------------
 # Wrapper fixture: the rendered sot-launch under the sandboxed PATH. Event log
@@ -562,30 +573,47 @@ check "an apply that leaves the pointer re-execs nothing and spawns once" \
 
 # ---------------------------------------------------------------------------
 case_start "dev_launcher_ensures"
-d="$WORK/dev"; mkdir -p "$d/repo/scripts/lib" "$d/home/.local/share/sot/bin" "$d/stubs"
-mk_stubs "$d/stubs"; rm -f "$d/stubs/systemctl" "$d/stubs/sotd"
-for f in launch-sot.sh sot-hosts.sh; do cp "$(dirname "$0")/../$f" "$d/repo/scripts/$f"; done
-cp "$LIB" "$d/repo/scripts/lib/sot-daemon.sh"
-: > "$d/log"
-cat > "$d/home/.local/share/sot/bin/sotd" <<SD
+# The dev launcher (pipefail) under the sandboxed PATH. nc's -h lists -U and
+# exits 1; its -U probe connects for real, and the sotd stub, like the daemon,
+# unlinks a stale socket before it binds.
+dev_row() {  # <dir> <stale socket 0|1> <description>
+    local d="$1"
+    mkdir -p "$d/repo/scripts/lib" "$d/home/.local/share/sot/bin" "$d/stubs"
+    mk_stubs "$d/stubs"; rm -f "$d/stubs/systemctl" "$d/stubs/sotd"
+    cat > "$d/stubs/nc" <<'NC'
+#!/bin/sh
+case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
+exec python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' "$2"
+NC
+    for f in launch-sot.sh sot-hosts.sh; do cp "$(dirname "$0")/../$f" "$d/repo/scripts/$f"; done
+    cp "$LIB" "$d/repo/scripts/lib/sot-daemon.sh"
+    : > "$d/log"
+    cat > "$d/home/.local/share/sot/bin/sotd" <<SD
 #!/bin/sh
 case "\$1 \$2" in
     "topology sync") exit 0 ;;
     "topology plan") printf 'self testbox\ndial testbox unix:$d/sot.sock\n'; exit 0 ;;
 esac
 echo "started \$0" >> "$d/log"
-exec python3 -c 'import socket,sys,time; socket.socket(socket.AF_UNIX).bind(sys.argv[1]); time.sleep(30)' "$d/sot.sock"
+echo \$\$ > "$d/pid"
+exec python3 -c 'import os,socket,sys,time
+p = sys.argv[1]
+if os.path.exists(p): os.unlink(p)
+s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(1); time.sleep(30)' "$d/sot.sock"
 SD
-cat > "$d/fe" <<FE
+    cat > "$d/fe" <<FE
 #!/bin/sh
 echo "fe \$([ -S "$d/sot.sock" ] && echo yes || echo no)" >> "$d/log"
 FE
-chmod +x "$d/home/.local/share/sot/bin/sotd" "$d/fe"
-( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
-check "the dev launcher starts the plan's own local backend before the frontend" \
-    "started $d/home/.local/share/sot/bin/sotd fe yes" "$(events "$d")"
-pkill_pid="$(pgrep -f "$d/sot.sock" 2>/dev/null | head -1 || true)"
-[ -z "$pkill_pid" ] || kill "$pkill_pid" 2>/dev/null || true
+    chmod +x "$d/stubs/nc" "$d/home/.local/share/sot/bin/sotd" "$d/fe"
+    [ "$2" != 1 ] || python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
+    ( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
+    check "$3" "started $d/home/.local/share/sot/bin/sotd fe yes" "$(events "$d")"
+    check "$3: the log is under its prefix" "yes" "$([ -f "$d/home/.local/share/sot/logs/sotd.log" ] && echo yes || echo no)"
+    reap_stub "$d"
+}
+dev_row "$WORK/dev" 0 "the dev launcher starts the plan's own local backend before the frontend"
+dev_row "$WORK/dev-stale" 1 "a stale socket file is not a live daemon: the dev launcher starts one"
 
 # ---------------------------------------------------------------------------
 case_start "launcher_bounds_match_ops"

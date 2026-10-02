@@ -128,17 +128,23 @@ EOF
 sot_socket_open() {  # <socket>
     local socket="$1" pid
     [ -S "$socket" ] || return 1
-    if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
-        nc -U "$socket" </dev/null >/dev/null 2>&1 &
-        pid=$!
-        sleep 1
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            return 0
-        fi
-        wait "$pid"
-        return $?
+    # A case, not a pipeline: under a pipefail caller an nc whose -h exits
+    # non-zero would fail `nc -h | grep` and read a stale socket as up.
+    if command -v nc >/dev/null 2>&1; then
+        case "$(nc -h 2>&1)" in
+            *-U*)
+                nc -U "$socket" </dev/null >/dev/null 2>&1 &
+                pid=$!
+                sleep 1
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill "$pid" 2>/dev/null || true
+                    wait "$pid" 2>/dev/null || true
+                    return 0
+                fi
+                wait "$pid"
+                return $?
+                ;;
+        esac
     fi
     # No nc, or an nc without -U (netcat-traditional), cannot probe: the
     # socket file is the best available evidence, and it is never removed on
@@ -162,14 +168,17 @@ sot_service_owned() {  # <prefix>
 # previous instance is still shutting down. Never removes the socket: the
 # daemon unlinks a stale one itself, and an ensure-side rm can delete a
 # successor's fresh bind. Never kills a daemon it started: the daemon's own
-# lock wait is shorter than this one.
+# lock wait is shorter than this one. A backend it starts itself logs under
+# the install, never to a path another user can hold.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
+    local logfile="$1/logs/sotd.log"
     sot_socket_open "$socket" && return 0
     if sot_service_owned "$prefix"; then
         mode=systemd
     else
-        nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
+        mkdir -p "$prefix/logs"
+        nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >"$logfile" 2>&1 </dev/null &
         pid=$!
     fi
     start="$(date +%s)"
@@ -183,7 +192,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
             code=$?
             # Another daemon may have won the lock.
             sot_socket_open "$socket" && return 0
-            echo "ERROR: the backend exited ($code) before opening $socket; see /tmp/sotd.log" >&2
+            echo "ERROR: the backend exited ($code) before opening $socket; see $logfile" >&2
             return 1
         fi
         if [ "$warned" = 0 ] && [ "$now" -ge $((start + 3)) ]; then
@@ -194,7 +203,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     done
     echo "ERROR: the backend did not open $socket within ${SOT_LAUNCH_WAIT_S}s" >&2
     if [ "$mode" = systemd ]; then echo "see journalctl --user -u sotd.service" >&2
-    else echo "see /tmp/sotd.log" >&2; fi
+    else echo "see $logfile" >&2; fi
     return 1
 }
 
