@@ -3934,6 +3934,14 @@ fn pane_shows_terminal_reason(has_client: bool, is_attached: bool) -> bool {
     has_client && !is_attached
 }
 
+/// The preview's scroll limit in body lines: the tallest buffer the pane can
+/// show (the markdown body, the concept annotation, and the edit buffer while
+/// editing), scrolled until its last line meets the bottom of `visible_px`.
+fn preview_max_scroll(line_h: f32, visible_px: f32, buffers: &[&MarkdownPreview]) -> u16 {
+    let total_px = buffers.iter().map(|p| p.total_visual_pixels(line_h)).fold(0.0_f32, f32::max);
+    ((total_px - visible_px).max(0.0) / line_h).ceil() as u16
+}
+
 /// The text `pane_shows_terminal_reason`'s own overlay paints, given
 /// `client_status` — the RETAINED client's own `status_line()`, read
 /// directly at the call site. Deliberately takes no `self.status`
@@ -18228,28 +18236,24 @@ impl State {
         // placeholder spans (display math, embedded figures) — using
         // a body-line count alone undercounts the document height by
         // (figure_height - body_line_h) for every embedded media row.
-        // When both md and concept render, clamp by the taller so
-        // neither hits its bottom before the other has been fully
-        // reached.
+        // Clamp by the tallest buffer the pane shows (markdown, concept, and
+        // the edit buffer while editing), so none hits its bottom before it
+        // has been fully reached.
         let line_h = self.preview_md.line_height().max(1.0);
-        let md_total_px = self.preview_md.total_visual_pixels(line_h);
-        let concept_total_px = self
-            .preview_concept
-            .as_ref()
-            .map(|p| p.total_visual_pixels(line_h))
-            .unwrap_or(0.0);
-        let total_px = md_total_px.max(concept_total_px);
         // The extras paint with `EXTRA_TOP_PAD_PX` of headroom, so each
         // frame only renders `md_rect.h - pad` pixels of content. Subtract
         // the pad from `visible_px` so max_scroll lets the user reach the
         // actual bottom of the document without losing the tail to the
         // padding.
         let visible_px = (md_rect.h - crate::text::EXTRA_TOP_PAD_PX).max(line_h);
-        let max_scroll_px = (total_px - visible_px).max(0.0);
         // `preview_scroll` is body-line units; convert the pixel slack
         // back via ceil so the final body-line step always lands the
         // bottom of the document on screen (no off-by-fraction clip).
-        let max_scroll = (max_scroll_px / line_h).ceil() as u16;
+        let buffers: Vec<&MarkdownPreview> = std::iter::once(&self.preview_md)
+            .chain(self.preview_concept.as_ref())
+            .chain(self.preview_edit.as_ref().filter(|_| show_edit))
+            .collect();
+        let max_scroll = preview_max_scroll(line_h, visible_px, &buffers);
         self.preview_scroll = self.preview_scroll.min(max_scroll);
         let preview_scroll_px = self.preview_scroll as f32 * line_h;
 
@@ -30300,6 +30304,25 @@ mod capsule_pane_tests {
         assert_ne!(unrelated_later_status, "checkpoint restore failed: some detail");
         let text_again = pane_terminal_reason_text(true, Some("checkpoint restore failed: some detail"));
         assert_eq!(text_again, text);
+    }
+
+    #[test]
+    fn preview_max_scroll_reaches_the_end_of_the_edit_buffer() {
+        let lines = |n: usize| {
+            (0..n)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut fonts = cosmic_text::FontSystem::new();
+        let md = MarkdownPreview::new_plain(&mut fonts, &lines(5), 800.0, 1.0);
+        let edit = MarkdownPreview::new_plain(&mut fonts, &lines(50), 800.0, 1.0);
+        let h = md.line_height();
+        let vis = 10.0 * h;
+        assert_eq!(preview_max_scroll(h, vis, &[&md]), 0);
+        let s = preview_max_scroll(h, vis, &[&md, &edit]);
+        assert!(s as f32 * h >= edit.total_visual_pixels(h) - vis - 0.5);
+        assert!((s as f32 * h) < edit.total_visual_pixels(h) - vis + h);
     }
 
     #[test]
