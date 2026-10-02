@@ -5346,9 +5346,13 @@ mod registration_delete_tests {
         // directory's open for its sync fails.
         mode(0o300);
         let removed = remove_registration(&[toml.clone(), dir.path().join("absent.toml")]);
+        // The shutdown's retry finds the file gone; with its directory still
+        // unsynced, that is not a removal either.
+        let retried = remove_registration(&[toml.clone()]);
         mode(0o700);
         assert!(!toml.exists(), "the unlink itself failed");
         assert!(!removed, "a registration delete whose directory was not synced counted as removed");
+        assert!(!retried, "a retry that found the file gone counted it removed while its directory was still unsynced");
         assert!(remove_registration(&[toml]), "a missing file is success");
     }
 }
