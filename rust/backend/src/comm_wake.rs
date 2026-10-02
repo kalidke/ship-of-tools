@@ -330,7 +330,11 @@ const PANEL_RING: char = '\u{25ef}';
 /// suggestion or placeholder reads empty and a typed draft reads not free wherever its cursor sits. One frame
 /// cannot tell a working row, whose input box is live too; the hold in `wake_if_free` does.
 fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Option<&'static str> {
-    input_refused(lines, cursor, agent, windows, Expect::Empty)
+    match input_refused(lines, cursor, agent, windows, Expect::Empty) {
+        // Any refusal while the box holds the wake's own line: an earlier wake typed it and did not send it.
+        Some(_) if typed_refusal(lines, cursor, agent, windows, WAKE_LINE).is_none() => Some("wake text left unsent"),
+        other => other,
+    }
 }
 
 /// What the input box is expected to hold: nothing (the free test), or exactly the typed wake line (the gate
@@ -558,15 +562,23 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
             tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Refused(Refusal { reason: "typed text not in main's input box", border })
         }
-        Ok(WakeOutcome::EnterFailed { detail }) => {
+        Ok(WakeOutcome::Unconfirmed { step, detail }) => {
             let (_, border) = seen.take();
-            tracing::warn!(handle, border = ?border, "comm wake: typed the line; Enter not confirmed ({detail})");
-            Step::Refused(Refusal { reason: "enter not confirmed", border })
+            tracing::warn!(handle, border = ?border, "comm wake: {step} not confirmed ({detail})");
+            Step::Refused(Refusal { reason: unconfirmed_reason(step), border })
         }
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");
             Step::Skip
         }
+    }
+}
+
+/// The refusal reason for an unconfirmed wake step (`"text"` or `"enter"`).
+fn unconfirmed_reason(step: &str) -> &'static str {
+    match step {
+        "text" => "text not confirmed",
+        _ => "enter not confirmed",
     }
 }
 
@@ -591,6 +603,22 @@ mod tests {
 
     fn boxed(line: &str) -> Vec<String> {
         vec![R.to_string(), line.to_string(), R.to_string()]
+    }
+
+    #[test]
+    fn a_box_holding_the_wake_line_names_it() {
+        let held = format!("\u{276f}\u{a0}{WAKE_LINE}");
+        assert_eq!(refused_on(&boxed(&held), Some((1, 2)), "claude", false), Some("wake text left unsent"));
+        // As a wake leaves it: the cursor at the END of the text.
+        let end = 2 + WAKE_LINE.chars().count() as u16;
+        assert_eq!(refused_on(&boxed(&held), Some((1, end)), "claude", false), Some("wake text left unsent"));
+        assert_eq!(refused_on(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", false), Some("input not empty"));
+    }
+
+    #[test]
+    fn unconfirmed_steps_have_their_own_reasons() {
+        assert_eq!(unconfirmed_reason("text"), "text not confirmed");
+        assert_eq!(unconfirmed_reason("enter"), "enter not confirmed");
     }
 
     fn bfree(line: &str, col: u16, windows: bool) -> bool {
