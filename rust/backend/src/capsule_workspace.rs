@@ -4182,7 +4182,8 @@ pub mod headless {
     }
 
     /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
-    /// screen on that same client with `is_free(lines, cursor, agent)`, and
+    /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
+    /// [`free_test_lines`] reads them), and
     /// only then type `line` and Enter as [`write_and_enter`] does. A screen
     /// that is not free gets no hold (it still costs the attach); one that is
     /// must then hold identical (the cursor, and every row through the line
@@ -4208,7 +4209,8 @@ pub mod headless {
         }
         let cursor = client.screen().cursor_position();
         let first = wake_lines(&client);
-        let out = if !is_free(&first, Some(cursor), agent) {
+        let seen = free_test_lines(client.screen());
+        let out = if !is_free(&seen, Some(cursor), agent) {
             Ok(WakeOutcome::NotFree)
         } else {
             let held_from = Instant::now();
@@ -4218,7 +4220,7 @@ pub mod headless {
                 client.pump();
                 still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(&client), cursor.0) == held_rows(&first, cursor.0);
             }
-            if still && is_free(&first, Some(cursor), agent) {
+            if still && is_free(&seen, Some(cursor), agent) {
                 type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
                     .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
             } else {
@@ -4287,6 +4289,25 @@ pub mod headless {
     fn wake_lines(client: &Client) -> Vec<String> {
         let (_, cols) = client.screen().size();
         client.screen().rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
+    }
+
+    /// [`wake_lines`] as the wake's free test reads them: on the cursor's row a dim cell (SGR 2) reads as a
+    /// space. Claude Code draws its prompt suggestion and placeholders dim, and they are not input; a typed draft
+    /// is not dim. Only that row: the hold compares [`wake_lines`] whole.
+    pub(crate) fn free_test_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
+        let (row, _) = screen.cursor_position();
+        let (_, cols) = screen.size();
+        let mut lines: Vec<String> = screen.rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect();
+        if let Some(line) = lines.get_mut(row as usize) {
+            *line = (0..cols)
+                .filter_map(|col| screen.cell(row, col))
+                .filter(|cell| !cell.is_wide_continuation())
+                .map(|cell| if cell.dim() || !cell.has_contents() { " " } else { cell.contents() })
+                .collect::<String>()
+                .trim_end_matches(' ')
+                .to_string();
+        }
+        lines
     }
 
     /// The rows the wake's hold compares: from the top of the screen through
