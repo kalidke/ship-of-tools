@@ -317,13 +317,13 @@ case_marker_question_without_text_leaves_the_floor() {
 case_non_refusal_stamp_failure_still_floors() {
     local real="$WORK/real-bin"; mv "$SOT_COMM_HOME/bin" "$real" && mkdir "$SOT_COMM_HOME/bin"
     local f; for f in "$real"/*; do ln -s "$f" "$SOT_COMM_HOME/bin/${f##*/}"; done
-    rm "$SOT_COMM_HOME/bin/comm-status.sh"
+    rm "${SOT_COMM_HOME:?}/bin/comm-status.sh"
     printf '#!/bin/bash\n[ "$1" = stop ] && exec "%s" "$@"\nexit 1\n' "$real/comm-status.sh" > "$SOT_COMM_HOME/bin/comm-status.sh"
     chmod +x "$SOT_COMM_HOME/bin/comm-status.sh"
     seed_facts '{"floor":"machine"}'
     IT $'SITREP: all done' >/dev/null
     local rc=$?
-    rm -rf "$SOT_COMM_HOME/bin"; mv "$real" "$SOT_COMM_HOME/bin"
+    rm -rf "${SOT_COMM_HOME:?}/bin"; mv "$real" "$SOT_COMM_HOME/bin"
     expect idle/-/-/-/- floor-dropped
 }
 # The refusal writes no temp file: TMPDIR stays empty.
