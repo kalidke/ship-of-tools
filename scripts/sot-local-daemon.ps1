@@ -313,7 +313,7 @@ if ($Stop) {
         $stateBase = $env:LOCALAPPDATA
         if (-not $stateBase) { $stateBase = Join-Path $env:USERPROFILE 'AppData\Local' }
         $heldPath = Join-Path (Join-Path $stateBase 'sot') 'held.json'
-        $closing = ((Get-Content -Raw -LiteralPath $heldPath | ConvertFrom-Json).closing -eq $true)
+        $closing = ((Get-Content -Raw -LiteralPath $heldPath -ErrorAction Stop | ConvertFrom-Json).closing -eq $true)
     } catch { $closing = $false }
     if ($FrontendKilled -or $closing) {
         Write-LocalDaemonLog "stop: waiting up to ${DaemonLockWaitSeconds}s for the daemon to finish its own shutdown (frontendKilled=$([bool]$FrontendKilled) closing=$closing)"

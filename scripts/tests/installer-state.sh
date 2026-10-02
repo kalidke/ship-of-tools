@@ -559,6 +559,21 @@ printf '#!/bin/sh\nprintf "systemctl %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$
 run_wrapper "$d"
 check "a foreign unit: rollback is pkill, no systemd stop" \
     "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+# A real foreign unit, as sot_service_owned defines one: systemctl is here and
+# the manifest says systemd, but the unit runs another prefix's sotd.
+foreign_unit() {  # <dir>
+    printf '{"service": "systemd"}\n' > "$1/prefix/install.json"
+    render_sotd_unit "$WORK/elsewhere" "$(dirname "$0")/../../deploy/sotd.service" "$1/home/.config/systemd/user/sotd.service"
+    printf '#!/bin/sh\nprintf "systemctl %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$1/stubs/systemctl"; chmod +x "$1/stubs/systemctl"
+}
+d="$WORK/w-real-for-apply"; mk_wrapper "$d" "0" 0 1; foreign_unit "$d"
+run_wrapper "$d"
+check "a real foreign unit: apply runs no service op, only pkill plus sot-apply" \
+    "0 1 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+d="$WORK/w-real-for-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 0 0; foreign_unit "$d"
+run_wrapper "$d"
+check "a real foreign unit: rollback runs no service op, only pkill" \
+    "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
 
 # ---------------------------------------------------------------------------
 case_start "wrapper_reexecs_after_apply"

@@ -62,10 +62,9 @@ stop_daemon() {
         pkill -u "\$(id -u)" -f "$prefix/bin/sotd" 2>/dev/null && sleep 1
     fi
 }
-# Single apply owner (ADR 0030 Phase C): on systemd installs the apply runs
-# ONLY inside ExecStartPre (daemon stopped, whole install, FE binary
-# included, flips together); a try-restart triggers it. Launcher-managed
-# daemons (macOS / --no-service) are stopped FIRST, then sot-apply runs here.
+# Apply an armed update (ADR 0030 Phase C): an active owned service is
+# try-restarted so its ExecStartPre runs sot-apply; otherwise the daemon is
+# stopped FIRST, then sot-apply runs here.
 # Succeeds only when the pointer is consumed: the caller then re-execs, and
 # the consumed pointer is what stops the re-exec'd wrapper doing it again.
 apply_pending() {
