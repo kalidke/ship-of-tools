@@ -10,6 +10,9 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+# A second agent inside the session neither despawns nor spawns rows; the gate
+# comes before any write, so a refused child touches nothing.
+_why="$(sot_require_agent)" || { echo "comm-despawn.sh: $_why" >&2; exit 1; }
 ensure_home
 
 WHO=""; ENDPOINT=""

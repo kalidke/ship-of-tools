@@ -84,8 +84,11 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
+# A second agent inside the session neither spawns nor despawns rows (a row it
+# needs is asked of its row's agent); the gate comes before the context call, so
+# a refused child touches nothing.
+_why="$(sot_require_agent)" || { echo "comm-spawn.sh: $_why" >&2; exit 1; }
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 # Spawner's own handle, captured before arg parsing reuses NAME for the
 # child. Deliberately NOT synthesized into a "spawner-$HOST" placeholder
@@ -127,9 +130,10 @@ if [ -n "$TASK" ]; then
     # the task silently never reached the child's inbox). Reuses the same
     # check comm-send/relay/bootstrap already enforce; NAME is reused
     # below for the CHILD and is still "" at this point in the script, so
-    # this borrows it briefly rather than adding a parallel helper.
+    # this borrows it briefly rather than adding a parallel helper. The
+    # agent half of that check ran first, above.
     NAME="$SPAWNER"
-    why="$(sot_require_routable_identity)" || { echo "FAILED: $why" >&2; exit 1; }
+    why="$(_sot_identity_routable)" || { echo "FAILED: $why" >&2; exit 1; }
     NAME=""
 fi
 

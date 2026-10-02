@@ -1838,9 +1838,11 @@ _sot_ps_records() {
 # arguments after argv[0], tokenised the way Windows does: double quotes group,
 # \" is a quote), then `!end`. A `!` line from sotd, or a node.exe whose command
 # line could not be read (a node host cannot be told from any other node), is
-# `!truncated` and ends the output.
+# `!truncated` and ends the output. Any other exe whose command line could not
+# be read gets ONE argument, RS (\036): arguments unknown, which is not an empty
+# tail and equals nothing (_sot_agent_layers).
 _sot_win_records() {
-    awk -F '\t' -v us="$(printf '\037')" '
+    awk -F '\t' -v us="$(printf '\037')" -v rs="$(printf '\036')" '
         /^!/ { print "!truncated"; trunc = 1; exit }
         { exe = $1; cl = $2; nt = 0; cur = ""; q = 0; has = 0
           for (i = 1; i <= length(cl); i++) { c = substr(cl, i, 1)
@@ -1851,6 +1853,7 @@ _sot_win_records() {
           if (has) tk[++nt] = cur
           if (nt == 0 && tolower(exe) == "node.exe") { print "!truncated"; trunc = 1; exit }
           rec = exe
+          if (nt == 0) rec = rec us rs
           for (i = 2; i <= nt; i++) rec = rec us tk[i]
           print rec }
         END { if (!trunc) print "!end" }'
@@ -1873,7 +1876,8 @@ _sot_ancestor_chain() {
         case "$rc" in 0|3) ;; *) echo "sotd ancestors failed (rc $rc): update sotd"; return 1 ;; esac
         out="${out//$'\r'/}"
         [ -n "$out" ] || return 1
-        { printf '%s\n' "$out"; [ "$rc" -ne 3 ] || echo '!truncated'; } | _sot_win_records
+        # On 3 sotd's own last line is `!truncated`; one is added only if it is missing.
+        { printf '%s\n' "$out"; [ "$rc" -ne 3 ] || case "${out##*$'\n'}" in '!truncated') ;; *) echo '!truncated' ;; esac; } | _sot_win_records
     elif [ -r "/proc/$$/stat" ]; then
         p=$$
         while :; do
@@ -1904,9 +1908,12 @@ _sot_ancestor_chain() {
 # A record is an agent layer when argv[0] names one, or when argv[0] is node and
 # ANY argument names one (its basename minus .js/.mjs/.cjs) or lies in the npm
 # package of one. A node host and its native child count once when the child is
-# the host's direct child and its arguments equal the host's after its script.
+# the host's direct child and its arguments equal the host's after its script;
+# a native agent whose arguments are unknown (a lone RS argument, from a Windows
+# command line that could not be read) never counts once with its host, though a
+# standalone one still counts as one layer.
 _sot_agent_layers() {
-    awk -F "$(printf '\037')" -v agents="$_SOT_AGENTS" '
+    awk -F "$(printf '\037')" -v agents="$_SOT_AGENTS" -v unk="$(printf '\036')" '
         function nm(w) { sub(/^.*[\/\\]/, "", w); sub(/^-/, "", w); w = tolower(w); sub(/\.exe$/, "", w); return w }
         function agentof(a,   p, b) {
             p = a; gsub(/\\/, "/", p)
@@ -1924,8 +1931,9 @@ _sot_agent_layers() {
           } else n = w0
           agent = (n != "" && index(agents, " " n " ") > 0)
           after = ""; for (i = from; i <= NF; i++) after = after FS $i
-          if (agent && !(kind == "node" && pkind == "native" && pagent && pn == n && pafter == after)) print n
-          pkind = kind; pn = n; pagent = agent; pafter = after
+          unknown = (kind == "native" && $2 == unk)
+          if (agent && !(kind == "node" && pkind == "native" && pagent && !punk && pn == n && pafter == after)) print n
+          pkind = kind; pn = n; pagent = agent; pafter = after; punk = unknown
           if (w0 == "sot-capsule") { fin = 1; print "!ok"; exit } }
         END { if (!fin) print "!tree" }'
 }

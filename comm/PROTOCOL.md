@@ -470,15 +470,23 @@ Monitor exists.
   `sotd.exe` that fails or is too old) is refused, not trusted. On Windows, an
   ancestor whose record cannot be opened, or whose creation time is after its
   child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
-  command line are refused. An unopenable process belongs to another account,
-  so it cannot be the row's capsule or one of its agents; a reused pid means the
-  real parent has exited, the twin of reparenting. An agent that needs its own
-  handle is started as its own row.
+  command line are refused. A reused pid means the real parent has exited, the
+  twin of reparenting. On Windows an unreadable command line is recorded as
+  arguments unknown, which equals nothing: a native agent so recorded never
+  counts once with its node host, though a standalone one is one layer. Every
+  comm script on Windows refuses ("update sotd") until the installed `sotd.exe`
+  has the `ancestors` subcommand, so the scripts and `sotd.exe` ship together.
+  A refused process may neither spawn nor despawn rows, and no hook of it writes
+  anything under the comm home. An agent that needs its own handle is started as
+  its own row.
 - What that check does not see: a process reparented away from its agent; an
   agent whose name is not in the list; a macOS agent whose argv[0] contains a
   space; on Windows, an agent above an ancestor whose record cannot be opened or
   that was created after its child; and a shim that starts `node` under the
-  agent's own name (a volta-style shim), which may be refused instead.
+  agent's own name (a volta-style shim), which may be refused instead. On macOS
+  the walk reads `ps`, which folds runs of white space, so a native agent started
+  directly by its node host with arguments that differ only in white space counts
+  as one layer with it; exact argv on macOS comes after 0.6.6.
 
 ## Dependencies
 

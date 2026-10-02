@@ -15,7 +15,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 TGT="${1:-}"; SUGG="${2:-}"
 [ -z "$TGT" ] && { echo "usage: comm-bootstrap.sh <workspace slug|label|id> [suggested-name]" >&2; exit 1; }

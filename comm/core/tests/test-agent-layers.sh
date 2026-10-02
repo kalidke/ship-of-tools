@@ -205,8 +205,8 @@ eq "windows filter: arguments, quotes and an escaped quote; argv[0] is dropped" 
     "$(printf '%s\n' "bash.exe${TAB}C:\\git\\bash.exe -c \"x y\"" "a.exe${TAB}a.exe \"p\\\"q\"" | _sot_win_records | pipes)" 'bash.exe|-c|x y a.exe|p"q !end'
 eq "windows filter: a node.exe with an empty command line is truncated, and nothing follows" \
     "$(printf '%s\n' "bash.exe${TAB}bash.exe" "node.exe${TAB}" "claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
-eq "windows filter: any other exe with an empty command line is its name alone" \
-    "$(printf '%s\n' "claude.exe${TAB}" | _sot_win_records | pipes)" "claude.exe !end"
+eq "windows filter: any other exe with an empty command line has arguments unknown (one RS argument), not an empty tail" \
+    "$(printf '%s\n' "claude.exe${TAB}" "a.exe${TAB}a.exe" | _sot_win_records | pipes)" "claude.exe|$(printf '\036') a.exe !end"
 eq "windows filter: a !truncated line passes through and ends the output" \
     "$(printf '%s\n' "bash.exe${TAB}bash.exe" '!truncated' | _sot_win_records | pipes)" "bash.exe !truncated"
 

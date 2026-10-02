@@ -26,9 +26,11 @@
 # subagent's tool call sharing this session id must never be able to swallow
 # the owner's answer by re-touching that tick) — proof that completion is
 # THIS dialog, not a foreign AskUserQuestion resolving while this row's real
-# question is still open, is a marker dropped below, keyed by the envelope's
-# own `tool_use_id`: only the matching PostToolUse may consume it and treat
-# its completion as an answer (field report, 2026-09-27: a badge showed idle
+# question is still open, is a marker keyed by the envelope's own
+# `tool_use_id`, dropped by `comm-status.sh blocked` (this hook passes the id as
+# SOT_COMM_ASKQ_ID and writes nothing under the comm home itself, so a second
+# agent inside the session leaves no marker): only the matching PostToolUse may
+# consume it and treat its completion as an answer (field report, 2026-09-27: a badge showed idle
 # while a real question was open, root cause a PostToolUse that cleared the
 # question unconditionally on ANY completed AskUserQuestion).
 #
@@ -45,18 +47,12 @@
 [ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
-# Drop the answer marker before stamping `blocked`, keyed by this dialog's
-# own tool_use_id (sanitized: an id is free-text as far as we know, and this
-# becomes a filename). No id, no marker — the PostToolUse side then finds
-# nothing to consume and this dialog's answer is simply never fast-tracked
-# (comm-status.sh's own self-gating still applies to everything else).
+# This dialog's own tool_use_id goes to `comm-status.sh blocked`, which drops the
+# answer marker behind its own gate. No id, no marker — the PostToolUse side then
+# finds nothing to consume and this dialog's answer is simply never fast-tracked.
 tool_use_id="$(jq -r '.tool_use_id // ""' 2>/dev/null || true)"
-if [ -n "$tool_use_id" ]; then
-    mkdir -p "$COMM_HOME/state" 2>/dev/null || true
-    : > "$COMM_HOME/state/askq-$(printf '%s' "$tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
-fi
 if [ -x "$STATUS" ]; then
-    "$STATUS" blocked >/dev/null 2>&1 || true
+    SOT_COMM_ASKQ_ID="$tool_use_id" "$STATUS" blocked >/dev/null 2>&1 || true
     "$STATUS" stop >/dev/null 2>&1 || true
 fi
 exit 0

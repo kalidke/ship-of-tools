@@ -36,7 +36,6 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 # Subcommand parsed FIRST, before any transport setup (Codex review round-2
 # SHOULD-FIX 2): `send` needs a routable identity to stamp a from-field

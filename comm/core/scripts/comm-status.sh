@@ -21,7 +21,12 @@
 #   working | idle     clear `question`, `waiting` and `done`
 #   blocked ["q"]       sets `question` (keeps `waiting` — red outranks
 #                       purple; the wait returns when the answer turn ends);
-#                       no text keeps the question's own text, else the note
+#                       no text keeps the question's own text, else the note.
+#                       With $SOT_COMM_ASKQ_ID set (the AskUserQuestion hook
+#                       passes its tool_use_id) it also creates
+#                       state/askq-<id>.marker, the proof that the matching
+#                       PostToolUse is THIS dialog's answer; a manual
+#                       `blocked` sets no variable and writes no marker
 #   waiting ["s"]       sets `waiting` (keeps `question`); no text keeps the
 #                       wait's own text, else the note
 #   done                sets `done`, clears `question` and `waiting`
@@ -91,6 +96,12 @@ UNREADABLE="FAILED: the registry could not be read; stamp discarded"
 [ -n "${NAME:-}" ] || _no_row
 rc=0; sot_registry_read "$NAME" >/dev/null || rc=$?
 case "$rc" in 0) ;; 1) _no_row ;; *) echo "$UNREADABLE" >&2; exit 1 ;; esac
+# The AskUserQuestion answer marker, behind the gate and the row check above (the
+# id is sanitized: it becomes a filename).
+if [ "$VERB" = blocked ] && [ -n "${SOT_COMM_ASKQ_ID:-}" ]; then
+    mkdir -p "$COMM_HOME/state" 2>/dev/null || true
+    : > "$COMM_HOME/state/askq-$(printf '%s' "$SOT_COMM_ASKQ_ID" | tr -c 'A-Za-z0-9._-' '_').marker" 2>/dev/null || true
+fi
 
 # ${2+set}: distinguish an omitted text (keep the prior note) from an
 # explicit "" (clear it).
