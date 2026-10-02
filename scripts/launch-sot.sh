@@ -67,6 +67,8 @@ unset SOT_LAUNCH_REEXEC || true
 
 # shellcheck source=sot-hosts.sh
 . "$(dirname "$0")/sot-hosts.sh"
+# shellcheck source=lib/sot-daemon.sh
+. "$(dirname "$0")/lib/sot-daemon.sh"
 
 # resolve_local_sotd_bin: dev build first, then a release install's staged
 # sotd -- either way, a LOCAL binary this box can run `topology plan`
@@ -159,12 +161,23 @@ read_topology_plan
 # pinned release checkout, not necessarily built) has no
 # rust/target/release of its own.
 dial_args=()
+local_sock=""
+self_host="$(sot_topology_field "$PLAN" SELF)"
 while IFS='|' read -r d_tag d_host d_endpoint; do
     [ "$d_tag" = "DIAL" ] || continue
     dial_args+=(--dial "$d_host=$d_endpoint")
+    # This computer's own backend: the plan's self dial line is the socket the
+    # frontend dials, so it is the one to ensure.
+    case "$d_endpoint" in
+        unix:*) [ "$d_host" != "$self_host" ] || local_sock="${d_endpoint#unix:}" ;;
+    esac
 done <<EOF
 $PLAN
 EOF
+if [ -n "$local_sock" ]; then
+    sot_daemon_ensure "${SOT_PREFIX:-$HOME/.local/share/sot}" "$SOTD_BIN" "$local_sock" \
+        || echo "WARNING: this computer's backend did not start; the window will show it unreachable" >&2
+fi
 # Finding 3b (v0.6.5 macOS field report): bash 3.2 (macOS's stock
 # /bin/bash, still there under set -u) treats an EMPTY array's
 # "${arr[@]}" expansion as an unset variable and aborts -- the

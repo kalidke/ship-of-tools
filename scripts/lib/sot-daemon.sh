@@ -38,63 +38,51 @@ render_sot_launch() {  # <prefix> <target> <dest>
     local prefix="$1" target="$2" dest="$3"
     cat > "$dest" <<EOF
 #!/usr/bin/env bash
+# sot-launch: all-in-one
 # All-in-one launcher: apply any armed pending update (offline pointer flip,
-# fail-open), start the backend on demand if its per-user socket is missing
-# (macOS has no service wiring yet; Linux normally has the systemd unit),
-# then SUPERVISE the frontend: exit-75 respawn (ADR 0017 on Unix) and
-# crash-loop rollback of a just-applied update (ADR 0030 Phase C3).
+# fail-open) and re-exec itself so the new wrapper and library run, make
+# sure the backend answers before EVERY frontend spawn, then SUPERVISE the
+# frontend: exit-75 respawn (ADR 0017 on Unix) and crash-loop rollback of a
+# just-applied update (ADR 0030 Phase C3).
 PENDING="$prefix/updates/pending-$target.json"
 MARKER="$prefix/updates/just-applied-$target"
-stop_daemon() { pkill -u "\$(id -u)" -f "$prefix/bin/sotd" 2>/dev/null && sleep 1; }
+# The checkout's library, read at run time: a rollback restores the wrapper
+# together with the checkout, so the pair stays matched.
+LIB="$prefix/repo/current/scripts/lib/sot-daemon.sh"
+. "\$LIB" || { echo "ERROR: cannot read \$LIB" >&2; exit 1; }
+SOCKET="\$("$prefix/bin/sotd" session-socket-path sot)"
+# An owned service is stopped through systemd so its restart policy cannot
+# race the stop.
+stop_daemon() {
+    if sot_service_owned "$prefix"; then
+        systemctl --user stop sotd.service >/dev/null 2>&1
+    else
+        pkill -u "\$(id -u)" -f "$prefix/bin/sotd" 2>/dev/null && sleep 1
+    fi
+}
 # Single apply owner (ADR 0030 Phase C): on systemd installs the apply runs
-# ONLY inside ExecStartPre (daemon stopped, whole install — FE binary
-# included — flips together); a try-restart triggers it. Launcher-managed
+# ONLY inside ExecStartPre (daemon stopped, whole install, FE binary
+# included, flips together); a try-restart triggers it. Launcher-managed
 # daemons (macOS / --no-service) are stopped FIRST, then sot-apply runs here.
+# Succeeds only when the pointer is consumed: the caller then re-execs, and
+# the consumed pointer is what stops the re-exec'd wrapper doing it again.
 apply_pending() {
-    [ -f "\$PENDING" ] || return 0
-    [ -x "$prefix/bin/sot-apply" ] || return 0
-    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active sotd.service >/dev/null 2>&1; then
-        echo "pending update armed — restarting sotd so ExecStartPre applies it" >&2
+    [ -f "\$PENDING" ] || return 1
+    [ -x "$prefix/bin/sot-apply" ] || return 1
+    if sot_service_owned "$prefix" && systemctl --user is-active --quiet sotd.service >/dev/null 2>&1; then
+        echo "pending update armed - restarting sotd so ExecStartPre applies it" >&2
         systemctl --user try-restart sotd.service || true
     else
         stop_daemon
         APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
         [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
     fi
+    [ ! -f "\$PENDING" ]
 }
-apply_pending
-SOCKET="\$("$prefix/bin/sotd" session-socket-path sot)"
-socket_open() {
-    [ -S "\$SOCKET" ] || return 1
-    if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
-        nc -U "\$SOCKET" </dev/null >/dev/null 2>&1 &
-        pid=\$!
-        sleep 1
-        if kill -0 "\$pid" 2>/dev/null; then
-            kill "\$pid" 2>/dev/null || true
-            wait "\$pid" 2>/dev/null || true
-            return 0
-        fi
-        wait "\$pid"
-        return \$?
-    fi
-    # No nc, or an nc without -U (netcat-traditional), cannot probe:
-    # the socket file is the best available evidence, and it is never removed
-    # on that evidence; the frontend still fails loud if the connect cannot
-    # complete.
-    return 0
-}
-start_daemon_if_needed() {
-    if ! socket_open; then
-        [ -z "\${SOCKET:-}" ] || rm -f -- "\${SOCKET:?}" 2>/dev/null || true
-        nohup "$prefix/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-        i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
-        socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
-    fi
-}
-start_daemon_if_needed
+if apply_pending; then exec "\$0" "\$@"; fi
 FAILS=0; ROLLED=0
 while :; do
+    sot_daemon_ensure "$prefix" "$prefix/bin/sotd" "\$SOCKET" || exit 1
     START="\$(date +%s)"
     "$prefix/bin/sot" --socket "\$SOCKET"
     RC=\$?
@@ -104,23 +92,21 @@ while :; do
     [ "\$RUNTIME" -ge 60 ] && rm -f "\${MARKER:?}" 2>/dev/null
     if [ "\$RC" -eq 75 ]; then
         # ADR-0017 self-relaunch: pick up any staged update, then respawn.
-        apply_pending
-        start_daemon_if_needed
+        if apply_pending; then exec "\$0" "\$@"; fi
         FAILS=0
         continue
     fi
     if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
         FAILS=\$((FAILS + 1))
         if [ "\$FAILS" -ge 2 ]; then
-            # Roll back ONLY inside the just-applied health window — an
+            # Roll back ONLY inside the just-applied health window; an
             # unrelated crash weeks later must not downgrade a healthy
             # release.
             if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
                && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
-                echo "frontend crash-looped inside the post-update window — rolling back" >&2
+                echo "frontend crash-looped inside the post-update window - rolling back" >&2
                 stop_daemon
                 [ -x "$prefix/bin/sot-apply" ] && "$prefix/bin/sot-apply" --rollback >&2
-                start_daemon_if_needed
                 ROLLED=1; FAILS=0
                 continue
             fi

@@ -444,6 +444,150 @@ case "$ENS_ERR" in *"exited (3)"*) check "the exit code is named" ok ok ;; *) ch
 check "and does so in under 5 s" "yes" "$([ "$ENS_SECS" -lt 5 ] && echo yes || echo "no (${ENS_SECS}s)")"
 
 # ---------------------------------------------------------------------------
+# Wrapper fixture: the rendered sot-launch under the sandboxed PATH. Event log
+# lines: probe (nc), spawn (sot), rollback / apply (sot-apply), hop (a re-exec'd
+# wrapper), plus the systemctl and pkill argv.
+# <dir> <sot exit codes> <owned 1|0> <pending 1|0> <apply: rollback-only|consume>
+mk_wrapper() {
+    local d="$1" codes="$2" owned="$3" pending="$4" apply="${5:-log}" prefix="$1/prefix" lib
+    lib="$prefix/repo/current/scripts/lib"
+    mkdir -p "$d/stubs" "$d/home/.local/bin" "$d/home/.config/systemd/user" "$prefix/bin" "$prefix/updates" "$lib"
+    mk_stubs "$d/stubs"
+    cat > "$d/stubs/nc" <<'NC'
+#!/bin/sh
+case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
+echo probe >> "$STUB_LOG"
+exit 0
+NC
+    cat > "$d/stubs/systemctl" <<'SC'
+#!/bin/sh
+printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
+exit 0
+SC
+    cat > "$d/stubs/pkill" <<'PK'
+#!/bin/sh
+echo pkill >> "$STUB_LOG"
+exit 0
+PK
+    chmod +x "$d/stubs/nc" "$d/stubs/systemctl" "$d/stubs/pkill"
+    [ "$owned" = 1 ] || rm -f "$d/stubs/systemctl"
+    cp "$LIB" "$lib/sot-daemon.sh"
+    printf '%s\n' "$codes" > "$d/codes"
+    : > "$d/log"
+    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
+    cat > "$prefix/bin/sotd" <<SD
+#!/bin/sh
+[ "\$1" = session-socket-path ] && echo "$d/sot.sock"
+exit 0
+SD
+    cat > "$prefix/bin/sot" <<'SOT'
+#!/bin/sh
+echo spawn >> "$STUB_LOG"
+d="$(dirname "$0")/../.."
+code="$(head -1 "$d/codes")"; sed -i 1d "$d/codes"
+exit "${code:-0}"
+SOT
+    case "$apply" in
+        consume)
+            cat > "$prefix/bin/sot-apply" <<SA
+#!/bin/sh
+echo apply >> "\$STUB_LOG"
+rm -f "$prefix/updates/pending-testtarget.json"
+printf '#!/bin/sh\necho hop >> "\$STUB_LOG"\n' > "$d/home/.local/bin/sot-launch.new"
+chmod +x "$d/home/.local/bin/sot-launch.new"
+mv "$d/home/.local/bin/sot-launch.new" "$d/home/.local/bin/sot-launch"
+SA
+            ;;
+        *)
+            cat > "$prefix/bin/sot-apply" <<'SA'
+#!/bin/sh
+case "$*" in *--rollback*) echo rollback >> "$STUB_LOG" ;; *) echo apply >> "$STUB_LOG" ;; esac
+SA
+            ;;
+    esac
+    chmod +x "$prefix/bin/sotd" "$prefix/bin/sot" "$prefix/bin/sot-apply"
+    if [ "$owned" = 1 ]; then
+        printf '{"service": "systemd"}\n' > "$prefix/install.json"
+        render_sotd_unit "$prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/home/.config/systemd/user/sotd.service"
+    fi
+    [ "$pending" != 1 ] || printf '{}\n' > "$prefix/updates/pending-testtarget.json"
+    : > "$prefix/updates/just-applied-testtarget"
+    render_sot_launch "$prefix" testtarget "$d/home/.local/bin/sot-launch"
+}
+run_wrapper() {  # <dir>: sets WR_RC
+    local d="$1"
+    WR_RC=0
+    ( HOME="$d/home" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" "$d/home/.local/bin/sot-launch" ) >/dev/null 2>&1 || WR_RC=$?
+}
+events() { grep -E '^(probe|spawn|rollback|hop|started|fe )' "$1/log" | tr '\n' ' ' | sed 's/ $//'; }
+
+# ---------------------------------------------------------------------------
+case_start "wrapper_ensures_before_every_spawn"
+d="$WORK/w-ensure"; mk_wrapper "$d" "$(printf '1\n1\n0')" 0 0
+run_wrapper "$d"
+check "the wrapper probes the socket before every spawn, rolls back after two fast crashes" \
+    "0 probe spawn probe spawn rollback probe spawn" "$WR_RC $(events "$d")"
+
+# ---------------------------------------------------------------------------
+case_start "wrapper_service_ops_follow_ownership"
+d="$WORK/w-own-apply"; mk_wrapper "$d" "0" 1 1
+run_wrapper "$d"
+check "an owned unit: apply is a try-restart, no sot-apply, no pkill" \
+    "1 0 0" "$(grep -c -- '--user try-restart sotd.service' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+d="$WORK/w-own-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 1 0
+run_wrapper "$d"
+check "an owned unit: rollback stops it through systemd" \
+    "1 0" "$(grep -c -- '--user stop sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+d="$WORK/w-for-apply"; mk_wrapper "$d" "0" 0 1
+printf '#!/bin/sh\nexit 0\n' > "$d/stubs/systemctl"; chmod +x "$d/stubs/systemctl"
+run_wrapper "$d"
+check "a foreign unit: apply is pkill plus sot-apply, no try-restart" \
+    "0 1 1" "$(grep -c 'try-restart' "$d/log" || true) $(grep -c '^apply$' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+d="$WORK/w-for-rb"; mk_wrapper "$d" "$(printf '1\n1\n0')" 0 0
+printf '#!/bin/sh\nprintf "systemctl %%s\\n" "$*" >> "$STUB_LOG"\nexit 0\n' > "$d/stubs/systemctl"; chmod +x "$d/stubs/systemctl"
+run_wrapper "$d"
+check "a foreign unit: rollback is pkill, no systemd stop" \
+    "0 1" "$(grep -c 'sotd.service' "$d/log" || true) $(grep -c '^pkill$' "$d/log" || true)"
+
+# ---------------------------------------------------------------------------
+case_start "wrapper_reexecs_after_apply"
+d="$WORK/w-hop"; mk_wrapper "$d" "0" 0 1 consume
+run_wrapper "$d"
+check "an apply that consumes the pointer re-execs the wrapper and spawns nothing" \
+    "0 hop" "$WR_RC $(events "$d")"
+d="$WORK/w-nohop"; mk_wrapper "$d" "0" 0 1
+run_wrapper "$d"
+check "an apply that leaves the pointer re-execs nothing and spawns once" \
+    "0 0 1" "$WR_RC $(grep -c '^hop$' "$d/log" || true) $(grep -c '^spawn$' "$d/log" || true)"
+
+# ---------------------------------------------------------------------------
+case_start "dev_launcher_ensures"
+d="$WORK/dev"; mkdir -p "$d/repo/scripts/lib" "$d/home/.local/share/sot/bin" "$d/stubs"
+mk_stubs "$d/stubs"; rm -f "$d/stubs/systemctl" "$d/stubs/sotd"
+for f in launch-sot.sh sot-hosts.sh; do cp "$(dirname "$0")/../$f" "$d/repo/scripts/$f"; done
+cp "$LIB" "$d/repo/scripts/lib/sot-daemon.sh"
+: > "$d/log"
+cat > "$d/home/.local/share/sot/bin/sotd" <<SD
+#!/bin/sh
+case "\$1 \$2" in
+    "topology sync") exit 0 ;;
+    "topology plan") printf 'self testbox\ndial testbox unix:$d/sot.sock\n'; exit 0 ;;
+esac
+echo "started \$0" >> "$d/log"
+exec python3 -c 'import socket,sys,time; socket.socket(socket.AF_UNIX).bind(sys.argv[1]); time.sleep(30)' "$d/sot.sock"
+SD
+cat > "$d/fe" <<FE
+#!/bin/sh
+echo "fe \$([ -S "$d/sot.sock" ] && echo yes || echo no)" >> "$d/log"
+FE
+chmod +x "$d/home/.local/share/sot/bin/sotd" "$d/fe"
+( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
+check "the dev launcher starts the plan's own local backend before the frontend" \
+    "started $d/home/.local/share/sot/bin/sotd fe yes" "$(events "$d")"
+pkill_pid="$(pgrep -f "$d/sot.sock" 2>/dev/null | head -1 || true)"
+[ -z "$pkill_pid" ] || kill "$pkill_pid" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
 case_start "launcher_bounds_match_ops"
 OPS_WAIT="$(sed -n 's/.*pub const LAUNCH_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops.rs")"
 LIB_WAIT="$(sed -n 's/^SOT_LAUNCH_WAIT_S=\([0-9]*\).*/\1/p' "$LIB")"
