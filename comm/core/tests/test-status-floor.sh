@@ -272,14 +272,60 @@ case_a_blank_declaration_keeps_its_own_text() {
     done
 }
 # `waiting` is the model's word that nothing needs the user: it clears an open
-# question, and says so on stderr so a mistaken stamp shows what it hid.
+# question, silently.
 case_waiting_clears_an_open_question() {
     seed_facts '{}'; "$ST" blocked "q?" >/dev/null
     local err; err="$("$ST" waiting "the job" 2>&1 >/dev/null)"; local rc=$?
     [ "$rc" = 0 ] || { echo "    waiting rc $rc"; return 1; }
     expect waiting/-/-/w/- cleared || return 1
-    [ "$err" = "cleared pending question: q?" ] || { echo "    stderr '$err'"; return 1; }
+    [ -z "$err" ] || { echo "    stderr '$err'"; return 1; }
     [ "$(summ)" = "the job" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+# `waiting` prints nothing, whether or not a question was pending.
+case_waiting_without_a_question_is_silent() {
+    local seed rc err
+    for seed in '{}' '{"waiting":"old"}'; do
+        seed_facts "$seed"; rc=0
+        err="$("$ST" waiting "x" 2>&1 >/dev/null)" || rc=$?
+        [ "$rc" = 0 ] || { echo "    $seed: rc $rc"; return 1; }
+        [ -z "$err" ] || { echo "    $seed: stderr '$err'"; return 1; }
+    done
+}
+# Under a CRLF-emitting jq (a native jq.exe on Windows) `waiting` still prints
+# nothing, and a bare `waiting` over a row with no text is still refused.
+case_waiting_under_a_crlf_jq() {
+    local real_jq stub rc=0 err
+    real_jq="$(command -v jq)" || { echo "    jq not found"; return 1; }
+    stub="$WORK/crlf-stubbin"; mkdir -p "$stub"
+    cat > "$stub/jq" <<STUB
+#!/usr/bin/env bash
+"$real_jq" "\$@" | sed \$'s/\$/\r/'
+exit "\${PIPESTATUS[0]}"
+STUB
+    chmod +x "$stub/jq"
+    seed_facts '{"question":"q?"}'
+    err="$(PATH="$stub:$PATH" "$ST" waiting "x" 2>&1 >/dev/null)" || rc=$?
+    [ "$rc" = 0 ] || { echo "    waiting rc $rc"; return 1; }
+    [ -z "$err" ] || { echo "    stderr '$err'"; return 1; }
+    expect waiting/-/-/w/- crlf || return 1
+    seed_facts '{}'; rc=0
+    PATH="$stub:$PATH" "$ST" waiting >/dev/null 2>&1 || rc=$?
+    [ "$rc" = 2 ] || { echo "    bare waiting rc $rc"; return 1; }
+    expect /-/-/-/- crlf-refused
+}
+# Text made only of newlines is no text: a bare declaration over it is refused.
+case_newline_only_text_is_refused() {
+    local v fact rc
+    for v in blocked waiting; do
+        fact=question; [ "$v" = waiting ] && fact=waiting
+        seed_facts "$(jq -cn --arg f "$fact" '{($f): "\n\n"}')"; rc=0
+        "$ST" "$v" >/dev/null 2>"$WORK/err" || rc=$?
+        [ "$rc" = 2 ] || { echo "    $v: rc $rc"; return 1; }
+        grep -qx "comm-status.sh: $v needs its text -- stamp discarded" "$WORK/err" \
+            || { echo "    $v: stderr '$(cat "$WORK/err")'"; return 1; }
+        jq -e --arg f "$fact" '.agents | to_entries[0].value[$f] == "\n\n"' "$REGISTRY" >/dev/null \
+            || { echo "    $v: row changed"; return 1; }
+    done
 }
 # A blocked or waiting with no text and no text of its own on the row is
 # refused: a question or wait always carries readable text.
@@ -315,15 +361,14 @@ case_marker_question_without_text_leaves_the_floor() {
 # through to the turn's `stop`, as before. A stub comm-status.sh fails every
 # declaration with rc 1 and hands `stop` to the real script.
 case_non_refusal_stamp_failure_still_floors() {
-    local real="$WORK/real-bin"; mv "$SOT_COMM_HOME/bin" "$real" && mkdir "$SOT_COMM_HOME/bin"
-    local f; for f in "$real"/*; do ln -s "$f" "$SOT_COMM_HOME/bin/${f##*/}"; done
-    rm "${SOT_COMM_HOME:?}/bin/comm-status.sh"
-    printf '#!/bin/bash\n[ "$1" = stop ] && exec "%s" "$@"\nexit 1\n' "$real/comm-status.sh" > "$SOT_COMM_HOME/bin/comm-status.sh"
-    chmod +x "$SOT_COMM_HOME/bin/comm-status.sh"
+    local stub="$WORK/stub-bin" f; mkdir "$stub"
+    for f in "$SCRIPTS_DIR"/*; do [ "${f##*/}" = comm-status.sh ] || ln -s "$f" "$stub/${f##*/}"; done
+    printf '#!/bin/bash\n[ "$1" = stop ] && exec "%s" "$@"\nexit 1\n' "$SCRIPTS_DIR/comm-status.sh" > "$stub/comm-status.sh"
+    chmod +x "$stub/comm-status.sh"
+    ln -sfn "$stub" "$SOT_COMM_HOME/bin"
     seed_facts '{"floor":"machine"}'
     IT $'SITREP: all done' >/dev/null
-    local rc=$?
-    rm -rf "${SOT_COMM_HOME:?}/bin"; mv "$real" "$SOT_COMM_HOME/bin"
+    ln -sfn "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
     expect idle/-/-/-/- floor-dropped
 }
 # The refusal writes no temp file: TMPDIR stays empty.
@@ -975,7 +1020,10 @@ check "a question mid-turn is green, red once the turn stops" case_question_duri
 check "a machine wake on red goes green; a plain answer returns red" case_machine_wake_on_red_goes_green_returns_at_stop
 check "declared text supersedes an old note (blocked and waiting)" case_declared_text_supersedes_an_old_note
 check "a declaration without text keeps the fact's own text (blocked and waiting)" case_a_blank_declaration_keeps_its_own_text
-check "waiting clears an open question and prints what it hid" case_waiting_clears_an_open_question
+check "waiting clears an open question silently" case_waiting_clears_an_open_question
+check "waiting with no pending question prints nothing" case_waiting_without_a_question_is_silent
+check "a bare blocked or waiting over newline-only text is refused" case_newline_only_text_is_refused
+check "waiting is silent and refusable under a CRLF jq" case_waiting_under_a_crlf_jq
 check "a blocked or waiting with no text is refused, nothing written" case_textless_blocked_or_waiting_is_refused
 check "the AskUserQuestion hook carries the question text" case_askq_hook_carries_the_question
 check "a SITREP-QUESTION: with no text leaves a running floor and no question" case_marker_question_without_text_leaves_the_floor

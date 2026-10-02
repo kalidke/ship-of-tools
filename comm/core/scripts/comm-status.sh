@@ -31,9 +31,9 @@
 #                       PostToolUse is THIS dialog's answer; a manual
 #                       `blocked` sets no variable and writes no marker
 #   waiting ["s"]       sets `waiting` and clears `question` (a wait says
-#                       nothing needs the user; the cleared text is printed on
-#                       stderr); no text keeps the wait's own text, and with
-#                       none of its own the stamp is refused, like blocked
+#                       nothing needs the user); no text keeps the wait's own
+#                       text, and with none of its own the stamp is refused,
+#                       like blocked
 #   done                sets `done`, clears `question` and `waiting`
 #   TEXT omitted keeps the prior declaration line (`note`); pass "" to clear
 #   it (working, idle and done only: blocked and waiting never clear a text).
@@ -121,13 +121,12 @@ status_txn() {
     # A question or wait always carries readable text: with none given and none
     # of its own on the row, the stamp is refused (inside the lock, no write,
     # before any temp file exists).
-    local pq=""
-    if [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; then
-        local fld=waiting own_len out; [ "$VERB" = blocked ] && fld=question
-        # One read: the length of the verb's own text, then the pending question.
-        out="$(printf '%s' "$row" | jq -r "\"\(((.$fld // \"\") | length))\\n\(.question // \"\")\"" 2>/dev/null)"
-        own_len="${out%%$'\n'*}"; pq="${out#*$'\n'}"
-        if [ -z "$SUM" ] && [ "${own_len:-0}" -eq 0 ]; then
+    if [ -z "$SUM" ] && { [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; }; then
+        local fld=waiting out; [ "$VERB" = blocked ] && fld=question
+        # One read, one character: does the verb's own text have any? Only the
+        # first character is tested, so a CR a native jq adds after it is harmless.
+        out="$(printf '%s' "$row" | jq -r --arg f "$fld" 'if ((.[$f] // "") | explode | all(. == 10)) then "0" else "1" end' 2>/dev/null)"
+        if [ "${out:0:1}" != 1 ]; then
             echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2
         fi
     fi
@@ -170,10 +169,6 @@ status_txn() {
     ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE" \
       --rawfile sum "$sum_file" || rc=$?
     rm -f "${sum_file:?}"
-    # `waiting` clears a pending question; say what it hid, once the write held.
-    if [ "$rc" -eq 0 ] && [ "$VERB" = waiting ] && [ -n "$pq" ]; then
-        echo "cleared pending question: $pq" >&2
-    fi
     return $rc
 }
 with_lock status_txn

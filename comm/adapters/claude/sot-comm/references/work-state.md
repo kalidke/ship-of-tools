@@ -45,9 +45,7 @@ retract, the same "no aging" rule blue already follows.
 `blocked "<q>"` KEEPS an existing `waiting`: both facts can be true, and
 red simply outranks purple in the display until the question is answered,
 at which point the wait (if still real) shows again. `waiting "<s>"`
-CLEARS `question`: a wait is the session's word that nothing needs the user,
-and `comm-status.sh` prints `cleared pending question: <text>` on stderr (rc
-stays 0) so a session that stamped it by mistake sees what it hid.
+CLEARS `question`: a wait is the session's word that nothing needs the user.
 `working`/`idle`/`done` all clear both.
 
 A question or a wait always carries readable text. `blocked` or `waiting`
@@ -172,6 +170,7 @@ re-open it.
 
 Two more limits are known. An AskUserQuestion payload with no question text
 still leaves the answer marker before the stamp is refused (real payloads
-always carry the text; the next heartbeat consumes the marker). A refused
+always carry the text; only a matching AskUserQuestion answer consumes the
+marker, so it otherwise stays). A refused
 marker stamp gives the model no feedback: the row simply stays green until the
-turn's next stamp.
+session's next turn stamps it.
