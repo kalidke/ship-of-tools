@@ -154,9 +154,10 @@ fn seal_record_preimage(seal_wire: &[u8]) -> Result<Vec<u8>> {
     Ok(w)
 }
 
-/// Commit policy for one append. State-bearing frames are Immediate per the
-/// ADR's durability invariants; opaque producer output may buffer behind the
-/// capsule-publication watermark (caller flushes via `commit`).
+/// Commit policy for one append. State-bearing frames are Immediate per ADR
+/// 0039's durability invariants, except the input WAL's `input` and
+/// `forwarded`, which ride a later fsync; opaque producer output may buffer
+/// behind the capsule-publication watermark (caller flushes via `commit`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Commit {
     Immediate,
@@ -219,6 +220,10 @@ pub struct SegmentWriter {
     first_seq: Option<Seq>,
     last_seq: Option<Seq>,
     sealed: bool,
+    /// Bytes written to `.open`, header included.
+    written: u64,
+    /// Bytes a completed `sync_all` covers: the prefix a power failure cannot take.
+    synced: u64,
     /// Codex round-1 Major 5 discharge: test-only fault injection at the
     /// write-succeeded/fsync-failed boundary. `#[cfg(test)]` only — it
     /// exists purely to prove the ADR 0041 one-fact-one-barrier claim
@@ -272,6 +277,8 @@ impl SegmentWriter {
             first_seq: None,
             last_seq: None,
             sealed: false,
+            written: wire.len() as u64,
+            synced: wire.len() as u64,
             #[cfg(test)]
             fault_next_append_sync: false,
         })
@@ -323,8 +330,10 @@ impl SegmentWriter {
         let body = serde_json::to_vec(env)?;
         let wire = record::encode(RecordKind::Frame, &body, None)?;
         self.file.write_all(&wire)?;
+        self.written += wire.len() as u64;
         if commit == Commit::Immediate {
             self.file.sync_all()?;
+            self.synced = self.written;
             #[cfg(test)]
             if self.fault_next_append_sync {
                 self.fault_next_append_sync = false;
@@ -348,7 +357,18 @@ impl SegmentWriter {
     /// watcher before this returns.
     pub fn commit(&mut self) -> Result<()> {
         self.file.sync_all()?;
+        self.synced = self.written;
         Ok(())
+    }
+
+    /// A Buffered append not yet covered by a sync.
+    pub fn has_unsynced(&self) -> bool {
+        self.written > self.synced
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synced_len(&self) -> u64 {
+        self.synced
     }
 
     /// Seal + publish: append seal record → fsync → RENAME_NOREPLACE to
@@ -595,6 +615,23 @@ pub(crate) mod tests {
             created_wall_ms: 1_756_000_000_000,
             retention_class: (index == 0).then_some(RetentionClass::Archive),
         }
+    }
+
+    #[test]
+    fn buffered_append_owes_a_commit_until_a_sync_covers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = SegmentWriter::create(dir.path(), test_header("voy", 0, 1, None)).unwrap();
+        assert!(!w.has_unsynced());
+        let synced = w.synced_len();
+        w.append(&test_env(1, 1), Commit::Buffered).unwrap();
+        assert!(w.has_unsynced());
+        assert_eq!(w.synced_len(), synced);
+        w.commit().unwrap();
+        assert!(!w.has_unsynced());
+        w.append(&test_env(1, 2), Commit::Buffered).unwrap();
+        assert!(w.has_unsynced());
+        w.append(&test_env(1, 3), Commit::Immediate).unwrap();
+        assert!(!w.has_unsynced());
     }
 
     #[test]

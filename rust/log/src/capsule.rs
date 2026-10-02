@@ -858,9 +858,10 @@ fn run_input_wal(
     let is_fresh =
         connection_authorized && ctx.holder.as_deref() == Some(controller_id) && take_epoch == ctx.take_epoch;
 
-    // A brand-new idem_key commits `input` (fsync) first, always -- "input
-    // is durably logged before the producer sees it" (ADR 0039) applies
-    // regardless of whether the write will turn out to be stale.
+    // A brand-new idem_key appends `input` first, always. The fsync of the
+    // `refused_stale_epoch` or `forward_intent` fact appended next covers it
+    // before any reply or the forward syscall, so "input is durably logged
+    // before the producer sees it" (ADR 0039) holds either way.
     let existing = store.dedupe_index.get(&idem_key).copied();
     let input_seq = match existing {
         None => {
@@ -871,7 +872,7 @@ fn run_input_wal(
                 json!({"idem_key": hex_idem_key(&idem_key), "content": "redacted", "length": payload.len()}),
             );
             let input_seq = input.seq;
-            w.append(&input, Commit::Immediate)?;
+            w.append(&input, Commit::Buffered)?;
             *frames_written += 1;
             store.dedupe_index.insert(
                 idem_key,
@@ -949,7 +950,8 @@ fn run_input_wal(
                         "intent": {"epoch": intent_seq.epoch, "n": intent_seq.n}}}),
     );
     fwd.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
-    w.append(&fwd, Commit::Immediate)?;
+    // Buffered: the next commit of this segment covers it (ADR 0039 Durability invariants; flush_output!).
+    w.append(&fwd, Commit::Buffered)?;
     *frames_written += 1;
     if let Some(e) = store.dedupe_index.get_mut(&idem_key) {
         e.state = DedupeState::Forwarded;
@@ -1526,6 +1528,12 @@ pub fn run<P: Producer>(
                 execute_light_actions!(attach_proto.output_committed(&pending_output, Instant::now()));
                 pending_output.clear();
                 pending_bytes = 0;
+            } else if $w.has_unsynced() {
+                // A Buffered input-WAL record with no output behind it: commit it
+                // by the next group-commit check (ADR 0039 Durability invariants);
+                // nothing is published, so no `output_committed`.
+                $w.commit()?;
+                last_fsync = Instant::now();
             }
             last_commit = Instant::now();
             // ADR 0041: attach is GROUND-GATED; the watermark barrier
@@ -2777,5 +2785,125 @@ mod tests {
             "a marker whose write succeeded (only its fsync report lied) must still be visible \
              to the accessor -- a requester's pessimistic report can never erase a real byte"
         );
+    }
+
+    /// The pty side of the input WAL: records the file length at the first
+    /// write, so a test can compare it to what a sync covers by then.
+    struct PtyWitness {
+        open: PathBuf,
+        len_at_write: Option<u64>,
+        bytes: Vec<u8>,
+    }
+
+    impl PtyWitness {
+        fn new(open: PathBuf) -> Self {
+            Self { open, len_at_write: None, bytes: Vec::new() }
+        }
+    }
+
+    impl Write for PtyWitness {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.len_at_write.is_none() {
+                self.len_at_write = Some(std::fs::metadata(&self.open)?.len());
+            }
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn input_wal_ctx(epoch: u64) -> FrameCtx {
+        FrameCtx {
+            epoch,
+            next_n: 1,
+            t0: Instant::now(),
+            take_epoch: 1,
+            holder: Some("c1".into()),
+            attached: None,
+        }
+    }
+
+    /// An acked key (`Recorded`) replays as `Recorded` after a process crash
+    /// and as `DeliveryUnknown` after a power loss that takes the unsynced
+    /// `forwarded`; never as a second forward (ADR 0039 Durability
+    /// invariants).
+    #[test]
+    fn input_wal_acked_key_replays_recorded_or_unknown_never_forwarded_twice() {
+        const K: [u8; 16] = [7; 16];
+        for power_loss in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let name = if power_loss { "iwb" } else { "iwa" };
+            let (mut store, mut w) = run_end_marker_writer(dir.path(), name);
+            let seg_dir = dir.path().join(name).join("seg");
+            let open = w.identity().path(&seg_dir, crate::segment::SegmentState::Open);
+            let mut ctx = input_wal_ctx(1);
+            let mut witness = PtyWitness::new(open.clone());
+            let mut fw = 0u64;
+            let out = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, K, b"x", true)
+                .unwrap();
+            assert!(matches!(out, InputOutcome::Recorded));
+            let synced = w.synced_len();
+            assert!(
+                std::fs::metadata(&open).unwrap().len() > synced,
+                "forwarded is written but not yet covered by a sync"
+            );
+            assert_eq!(witness.len_at_write, Some(synced), "input and intent are synced before the forward");
+            drop(w);
+            drop(store);
+            if power_loss {
+                std::fs::OpenOptions::new().write(true).open(&open).unwrap().set_len(synced).unwrap();
+            }
+            let mut store = VoyageStore::open_for_writing(&dir.path().join(name), name).unwrap();
+            let want = if power_loss { DedupeState::Intent } else { DedupeState::Forwarded };
+            assert_eq!(store.dedupe_index[&K].state, want);
+            store.seal_survivor().unwrap();
+            let mut w = store
+                .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
+                .unwrap();
+            let open2 = w.identity().path(&seg_dir, crate::segment::SegmentState::Open);
+            let mut ctx = input_wal_ctx(2);
+            let mut witness = PtyWitness::new(open2);
+            let mut fw = 0u64;
+            let out = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, K, b"x", true)
+                .unwrap();
+            if power_loss {
+                assert!(matches!(out, InputOutcome::DeliveryUnknown));
+            } else {
+                assert!(matches!(out, InputOutcome::Recorded));
+            }
+            assert!(witness.bytes.is_empty(), "a replayed key is never forwarded again");
+            assert_eq!(fw, 0);
+        }
+    }
+
+    /// A failed fsync after an acked key halts before the next forward; a stale-epoch refusal is fsynced before its reply.
+    #[test]
+    fn input_wal_fsync_error_after_an_ack_halts_before_the_next_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, mut w) = run_end_marker_writer(dir.path(), "iwf");
+        let open = w.identity().path(&dir.path().join("iwf").join("seg"), crate::segment::SegmentState::Open);
+        let mut ctx = input_wal_ctx(1);
+        let mut witness = PtyWitness::new(open);
+        let mut fw = 0u64;
+        let (k1, k2) = ([1u8; 16], [2u8; 16]);
+        let out = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, k1, b"x", true)
+            .unwrap();
+        assert!(matches!(out, InputOutcome::Recorded));
+        assert!(w.has_unsynced());
+        // A stale-epoch refusal's fsync covers its `input` (and k1's `forwarded`) before the reply.
+        let k3 = [3u8; 16];
+        let out = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, k3, b"z", false)
+            .unwrap();
+        assert!(matches!(out, InputOutcome::RefusedStale));
+        assert!(!w.has_unsynced(), "a stale-epoch refusal is fsynced before its reply");
+        assert_eq!(store.dedupe_index[&k3].state, DedupeState::Refused);
+        w.inject_fault_on_next_append_sync();
+        let err = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, k2, b"y", true)
+            .unwrap_err();
+        assert!(err.to_string().contains("injected fsync failure"), "{err}");
+        assert_eq!(witness.bytes, b"x");
+        assert_eq!(store.dedupe_index[&k2].state, DedupeState::Input);
     }
 }
