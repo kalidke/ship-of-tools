@@ -213,6 +213,8 @@ navigating. Each line is `<display-name> = "<ssh-alias>"`.
 
 `nvidia-smi` and `/proc` are world-readable, so no `sudo` or special privileges
 are needed on any monitored host. Remove a line to stop monitoring that host.
+The sampler reads `/proc`, so a daemon samples its own host only on Linux; on
+macOS and Windows the local host is left out of the drawer.
 
 ### Example
 
