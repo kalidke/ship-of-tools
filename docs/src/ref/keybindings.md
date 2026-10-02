@@ -133,7 +133,7 @@ Normal text entry and terminal-application controls retain their own input handl
 | `session.create_bare` | `Shift+Enter` | Create a workspace in the selected folder with a shell and no agent. |
 | `session.create` | `Enter` | Create a workspace in the selected folder with a Claude Code agent. |
 | `session.account_next` | `Tab` | Cycle which login account the new session will use. Hidden when only one account is discovered. |
-| `quit` | `Primary+q` | Close the frontend from navigation focus. |
+| `quit` | `Primary+q` | Close the window from navigation focus, asking whether to keep the daemon and sessions running. |
 | `files.copy_path` | `Primary+c` / `c` | Copy the selected file's backend path to the clipboard. |
 | `files.new` | `Primary+n` | Create a file, or a folder when the name ends with /, in the selected directory. |
 | `files.delete` | `Primary+d` | Delete the selected file after confirmation. Directories are refused. |

@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use interprocess::local_socket::tokio::prelude::*;
@@ -16,6 +17,7 @@ use sot_protocol::ops::{lease, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavi
 use sot_protocol::{codec, Frame};
 use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot::error::TryRecvError;
 
 use crate::dial::HostKey;
 use crate::transport::{connect_pipe, Dial, TransportConfig};
@@ -205,6 +207,102 @@ impl Leases {
         let slots = self.slots.lock().unwrap();
         if let Some(h) = slots.get(host).and_then(|s| s.holder.as_ref()) {
             let _ = h.send(HolderCmd::NoticeSeen(n));
+        }
+    }
+
+    /// Ask every held lease's daemon to end (or keep) its sessions. None when
+    /// no lease is held: the window can exit at once.
+    pub fn leave_all(&self, intent: LeaveIntent, exit_code: i32, now: Instant) -> Option<Leaving> {
+        let mut pending = Vec::new();
+        for (host, slot) in self.slots.lock().unwrap().iter() {
+            if !matches!(Self::resolved(slot), Standing::Granted { .. }) {
+                continue;
+            }
+            if let Some(h) = &slot.holder {
+                let (tx, rx) = oneshot::channel();
+                if h.send(HolderCmd::Leave(intent, tx)).is_ok() {
+                    pending.push((host.clone(), rx));
+                }
+            }
+        }
+        if pending.is_empty() {
+            None
+        } else {
+            Some(Leaving::new(intent, exit_code, pending, now))
+        }
+    }
+}
+
+/// How long the not-ended line holds before the window exits.
+pub const NOT_ENDED_EXIT_HOLD: Duration = Duration::from_secs(3);
+/// How often the window polls the acks while leaving.
+pub const LEAVE_POLL: Duration = Duration::from_millis(250);
+
+/// A window on its way out: waiting for the daemons' acks.
+pub struct Leaving {
+    pub intent: LeaveIntent,
+    pub exit_code: i32,
+    pending: Vec<(HostKey, oneshot::Receiver<u32>)>,
+    acks: Vec<(HostKey, u32)>,
+    deadline: Instant,
+    shown: Option<u32>,
+    hold_until: Option<Instant>,
+}
+
+/// What the event loop does next while leaving.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LeaveStep {
+    Wait(Instant),
+    Show(Vec<(HostKey, u32)>),
+    Exit,
+}
+
+impl Leaving {
+    pub fn new(
+        intent: LeaveIntent,
+        exit_code: i32,
+        pending: Vec<(HostKey, oneshot::Receiver<u32>)>,
+        now: Instant,
+    ) -> Self {
+        let wait = match intent {
+            LeaveIntent::Close => lease::CLOSE_ACK_WAIT,
+            _ => lease::KEEP_ACK_WAIT,
+        };
+        Self { intent, exit_code, pending, acks: Vec::new(), deadline: now + wait, shown: None, hold_until: None }
+    }
+
+    pub fn poll(&mut self, now: Instant) -> LeaveStep {
+        if let Some(t) = self.hold_until {
+            return if now >= t { LeaveStep::Exit } else { LeaveStep::Wait(t) };
+        }
+        let mut still = Vec::new();
+        for (host, mut rx) in std::mem::take(&mut self.pending) {
+            match rx.try_recv() {
+                Ok(n) => self.acks.push((host, n)),
+                Err(TryRecvError::Closed) => self.acks.push((host, 0)),
+                Err(TryRecvError::Empty) => still.push((host, rx)),
+            }
+        }
+        self.pending = still;
+        if !self.pending.is_empty() && now < self.deadline {
+            return LeaveStep::Wait(self.deadline.min(now + LEAVE_POLL));
+        }
+        let nonzero: Vec<(HostKey, u32)> = self.acks.iter().filter(|(_, n)| *n > 0).cloned().collect();
+        if nonzero.is_empty() {
+            return LeaveStep::Exit;
+        }
+        self.shown = Some(nonzero.iter().map(|(_, n)| n).sum());
+        self.hold_until = Some(now + NOT_ENDED_EXIT_HOLD);
+        LeaveStep::Show(nonzero)
+    }
+
+    /// The status line while leaving: the not-ended count once shown,
+    /// otherwise `closing…` (a handover has none).
+    pub fn line(&self) -> Option<String> {
+        match (self.shown, self.intent) {
+            (Some(n), _) => not_ended_line(n),
+            (None, LeaveIntent::Handover) => None,
+            (None, _) => Some("closing…".to_string()),
         }
     }
 }
@@ -429,6 +527,7 @@ mod tests {
     async fn lease_wire_round_trip() {
         let (listener, path) = bind("wire");
         let (seen_tx, seen_rx) = oneshot::channel::<Frame>();
+        let (leaving_tx, leaving_rx) = oneshot::channel::<Frame>();
         tokio::spawn(async move {
             let conn = listener.accept().await.unwrap();
             let (rx, mut tx) = conn.split();
@@ -448,6 +547,11 @@ mod tests {
                 .await
                 .unwrap();
             let _ = seen_tx.send(seen);
+            let (leaving, _) = codec::read_frame(&mut rx).await.unwrap();
+            let _ = leaving_tx.send(leaving.clone());
+            codec::write_frame(&mut tx, &Frame::res(leaving.id, op::FE_LEAVING, serde_json::json!({"not_ended": 3})), None)
+                .await
+                .unwrap();
             tokio::time::sleep(Duration::from_secs(5)).await;
         });
         let host = "local".to_string();
@@ -458,6 +562,19 @@ mod tests {
         let seen = tokio::time::timeout(Duration::from_secs(2), seen_rx).await.unwrap().unwrap();
         assert_eq!(seen.op, op::FE_NOTICE_SEEN);
         assert_eq!(seen.payload, serde_json::json!({"not_ended": 1}));
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(2), leaving_rx).await.unwrap().unwrap();
+        assert_eq!(frame.op, op::FE_LEAVING);
+        assert_eq!(frame.payload, serde_json::json!({"intent": "close"}));
+        let mut step = leaving.poll(Instant::now());
+        for _ in 0..40 {
+            if !matches!(step, LeaveStep::Wait(_)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            step = leaving.poll(Instant::now());
+        }
+        assert_eq!(step, LeaveStep::Show(vec![(host.clone(), 3)]));
     }
 
     // PIN, NOT FAIL-FIRST: interprocess 2.4.2 already creates the socket
@@ -522,5 +639,41 @@ mod tests {
         assert_eq!(not_ended_line(0), None);
         assert_eq!(not_ended_line(1).unwrap(), "1 session could not be ended and is still running");
         assert_eq!(not_ended_line(3).unwrap(), "3 sessions could not be ended and are still running");
+
+        let h = "h".to_string();
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+
+        let (tx, rx) = oneshot::channel();
+        let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
+        assert_eq!(l.line().as_deref(), Some("closing…"));
+        tx.send(2).unwrap();
+        assert_eq!(l.poll(t0), LeaveStep::Show(vec![(h.clone(), 2)]));
+        assert_eq!(l.line().unwrap(), "2 sessions could not be ended and are still running");
+        assert_eq!(l.poll(t0 + s(1)), LeaveStep::Wait(t0 + s(3)));
+        assert_eq!(l.poll(t0 + s(3)), LeaveStep::Exit);
+
+        let (tx, rx) = oneshot::channel();
+        let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
+        tx.send(0).unwrap();
+        assert_eq!(l.poll(t0), LeaveStep::Exit);
+
+        let (tx, rx) = oneshot::channel::<u32>();
+        let mut l = Leaving::new(LeaveIntent::Keep, 0, vec![(h.clone(), rx)], t0);
+        drop(tx);
+        assert_eq!(l.poll(t0), LeaveStep::Exit);
+
+        let (_tx, rx) = oneshot::channel::<u32>();
+        let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
+        assert_eq!(l.poll(t0 + s(124)), LeaveStep::Wait(t0 + s(124) + LEAVE_POLL));
+        assert_eq!(l.poll(t0 + s(125)), LeaveStep::Exit);
+
+        let (_tx, rx) = oneshot::channel::<u32>();
+        let mut l = Leaving::new(LeaveIntent::Keep, 0, vec![(h.clone(), rx)], t0);
+        assert_eq!(l.line().as_deref(), Some("closing…"));
+        assert_eq!(l.poll(t0 + s(10)), LeaveStep::Exit);
+
+        let l = Leaving::new(LeaveIntent::Handover, 75, vec![], t0);
+        assert_eq!(l.line(), None);
     }
 }

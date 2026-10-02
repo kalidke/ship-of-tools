@@ -43,6 +43,7 @@ use crate::preview::quad::{Quad, QuadPipeline, ScreenRect};
 use crate::preview::svg::quad_from_svg_bytes;
 use crate::settings::Settings;
 use crate::transport::OutgoingReq;
+use sot_protocol::ops::LeaveIntent;
 use sot_protocol::{ReplFrame, TreeNode};
 
 /// `(host, identifier)` — the composite identity backing every
@@ -627,6 +628,10 @@ enum NavPrompt {
         /// Display label of the row, echoed in the confirm prompt.
         label: String,
     },
+    /// Ctrl+Q in navigation focus: ask whether to keep the daemon and its
+    /// sessions running. `keep` is the highlighted answer (No by default);
+    /// Tab flips it, Enter confirms, Esc cancels.
+    ConfirmQuit { keep: bool },
     /// Ctrl+S on a raster that carries NO physical scale (ADR 0034 §4 live
     /// entry): type the pixel size in MICRONS. Enter validates + fires
     /// `preview.set_scale` (which persists the sidecar and returns the
@@ -642,6 +647,66 @@ enum NavPrompt {
         /// Live nm-per-pixel buffer, rendered after `pixel size (nm): `.
         input: String,
     },
+}
+
+/// A key the Ctrl+Q prompt reacts to.
+#[derive(Clone, Copy)]
+enum QuitKey {
+    Tab,
+    Enter,
+    Esc,
+    Other,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QuitPromptStep {
+    Stay { keep: bool },
+    Leave(LeaveIntent),
+    Cancel,
+}
+
+/// The Ctrl+Q prompt's key table: Tab flips the answer, Enter confirms it,
+/// Esc cancels, anything else changes nothing.
+fn quit_prompt_key(keep: bool, key: QuitKey) -> QuitPromptStep {
+    match key {
+        QuitKey::Tab => QuitPromptStep::Stay { keep: !keep },
+        QuitKey::Enter => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
+        QuitKey::Esc => QuitPromptStep::Cancel,
+        QuitKey::Other => QuitPromptStep::Stay { keep },
+    }
+}
+
+fn quit_prompt_line(keep: bool) -> String {
+    let (no, yes) = if keep { ("No", "[Yes]") } else { ("[No]", "Yes") };
+    format!("Keep the daemon and sessions running?  {no}  {yes}   Tab switches \u{b7} Enter confirms \u{b7} Esc cancels")
+}
+
+/// Why the window is being asked to exit.
+#[derive(Clone, Copy)]
+enum ExitReason {
+    WindowClose,
+    QuitKey,
+    Relaunch(i32),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExitStep {
+    Ask,
+    Leave { intent: LeaveIntent, code: i32 },
+    Now,
+    Ignore,
+}
+
+/// What an exit request does. A window already leaving exits at once on a
+/// second close; a relaunch then defers to the leave in progress.
+fn exit_intent(reason: ExitReason, leaving: bool) -> ExitStep {
+    match (reason, leaving) {
+        (ExitReason::WindowClose, false) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
+        (ExitReason::QuitKey, false) => ExitStep::Ask,
+        (ExitReason::Relaunch(code), false) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
+        (ExitReason::WindowClose | ExitReason::QuitKey, true) => ExitStep::Now,
+        (ExitReason::Relaunch(_), true) => ExitStep::Ignore,
+    }
 }
 
 /// Outcome of a Ctrl+N create round-trip, as `finish_pending_create` needs
@@ -4911,6 +4976,8 @@ struct State {
     /// Not-ended counts shown and not yet reported to the daemon; sent
     /// right after the frame that shows them is presented.
     notice_acks: Vec<(crate::dial::HostKey, u32)>,
+    /// Set once the window is on its way out and waiting for the daemons' acks.
+    leaving: Option<crate::lease::Leaving>,
     /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
     /// transport each host's CONTROL connection actually resolved to
     /// (`ResolvedDial`'s own doc) — recorded from every `Connected` evt,
@@ -6802,6 +6869,7 @@ impl State {
             #[cfg(windows)]
             own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::state_dir::state_dir_hash(&d)),
             notice_acks: Vec::new(),
+            leaving: None,
             host_resolved_dial: HashMap::new(),
             link_gates: HashMap::new(),
             declared_host: HashMap::new(),
@@ -11909,6 +11977,7 @@ impl State {
     fn cancel_nav_prompt(&mut self) {
         self.status = match self.nav_prompt {
             Some(NavPrompt::ConfirmDelete { .. }) => "delete · cancelled".to_string(),
+            Some(NavPrompt::ConfirmQuit { .. }) => "quit · cancelled".to_string(),
             Some(NavPrompt::ScaleEntry { .. }) => "pixel size · cancelled".to_string(),
             _ => "new file · cancelled".to_string(),
         };
@@ -16120,28 +16189,65 @@ impl State {
     /// ADR 0041 step 6 U3 ruling (a): the ONE quit dispatcher every
     /// user-requested exit routes through — the window-close request and
     /// the Quit keybind both call this instead of `event_loop.exit()`
-    /// directly. Exit 75 (self-relaunch), a crash, and `--capture` are
-    /// excluded by construction: none of their call sites reach this
-    /// method (see `window_event`'s relaunch-flag branch and the
-    /// `capture_now` path in `redraw`, both untouched by this unit).
+    /// directly. Exit 75 (self-relaunch) reaches `leave` from
+    /// `window_event`'s relaunch-flag branch instead; a crash and
+    /// `--capture` never reach it.
     ///
-    /// When attach-only is not live for this drawer (the flag is off,
-    /// the drawer was never opened, or this is not Windows) there is no
-    /// supervisor lane to notify, so this degrades to exactly today's
-    /// behavior: `event_loop.exit()` immediately. When it IS live, this
-    /// sends `end_run` and holds the window open in the "ending session"
-    /// state until `record_closed` (or the cutoff) — `pump_attach_term`
-    /// and `about_to_wait`'s `should_exit` check carry the rest.
-    fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: &str) {
+    /// `exit_intent` decides: the window's close button leaves with Close,
+    /// Ctrl+Q asks first (`NavPrompt::ConfirmQuit`), and a second request
+    /// while leaving exits at once. `leave` tells each held lease's daemon
+    /// what to do with this computer's sessions and the window exits once
+    /// the acks are in (`about_to_wait`).
+    fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
+        let why = match reason {
+            ExitReason::WindowClose => "window close requested",
+            ExitReason::QuitKey => "Ctrl+Q quit action",
+            ExitReason::Relaunch(_) => "relaunch",
+        };
+        match exit_intent(reason, self.leaving.is_some()) {
+            ExitStep::Ask => {
+                self.nav_prompt = Some(NavPrompt::ConfirmQuit { keep: false });
+                self.window.request_redraw();
+            }
+            ExitStep::Now => {
+                let code = self.leaving.as_ref().map_or(0, |l| l.exit_code);
+                self.finish_exit(event_loop, code);
+            }
+            ExitStep::Ignore => {}
+            ExitStep::Leave { intent, code } => self.leave(event_loop, intent, code, why),
+        }
+    }
+
+    /// Start leaving: tell every held lease's daemon `intent`, and (on
+    /// Windows) end the attach-only drawer's session alongside it. The exit
+    /// itself happens in `about_to_wait` once the acks are in.
+    fn leave(&mut self, event_loop: &ActiveEventLoop, intent: LeaveIntent, code: i32, reason: &str) {
+        self.nav_prompt = None;
+        self.leaving = self.leases.leave_all(intent, code, std::time::Instant::now());
         #[cfg(windows)]
-        if let Some(t) = self.attach_term.as_mut() {
-            t.request_quit(reason);
-            self.status = "ending session\u{2026}".to_string();
-            self.window.request_redraw();
-            return;
+        if intent != LeaveIntent::Handover {
+            if let Some(t) = self.attach_term.as_mut() {
+                t.request_quit(reason);
+                self.status = "ending session\u{2026}".to_string();
+                self.window.request_redraw();
+                return;
+            }
         }
         let _ = reason;
         self.should_exit = true;
+        if self.leaving.is_none() {
+            self.finish_exit(event_loop, code);
+        } else {
+            self.window.request_redraw();
+        }
+    }
+
+    fn finish_exit(&mut self, event_loop: &ActiveEventLoop, code: i32) {
+        if code != 0 {
+            #[cfg(windows)]
+            allow_next_foreground();
+            std::process::exit(code);
+        }
         event_loop.exit();
     }
 
@@ -16356,7 +16462,12 @@ impl State {
             Some(NavPrompt::ScaleEntry { input, .. }) => {
                 format!("pixel size (nm): {input}▏")
             }
-            None => crate::lease::status_line(self.leases.notice(), &self.status),
+            Some(NavPrompt::ConfirmQuit { keep }) => quit_prompt_line(*keep),
+            None => self
+                .leaving
+                .as_ref()
+                .and_then(|l| l.line())
+                .unwrap_or_else(|| crate::lease::status_line(self.leases.notice(), &self.status)),
         };
         // Local wall-clock of the machine running the frontend, sampled once
         // per frame and turned into the top-right chrome clock text at the
@@ -20312,22 +20423,22 @@ impl ApplicationHandler for App {
                 "relaunch requested; exiting for supervisor respawn"
             );
             state.persist_resume_state();
-            // We currently own the OS foreground, so we're allowed to hand the
-            // foreground right to the about-to-spawn replacement. ASFW_ANY lifts
-            // the Win32 foreground lock for the next SetForegroundWindow from
-            // any process — which the relaunched FE issues on its first paint
-            // (force_os_foreground). Without this the new process is blocked
-            // and only flashes the taskbar. ADR 0017.
-            #[cfg(windows)]
-            allow_next_foreground();
-            std::process::exit(relaunch_code as i32);
+            // The exit hands the OS foreground to the about-to-spawn
+            // replacement (`finish_exit`, ADR 0017). The daemon keeps the
+            // sessions for a minute (Handover) while the new window opens.
+            if matches!(
+                exit_intent(ExitReason::Relaunch(relaunch_code as i32), state.leaving.is_some()),
+                ExitStep::Leave { .. }
+            ) {
+                state.leave(event_loop, LeaveIntent::Handover, relaunch_code as i32, "relaunch");
+            }
         }
         // FE control commands (ADR 0019): drain whatever the watcher enqueued
         // and dispatch on the main thread — same code paths as the keybinds.
         // Cheap no-op when the queue is empty.
         state.drain_fe_commands();
         match event {
-            WindowEvent::CloseRequested => state.request_quit(event_loop, "window close requested"),
+            WindowEvent::CloseRequested => state.request_quit(event_loop, ExitReason::WindowClose),
             WindowEvent::Resized(size) => {
                 state.resize(size);
                 state.persist_resume_state();
@@ -21196,6 +21307,32 @@ impl ApplicationHandler for App {
                         // any other nav key is swallowed so arrows / mode
                         // switches don't disturb the tree mid-type.
                         if state.nav_prompt.is_some() {
+                            // ConfirmQuit: Tab flips, Enter confirms, Esc
+                            // cancels; repeats and every other key do nothing.
+                            if let Some(NavPrompt::ConfirmQuit { keep }) = state.nav_prompt {
+                                if !event.repeat {
+                                    let key = if matches!(event.logical_key, Key::Named(NamedKey::Tab)) {
+                                        QuitKey::Tab
+                                    } else if action == Some(Action::Confirm) {
+                                        QuitKey::Enter
+                                    } else if action == Some(Action::Cancel) {
+                                        QuitKey::Esc
+                                    } else {
+                                        QuitKey::Other
+                                    };
+                                    match quit_prompt_key(keep, key) {
+                                        QuitPromptStep::Stay { keep } => {
+                                            state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
+                                            state.window.request_redraw();
+                                        }
+                                        QuitPromptStep::Cancel => state.cancel_nav_prompt(),
+                                        QuitPromptStep::Leave(i) => {
+                                            state.leave(event_loop, i, 0, "Ctrl+Q quit action")
+                                        }
+                                    }
+                                }
+                                return;
+                            }
                             // ConfirmDelete is a y/N gate, not a text field:
                             // 'y'/'Y' confirms, everything else (incl.
                             // 'n'/'N'/Esc) cancels. CreateFile keeps its
@@ -21265,7 +21402,7 @@ impl ApplicationHandler for App {
                         if !event.repeat
                             && action == Some(Action::Quit)
                         {
-                            state.request_quit(event_loop, "Ctrl+Q quit action");
+                            state.request_quit(event_loop, ExitReason::QuitKey);
                             return;
                         }
                         // Ctrl+C: copy the cursored row's file path to the
@@ -22812,7 +22949,23 @@ impl ApplicationHandler for App {
         // already calls `event_loop.exit()` at its own call site; this
         // check is additive for the one setter that cannot.
         if state.should_exit {
-            event_loop.exit();
+            let now = std::time::Instant::now();
+            let step = state.leaving.as_mut().map(|l| l.poll(now));
+            match step {
+                Some(crate::lease::LeaveStep::Wait(t)) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(t));
+                    return;
+                }
+                Some(crate::lease::LeaveStep::Show(acks)) => {
+                    state.notice_acks.extend(acks);
+                    state.window.request_redraw();
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(now + crate::lease::NOT_ENDED_EXIT_HOLD));
+                    return;
+                }
+                Some(crate::lease::LeaveStep::Exit) | None => {}
+            }
+            let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
+            state.finish_exit(event_loop, code);
             return;
         }
         if state.help_peek_expired() {
@@ -24167,6 +24320,36 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quit_prompt_key_table() {
+        use QuitKey::*;
+        use QuitPromptStep::*;
+        assert_eq!(quit_prompt_key(false, Tab), Stay { keep: true });
+        assert_eq!(quit_prompt_key(true, Tab), Stay { keep: false });
+        assert_eq!(quit_prompt_key(false, Enter), Leave(LeaveIntent::Close));
+        assert_eq!(quit_prompt_key(true, Enter), Leave(LeaveIntent::Keep));
+        assert_eq!(quit_prompt_key(false, Esc), Cancel);
+        assert_eq!(quit_prompt_key(true, Esc), Cancel);
+        assert_eq!(quit_prompt_key(false, Other), Stay { keep: false });
+        assert_eq!(quit_prompt_key(true, Other), Stay { keep: true });
+        let no = quit_prompt_line(false);
+        assert!(no.contains("[No]") && no.contains("Yes") && !no.contains("[Yes]"));
+        let yes = quit_prompt_line(true);
+        assert!(yes.contains("[Yes]") && !yes.contains("[No]"));
+    }
+
+    #[test]
+    fn exit_intent_table() {
+        use ExitReason::*;
+        use ExitStep::*;
+        assert_eq!(exit_intent(WindowClose, false), Leave { intent: LeaveIntent::Close, code: 0 });
+        assert_eq!(exit_intent(QuitKey, false), Ask);
+        assert_eq!(exit_intent(Relaunch(75), false), Leave { intent: LeaveIntent::Handover, code: 75 });
+        assert_eq!(exit_intent(WindowClose, true), Now);
+        assert_eq!(exit_intent(QuitKey, true), Now);
+        assert_eq!(exit_intent(Relaunch(75), true), Ignore);
+    }
+
     use super::*;
     use sot_protocol::TreeNode;
 

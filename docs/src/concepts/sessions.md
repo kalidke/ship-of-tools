@@ -43,7 +43,7 @@ evaluation at a time and does not queue: a request that arrives while another
 is running comes back as `busy` and nothing runs. The `julia-repl` skill tells
 agents to use separate `julia` processes for parallel runs.
 
-## Capsules: sessions that outlive everything around them
+## Capsules: what a session survives
 
 Each session's agent runs in a **capsule**: a small supervisor process
 (`sot-capsule`) that owns the agent's terminal and records the session to disk
@@ -53,7 +53,10 @@ daemon starts capsules and lists them, but does not hold them up.
 | What goes away | What happens to the session |
 |----------------|-----------------------------|
 | the network, or the laptop lid | nothing — the frontend reconnects on its own when the network is back; `F5` retries at once |
-| the frontend (quit, crash, relaunch) | nothing — the next frontend reattaches |
+| the last window on this computer (closed, crashed or killed) | it ends, with the backend; the next window starts with none. `Ctrl+Q` asks first and can keep them running |
+| one of two windows on this computer | nothing — sessions end with the last window |
+| a window relaunch (update) | nothing, if the new window opens within a minute |
+| a window on another computer | nothing — the next window reattaches |
 | the daemon (restart, upgrade) | the capsule keeps running and the restarted daemon re-adopts it |
 
 On Linux each capsule supervisor runs in its own transient `systemd --user`

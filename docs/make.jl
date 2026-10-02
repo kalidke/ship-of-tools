@@ -48,6 +48,7 @@ makedocs(;
             "What it does" => "features.md",
             "Quickstart" => "start/quickstart.md",
             "Your first session" => "start/tour.md",
+            "What keeps running" => "start/running.md",
             "Going remote" => "start/remote.md",
             "Install details" => "start/install.md",
             "Per-machine setup" => "start/setup.md",
