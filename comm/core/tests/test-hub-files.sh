@@ -499,13 +499,21 @@ case_a_wire_send_with_no_daemon_is_failed() {
 # the real Windows discovery runs.
 WINBIN="$WORK/winbin"; WINFAKE="$WORK/winfake"; WINAPP="$WORK/winappdata"; WINHUB="$WORK/winhub"
 cp -r "$SCRIPTS_DIR" "$WINBIN"
+# Cygwin's /proc as the Windows walk reads it: each script that sources the library
+# is one MSYS process under a native parent (Windows pid 1000).
+cat >> "$WINBIN/comm-lib.sh" <<WINPROC
+
+# ---- test only: a Cygwin /proc stand-in ----
+_SOT_PROC="$WORK/winproc/\$\$"; mkdir -p "\$_SOT_PROC/\$\$"
+printf '%s (bash) S 1\n' "\$\$" > "\$_SOT_PROC/\$\$/stat"; printf 'bash\0' > "\$_SOT_PROC/\$\$/cmdline"; echo 1000 > "\$_SOT_PROC/\$\$/winpid"
+WINPROC
 mkdir -p "$WINFAKE" "$WINAPP/sot/bin" "$WINHUB"
 printf '#!/bin/sh\necho "MINGW64_NT-10.0-19045"\n' > "$WINFAKE/uname"
 cat > "$WINAPP/sot/bin/sotd.exe" <<'FAKESOTD'
 #!/bin/sh
 if [ "$1" = session-socket-path ] && [ "$2" = local ]; then printf '%s\n' '\\.\pipe\sot-fakeuser-local'; exit 0; fi
-# `ancestors`: the one process above a comm script, no agent among them.
-if [ "$1" = ancestors ]; then echo bash.exe; exit 0; fi
+# `ancestors --from`: the one process above the comm script's shell, no agent among them.
+if [ "$1" = ancestors ] && [ "$2" = --from ]; then printf '1001\tbash.exe\tbash.exe\n'; exit 0; fi
 exit 1
 FAKESOTD
 { printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKEPS'

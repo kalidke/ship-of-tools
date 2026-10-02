@@ -146,8 +146,13 @@ join_in() {
             self="$WORK/self-$NEXTSELF.txt"
         fi
     fi
-    local errfile="$WORK/stderr-$NEXTSELF.tmp"
-    JOIN_OUT="$(cd "$root" && SOT_COMM_SELF_FILE="$self" "$JOIN" "$@" 2>"$errfile")"
+    local errfile="$WORK/stderr-$NEXTSELF.tmp" wrap=() rid
+    # An identity that names a row runs beneath that row's capsule (lib-home-guard.sh).
+    case "$(basename "$self")" in
+        *__*.txt) rid="$(basename "$self")"; rid="${rid#*__}"; rid="${rid%.txt}"
+                  [ "$rid" = nopane ] || wrap=(in_row "$rid") ;;
+    esac
+    JOIN_OUT="$(cd "$root" && SOT_COMM_SELF_FILE="$self" "${wrap[@]+"${wrap[@]}"}" "$JOIN" "$@" 2>"$errfile")"
     JOIN_RC=$?
     JOIN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }

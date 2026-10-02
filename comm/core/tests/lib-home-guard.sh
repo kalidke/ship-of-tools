@@ -38,6 +38,14 @@
 # Paths compare physically (cd -P); the part of a path that does not exist yet
 # is kept as written, so a live home that does not exist (as on CI) compares as
 # its literal path.
+# A suite that pins a row-shaped identity (a self file named <host>__<id>.txt, or
+# SOT_WORKSPACE_ID with no self file) runs a gated comm script only beneath that
+# row's capsule (PROTOCOL.md's row rule), so the file also defines
+#   in_row ID CMD...                 run CMD beneath a stand-in for row ID's capsule
+# The path need not exist: the walk reads only the command line. CMD must be an
+# executable (a script or a binary), not a shell function of the suite; exported
+# variables reach it, unexported ones do not. Linux and macOS only: a Windows walk names the
+# executable, which `exec -a` cannot change.
 _GUARD_LIVE=("$HOME/.sot-comm")
 _GUARD_ACCT="" _GUARD_USER="$(id -un 2>/dev/null)"
 case "$_GUARD_USER" in
@@ -115,4 +123,9 @@ guard_refuse_live_home() {  # HOME_DIR
                 exit 2 ;;
         esac
     done
+}
+
+in_row() {  # ID CMD... : run CMD beneath a stand-in for row ID's capsule
+    local id="$1"; shift
+    ( exec -a sot-capsule bash -c 'shift; "$@"; exit $?' _ "/in-row/state/workspaces/$id/voyages/v0" "$@" )
 }

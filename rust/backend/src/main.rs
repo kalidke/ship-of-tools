@@ -182,9 +182,9 @@ async fn main() -> Result<()> {
                 println!("{}", paths::session_socket_path(&label).display());
                 return Ok(());
             }
-            // `sotd ancestors` (Windows only): comm-lib.sh reads it to count
+            // `sotd ancestors [--from <pid>]` (Windows only): comm-lib.sh reads it to count
             // the agents above a comm script. A pure query like the arms around it.
-            "ancestors" => std::process::exit(ancestors::run()),
+            "ancestors" => std::process::exit(ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
             // ADR 0046 decision 4: the daemon's `agent_argv` is the ONE
             // owner of the launch recipe; `ccb` execs THROUGH this
             // rather than carrying its own copy of the scrub
@@ -287,7 +287,9 @@ Pure queries (no startup side effects, answered before any of the above):
                           resolve and exec the named agent's launch
                           recipe in place (ADR 0046 decision 4); only
                           "claude" has a recipe today
-  ancestors (Windows only)  print this process's ancestors (exe, command line), parent first
+  ancestors [--from <pid>] (Windows only)
+                          print the ancestors of <pid> (default: this
+                          process), parent first: pid, exe, command line
   topology <plan|status|relay-endpoint|sync|apply>
                           what this box derives from hosts.toml
                           (`sotd topology` alone prints the details)

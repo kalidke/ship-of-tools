@@ -467,40 +467,74 @@ Monitor exists.
   the top of its process tree outside a row. A `node` process is an agent when
   any of its arguments names one or lies in its npm package, and it counts once
   with its native child only when that child is its direct child and its
-  arguments after the binary equal the host's after its script (on Windows, as the Microsoft C runtime splits each command line, its backslash and `""` rules included). Agents are
-  named, not launchers: the list is the agents comm ships an adapter for, and it
-  grows in the commit that adds one. The check reads each ancestor's full
-  command line, and an ancestry it cannot read in full (a walk past 64
-  processes, an unreadable /proc record, a parse that did not finish, a
-  `sotd.exe` that fails or is too old) is refused, not trusted. On Windows, an
-  ancestor whose record cannot be opened, or whose creation time is after its
-  child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
-  command line are refused. A reused pid means the real parent has exited, the
-  twin of reparenting. On Windows, and on macOS where `ps` prints `(name)` for
-  arguments it cannot read, an unreadable command line is recorded as the
-  program name with arguments unknown, which equals nothing: a native agent so
-  recorded never counts once with its node host, though a standalone one is one
-  layer, and a `node` so recorded is refused. On
-  Windows every comm script that reads mail, sends, joins or stamps refuses
-  ("update sotd") until the installed `sotd.exe` has the `ancestors` subcommand, so the
-  scripts and `sotd.exe` ship together. A refused process may neither spawn nor
-  despawn rows (`comm-probe.sh`'s included) nor run `comm-worktree-new.sh`, which
-  refuses it before any git write, and no hook of it writes anything
-  under the comm home. An agent that needs its own handle is started as
-  its own row.
-- What that check does not see: a process reparented away from its agent; an
+  arguments after the binary equal the host's after its script (on Windows, as
+  the Microsoft C runtime splits each command line, its backslash and `""`
+  rules included). Agents are named, not launchers: the list is the agents comm
+  ships an adapter for, and it grows in the commit that adds one. The check
+  reads each ancestor's full command line, and an ancestry it cannot read in
+  full (a walk past 64 processes, an unreadable /proc record, a parse that did
+  not finish, a `sotd.exe` that fails or is too old) is refused, not trusted.
+  On Windows the walk reads Cygwin's own /proc (the MSYS runtime Git for
+  Windows ships) from the script's own process up through its MSYS parents, and
+  `sotd.exe ancestors --from <pid>` above the first one whose parent is native.
+  An MSYS program that execs another is a new Windows process whose Windows
+  parent has exited, so where the native walk stops at an MSYS process, the
+  walk goes on from that process's MSYS parent. An ancestor whose parent has
+  exited with no MSYS parent to go on from, whose record cannot be opened, or
+  whose creation time is after its child's, ends the walk as the top; for a
+  process that names no row, only the 64 cap, an unreadable /proc record and
+  node.exe's unreadable command line are refused (the row rule below refuses
+  that early top for one that names a row). On Windows, and on macOS where
+  `ps` prints `(name)` for arguments it cannot read, an unreadable command
+  line is recorded as the program name with arguments unknown, which equals
+  nothing: a native agent so recorded never counts once with its node host,
+  though a standalone one is one layer, and a `node` so recorded is refused.
+  On Windows every comm script that reads mail, sends, joins or
+  stamps refuses until the installed `sotd.exe` has `ancestors --from` (an
+  older one fails, "update sotd", or prints lines that carry no pid, which is
+  an unreadable ancestry), so the scripts and `sotd.exe` ship together. A
+  refused process may neither spawn nor despawn rows (`comm-probe.sh`'s
+  included) nor run `comm-worktree-new.sh`, which refuses it before any git
+  write, and no hook of it writes anything under the comm home. An agent
+  that needs its own handle is started as its own row.
+- A process whose identity names a row acts as that row's handle only if that
+  row's capsule is one of its ancestors. The identity names row `<id>` when its
+  pinned self file is named `<host>__<id>.txt` and `<id>` is not `nopane`. When
+  no self file is pinned, it names the row `SOT_WORKSPACE_ID` gives. A capsule is
+  that row's when one of its arguments before `--` (with `\` read as `/`) ends
+  in `/workspaces/<id>` or contains `/workspaces/<id>/voyages/`. The process is
+  refused, and nothing is read, sent or stamped, when its walk ends in any of
+  three ways: at the top, at another row's capsule, or at a capsule whose
+  command line cannot be read. So for a process that names a row, two kinds of
+  early stop no longer pass: being reparented away from the row, and, on
+  Windows, a walk that stops at an ancestor it cannot open (a sandboxed agent's
+  child may be unable to open its parent even under the same account) or at a
+  reused pid. Only a process that names no row may end its walk at the top,
+  which is how a session outside any row passes, including one under another
+  account's sshd. A private identity file for a process outside any row must not
+  be named `<host>__<id>.txt`.
+- What the check does not see: for a process that names no row, an agent above
+  a reparenting, or on Windows above an ancestor that has exited with no MSYS
+  parent to go on from (a process of another MSYS or Cygwin installation is not
+  in this one's /proc), cannot be opened, or was created after its child; an
   agent whose name is not in the list; a macOS agent whose argv[0] contains a
   space; on macOS, an agent whose arguments `ps` cannot read and whose program
-  file is not named after it; on Windows, an agent above an ancestor whose record cannot be opened or
-  that was created after its child; and a shim that starts `node` under the
-  agent's own name (a volta-style shim), which may be refused instead. On macOS
-  the walk reads `ps`, which folds runs of white space, so a native agent started
-  directly by its node host with arguments that differ only in white space counts
-  as one layer with it; exact argv on macOS comes after 0.6.6. An argument that itself contains the
-  record's marker bytes (\x1f, \x1e, \x1c, \x1b) reads as a separator, an unknown
-  marker or an encoded newline or return. On Windows an unpaired UTF-16 surrogate
-  in a command line reads as U+FFFD. On Linux a process whose whole command line
-  is exactly `!end` ends the walk as if it were the top.
+  file is not named after it; and a shim that starts `node` under the agent's
+  own name (a
+  volta-style shim), which may be refused instead. On macOS a capsule binary
+  installed under a path that holds a space is not recognised (`ps` splits its
+  argv[0]), and a state path holding a standalone `--` word ends the argument
+  scan early; either way a process naming its row is refused there. An argument
+  whose state root itself lies inside another row's voyages folder (a path
+  holding `/workspaces/<id>/voyages/` before its own) matches that row too. On
+  macOS the walk reads `ps`, which folds runs of white space, so a native agent
+  started directly by its node host with arguments that differ only in white
+  space counts as one layer with it; exact argv on macOS comes after 0.6.6. An
+  argument that itself contains the record's marker bytes (\x1f, \x1e, \x1c,
+  \x1b) reads as a separator, an unknown marker or an encoded newline or
+  return. On Windows an unpaired UTF-16 surrogate in a command line reads as
+  U+FFFD. On Linux a process whose whole command line is exactly `!end` ends
+  the walk as if it were the top.
 
 ## Dependencies
 
