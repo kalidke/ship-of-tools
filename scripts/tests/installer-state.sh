@@ -598,6 +598,29 @@ PS_WAIT="$(sed -n 's/^\$LaunchWaitSeconds = \([0-9]*\).*/\1/p' "$PS_DAEMON")"
 PS_LOCK="$(sed -n 's/^\$DaemonLockWaitSeconds = \([0-9]*\).*/\1/p' "$PS_DAEMON")"
 check "sot-local-daemon.ps1 launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$PS_WAIT"
 check "sot-local-daemon.ps1 daemon-lock wait is ops.rs DAEMON_LOCK_WAIT" "$OPS_LOCK" "$PS_LOCK"
+OPS_RS="$(dirname "$0")/../../rust/protocol/src/ops.rs"
+PS_LAUNCH="$(dirname "$0")/../launch-sot.ps1"
+OPS_LEASE_MS="$(sed -n 's/.*pub const LEASE_REPLY_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$OPS_RS")"
+OPS_HANDOVER="$(sed -n 's/.*pub const HANDOVER_BOUND: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$OPS_RS")"
+PS_LEASE_MS="$(sed -n 's/^\$LeaseReplyWaitMs = \([0-9]*\).*/\1/p' "$PS_LAUNCH")"
+PS_HANDOVER="$(sed -n 's/^\$HandoverBoundSeconds = \([0-9]*\).*/\1/p' "$PS_LAUNCH")"
+check "launch-sot.ps1 lease reply wait is ops.rs LEASE_REPLY_WAIT in ms" "$((OPS_LEASE_MS * 1000))" "$PS_LEASE_MS"
+check "launch-sot.ps1 handover bound is ops.rs HANDOVER_BOUND" "$OPS_HANDOVER" "$PS_HANDOVER"
+OPS_FE_LEASE="$(sed -n 's/.*pub const FE_LEASE: &str = "\([^"]*\)".*/\1/p' "$OPS_RS")"
+OPS_FE_LEAVING="$(sed -n 's/.*pub const FE_LEAVING: &str = "\([^"]*\)".*/\1/p' "$OPS_RS")"
+check "launch-sot.ps1 names the fe.lease op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEASE\"" "$PS_LAUNCH" && echo yes || echo no)"
+check "launch-sot.ps1 names the fe.leaving op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEAVING\"" "$PS_LAUNCH" && echo yes || echo no)"
+# The golden lease line: the launcher's literal and ops.rs's test line (backslashes stripped)
+# share the prefix and the sorted payload keys, in order.
+LEASE_PREFIX='{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"'
+in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then ,"pid": on one line
+    local txt
+    if [ "$2" = 1 ]; then txt="$(sed 's/\\//g' "$1")"; else txt="$(cat "$1")"; fi
+    printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | grep -qF '","created":' && \
+        printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | sed 's/.*","created":/","created":/' | grep -qF ',"pid":' && echo yes || echo no
+}
+check "launch-sot.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LAUNCH" 0)"
+check "ops.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
 
 # ---------------------------------------------------------------------------
 # sot-apply fixtures: an install prefix with a real sot-apply, a git checkout
