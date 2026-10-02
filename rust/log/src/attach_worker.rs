@@ -1019,16 +1019,17 @@ impl<E: Endpoint> AttachWorker<E> {
         Ok(Self { msg_tx, ingress_bytes, ingress_bound, attach_gen, discarded, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
     }
 
+    /// Whether this worker's pane is on screen; a worker whose host's link is down pauses only while unviewed.
+    pub fn set_viewed(&self, viewed: bool) {
+        self.viewed.store(viewed, Ordering::Release);
+    }
+
     /// A sink that consumes [`WorkerEvent::Output`] bytes calls this with
     /// however many it just consumed, releasing the episode reader's own
     /// backpressure by that much — the ONLY way [`QueuedBytes`] ever goes
     /// down (see that type's own doc). `fe_client_io::FeAttachClient::
     /// pump` calls this exactly where the pre-extraction module's own
     /// `queued_bytes.sub` call was.
-    pub fn set_viewed(&self, viewed: bool) {
-        self.viewed.store(viewed, Ordering::Release);
-    }
-
     pub fn ack_output_consumed(&self, n: usize) {
         self.queued_bytes.sub(n);
     }
