@@ -2348,7 +2348,8 @@ pub struct LaneConnectRes {
 }
 
 /// `fe.lease` request: a window claims the daemon. `boot`, `pid` and
-/// `created` identify the claimant's process; `boot` is empty on Windows.
+/// `created` identify the claimant's process; on Windows `boot` is the
+/// registry BootId as a decimal string, `""` if unreadable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeLeaseReq {
     pub boot: String,

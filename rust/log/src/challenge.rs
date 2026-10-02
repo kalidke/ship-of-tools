@@ -213,24 +213,27 @@ pub struct ProcessIdentity {
 }
 
 /// This computer's boot, as text a different computer cannot share:
-/// Linux `boot_id`, macOS `kern.boottime` as `<sec>.<usec>`, Windows
-/// `""` (its `created` is an absolute FILETIME already).
+/// Linux `boot_id`, macOS `kern.bootsessionuuid`, Windows the registry
+/// BootId as a decimal string, `""` if unreadable.
 #[cfg(target_os = "linux")]
 pub fn boot_identity() -> std::io::Result<String> {
     let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     Ok(id.trim().to_string())
 }
 
+/// The per-boot UUID, not `kern.boottime`: XNU shifts the boot time when
+/// the clock is stepped, and a moved boot would refuse this boot's
+/// windows and plan Cleanup on an update restart.
 #[cfg(target_os = "macos")]
 pub fn boot_identity() -> std::io::Result<String> {
-    let mut tv: libc::timeval = unsafe { std::mem::zeroed() };
-    let mut len = std::mem::size_of::<libc::timeval>();
-    // SAFETY: the name is NUL-terminated; the out-buffer is a local
-    // `timeval` and `len` its true size.
+    let mut buf = [0u8; 64];
+    let mut len = buf.len();
+    // SAFETY: the name is NUL-terminated; the out-buffer is a local array
+    // and `len` its true size.
     let rc = unsafe {
         libc::sysctlbyname(
-            c"kern.boottime".as_ptr(),
-            std::ptr::addr_of_mut!(tv).cast(),
+            c"kern.bootsessionuuid".as_ptr(),
+            buf.as_mut_ptr().cast(),
             &mut len,
             std::ptr::null_mut(),
             0,
@@ -239,7 +242,8 @@ pub fn boot_identity() -> std::io::Result<String> {
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(format!("{}.{}", tv.tv_sec, tv.tv_usec))
+    let id = std::str::from_utf8(&buf[..len.min(buf.len())]).map_err(std::io::Error::other)?;
+    Ok(id.trim_end_matches('\0').to_string())
 }
 
 /// The Windows boot identity from the registry `BootId` DWORD; absent or
@@ -330,6 +334,15 @@ mod identity_tests {
     fn boot_identity_is_stable_and_nonempty() {
         let a = boot_identity().unwrap();
         assert!(!a.is_empty());
+        assert_eq!(a, boot_identity().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn boot_identity_is_a_uuid_on_macos() {
+        let a = boot_identity().unwrap();
+        assert_eq!(a.len(), 36, "{a:?}");
+        assert_eq!(a.matches('-').count(), 4, "{a:?}");
         assert_eq!(a, boot_identity().unwrap());
     }
 
