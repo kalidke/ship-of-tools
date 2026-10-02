@@ -137,6 +137,8 @@ pub enum IncomingEvt {
     Disconnected {
         reason: String,
     },
+    /// A grant reported sessions an earlier close could not end.
+    NotEnded { count: u32 },
     /// The backend refused the handshake because the FE↔BE wire-contract
     /// protocol versions differ (ADR 0030 §2). Unlike a transient
     /// `Disconnected`, this is a hard, self-diagnosing skew: the chrome shows a
@@ -1631,6 +1633,7 @@ pub fn spawn(
     window: Arc<Window>,
     reconnect_now: Arc<tokio::sync::Notify>,
     gate: sot_protocol::ssh_bridge::LinkGate,
+    leases: Arc<crate::lease::Leases>,
 ) {
     rt.spawn(async move {
         // Reconnect loop with exponential backoff capped at 5s. The
@@ -1661,6 +1664,7 @@ pub fn spawn(
                 window.clone(),
                 &mut backoff_ms,
                 &gate,
+                &leases,
             )
             .await
             {
@@ -1713,9 +1717,17 @@ async fn connect_and_run(
     window: Arc<Window>,
     backoff_ms: &mut u64,
     gate: &sot_protocol::ssh_bridge::LinkGate,
+    leases: &crate::lease::Leases,
 ) -> Result<()> {
     match &config.dial {
         Dial::Pipe(pipe_path) => {
+            let not_ended = leases
+                .before_data_connection(&host, pipe_path, config.token.as_deref())
+                .await?;
+            if not_ended > 0 {
+                let _ = evt_tx.send((host.clone(), IncomingEvt::NotEnded { count: not_ended }));
+                window.request_redraw();
+            }
             let stream = connect_pipe(pipe_path).await?;
             // Pre-hello: the daemon hasn't declared its host yet, so
             // `host` here is only this connection's DIAL key, not a
@@ -1797,7 +1809,7 @@ async fn connect_and_run(
 }
 
 /// Connect to the local socket / named pipe at `path`.
-async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
+pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
     let path_str = path.to_str().context("socket path must be valid UTF-8")?;
     let name = path_str
         .to_fs_name::<GenericFilePath>()

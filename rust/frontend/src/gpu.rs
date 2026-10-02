@@ -3576,6 +3576,7 @@ pub struct App {
         tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
     )>,
     pending_transports: Option<Vec<PendingTransport>>,
+    leases: Arc<crate::lease::Leases>,
     /// Tracks Ctrl/Shift/Alt/Super state for Ctrl+Arrow pane navigation.
     /// winit 0.30 publishes modifier changes via `WindowEvent::ModifiersChanged`
     /// separately from key presses, so we keep a running copy and consult
@@ -3594,6 +3595,7 @@ impl App {
             tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
         )>,
         pending_transports: Option<Vec<PendingTransport>>,
+        leases: Arc<crate::lease::Leases>,
     ) -> Self {
         Self {
             state: None,
@@ -3603,6 +3605,7 @@ impl App {
             evt_tx: Some(evt_tx),
             conns,
             pending_transports,
+            leases,
             modifiers: winit::keyboard::ModifiersState::empty(),
         }
     }
@@ -4900,6 +4903,10 @@ struct State {
     /// `PendingTransport` list `conns` is built from, before `resumed()`
     /// consumes it (`spawn_pane_attach_term` is the only reader).
     host_transports: HashMap<crate::dial::HostKey, crate::transport::TransportConfig>,
+    leases: Arc<crate::lease::Leases>,
+    /// Not-ended counts shown and not yet reported to the daemon; sent
+    /// right after the frame that shows them is presented.
+    notice_acks: Vec<(crate::dial::HostKey, u32)>,
     /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
     /// transport each host's CONTROL connection actually resolved to
     /// (`ResolvedDial`'s own doc) — recorded from every `Connected` evt,
@@ -6106,6 +6113,7 @@ impl State {
             crate::dial::HostKey,
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
+        leases: Arc<crate::lease::Leases>,
     ) -> Result<Self> {
         // Loaded here (rather than at each of its several uses below) so
         // `last_host` and the window-geometry fields below all read the
@@ -6715,6 +6723,8 @@ impl State {
             // `conns` came from, before that list is consumed spawning
             // each host's transport task — empty here only briefly.
             host_transports: HashMap::new(),
+            leases,
+            notice_acks: Vec::new(),
             host_resolved_dial: HashMap::new(),
             link_gates: HashMap::new(),
             declared_host: HashMap::new(),
@@ -13285,6 +13295,15 @@ impl State {
                         }
                     } // if event_host == self.active_host
                 }
+                crate::transport::IncomingEvt::NotEnded { count } => {
+                    if let Some(line) = crate::lease::not_ended_line(count) {
+                        self.status = line;
+                        self.notify_sticky_until =
+                            Some(std::time::Instant::now() + NOTIFY_STICKY);
+                        self.notice_acks.push((event_host.clone(), count));
+                        self.window.request_redraw();
+                    }
+                }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
@@ -19442,6 +19461,9 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        for (h, n) in self.notice_acks.drain(..) {
+            self.leases.notice_seen(&h, n);
+        }
         self.text.trim();
 
         if let Some((buf, padded_bpr, unpadded_bpr)) = readback {
@@ -19968,7 +19990,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone()) {
+        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone(), self.leases.clone()) {
             Ok(mut state) => {
                 // Spawn one transport task per host once the window exists,
                 // since each task needs an Arc<Window> to call
@@ -19999,6 +20021,7 @@ impl ApplicationHandler for App {
                             state.window.clone(),
                             state.reconnect_now.clone(),
                             gate,
+                            state.leases.clone(),
                         );
                     }
                     // ADR 0035: spawn the proxy manager whenever there's a

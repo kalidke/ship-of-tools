@@ -488,8 +488,9 @@ start_daemon() {
 }
 # The frontend's persisted state, rewritten before every start: window
 # geometry = the Xvfb screen (see header), resumed into the live DemoProject
-# row. Not --ephemeral, which skips the workspace resume; what the frontend
-# persists lands in the scratch XDG_CONFIG_HOME.
+# row. Not --ephemeral, which skips the workspace resume; --no-lease, so a
+# take's end (stop_fe kills the window) never ends the scratch sessions
+# between takes. What the frontend persists lands in the scratch XDG_CONFIG_HOME.
 # FE_H (the hero take only) makes the window shorter than the screen; the
 # recording still grabs the whole screen and the cut crops it.
 start_fe() {   # start_fe flags...
@@ -497,7 +498,7 @@ start_fe() {   # start_fe flags...
         "$W" "${FE_H:-$H}" "${ROW_ID[DemoProject]}" >"$WORK/config/sot/state-demo.toml"
     # shellcheck disable=SC2068 — flags are a curated word list
     spawn "$WORK/sot.log" "${DEMO_ENV[@]}" "$BIN/sot" --socket "$WORK/runtime/sotd.sock" \
-        --font-scale "$FONT_SCALE" $@
+        --font-scale "$FONT_SCALE" --no-lease $@
     FE_PID=$SPAWNED
 }
 # A resumed workspace does not attach its pane until a switch, and a switch

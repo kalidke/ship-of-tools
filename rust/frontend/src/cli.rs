@@ -152,6 +152,11 @@ pub struct Cli {
     /// consumption of the `fe-commands/` control directory. `--capture`
     /// implies the same skips. Single-writer rule for multi-FE hosts (B8).
     pub ephemeral: bool,
+    /// This window never takes the window lease (ADR 0050): its close or kill
+    /// ends no sessions, and it shows no lease notice. For a media script that
+    /// records a resumed window across takes (`scripts/docs-media.sh`);
+    /// `--ephemeral` and `--capture` imply the same.
+    pub no_lease: bool,
     /// Comma-separated session/workspace labels to seed offline, so the
     /// `--capture` harness can render the bottom session strip without a
     /// live backend. The middle entry is made active (centered). Ignored
@@ -221,6 +226,7 @@ Automation / dev (screenshots, demos):
   --demo-sessions <a:working,b:idle,...>      --demo-repl-eval <file>
   --start-help-peek     show the temporary pane overlay at startup
   --ephemeral           don't persist state   --relaunched        (set by the supervisor)
+  --no-lease            this window's close ends no sessions (media scripts)
 
 Ctrl+? shows pane actions briefly; press again for the Help drawer.
 F1 opens Help directly. Focused pane borders show the active shortcuts."#;
@@ -251,6 +257,7 @@ impl Cli {
         let mut start_monitor = false;
         let mut start_scalebar = false;
         let mut ephemeral = false;
+        let mut no_lease = false;
         let mut demo_sessions: Vec<String> = Vec::new();
         let mut demo_session_states: Vec<Option<String>> = Vec::new();
         let mut demo_flash: Vec<String> = Vec::new();
@@ -396,6 +403,7 @@ impl Cli {
                 "--ephemeral" => {
                     ephemeral = true;
                 }
+                "--no-lease" => no_lease = true,
                 "--demo-sessions" => {
                     if let Some(v) = args.next() {
                         let parsed: Vec<(String, Option<String>)> =
@@ -468,6 +476,7 @@ impl Cli {
             start_monitor,
             start_scalebar,
             ephemeral,
+            no_lease,
             demo_sessions,
             demo_session_states,
             demo_flash,
