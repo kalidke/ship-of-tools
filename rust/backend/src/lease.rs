@@ -525,12 +525,36 @@ pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<
         f.write_all(&bytes)?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, path)?;
-    sync_dir(path)
+    replace_file(&tmp, path)
 }
 
-/// A rename or a delete is durable only once its directory is synced.
-/// Windows has no directory sync: std cannot open a directory handle there.
+/// The replace step. Unix renames, then syncs the directory so the rename
+/// is durable. Windows replaces with MoveFileExW write-through, which
+/// returns once the move is on disk.
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+        let wide = |p: &Path| p.as_os_str().encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (from, to) = (wide(tmp), wide(path));
+        // SAFETY: both buffers are NUL-terminated and outlive the call.
+        let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(tmp, path)?;
+        sync_dir(path)
+    }
+}
+
+/// A delete is durable only once its directory is synced. The Windows
+/// delete has no sync, since Win32 has no write-through delete: the one
+/// Windows residual.
 fn sync_dir(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
