@@ -696,7 +696,11 @@ and the acceptance matrix.
   lost or run twice. The FE retains the exact
   `(voyage_uuid, idem_key, take_epoch, bytes)` — at most one outstanding
   — across reconnect and, after re-attaching and re-taking, RESENDS THE
-  SAME KEY, which the durable dedupe index answers deterministically.
+  SAME KEY, which the dedupe index answers from the record (amended
+  2026-10-01). There is one exception, from ADR 0039's Durability
+  invariants: if `forwarded` never becomes durable inside ADR 0039's
+  unsynced window, an `input_recorded` the client never received can become
+  `input_delivery_unknown`, never a second forward.
   `input_recorded` completes it. `input_delivery_unknown` is never
   auto-retried (the wire forbids it): the input is dropped and marked
   visibly unknown. `input_refused_stale` means the epoch moved, so it is
@@ -852,8 +856,11 @@ There is no `detach` op — ordered pipe EOF is detach, clean or crash.
     requires the capability AND the durable holder/epoch — replaying
     identity fields without a `take` cannot type.
   - `input {controller_id, take_epoch, idem_key, bytes}` — the ack means
-    exactly "input recorded"; duplicate `idem_key`s get deterministic
-    answers; size-capped; the stale-epoch recheck happens immediately
+    exactly "input recorded": `input` and `forward_intent` are fsynced and
+    the forward syscall returned, while `forwarded` may still be inside
+    ADR 0039's unsynced window (amended 2026-10-01). Duplicate `idem_key`s
+    get the answer the dedupe index holds (reconnect rule above);
+    size-capped; the stale-epoch recheck happens immediately
     before the PTY write, and a stale refusal emits the WAL lattice's
     `{input, refused_stale_epoch}` fact — never a bare input frame
     (bare means must-retry) — with verifier-valid attribution (the

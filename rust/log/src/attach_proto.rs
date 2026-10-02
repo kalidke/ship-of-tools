@@ -662,7 +662,7 @@ pub enum Action {
     },
     /// Execute the full ADR 0039 input WAL for one wire `input` frame:
     /// dedupe-check `idem_key` against the store's index (folded once at
-    /// open, kept live) → per the lattice, either commit `input` (fsync) as
+    /// open, kept live) → per the lattice, either append `input` as
     /// a new entry or (a `{input}`-only retry) reuse the ORIGINAL input's
     /// identity without writing a second `input` frame → the LAST-MOMENT
     /// recheck of `(controller_id, take_epoch)` against DURABLE state
@@ -672,11 +672,12 @@ pub enum Action {
     /// possibly also match the durable identity, but the loop's own
     /// durable comparison is the actual source of truth and must run
     /// regardless) → if STALE (by either check): commit
-    /// `{input, refused_stale_epoch}` (fsync) directly, `forward_intent`
+    /// `{input, refused_stale_epoch}` under one fsync directly, `forward_intent`
     /// NEVER committed — this is exactly why the lattice's refused chain is
     /// `{input, refused}`, with no intent in it; if FRESH: commit
-    /// `input_fact:forward_intent` (fsync) → forward syscall → commit
-    /// `forwarded` (fsync). A `{input,intent}`-only chain (crash-in-flight,
+    /// `input_fact:forward_intent` (one fsync covers it and `input`) → forward
+    /// syscall → append `forwarded`, which the loop's next commit covers
+    /// (ADR 0039 Durability invariants). A `{input,intent}`-only chain (crash-in-flight,
     /// or a duplicate that reached exactly that far) replies
     /// `DeliveryUnknown` and appends nothing further. Report the outcome
     /// via [`AttachProto::input_outcome`]. Never emitted once

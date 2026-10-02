@@ -32,7 +32,9 @@ segments are the only truth.
   sees it; an acknowledged input can never be lost.
 - **Nothing observed can un-happen**: a frame reaches any watcher only after
   the fsync that covers it. Live readers never tail open files — they receive
-  frames from the writing capsule; offline readers read sealed segments.
+  frames from the writing capsule; offline readers read sealed segments. One
+  wire reply may precede its fact's fsync: `input_recorded` (Durability
+  invariants).
 - **A crash costs at most the unfinished tail** of the open segment, and only
   a *provably* torn tail is ever discarded; every other defect is loud.
   Sealed history is never auto-repaired.
@@ -172,9 +174,11 @@ producer_attached = { producer_kind: str, version: str, schema_hash?: hex64,
 - Producer frames carry exactly one same-epoch `attached_to` → their
   `producer_attached` frame.
 
-**Input WAL + dedupe** — order: `input` (fsync) → `input_fact:forward_intent`
-(fsync) → forward syscall → `forwarded` → `producer_observed`
-(echo-confirmed). Legal chains per idem_key, exactly: {input} ·
+**Input WAL + dedupe** (order amended 2026-10-01) — order: `input` →
+`input_fact:forward_intent` → fsync (one barrier covers both) → forward
+syscall → `forwarded` → `producer_observed` (echo-confirmed); a stale
+input is `input` → `input_fact:refused_stale_epoch` → fsync → reply. Legal
+chains per idem_key, exactly: {input} ·
 {input,intent} · {input,intent,forwarded} · {input,intent,forwarded,observed}
 · {input,refused}. Anything else is verifier-loud. Deterministic retry: chain
 = {input} ⇒ a same-key retry MUST re-attempt (new intent, same input
@@ -302,14 +306,36 @@ recovered_by_epoch?: u53, digest: Digest}` (nulls ⇔ empty segment).
 and the seal's own metadata via the preimage above. The chain claim is
 consistency-checking, not tamper-proofing.
 
-**Durability invariants (normative)**: input, input_fact, lifecycle,
-control_exchange, turn frames, producer_attached, and anything acknowledged
-or published to a watcher are committed (fsynced) before they are visible;
-opaque producer output may group-commit behind the capsule-publication
-watermark. Batching values and failure-signal transports are implementation
-policy, not format. After an append/fsync failure the capsule writes nothing
+**Durability invariants (normative, amended 2026-10-01)**: input,
+input_fact, lifecycle, control_exchange, turn frames, producer_attached, and
+anything acknowledged or published to a watcher are committed (fsynced)
+before they are visible, except `input_fact:forwarded` (below). Opaque
+producer output may group-commit behind the capsule-publication watermark.
+`input` is covered by the fsync after the `forward_intent` or
+`refused_stale_epoch` fact appended next in the same step, before the
+forward syscall or any reply. `input_fact:forwarded` is covered by a later
+fsync of the same segment; until then it is inside the unsynced window.
+While the run lasts, the writer commits it no later than its first check
+one group-commit window after the append, and it checks at least once per
+window plus one loop iteration. A run that ends without its final commit (error exit,
+panic, kill) leaves it to kernel writeback or the successor's recovery,
+which copies the valid prefix and fsyncs it. Any later fsync of the segment
+closes the window sooner. `input_recorded` may be sent, and a same-key
+retry answered from the live dedupe index, while that `forwarded` is
+unsynced.
+**The one cost:** if that `forwarded` never becomes durable (a power
+failure, or a failed fsync or writeback, inside that window), a key whose
+`input_recorded` was already sent replays as `input_delivery_unknown`,
+because the dedupe fold finds `{input, intent}`. No input is lost and none
+is forwarded twice. `input` and `forward_intent` are durable before the
+forward syscall: their fsync comes first, and a failed fsync returns before
+the syscall is made. So every replay finds the intent and never forwards
+again.
+Batching values and failure-signal transports are implementation policy,
+not format. After an append/fsync failure the capsule writes nothing
 further to the log — it stops reading producer output, refuses input, and
-signals out of band; recovery repairs first.
+signals out of band; recovery repairs first. A failed barrier fsync can
+halt the capsule after the key's `input_recorded` went out.
 
 ## Writer fencing
 
