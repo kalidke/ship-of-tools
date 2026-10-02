@@ -594,6 +594,78 @@ LIB_WAIT="$(sed -n 's/^SOT_LAUNCH_WAIT_S=\([0-9]*\).*/\1/p' "$LIB")"
 check "the library's launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$LIB_WAIT"
 
 # ---------------------------------------------------------------------------
+# sot-apply fixtures: an install prefix with a real sot-apply, a git checkout
+# holding this tree's library and unit template, and a staged v9.9.9.
+SRC="$(cd "$(dirname "$0")/../.." && pwd)"
+mk_apply_fixture() {  # <dir> <owned-unit 0|1> <owned-wrapper 0|1>
+    local d="$1" ou="$2" ow="$3" h="$1/home" P="$1/prefix" co="$1/co" other=/other/prefix
+    local stage="$1/prefix/updates/v9.9.9-linux-x86_64" top=sot-v9.9.9-linux-x86_64 sha unit_owner wrap_owner
+    mkdir -p "$h/.config/systemd/user" "$h/.local/bin" "$P/bin" "$P/updates" "$P/repo" "$d/prev-co" \
+        "$co/scripts/lib" "$co/deploy" "$stage/$top" "$d/stubs"
+    mk_stubs "$d/stubs"
+    : > "$d/log"
+    cp "$SRC/scripts/sot-apply.sh" "$P/bin/sot-apply"; chmod 0755 "$P/bin/sot-apply"
+    printf 'old-sot\n' > "$P/bin/sot"; printf 'old-sotd\n' > "$P/bin/sotd"
+    chmod 0755 "$P/bin/sot" "$P/bin/sotd"
+    printf '{\n  "tag": "v9.9.8",\n  "version": "9.9.8",\n  "commit": "aaa",\n  "service": "systemd"\n}\n' > "$P/install.json"
+    ln -sfn "$d/prev-co" "$P/repo/current"
+    cp "$SRC/scripts/lib/sot-daemon.sh" "$co/scripts/lib/"; cp "$SRC/deploy/sotd.service" "$co/deploy/"
+    ( cd "$co" && git init -q . && git add . && git -c user.name=t -c user.email=t@t commit -q -m c )
+    printf 'new-sot\n' > "$stage/$top/sot"; printf 'new-sotd\n' > "$stage/$top/sotd"
+    printf 'asset\n' > "$stage/$top.tar.gz"
+    sha="$(sha256sum "$stage/$top.tar.gz" | cut -d' ' -f1)"
+    printf '{}\n' > "$stage/manifest.json"
+    printf '{\n  "tag": "v9.9.9",\n  "target": "linux-x86_64",\n  "checkout": "%s",\n  "commit": "%s",\n  "asset": "%s.tar.gz",\n  "asset_sha256": "%s"\n}\n' \
+        "$co" "$(cd "$co" && git rev-parse HEAD)" "$top" "$sha" > "$P/updates/pending-linux-x86_64.json"
+    unit_owner="$other"; [ "$ou" = 1 ] && unit_owner="$P"
+    wrap_owner="$other"; [ "$ow" = 1 ] && wrap_owner="$P"
+    printf '[Service]\nExecStart=%s/bin/sotd --x\nRestart=always\n' "$unit_owner" > "$h/.config/systemd/user/sotd.service"
+    printf '#!/usr/bin/env bash\nPENDING="%s/updates/pending-linux-x86_64.json"\nstart_daemon_if_needed() {\n:\n}\n' "$wrap_owner" > "$h/.local/bin/sot-launch"
+    chmod 0755 "$h/.local/bin/sot-launch"
+    cp "$h/.config/systemd/user/sotd.service" "$d/unit.orig"; cp "$h/.local/bin/sot-launch" "$d/wrap.orig"
+}
+run_apply() {  # <dir> [args]: rmdir is not in $TOOLS, so the staging lock is cleared here
+    local d="$1"; shift
+    rm -rf "${d:?}/prefix/updates/.lock"
+    ( HOME="$d/home" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" STUB_SOCKET="$d/sot.sock" \
+        "$d/prefix/bin/sot-apply" "$@" ) > "$d/out" 2>&1 || true
+}
+reloads() { grep -c '^--user daemon-reload$' "$1/log" || true; }
+
+# ---------------------------------------------------------------------------
+case_start "apply_rerenders_owned_unit"
+d="$WORK/ap1"; mk_apply_fixture "$d" 1 1; run_apply "$d"
+U="$d/home/.config/systemd/user/sotd.service"
+check "the applied tag is recorded" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
+check "the owned unit now restarts on failure" "1" "$(grep -c '^Restart=on-failure$' "$U" || true)"
+check "exactly one daemon-reload" "1" "$(reloads "$d")"
+check "the unit backup equals the original" "same" "$(cmp -s "$d/unit.orig" "$d/prefix/updates/sotd.service.prev-linux-x86_64" && echo same || echo differ)"
+
+# ---------------------------------------------------------------------------
+case_start "apply_skips_foreign_unit"
+d="$WORK/ap2"; mk_apply_fixture "$d" 0 0; run_apply "$d"
+check "the applied tag is recorded" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
+check "a foreign unit is byte-identical" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
+check "no daemon-reload" "0" "$(reloads "$d")"
+check "no unit backup" "no" "$([ -e "$d/prefix/updates/sotd.service.prev-linux-x86_64" ] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "apply_rerenders_owned_wrapper"
+d="$WORK/ap3"; mk_apply_fixture "$d" 1 1
+W="$d/home/.local/bin/sot-launch"; ino0="$(stat -c %i "$W")"
+run_apply "$d"
+check "the wrapper carries the marker" "1" "$(grep -c '^# sot-launch: all-in-one$' "$W" || true)"
+check "the wrapper is executable" "yes" "$([ -x "$W" ] && echo yes || echo no)"
+check "the wrapper is a new inode" "changed" "$([ "$(stat -c %i "$W")" != "$ino0" ] && echo changed || echo same)"
+check "the wrapper backup equals the original" "same" "$(cmp -s "$d/wrap.orig" "$d/prefix/updates/sot-launch.prev-linux-x86_64" && echo same || echo differ)"
+
+# ---------------------------------------------------------------------------
+case_start "apply_skips_foreign_wrapper"
+d="$WORK/ap4"; mk_apply_fixture "$d" 1 0; run_apply "$d"
+check "the applied tag is recorded" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
+check "a foreign wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'

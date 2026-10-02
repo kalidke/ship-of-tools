@@ -42,6 +42,8 @@ esac
 PENDING="$UPDATES/pending-$TARGET.json"
 LASTGOOD="$UPDATES/last-good-$TARGET.json"
 MARKER="$UPDATES/just-applied-$TARGET"
+UNIT_BAK="$UPDATES/sotd.service.prev-$TARGET"
+WRAP_BAK="$UPDATES/sot-launch.prev-$TARGET"
 
 # ---- prefer a STAGED release's OWN sot-apply, once -------------------------
 # Finding 1b (v0.6.5 macOS field report): the INSTALLED copy of this
@@ -214,6 +216,8 @@ PREV_CHECKOUT="$(readlink "$PREFIX/repo/current" 2>/dev/null || echo "")"
     printf '  "checkout": "%s"\n' "$PREV_CHECKOUT"
     printf '}\n'
 } > "$LASTGOOD.tmp" && mv -f "$LASTGOOD.tmp" "$LASTGOOD"
+# Backups belong to the latest apply: sot_rerender_owned makes them below.
+rm -f "${UNIT_BAK:?}" "${WRAP_BAK:?}"
 
 # ---- the flip: binaries, then pointers — all-or-restore ----------------------
 restore_previous() {
@@ -259,6 +263,15 @@ if [ -f "$PREFIX/install.json" ]; then
        || ! mv -f "$PREFIX/install.json.tmp" "$PREFIX/install.json"; then
         restore_previous "rewriting install.json failed"
     fi
+fi
+
+# ---- re-render the unit and wrapper this install owns -------------------------
+# The last fallible step: the library comes from the commit being applied, and
+# an older target without one re-renders nothing.
+if [ -r "$CHECKOUT/scripts/lib/sot-daemon.sh" ]; then
+    . "$CHECKOUT/scripts/lib/sot-daemon.sh" \
+        && sot_rerender_owned "$PREFIX" "$TARGET" "$CHECKOUT" "$UNIT_BAK" "$WRAP_BAK" \
+        || restore_previous "re-rendering the unit or wrapper failed"
 fi
 
 # Success: arm the crash-loop health window, clear the pointer.

@@ -195,3 +195,29 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     else echo "see /tmp/sotd.log" >&2; fi
     return 1
 }
+
+# Re-render, from CHECKOUT's own templates, the unit and the wrapper this
+# install owns, so an update carries their text along with the binaries.
+# Each file is backed up first (UNIT_BAK / WRAP_BAK exist only when that file
+# was re-rendered); the new text is written beside the target and moved in, so
+# a running wrapper keeps its old inode. Returns 1 on any write failure.
+sot_rerender_owned() {  # <prefix> <target> <checkout> <unit-bak> <wrap-bak>
+    local prefix="$1" target="$2" checkout="$3" unit_bak="$4" wrap_bak="$5"
+    local unit="$HOME/.config/systemd/user/sotd.service" wrapper="$HOME/.local/bin/sot-launch"
+    if sot_service_owned "$prefix"; then
+        cp -p "$unit" "$unit_bak" \
+            && render_sotd_unit "$prefix" "$checkout/deploy/sotd.service" "$unit.new" \
+            && mv -f "$unit.new" "$unit" || return 1
+        # The file on disk is right either way; the live check reads NeedDaemonReload.
+        timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
+            || echo "sot-apply: systemctl --user daemon-reload failed (the unit file is current)" >&2
+    fi
+    if [ -f "$wrapper" ] \
+       && { grep -q '^# sot-launch: all-in-one$' "$wrapper" || grep -q '^start_daemon_if_needed()' "$wrapper"; } \
+       && [ "$(sot_wrapper_owner_prefix < "$wrapper")" = "$prefix" ]; then
+        cp -p "$wrapper" "$wrap_bak" \
+            && render_sot_launch "$prefix" "$target" "$wrapper.new" \
+            && mv -f "$wrapper.new" "$wrapper" || return 1
+    fi
+    return 0
+}
