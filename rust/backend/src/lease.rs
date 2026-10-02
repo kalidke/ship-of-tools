@@ -39,7 +39,8 @@ fn handover_bound_ms() -> u64 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct HeldRecord {
     pub v: u32,
-    /// The writing daemon's own `boot_identity()` (`""` on Windows). A
+    /// The writing daemon's own `boot_identity()` (`""` on Windows when
+    /// the BootId is unreadable). A
     /// record from another boot plans Cleanup at once.
     pub boot: String,
     /// The live leases' identities, plus a pending start's recorded
@@ -261,7 +262,7 @@ impl Leases {
             tracing::warn!(pid = req.pid, "fe.lease refused: bad or missing token");
             return (LeaseOutcome::Foreign, None);
         }
-        if req.boot != own_boot || req.pid != peer.pid || req.created != peer.created {
+        if !boots_match(&req.boot, own_boot, cfg!(windows)) || req.pid != peer.pid || req.created != peer.created {
             return (LeaseOutcome::Foreign, None);
         }
         let who = ProcessIdentity { boot: req.boot.clone(), pid: req.pid, created: req.created };
@@ -439,6 +440,15 @@ pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<
     std::fs::rename(&tmp, path)
 }
 
+/// Whether a claimed boot matches this daemon's. Strict is plain equality.
+/// Lenient (Windows) also accepts an empty side: the peer proof there is
+/// the pipe client's pid plus its absolute creation time, which a
+/// forwarder cannot match, so a failed BootId read must not leave the
+/// window unleased.
+fn boots_match(req_boot: &str, own_boot: &str, lenient: bool) -> bool {
+    req_boot == own_boot || (lenient && (req_boot.is_empty() || own_boot.is_empty()))
+}
+
 /// A start's plan, from the record and this boot alone: it takes no
 /// process liveness, so a reused pid can never resume or hold a row.
 pub(crate) fn startup_plan(
@@ -451,7 +461,13 @@ pub(crate) fn startup_plan(
         Err(_) => return StartPlan::Cleanup,
         Ok(Some(rec)) => rec,
     };
-    if rec.closing || own_boot != Ok(rec.boot.as_str()) {
+    // An empty boot on either side is unknown (Windows with an unreadable
+    // BootId): only two non-empty, different boots plan Cleanup.
+    let other_boot = match own_boot {
+        Err(()) => true,
+        Ok(own) => !own.is_empty() && !rec.boot.is_empty() && own != rec.boot,
+    };
+    if rec.closing || other_boot {
         return StartPlan::Cleanup;
     }
     if let Some(until_ms) = rec.handover_until_ms {
@@ -704,6 +720,36 @@ mod tests {
     }
 
     #[test]
+    fn boots_match_table() {
+        for (req, own, strict, lenient) in [
+            ("80", "80", true, true),
+            ("80", "81", false, false),
+            ("80", "", false, true),
+            ("", "80", false, true),
+            ("", "81", false, true),
+            ("", "", true, true),
+        ] {
+            assert_eq!(boots_match(req, own, false), strict, "strict {req:?} {own:?}");
+            assert_eq!(boots_match(req, own, true), lenient, "lenient {req:?} {own:?}");
+        }
+    }
+
+    #[test]
+    fn startup_plan_boot_row_compares_only_two_nonempty_boots() {
+        use StartPlan::*;
+        let with = |boot: &str| Ok(Some(HeldRecord { boot: boot.into(), ..empty() }));
+        for (name, rec_boot, own, want) in [
+            ("80 vs 81", "80", Ok("81"), Cleanup),
+            ("80 vs unknown", "80", Ok(""), Resume),
+            ("unknown vs 81", "", Ok("81"), Resume),
+            ("unknown vs unknown", "", Ok(""), Resume),
+            ("own Err", "80", Err(()), Cleanup),
+        ] {
+            assert_eq!(startup_plan(&with(rec_boot), own, T0), want, "{name}");
+        }
+    }
+
+    #[test]
     fn startup_plan_table() {
         use StartPlan::*;
         let _takes_no_liveness: fn(&Result<Option<HeldRecord>, String>, Result<&str, ()>, u64) -> StartPlan = startup_plan;
@@ -735,8 +781,10 @@ mod tests {
             assert_eq!(startup_plan(read, Ok(BOOT), T0), *want, "{name}");
             let unknown = if matches!(read, Ok(Option::None)) { Resume } else { Cleanup };
             assert_eq!(startup_plan(read, Err(()), T0), unknown, "{name}, own boot unknown");
-            let windows = read.clone().map(|r| r.map(|r| HeldRecord { boot: if r.boot == BOOT { String::new() } else { r.boot.clone() }, ..r }));
-            assert_eq!(startup_plan(&windows, Ok(""), T0), *want, "{name}, \"\" = \"\"");
+            if !matches!(read, Ok(Some(r)) if r.boot != BOOT) {
+                let windows = read.clone().map(|r| r.map(|r| HeldRecord { boot: String::new(), ..r }));
+                assert_eq!(startup_plan(&windows, Ok(""), T0), *want, "{name}, \"\" = \"\"");
+            }
         }
     }
 
