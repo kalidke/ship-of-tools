@@ -1827,7 +1827,8 @@ _SOT_AGENTS=" claude codex "
 # name) for a process whose arguments it cannot read: that record is `name`, US,
 # RS (\036) — arguments unknown, which equals nothing, as on Windows — except
 # `(node)`, which cannot be told from an agent's host and is `!truncated`, ending
-# the output.
+# the output. A readable command line that is literally `(...)` is read the same
+# way, as its name with arguments unknown.
 _sot_ps_records() {
     awk -v me="$1" -v us="$(printf '\037')" -v rs="$(printf '\036')" '
         { pid = $1; pp[pid] = $2; $1 = ""; $2 = ""; sub(/^ +/, "")
