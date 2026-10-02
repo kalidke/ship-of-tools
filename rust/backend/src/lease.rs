@@ -221,6 +221,9 @@ impl State {
         self.phase = Phase::Closing;
         self.handover_until_ms = None;
         self.pending = None;
+        self.awaited.clear();
+        self.hold_until_ms = None;
+        self.close_at_hold = false;
         self.persist_or_log();
         true
     }
@@ -387,18 +390,20 @@ impl Leases {
         if st.phase != Phase::Open {
             return Tick::None;
         }
-        if let Some(until) = st.hold_until_ms.filter(|until| st.pending.is_none() && *until <= now_ms) {
-            let pids = st.awaited_pids();
-            st.awaited.clear();
-            st.hold_until_ms = None;
+        if let Some(until) = st.hold_until_ms.filter(|until| *until <= now_ms) {
             if st.close_at_hold && st.held.is_empty() {
+                let pids = st.awaited_pids();
                 tracing::info!("recorded window(s) {pids:?} did not re-lease by {until}: shutting down as a close");
                 st.close();
                 drop(st);
                 self.gone.send_replace(true);
                 return Tick::Shutdown;
             }
-            st.persist_or_log();
+            if st.pending.is_none() {
+                st.awaited.clear();
+                st.hold_until_ms = None;
+                st.persist_or_log();
+            }
         }
         if let Some(p) = st.pending.as_mut().filter(|p| !p.expired && p.until_ms <= now_ms) {
             p.expired = true;
@@ -1067,6 +1072,28 @@ mod tests {
                 assert_eq!(startup_plan(&windows, Ok(""), T0), *want, "{name}, \"\" = \"\"");
             }
         }
+    }
+
+    #[test]
+    fn deferred_close_survives_a_pending_expiry() {
+        let f = fixture(Some(BOOT));
+        let until = T0 + 60_000;
+        f.leases.install_pending(until, Qualify::Holders(vec![id(1), id(2)])).unwrap();
+        let gen = f.grant(&id(3));
+        assert_eq!(f.leases.depart(gen, Some(LeaveIntent::Close), T0), Decision::None);
+        assert_eq!(f.leases.tick(until), Tick::Shutdown, "a deferred close is a shutdown at the deadline");
+        assert!(f.on_disk().expect("the record is kept").closing);
+    }
+
+    #[test]
+    fn shutdown_forgets_awaited_holders() {
+        let f = fixture(Some(BOOT));
+        f.leases.install_pending(T0 + 60_000, Qualify::Holders(vec![id(1), id(2)])).unwrap();
+        f.leases.begin_close();
+        f.leases.finish_shutdown(0, vec![]).unwrap();
+        let rec = f.on_disk();
+        assert!(rec.as_ref().map_or(true, |r| r.holders.is_empty() && r.hold_until_ms.is_none()), "{rec:?}");
+        assert_eq!(startup_plan(&read_record(&f.path), Ok(BOOT), T0 + 1), StartPlan::Resume);
     }
 
     #[test]
