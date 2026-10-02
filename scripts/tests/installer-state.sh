@@ -1038,6 +1038,15 @@ check "it says the release predates this installer" "1" \
     "$(printf '%s\n' "$out" | grep -c 'release v0.0.1 predates this installer (no scripts/lib/sot-daemon.sh)' || true)"
 check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
 check "no release asset was requested" "0" "$(grep -c 'releases/download' "$d/curl.log" || true)"
+# A network failure (curl exit 6) is said as one, never as an old release.
+sed -i 's/exit 22 ;; esac/exit 6 ;; esac/' "$d/stubs/curl"
+rc=0
+out="$(env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" CURL_LOG="$d/curl.log" SOT_INSTALL_TAG=v0.0.1 \
+    bash "$(dirname "$0")/../install.sh" --local --no-service --prefix "$d/prefix" 2>&1)" || rc=$?
+check "an unreachable network exits non-zero" "yes" "$([ "$rc" -ne 0 ] && echo yes || echo no)"
+check "it names the network, not the release" "1 0" \
+    "$(printf '%s\n' "$out" | grep -c 'cannot reach raw.githubusercontent.com to check release v0.0.1 (curl exit 6)' || true) $(printf '%s\n' "$out" | grep -c 'predates' || true)"
+check "the prefix was still never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

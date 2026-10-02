@@ -543,9 +543,14 @@ say "installing Ship of Tools $VERSION into $PREFIX"
 # This body sources the tag's scripts/lib/sot-daemon.sh; a release older than
 # that library has none. Ask for it BEFORE the first copy, unit or symlink
 # (only the depot-config heal above has run). The one-liner never pairs this
-# body with an old tree: it runs the tag's own installer.
-curl -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" \
+# body with an old tree: it runs the tag's own installer. curl's exit 22 is an
+# HTTP error (the file is absent); any other failure is the network.
+lib_rc=0
+curl -fsSI -o /dev/null "https://raw.githubusercontent.com/$REPO/$VERSION/scripts/lib/sot-daemon.sh" || lib_rc=$?
+[ "$lib_rc" -ne 22 ] \
     || die "release $VERSION predates this installer (no scripts/lib/sot-daemon.sh); install it with its own installer: run the one-liner without SOT_INSTALL_TAG, or that tag's scripts/install.sh"
+[ "$lib_rc" -eq 0 ] \
+    || die "cannot reach raw.githubusercontent.com to check release $VERSION (curl exit $lib_rc); nothing was changed, try again"
 
 # ---- 2. download + verify ----------------------------------------------------
 ASSETS=("SHA256SUMS" "sot-$VER-$TARGET.tar.gz")
