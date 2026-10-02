@@ -729,11 +729,11 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             @test_logs (:info, r"no settings.json in this Claude account folder") match_mode = :any ShipTools._claude_settings_targets(home, joinpath(home, ".claude"))
             @test ShipTools._claude_settings_targets(home, joinpath(home, ".claude")) ==
                   [realpath(default), realpath(a)]
-            # The install's own dir is the one place a MISSING file is returned
-            # (to be created); the default is still included when it is elsewhere.
+            # An install run from inside an account folder with no settings.json
+            # never creates one there (ruling 1); the default takes the hooks.
             own = joinpath(auth, "c")
             @test ShipTools._claude_settings_targets(home, own) ==
-                  [joinpath(own, "settings.json"), realpath(default), realpath(a)]
+                  [realpath(default), realpath(a)]
             # Nothing was created through the dangling link.
             @test islink(d) && !ispath(d)
 
@@ -826,6 +826,76 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "_install_claude_hooks: never creates a settings.json in an account folder" begin
+        jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
+        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+        mktempdir() do home
+            mkpath(joinpath(home, ".claude"))
+            c = joinpath(home, ".claude-auth", "c"); mkpath(c)
+            srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
+            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                ShipTools._install_claude_hooks(srchooks, c)
+                @test isempty(readdir(c))
+                f = joinpath(home, ".claude", "settings.json")
+                @test isfile(f)
+                for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                    @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
+                end
+            end
+        end
+    end
+
+    @testset "_claude_settings_targets: an unreadable account folder is skipped, not fatal" begin
+        mktempdir() do home
+            default = joinpath(home, ".claude", "settings.json")
+            mkpath(dirname(default)); write(default, "{}")
+            a = joinpath(home, ".claude-auth", "a", "settings.json")
+            mkpath(dirname(a)); write(a, "{}")
+            locked = joinpath(home, ".claude-auth", "locked")
+            mkpath(locked); write(joinpath(locked, "settings.json"), "{}")
+            chmod(locked, 0o000)
+            try
+                restrained = try isfile(joinpath(locked, "settings.json")); false catch; true end
+                if !restrained
+                    @test_skip false
+                else
+                    @test ShipTools._claude_settings_targets(home, joinpath(home, ".claude")) ==
+                          [realpath(default), realpath(a)]
+                end
+            finally
+                chmod(locked, 0o755)
+            end
+        end
+    end
+
+    @testset "_install_claude_hooks: a rewrite keeps the file's mode and a re-run does not rewrite" begin
+        if Sys.iswindows()
+            @test_skip false
+        else
+            jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
+            cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+            mktempdir() do home
+                f = joinpath(home, ".claude", "settings.json")
+                mkpath(dirname(f)); write(f, "{}")
+                chmod(f, 0o604)  # a mode no umask produces
+                srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
+                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                    ShipTools._install_claude_hooks(srchooks, joinpath(home, ".claude"))
+                    @test filemode(f) & 0o777 == 0o604
+                    for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
+                        @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
+                    end
+                    ino1 = stat(f).inode
+                    ShipTools._install_claude_hooks(srchooks, joinpath(home, ".claude"))
+                    @test stat(f).inode == ino1
+                    @test filemode(f) & 0o777 == 0o604
+                end
+            end
+        end
+    end
+
     @testset "installer prunes the retired session-start aliases and ccbe" begin
         # Both adapters route through _install_skills: the Codex-only path
         # that never carried resource files must not silently return.
@@ -878,16 +948,25 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
                     {"matcher":"clear","hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-postclear-reminder.sh"}]},
                     {"matcher":"startup","hooks":[{"type":"command","command":"/usr/local/bin/mine.sh"}]}],
                   "Stop":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-idle.sh"}]}],
+                  "Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"}]}],
                   "PostToolUse":[{"hooks":[{"type":"command","command":"/usr/local/bin/other.sh"}]}]}}""")
             end
             ShipTools._remove_stale_comm_hooks!(settings)
             txt = read(settings, String)
             @test !occursin("comm-postcompact-reminder", txt)
             @test !occursin("comm-postclear-reminder", txt)
-            @test !occursin("comm-status-idle", txt)
+            @test occursin("comm-status-idle", txt)
             @test occursin("/usr/local/bin/mine.sh", txt)
             @test occursin("/usr/local/bin/other.sh", txt)
-            @test !occursin("\"Stop\"", txt)
+            @test occursin("\"Stop\"", txt)
+            @test !occursin("\"Notification\"", txt)
+        end
+        mktempdir() do dir
+            settings = joinpath(dir, "settings.json")
+            write(settings, """{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"},{"type":"command","command":"/usr/local/bin/mine.sh"}]}]}}""")
+            ShipTools._remove_stale_comm_hooks!(settings)
+            got = split(readchomp(`jq -r '.hooks.Notification[].hooks[].command' $settings`), '\n'; keepempty = false)
+            @test got == ["/usr/local/bin/mine.sh"]
         end
     end
 

@@ -136,7 +136,10 @@ those are set; `~/.sot-comm` follows `SOT_COMM_HOME`. The other paths do not
 move: `~/.local/bin`, `~/.agents/plugins`, `~/.claude-auth` and everything in
 the first table are always written in your home directory, and an existing
 `~/.claude/settings.json` gets the hooks even when `CLAUDE_CONFIG_DIR` points
-elsewhere. Setting those three variables is
+elsewhere. If `CLAUDE_CONFIG_DIR` names an account folder under
+`~/.claude-auth` that has no `settings.json`, none is created there; the hooks
+go into `~/.claude/settings.json` (created if missing), which the backend links
+into the account. Setting those three variables is
 therefore not an isolated try-out; for that, install under a separate user
 account or in a virtual machine.
 
@@ -220,8 +223,10 @@ them.
 Then, by hand:
 
 - remove the hook entries that call `~/.sot-comm/bin/comm-*.sh` from
-  `~/.claude/settings.json` and from each `~/.claude-auth/<name>/settings.json`
-  that is a file of its own;
+  `~/.claude/settings.json` (even when `CLAUDE_CONFIG_DIR` is set), from
+  `$CLAUDE_CONFIG_DIR/settings.json` when it is set, and from each
+  `~/.claude-auth/<name>/settings.json`; where one of these is a link, edit the
+  file it points to, once;
 - if Codex is installed, remove the `sot-comm@sot-local` plugin (it is listed
   by `codex plugin list`);
 - remove the `sot-local` entry from `~/.agents/plugins/marketplace.json`, or
