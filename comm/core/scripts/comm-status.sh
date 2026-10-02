@@ -23,17 +23,20 @@
 #   working | idle     clear `question`, `waiting` and `done`
 #   blocked ["q"]       sets `question` (keeps `waiting` — red outranks
 #                       purple; the wait returns when the answer turn ends);
-#                       no text keeps the question's own text, else the note.
+#                       no text keeps the question's own text, and with none
+#                       of its own the stamp is refused (rc 2, nothing written).
 #                       With $SOT_COMM_ASKQ_ID set (the AskUserQuestion hook
 #                       passes its tool_use_id) it also creates
 #                       state/askq-<id>.marker, the proof that the matching
 #                       PostToolUse is THIS dialog's answer; a manual
 #                       `blocked` sets no variable and writes no marker
-#   waiting ["s"]       sets `waiting` (keeps `question`); no text keeps the
-#                       wait's own text, else the note
+#   waiting ["s"]       sets `waiting` and clears `question` (a wait says
+#                       nothing needs the user; the cleared text is printed on
+#                       stderr); no text keeps the wait's own text, and with
+#                       none of its own the stamp is refused, like blocked
 #   done                sets `done`, clears `question` and `waiting`
 #   TEXT omitted keeps the prior declaration line (`note`); pass "" to clear
-#   it.
+#   it (working, idle and done only: blocked and waiting never clear a text).
 #
 # The registry row is a set of FACTS, not one state (ADR 0044 amendment,
 # 2026-09-19: "the row is a set of facts reduced by display priority").
@@ -112,13 +115,25 @@ ORIGIN="${COMM_STATUS_ORIGIN:-machine}"
 
 # The whole read-decide-write, run under the registry lock.
 status_txn() {
-    local row_rc=0
-    sot_registry_read "$NAME" >/dev/null || row_rc=$?
+    local row_rc=0 row
+    row="$(sot_registry_read "$NAME")" || row_rc=$?
     case "$row_rc" in 0) ;; 1) return 0 ;; *) echo "$UNREADABLE" >&2; return 1 ;; esac   # row gone: no-op
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): SUM is
     # free-text and must never reach jq via --arg.
     local sum_file; sum_file="$(sot_jq_rawfile "$SUM")" || return 1
     local ts rc=0
+    # A question or wait always carries readable text: with none given and none
+    # of its own on the row, the stamp is refused (inside the lock, no write).
+    if [ -z "$SUM" ] && { [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; }; then
+        local own fld=waiting; [ "$VERB" = blocked ] && fld=question
+        own="$(printf '%s' "$row" | jq -r ".$fld // \"\"" 2>/dev/null)"
+        [ -n "$own" ] || { echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2; }
+    fi
+    # `waiting` clears a pending question; say what it hid.
+    if [ "$VERB" = waiting ]; then
+        local pq; pq="$(printf '%s' "$row" | jq -r '.question // ""' 2>/dev/null)"
+        [ -z "$pq" ] || echo "cleared pending question: $pq" >&2
+    fi
     ts="$(now_iso)"
     registry_replace '
       .agents[$n] |= (
@@ -136,10 +151,11 @@ status_txn() {
                   # so a woken or answered row never shows a line written
                   # before its latest declaration (a row read working with a
                   # days-old note — field report, 2026-10-01).
-            if $st == "blocked" then (.question = (if $h == "1" then $sum else (.question // .note // "") end))
-                | (if $h == "1" then del(.note) else . end)
-              elif $st == "waiting" then (.waiting = (if $h == "1" then $sum else (.waiting // .note // "") end))
-                | (if $h == "1" then del(.note) else . end)
+            if $st == "blocked" then (.question = (if $sum != "" then $sum else .question end))
+                | (if $sum != "" then del(.note) else . end)
+              elif $st == "waiting" then (.waiting = (if $sum != "" then $sum else .waiting end))
+                | del(.question)
+                | (if $sum != "" then del(.note) else . end)
               elif $st == "done" then (if $h == "1" then .note = $sum else . end) | .done = true | del(.question, .waiting)
               else (if $h == "1" then .note = $sum else . end) | del(.question, .waiting, .done) end   # working, idle
           end

@@ -59,11 +59,11 @@ ln -s "$SCRIPTS_DIR/comm-status.sh" "$FLAT_BIN_DIR/comm-status.sh"
 
 W() { printf '%s' "$1" | bash "$HOOKS_DIR/comm-status-working.sh"; }
 I() { printf '{}' | bash "$HOOKS_DIR/comm-status-idle.sh"; }
-# B: the PreToolUse AskUserQuestion hook (sends blocked, then stop). Carries
+# B: the PreToolUse AskUserQuestion hook (sends blocked with the question, then stop). Carries
 # a fixed tool_use_id so a paired HBQ call in the SAME test can consume the
 # marker it drops; a bare HBQ with no preceding B for that id is exactly the
 # "foreign dialog, no marker" case (see the fix-1 cases below).
-B() { printf '{"tool_name":"AskUserQuestion","tool_use_id":"askq-test"}' | bash "$HOOKS_DIR/comm-status-blocked.sh"; }
+B() { printf '{"tool_name":"AskUserQuestion","tool_use_id":"askq-test","tool_input":{"questions":[{"question":"A question?"}]}}' | bash "$HOOKS_DIR/comm-status-blocked.sh"; }
 # HB: a heartbeat tool call (PostToolUse, tool_name=Bash). HBQ: the
 # AskUserQuestion ANSWER's PostToolUse. Both route through FLAT_BIN_DIR so
 # the hook's own NAME resolution (SELF_DIR/comm-context.sh) succeeds. HB
@@ -266,9 +266,50 @@ case_a_blank_declaration_keeps_its_own_text() {
     for v in blocked waiting; do
         seed idle; "$ST" idle "old" >/dev/null; "$ST" "$v" "Q" >/dev/null; "$ST" "$v" >/dev/null
         [ "$(summ)" = "Q" ] || { echo "    $v, then $v bare: summary '$(summ)'"; return 1; }
-        seed idle; "$ST" idle "n" >/dev/null; "$ST" "$v" >/dev/null
-        [ "$(summ)" = "n" ] || { echo "    $v bare over a note: summary '$(summ)'"; return 1; }
+        # No text of its own to keep: refused, and nothing is written.
+        seed idle; "$ST" idle "n" >/dev/null; local rc=0; "$ST" "$v" >/dev/null 2>&1 || rc=$?
+        [ "$rc" = 2 ] && [ "$(summ)" = "n" ] || { echo "    $v bare over a note: rc $rc, summary '$(summ)'"; return 1; }
     done
+}
+# `waiting` is the model's word that nothing needs the user: it clears an open
+# question, and says so on stderr so a mistaken stamp shows what it hid.
+case_waiting_clears_an_open_question() {
+    seed_facts '{}'; "$ST" blocked "q?" >/dev/null
+    local err; err="$("$ST" waiting "the job" 2>&1 >/dev/null)"; local rc=$?
+    [ "$rc" = 0 ] || { echo "    waiting rc $rc"; return 1; }
+    expect waiting/-/-/w/- cleared || return 1
+    [ "$err" = "cleared pending question: q?" ] || { echo "    stderr '$err'"; return 1; }
+    [ "$(summ)" = "the job" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+# A blocked or waiting with no text and no text of its own on the row is
+# refused: a question or wait always carries readable text.
+case_textless_blocked_or_waiting_is_refused() {
+    local v arg rc
+    for v in blocked waiting; do
+        for arg in none empty; do
+            seed_facts '{"note":"n"}'; rc=0
+            if [ "$arg" = none ]; then "$ST" "$v" >/dev/null 2>"$WORK/err" || rc=$?
+            else "$ST" "$v" "" >/dev/null 2>"$WORK/err" || rc=$?; fi
+            [ "$rc" = 2 ] || { echo "    $v ($arg): rc $rc"; return 1; }
+            expect /-/-/-/- "$v ($arg)" || return 1
+            [ "$(summ)" = "prior" ] || { echo "    $v ($arg): summary '$(summ)'"; return 1; }
+            grep -qx "comm-status.sh: $v needs its text -- stamp discarded" "$WORK/err" \
+                || { echo "    $v ($arg): stderr '$(cat "$WORK/err")'"; return 1; }
+        done
+    done
+}
+case_askq_hook_carries_the_question() {
+    seed_facts '{"floor":"machine"}'
+    printf '%s' '{"tool_use_id":"t1","tool_input":{"questions":[{"question":"Ship it?"}]}}' \
+        | bash "$HOOKS_DIR/comm-status-blocked.sh"
+    expect blocked/-/q/-/- askq || return 1
+    [ "$(summ)" = "Ship it?" ] || { echo "    summary '$(summ)'"; return 1; }
+}
+# A refused marker stamp must not stop the turn either: the floor stays.
+case_marker_question_without_text_leaves_the_floor() {
+    seed_facts '{"floor":"machine"}'
+    IT $'SITREP-QUESTION:' >/dev/null
+    expect /machine/-/-/- floor-kept
 }
 case_human_answer_clears_question_ends_blue() {
     seed idle; W "$GENUINE"; "$ST" blocked "the question?" >/dev/null; floor_now
@@ -909,6 +950,10 @@ check "a question mid-turn is green, red once the turn stops" case_question_duri
 check "a machine wake on red goes green; a plain answer returns red" case_machine_wake_on_red_goes_green_returns_at_stop
 check "declared text supersedes an old note (blocked and waiting)" case_declared_text_supersedes_an_old_note
 check "a declaration without text keeps the fact's own text (blocked and waiting)" case_a_blank_declaration_keeps_its_own_text
+check "waiting clears an open question and prints what it hid" case_waiting_clears_an_open_question
+check "a blocked or waiting with no text is refused, nothing written" case_textless_blocked_or_waiting_is_refused
+check "the AskUserQuestion hook carries the question text" case_askq_hook_carries_the_question
+check "a SITREP-QUESTION: with no text leaves a running floor and no question" case_marker_question_without_text_leaves_the_floor
 check "the user's answer clears the question and ends blue" case_human_answer_clears_question_ends_blue
 check "a question outranks a wait; the wait returns once answered" case_red_over_purple
 check "a wait survives a user turn and a machine turn" case_purple_survives_user_and_machine_turns

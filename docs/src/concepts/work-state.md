@@ -45,7 +45,8 @@ A row's state is not a single value the agent sets; it is a small set of
   a message from another agent);
 - the agent's own **declarations** — `working`, `blocked "question"`,
   `waiting "on what"`, `done`, `idle` — set or clear a question, a wait or a
-  done flag.
+  done flag. `waiting` clears an open question (it says nothing needs you), and a
+  `blocked` or `waiting` with no text is refused.
 
 The display picks the highest-priority fact that holds: an open question with
 no turn running is **red**; otherwise a running turn is **green**; otherwise a

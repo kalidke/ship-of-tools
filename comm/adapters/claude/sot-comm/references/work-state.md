@@ -19,7 +19,7 @@ A row is a small SET OF FACTS, not one state you set directly:
 | field | value | set by | cleared by |
 |---|---|---|---|
 | `floor` | `user` \| `machine` | the `prompt` event, to the origin | the `stop` event |
-| `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; explicit `working`/`idle`/`done` |
+| `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; `waiting`; explicit `working`/`idle`/`done` |
 | `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
 | `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |
 | `note` | the declaration's own line | any declaration with a summary | a declaration with `""` |
@@ -45,7 +45,16 @@ retract, the same "no aging" rule blue already follows.
 `blocked "<q>"` KEEPS an existing `waiting`: both facts can be true, and
 red simply outranks purple in the display until the question is answered,
 at which point the wait (if still real) shows again. `waiting "<s>"`
-likewise keeps `question`. `working`/`idle`/`done` all clear both.
+CLEARS `question`: a wait is the session's word that nothing needs the user,
+and `comm-status.sh` prints `cleared pending question: <text>` on stderr (rc
+stays 0) so a session that stamped it by mistake sees what it hid.
+`working`/`idle`/`done` all clear both.
+
+A question or a wait always carries readable text. `blocked` or `waiting`
+with no text (no argument, or `""`) keeps the fact's own text when the row
+has one; when it has none the stamp is refused: rc 2, stderr
+`comm-status.sh: <verb> needs its text -- stamp discarded`, nothing written.
+A script that stamped a bare `blocked` or `waiting` now shows that error.
 
 `AskUserQuestion` (Claude) and the permission prompt (Codex) are the
 session yielding to the owner while the harness pauses: their PreToolUse
@@ -152,3 +161,11 @@ ones. The same finding won't re-fire within 30 minutes.
 
 Kill switch: `SOT_TURN_AUDITOR=0` (env) or `touch ~/.sot-comm/auditor.off`
 (falls back to the legacy `?`-grep nudge).
+
+## Known limit
+
+One red row was seen with an empty question, and the process that wrote the
+empty text was never identified. The refusal above means a textless
+`blocked` or `waiting` can no longer paint a row, so the fix does not depend
+on finding it. If a row ever shows red with text its own session never wrote,
+re-open it.

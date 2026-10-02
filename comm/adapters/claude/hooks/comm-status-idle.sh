@@ -438,7 +438,11 @@ fi
 if [ -n "$marker_state" ]; then
     # Explicit: the marker IS the model's report. `waiting` sets the fact;
     # every other marker clears it (comm-status.sh's declaration reduction).
-    [ -x "$STATUS" ] && "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || true
+    # A refused stamp (blocked or waiting with no text) ends the hook here, with
+    # no `stop`: the running floor stays and no empty question is written.
+    if [ -x "$STATUS" ] && ! "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1; then
+        exit 0
+    fi
 
     # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from
     # the marker above -- this only catches a result the closing block named

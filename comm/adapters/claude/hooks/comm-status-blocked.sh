@@ -9,7 +9,7 @@
 # after a stretch of plain idle, which lit agents as blocked while merely waiting).
 #
 # The tool then PAUSES the turn — no PostToolUse until the user answers — so
-# this hook also sends `stop`: the session is yielding to the owner exactly
+# this hook also sends `stop` (once `blocked` was accepted): the session is yielding to the owner exactly
 # like a real turn end (ADR 0044 amendment), and `stop` sets `floor`-derived
 # `done` only when nothing else is pending, never touching the `question` it
 # just set. Without a `stop` here the row would sit `working` (floor still
@@ -50,9 +50,13 @@ STATUS="$COMM_HOME/bin/comm-status.sh"
 # This dialog's own tool_use_id goes to `comm-status.sh blocked`, which drops the
 # answer marker behind its own gate. No id, no marker — the PostToolUse side then
 # finds nothing to consume and this dialog's answer is simply never fast-tracked.
-tool_use_id="$(jq -r '.tool_use_id // ""' 2>/dev/null || true)"
+# The question text rides along (a textless `blocked` is refused), and `stop`
+# runs only when `blocked` succeeded: a refused one never deletes a running floor.
+payload="$(cat 2>/dev/null || true)"
+tool_use_id="$(printf '%s' "$payload" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
+question="$(printf '%s' "$payload" | jq -r '.tool_input.questions[0].question // ""' 2>/dev/null || true)"
 if [ -x "$STATUS" ]; then
-    SOT_COMM_ASKQ_ID="$tool_use_id" "$STATUS" blocked >/dev/null 2>&1 || true
-    "$STATUS" stop >/dev/null 2>&1 || true
+    { SOT_COMM_ASKQ_ID="$tool_use_id" "$STATUS" blocked "$question" >/dev/null 2>&1 \
+        && "$STATUS" stop >/dev/null 2>&1; } || true
 fi
 exit 0
