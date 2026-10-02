@@ -191,6 +191,16 @@ impl State {
         write_or_delete(path, &self.record())
     }
 
+    /// An end's `forget`, added to the ids already kept: an id leaves
+    /// only when a start removes its registration.
+    fn forget_also(&mut self, ids: Vec<String>) {
+        for id in ids {
+            if !self.forget.contains(&id) {
+                self.forget.push(id);
+            }
+        }
+    }
+
     /// For a write that follows an event that already happened (a
     /// departure, an expiry, shutdown step 1): refusing it would be a
     /// silent keep-alive, so a failure is logged and the event stands.
@@ -241,10 +251,11 @@ impl Leases {
         let startup_cleanup = read
             .as_ref()
             .is_some_and(|read| startup_plan(read, own_boot.as_deref().ok_or(()), now_ms) == StartPlan::Cleanup);
-        // The count survives a restart until a window acks it.
-        let not_ended = match &read {
-            Some(Ok(Some(rec))) => rec.not_ended,
-            _ => 0,
+        // The count survives a restart until a window acks it, and the
+        // forget list until the start removes each id's registration.
+        let (not_ended, forget) = match &read {
+            Some(Ok(Some(rec))) => (rec.not_ended, rec.forget.clone()),
+            _ => (0, Vec::new()),
         };
         let state = State {
             own_boot,
@@ -255,7 +266,7 @@ impl Leases {
             pending_until_ms: None,
             phase: Phase::Open,
             not_ended,
-            forget: Vec::new(),
+            forget,
             closer_waits: false,
             startup_cleanup,
         };
@@ -407,15 +418,16 @@ impl Leases {
         }
     }
 
-    /// Shutdown step 5, the shutdown's report written as the record: it
-    /// ends `closing` (leases stay refused until the process exits).
+    /// Shutdown step 5, the shutdown's report written as the record, its
+    /// count added to one no window has acked: it ends `closing` (leases
+    /// stay refused until the process exits).
     pub(crate) fn finish_shutdown(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
         if st.phase == Phase::Closing {
             st.phase = Phase::Finished;
         }
-        st.not_ended = not_ended;
-        st.forget = forget;
+        st.not_ended = st.not_ended.saturating_add(not_ended);
+        st.forget_also(forget);
         let written = st.persist();
         drop(st);
         self.report.send_replace(Some(not_ended));
@@ -430,8 +442,15 @@ impl Leases {
         let mut st = self.lock();
         st.startup_cleanup = false;
         st.not_ended = st.not_ended.saturating_add(not_ended);
-        st.forget = forget;
+        st.forget_also(forget);
         st.persist()
+    }
+
+    /// The start's forget pass: of the record's `forget`, only the ids
+    /// whose registration would not go stay, so every later record write
+    /// keeps them for the next start.
+    pub(crate) fn keep_unremoved(&self, unremoved: &[String]) {
+        self.lock().forget.retain(|id| unremoved.contains(id));
     }
 
     /// The count every grant carries until a window acks it.
@@ -512,9 +531,7 @@ pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) 
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
-        let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream else {
-            return PeerAuthOutcome::Undetermined;
-        };
+        let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream;
         match sot_log::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
             Ok((pid, created)) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
             Err(_) => PeerAuthOutcome::Undetermined,
@@ -923,6 +940,18 @@ mod tests {
         f.leases.finish_cleanup(2, Vec::new()).unwrap();
         assert_eq!(f.leases.notice(), 5, "a startup Cleanup's count replaced the loaded one instead of adding to it");
         assert_eq!(f.on_disk().map(|r| r.not_ended), Some(5));
+    }
+
+    #[test]
+    fn shutdown_keeps_an_unacked_loaded_count() {
+        let f = restart(&HeldRecord { not_ended: 3, ..empty() });
+        f.leases.begin_close();
+        f.leases.finish_shutdown(2, Vec::new()).unwrap();
+        assert_eq!(
+            f.on_disk().map(|r| r.not_ended),
+            Some(5),
+            "a shutdown replaced the loaded count no window had seen instead of adding to it"
+        );
     }
 
     #[test]
