@@ -371,3 +371,81 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     let status = child.wait().expect("wait for the bridge");
     assert_eq!(status.code(), Some(0), "the bridge exits cleanly when its caller hangs up");
 }
+
+/// A lease sent through the bridge is the bridge's own connection: the
+/// daemon reads the bridge process at accept, which never matches the
+/// claim, so a bridged or relayed window never counts as a window here,
+/// and its end never shuts the daemon down (#2).
+#[cfg(target_os = "linux")]
+#[test]
+fn lease_through_stdio_bridge_refused() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let env = Env::new("bridge-lease");
+    let label = sot_protocol::local_daemon_label();
+    runtime_root();
+    let hosts_toml = env._tmp.path().join("hosts.toml");
+    std::fs::write(&hosts_toml, format!("hub = \"{TEST_STATE_HOST}\"\n\n[host.{TEST_STATE_HOST}]\ndaemon = true\n")).expect("write hosts.toml");
+    let daemon_stderr = env._tmp.path().join("sotd.stderr");
+    let daemon = Command::new(sotd_exe())
+        .arg("--label")
+        .arg(label)
+        .arg("--project-root")
+        .arg(&env.daemon_project_root)
+        .env("LOCALAPPDATA", &env.state_root)
+        .env("XDG_STATE_HOME", &env.state_root)
+        .env("XDG_CONFIG_HOME", &env.config_root)
+        .env("SOT_SELF_HOST", TEST_STATE_HOST)
+        .env("SOT_RUNTIME_DIR", env._runtime_tmp.path())
+        .env("HOME", &env.home_root)
+        .env("USERPROFILE", &env.home_root)
+        .env("SOT_COMM_HOME", &env.comm_root)
+        .env("XDG_RUNTIME_DIR", runtime_root())
+        .env("SOT_HOSTS", &hosts_toml)
+        .env_remove("SOT_SOCKET")
+        .env_remove("SOT_PROJECT_ROOT")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(std::fs::File::create(&daemon_stderr).expect("create the daemon's stderr file")))
+        .spawn()
+        .expect("spawn sotd");
+    env.daemon.borrow_mut().replace(daemon);
+    let socket = sot_protocol::session_socket_path(label);
+    let deadline = Instant::now() + BOUND;
+    while UnixStream::connect(&socket).is_err() {
+        let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
+        if let Some(status) = exited {
+            panic!("sotd exited {status} without binding {}: {}", socket.display(), daemon_said(&daemon_stderr));
+        }
+        assert!(Instant::now() < deadline, "sotd never bound {}: {}", socket.display(), daemon_said(&daemon_stderr));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The claim is this test process's own identity; the peer the daemon
+    // reads is the bridge.
+    let who = sot_log::challenge::self_identity().expect("this process's identity");
+    let req = sot_protocol::ops::FeLeaseReq { boot: who.boot, pid: who.pid, created: who.created, token: None };
+    let frame = sot_protocol::Frame::req(1, sot_protocol::op::FE_LEASE, serde_json::to_value(&req).expect("fe.lease serializes"));
+    let mut line = serde_json::to_vec(&frame).expect("frame serializes");
+    line.push(b'\n');
+
+    let mut child = spawn_bridge(&[]);
+    let mut stdin = child.stdin.take().expect("bridge stdin");
+    let mut stdout = std::io::BufReader::new(child.stdout.take().expect("bridge stdout"));
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let mut reply = Vec::new();
+        let _ = tx.send(stdout.read_until(b'\n', &mut reply).map(|_| reply));
+    });
+    stdin.write_all(&line).expect("write fe.lease");
+    stdin.flush().expect("flush fe.lease");
+    let reply = next(&rx, "the daemon's lease answer");
+    let parsed: sot_protocol::Frame = serde_json::from_slice(reply.strip_suffix(b"\n").unwrap_or(&reply)).expect("a frame");
+    assert_eq!(parsed.payload["outcome"], "foreign", "a bridged lease must be foreign: {:?}", parsed.payload);
+
+    drop(stdin);
+    assert_eq!(child.wait().expect("wait for the bridge").code(), Some(0));
+    std::thread::sleep(Duration::from_secs(2));
+    let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
+    assert!(exited.is_none(), "the bridged lease's end shut the daemon down: {exited:?}: {}", daemon_said(&daemon_stderr));
+    assert!(UnixStream::connect(&socket).is_ok(), "the daemon stopped answering after a bridged lease");
+}

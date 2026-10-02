@@ -16,17 +16,39 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use sot_log::challenge::{PeerAuthOutcome, ProcessIdentity};
-use sot_protocol::ops::{lease as bounds, FeLeaseReq, LeaseOutcome, LeaveIntent};
+use sot_log::challenge::{PeerAuthOutcome, PeerAuthenticated, ProcessIdentity};
+use sot_protocol::ops::{
+    lease as bounds, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavingRes, FeNoticeSeenReq, FeNoticeSeenRes,
+    LeaseOutcome, LeaveIntent,
+};
+use sot_protocol::{Frame, Kind};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 /// `held.json`'s shape; a record with any other `v` plans Cleanup.
 const RECORD_V: u32 = 1;
 
 /// How long a relaunch handover, or a restart's recorded holders, keep
-/// the rows waiting for a window.
+/// the rows waiting for a window. `SOT_TEST_HANDOVER_BOUND_MS` overrides it
+/// for tests, read once per process; unset in every real deployment.
 pub(crate) fn handover_bound() -> std::time::Duration {
-    bounds::HANDOVER_BOUND
+    static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_HANDOVER_BOUND_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(bounds::HANDOVER_BOUND)
+}
+
+/// Wall-clock unix milliseconds: the one clock every lease deadline uses.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn handover_bound_ms() -> u64 {
@@ -162,6 +184,9 @@ struct State {
     phase: Phase,
     not_ended: u32,
     forget: Vec<String>,
+    /// The deciding departure was a `fe.leaving{close}`: its window waits
+    /// for the shutdown's count (shutdown step 6).
+    closer_waits: bool,
 }
 
 impl State {
@@ -238,6 +263,10 @@ pub(crate) struct Leases {
     /// late it subscribes.
     gone: watch::Sender<bool>,
     starts: mpsc::UnboundedSender<StartEvent>,
+    /// Shutdown step 5's `not_ended`, for the waiting closer.
+    report: watch::Sender<Option<u32>>,
+    /// The waiting closer has been answered (step 6), or gave up.
+    answered: watch::Sender<bool>,
 }
 
 impl Leases {
@@ -259,8 +288,15 @@ impl Leases {
             phase: Phase::Open,
             not_ended: 0,
             forget: Vec::new(),
+            closer_waits: false,
         };
-        let leases = Leases { state: Arc::new(Mutex::new(state)), gone: watch::Sender::new(false), starts };
+        let leases = Leases {
+            state: Arc::new(Mutex::new(state)),
+            gone: watch::Sender::new(false),
+            starts,
+            report: watch::Sender::new(None),
+            answered: watch::Sender::new(false),
+        };
         (leases, events)
     }
 
@@ -364,6 +400,7 @@ impl Leases {
             }
             LeaveIntent::Close => {
                 st.close();
+                st.closer_waits = intent.is_some();
                 drop(st);
                 self.gone.send_replace(true);
                 Decision::Shutdown
@@ -435,7 +472,10 @@ impl Leases {
         }
         st.not_ended = not_ended;
         st.forget = forget;
-        st.persist()
+        let written = st.persist();
+        drop(st);
+        self.report.send_replace(Some(not_ended));
+        written
     }
 
     /// The end of a startup Cleanup, from the plan or from an expired
@@ -493,6 +533,263 @@ impl Leases {
     pub(crate) async fn gone(&self) {
         let _ = self.gone.subscribe().wait_for(|gone| *gone).await;
     }
+
+    /// The deciding departure's window waits for the shutdown's count.
+    pub(crate) fn closer_waits(&self) -> bool {
+        self.lock().closer_waits
+    }
+
+    /// Resolves with shutdown step 5's `not_ended`.
+    async fn report(&self) -> u32 {
+        let mut rx = self.report.subscribe();
+        let n = match rx.wait_for(Option::is_some).await {
+            Ok(n) => n.unwrap_or_default(),
+            Err(_) => 0,
+        };
+        n
+    }
+
+    /// Resolves once the waiting closer has been answered or gave up.
+    pub(crate) async fn answered(&self) {
+        let _ = self.answered.subscribe().wait_for(|done| *done).await;
+    }
+
+    /// One tick of the 1 s ticker: [`Leases::tick`], and what the ticker
+    /// does with its answer.
+    pub(crate) fn step(&self, now_ms: u64) -> Tick {
+        let tick = self.tick(now_ms);
+        if tick == Tick::Cleanup {
+            tracing::info!("a pending start expired with no qualifying lease");
+        }
+        tick
+    }
+}
+
+/// The 1 s ticker: every lease deadline is checked here, never by a
+/// per-handover timer. It stops once a shutdown has begun.
+pub(crate) async fn ticker(leases: Arc<Leases>) {
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = every.tick() => {}
+            () = leases.gone() => return,
+        }
+        leases.step(now_ms());
+    }
+}
+
+/// The connecting process, read from the OS at accept, before the stream
+/// is split (1.2). Only Linux checks the uid, because it comes with the
+/// pid there; on macOS the socket directory and on Windows the pipe ACL
+/// already bind the peer to this user. Any OS-call failure is
+/// `Undetermined`.
+pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) -> PeerAuthOutcome {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream else {
+            return PeerAuthOutcome::Undetermined;
+        };
+        match sot_log::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
+            Ok((pid, created)) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
+            Err(_) => PeerAuthOutcome::Undetermined,
+        }
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        use interprocess::local_socket::traits::StreamCommon as _;
+        let Ok(creds) = stream.peer_creds() else {
+            return PeerAuthOutcome::Undetermined;
+        };
+        #[cfg(target_os = "linux")]
+        match creds.euid() {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            Some(uid) if uid == unsafe { libc::geteuid() } => {}
+            Some(_) => return PeerAuthOutcome::Foreign,
+            None => return PeerAuthOutcome::Undetermined,
+        }
+        let Some(pid) = creds.pid().and_then(|pid| u32::try_from(pid).ok()) else {
+            return PeerAuthOutcome::Undetermined;
+        };
+        match sot_log::challenge::process_created(pid) {
+            Ok(created) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
+            Err(_) => PeerAuthOutcome::Undetermined,
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = stream;
+        PeerAuthOutcome::Undetermined
+    }
+}
+
+/// A lease line's cap; an over-cap line is discarded up to its newline
+/// and answered with an error.
+const LINE_CAP: usize = 64 * 1024;
+
+/// One line of a lease connection.
+enum Line {
+    Complete(Vec<u8>),
+    OverCap,
+    /// EOF, including a partial line followed by EOF.
+    End,
+}
+
+async fn read_line<R: AsyncBufRead + Unpin>(rx: &mut R) -> std::io::Result<Line> {
+    let (mut line, mut over) = (Vec::new(), false);
+    loop {
+        let buf = rx.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok(Line::End);
+        }
+        let (take, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (buf.len(), false),
+        };
+        if !over {
+            line.extend_from_slice(&buf[..take]);
+            if line.len() > LINE_CAP {
+                over = true;
+                line = Vec::new();
+            }
+        }
+        rx.consume(take);
+        if done {
+            return Ok(if over { Line::OverCap } else { Line::Complete(line) });
+        }
+    }
+}
+
+/// One lease connection, from its `fe.lease` to its end (1.2, 1.3). The
+/// grant's answer carries the state root's hash and the unacked count. A
+/// granted lease departs at its well-formed `fe.leaving`, at EOF or at an
+/// io error (both `Close`); any other line is answered with an error and
+/// the lease continues, and the daemon never closes it. A
+/// `fe.leaving{close}` that decided the shutdown is answered after it,
+/// with the count it could not end.
+pub(crate) async fn hold<R, W>(
+    mut rx: R,
+    mut tx: W,
+    first: Frame,
+    peer: PeerAuthOutcome,
+    expected_token: Option<&str>,
+    leases: &Leases,
+    state_root: Option<&Path>,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let Ok(req) = serde_json::from_value::<FeLeaseReq>(first.payload.clone()) else {
+        return crate::proxy::reject(&mut tx, first.id, op::FE_LEASE, "bad_request", "malformed fe.lease").await;
+    };
+    let token_ok = expected_token.is_none_or(|expected| {
+        let presented = req.token.clone().unwrap_or_default();
+        crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes())
+    });
+    let (outcome, gen) = leases.grant(&req, &peer, token_ok, now_ms());
+    let granted = gen.is_some();
+    let res = FeLeaseRes {
+        outcome,
+        state_root: state_root.filter(|_| granted).map(sot_log::state_dir::state_dir_hash),
+        not_ended: if granted { leases.notice() } else { 0 },
+    };
+    reply(&mut tx, first.id, op::FE_LEASE, &res).await?;
+    let Some(gen) = gen else { return Ok(()) };
+
+    let mut held = Some(gen);
+    loop {
+        let bytes = match read_line(&mut rx).await {
+            Ok(Line::Complete(bytes)) => bytes,
+            Ok(Line::OverCap) => {
+                crate::proxy::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "line over the lease cap").await?;
+                continue;
+            }
+            Ok(Line::End) => break,
+            Err(e) => {
+                tracing::info!(error = %e, "lease connection read failed: it departs as a close");
+                break;
+            }
+        };
+        let frame = match serde_json::from_slice::<Frame>(&bytes) {
+            Ok(frame) if frame.kind == Kind::Req => frame,
+            _ => {
+                crate::proxy::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "not a request").await?;
+                continue;
+            }
+        };
+        match frame.op.as_str() {
+            op::FE_LEAVING => {
+                let Ok(leaving) = serde_json::from_value::<FeLeavingReq>(frame.payload.clone()) else {
+                    crate::proxy::reject(&mut tx, frame.id, op::FE_LEAVING, "bad_request", "malformed fe.leaving").await?;
+                    continue;
+                };
+                let decision = match held.take() {
+                    Some(gen) => leases.depart(gen, Some(leaving.intent), now_ms()),
+                    None => Decision::None,
+                };
+                if decision == Decision::Shutdown && leaving.intent == LeaveIntent::Close {
+                    answer_close(&mut rx, &mut tx, frame.id, leases).await;
+                    return Ok(());
+                }
+                reply(&mut tx, frame.id, op::FE_LEAVING, &FeLeavingRes { not_ended: 0 }).await?;
+            }
+            op::FE_NOTICE_SEEN => {
+                let Ok(seen) = serde_json::from_value::<FeNoticeSeenReq>(frame.payload.clone()) else {
+                    crate::proxy::reject(&mut tx, frame.id, op::FE_NOTICE_SEEN, "bad_request", "malformed fe.notice_seen").await?;
+                    continue;
+                };
+                if let Err(e) = leases.notice_seen(seen.not_ended) {
+                    tracing::error!("held record not written after fe.notice_seen: {e}");
+                }
+                reply(&mut tx, frame.id, op::FE_NOTICE_SEEN, &FeNoticeSeenRes {}).await?;
+            }
+            other => {
+                crate::proxy::reject(&mut tx, frame.id, other, "bad_request", "not a lease request").await?;
+            }
+        }
+    }
+    if let Some(gen) = held {
+        leases.depart(gen, None, now_ms());
+    }
+    Ok(())
+}
+
+/// Shutdown step 6 for the window whose `fe.leaving{close}` decided it:
+/// the count after the shutdown, then up to `NOTICE_ACK_WAIT` for its
+/// `fe.notice_seen` when the count is above 0. Answered whatever happens,
+/// so the shutdown never waits on a broken window.
+async fn answer_close<R, W>(rx: &mut R, tx: &mut W, id: u64, leases: &Leases)
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let not_ended = leases.report().await;
+    if reply(tx, id, op::FE_LEAVING, &FeLeavingRes { not_ended }).await.is_ok() && not_ended > 0 {
+        let seen = async {
+            while let Ok(Line::Complete(bytes)) = read_line(rx).await {
+                let Ok(frame) = serde_json::from_slice::<Frame>(&bytes) else { continue };
+                if frame.op != op::FE_NOTICE_SEEN {
+                    continue;
+                }
+                if let Ok(seen) = serde_json::from_value::<FeNoticeSeenReq>(frame.payload) {
+                    if let Err(e) = leases.notice_seen(seen.not_ended) {
+                        tracing::error!("held record not written after fe.notice_seen: {e}");
+                    }
+                    let _ = reply(tx, frame.id, op::FE_NOTICE_SEEN, &FeNoticeSeenRes {}).await;
+                    return;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(bounds::NOTICE_ACK_WAIT, seen).await;
+    }
+    leases.answered.send_replace(true);
+}
+
+async fn reply<W: AsyncWrite + Unpin>(tx: &mut W, id: u64, op: &str, res: &impl Serialize) -> anyhow::Result<()> {
+    let frame = Frame::res(id, op, serde_json::to_value(res)?);
+    crate::server::write_frame_within(tx, &frame, None, bounds::LEASE_REPLY_WAIT).await
 }
 
 /// `Ok(None)` when there is no record; `Err` when it cannot be read,
@@ -603,7 +900,6 @@ pub(crate) fn startup_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sot_log::challenge::PeerAuthenticated;
     use std::time::Duration;
 
     const BOOT: &str = "boot-a";

@@ -16,7 +16,10 @@ use std::time::Duration;
 use tokio::sync::{broadcast, watch};
 use tokio::time::Instant;
 
+use sot_protocol::ops::lease as bounds;
+
 use crate::handlers::CapsuleDestroyOutcome;
+use crate::lease::Leases;
 use crate::workspaces::{Workspace, WorkspaceChanged, Workspaces};
 
 /// How often a refused end is tried again.
@@ -24,6 +27,80 @@ const RETRY_EVERY: Duration = Duration::from_secs(1);
 
 /// The end-run reason a window's close records.
 const REASON: &str = "window closed";
+
+/// How long step 4 waits for the daemon's own children.
+const CHILDREN_WAIT: Duration = Duration::from_secs(3);
+
+/// `SOT_TEST_SHUTDOWN_BOUND_MS` overrides [`bounds::SHUTDOWN_BOUND`] for
+/// tests, read once per process; unset in every real deployment.
+pub(crate) fn shutdown_bound() -> Duration {
+    static OVERRIDE_MS: OnceLock<Option<u64>> = OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_SHUTDOWN_BOUND_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms.map(Duration::from_millis).unwrap_or(bounds::SHUTDOWN_BOUND)
+}
+
+/// The shutdown (1.4), after step 1 stopped the accepting; it never
+/// returns. Step 0 is a backstop thread that exits 1 at the bound, for
+/// the next start to finish. Steps 2 and 3 share the rows deadline,
+/// `decided + bound - SHUTDOWN_TAIL`; the tail is not scaled with an
+/// overridden bound, because steps 4 to 6 take as long either way. Then the daemon's own children, the final
+/// record, the waiting closer's answer, and exit 0.
+pub(crate) async fn run(
+    leases: Arc<Leases>,
+    workspaces: Workspaces,
+    ws_events: broadcast::Sender<WorkspaceChanged>,
+    decided: Instant,
+) -> ! {
+    let bound = shutdown_bound();
+    let backstop = bound.saturating_sub(decided.elapsed());
+    std::thread::spawn(move || {
+        std::thread::sleep(backstop);
+        tracing::error!("shutdown still running after {bound:?}: exiting 1; the next start finishes it");
+        std::process::exit(1);
+    });
+    leases.begin_close();
+    tracing::info!("shutting down: ending this computer's sessions");
+
+    let rows_deadline = decided + bound.saturating_sub(bounds::SHUTDOWN_TAIL);
+    let gate = workspaces.clone();
+    let gate_deadline = std::time::Instant::now() + rows_deadline.saturating_duration_since(Instant::now());
+    let settled = tokio::time::timeout_at(
+        rows_deadline,
+        tokio::task::spawn_blocking(move || gate.close_gate_and_settle(gate_deadline)),
+    )
+    .await;
+    if !matches!(settled, Ok(Ok(true))) {
+        tracing::warn!("shutdown: a run start was still in flight at the rows deadline");
+    }
+
+    let report = match sot_log::state_dir::sot_state_dir() {
+        Some(state_root) => end_rows(&workspaces, &ws_events, &state_root, rows_deadline).await,
+        None => EndReport::default(),
+    };
+
+    fire();
+    let children = Instant::now() + CHILDREN_WAIT;
+    while live_children() > 0 && Instant::now() < children {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if live_children() > 0 {
+        tracing::warn!(live = live_children(), "shutdown: the daemon's own children were still alive after {CHILDREN_WAIT:?}");
+    }
+
+    if let Err(e) = leases.finish_shutdown(report.not_ended, report.forget.clone()) {
+        tracing::error!("shutdown: the final held record was not written: {e}");
+    }
+    if leases.closer_waits() {
+        let wait = bounds::LEASE_REPLY_WAIT * 2 + bounds::NOTICE_ACK_WAIT;
+        let _ = tokio::time::timeout(wait, leases.answered()).await;
+    }
+    tracing::info!(ended = report.ended.len(), not_ended = report.not_ended, "shutdown complete");
+    std::process::exit(bounds::EXIT_REQUESTED_SHUTDOWN)
+}
 
 /// What [`end_rows`] did. `ended` and `forget` are both ended runs;
 /// `forget` holds the rows whose registration files would not go, for the
