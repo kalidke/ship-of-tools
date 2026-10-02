@@ -56,11 +56,13 @@ When intents arrive in order on one lease, the latest wins.
   `Close` is a shutdown; `Keep` does nothing and is the only open-ended keep; `Handover`
   waits up to `HANDOVER_BOUND` (60 seconds, `lease::HANDOVER_BOUND` in the protocol
   crate), persisted.
-- After a `Keep`, the daemon keeps reading that connection until EOF. A later well-formed
-  `Close` on it supersedes the keep and is applied in order, so an X after a Keep never
-  leaves sessions running; EOF after a keep stays a keep (latest intent wins).
-- Any granted lease clears a handover; a handover that expires with no lease held is a
-  shutdown.
+- After a `Keep` or a `Handover`, the daemon keeps reading that connection until EOF.
+  Every later well-formed `fe.leaving` on it replaces the earlier intent and is applied in
+  order as that window's departure at that moment (latest intent wins): an X after a Keep
+  or a Handover never leaves sessions running, a Keep after a Handover is open-ended, and a
+  Handover after a Keep is bounded. EOF after an intent leaves the last one standing.
+- Any granted lease clears a handover, and a pending start the ticker has not yet acted
+  on, even past its deadline; a handover that expires with no lease held is a shutdown.
 - `fe.leaving{close}` from the last holder is answered after the shutdown, with the count
   of rows not ended, including any no window has yet acknowledged; every other
   `fe.leaving` is answered at once with zero.
@@ -80,11 +82,13 @@ deadline, and a row of any other runtime is left running and counted not ended; 
 daemon's own children are signalled and given 3 s; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
-are forgotten; rows not ended stay registered and running, and are counted. The product
+are forgotten, their registration deleted and its directory synced before the final
+record clears `closing`; rows not ended stay registered and running, and are counted. The product
 never runs `pkill` or `tmux kill-server`.
 
 Exit codes: 0 is a requested shutdown and stays down; 75 is an update restart and starts
-again; 1 is a failure (lock timeout or refuse-live). The bounds chain is
+again, taken only while no shutdown is under way, so a shutdown's own exit always stands;
+1 is a failure (lock timeout or refuse-live). The bounds chain is
 `HANDOVER_BOUND (60) < SHUTDOWN_BOUND (120) < DAEMON_LOCK_WAIT (150) < LAUNCH_WAIT (160)`:
 a successor waits longer than any shutdown lasts, and a launcher waits longer than a
 successor waits for its lock.
@@ -206,4 +210,13 @@ connection is the only handle.
   name; an unconfirmed text step does not stop the next 2 s tick from retrying, and a
   persistent write failure warns on every attempt; `pty.input`'s `enter_sent: false`
   lumps unknown with not sent.
+- (h) A failed closing-record write: the shutdown still ends the rows, and a kill during it
+  may resume them.
+- (i) A child blocked on a write may survive the shutdown uncounted.
+- (j) Quarto engines whose launcher was already reaped survive a shutdown, and Windows has
+  no tree containment for them.
+- (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
+  at the next window; it stays in the record until acknowledged.
+- (l) The Windows forwarding cancellation does not kill an already-spawned ssh child.
+- (m) The monitor's backoff ignores the shutdown signal.
 - Window: see the release notes.

@@ -1,7 +1,8 @@
 // durable.rs — the one durable write and delete for daemon records a later
-// start acts on: `held.json` (lease.rs) and a row's `row-scopes`
-// (capsule_workspace.rs). A write is a tmp file, fsync, then the replace;
-// a delete is durable once its directory is synced.
+// start acts on: `held.json` (lease.rs), a row's `row-scopes`
+// (capsule_workspace.rs) and a row's registration delete (handlers.rs). A
+// write is a tmp file, fsync, then the replace; a delete is durable once
+// its directory is synced.
 
 use std::path::Path;
 

@@ -270,8 +270,9 @@ impl Leases {
     /// `Undetermined` if the peer is, or this daemon's boot is unknown;
     /// `Granted` iff the token passed and the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
-    /// generation, clears an in-process handover and, before its
-    /// deadline, a pending start. A grant whose record cannot be written
+    /// generation and clears an in-process handover and a pending start:
+    /// one still here is one the ticker has not acted on, whatever the
+    /// clock says. A grant whose record cannot be written
     /// is undone and refused as `Undetermined`, so a grant never outruns
     /// its record.
     pub(crate) fn grant(
@@ -279,7 +280,6 @@ impl Leases {
         req: &FeLeaseReq,
         peer: &PeerAuthOutcome,
         token_ok: bool,
-        now_ms: u64,
     ) -> (LeaseOutcome, Option<u64>) {
         let mut st = self.lock();
         if st.phase != Phase::Open {
@@ -302,15 +302,12 @@ impl Leases {
         let gen = st.next_gen;
         st.next_gen += 1;
         let handover = st.handover_until_ms.take();
-        let qualified = st.pending_until_ms.is_some_and(|until| now_ms < until);
-        let cleared = if qualified { st.pending_until_ms.take() } else { None };
+        let pending = st.pending_until_ms.take();
         st.held.push((gen, who));
         if let Err(e) = st.persist() {
             st.held.pop();
             st.handover_until_ms = handover;
-            if qualified {
-                st.pending_until_ms = cleared;
-            }
+            st.pending_until_ms = pending;
             let path = st.path.as_deref().unwrap_or(Path::new(""));
             tracing::error!(path = %path.display(), "fe.lease refused: held record not written: {e}");
             return (LeaseOutcome::Undetermined, None);
@@ -331,12 +328,12 @@ impl Leases {
         self.decide(st, intent, now_ms)
     }
 
-    /// A `fe.leaving{close}` after this connection's own `Keep`: the
-    /// user's latest intent wins, so it is that window's `Close` departure
-    /// at this moment. With no other lease held it is the shutdown.
-    pub(crate) fn close_after_keep(&self, now_ms: u64) -> Decision {
+    /// A later `fe.leaving` on a lease that already departed: the user's
+    /// latest intent replaces the earlier one, so it is that window's
+    /// departure at this moment. With no other lease held it decides.
+    pub(crate) fn leave_again(&self, intent: LeaveIntent, now_ms: u64) -> Decision {
         let st = self.lock();
-        self.decide(st, Some(LeaveIntent::Close), now_ms)
+        self.decide(st, Some(intent), now_ms)
     }
 
     /// What a departure decides once its lease is gone: nothing unless it
@@ -355,6 +352,8 @@ impl Leases {
                 Decision::Shutdown
             }
             LeaveIntent::Keep => {
+                // A Keep after a Handover is open-ended.
+                st.handover_until_ms = None;
                 st.persist_or_log();
                 Decision::None
             }
@@ -394,6 +393,13 @@ impl Leases {
         if self.lock().close() {
             self.gone.send_replace(true);
         }
+    }
+
+    /// `f` under the lease lock iff no shutdown has begun, so none begins
+    /// while it runs; `None` once one has.
+    pub(crate) fn while_open<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
+        let st = self.lock();
+        (st.phase == Phase::Open).then(f)
     }
 
     /// Shutdown step 5, the shutdown's report written as the record, its
@@ -606,7 +612,7 @@ where
         let presented = req.token.clone().unwrap_or_default();
         crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes())
     });
-    let (outcome, gen) = leases.grant(&req, &peer, token_ok, now_ms());
+    let (outcome, gen) = leases.grant(&req, &peer, token_ok);
     let granted = gen.is_some();
     let res = FeLeaseRes {
         outcome,
@@ -620,9 +626,6 @@ where
     let mut held = Some(gen);
     let end: anyhow::Result<()> = async {
         reply(&mut tx, first.id, op::FE_LEASE, &res).await?;
-        // This lease departed with `Keep`: a later `fe.leaving{close}` on it
-        // still applies.
-        let mut kept = false;
         loop {
             let bytes = match read_line(&mut rx).await {
                 Ok(Line::Complete(bytes)) => bytes,
@@ -649,16 +652,11 @@ where
                         crate::proxy::reject(&mut tx, frame.id, op::FE_LEAVING, "bad_request", "malformed fe.leaving").await?;
                         continue;
                     };
+                    // The first departs the lease; each later one replaces
+                    // its intent (the latest intent wins).
                     let decision = match held.take() {
-                        Some(gen) => {
-                            kept = leaving.intent == LeaveIntent::Keep;
-                            leases.depart(gen, Some(leaving.intent), now_ms())
-                        }
-                        None if kept && leaving.intent == LeaveIntent::Close => {
-                            kept = false;
-                            leases.close_after_keep(now_ms())
-                        }
-                        None => Decision::None,
+                        Some(gen) => leases.depart(gen, Some(leaving.intent), now_ms()),
+                        None => leases.leave_again(leaving.intent, now_ms()),
                     };
                     if decision == Decision::Shutdown && leaving.intent == LeaveIntent::Close {
                         answer_close(&mut rx, &mut tx, frame.id, leases).await;
@@ -876,7 +874,7 @@ mod tests {
 
     impl Fixture {
         fn grant(&self, who: &ProcessIdentity) -> u64 {
-            let (outcome, gen) = self.leases.grant(&req(who), &peer(who), true, T0);
+            let (outcome, gen) = self.leases.grant(&req(who), &peer(who), true);
             assert_eq!(outcome, LeaseOutcome::Granted, "{who:?}");
             gen.expect("a grant carries its generation")
         }
@@ -955,7 +953,7 @@ mod tests {
             write_or_delete(&path, &rec).unwrap();
             let leases = start_on(&path);
             let who = id(1);
-            let (outcome, _) = leases.grant(&req(&who), &peer(&who), true, T0);
+            let (outcome, _) = leases.grant(&req(&who), &peer(&who), true);
             assert_eq!(outcome, LeaseOutcome::Granted, "{what}: a grant still answers the window");
             assert_eq!(
                 read_record(&path).unwrap(),
@@ -1002,7 +1000,7 @@ mod tests {
         ];
         let f = fixture(Some(BOOT));
         for (name, r, p, token_ok, want, why) in &cases {
-            let (got, gen) = f.leases.grant(r, p, *token_ok, T0);
+            let (got, gen) = f.leases.grant(r, p, *token_ok);
             assert_eq!(got, *want, "{name}");
             assert_eq!(gen.is_some(), *want == Granted, "{name}: a generation iff granted");
             assert_eq!(claim(Some(BOOT), r, p, *token_ok).err(), why.map(|why| (*want, why)), "{name}: the check named");
@@ -1014,7 +1012,7 @@ mod tests {
 
         let f = fixture(None);
         for p in [peer(&me), PeerAuthOutcome::Foreign] {
-            assert_eq!(f.leases.grant(&req(&me), &p, true, T0).0, Undetermined, "missing daemon boot, {p:?}");
+            assert_eq!(f.leases.grant(&req(&me), &p, true).0, Undetermined, "missing daemon boot, {p:?}");
             assert_eq!(claim(None, &req(&me), &p, true).err(), Some((Undetermined, "own boot unknown")), "{p:?}");
         }
         assert_eq!(f.on_disk(), None, "a refusal records nothing");
@@ -1022,7 +1020,7 @@ mod tests {
         let f = fixture(Some(BOOT));
         f.leases.begin_close();
         for p in [peer(&me), PeerAuthOutcome::Undetermined] {
-            assert_eq!(f.leases.grant(&req(&me), &p, true, T0), (Closing, None), "closing, {p:?}");
+            assert_eq!(f.leases.grant(&req(&me), &p, true), (Closing, None), "closing, {p:?}");
         }
     }
 
@@ -1036,7 +1034,7 @@ mod tests {
         let f = fixture(Some(BOOT));
         let a = f.grant(&id(1));
         mode(&f, 0o500);
-        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, T0), (LeaseOutcome::Undetermined, None), "refused, never Granted");
+        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true), (LeaseOutcome::Undetermined, None), "refused, never Granted");
         mode(&f, 0o700);
         f.leases.depart(a, Some(LeaveIntent::Keep), T0);
         assert_eq!(f.on_disk(), None, "the refused grant's entry is undone");
@@ -1045,7 +1043,7 @@ mod tests {
         let f = fixture(Some(BOOT));
         f.leases.install_pending(T0 + handover_bound_ms()).unwrap();
         mode(&f, 0o500);
-        assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true, T0), (LeaseOutcome::Undetermined, None));
+        assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true), (LeaseOutcome::Undetermined, None));
         mode(&f, 0o700);
         assert_eq!(
             f.leases.tick(T0 + handover_bound_ms()),
@@ -1082,7 +1080,7 @@ mod tests {
             assert_eq!(gone, want == Decision::Shutdown, "gone fires iff shutdown, {intent:?}");
             assert_eq!(f.on_disk(), rec, "{intent:?}");
             if want == Decision::Shutdown {
-                assert_eq!(f.leases.grant(&req(&id(3)), &peer(&id(3)), true, T0).0, LeaseOutcome::Closing);
+                assert_eq!(f.leases.grant(&req(&id(3)), &peer(&id(3)), true).0, LeaseOutcome::Closing);
             }
         }
     }
@@ -1158,7 +1156,7 @@ mod tests {
         assert_eq!(f.leases.tick(until), Tick::Shutdown, "expiry with no lease held");
         assert_eq!(f.leases.tick(until + 1), Tick::None, "decided once");
         assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }));
-        assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true, until).0, LeaseOutcome::Closing);
+        assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true).0, LeaseOutcome::Closing);
     }
 
     #[test]
@@ -1167,7 +1165,7 @@ mod tests {
         f.leases.begin_close();
         f.leases.finish_cleanup(0, vec![]).unwrap();
         assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "closing until the shutdown's own step 5");
-        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, T0).0, LeaseOutcome::Closing);
+        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true).0, LeaseOutcome::Closing);
     }
 
     #[tokio::test]
@@ -1492,5 +1490,86 @@ mod tests {
             .await
             .expect("the close was not answered");
         assert_eq!(told, serde_json::json!(5), "the closer was told only this shutdown's count, not the record's");
+    }
+
+    /// For every ordered pair of intents on the last lease, the second
+    /// decides (ruling c). A `Close` first is a shutdown at once, and its
+    /// lease is answered and ended, so no later intent is read.
+    #[tokio::test]
+    async fn latest_intent_wins_table() {
+        use tokio::io::AsyncWriteExt as _;
+        use LeaveIntent::*;
+        let mut wrong = Vec::new();
+        for first in [Keep, Handover, Close] {
+            for second in [Keep, Handover, Close] {
+                let f = fixture(Some(BOOT));
+                let leases = &f.leases;
+                let (ours, theirs) = tokio::io::duplex(4096);
+                let window = async move {
+                    let mut theirs = tokio::io::BufReader::new(theirs);
+                    let mut text = String::new();
+                    theirs.read_line(&mut text).await.unwrap();
+                    for (id, intent) in [(2, first), (3, second)] {
+                        if theirs.get_mut().write_all(&line(id, op::FE_LEAVING, FeLeavingReq { intent })).await.is_err() {
+                            break;
+                        }
+                        text.clear();
+                        if theirs.read_line(&mut text).await.unwrap_or(0) == 0 {
+                            break;
+                        }
+                    }
+                };
+                // Shutdown step 5, so a deciding close is answered.
+                let finish = async {
+                    leases.gone().await;
+                    leases.finish_shutdown(0, Vec::new()).unwrap();
+                    std::future::pending::<()>().await;
+                };
+                let before = now_ms();
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    tokio::select! {
+                        _ = async { tokio::join!(hold_over(ours, id(1), leases), window) } => {}
+                        () = finish => {}
+                    }
+                })
+                .await
+                .expect("the window's intents were not answered");
+                let bounded = before + handover_bound_ms()..=now_ms() + handover_bound_ms();
+                let shut = tokio::time::timeout(Duration::from_millis(50), leases.gone()).await.is_ok();
+                let got = match (shut, f.on_disk().and_then(|rec| rec.handover_until_ms)) {
+                    (true, _) => "a shutdown",
+                    (false, Some(until)) if bounded.contains(&until) => "a bounded handover",
+                    (false, Some(_)) => "a handover from another moment",
+                    (false, None) => "an open-ended keep",
+                };
+                let want = match if first == Close { first } else { second } {
+                    Close => "a shutdown",
+                    Keep => "an open-ended keep",
+                    Handover => "a bounded handover",
+                };
+                if got != want {
+                    wrong.push(format!("{first:?} then {second:?}: {got}, not {want}"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "the latest intent on a lease did not win: {wrong:?}");
+    }
+
+    /// The pending's deadline has passed but no tick has acted on it: a
+    /// grant still clears it, so a later Keep stays open-ended.
+    #[test]
+    fn grant_after_deadline_before_tick_clears_the_pending() {
+        let until = T0 + handover_bound_ms();
+        let f = fixture(Some(BOOT));
+        f.leases.install_pending(until).unwrap();
+        let (outcome, gen) = f.leases.grant(&req(&id(1)), &peer(&id(1)), true);
+        assert_eq!(outcome, LeaseOutcome::Granted);
+        assert_eq!(f.leases.depart(gen.unwrap(), Some(LeaveIntent::Keep), until + 1), Decision::None);
+        assert_eq!(
+            f.leases.tick(until + 2),
+            Tick::None,
+            "a grant past the deadline but before the tick left the pending armed: the Keep was shut down"
+        );
+        assert_eq!(f.on_disk(), None, "the pending is cleared");
     }
 }

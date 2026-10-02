@@ -21,6 +21,7 @@
 use anyhow::Result;
 use serde_json::json;
 use sot_protocol::{app_version, op, FeCommandEvt, Frame, UpdateApplyRes, UpdateCheckRes};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
@@ -28,6 +29,7 @@ use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
 use crate::handlers::HandlerOutput;
+use crate::lease::Leases;
 
 /// Default release repo. Overridable via `SOT_UPDATE_REPO` for testing against
 /// a fork.
@@ -309,6 +311,7 @@ fn notify_text(latest: &str, current: &str) -> String {
 pub fn spawn_periodic(
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     clients: crate::clients::Clients,
+    leases: Arc<Leases>,
 ) {
     let updater = Updater::from_env();
     if updater.dev {
@@ -331,7 +334,7 @@ pub fn spawn_periodic(
     tokio::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_DELAY).await;
         loop {
-            run_check_once(&updater, &fe_command_tx, &clients).await;
+            run_check_once(&updater, &fe_command_tx, &clients, &leases).await;
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
     });
@@ -344,6 +347,7 @@ async fn run_check_once(
     updater: &Updater,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>,
     clients: &crate::clients::Clients,
+    leases: &Leases,
 ) {
     let out = updater.check().await;
     if out.update_available {
@@ -381,9 +385,10 @@ async fn run_check_once(
                 // Re-check after the grace sleep: a client that attached in
                 // the window must not have its session killed.
                 if clients.count() == 0 {
-                    std::process::exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
+                    exit_for_update(leases, |code| std::process::exit(code));
+                } else {
+                    tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
                 }
-                tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
             } else if armed {
                 tracing::info!(tag = %id.tag, attached, "auto mode: armed but clients attached — applying at next launch/restart instead");
             }
@@ -494,6 +499,7 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
 pub async fn handle_update_apply(
     req_id: u64,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>,
+    leases: &Leases,
 ) -> Result<HandlerOutput> {
     let refuse = |status: &str| -> Result<HandlerOutput> {
         let res = UpdateApplyRes {
@@ -549,10 +555,13 @@ pub async fn handle_update_apply(
     // launcher-managed daemons the next sot-launch applies and starts fresh.
     // (A flush-coupled exit — after the writer confirms the frame left — is
     // a tracked follow-up; 1.5s is comfortably beyond a loopback write.)
-    tokio::spawn(async {
+    let leases = leases.clone();
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        tracing::info!("update.apply: exiting now");
-        std::process::exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
+        exit_for_update(&leases, |code| {
+            tracing::info!("update.apply: exiting now");
+            std::process::exit(code)
+        });
     });
 
     let res = UpdateApplyRes {
@@ -567,6 +576,16 @@ pub async fn handle_update_apply(
     )])
 }
 
+/// An update's exit, a restart (75) handed to `exit`, taken only while no
+/// shutdown is under way: the check holds the lease lock through the exit,
+/// so none begins between them. Once one has begun its own exit stands and
+/// the update's is skipped (ruling f).
+fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
+    if leases.while_open(|| exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)).is_none() {
+        tracing::info!("update exit skipped: a shutdown is under way, and its own exit stands");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,8 +597,25 @@ mod tests {
         let src = include_str!("update.rs");
         let body = &src[..src.find("#[cfg(test)]").expect("the test module")];
         assert!(!body.contains(&format!("process::exit({})", 0)), "update.rs exits 0, a requested shutdown");
-        let restart = format!("process::exit({})", "sot_protocol::ops::lease::EXIT_UPDATE_RESTART");
-        assert_eq!(body.matches(&restart).count(), 2, "both update exits are restarts");
+        assert_eq!(body.matches("process::exit(").count(), body.matches("process::exit(code)").count(), "an update exits only with the code exit_for_update hands it");
+        assert_eq!(body.matches("exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)").count(), 1, "the update's one exit is a restart");
+    }
+
+    /// Once a shutdown has begun its own exit stands: the update's is
+    /// skipped (ruling f).
+    #[test]
+    fn update_exit_yields_to_shutdown() {
+        let leases = Leases::new(Some("boot".into()), None, None, false);
+        let exit_code = |leases: &Leases| {
+            let mut code = None;
+            exit_for_update(leases, |c| code = Some(c));
+            code
+        };
+        assert_eq!(exit_code(&leases), Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART), "no shutdown under way: the update exits 75");
+        leases.begin_close();
+        assert_eq!(exit_code(&leases), None, "the update exits 75 during a shutdown");
+        leases.finish_shutdown(0, Vec::new()).unwrap();
+        assert_eq!(exit_code(&leases), None, "the update exits 75 after the shutdown's final record");
     }
 
     fn topo(text: &str) -> sot_protocol::topology::Topology {

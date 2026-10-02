@@ -5306,24 +5306,51 @@ fn default_row_end_response(
 /// Remove a row's tomls from disk so neither registration path brings the
 /// workspace back on next daemon startup: `scan_disk` reads the modern
 /// workspaces/ toml, and the ADR-0013 migration reads the legacy
-/// sessions/ toml. A missing file is success; `false` means a remove
-/// failed (logged).
+/// sessions/ toml. A missing file is success; `false` means a remove or
+/// its directory sync failed (logged).
 pub(crate) fn remove_row_files(slug: &str) -> bool {
-    let mut toml_removed = true;
-    for toml_path in [
+    remove_registration(&[
         crate::workspaces::toml_path_for(slug),
         crate::workspaces::legacy_toml_path_for(slug),
-    ] {
-        match std::fs::remove_file(&toml_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
-                toml_removed = false;
-            }
+    ])
+}
+
+/// Each registration file removed and its directory synced, so the delete
+/// survives a power loss: a registration that came back under a record no
+/// longer `closing` would resume an ended row (ruling e).
+fn remove_registration(paths: &[std::path::PathBuf]) -> bool {
+    let mut toml_removed = true;
+    for toml_path in paths {
+        if let Err(e) = crate::durable::remove(toml_path) {
+            tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
+            toml_removed = false;
         }
     }
     toml_removed
+}
+
+#[cfg(all(test, unix))]
+mod registration_delete_tests {
+    use super::*;
+
+    /// A pin, not a power loss (no test can cut the power): a delete whose
+    /// directory cannot be synced is not a removed registration.
+    #[test]
+    fn registration_delete_syncs_its_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let toml = dir.path().join("row.toml");
+        let mode = |m: u32| std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(m)).unwrap();
+        std::fs::write(&toml, "x").unwrap();
+        // Write and search but no read: the unlink succeeds, and only the
+        // directory's open for its sync fails.
+        mode(0o300);
+        let removed = remove_registration(&[toml.clone(), dir.path().join("absent.toml")]);
+        mode(0o700);
+        assert!(!toml.exists(), "the unlink itself failed");
+        assert!(!removed, "a registration delete whose directory was not synced counted as removed");
+        assert!(remove_registration(&[toml]), "a missing file is success");
+    }
 }
 
 pub async fn handle_workspace_destroy(
