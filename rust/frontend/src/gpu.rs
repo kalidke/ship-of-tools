@@ -3934,12 +3934,27 @@ fn pane_shows_terminal_reason(has_client: bool, is_attached: bool) -> bool {
     has_client && !is_attached
 }
 
-/// The preview's scroll limit in body lines: the tallest buffer the pane can
-/// show (the markdown body, the concept annotation, and the edit buffer while
-/// editing), scrolled until its last line meets the bottom of `visible_px`.
-fn preview_max_scroll(line_h: f32, visible_px: f32, buffers: &[&MarkdownPreview]) -> u16 {
-    let total_px = buffers.iter().map(|p| p.total_visual_pixels(line_h)).fold(0.0_f32, f32::max);
-    ((total_px - visible_px).max(0.0) / line_h).ceil() as u16
+/// The preview's scroll limit in body lines: `shown` scrolled until its last
+/// line meets the bottom of `visible_px`.
+fn preview_max_scroll(line_h: f32, visible_px: f32, shown: &MarkdownPreview) -> u16 {
+    ((shown.total_visual_pixels(line_h) - visible_px).max(0.0) / line_h).ceil() as u16
+}
+
+/// The one preview buffer on screen and the height, px, of the rect it is
+/// drawn in: the edit buffer (whole preview rect) while editing, else the
+/// markdown body (inset md rect). The scroll clamp measures only this buffer,
+/// so a hidden one never scrolls the pane into blank space.
+fn preview_scroll_target<'a>(
+    show_edit: bool,
+    md: &'a MarkdownPreview,
+    md_h: f32,
+    edit: Option<&'a MarkdownPreview>,
+    edit_h: f32,
+) -> (&'a MarkdownPreview, f32) {
+    match edit.filter(|_| show_edit) {
+        Some(e) => (e, edit_h),
+        None => (md, md_h),
+    }
 }
 
 /// The text `pane_shows_terminal_reason`'s own overlay paints, given
@@ -18113,7 +18128,6 @@ impl State {
         let show_fatal = self.protocol_mismatch.contains_key(&self.active_host);
         let show_png = self.preview_png.is_some() && !show_fatal;
         let show_svg = false;
-        let show_concept = false;
         // Edit mode owns the preview pane: the file viewer hides so
         // the editable annotation body has the whole rect.
         let show_edit =
@@ -18236,24 +18250,26 @@ impl State {
         // placeholder spans (display math, embedded figures) — using
         // a body-line count alone undercounts the document height by
         // (figure_height - body_line_h) for every embedded media row.
-        // Clamp by the tallest buffer the pane shows (markdown, concept, and
-        // the edit buffer while editing), so none hits its bottom before it
-        // has been fully reached.
+        // Clamp by the one buffer on screen, in the rect it is drawn in, so a
+        // hidden buffer never scrolls the pane into blank space.
         let line_h = self.preview_md.line_height().max(1.0);
         // The extras paint with `EXTRA_TOP_PAD_PX` of headroom, so each
-        // frame only renders `md_rect.h - pad` pixels of content. Subtract
+        // frame only renders `the drawn rect's height - pad` pixels of content. Subtract
         // the pad from `visible_px` so max_scroll lets the user reach the
         // actual bottom of the document without losing the tail to the
         // padding.
-        let visible_px = (md_rect.h - crate::text::EXTRA_TOP_PAD_PX).max(line_h);
+        let (shown, shown_h) = preview_scroll_target(
+            show_edit,
+            &self.preview_md,
+            md_rect.h,
+            self.preview_edit.as_ref(),
+            preview_rect.h,
+        );
+        let visible_px = (shown_h - crate::text::EXTRA_TOP_PAD_PX).max(line_h);
         // `preview_scroll` is body-line units; convert the pixel slack
         // back via ceil so the final body-line step always lands the
         // bottom of the document on screen (no off-by-fraction clip).
-        let buffers: Vec<&MarkdownPreview> = std::iter::once(&self.preview_md)
-            .chain(self.preview_concept.as_ref())
-            .chain(self.preview_edit.as_ref().filter(|_| show_edit))
-            .collect();
-        let max_scroll = preview_max_scroll(line_h, visible_px, &buffers);
+        let max_scroll = preview_max_scroll(line_h, visible_px, shown);
         self.preview_scroll = self.preview_scroll.min(max_scroll);
         let preview_scroll_px = self.preview_scroll as f32 * line_h;
 
@@ -18412,23 +18428,6 @@ impl State {
                 color: (220, 220, 220),
                 scroll_y_px: preview_scroll_px,
             });
-        }
-        if show_concept {
-            if let Some(pc) = self.preview_concept.as_ref() {
-                extras.push(crate::text::ExtraArea {
-                    buffer: &pc.buffer,
-                    x: concept_rect.x,
-                    y: concept_rect.y,
-                    right: concept_rect.x + concept_rect.w,
-                    bottom: whole_line_clip(pc, concept_rect, preview_scroll_px),
-                    clip_left: None,
-                    clip_top: None,
-                    // Slight magenta tint so the annotation reads as the
-                    // "concept layer" content even when sharing the slot.
-                    color: (220, 200, 230),
-                    scroll_y_px: preview_scroll_px,
-                });
-            }
         }
         if show_edit {
             if let Some(pe) = self.preview_edit.as_ref() {
@@ -30319,10 +30318,36 @@ mod capsule_pane_tests {
         let edit = MarkdownPreview::new_plain(&mut fonts, &lines(50), 800.0, 1.0);
         let h = md.line_height();
         let vis = 10.0 * h;
-        assert_eq!(preview_max_scroll(h, vis, &[&md]), 0);
-        let s = preview_max_scroll(h, vis, &[&md, &edit]);
+        assert_eq!(preview_max_scroll(h, vis, &md), 0);
+        let s = preview_max_scroll(h, vis, &edit);
         assert!(s as f32 * h >= edit.total_visual_pixels(h) - vis - 0.5);
         assert!((s as f32 * h) < edit.total_visual_pixels(h) - vis + h);
+    }
+
+    #[test]
+    fn preview_scroll_target_measures_only_the_buffer_on_screen() {
+        let lines = |n: usize| {
+            (0..n)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut fonts = cosmic_text::FontSystem::new();
+        let md = MarkdownPreview::new_plain(&mut fonts, &lines(100), 800.0, 1.0);
+        let edit = MarkdownPreview::new_plain(&mut fonts, &lines(20), 800.0, 1.0);
+        let h = md.line_height();
+        let (b, bh) = preview_scroll_target(true, &md, 10.0 * h, Some(&edit), 12.0 * h);
+        assert!(std::ptr::eq(b, &edit));
+        assert_eq!(bh, 12.0 * h);
+        let (b2, bh2) = preview_scroll_target(false, &md, 10.0 * h, Some(&edit), 12.0 * h);
+        assert!(std::ptr::eq(b2, &md));
+        assert_eq!(bh2, 10.0 * h);
+        let (b3, bh3) = preview_scroll_target(true, &md, 10.0 * h, None, 12.0 * h);
+        assert!(std::ptr::eq(b3, &md));
+        assert_eq!(bh3, 10.0 * h);
+        let vis = bh - crate::text::EXTRA_TOP_PAD_PX;
+        let s = preview_max_scroll(h, vis, b);
+        assert!((s as f32) * h < edit.total_visual_pixels(h) - vis + h);
     }
 
     #[test]
