@@ -474,8 +474,10 @@ Monitor exists.
   processes, an unreadable /proc record, a parse that did not finish, a
   `sotd.exe` that fails or is too old) is refused, not trusted. On Windows, an
   ancestor whose record cannot be opened, or whose creation time is after its
-  child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
-  command line are refused. On Windows an unreadable command line is recorded as
+  child's, ends the walk as the top; for a
+  process that names no row, only the 64 cap and node.exe's unreadable command
+  line are refused (the row rule below refuses that early top for one that
+  names a row). On Windows an unreadable command line is recorded as
   arguments unknown, which equals nothing: a native agent so recorded never
   counts once with its node host, though a standalone one is one layer. On
   Windows every comm script that reads mail, sends, joins or stamps refuses
@@ -503,12 +505,13 @@ Monitor exists.
 - What the check does not see: for a process that names no row, an agent above a
   reparenting, or on Windows above an ancestor that cannot be opened or that was
   created after its child; an agent whose name is not in the list; a macOS agent
-  whose argv[0] contains a space; a shim that starts `node` under the agent's own
-  name (a volta-style shim), which may be refused instead; and a second agent
-  that removes both `SOT_COMM_SELF_FILE` and `SOT_WORKSPACE_ID` from its
-  environment, which then falls to the host's shared no-pane identity. On macOS a
+  whose argv[0] contains a space; and a shim that starts `node` under the agent's
+  own name (a volta-style shim), which may be refused instead. On macOS a
   capsule binary installed under a path that holds a space is not recognised
-  (`ps` splits its argv[0]), so a process naming its row is refused there. On macOS
+  (`ps` splits its argv[0]), and a state path holding a standalone `--` word ends
+  the argument scan early; either way a process naming its row is refused there.
+  An argument whose state root itself lies inside another row's voyages folder (a
+  path holding `/workspaces/<id>/voyages/` before its own) matches that row too. On macOS
   the walk reads `ps`, which folds runs of white space, so a native agent started
   directly by its node host with arguments that differ only in white space counts
   as one layer with it; exact argv on macOS comes after 0.6.6. An argument that itself contains the

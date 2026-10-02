@@ -1667,7 +1667,9 @@ sot_pty_screen() {
 # self file is pinned — there the slot comm-context.sh derives is keyed by
 # that same ambient id, so the two agree by construction. "nopane" is the
 # literal placeholder comm-context.sh writes for a non-capsule shell, never
-# a real id — treated the same as absent.
+# a real id — treated the same as absent. A host label or an id may itself hold
+# "__", so when the name has more than one, this host's own label (sot_host) is
+# stripped first; with no match the cut is at the first "__".
 #
 # The order is load-bearing and ran the other way until 2026-09-28. A test
 # or a lane pins its own scratch identity but inherits $SOT_WORKSPACE_ID
@@ -1689,7 +1691,13 @@ sot_capsule_workspace_id() {
         *__*.txt) ;;
         *) return 1 ;;
     esac
-    local id="${base#*__}"
+    local id="${base#*__}" host=""
+    case "$id" in
+        *__*) host="$(sot_host 2>/dev/null)" || host=""
+              if [ -n "$host" ]; then
+                  case "$base" in "$host"__*) id="${base#"$host"__}" ;; esac
+              fi ;;
+    esac
     id="${id%.txt}"
     [ -n "$id" ] && [ "$id" != "nopane" ] || return 1
     printf '%s\n' "$id"
@@ -1913,7 +1921,7 @@ _sot_ancestor_chain() {
 # _sot_agent_layers [ROW] — stdin: a chain from _sot_ancestor_chain. Prints one agent
 # name per layer, nearest first, stopping after the capsule's record, then `!ok`
 # when the chain was read to the capsule or the top; `!tree` and nothing more when
-# it ends short of both. Output without `!ok` is a filter that did not finish.
+# it ends short of both. Output without a closing `!ok`, `!norow` or `!elsewhere` is a filter that did not finish.
 # With a ROW id the end must be that row's capsule: the top prints `!norow`, and a
 # capsule none of whose arguments before `--` (with `\` read as `/`) ends in
 # /workspaces/ROW or holds /workspaces/ROW/voyages/ prints `!elsewhere`, both in
@@ -1964,7 +1972,7 @@ _sot_agent_layers() {
 # prints ONE reason on stdout, the way sot_require_routable_identity does, and
 # returns 1 for a child (a second agent) or 2 for an ancestry that cannot be read
 # in full (it cannot be shown to be the session's own agent) or for a process that
-# names a row it does not run inside (its walk ends at the top or at another
+# names a row it is not shown to run inside (its walk ends at the top or at another
 # capsule). Layers are judged first: a child is 1 whatever the row verdict.
 sot_require_agent() {
     local chain layers l n=0 ok=0 inner="" outer="" row="" away=0
@@ -1984,7 +1992,7 @@ sot_require_agent() {
         return 1
     fi
     if [ "$away" = 1 ]; then
-        echo "this process names row $row but does not run inside that row's capsule, so it has no comm identity; nothing was read, sent or stamped; start it inside the row, or as its own row"
+        echo "this process names row $row but is not shown to run inside that row's capsule, so it has no comm identity; nothing was read, sent or stamped; start it inside the row, or as its own row"
         return 2
     fi
     return 0

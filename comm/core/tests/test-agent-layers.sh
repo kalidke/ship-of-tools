@@ -214,12 +214,14 @@ wtbl 2 "a quoted TAB against a space in the child: two layers" \
     "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A B\"" "node.exe${TAB}$WCJS \"A${TAB}B\"" "sot-capsule.exe${TAB}sot-capsule.exe run"
 
 # --- 1b2. the row rule: a process that names a row must reach that row's capsule ---
-R_ROW_TEXT="does not run inside that row's capsule"
+R_ROW_TEXT="is not shown to run inside that row's capsule"
 # rreq WANT DESC TEXT SELF WSID RECORD... : req with an identity set only inside its subshell
-# (SELF is a self file path, WSID a SOT_WORKSPACE_ID; empty sets neither).
+# (SELF is a self file path, WSID a SOT_WORKSPACE_ID; empty sets neither). RHOST, when set
+# for the call (`RHOST=h rreq ...`), is this host's SOT_SELF_HOST inside the subshell only.
 rreq() {
     local want="$1" desc="$2" text="$3" self="$4" wsid="$5" res; shift 5; CHAIN=("$@")
-    res="$( [ -z "$self" ] || export SOT_COMM_SELF_FILE="$self"; [ -z "$wsid" ] || export SOT_WORKSPACE_ID="$wsid"
+    res="$( [ -z "${RHOST:-}" ] || export SOT_SELF_HOST="$RHOST"
+            [ -z "$self" ] || export SOT_COMM_SELF_FILE="$self"; [ -z "$wsid" ] || export SOT_WORKSPACE_ID="$wsid"
             _sot_ancestor_chain() { local r; [ "${#CHAIN[@]}" -gt 0 ] || return 1; for r in "${CHAIN[@]}"; do printf '%s\n' "${r//|/$US}"; done
                                     case "$r" in '!'*) ;; *) echo '!end' ;; esac; }
             o="$(sot_require_agent)"; echo "rc=$?|$o" )"
@@ -242,6 +244,12 @@ rreq 0 "nothing set, at the top"                          "" "" "" bash claude
 rreq 0 "self-x.txt names no row, inside ws-b's leg"       "" "$WORK/self/self-x.txt" "" bash claude "sot-capsule|run|/s/workspaces/ws-b/voyages/v1|v1"
 rreq 1 "two agents inside ws-a's leg"                     "has no comm identity" "$SA" "" bash codex bash claude "sot-capsule|run|/s/workspaces/ws-a/voyages/v1|v1"
 rreq 1 "two agents at the top with row ws-a"              "has no comm identity" "$SA" "" bash codex bash claude
+# The row id strips this host's own label first (a label may hold __; so may an id).
+WLEG='sot-capsule|run|/s/workspaces/%s/voyages/v1|v1'
+RHOST=dev__box rreq 0 "host dev__box, self file dev__box__ws-a.txt, ws-a's leg" "" "$WORK/self/dev__box__ws-a.txt" "" bash claude "$(printf "$WLEG" ws-a)"
+RHOST=h rreq 0 "an id holding __: ws-a__b's leg" "" "$WORK/self/h__ws-a__b.txt" "" bash claude "$(printf "$WLEG" ws-a__b)"
+RHOST=h rreq 2 "an id holding __: ws-b's leg" "$R_ROW_TEXT" "$WORK/self/h__ws-a__b.txt" "" bash claude "$(printf "$WLEG" ws-b)"
+RHOST=other rreq 2 "host other does not match dev__box: first __, row box__ws-a, ws-a's leg" "$R_ROW_TEXT" "$WORK/self/dev__box__ws-a.txt" "" bash claude "$(printf "$WLEG" ws-a)"
 
 # rwinreq WANT DESC TEXT SELF WSID SOTD_RC LINE... : winreq with an identity set only inside its subshell.
 rwinreq() {
@@ -635,6 +643,13 @@ hasnt "row rule: that poll shows no frame" "$OUT" "frame-row"
 eq  "row rule: that poll leaves the cursor alone" "$(sum "$CUR_A")" "$cur0"
 ROWID=ws-a; run rown "$SELF_WA" "$POLL"
 eq  "row rule: poll beneath ws-a's capsule, naming ws-a, succeeds" "$RC" 0
+# The Stop hook shows the refusal and stamps nothing.
+reg0="$(sum "$REG")"
+OUT="$(printf '{}' | CLAUDE_CODE_SESSION_ID=agl-stop-row ROWID=ws-b chain rown "$SELF_WA" bash "$HOOKS_DIR/comm-status-idle.sh" 2>&1)"; rc_of
+eq  "row rule: the Stop hook beneath ws-b, naming ws-a, exits 0" "$RC" 0
+has "row rule: the Stop hook shows a systemMessage" "$OUT" '"systemMessage"'
+has "row rule: the Stop hook names the cause" "$OUT" "$R_ROW_TEXT"
+eq  "row rule: the Stop hook leaves the registry alone" "$(sum "$REG")" "$reg0"
 # An orphan: its shell exits at once, so no ws-a capsule is above it.
 ORC="$WORK/orphan.rc"; rm -f "${ORC:?}"
 ( cd "$WORK" && export SOT_COMM_SELF_FILE="$SELF_WA" RCF && in_row ws-a bash -c '( sleep 1; "$@" > "$0.out" 2>&1; echo $? > "$0" ) < /dev/null > /dev/null 2>&1 & exit 0' "$ORC" "$POLL" ) > /dev/null 2>&1

@@ -44,7 +44,8 @@
 #   in_row ID CMD...                 run CMD beneath a stand-in for row ID's capsule
 # The path need not exist: the walk reads only the command line. CMD must be an
 # executable (a script or a binary), not a shell function of the suite; exported
-# variables reach it, unexported ones do not.
+# variables reach it, unexported ones do not. Linux and macOS only: a Windows walk names the
+# executable, which `exec -a` cannot change.
 _GUARD_LIVE=("$HOME/.sot-comm")
 _GUARD_ACCT="" _GUARD_USER="$(id -un 2>/dev/null)"
 case "$_GUARD_USER" in
