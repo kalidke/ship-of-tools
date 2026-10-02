@@ -101,8 +101,8 @@ or local frontend driving a Linux backend where the Julia kernel and GPU live.
 A single daemon can host **one Julia kernel per workspace**, routed by
 `workspace_id`, so switching the active project is fast and never tears the kernel
 down. Each agent session runs in its own **capsule** supervisor, which the
-daemon starts and lists but does not hold up, so sessions survive frontend and
-daemon restarts alike — see [Sessions and persistence](../concepts/sessions.md).
+daemon starts and lists but does not hold up, so sessions survive frontend relaunches and
+daemon restarts alike (closing the window ends this computer's sessions; see ADR 0050) — see [Sessions and persistence](../concepts/sessions.md).
 
 ## Where to go next
 

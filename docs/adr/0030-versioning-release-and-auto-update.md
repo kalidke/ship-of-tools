@@ -6,6 +6,8 @@ next launch; remote-BE-over-SSH is the design — all-in-one uses the same SSH p
 localhost, SSH key auth to the BE host is a hard requirement)
 **Date:** 2026-07-01
 
+> **Amended 2026-10-02 (0.6.6):** an update restart exits 75, and the service restarts the daemon on 75 only; exit 0 is a requested shutdown and stays down. A window relaunch for an update hands over its lease (60 s bound) rather than closing. See ADR 0050.
+
 > **Superseded in part (2026-08-10 note):** two claims above and in the body
 > drifted from the shipped implementation — read the **Amendment 2026-07-04**
 > below first. (1) The **julia bundle is retired**: every `julia-bundle-*`

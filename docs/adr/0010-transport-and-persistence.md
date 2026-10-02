@@ -80,3 +80,7 @@ frontend no longer has. The frontend now spawns `ssh <host> sotd
 stdio-bridge` and speaks the protocol directly over that child's own
 stdin/stdout — no local socket, no local port, on any platform. See
 [Transport](../src/concepts/transport.md).
+
+## Update (2026-10-02, 0.6.6): persistence past a window close is the remote model only
+
+A session now outlives a window close only when the backend is remote. A backend on the same computer as the window ends its sessions when the last window closes, unless the user chose to keep them. Rows still survive a daemon restart. See ADR 0050.

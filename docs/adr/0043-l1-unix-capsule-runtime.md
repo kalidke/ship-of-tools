@@ -884,6 +884,14 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     1677d24c (the fix — a denied breakaway is contained, not refused). Linux is
     **L2, PR #232**.
 
+    > **Amended 2026-10-02 (0.6.6):** (1) A row's spawn now names its own
+    > transient unit, `sot-row-<hash>-<uuid>.scope`, instead of the unnamed
+    > scope shown in decisions 24 and 32 (`--unit` was absent); the whole scope
+    > ends with the row, so a descendant that left the agent's process group
+    > no longer survives it, with the residuals recorded in ADR 0050. (2) Rows
+    > outlive a daemon restart, not the last window's close: when the last
+    > window on this computer closes, the daemon ends every row (see ADR 0050).
+
 33. **One guard, one resume path; the daemon watches only what it spawned —
     REPLACES decision 26, rule D's claim and the contention re-probe.** A
     per-row guard (`Workspaces` replaces `starting: HashSet<String>` with a

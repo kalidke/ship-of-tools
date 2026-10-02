@@ -147,3 +147,7 @@ Phase 2 = **single host.** Sessions mode lists backends on the host the frontend
 - **State files don't track project mutation.** If the user moves `project_dir` outside DevEnv we notice via tmux session dead → daemon dead → reconcile prompt. The toml is a pointer, not a copy.
 - **`$SOT_PROJECTS_ROOT` is settings-driven.** Defaults to `$HOME/julia_dev`. Sessions-mode picker is scoped there; future Files-mode-goes-universal (Option B in the design discussion) can later replace the picker with a free-roam Files mode + "make-this-a-backend" key, without changing the rest of this design.
 - **Phase 2 implementation order**: ADR (this doc) → backend sockets per-session naming → tmux query/spawn helpers in frontend → Sessions mode rendering → picker → startup resume → reconciliation banners.
+
+## Update (2026-10-02, 0.6.6): persistence past a window close is the remote model only
+
+A session now outlives a window close only when the backend is remote. A backend on the same computer as the window ends its sessions when the last window closes, unless the user chose to keep them. Rows still survive a daemon restart. See ADR 0050.

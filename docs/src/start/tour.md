@@ -57,7 +57,7 @@ nothing runs there until you create a session.
    the agent is working, waiting for your answer or done; the colours are in
    [Work-state colours](../concepts/work-state.md).
 
-The session keeps running when you switch rows or close the window.
+The session keeps running when you switch rows. Closing the window ends the sessions of a backend on this computer; a remote backend keeps them running.
 
 ## Files mode — `f`
 
