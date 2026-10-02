@@ -709,6 +709,14 @@ fn exit_intent(reason: ExitReason, leaving: bool) -> ExitStep {
     }
 }
 
+/// Whether the redraw that set `should_exit` ends the event loop. A window
+/// that is leaving exits only from `about_to_wait`'s poll, with its own
+/// exit code once the acks are in. The capture harness never leases and
+/// `about_to_wait` returns early for it, so its exit is here.
+fn redraw_exits(should_exit: bool, leaving: bool, harness: bool) -> bool {
+    should_exit && (harness || !leaving)
+}
+
 /// Outcome of a Ctrl+N create round-trip, as `finish_pending_create` needs
 /// it: `FileWriteResult`'s `Ok`/`Conflict`/`Error` and `DirCreateResult`'s
 /// `Ok`/`Error` collapse onto these three cases — a conflicting `file.write`
@@ -20416,7 +20424,7 @@ impl ApplicationHandler for App {
         // saved on events, and the OS reclaims the window/GPU surface.
         let relaunch_code = state
             .relaunch_flag
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
         if relaunch_code != 0 {
             tracing::info!(
                 exit_code = relaunch_code,
@@ -20723,7 +20731,7 @@ impl ApplicationHandler for App {
                             ));
                         }
                     }
-                    if state.should_exit {
+                    if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
                         event_loop.exit();
                     }
                 }
@@ -22944,10 +22952,9 @@ impl ApplicationHandler for App {
         // `Ended` outcome (from `pump_attach_term`, run during `redraw`,
         // which has no `event_loop` of its own) reaches an actual exit
         // HERE — the one place every idle cycle already passes through
-        // with both `state` and `event_loop` in hand. Every OTHER
-        // `should_exit` setter (the Quit keybind, the capture harness)
-        // already calls `event_loop.exit()` at its own call site; this
-        // check is additive for the one setter that cannot.
+        // with both `state` and `event_loop` in hand. A leaving window
+        // exits only here too, once its acks are in, with its own exit
+        // code: the redraw exit skips it (`redraw_exits`).
         if state.should_exit {
             let now = std::time::Instant::now();
             let step = state.leaving.as_mut().map(|l| l.poll(now));
@@ -24345,9 +24352,23 @@ mod tests {
         assert_eq!(exit_intent(WindowClose, false), Leave { intent: LeaveIntent::Close, code: 0 });
         assert_eq!(exit_intent(QuitKey, false), Ask);
         assert_eq!(exit_intent(Relaunch(75), false), Leave { intent: LeaveIntent::Handover, code: 75 });
+        assert_eq!(exit_intent(Relaunch(76), false), Leave { intent: LeaveIntent::Handover, code: 76 });
         assert_eq!(exit_intent(WindowClose, true), Now);
         assert_eq!(exit_intent(QuitKey, true), Now);
         assert_eq!(exit_intent(Relaunch(75), true), Ignore);
+    }
+
+    #[test]
+    fn redraw_exit_table() {
+        // A leaving window exits only from `about_to_wait`.
+        assert!(!redraw_exits(true, true, false));
+        assert!(!redraw_exits(false, true, false));
+        // The capture harness exits at its redraw.
+        assert!(redraw_exits(true, false, true));
+        // A plain `should_exit` with nothing leaving exits.
+        assert!(redraw_exits(true, false, false));
+        assert!(!redraw_exits(false, false, false));
+        assert!(!redraw_exits(false, false, true));
     }
 
     use super::*;
