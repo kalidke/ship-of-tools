@@ -43,11 +43,17 @@ pub(crate) struct HeldRecord {
     /// the BootId is unreadable). A
     /// record from another boot plans Cleanup at once.
     pub boot: String,
-    /// The live leases' identities, plus a pending start's recorded
-    /// holders until it resolves.
+    /// The live leases' identities, plus the recorded holders still
+    /// awaited: each until it re-leases or the hold passes.
     pub holders: Vec<ProcessIdentity>,
     /// An in-process or pending handover's deadline.
     pub handover_until_ms: Option<u64>,
+    /// The deadline by which recorded holders must re-lease, set iff one
+    /// is still awaited. Written once: a restart never extends the
+    /// recorded holders' bound. Apart from `handover_until_ms`, so a
+    /// persisted hold never lets any granted lease complete a start.
+    #[serde(default)]
+    pub hold_until_ms: Option<u64>,
     /// True from shutdown step 1 to step 5.
     pub closing: bool,
     /// Sessions an earlier close could not end, until a window acks them.
@@ -61,6 +67,7 @@ impl HeldRecord {
     fn is_empty(&self) -> bool {
         self.holders.is_empty()
             && self.handover_until_ms.is_none()
+            && self.hold_until_ms.is_none()
             && !self.closing
             && self.not_ended == 0
             && self.forget.is_empty()
@@ -143,6 +150,14 @@ struct State {
     /// One entry per granted lease, removed by its generation only.
     held: Vec<(u64, ProcessIdentity)>,
     handover_until_ms: Option<u64>,
+    /// Recorded holders that have not re-leased since this start. They
+    /// count as present, not last, until `hold_until_ms`.
+    awaited: Vec<ProcessIdentity>,
+    /// Set iff `awaited` is non-empty; taken from the record, never moved.
+    hold_until_ms: Option<u64>,
+    /// The last live lease closed while a recorded holder was awaited: at
+    /// the hold, with no lease held, that close is a shutdown.
+    close_at_hold: bool,
     pending: Option<Pending>,
     phase: Phase,
     not_ended: u32,
@@ -151,12 +166,8 @@ struct State {
 
 impl State {
     fn record(&self) -> HeldRecord {
-        let recorded = match &self.pending {
-            Some(Pending { qualify: Qualify::Holders(h), .. }) => h.as_slice(),
-            _ => &[],
-        };
         let mut holders: Vec<ProcessIdentity> = Vec::new();
-        for who in self.held.iter().map(|(_, who)| who).chain(recorded) {
+        for who in self.held.iter().map(|(_, who)| who).chain(&self.awaited) {
             if !holders.contains(who) {
                 holders.push(who.clone());
             }
@@ -170,6 +181,7 @@ impl State {
             boot: self.own_boot.clone().unwrap_or_default(),
             holders,
             handover_until_ms: self.handover_until_ms.or(pending_until),
+            hold_until_ms: self.hold_until_ms,
             closing: self.phase == Phase::Closing,
             not_ended: self.not_ended,
             forget: self.forget.clone(),
@@ -188,6 +200,15 @@ impl State {
         if let (Err(e), Some(path)) = (self.persist(), &self.path) {
             tracing::error!(path = %path.display(), "held record not written: {e}");
         }
+    }
+
+    /// A recorded holder is still awaited and its hold has not passed.
+    fn in_hold(&self, now_ms: u64) -> bool {
+        !self.awaited.is_empty() && self.hold_until_ms.is_some_and(|until| now_ms < until)
+    }
+
+    fn awaited_pids(&self) -> Vec<u32> {
+        self.awaited.iter().map(|who| who.pid).collect()
     }
 
     /// Shutdown step 1: record `closing` and refuse every later lease. A
@@ -228,6 +249,9 @@ impl Leases {
             next_gen: 1,
             held: Vec::new(),
             handover_until_ms: None,
+            awaited: Vec::new(),
+            hold_until_ms: None,
+            close_at_hold: false,
             pending: None,
             phase: Phase::Open,
             not_ended: 0,
@@ -245,8 +269,9 @@ impl Leases {
     /// `Undetermined` if the peer is, or this daemon's boot is unknown;
     /// `Granted` iff the token passed and the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
-    /// generation, clears an in-process handover, and may complete a
-    /// pending start. A grant whose record cannot be written is undone and
+    /// generation, clears an in-process handover and a close deferred to
+    /// the hold, stops awaiting its claimant, and may complete a pending
+    /// start. A grant whose record cannot be written is undone and
     /// refused as `Undetermined`, so a grant never outruns its record.
     pub(crate) fn grant(
         &self,
@@ -275,7 +300,12 @@ impl Leases {
         };
         let gen = st.next_gen;
         st.next_gen += 1;
-        let handover_until_ms = st.handover_until_ms.take();
+        let undo = (st.handover_until_ms.take(), st.awaited.clone(), st.hold_until_ms, st.close_at_hold);
+        st.awaited.retain(|w| *w != who);
+        if st.awaited.is_empty() {
+            st.hold_until_ms = None;
+        }
+        st.close_at_hold = false;
         let qualified = st.pending.as_ref().is_some_and(|p| {
             !p.expired
                 && now_ms < p.until_ms
@@ -288,7 +318,7 @@ impl Leases {
         st.held.push((gen, who));
         if let Err(e) = st.persist() {
             st.held.pop();
-            st.handover_until_ms = handover_until_ms;
+            (st.handover_until_ms, st.awaited, st.hold_until_ms, st.close_at_hold) = undo;
             if qualified {
                 st.pending = cleared;
             }
@@ -306,7 +336,8 @@ impl Leases {
     /// A lease's end: `intent` is its well-formed `fe.leaving`, `None` for
     /// an EOF or io error (which means `Close`). Only the last lease's end
     /// decides anything; an unknown or already-removed generation is a
-    /// no-op.
+    /// no-op. A recorded holder inside its hold counts as present, so a
+    /// `Close` then waits for the hold.
     pub(crate) fn depart(&self, gen: u64, intent: Option<LeaveIntent>, now_ms: u64) -> Decision {
         let mut st = self.lock();
         let Some(at) = st.held.iter().position(|(g, _)| *g == gen) else {
@@ -318,6 +349,16 @@ impl Leases {
             return Decision::None;
         }
         match intent.unwrap_or(LeaveIntent::Close) {
+            LeaveIntent::Close if st.in_hold(now_ms) => {
+                st.close_at_hold = true;
+                tracing::info!(
+                    "window closed; staying until {} for recorded window(s) {:?} to re-lease",
+                    st.hold_until_ms.unwrap_or_default(),
+                    st.awaited_pids()
+                );
+                st.persist_or_log();
+                Decision::None
+            }
             LeaveIntent::Close => {
                 st.close();
                 drop(st);
@@ -336,22 +377,38 @@ impl Leases {
         }
     }
 
-    /// The 1 s ticker's check: an expired handover with no lease held is a
-    /// shutdown; an expired pending start is a Cleanup, handed out once.
+    /// The 1 s ticker's check, in order: a passed hold, once the rows are
+    /// released, stops awaiting the recorded holders, and a close deferred
+    /// to it is a shutdown; an expired pending start is a Cleanup, handed
+    /// out once; an expired handover with no lease held and no recorded
+    /// holder inside its hold is a shutdown.
     pub(crate) fn tick(&self, now_ms: u64) -> Tick {
         let mut st = self.lock();
         if st.phase != Phase::Open {
             return Tick::None;
         }
-        if st.held.is_empty() && st.handover_until_ms.is_some_and(|until| until <= now_ms) {
-            st.close();
-            drop(st);
-            self.gone.send_replace(true);
-            return Tick::Shutdown;
+        if let Some(until) = st.hold_until_ms.filter(|until| st.pending.is_none() && *until <= now_ms) {
+            let pids = st.awaited_pids();
+            st.awaited.clear();
+            st.hold_until_ms = None;
+            if st.close_at_hold && st.held.is_empty() {
+                tracing::info!("recorded window(s) {pids:?} did not re-lease by {until}: shutting down as a close");
+                st.close();
+                drop(st);
+                self.gone.send_replace(true);
+                return Tick::Shutdown;
+            }
+            st.persist_or_log();
         }
         if let Some(p) = st.pending.as_mut().filter(|p| !p.expired && p.until_ms <= now_ms) {
             p.expired = true;
             return Tick::Cleanup;
+        }
+        if st.held.is_empty() && st.handover_until_ms.is_some_and(|until| until <= now_ms) && !st.in_hold(now_ms) {
+            st.close();
+            drop(st);
+            self.gone.send_replace(true);
+            return Tick::Shutdown;
         }
         Tick::None
     }
@@ -378,13 +435,16 @@ impl Leases {
 
     /// The end of a startup Cleanup, from the plan or from an expired
     /// pending start: its report written as the record, and the expired
-    /// pending start cleared. It never touches the phase, so a shutdown
-    /// that began during the Cleanup stays `closing` until its own step 5.
+    /// pending start and its awaited holders cleared. It never touches the
+    /// phase, so a shutdown that began during the Cleanup stays `closing`
+    /// until its own step 5.
     pub(crate) fn finish_cleanup(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
         if st.pending.as_ref().is_some_and(|p| p.expired) {
             st.pending = None;
         }
+        st.awaited.clear();
+        st.hold_until_ms = None;
         st.not_ended = not_ended;
         st.forget = forget;
         st.persist()
@@ -410,10 +470,16 @@ impl Leases {
         self.lock().record()
     }
 
-    /// A start's Pending plan: the record keeps its holders, or its
-    /// handover deadline, until a qualifying lease or the Cleanup.
+    /// A start's Pending plan: the record keeps its handover deadline
+    /// until a qualifying lease or the Cleanup, and its holders, awaited,
+    /// until each re-leases or the hold `until_ms` passes. Written before
+    /// it returns, so the hold is on disk before any row is held back.
     pub(crate) fn install_pending(&self, until_ms: u64, qualify: Qualify) -> std::io::Result<()> {
         let mut st = self.lock();
+        if let Qualify::Holders(holders) = &qualify {
+            st.awaited = holders.clone();
+            st.hold_until_ms = Some(until_ms);
+        }
         st.pending = Some(Pending { until_ms, qualify, expired: false });
         st.persist()
     }
@@ -543,8 +609,11 @@ pub(crate) fn startup_plan(
         }
         return StartPlan::Pending { until_ms, qualify: Qualify::Any };
     }
+    if rec.hold_until_ms.is_some_and(|until| until <= now_ms) {
+        return StartPlan::Cleanup;
+    }
     if !rec.holders.is_empty() {
-        let until_ms = now_ms.saturating_add(handover_bound_ms());
+        let until_ms = rec.hold_until_ms.unwrap_or(now_ms.saturating_add(handover_bound_ms()));
         return StartPlan::Pending { until_ms, qualify: Qualify::Holders(rec.holders.clone()) };
     }
     StartPlan::Resume
@@ -572,7 +641,16 @@ mod tests {
     }
 
     fn empty() -> HeldRecord {
-        HeldRecord { v: 1, boot: BOOT.into(), holders: vec![], handover_until_ms: None, closing: false, not_ended: 0, forget: vec![] }
+        HeldRecord {
+            v: 1,
+            boot: BOOT.into(),
+            holders: vec![],
+            handover_until_ms: None,
+            hold_until_ms: None,
+            closing: false,
+            not_ended: 0,
+            forget: vec![],
+        }
     }
 
     struct Fixture {
@@ -775,7 +853,7 @@ mod tests {
 
         let mut f = fixture(Some(BOOT));
         f.leases.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
-        assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }));
+        assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], hold_until_ms: Some(until), ..empty() }));
         f.grant(&id(2));
         assert!(f.starts.try_recv().is_err(), "an unrecorded window does not complete it");
         assert_eq!(f.leases.record().holders, vec![id(2), id(1)]);
@@ -808,6 +886,54 @@ mod tests {
         f.leases.finish_cleanup(0, vec![]).unwrap();
         assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "closing until the shutdown's own step 5");
         assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, until).0, LeaseOutcome::Closing);
+    }
+
+    #[test]
+    fn recorded_holder_counts_until_hold_deadline() {
+        let (a, b) = (id(1), id(2));
+        let mut f = fixture(Some(BOOT));
+        write_or_delete(&f.path, &HeldRecord { holders: vec![a.clone(), b.clone()], ..empty() }).unwrap();
+        let StartPlan::Pending { until_ms: until, qualify } = startup_plan(&read_record(&f.path), Ok(BOOT), T0) else {
+            panic!("recorded holders plan Pending");
+        };
+        f.leases.install_pending(until, qualify).unwrap();
+        let ga = f.grant(&a);
+        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "the first recorded holder releases the rows");
+        let rec = f.on_disk().unwrap();
+        assert!(rec.holders.contains(&b), "B is still awaited: {rec:?}");
+        assert_eq!(rec.hold_until_ms, Some(until), "the same hold");
+        assert_eq!(f.leases.depart(ga, Some(LeaveIntent::Close), T0 + 1), Decision::None, "B counts as present");
+        assert_eq!(f.leases.grant(&req(&b), &peer(&b), true, until - 1).0, LeaseOutcome::Granted, "B re-leases in time");
+        assert_eq!(f.leases.tick(until + 1), Tick::None);
+        assert_eq!(f.leases.record().holders, vec![b]);
+    }
+
+    #[test]
+    fn hold_deadline_survives_restarts() {
+        let f = fixture(Some(BOOT));
+        write_or_delete(&f.path, &HeldRecord { holders: vec![id(1)], ..empty() }).unwrap();
+        let until = T0 + handover_bound_ms();
+        for now in [T0, T0 + 10_000, T0 + 20_000] {
+            let plan = startup_plan(&read_record(&f.path), Ok(BOOT), now);
+            assert_eq!(plan, StartPlan::Pending { until_ms: until, qualify: Qualify::Holders(vec![id(1)]) }, "a start at {now}");
+            let (restarted, _) = Leases::new(Some(BOOT.into()), Some(f.path.clone()));
+            restarted.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
+            assert_eq!(f.on_disk().unwrap().hold_until_ms, Some(until), "written at once, at {now}");
+        }
+        assert_eq!(startup_plan(&read_record(&f.path), Ok(BOOT), T0 + 61_000), StartPlan::Cleanup);
+    }
+
+    #[test]
+    fn absent_holder_ends_at_hold_deadline() {
+        let until = T0 + handover_bound_ms();
+        let f = fixture(Some(BOOT));
+        f.leases.install_pending(until, Qualify::Holders(vec![id(1), id(2)])).unwrap();
+        let a = f.grant(&id(1));
+        assert_eq!(f.leases.depart(a, Some(LeaveIntent::Close), T0 + 1), Decision::None, "deferred to the hold");
+        assert_eq!(f.leases.tick(until - 1), Tick::None);
+        assert_eq!(f.leases.tick(until), Tick::Shutdown, "the absent window did not re-lease: a close");
+        assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }));
+        assert_eq!(f.leases.grant(&req(&id(3)), &peer(&id(3)), true, until).0, LeaseOutcome::Closing);
     }
 
     #[tokio::test]
@@ -900,6 +1026,12 @@ mod tests {
                 rec(|r| r.holders = vec![id(1)]),
                 Pending { until_ms: T0 + handover_bound_ms(), qualify: Qualify::Holders(vec![id(1)]) },
             ),
+            ("hold passed", rec(|r| (r.holders, r.hold_until_ms) = (vec![id(1)], Some(T0 - 1))), Cleanup),
+            (
+                "holders, hold in the future",
+                rec(|r| (r.holders, r.hold_until_ms) = (vec![id(1)], Some(T0 + 5))),
+                Pending { until_ms: future, qualify: Qualify::Holders(vec![id(1)]) },
+            ),
             ("only not_ended and forget", rec(|r| (r.not_ended, r.forget) = (2, vec!["w".into()])), Resume),
         ];
         for (name, read, want) in &cases {
@@ -921,6 +1053,7 @@ mod tests {
         let full = HeldRecord {
             holders: vec![id(1)],
             handover_until_ms: Some(T0),
+            hold_until_ms: Some(T0 + 1),
             closing: true,
             not_ended: 3,
             forget: vec!["w1".into()],
@@ -931,11 +1064,12 @@ mod tests {
         write_or_delete(&path, &HeldRecord { handover_until_ms: None, ..full }).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            r#"{"v":1,"boot":"boot-a","holders":[{"boot":"boot-a","pid":1,"created":7001}],"handover_until_ms":null,"closing":true,"not_ended":3,"forget":["w1"]}"#
+            r#"{"v":1,"boot":"boot-a","holders":[{"boot":"boot-a","pid":1,"created":7001}],"handover_until_ms":null,"hold_until_ms":1000001,"closing":true,"not_ended":3,"forget":["w1"]}"#
         );
-        let keeps: [(&str, fn(&mut HeldRecord)); 5] = [
+        let keeps: [(&str, fn(&mut HeldRecord)); 6] = [
             ("holders", |r| r.holders = vec![id(1)]),
             ("handover", |r| r.handover_until_ms = Some(T0)),
+            ("hold", |r| r.hold_until_ms = Some(T0)),
             ("closing", |r| r.closing = true),
             ("not_ended", |r| r.not_ended = 1),
             ("forget", |r| r.forget = vec!["w".into()]),
