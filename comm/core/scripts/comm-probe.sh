@@ -309,6 +309,12 @@ probe_serve() {
 
 # Runs only when executed, not sourced (the tests source this for the helpers).
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    # A second agent inside a session (sot_require_agent) neither makes nor stops
+    # rows, reads the registry nor serves as a handle; the gate comes before the
+    # comm home is made and before any request.
+    case "${1:-}" in
+        up|down|serve|status) _why="$(sot_require_agent)" || probe_die "$_why" ;;
+    esac
     ensure_home
     ENDPOINT="$(sot_daemon_endpoint)" || probe_die "no sotd daemon found on this box"
     case "${1:-}" in

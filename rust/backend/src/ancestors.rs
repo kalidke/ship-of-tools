@@ -3,15 +3,15 @@
 // `_sot_ancestor_chain` reads it where `ps` cannot see a native parent through
 // an MSYS shell, to count how many agents lie between a comm script and its
 // row's capsule. The command line is what tells `node <agent script>` from any
-// other node; one that cannot be read is printed empty.
+// other node; one that cannot be read is printed empty. A TAB, a newline and a
+// return inside a command line are printed as \x1d, \x1c and \x1b, never a space.
 //
 // One Toolhelp snapshot, then a walk upward from this process's own parent. The
 // snapshot keeps a parent pid after the parent has exited, and Windows reuses
 // pids, so the walk stops where the chain stops being one, and that place is the
 // top: a pid missing from the snapshot, pid 0 or 4 (System), a process whose
-// record cannot be opened (another account's, so never the row's capsule or one
-// of its agents), one created after its child (a reused pid: the real parent has
-// exited, the twin of reparenting to pid 1). Only a chain that goes on past 64
+// record cannot be opened, one created after its child (a reused pid: the real
+// parent has exited, the twin of reparenting to pid 1). Only a chain that goes on past 64
 // lines is cut short: it ends with the line `!truncated` and exit 3, and the
 // caller must not take what it has read for the whole chain.
 
@@ -51,10 +51,13 @@ fn step(pid: u32, printed: usize, in_snapshot: bool, created: Option<u64>, child
     }
 }
 
-/// A command line as it is printed on one `<exe>\t<command line>` line.
+/// A command line as it is printed on one `<exe>\t<command line>` line. A TAB, a
+/// newline and a return would end the column or the line, and a space would make
+/// two command lines that differ only by one of them equal, so each has its own
+/// byte: \x1d, \x1c and \x1b.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn encode_command_line(text: &str) -> String {
-    text.replace(['\t', '\r', '\n'], " ")
+    text.replace('\t', "\u{1d}").replace('\n', "\u{1c}").replace('\r', "\u{1b}")
 }
 
 /// Runs the subcommand and returns its exit status: 0 when at least one line

@@ -64,7 +64,6 @@ done
 # call (which can heal a self file or create the registry) and any later write.
 _why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&2; exit 1; }
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 # Spawn handoff: comm-spawn (and the daemon's capsule producer env, see
 # capsule_workspace::capsule_supervisor_env) pin the agent's handle by

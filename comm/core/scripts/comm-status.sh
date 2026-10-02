@@ -81,7 +81,6 @@ if ! _why="$(sot_require_agent)"; then
     echo "comm-status.sh: $_why" >&2; exit 1
 fi
 eval "$("$SCRIPT_DIR/comm-context.sh")"
-ensure_home
 
 # Self-gate: only a joined comm agent (a session with a self row) reports.
 # NAME comes from comm-context (the pane-keyed self file); empty / no row →

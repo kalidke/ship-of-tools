@@ -1836,7 +1836,8 @@ _sot_ps_records() {
 # _sot_win_records — stdin: sotd.exe's `<exe>\t<command line>` lines, parent
 # first. Prints one record per process (the exe, then the command line's
 # arguments after argv[0], tokenised the way Windows does: double quotes group,
-# \" is a quote), then `!end`. A `!` line from sotd, or a node.exe whose command
+# \" is a quote; \x1d, \x1c and \x1b, sotd's TAB, newline and return, are not
+# white space and stay inside their token), then `!end`. A `!` line from sotd, or a node.exe whose command
 # line could not be read (a node host cannot be told from any other node), is
 # `!truncated` and ends the output. Any other exe whose command line could not
 # be read gets ONE argument, RS (\036): arguments unknown, which is not an empty
@@ -1861,7 +1862,8 @@ _sot_win_records() {
 
 # _sot_ancestor_chain — this process and its ancestors, one record per process,
 # the caller first, at most 64: the argv, fields joined by US (a space inside
-# an argument survives, except from ps). The output ends with `!end` (the top
+# an argument survives, except from ps; a newline is \x1c on Linux, and sotd.exe
+# prints a TAB, a newline and a return as \x1d, \x1c and \x1b). The output ends with `!end` (the top
 # was reached) or `!truncated` (the walk stopped short of it). 1 when nothing
 # could be read, or sotd.exe failed (it then prints why).
 _sot_ancestor_chain() {
@@ -1886,7 +1888,9 @@ _sot_ancestor_chain() {
             IFS= read -r line < "/proc/$p/stat" 2>/dev/null || { echo '!truncated'; break; }
             rest="${line##*) }"; rest="${rest#* }"
             rec=""
-            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/ }$us"; done < "/proc/$p/cmdline" 2>/dev/null
+            # A newline would end the record: it becomes \x1c, never a space (an argument
+            # that differs only by one must not look equal to the host's).
+            while IFS= read -r -d '' a; do rec="$rec${a//$'\n'/$'\034'}$us"; done < "/proc/$p/cmdline" 2>/dev/null
             if [ -z "$rec" ]; then echo '!truncated'; break; fi
             printf '%s\n' "${rec%"$us"}"
             n=$((n + 1)); p="${rest%% *}"
