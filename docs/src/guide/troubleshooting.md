@@ -45,7 +45,8 @@ versions.
 ## The bottom of the preview
 
 The preview stops each block of text and each table at its last whole line, so no line is drawn
-cut in half, and while you edit an annotation it scrolls to the end of what you are editing.
+cut in half; figure captions and the scale-bar label are not covered. While you edit an annotation
+you can scroll (mouse wheel) to the end of what you are editing.
 Known limits: a pane shorter than one line of text still shows that one partial line, and a
 table's last whole row can sit in the narrow bottom margin where body text stops.
 
