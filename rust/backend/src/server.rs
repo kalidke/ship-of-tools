@@ -664,33 +664,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         );
     }
 
-    // ADR 0042 slice L1a: adopt every REGISTERED capsule workspace's
-    // supervisor on this daemon's own startup — the counterpart of the
-    // tmux-session ensure block just above, for the OTHER runtime. This
-    // naturally covers the default workspace too when it is a capsule
-    // (just marked/preserved above): one registry pass, one code path,
-    // no separate "spawn the default's own supervisor" step. `sot-capsule
-    // supervise --resume` decides adopt-vs-spawn itself (ADR 0041's
-    // start-mode table), including for a workspace whose state directory
-    // does not exist yet at all ("no leg at all -> spawn a new leg").
-    // Codex review finding 10: runs OFF the startup critical path (a
-    // detached task, never awaited) with its own bounded concurrency —
-    // see `capsule_workspace::resume_all`'s own doc. Ungated since the
-    // macOS wiring lane: every NEW workspace resolves to `"capsule"` on
-    // every host this daemon builds for (ADR 0042 L6 / this repo's B6
-    // lane, ADR 0046 decision 5), so every host has rows to resume —
-    // plus any surviving `"tmux"` row from before the flip, which this
-    // scan still ignores exactly as before.
-    if let Some(state_root) = sot_log::state_dir::sot_state_dir() {
-        tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
-    } else {
-        tracing::warn!(
-            "capsule workspace resume-scan skipped: could not resolve this machine's state root \
-             ({} unset)",
-            crate::capsule_workspace::STATE_ROOT_HINT
-        );
-    }
-
 
     // When the backend is launched with `--label`, stamp our identity into
     // `~/.config/sot/sessions/<slug>.toml` so Sessions mode (frontend)
@@ -795,6 +768,14 @@ pub async fn run(opts: Opts) -> Result<()> {
     // destroy; each connection subscribes and writes a `workspace.changed`
     // evt frame so the Sessions strip refreshes live (mirror preview.changed).
     let (ws_events_tx, _ws_events_rx) = broadcast::channel::<WorkspaceChanged>(64);
+
+    // The start (ADR 0042 slice L1a's resume, now behind `held.json`):
+    // resume every registered capsule row, or end them all without a
+    // resume (`startup::begin`). Here because a Cleanup's ends publish on
+    // the workspace bus, and before any listener binds, so the record is
+    // in the leases before the first grant.
+    #[allow(unused_variables)]
+    let leases = crate::startup::begin(sot_log::state_dir::sot_state_dir(), &workspaces, &ws_events_tx);
 
     // Topology write path (plan §B "Editing the master list"): one store
     // per daemon holding the last successfully parsed `hosts.toml`, and a

@@ -51,6 +51,7 @@ mod session_state;
 #[allow(dead_code)]
 mod shutdown;
 mod site_serve;
+mod startup;
 mod status_cli;
 mod stdio_bridge;
 mod topology_cli;
