@@ -45,14 +45,13 @@ reported as a failure — `FAILED -> @h: …` — instead of an ack for the daem
 own success.
 
 **A second agent inside a session has no identity.** A process acts as a handle
-only if at most one agent (claude or codex; an npm agent's `node <script>` and
-its native child count once) lies between it and its row's capsule, or the top
-of its process tree outside a row. A `codex exec` or `claude -p` started inside
+only if at most one agent lies between it and its row's capsule, or the top of
+its process tree outside a row. A `codex exec` or `claude -p` started inside
 a session, and anything it starts, gets "has no comm identity" and must stop: it
 never reads the inbox, sends, joins or stamps the row. An ancestry the check
 cannot read in full is refused too. An agent that needs its own handle is
-started as its own row. The [Comm protocol](../ref/comm.md) lists what the check
-does not see.
+started as its own row. The [Comm protocol](../ref/comm.md) states the rule and
+lists what the check does not see.
 
 ## The contract
 

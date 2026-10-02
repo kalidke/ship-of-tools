@@ -55,10 +55,11 @@ MSG_FILE="$(sot_jq_rawfile "$MSG")" || exit 1
 trap 'rm -f "${MSG_FILE:?}"' EXIT
 
 # Identity refusal, via the ONE shared helper (comm-lib.sh) also used by
-# comm-relay.sh and comm-bootstrap.sh: requires more than a merely nonempty
+# comm-relay.sh and comm-bootstrap.sh (here without its agent gate, which ran
+# above, so a send walks the ancestry once): requires more than a merely nonempty
 # NAME — see the helper's own comment. Checked BEFORE any transport work so
 # an unresolved sender always sees THIS refusal, never a daemon error.
-if ! why="$(sot_require_routable_identity)"; then
+if ! why="$(_sot_identity_routable)"; then
     if [ "$BROADCAST" = true ]; then echo "FAILED -> --broadcast: $why" >&2; else echo "FAILED -> @$TARGET: $why" >&2; fi
     exit 1
 fi

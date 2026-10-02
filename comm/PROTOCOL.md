@@ -458,17 +458,26 @@ Monitor exists.
   session: it may send under the parent's handle and never reads the inbox.
   Another agent started inside a session (`codex exec`, `claude -p`), and
   anything it starts, has no comm identity: a process acts as a handle only if
-  at most one agent (claude or codex; an npm agent's `node <script>` and its
-  native child count once) lies between it and its row's capsule, or the top of
-  its process tree outside a row. Agents are named, not launchers: the list is
-  the agents comm ships an adapter for, and it grows in the commit that adds
-  one. The check reads each ancestor's full command line, and an ancestry it
-  cannot read in full (a walk past 64 processes, an unreadable record) is
-  refused, not trusted. An agent that needs its own handle is started as its
-  own row.
-- What that check does not see: a process reparented away from its agent
-  (`setsid`, `nohup`); an agent whose name is not in the list; a macOS agent
-  whose argv[0] contains a space; and a shim that starts `node` under the
+  at most one agent (claude or codex) lies between it and its row's capsule, or
+  the top of its process tree outside a row. A `node` process is an agent when
+  any of its arguments names one or lies in its npm package, and it counts once
+  with its native child only when that child is its direct child and its
+  arguments after the binary equal the host's after its script. Agents are
+  named, not launchers: the list is the agents comm ships an adapter for, and it
+  grows in the commit that adds one. The check reads each ancestor's full
+  command line, and an ancestry it cannot read in full (a walk past 64
+  processes, an unreadable /proc record, a parse that did not finish, a
+  `sotd.exe` that fails or is too old) is refused, not trusted. On Windows, an
+  ancestor whose record cannot be opened, or whose creation time is after its
+  child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
+  command line are refused. An unopenable process belongs to another account,
+  so it cannot be the row's capsule or one of its agents; a reused pid means the
+  real parent has exited, the twin of reparenting. An agent that needs its own
+  handle is started as its own row.
+- What that check does not see: a process reparented away from its agent; an
+  agent whose name is not in the list; a macOS agent whose argv[0] contains a
+  space; on Windows, an agent above an ancestor whose record cannot be opened or
+  that was created after its child; and a shim that starts `node` under the
   agent's own name (a volta-style shim), which may be refused instead.
 
 ## Dependencies

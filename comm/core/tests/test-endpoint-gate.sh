@@ -157,7 +157,7 @@ EOF
 case_daemonless_box_no_sotd_on_path_is_no_endpoint() {
     local dir out rc
     dir="$(fake_bin_dir)"
-    out="$(env -u SOTD_BIN PATH="$dir" sot_relay_endpoint 2>/dev/null)"
+    out="$(env -u SOTD_BIN PATH="$_GUARD_STUBS:$dir" sot_relay_endpoint 2>/dev/null)"
     rc=$?
     { [ -z "$out" ] && [ "$rc" -ne 0 ]; } || { echo "  expected no endpoint with no sotd at all, got: $out"; return 1; }
     return 0
@@ -465,6 +465,9 @@ EOF
     fakebin="$(mktemp -d "$WORK/proc-stub-fakebin-XXXXXX")"
     printf '#!/bin/sh\necho "%s sleep 300"\necho "%s %s"\n' "$decoy_pid" "$pid" "$dir/sotd" > "$fakebin/pgrep"
     chmod +x "$fakebin/pgrep"
+    # The guard's other refusing stubs stay on this rebuilt PATH, all but sotd:
+    # the case's premise is that `command -v sotd` finds nothing.
+    local gs; for gs in sotd.exe powershell.exe pwsh pwsh.exe; do ln -s "$_GUARD_STUBS/$gs" "$fakebin/$gs"; done
     trap 'kill '"$decoy_pid"' 2>/dev/null; wait '"$decoy_pid"' 2>/dev/null; kill '"$pid"' 2>/dev/null; wait '"$pid"' 2>/dev/null' RETURN
 
     local fakehome out

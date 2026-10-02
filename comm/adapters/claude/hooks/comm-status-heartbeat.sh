@@ -44,6 +44,28 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _envelope="$(cat)"
 tool="$(printf '%s' "$_envelope" | jq -r '.tool_name // ""' 2>/dev/null || true)"
 
+# comm-lib.sh, in the comm home's bin first (update_comm puts every script
+# there), then next to this file: the fallback pair the hook uses for
+# comm-context.sh too. It is only ever sourced in a subshell.
+hb_lib="$COMM_HOME/bin/comm-lib.sh"
+[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
+# A second agent inside the session (codex exec, claude -p) changes nothing under
+# the comm home: not the owner's AskUserQuestion marker, not the state directory,
+# not the row's tick. So this gate comes before every write below; it needs only
+# $$. Status 1 is a child, silent; any other nonzero (an ancestry that cannot be
+# read, a lib too old to hold the gate) says why on stderr, and the hook still
+# stands down.
+_agent_gate() {
+    local _why _rc
+    _why="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 127; sot_require_agent ) 2>/dev/null )"; _rc=$?
+    case "$_rc" in
+        0) ;;
+        1) exit 0 ;;
+        *) [ -n "$_why" ] || _why="could not check whether this process is its own session's agent; comm-lib.sh did not load or lacks the check"
+           echo "sot-comm: $_why" >&2; exit 0 ;;
+    esac
+}
+
 # The AskUserQuestion ANSWER (ADR 0044 amendment): this tool's PostToolUse
 # fires once the owner has typed the answer and the harness resumes — the
 # session is no longer yielding. Sends `prompt` (origin user) exactly like a
@@ -67,6 +89,7 @@ tool="$(printf '%s' "$_envelope" | jq -r '.tool_name // ""' 2>/dev/null || true)
 # this completion carries: only consuming that marker earns the `prompt`.
 # No marker (no PreToolUse ever opened this exact dialog) means no answer.
 if [ "$tool" = AskUserQuestion ]; then
+    _agent_gate
     _tool_use_id="$(printf '%s' "$_envelope" | jq -r '.tool_use_id // ""' 2>/dev/null || true)"
     _askq_marker="$COMM_HOME/state/askq-$(printf '%s' "$_tool_use_id" | tr -c 'A-Za-z0-9._-' '_').marker"
     if [ -n "$_tool_use_id" ] && [ -f "$_askq_marker" ]; then
@@ -94,25 +117,9 @@ _hb_tick="$COMM_HOME/state/hb-$(printf '%s' "$_hb_key" | tr -c 'A-Za-z0-9._-' '_
 if [ -f "$_hb_tick" ] && [ -n "$(find "$_hb_tick" -newermt '-10 seconds' 2>/dev/null)" ]; then
     exit 0
 fi
+_agent_gate
 mkdir -p "$COMM_HOME/state" 2>/dev/null || true
 touch -- "$_hb_tick" 2>/dev/null || true
-# comm-lib.sh, in the comm home's bin first (update_comm puts every script
-# there), then next to this file: the fallback pair the hook uses for
-# comm-context.sh too. It is only ever sourced in a subshell.
-hb_lib="$COMM_HOME/bin/comm-lib.sh"
-[ -r "$hb_lib" ] || hb_lib="$SELF_DIR/comm-lib.sh"
-# A second agent inside the session (codex exec, claude -p) never refreshes the
-# row (a child touching the shared tick above delays the agent's own heartbeat by
-# at most 10 s). The gate comes before the context call; it needs only $$. Status
-# 1 is a child, silent; any other nonzero (an ancestry that cannot be read, a lib
-# too old to hold the gate) says why on stderr, and the hook still stands down.
-_why="$( ( . "$hb_lib" >/dev/null 2>&1 || exit 127; sot_require_agent ) 2>/dev/null )"; _rc=$?
-case "$_rc" in
-    0) ;;
-    1) exit 0 ;;
-    *) [ -n "$_why" ] || _why="could not check whether this process is its own session's agent; comm-lib.sh did not load or lacks the check"
-       echo "sot-comm: $_why" >&2; exit 0 ;;
-esac
 NAME=""
 # TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,
 # and because this hook fires on EVERY PostToolUse a stalled child piles up

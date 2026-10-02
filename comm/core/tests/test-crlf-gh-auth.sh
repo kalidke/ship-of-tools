@@ -65,6 +65,7 @@ has_cr() { LC_ALL=C grep -q $'\r' "$@"; }
 
 setup() {
     TMP="$(mktemp -d "${TMPDIR:-/tmp}/sot-gh-crlf.XXXXXX")"
+    guard_fresh_home "$TMP"
     STUB="$TMP/stub"; mkdir -p "$STUB" "$TMP/comm" "$TMP/gh"
 
     # jq: the real one, with every \n rewritten to \r\n. Streamed, and the real

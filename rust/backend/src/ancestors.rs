@@ -7,11 +7,49 @@
 //
 // One Toolhelp snapshot, then a walk upward from this process's own parent. The
 // snapshot keeps a parent pid after the parent has exited, and Windows reuses
-// pids, so the walk stops where the chain stops being one: a pid missing from
-// the snapshot or pid 0 or 4 (System) is the top. A walk cut short any other way
-// (64 lines, a parent whose creation time is unreadable or later than its
-// child's) ends with the line `!truncated` and exit 3: the caller must not take
-// what it has read for the whole chain.
+// pids, so the walk stops where the chain stops being one, and that place is the
+// top: a pid missing from the snapshot, pid 0 or 4 (System), a process whose
+// record cannot be opened (another account's, so never the row's capsule or one
+// of its agents), one created after its child (a reused pid: the real parent has
+// exited, the twin of reparenting to pid 1). Only a chain that goes on past 64
+// lines is cut short: it ends with the line `!truncated` and exit 3, and the
+// caller must not take what it has read for the whole chain.
+
+/// The most lines a walk prints.
+const MAX_LINES: usize = 64;
+
+/// What the walk does at one candidate parent.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Step {
+    /// The candidate is not part of the chain: the walk is complete.
+    Top,
+    /// Print the candidate and go on from its parent; its creation time is the
+    /// bound for the next one.
+    Next(u64),
+    /// The chain goes on past the cap.
+    Truncated,
+}
+
+/// The walk's decision at candidate `pid`, after `printed` lines: `in_snapshot`
+/// is whether the snapshot lists it, `created` its creation time (`None` when
+/// its record cannot be opened or read), `child_created` its child's.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn step(pid: u32, printed: usize, in_snapshot: bool, created: Option<u64>, child_created: u64) -> Step {
+    if pid == 0 || pid == 4 || !in_snapshot {
+        return Step::Top;
+    }
+    match created {
+        Some(c) if c <= child_created => {
+            if printed >= MAX_LINES {
+                Step::Truncated
+            } else {
+                Step::Next(c)
+            }
+        }
+        _ => Step::Top,
+    }
+}
 
 /// Runs the subcommand and returns its exit status: 0 when at least one line
 /// was printed and the walk reached the top, 3 when it was truncated, else 1;
@@ -30,6 +68,7 @@ pub fn run() -> i32 {
 
 #[cfg(windows)]
 mod win {
+    use super::{step, Step};
     use std::collections::HashMap;
     use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING};
@@ -38,8 +77,6 @@ mod win {
         TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-
-    const MAX_LINES: usize = 64;
 
     /// pid -> (parent pid, executable file name), one snapshot.
     fn snapshot() -> Option<HashMap<u32, (u32, String)>> {
@@ -66,25 +103,12 @@ mod win {
         }
     }
 
-    /// A process's creation time, or `None` when it cannot be read.
-    fn created(pid: u32) -> Option<u64> {
-        // SAFETY: `OpenProcess` returns null on failure; a non-null handle is
-        // closed before returning.
-        unsafe {
-            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle.is_null() {
-                return None;
-            }
-            let bits = sot_log::challenge_win::creation_filetime_bits(handle).ok();
-            CloseHandle(handle);
-            bits
-        }
-    }
-
-    /// A process's full command line, or `None` when it cannot be read. Tabs and
-    /// line breaks become spaces: the caller reads one tab-separated line per
-    /// process.
-    fn command_line(pid: u32) -> Option<String> {
+    /// A process's creation time and full command line, from one handle, or
+    /// `None` when its record cannot be opened or its creation time read (the
+    /// caller then treats it as the top). The command line is `None` when it
+    /// cannot be read; tabs and line breaks become spaces, for the caller reads
+    /// one tab-separated line per process.
+    fn info(pid: u32) -> Option<(u64, Option<String>)> {
         // SAFETY: `OpenProcess` returns null on failure; a non-null handle is
         // closed before returning. The buffer is `u64` words, so the
         // `UNICODE_STRING` header at its start is aligned, and the query writes
@@ -95,6 +119,7 @@ mod win {
             if handle.is_null() {
                 return None;
             }
+            let created = sot_log::challenge_win::creation_filetime_bits(handle).ok();
             let mut need: u32 = 0;
             NtQueryInformationProcess(handle, ProcessCommandLineInformation, std::ptr::null_mut(), 0, &mut need);
             let text = if need == 0 {
@@ -117,33 +142,36 @@ mod win {
                 }
             };
             CloseHandle(handle);
-            text.map(|t| t.replace(['\t', '\r', '\n'], " "))
+            created.map(|c| (c, text.map(|t| t.replace(['\t', '\r', '\n'], " "))))
         }
     }
 
     pub fn run() -> i32 {
         let Some(procs) = snapshot() else { return 1 };
         let me = std::process::id();
-        let Some(mut child_created) = created(me) else { return 1 };
+        let Some((mut child_created, _)) = info(me) else { return 1 };
         let mut pid = procs.get(&me).map(|p| p.0).unwrap_or(0);
         let mut printed = 0;
         let mut truncated = false;
-        while pid != 0 && pid != 4 {
-            if printed >= MAX_LINES {
-                truncated = true;
-                break;
-            }
-            let Some((parent, exe)) = procs.get(&pid) else { break };
-            match created(pid) {
-                Some(c) if c <= child_created => child_created = c,
-                _ => {
+        loop {
+            let entry = procs.get(&pid);
+            let found = info(pid);
+            let created = found.as_ref().map(|f| f.0);
+            match step(pid, printed, entry.is_some(), created, child_created) {
+                Step::Top => break,
+                Step::Truncated => {
                     truncated = true;
                     break;
                 }
+                Step::Next(c) => {
+                    child_created = c;
+                    let Some((parent, exe)) = entry else { break };
+                    let cl = found.and_then(|f| f.1).unwrap_or_default();
+                    println!("{exe}\t{cl}");
+                    printed += 1;
+                    pid = *parent;
+                }
             }
-            println!("{exe}\t{}", command_line(pid).unwrap_or_default());
-            printed += 1;
-            pid = *parent;
         }
         if truncated {
             println!("!truncated");

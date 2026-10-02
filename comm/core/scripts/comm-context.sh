@@ -6,7 +6,12 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
 source "$SCRIPT_DIR/comm-lib.sh"
-ensure_home
+# Two writes in this script (the comm home's directories and registry skeleton
+# here, the legacy self-file heal below) are an agent's own to make: a second
+# agent inside the session (sot_require_agent) skips them and reads on. A comm
+# home that is already whole writes nothing, so that case costs no ancestry walk.
+if [ -f "$REGISTRY" ] && [ -d "$INBOX_DIR" ] && [ -d "$SELF_DIR" ] && [ -d "$READ_DIR" ]; then :
+elif sot_require_agent >/dev/null 2>&1; then ensure_home; fi
 
 # SOT_COMM_TEST_HOST lets a caller pin HOST directly, bypassing `hostname -s`
 # — mirrors the $SOT_COMM_SELF_FILE test seam below. A test must be hermetic
@@ -146,7 +151,7 @@ if [ -f "$SELF_FILE" ]; then
             NAME=""
         fi
 
-        if [ "$heal" = 1 ] && [ -n "$NAME" ]; then
+        if [ "$heal" = 1 ] && [ -n "$NAME" ] && sot_require_agent >/dev/null 2>&1; then
             # Atomic write (comm-lib.sh sot_write_self_file); a failed
             # heal is not fatal to THIS call but must never claim success.
             if sot_write_self_file "$SELF_FILE" "$NAME" "$REPO" "$PROJECT_ROOT"; then

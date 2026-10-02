@@ -95,25 +95,27 @@ source "$SCRIPTS_DIR/comm-lib.sh"
 # A record is one process's argv, fields joined by US (comm-lib.sh reads
 # /proc/<pid>/cmdline NUL-separated, so a space inside an argument survives).
 # tbl splits each argument at its spaces; tblu takes fields joined by `|`, for
-# an argument that holds a space.
+# an argument that holds a space. Both end the chain with `!end`, as a walk to the
+# top does, and count the names before the filter's closing `!ok`.
 US=$'\037'
 tbl() {  # WANT DESC LINE...
     local want="$1" desc="$2" got l recs=(); shift 2
     for l in "$@"; do recs+=("${l// /$US}"); done
-    got="$(printf '%s\n' "${recs[@]}" | _sot_agent_layers 2>/dev/null | awk 'NF' | wc -l | tr -d ' ')"
+    got="$(printf '%s\n' "${recs[@]}" '!end' | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
     eq "table: $desc" "$got" "$want"
 }
 tblu() {  # WANT DESC RECORD...   (fields joined by |)
     local want="$1" desc="$2" got l recs=(); shift 2
     for l in "$@"; do recs+=("${l//|/$US}"); done
-    got="$(printf '%s\n' "${recs[@]}" | _sot_agent_layers 2>/dev/null | awk 'NF' | wc -l | tr -d ' ')"
+    got="$(printf '%s\n' "${recs[@]}" '!end' | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
     eq "table: $desc" "$got" "$want"
 }
 # req WANT_RC DESC TEXT RECORD... : sot_require_agent over a stubbed chain
 # (fields joined by |); its status and one-line reason.
 req() {
     local want="$1" desc="$2" text="$3" res; shift 3; CHAIN=("$@")
-    res="$( _sot_ancestor_chain() { local r; [ "${#CHAIN[@]}" -gt 0 ] || return 1; for r in "${CHAIN[@]}"; do printf '%s\n' "${r//|/$US}"; done; }
+    res="$( _sot_ancestor_chain() { local r; [ "${#CHAIN[@]}" -gt 0 ] || return 1; for r in "${CHAIN[@]}"; do printf '%s\n' "${r//|/$US}"; done
+                                    case "$r" in '!'*) ;; *) echo '!end' ;; esac; }
             o="$(sot_require_agent)"; echo "rc=$?|$o" )"
     case "$res" in "rc=$want|"*"$text"*) ok "require: $desc" ;; *) bad "require: $desc (want rc=$want and '$text', got: $res)" ;; esac
 }
@@ -200,7 +202,8 @@ eq "windows filter: a !truncated line passes through and ends the output" \
 # --- 2. end to end --------------------------------------------------------------
 printf '%s\n' 'n=$1; shift; exec -a "$n" bash "$@"' > "$WORK/fake.sh"
 printf '%s\n' '"$@"; exit $?' > "$WORK/hold.sh"
-mkdir -p "$WORK/npm"; cp "$WORK/hold.sh" "$WORK/npm/codex"
+# An npm codex: the host script forwards its own arguments to the native process.
+mkdir -p "$WORK/npm"; printf '%s\n' 'bash "'"$WORK"'/fake.sh" codex "$@"; exit $?' > "$WORK/npm/codex"
 F() { bash "$WORK/fake.sh" "$@"; }
 # chain KIND SELF CMD... : run CMD in a tool shell under a fake process chain,
 # from $WORK, as the handle SELF names. Tool shell last, agents above it.
@@ -214,7 +217,7 @@ chain() {
     case "$kind" in
         own)   F "${cap[@]}" bash "$WORK/fake.sh" claude hold.sh "${tool[@]}" ;;
         child) F "${cap[@]}" bash "$WORK/fake.sh" claude hold.sh bash "$WORK/fake.sh" codex hold.sh "${tool[@]}" ;;
-        npm)   F "${cap[@]}" bash "$WORK/fake.sh" node "$WORK/npm/codex" bash "$WORK/fake.sh" codex hold.sh "${tool[@]}" ;;
+        npm)   F "${cap[@]}" bash "$WORK/fake.sh" node "$WORK/npm/codex" hold.sh "${tool[@]}" ;;
         bash)  F "${cap[@]}" bash hold.sh "${tool[@]}" ;;
         # An npm agent is `node <script>`; the script runs CMD in its own shell.
         # NODE_ARGS is node's argv after `node`; "$@" is CMD, which the script runs.
@@ -351,7 +354,7 @@ printf '%s\n' 'const r = require("child_process").spawnSync(process.env.NAT_BIN,
 NATCHAIN="$WORK/natchain.txt"
 NAT_CMD="$(printf '%q; rc=$?; bash -c %q _ %q > %q; exit $rc' "$POLL" '. "$1"; _sot_ancestor_chain' "$SCRIPTS_DIR/comm-lib.sh" "$NATCHAIN")"
 natrun() {  # NATIVE_NAME HOST_ARGS...  (NAT_BIN, NAT_CMD in the environment)
-    local nat="$1"; shift; rm -f "$NATCHAIN"; cd "$WORK" || return 1
+    local nat="$1"; shift; rm -f "${NATCHAIN:?}"; cd "$WORK" || return 1
     OUT="$(SOT_COMM_SELF_FILE="$SELF_ROW" NAT_BIN="$WORK/natbin/$nat" NAT_CMD="$NAT_CMD" F sot-capsule hold.sh node "$@" 2>&1)"; RC=$?
 }
 natchain_has() { case "$(tr "$US" '|' < "$NATCHAIN" 2>/dev/null)" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
@@ -445,7 +448,6 @@ BIN_T="$WORK/scripts-notree"; cp -r "$SCRIPTS_DIR" "$BIN_T" && chmod -R u+w "$BI
     && printf '\n_sot_ancestor_chain() { return 1; }\n' >> "$BIN_T/comm-lib.sh" \
     && grep -q '^_sot_ancestor_chain() { return 1; }$' "$BIN_T/comm-lib.sh" || { echo "FATAL: cannot build the no-ancestry copy" >&2; exit 1; }
 ln -sfn "$BIN_T" "$SOT_COMM_HOME/bin"
-reg3="$(sum "$REG")"
 run own "$SELF_ROW" "$BIN_T/comm-poll.sh"
 eq  "no ancestry: poll exits 1" "$RC" 1
 has "no ancestry: poll says why" "$OUT" "$R_TREE_TEXT"

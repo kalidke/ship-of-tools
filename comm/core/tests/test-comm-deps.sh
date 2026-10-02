@@ -39,11 +39,12 @@ check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')";
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1 (no '$3' in: $2)" ;; esac; }
 hasnt() { case "$2" in *"$3"*) bad "$1 (found '$3' in: $2)" ;; *) ok "$1" ;; esac; }
 
-# A PATH directory holding every tool the paths need except $1: everything in
-# /usr/bin and /bin, plus jq, flock and perl wherever they live.
+# A PATH holding every tool the paths need except $1: everything in /usr/bin
+# and /bin, plus jq, flock and perl wherever they live, behind the guard's
+# refusing stubs (they stay first, so the rebuilt PATH cannot reach a daemon).
 path_without() {  # TOOL
     local d="$WORK/path-no-$1" f t
-    [ -d "$d" ] && { printf '%s' "$d"; return; }
+    [ -d "$d" ] && { printf '%s' "$_GUARD_STUBS:$d"; return; }
     mkdir -p "$d"
     for f in /usr/bin/* /bin/*; do
         t="${f##*/}"; [ "$t" = "$1" ] || [ -e "$d/$t" ] || ln -s "$f" "$d/$t"
@@ -51,7 +52,7 @@ path_without() {  # TOOL
     for t in jq flock perl; do
         [ "$t" = "$1" ] || [ -e "$d/$t" ] || ln -s "$(command -v "$t")" "$d/$t"
     done
-    printf '%s' "$d"
+    printf '%s' "$_GUARD_STUBS:$d"
 }
 BASH_BIN="$(command -v bash)"
 POLL()  { PATH="$1" "$BASH_BIN" "$SCRIPTS_DIR/comm-poll.sh" 2>/dev/null; }
@@ -147,7 +148,7 @@ bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "$TETHER" "" </dev
 LOOPA=$!
 sleep 3
 check "retired bridge, tethered: the line is logged once" "$(grep -cF "$RETIRED" "$WORK/bridge/a.log")" "1"
-CHILDA="$(/usr/bin/pgrep -P "$LOOPA" | head -n1)"
+CHILDA="$(command -p pgrep -P "$LOOPA" | head -n1)"
 kill "$TETHER" 2>/dev/null; wait "$TETHER" 2>/dev/null
 gone=0
 for _ in $(seq 1 50); do
@@ -162,7 +163,7 @@ bash -c "$OLD_LOOP" sot-bridge "$SCRIPTS_DIR/comm-relay.sh" h "" "" </dev/null >
 LOOPB=$!
 sleep 6
 check "retired bridge, untethered: still exactly one line after 6 s" "$(grep -cF "$RETIRED" "$WORK/bridge/b.log")" "1"
-CHILDB="$(/usr/bin/pgrep -P "$LOOPB" | head -n1)"
+CHILDB="$(command -p pgrep -P "$LOOPB" | head -n1)"
 check "retired bridge, untethered: the child is a sleep" "$(ps -o comm= -p "${CHILDB:-0}" 2>/dev/null)" "sleep"
 kill "$LOOPB" 2>/dev/null; [ -z "$CHILDB" ] || kill "$CHILDB" 2>/dev/null
 wait "$LOOPB" 2>/dev/null

@@ -34,6 +34,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "FATAL: not in a git checkout" >&2; exit 1; }
 T="$(mktemp -d "${TMPDIR:-/tmp}/sot-rm-guard-XXXXXX")" && [ -d "$T" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "${T:?}"' EXIT
+guard_fresh_home "$T"
 
 RM_SCAN='
 my $V = q{(?:[A-Za-z_]\w*+|\d++)};
