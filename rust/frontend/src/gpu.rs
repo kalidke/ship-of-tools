@@ -3945,6 +3945,13 @@ fn pane_terminal_reason_text(shows_reason: bool, client_status: Option<&str>) ->
     shows_reason.then(|| client_status.unwrap_or_default().to_string())
 }
 
+/// The agent pane's overlay, one row each, top down: why it is not live,
+/// then the discarded-input count. Separate rows, so a long reason never
+/// truncates the count off the pane and the count never hides the reason.
+fn pane_overlay_lines(reason: Option<String>, notice: Option<String>) -> Vec<String> {
+    reason.into_iter().chain(notice).collect()
+}
+
 /// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
 /// `queue_pane_pending_input`'s buffer, given it already holds
 /// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
@@ -3987,12 +3994,13 @@ impl PanePendingInput {
         std::mem::take(self).bytes
     }
 
+    /// Shown until the pane next attaches (`take`), so it outlives the outage.
     fn notice(&self) -> Option<String> {
         let n = self.discarded;
         match n {
             0 => None,
-            1 => Some("link down: 1 keystroke discarded, not sent".to_string()),
-            _ => Some(format!("link down: {n} keystrokes discarded, not sent")),
+            1 => Some("1 keystroke discarded during an outage, not sent".to_string()),
+            _ => Some(format!("{n} keystrokes discarded during an outage, not sent")),
         }
     }
 }
@@ -4010,7 +4018,7 @@ mod pane_input_tests {
         q.discard();
         assert_eq!(
             q.notice().as_deref(),
-            Some("link down: 3 keystrokes discarded, not sent")
+            Some("3 keystrokes discarded during an outage, not sent")
         );
         assert!(q.take().is_empty());
     }
@@ -4026,13 +4034,28 @@ mod pane_input_tests {
     }
 
     #[test]
+    fn pane_overlay_keeps_the_count_beside_any_reason() {
+        let n = || Some("2 keystrokes discarded during an outage, not sent".to_string());
+        assert_eq!(
+            pane_overlay_lines(Some("dial failed".to_string()), n()),
+            vec!["dial failed".to_string(), n().unwrap()]
+        );
+        assert_eq!(pane_overlay_lines(None, n()), vec![n().unwrap()]);
+        assert_eq!(
+            pane_overlay_lines(Some("dial failed".to_string()), None),
+            vec!["dial failed".to_string()]
+        );
+        assert!(pane_overlay_lines(None, None).is_empty());
+    }
+
+    #[test]
     fn pane_input_one_keystroke_is_singular() {
         let mut q = PanePendingInput::default();
         q.queue(b"a");
         q.discard();
         assert_eq!(
             q.notice().as_deref(),
-            Some("link down: 1 keystroke discarded, not sent")
+            Some("1 keystroke discarded during an outage, not sent")
         );
     }
 }
@@ -16575,8 +16598,8 @@ impl State {
                 .get(h)
                 .and_then(|m| m.lines().next())
                 .map(str::to_owned)
-        })
-        .or_else(|| self.pane_input.notice());
+        });
+        let pane_overlay = pane_overlay_lines(pane_terminal_reason, self.pane_input.notice());
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
         // own parser being ready (`pump_pane_attach_term`'s "checkpoint
@@ -17592,21 +17615,22 @@ impl State {
                 // exactly.
                 paint_terminal(buf, llm_rect, &pty_screen);
                 // ADR 0030 §8 "Where it is shown", widened by ADR 0045
-                // decision 1 (Codex review): overlays ONE persistent
-                // reason line whenever `pane_terminal_reason` is set —
+                // decision 1 (Codex review): overlays the persistent reason
+                // line, and under it the discarded-input count, whenever
+                // either is set —
                 // whatever `pty_screen` actually painted underneath,
                 // including a checkpointed client's own now-STALE frozen
                 // content (a live failure/retry must never hide behind
                 // real-but-old output), not only the dead-uncheckpointed
                 // fallback to the (usually blank, unrelated) tmux screen
                 // this originally covered.
-                if let Some(reason) = pane_terminal_reason.as_deref() {
-                    if llm_rect.width > 2 {
+                if llm_rect.width > 2 {
+                    for (row, line) in pane_overlay.iter().enumerate().take(llm_rect.height as usize) {
                         write_title(
                             buf,
                             llm_rect.x + 1,
-                            llm_rect.y,
-                            reason,
+                            llm_rect.y + row as u16,
+                            line,
                             llm_rect.width - 2,
                             Style::default().fg(Color::Yellow),
                         );
