@@ -4904,6 +4904,10 @@ struct State {
     /// consumes it (`spawn_pane_attach_term` is the only reader).
     host_transports: HashMap<crate::dial::HostKey, crate::transport::TransportConfig>,
     leases: Arc<crate::lease::Leases>,
+    /// This window's own state root, as the daemon names it in a granted
+    /// lease; the attach-only drawer needs a lease that carries it (ADR 0050).
+    #[cfg(windows)]
+    own_state_root: Option<String>,
     /// Not-ended counts shown and not yet reported to the daemon; sent
     /// right after the frame that shows them is presented.
     notice_acks: Vec<(crate::dial::HostKey, u32)>,
@@ -5622,6 +5626,77 @@ fn truncate_to_cells(text: &str, cells: usize) -> (String, usize) {
         w += cw;
     }
     (out, w)
+}
+
+/// Which backend the drawer uses (ADR 0041, ADR 0050). The attach-only
+/// drawer needs this computer's backend, and that backend must hold this
+/// window's lease: a granted lease whose `state_root` is this window's own.
+/// The choice is made once, so an attach drawer already running stays and a
+/// plain terminal already running is never swapped out.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn drawer_uses_attach(
+    setting: bool,
+    attach_live: bool,
+    local_live: bool,
+    granted_roots: &[String],
+    own_root: Option<&str>,
+) -> bool {
+    attach_live || (setting && !local_live && own_root.is_some_and(|r| granted_roots.iter().any(|g| g == r)))
+}
+
+/// Wrap a status text into lines of display cells: the first line has
+/// `first_w` cells (the pane's width less the "status: " label), the rest
+/// `rest_w`. Breaks at a space where one falls in the line, else mid-word;
+/// a first line with no room for text comes back empty. Width is in cells,
+/// so wide glyphs never straddle a break; a glyph wider than `rest_w` still
+/// takes a line to itself, so the loop always advances. `rest_w == 0` (no
+/// pane) returns the text whole.
+fn wrap_status(text: &str, first_w: usize, rest_w: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    if rest_w == 0 {
+        return vec![text.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut rest = text;
+    let mut limit = first_w;
+    let mut first = true;
+    loop {
+        // The longest prefix that fits `limit` cells, and the last space in it.
+        let (mut w, mut end, mut last_space) = (0usize, 0usize, None);
+        for (i, ch) in rest.char_indices() {
+            let cw = ch.width().unwrap_or(0);
+            if w + cw > limit {
+                break;
+            }
+            if ch == ' ' {
+                last_space = Some(i);
+            }
+            w += cw;
+            end = i + ch.len_utf8();
+        }
+        if end == rest.len() {
+            out.push(rest.to_string());
+            return out;
+        }
+        let (cut, skip) = if rest[end..].starts_with(' ') {
+            (end, 1)
+        } else if let Some(sp) = last_space.filter(|&sp| sp > 0) {
+            (sp, 1)
+        } else if end == 0 && first {
+            (0, 0)
+        } else if end == 0 {
+            (rest.chars().next().map_or(0, char::len_utf8), 0)
+        } else {
+            (end, 0)
+        };
+        out.push(rest[..cut].to_string());
+        rest = &rest[cut + skip..];
+        if rest.is_empty() {
+            return out;
+        }
+        limit = rest_w;
+        first = false;
+    }
 }
 
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
@@ -6724,6 +6799,8 @@ impl State {
             // each host's transport task — empty here only briefly.
             host_transports: HashMap::new(),
             leases,
+            #[cfg(windows)]
+            own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::state_dir::state_dir_hash(&d)),
             notice_acks: Vec::new(),
             host_resolved_dial: HashMap::new(),
             link_gates: HashMap::new(),
@@ -16279,7 +16356,7 @@ impl State {
             Some(NavPrompt::ScaleEntry { input, .. }) => {
                 format!("pixel size (nm): {input}▏")
             }
-            None => self.status.clone(),
+            None => crate::lease::status_line(self.leases.notice(), &self.status),
         };
         // Local wall-clock of the machine running the frontend, sampled once
         // per frame and turned into the top-right chrome clock text at the
@@ -16428,7 +16505,13 @@ impl State {
         // did before this unit — "When off, NOTHING the FE does today
         // changes."
         #[cfg(windows)]
-        let use_attach_only = self.settings.attach_only;
+        let use_attach_only = drawer_uses_attach(
+            self.settings.attach_only,
+            self.attach_term.is_some(),
+            self.local_term.is_some(),
+            &self.leases.granted_state_roots(),
+            self.own_state_root.as_deref(),
+        );
         #[cfg(not(windows))]
         let use_attach_only = false;
 
@@ -16449,6 +16532,12 @@ impl State {
 
         if self.drawer == DrawerContent::Terminal && !use_attach_only {
             if self.local_term.is_none() {
+                #[cfg(windows)]
+                if self.settings.attach_only {
+                    self.status =
+                        "attach-only terminal needs this computer's backend to hold this window; opened a plain terminal"
+                            .to_string();
+                }
                 let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
                 // cwd = repo root, so the plain shell starts in the
@@ -17019,11 +17108,31 @@ impl State {
                     if nav_focus { "· [FOCUS]" } else { "" }
                 );
                 // Help lives on the focused border; keep the nav header compact.
+                // The status text wraps at the pane's width (a toast or the
+                // close reminder is a sentence): "status: " heads the first
+                // line only. Everything below counts from body_lines.len(),
+                // and the cursor's body position (a header of one status line
+                // and a spacer, computed before the draw) shifts by the extra
+                // lines here.
+                let status_label = "status: ";
+                let nav_w = nav_rect.width as usize;
+                let mut status_segs = wrap_status(
+                    &status,
+                    nav_w.saturating_sub(unicode_width::UnicodeWidthStr::width(status_label)),
+                    nav_w,
+                )
+                .into_iter();
                 let mut body_lines = Vec::new();
                 body_lines.push(RtLine::from(vec![
                     Span::styled("status: ", Style::default().fg(Color::DarkGray)),
                     Span::styled(status.clone(), Style::default().fg(Color::LightGreen)),
+                    Span::styled(status_label, Style::default().fg(Color::DarkGray)),
+                    Span::styled(status_segs.next().unwrap_or_default(), Style::default().fg(Color::LightGreen)),
                 ]));
+                for seg in status_segs {
+                    body_lines.push(RtLine::from(vec![Span::styled(seg, Style::default().fg(Color::LightGreen))]));
+                }
+                let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
                 body_lines.push(RtLine::from(""));
                 if tree_empty {
                     body_lines.push(RtLine::from(vec![Span::styled(
@@ -25078,6 +25187,61 @@ mod tests {
         assert_eq!(nav_spill_take(100, 20, 0), None);
         // Degenerate nav width still respects the cap.
         assert_eq!(nav_spill_take(5, 0, 3), Some(3));
+    }
+
+    #[test]
+    fn attach_only_requires_matching_state_root() {
+        let roots = vec!["r".to_string()];
+        // (what, setting, attach_live, local_live, roots, own_root, want)
+        let cases: &[(&str, bool, bool, bool, &[String], Option<&str>, bool)] = &[
+            ("setting on, matching root, no terminals", true, false, false, &roots, Some("r"), true),
+            ("setting off", false, false, false, &roots, Some("r"), false),
+            ("no granted lease", true, false, false, &[], Some("r"), false),
+            ("a root that differs", true, false, false, &roots, Some("x"), false),
+            ("own root unknown", true, false, false, &roots, None, false),
+            ("attach already live, setting off", false, true, false, &[], None, true),
+            ("plain terminal already live", true, false, true, &roots, Some("r"), false),
+        ];
+        for (what, setting, attach, local, granted, own, want) in cases {
+            assert_eq!(drawer_uses_attach(*setting, *attach, *local, granted, *own), *want, "{what}");
+        }
+    }
+
+    #[test]
+    fn wrap_status_table() {
+        // (description, text, first_w, rest_w, expected lines). A 20-wide pane
+        // gives the text 12 cells after "status: " on the first line.
+        let cases: &[(&str, &str, usize, usize, &[&str])] = &[
+            ("empty", "", 12, 20, &[""]),
+            ("fits", "ready", 12, 20, &["ready"]),
+            ("exactly the first line", "abcdefghijkl", 12, 20, &["abcdefghijkl"]),
+            ("one cell over, no space: hard break", "abcdefghijklm", 12, 20, &["abcdefghijkl", "m"]),
+            ("two lines, break at the last space", "hello world again today", 12, 20, &["hello world", "again today"]),
+            ("a space exactly at the edge", "hello world", 5, 13, &["hello", "world"]),
+            ("three lines", "aaa bbb ccc ddd eee fff", 6, 14, &["aaa", "bbb ccc ddd", "eee fff"]),
+            ("a word longer than the width", "abcdefghijklmnopqrstuv", 2, 10, &["ab", "cdefghijkl", "mnopqrstuv"]),
+            ("width smaller than the label", "abcdefgh", 0, 5, &["", "abcde", "fgh"]),
+            ("a wide glyph never straddles", "日本語", 3, 11, &["日", "本語"]),
+            ("a glyph wider than the line still advances", "日本", 1, 1, &["", "日", "本"]),
+            ("a trailing space at the break adds no empty line", "hello ", 5, 20, &["hello"]),
+            ("no pane", "abc def", 0, 0, &["abc def"]),
+        ];
+        for (what, text, first_w, rest_w, want) in cases {
+            let got = wrap_status(text, *first_w, *rest_w);
+            assert_eq!(got, *want, "{what}");
+            // Every line fits its width, and nothing but the break spaces is lost.
+            if *rest_w > 0 {
+                use unicode_width::UnicodeWidthStr;
+                for (i, line) in got.iter().enumerate() {
+                    let cap = if i == 0 { *first_w } else { *rest_w };
+                    assert!(line.width() <= cap || line.chars().count() == 1, "{what}: line {i} too wide");
+                }
+            }
+        }
+        // A 120-character toast at the default nav width wraps in full.
+        let toast = "The quick brown fox jumps over the lazy dog while the build finishes and every suite reports back to the lane ok";
+        let lines = wrap_status(toast, 22, 30);
+        assert_eq!(lines.join(" "), toast);
     }
 
     #[test]
