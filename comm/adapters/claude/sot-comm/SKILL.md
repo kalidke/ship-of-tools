@@ -203,3 +203,9 @@ daemon's build, the deployed comm scripts, and every row's phase. The frontend
 the user is on is the `fe` line marked `active`; its build says whether it has a
 given fix. Never answer this from sotd.log or the comm registry: a frontend is a
 client, not a comm peer, so the registry never lists it.
+
+## Troubleshooting
+
+A dim line in an idle row's input box is Claude Code's own prompt suggestion, not
+typed text: an empty Enter will not send it, and a screen read shows it as plain
+text, so it is not a stuck or half-sent message.
