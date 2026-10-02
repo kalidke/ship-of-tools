@@ -4167,7 +4167,8 @@ pub mod headless {
             client.shutdown(SHUTDOWN_WAIT);
             return Err(e);
         }
-        let out = type_and_enter(&mut client, text, op_budget, quiet_budget, pacing_budget);
+        let out = type_and_pace(&mut client, text, op_budget, quiet_budget, pacing_budget)
+            .map(|n| (n, send_enter(&mut client, op_budget)));
         client.shutdown(SHUTDOWN_WAIT);
         out
     }
@@ -4177,13 +4178,30 @@ pub mod headless {
     pub enum WakeOutcome {
         /// The screen was not a free prompt; nothing was typed.
         NotFree,
-        /// The line was typed; `enter_sent` is [`write_and_enter`]'s own flag.
-        Woke { enter_sent: bool },
+        /// The line was typed and Enter written.
+        Woke,
+        /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
+        /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
+        TypedNoEnter { reason: &'static str, border: String },
+        /// The line was typed and the gate passed, but the Enter write failed or its delivery is unknown.
+        EnterFailed,
+    }
+
+    /// What the typing step ended in: the gate's refusal (reason and border) or `None` when it passed, and
+    /// whether the Enter write succeeded (`false` when none was tried).
+    pub(crate) fn wake_outcome(gate: Option<(&'static str, String)>, enter_written: bool) -> WakeOutcome {
+        match gate {
+            Some((reason, border)) => WakeOutcome::TypedNoEnter { reason, border },
+            None if enter_written => WakeOutcome::Woke,
+            None => WakeOutcome::EnterFailed,
+        }
     }
 
     /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
-    /// screen on that same client with `is_free(lines, cursor, agent)`, and
-    /// only then type `line` and Enter as [`write_and_enter`] does. A screen
+    /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
+    /// [`free_test_lines`] reads them), and
+    /// only then type `line` and, if the typed-line gate (asked of the live screen after the pacing wait) says
+    /// the line sits alone in main's input box, Enter, as [`write_and_enter`] does. A screen
     /// that is not free gets no hold (it still costs the attach); one that is
     /// must then hold identical (the cursor, and every row through the line
     /// under it) for `still_for`, else it is a working row and nothing is
@@ -4193,7 +4211,7 @@ pub mod headless {
     pub fn wake_if_free(
         state_dir: &Path,
         controller_id: &str,
-        line: &[u8],
+        line: &str,
         is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
         agent: &str,
         still_for: Duration,
@@ -4208,9 +4226,22 @@ pub mod headless {
         }
         let cursor = client.screen().cursor_position();
         let first = wake_lines(&client);
-        let out = if !is_free(&first, Some(cursor), agent) {
+        let seen = free_test_lines(client.screen());
+        // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the hold
+        // and the passed final check leave a file each, for a stub that moves focus at exactly those points.
+        let marks = std::env::var_os("SOT_TEST_WAKE_MARKS").map(std::path::PathBuf::from);
+        let mark = |name: &str| {
+            if let Some(dir) = &marks {
+                let path = dir.join(name);
+                if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, b"")) {
+                    tracing::warn!(path = %path.display(), error = %e, "comm wake: test mark not written");
+                }
+            }
+        };
+        let out = if !is_free(&seen, Some(cursor), agent) {
             Ok(WakeOutcome::NotFree)
         } else {
+            mark("hold");
             let held_from = Instant::now();
             let mut still = true;
             while still && held_from.elapsed() < still_for {
@@ -4218,26 +4249,39 @@ pub mod headless {
                 client.pump();
                 still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(&client), cursor.0) == held_rows(&first, cursor.0);
             }
-            if still && is_free(&first, Some(cursor), agent) {
-                type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
-                    .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
+            // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
+            if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
+                mark("final-ok");
+                type_and_pace(&mut client, line.as_bytes(), op_budget, quiet_budget, pacing_budget).map(|_| {
+                    client.pump();
+                    let lines = free_test_lines(client.screen());
+                    let cursor = Some(client.screen().cursor_position());
+                    match crate::comm_wake::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
+                        Some(reason) => {
+                            let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
+                            wake_outcome(Some((reason, border)), false)
+                        }
+                        None => wake_outcome(None, send_enter(&mut client, op_budget)),
+                    }
+                })
             } else {
                 Ok(WakeOutcome::NotFree)
             }
         };
         client.shutdown(SHUTDOWN_WAIT);
+        mark("done");
         out
     }
 
-    /// [`write_and_enter`]'s steps 2-4 over an already attached,
+    /// [`write_and_enter`]'s steps 2-3 (type, then wait for the screen to settle) over an already attached,
     /// checkpointed client; the caller shuts the client down.
-    fn type_and_enter(
+    fn type_and_pace(
         client: &mut Client,
         text: &[u8],
         op_budget: Duration,
         quiet_budget: Duration,
         pacing_budget: Duration,
-    ) -> Result<(usize, bool), HeadlessError> {
+    ) -> Result<usize, HeadlessError> {
         let n = if text.is_empty() {
             0
         } else {
@@ -4268,12 +4312,14 @@ pub mod headless {
             }
         }
 
-        // Doc above: once the text is recorded, always Ok.
-        let enter_sent = send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).is_ok();
-
-        Ok((n, enter_sent))
+        Ok(n)
     }
 
+    /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above: once the text is
+    /// recorded, a failure here is a `false`, never an `Err`.
+    fn send_enter(client: &mut Client, op_budget: Duration) -> bool {
+        send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).is_ok()
+    }
 
     /// Current screen lines, top to bottom, trailing spaces trimmed —
     /// [`screen_of`]'s own shape, off an already-pumped client.
@@ -4287,6 +4333,25 @@ pub mod headless {
     fn wake_lines(client: &Client) -> Vec<String> {
         let (_, cols) = client.screen().size();
         client.screen().rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
+    }
+
+    /// [`wake_lines`] as the wake's free test reads them: on the cursor's row a dim cell (SGR 2) reads as a
+    /// space. Claude Code draws its prompt suggestion and placeholders dim, and they are not input; a typed draft
+    /// is not dim. Only that row: the hold compares [`wake_lines`] whole.
+    pub(crate) fn free_test_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
+        let (row, _) = screen.cursor_position();
+        let (_, cols) = screen.size();
+        let mut lines: Vec<String> = screen.rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect();
+        if let Some(line) = lines.get_mut(row as usize) {
+            *line = (0..cols)
+                .filter_map(|col| screen.cell(row, col))
+                .filter(|cell| !cell.is_wide_continuation())
+                .map(|cell| if cell.dim() || !cell.has_contents() { " " } else { cell.contents() })
+                .collect::<String>()
+                .trim_end_matches(' ')
+                .to_string();
+        }
+        lines
     }
 
     /// The rows the wake's hold compares: from the top of the screen through
@@ -4357,12 +4422,23 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::headless::{type_into, write_and_enter};
+    use super::headless::{type_into, wake_outcome, write_and_enter, WakeOutcome};
     use std::path::Path;
     use std::time::{Duration, Instant};
 
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(5)
+    }
+
+    #[test]
+    fn wake_outcome_table() {
+        let no = || Some(("no prompt glyph", "top".to_string()));
+        // A gate refusal wins, whatever the Enter flag says, and carries its reason and border.
+        for enter in [false, true] {
+            assert_eq!(wake_outcome(no(), enter), WakeOutcome::TypedNoEnter { reason: "no prompt glyph", border: "top".to_string() });
+        }
+        assert_eq!(wake_outcome(None, false), WakeOutcome::EnterFailed);
+        assert_eq!(wake_outcome(None, true), WakeOutcome::Woke);
     }
 
     #[test]

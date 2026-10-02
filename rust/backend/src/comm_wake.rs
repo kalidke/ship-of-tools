@@ -44,6 +44,21 @@
 //! nor `check_row`'s registry-then-clock order; deleting either passes every
 //! test, and a test that does not flake needs a seam.
 //!
+//! Nothing but spaces may follow the NBSP, and the free test reads the cursor's row with dim cells blank
+//! (`headless::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
+//! while a typed draft is not dim and reads not free wherever its cursor sits. The input must reach the main
+//! agent: no agents panel below the box, or the leader view's panel ([`panel_refusal`]); any other layout
+//! refuses. A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
+//! refusals, naming its handle, the reason and the line above the prompt. Known limits: a suggestion drawn by colour rather than dim reads as a draft, and so does every
+//! suggestion on Windows until a screen read shows SGR 2 survives ConPTY; a statusline that draws `●` or `◯`
+//! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
+//! or a focus off the input that drew no panel would read free (every captured view draws the panel).
+//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]);
+//! otherwise the line stays typed and the row is refused. That gate catches a stray key between the final read
+//! and the typing in the same wake. The window nothing guards is a dialog or permission prompt drawn between the
+//! gate's read and the Enter. A later wake refuses for whatever the screen then shows, and the refusal streak
+//! logs it.
+//!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
@@ -57,11 +72,14 @@ use crate::workspaces::Workspaces;
 pub const TICK: Duration = Duration::from_secs(2);
 /// Mail still unread this long after a wake gets one more line.
 const REPEAT_AFTER: Duration = Duration::from_secs(600);
+/// A row with unread mail that the wake has refused this long is logged, once per run of refusals, so a prompt
+/// the free test does not recognise is not silent.
+const REFUSED_FOR: Duration = Duration::from_secs(60);
 /// The Stop hook's longest run (its auditor call is capped at 45 s; Codex kills the hook at 10 s). A row whose
 /// registry entry carries a `stop_at` mark at most this old is running its Stop hook and is not typed into; an
 /// older mark is a Stop that never ended (Esc, an API error, a killed hook).
 const STOP_HOOK_BOUND: Duration = Duration::from_secs(60);
-const WAKE_LINE: &[u8] = b"[sot-comm] you have mail: run comm-poll.sh";
+const WAKE_LINE: &str = "[sot-comm] you have mail: run comm-poll.sh";
 const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
 const QUIET_BUDGET: Duration = Duration::from_millis(300);
@@ -272,6 +290,23 @@ fn is_rule(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| c == RULE)
 }
 
+/// An input-box border: a rule, or a rule with one ` label ` set into it, as Claude Code draws a named
+/// session's box top (`───── name ─`; seen 2026-10-02, v2.1.285) and the box of an agent being viewed
+/// (`──── task ─`, v2.1.287). A label does not say whose box it is; [`panel_refusal`] does. Known limits, both
+/// fail closed: a label containing `─` is not a border, and neither is a label as wide as the line (no rule
+/// left on one side).
+fn is_border(line: &str) -> bool {
+    let line = line.trim_end_matches(' ');
+    if is_rule(line) {
+        return true;
+    }
+    let Some(inner) = line.strip_prefix(RULE).and_then(|l| l.strip_suffix(RULE)) else {
+        return false;
+    };
+    let label = inner.trim_matches(RULE);
+    label.len() > 2 && label.starts_with(' ') && label.ends_with(' ') && !label.contains(RULE)
+}
+
 /// Whether the input prompt's own separator, U+00A0 after the glyph, is required on Windows. On Linux it always
 /// is. Off until a Windows screen read shows the NBSP survives ConPTY; while off, a bare glyph also counts there,
 /// and an agents-view task box with an empty placeholder (a voice state) reads free: a named Windows-only gap.
@@ -281,43 +316,112 @@ fn nbsp_required(windows: bool) -> bool {
     !windows || NBSP_ON_WINDOWS
 }
 
-/// The free-prompt test, all of: (a) only spaces before the glyph; (b) the cursor
-/// is just after the glyph, or one more; (c) the line sits directly between two
-/// rule lines, the input box's; (d) the glyph is followed by U+00A0, the main
-/// prompt's own mark (menus and dialog inputs draw an ASCII space), or, where
-/// the NBSP is not required ([`NBSP_ON_WINDOWS`]), by nothing but spaces. A
-/// menu, a dialog or a draft is not free. One frame cannot tell a working row,
-/// whose input box is live too; the hold in `wake_if_free` does.
-pub(crate) fn prompt_free(lines: &[String], cursor: Option<(u16, u16)>, agent: &str) -> bool {
-    prompt_free_on(lines, cursor, agent, cfg!(windows))
+/// The agents panel's mark for the agent the input reaches, and for every other agent.
+const PANEL_DOT: char = '\u{25cf}';
+const PANEL_RING: char = '\u{25ef}';
+
+/// Why the screen is not a free prompt for the wake; `None` when it is. Free is all of: (a) only spaces before
+/// the glyph; (b) the cursor just after the glyph, or one more; (c) the line directly between the input box's
+/// two borders (a rule, optionally labelled); (d) after the glyph U+00A0, the main prompt's own mark (menus and
+/// dialog inputs draw an ASCII space), then nothing but spaces, or, where the NBSP is not required
+/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]).
+/// The wake reads the cursor's row with dim cells blank (`headless::free_test_lines`), so Claude Code's dim
+/// suggestion or placeholder reads empty and a typed draft reads not free wherever its cursor sits. One frame
+/// cannot tell a working row, whose input box is live too; the hold in `wake_if_free` does.
+fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Option<&'static str> {
+    input_refused(lines, cursor, agent, windows, Expect::Empty)
 }
 
-pub(crate) fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
+/// What the input box is expected to hold: nothing (the free test), or exactly the typed wake line (the gate
+/// before Enter).
+enum Expect<'a> {
+    Empty,
+    Typed(&'a str),
+}
+
+/// Why `text`, just typed, does not sit alone in main's input box (`None` when it does): every structural check of [`refused_on`] (a box,
+/// the glyph, nothing before it, [`panel_refusal`] below) except the cursor column, then after the glyph the
+/// NBSP (a space where the NBSP is not required), exactly `text`, and spaces. Enter goes only when this holds.
+pub(crate) fn typed_refusal(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, text: &str) -> Option<&'static str> {
+    input_refused(lines, cursor, agent, windows, Expect::Typed(text))
+}
+
+fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool, expect: Expect) -> Option<&'static str> {
     let glyphs = prompt_glyphs(agent, windows);
-    let (false, Some((row, col))) = (glyphs.is_empty(), cursor) else {
-        return false;
-    };
-    let row = row as usize;
-    let Some(line) = lines.get(row) else {
-        return false;
-    };
-    let boxed = row > 0 && is_rule(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_rule(l));
-    if !boxed {
-        return false;
+    if glyphs.is_empty() {
+        return Some("no wake predicate for this agent");
     }
-    let cells: Vec<char> = line.chars().collect();
-    let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
-        return false;
+    let Some((row, col)) = cursor else {
+        return Some("no cursor");
     };
-    let col = col as usize;
-    let nbsp = cells.get(g + 1) == Some(&'\u{a0}');
-    let bare = !nbsp_required(windows) && cells[g + 1..].iter().all(|c| *c == ' ');
-    cells[..g].iter().all(|c| *c == ' ') && (col == g + 1 || col == g + 2) && (nbsp || bare)
+    let (row, col) = (row as usize, col as usize);
+    let boxed = row > 0 && row + 1 < lines.len() && is_border(&lines[row - 1]) && is_border(&lines[row + 1]);
+    if !boxed {
+        return Some("not in an input box");
+    }
+    let cells: Vec<char> = lines[row].chars().collect();
+    let Some(g) = cells.iter().position(|c| glyphs.contains(c)) else {
+        return Some("no prompt glyph");
+    };
+    if !cells[..g].iter().all(|c| *c == ' ') {
+        return Some("text before the glyph");
+    }
+    let rest = &cells[g + 1..];
+    let blank = |cs: &[char]| cs.iter().all(|c| *c == ' ');
+    match expect {
+        Expect::Empty => {
+            if col != g + 1 && col != g + 2 {
+                return Some("cursor not at the prompt");
+            }
+            let empty = (rest.first() == Some(&'\u{a0}') && blank(&rest[1..])) || (!nbsp_required(windows) && blank(rest));
+            if !empty {
+                return Some("input not empty");
+            }
+        }
+        Expect::Typed(text) => {
+            let after = match rest.first() {
+                Some('\u{a0}') => &rest[1..],
+                Some(' ') if !nbsp_required(windows) => &rest[1..],
+                _ => return Some("typed text not in main's input box"),
+            };
+            let want: Vec<char> = text.chars().collect();
+            if !after.starts_with(&want) || !blank(&after[want.len()..]) {
+                return Some("typed text not in main's input box");
+            }
+        }
+    }
+    panel_refusal(&lines[row + 2..])
+}
+
+/// Whether the input reaches the main agent, read from the rows below the box. If no line there carries
+/// [`PANEL_DOT`] or [`PANEL_RING`], there is no agents panel and it does. Otherwise only the leader view as
+/// captured (Claude Code 2.1.287, 2026-10-02) counts: every panel line starts with two spaces (the line under
+/// panel focus starts `❯ `), the one dotted line is `  ● main`, and a line ends with the footer hint
+/// `← for agents`, which goes once a key moves focus off the input (the first ↓, before any panel cursor
+/// shows). Any other layout refuses.
+fn panel_refusal(below: &[String]) -> Option<&'static str> {
+    let below: Vec<&str> = below.iter().map(|l| l.trim_end_matches(' ')).collect();
+    let panel: Vec<&str> = below.iter().copied().filter(|l| l.contains(PANEL_DOT) || l.contains(PANEL_RING)).collect();
+    if panel.is_empty() {
+        return None;
+    }
+    if panel.iter().any(|l| !l.starts_with("  ")) {
+        return Some("agents panel focused or unrecognised");
+    }
+    let dotted: Vec<&str> = panel.iter().copied().filter(|l| l.contains(PANEL_DOT)).collect();
+    if dotted != ["  \u{25cf} main"] {
+        return Some("the panel's dot is not on main");
+    }
+    if !below.iter().any(|l| l.ends_with("\u{2190} for agents")) {
+        return Some("agents panel without the input's footer hint");
+    }
+    None
 }
 
 /// The tick. Runs forever; started once from `server::run`.
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let mut woken: HashMap<String, Woken> = HashMap::new();
+    let mut streaks: HashMap<String, Streak> = HashMap::new();
     let mut warned: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -358,14 +462,8 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
             checks.push((handle, tokio::task::spawn_blocking(move || check_row(&home, &h, &state_dir, &agent, prior))));
         }
         for (handle, check) in checks {
-            match check.await {
-                Ok(Step::Clear) => {
-                    woken.remove(&handle);
-                }
-                Ok(Step::Woke(w)) => {
-                    woken.insert(handle, w);
-                }
-                Ok(Step::Skip) | Err(_) => {}
+            if let Ok(step) = check.await {
+                settle(&mut woken, &mut streaks, handle, step, Instant::now());
             }
         }
     }
@@ -375,6 +473,44 @@ enum Step {
     Clear,
     Skip,
     Woke(Woken),
+    /// The screen was not a free prompt, or did not hold still.
+    Refused(Refusal),
+}
+
+/// Why the wake did not type into a row with mail: a [`refused_on`] reason, `stop hook running` or `moved during
+/// the hold`, and the line above the cursor's row (the box's top border, when there is a box).
+#[derive(Debug)]
+struct Refusal {
+    reason: &'static str,
+    border: String,
+}
+
+/// A row with mail that the wake keeps refusing: when the run of refusals began, and whether its one line is out.
+struct Streak {
+    since: Instant,
+    logged: bool,
+}
+
+/// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak.
+fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: String, step: Step, now: Instant) {
+    match step {
+        Step::Clear => {
+            woken.remove(&handle);
+            streaks.remove(&handle);
+        }
+        Step::Woke(w) => {
+            streaks.remove(&handle);
+            woken.insert(handle, w);
+        }
+        Step::Refused(r) => {
+            let s = streaks.entry(handle.clone()).or_insert(Streak { since: now, logged: false });
+            if !s.logged && now.duration_since(s.since) >= REFUSED_FOR {
+                s.logged = true;
+                tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, "comm wake: a row with unread mail keeps refusing the wake");
+            }
+        }
+        Step::Skip => {}
+    }
 }
 
 fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Option<Woken>) -> Step {
@@ -391,11 +527,15 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     if crate::capsule_workspace::phase_of(state_dir) != ready {
         return Step::Skip;
     }
+    let seen: std::cell::RefCell<(Option<&'static str>, String)> = Default::default();
     let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::handlers::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        prompt_free(l, c, a) && !stop_hook_running(&registry, handle, now)
+        let reason = refused_on(l, c, a, cfg!(windows)).or_else(|| stop_hook_running(&registry, handle, now).then_some("stop hook running"));
+        let border = c.and_then(|(row, _)| l.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
+        *seen.borrow_mut() = (reason, border);
+        reason.is_none()
     };
     match wake_if_free(
         state_dir,
@@ -408,8 +548,20 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         QUIET_BUDGET,
         PACING_BUDGET,
     ) {
-        Ok(WakeOutcome::Woke { enter_sent: true }) => Step::Woke(Woken { line: s.total, at: Instant::now() }),
-        Ok(_) => Step::Skip,
+        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: s.total, at: Instant::now() }),
+        Ok(WakeOutcome::NotFree) => {
+            let (reason, border) = seen.take();
+            Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border })
+        }
+        Ok(WakeOutcome::TypedNoEnter { reason, border }) => {
+            tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
+            Step::Refused(Refusal { reason: "typed text not in main's input box", border })
+        }
+        Ok(WakeOutcome::EnterFailed) => {
+            let (_, border) = seen.take();
+            tracing::warn!(handle, border = ?border, "comm wake: typed the line but the Enter write failed");
+            Step::Refused(Refusal { reason: "enter write failed", border })
+        }
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");
             Step::Skip
@@ -420,7 +572,11 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capsule_workspace::headless::held_rows;
+    use crate::capsule_workspace::headless::{free_test_lines, held_rows};
+
+    fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
+        refused_on(lines, cursor, agent, windows).is_none()
+    }
 
     fn lines(l: &[&str]) -> Vec<String> {
         l.iter().map(|s| s.to_string()).collect()
@@ -443,8 +599,8 @@ mod tests {
     #[test]
     fn free_prompts() {
         for windows in [false, true] {
-            // Ghost-text suggestion with the cursor at its start.
-            assert!(bfree("\u{276f}\u{a0}try this", 2, windows));
+            // A suggestion as the wake reads it: the dim text blank.
+            assert!(bfree("\u{276f}\u{a0}", 2, windows));
         }
     }
 
@@ -752,7 +908,10 @@ mod tests {
 
     #[test]
     fn linux_rest_capture_is_free() {
-        assert!(on(&LINUX_IDLE, (8, 2), false));
+        // The grey suggestion as the wake reads it: blank.
+        let mut idle = LINUX_IDLE;
+        idle[8] = "\u{276f}\u{a0}";
+        assert!(on(&idle, (8, 2), false));
     }
 
     /// Two live captures of a claude row at rest, scrubbed, one second apart: a background agent's footer below the box ticks (`3m 9s` to `3m 11s`); every other row is identical.
@@ -808,8 +967,11 @@ mod tests {
     #[test]
     fn one_turn_frame_reads_free() {
         // One frame of a working row reads free (its box shows the glyph, NBSP and a queued-message hint); only
-        // the hold in `wake_if_free` protects it (itest `a_working_row_is_not_typed_into_until_it_rests`).
-        assert!(on(&LINUX_TURN_A, (8, 2), false));
+        // the hold in `wake_if_free` protects it (itest `a_working_row_is_not_typed_into_until_it_rests`). The
+        // queued-message hint read blank if it is dim (unverified); either way the hold protects the row.
+        let mut turn = LINUX_TURN_A;
+        turn[8] = "\u{276f}\u{a0}";
+        assert!(on(&turn, (8, 2), false));
         assert_eq!(on(&WIN_TURN_A, (7, 2), true), !nbsp_required(true));
         let mut nbsp = WIN_TURN_A;
         nbsp[7] = ">\u{a0}";
@@ -827,7 +989,9 @@ mod tests {
         assert_eq!(on(&bare, (7, 2), true), !nbsp_required(true));
         bare[7] = "\u{276f}\u{a0}";
         assert!(on(&bare, (7, 2), true));
-        assert!(on(&LINUX_IDLE, (8, 2), true));
+        let mut idle = LINUX_IDLE;
+        idle[8] = "\u{276f}\u{a0}";
+        assert!(on(&idle, (8, 2), true));
     }
 
     #[test]
@@ -916,15 +1080,6 @@ mod tests {
     }
 
     #[test]
-    fn a_suggestion_row_is_free() {
-        for windows in [false, true] {
-            assert!(on(&LINUX_IDLE, (8, 2), windows));
-        }
-        assert!(bfree(">\u{a0}text", 2, true));
-        assert!(!bfree(">\u{a0}text", 2, false));
-    }
-
-    #[test]
     fn a_glyph_then_a_space_is_not_free() {
         for windows in [false, true] {
             assert!(!bfree("\u{276f} text", 2, windows));
@@ -949,5 +1104,213 @@ mod tests {
             // wherever the NBSP is not required, the named Windows-only gap.
             assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
         }
+    }
+
+    /// REAL, 2026-10-02 journal, Claude Code 2.1.285, 83 columns, cursor 41;3: a named session's box.
+    #[test]
+    fn a_named_session_box_is_free() {
+        let rule = |n: usize| "\u{2500}".repeat(n);
+        let top = format!("{} named-session \u{2500}", rule(49));
+        let prompt = "\u{276f}\u{a0}".to_string();
+        for windows in [false, true] {
+            assert!(prompt_free_on(&[top.clone(), prompt.clone(), rule(83)], Some((1, 2)), "claude", windows));
+        }
+        let glued = format!("{}label\u{2500}", rule(10)); // no spaces around the label: not a border
+        let two = format!("{} a {} b \u{2500}", rule(10), rule(10)); // two labels: not a border
+        let inner = format!("{} a\u{2500}b \u{2500}", rule(10)); // a label containing the rule glyph
+        let wide = " a label as wide as the line ".to_string(); // no rule left on either side
+        for bad in [glued, two, inner, wide] {
+            assert!(!prompt_free_on(&[bad, prompt.clone(), rule(83)], Some((1, 2)), "claude", false));
+        }
+    }
+    const P_MAIN: &str = "  ● main";
+    const P_SUB: &str = "  ◯ general-purpose  background task                    13s · ↓ 41.0k tokens";
+    const F_LEADER: &str = "  ⏵⏵ auto mode on · 1 shell · ← for agents";
+    const F_DOWN: &str = "  ⏵⏵ auto mode on · 1 shell";
+    const F_SELECT: &str = "  ↑/↓ to select";
+    const F_VIEW: &str = "  Enter to view · x to stop";
+    /// The cursor in the probe frames' prompt row, where Claude Code leaves it in an empty prompt.
+    const AT: (u16, u16) = (16, 2);
+
+    fn rule80() -> String {
+        "\u{2500}".repeat(80)
+    }
+
+    /// REAL layout, scrubbed: the 2026-10-02 probe captures (Claude Code 2.1.287, 80 columns, one background
+    /// agent). Rows 15-17 are the box, 18-19 the statusline, 20 the footer, 22-23 the agents panel.
+    fn probe(top: &str, prompt: &str, footer: &str, panel: [&str; 2]) -> Vec<String> {
+        let rule = rule80();
+        let mut f = vec![String::new(); 15];
+        for l in [top, prompt, rule.as_str(), "  Opus 5.5 [00000000] acct ·think:xhigh | v2.1.287 | demo:main", "  Session: 51k (in:51k out:1k) | $0.00", footer, "", panel[0], panel[1], ""] {
+            f.push(l.to_string());
+        }
+        f
+    }
+
+    /// The stuck-wake record's shape: a 4x20 screen, the prompt between two rules, the cursor at column 3 (1-based).
+    fn parsed(prompt: &str) -> vt100_ctt::Parser {
+        let rule = "\u{2500}".repeat(20);
+        let mut p = vt100_ctt::Parser::new(4, 20, 0);
+        p.process(format!("{rule}\r\n{prompt}\r\n{rule}\x1b[2;3H").as_bytes());
+        p
+    }
+
+    #[test]
+    fn the_leader_view_reads_free() {
+        // Capture 10, and the same box with a named session's label in its top border.
+        let named = format!("{} named-session \u{2500}", "\u{2500}".repeat(64));
+        for top in [rule80(), named] {
+            for windows in [false, true] {
+                assert_eq!(refused_on(&probe(&top, "\u{276f}\u{a0}", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), None);
+            }
+        }
+    }
+
+    #[test]
+    fn typed_into_main_table() {
+        const L: &str = "[sot-comm] you have mail: run comm-poll.sh";
+        let at = |col: u16| Some((16, col));
+        let typed = |top: &str, prompt: &str, footer: &str, panel: [&str; 2], cur, windows| typed_refusal(&probe(top, prompt, footer, panel), cur, "claude", windows, L).is_none();
+        let line = format!("\u{276f}\u{a0}{L}");
+        // The line in a leader box, wherever the cursor sits on the prompt row.
+        assert!(typed(&rule80(), &line, F_LEADER, [P_MAIN, P_SUB], at(2 + L.len() as u16), false));
+        assert!(typed(&rule80(), &line, F_LEADER, [P_MAIN, P_SUB], at(2), false));
+        assert!(typed_refusal(&boxed(&line), Some((1, 44)), "claude", false, L).is_none());
+        // A focused panel under the box.
+        assert!(!typed(&rule80(), &line, F_SELECT, [P_MAIN, "❯ ◯ general-purpose"], at(2), false));
+        assert!(!typed(&rule80(), &line, F_DOWN, [P_MAIN, P_SUB], at(2), false));
+        // The cursor on a panel row, off the box.
+        assert!(!typed(&rule80(), &line, F_LEADER, [P_MAIN, P_SUB], Some((22, 0)), false));
+        // The box empty, the line plus more, other text, no NBSP.
+        assert!(!typed(&rule80(), "\u{276f}\u{a0}", F_LEADER, [P_MAIN, P_SUB], at(2), false));
+        assert!(!typed(&rule80(), &format!("{line} and more"), F_LEADER, [P_MAIN, P_SUB], at(2), false));
+        assert!(!typed(&rule80(), &format!("\u{276f}\u{a0}hello {L}"), F_LEADER, [P_MAIN, P_SUB], at(2), false));
+        assert!(!typed(&rule80(), &format!("\u{276f} {L}"), F_LEADER, [P_MAIN, P_SUB], at(2), false));
+        // A sub-agent's labelled box, its panel focused on it.
+        let top = format!("{} background task \u{2500}", "\u{2500}".repeat(62));
+        let viewing = ["  ◯ main", "❯ ● general-purpose  background task                    13s · ↓ 41.0k tokens"];
+        assert!(!typed(&top, &line, F_SELECT, viewing, at(2), false));
+        // Windows: either glyph; the NBSP or, while it is not required there, a space.
+        for glyph in ["\u{276f}", ">"] {
+            assert!(typed(&rule80(), &format!("{glyph}\u{a0}{L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
+            assert_eq!(typed(&rule80(), &format!("{glyph} {L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true), !nbsp_required(true));
+            assert!(!typed(&rule80(), &format!("{glyph}{L}"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
+            assert!(!typed(&rule80(), &format!("{glyph}\u{a0}{L} x"), F_LEADER, [P_MAIN, P_SUB], at(2), true));
+        }
+        // The line followed by Claude Code's dim suggestion: dim cells read blank, so the line still sits alone.
+        let rule = "\u{2500}".repeat(80);
+        let mut p = vt100_ctt::Parser::new(3, 80, 0);
+        p.process(format!("{rule}\r\n\u{276f}\u{a0}{L}\x1b[2m try this\x1b[22m\r\n{rule}\x1b[2;{}H", 3 + L.len()).as_bytes());
+        let seen = free_test_lines(p.screen());
+        assert_eq!(typed_refusal(&seen, Some(p.screen().cursor_position()), "claude", false, L), None);
+    }
+
+    #[test]
+    fn a_view_of_another_agent_is_refused() {
+        // Capture 08: the agent's task in the top border, the dot and the panel cursor on the agent. The
+        // placeholder `Message @general-purpose…` as the wake reads it if dim (blank), and as plain text.
+        let top = format!("{} background task \u{2500}", "\u{2500}".repeat(62));
+        let viewing = ["  ◯ main", "❯ ● general-purpose  background task                    13s · ↓ 41.0k tokens"];
+        assert_eq!(refused_on(&probe(&top, "\u{276f}\u{a0}", F_SELECT, viewing), Some(AT), "claude", false), Some("agents panel focused or unrecognised"));
+        assert_eq!(refused_on(&probe(&top, "\u{276f}\u{a0}Message @general-purpose…", F_SELECT, viewing), Some(AT), "claude", false), Some("input not empty"));
+    }
+
+    #[test]
+    fn the_dot_on_another_agent_is_refused() {
+        // DERIVED from capture 08 with no panel cursor, under the leader footer.
+        let dot_on_sub = ["  ◯ main", "  ● general-purpose  background task                    13s · ↓ 41.0k tokens"];
+        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_LEADER, dot_on_sub), Some(AT), "claude", false), Some("the panel's dot is not on main"));
+    }
+
+    #[test]
+    fn panel_focus_is_refused() {
+        // Captures 06 and 09 (the panel cursor on main) and 07 (on the agent): an Enter there opens a view.
+        let on_sub = "❯ ◯ general-purpose  background task                    13s · ↓ 41.0k tokens";
+        for (footer, panel) in [(F_SELECT, ["❯ ● main", P_SUB]), (F_VIEW, [P_MAIN, on_sub])] {
+            assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", footer, panel), Some(AT), "claude", false), Some("agents panel focused or unrecognised"));
+        }
+        // Capture 05, the first ↓: no panel cursor yet, but the footer hint is gone.
+        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false), Some("agents panel without the input's footer hint"));
+    }
+
+    #[test]
+    fn an_unknown_panel_layout_is_refused() {
+        // DERIVED: a panel with no line for main, and a dot on a name other than main.
+        for panel in [[P_SUB, ""], ["  ● team-lead", P_SUB]] {
+            assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_LEADER, panel), Some(AT), "claude", false), Some("the panel's dot is not on main"));
+        }
+    }
+
+    #[test]
+    fn a_draft_reads_not_free_wherever_its_cursor_sits() {
+        // At Home the cursor sits where an empty prompt's does (col 2); only the text after the NBSP tells.
+        for windows in [false, true] {
+            assert_eq!(refused_on(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", windows), Some("input not empty"));
+            assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}hello", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), Some("input not empty"));
+        }
+    }
+
+    #[test]
+    fn a_dim_suggestion_reads_empty_and_a_draft_does_not() {
+        let p = parsed("\u{276f}\u{a0}\x1b[2mtry this\x1b[22m");
+        let seen = free_test_lines(p.screen());
+        assert_eq!(seen[1], "\u{276f}\u{a0}");
+        assert_eq!(refused_on(&seen, Some(p.screen().cursor_position()), "claude", false), None);
+        let p = parsed("\u{276f}\u{a0}try this");
+        let seen = free_test_lines(p.screen());
+        assert_eq!(seen[1], "\u{276f}\u{a0}try this");
+        assert_eq!(refused_on(&seen, Some(p.screen().cursor_position()), "claude", false), Some("input not empty"));
+        // Only the cursor's row is read this way: a dim line elsewhere keeps its text.
+        let mut p = parsed("\u{276f}\u{a0}");
+        p.process(b"\x1b[4;1H\x1b[2mfooter\x1b[22m\x1b[2;3H");
+        assert_eq!(free_test_lines(p.screen())[3], "footer");
+    }
+    /// A log sink for one test: `tracing` writes here while the test's subscriber is the default.
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
+        let buf = LogBuf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
+        let text = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let count = || text().matches("keeps refusing the wake").count();
+        let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string() });
+        let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
+        let t0 = Instant::now();
+        let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
+        tracing::subscriber::with_default(sub, || {
+            // Inside the bound: silent. Fails if the bound is ignored.
+            at(Duration::ZERO, refused());
+            at(REFUSED_FOR - Duration::from_secs(1), refused());
+            assert_eq!(count(), 0, "inside the bound: silent");
+            // One line per streak, with its fields. Fails if the info! is deleted, a field dropped, or a streak logs twice.
+            at(REFUSED_FOR, refused());
+            at(REFUSED_FOR * 5, refused());
+            assert_eq!(count(), 1, "one line per streak");
+            let t = text();
+            assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\""), "{t}");
+            // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
+            at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0 }));
+            at(REFUSED_FOR * 7, refused());
+            assert_eq!(count(), 1, "a new streak waits its own bound");
+            at(REFUSED_FOR * 8, refused());
+            assert_eq!(count(), 2);
+            // A read inbox ends it too. Fails if Clear leaves the streak.
+            at(REFUSED_FOR * 9, Step::Clear);
+            at(REFUSED_FOR * 10, refused());
+            at(REFUSED_FOR * 11, refused());
+            assert_eq!(count(), 3);
+        });
     }
 }
