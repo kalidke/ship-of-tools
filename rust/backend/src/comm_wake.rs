@@ -54,10 +54,11 @@
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
 //! or a focus off the input that drew no panel would read free (every captured view draws the panel).
 //! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]);
-//! otherwise the line stays typed and the row is refused. That gate catches a stray key between the final read
-//! and the typing in the same wake. The window nothing guards is a dialog or permission prompt drawn between the
-//! gate's read and the Enter. A later wake refuses for whatever the screen then shows, and the refusal streak
-//! logs it.
+//! otherwise the line stays typed and the row is refused. That gate withholds Enter after a stray key between the
+//! final read and the typing; the line itself has then gone, without Enter, wherever that key put focus (the
+//! panel or a draft). Nothing guards the window between the gate's read and the Enter: a key pressed, or a dialog
+//! or permission prompt drawn, in it receives the Enter. A later wake refuses for whatever the screen then
+//! shows, and the refusal streak logs it.
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
@@ -557,10 +558,10 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
             tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Refused(Refusal { reason: "typed text not in main's input box", border })
         }
-        Ok(WakeOutcome::EnterFailed) => {
+        Ok(WakeOutcome::EnterFailed { detail }) => {
             let (_, border) = seen.take();
-            tracing::warn!(handle, border = ?border, "comm wake: typed the line but the Enter write failed");
-            Step::Refused(Refusal { reason: "enter write failed", border })
+            tracing::warn!(handle, border = ?border, "comm wake: typed the line; Enter not confirmed ({detail})");
+            Step::Refused(Refusal { reason: "enter not confirmed", border })
         }
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");

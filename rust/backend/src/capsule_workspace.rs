@@ -4168,7 +4168,7 @@ pub mod headless {
             return Err(e);
         }
         let out = type_and_pace(&mut client, text, op_budget, quiet_budget, pacing_budget)
-            .map(|n| (n, send_enter(&mut client, op_budget)));
+            .map(|n| (n, send_enter(&mut client, op_budget).is_ok()));
         client.shutdown(SHUTDOWN_WAIT);
         out
     }
@@ -4183,17 +4183,20 @@ pub mod headless {
         /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
         /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
         TypedNoEnter { reason: &'static str, border: String },
-        /// The line was typed and the gate passed, but the Enter write failed or its delivery is unknown.
-        EnterFailed,
+        /// The line was typed and the gate passed, but the Enter write returned an error (`detail`, the phase and
+        /// its text), or its delivery is unknown: the Enter may still have reached the agent.
+        EnterFailed { detail: String },
     }
 
     /// What the typing step ended in: the gate's refusal (reason and border) or `None` when it passed, and
-    /// whether the Enter write succeeded (`false` when none was tried).
-    pub(crate) fn wake_outcome(gate: Option<(&'static str, String)>, enter_written: bool) -> WakeOutcome {
+    /// the Enter write's result (`Ok` when none was tried and the gate refused).
+    pub(crate) fn wake_outcome(gate: Option<(&'static str, String)>, enter: Result<(), HeadlessError>) -> WakeOutcome {
         match gate {
             Some((reason, border)) => WakeOutcome::TypedNoEnter { reason, border },
-            None if enter_written => WakeOutcome::Woke,
-            None => WakeOutcome::EnterFailed,
+            None => match enter {
+                Ok(()) => WakeOutcome::Woke,
+                Err(e) => WakeOutcome::EnterFailed { detail: format!("{}: {}", e.phase, e.detail) },
+            },
         }
     }
 
@@ -4227,8 +4230,11 @@ pub mod headless {
         let cursor = client.screen().cursor_position();
         let first = wake_lines(&client);
         let seen = free_test_lines(client.screen());
-        // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the hold
-        // and the passed final check leave a file each, for a stub that moves focus at exactly those points.
+        // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the attempt
+        // leaves a file at each point, for a stub that moves focus at exactly those points: `hold` when the hold
+        // begins (the screen was free), `final-ok` when the live final check passes (before typing), `done` when
+        // the client is shut down. An attach or checkpoint failure before the hold (above) returns early and
+        // writes no `done`.
         let marks = std::env::var_os("SOT_TEST_WAKE_MARKS").map(std::path::PathBuf::from);
         let mark = |name: &str| {
             if let Some(dir) = &marks {
@@ -4259,7 +4265,7 @@ pub mod headless {
                     match crate::comm_wake::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
                         Some(reason) => {
                             let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
-                            wake_outcome(Some((reason, border)), false)
+                            wake_outcome(Some((reason, border)), Ok(()))
                         }
                         None => wake_outcome(None, send_enter(&mut client, op_budget)),
                     }
@@ -4316,9 +4322,9 @@ pub mod headless {
     }
 
     /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above: once the text is
-    /// recorded, a failure here is a `false`, never an `Err`.
-    fn send_enter(client: &mut Client, op_budget: Duration) -> bool {
-        send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).is_ok()
+    /// recorded, a failure here is a `false`, never an `Err`; the error itself is kept for [`wake_if_free`].
+    fn send_enter(client: &mut Client, op_budget: Duration) -> Result<(), HeadlessError> {
+        send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).map(|_| ())
     }
 
     /// Current screen lines, top to bottom, trailing spaces trimmed —
@@ -4422,7 +4428,7 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::headless::{type_into, wake_outcome, write_and_enter, WakeOutcome};
+    use super::headless::{type_into, wake_outcome, write_and_enter, HeadlessError, WakeOutcome};
     use std::path::Path;
     use std::time::{Duration, Instant};
 
@@ -4433,12 +4439,11 @@ mod headless_size_gate_tests {
     #[test]
     fn wake_outcome_table() {
         let no = || Some(("no prompt glyph", "top".to_string()));
-        // A gate refusal wins, whatever the Enter flag says, and carries its reason and border.
-        for enter in [false, true] {
-            assert_eq!(wake_outcome(no(), enter), WakeOutcome::TypedNoEnter { reason: "no prompt glyph", border: "top".to_string() });
-        }
-        assert_eq!(wake_outcome(None, false), WakeOutcome::EnterFailed);
-        assert_eq!(wake_outcome(None, true), WakeOutcome::Woke);
+        // A gate refusal carries its reason and border.
+        assert_eq!(wake_outcome(no(), Ok(())), WakeOutcome::TypedNoEnter { reason: "no prompt glyph", border: "top".to_string() });
+        let failed = HeadlessError { phase: "record", detail: "input delivery unknown".to_string(), submitted: true };
+        assert_eq!(wake_outcome(None, Err(failed)), WakeOutcome::EnterFailed { detail: "record: input delivery unknown".to_string() });
+        assert_eq!(wake_outcome(None, Ok(())), WakeOutcome::Woke);
     }
 
     #[test]
