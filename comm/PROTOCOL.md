@@ -405,8 +405,8 @@ hub that waited out the lock and then filed is not reported `FAILED`.
 **Landing in stages: a handle the hub's folder does not list
 (`not_here`) falls back to the older route** — `agent.send` offered to
 everything attached to the hub, decided on a filer's receipt. There, a
-receipt gives `filed -> @h (by <filer>, relay)` (exit 0); an ack whose roster
-is empty gives `FAILED -> @h: no box knows that handle: <h>`; an ack naming
+receipt gives `filed -> @h (by <filer>, relay)` (exit 0); an ack with an empty roster
+and no receipt within 5 seconds gives `FAILED -> @h: nobody filed it within 5s: no box knows that handle, or the daemon that holds it is stopped or not linked to the hub`; an ack naming
 anyone with no receipt within 5 seconds gives `NOT CONFIRMED: sent for @h;
 nobody claimed it within 5s. Attached: …`, the roster a diagnostic and never
 a verdict — so a handle no box knows gives `NOT CONFIRMED` whenever anything

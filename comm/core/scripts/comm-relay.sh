@@ -201,7 +201,7 @@ send_frame() {  # $1 to, $2 text
             *) echo "FAILED -> @$1: $reason" >&2; return 1 ;;
         esac
     fi
-    # THE NOT-MINE LEG, deleted in B2: a handle the hub's folder does not list
+    # THE NOT-MINE LEG: a handle the hub's folder does not list
     # still goes out as `agent.send` and waits for a filer's receipt. A
     # broadcast (`send --all`, sot-nav.sh's envelope) takes this path for its
     # `relayed` count.
@@ -239,14 +239,8 @@ send_frame() {  # $1 to, $2 text
                     ack_array=true
                     mapfile -t receivers < <(printf '%s' "$line" | sot_jq -r '.payload.receivers[]')
                 fi
-                # Wait for a receipt ONLY where one can exist: a directed
-                # send with somebody attached. Everything else is decided on
-                # the ack and must not spend the caller's seconds — a
-                # broadcast has no single
-                # addressee to file for, and nobody attached means nobody
-                # can append.
-                if [ "$ack_ok" = false ] || [ "$ack_array" = false ] || [ -z "$1" ] \
-                   || [ "${#receivers[@]}" -eq 0 ]; then
+                # A directed send waits for its receipt, roster or no roster: a hub link files and receipts and is never on the roster (role cli). A broadcast has no single addressee, so it is decided on the ack.
+                if [ "$ack_ok" = false ] || [ "$ack_array" = false ] || [ -z "$1" ]; then
                     break
                 fi
                 ;;
@@ -311,10 +305,8 @@ send_frame() {  # $1 to, $2 text
             return 0
         fi
         if [ "${#receivers[@]}" -eq 0 ]; then
-            # Nothing is attached to this daemon, and neither this box's
-            # registry nor the hub's folder names the target. There is nowhere
-            # for the frame to land.
-            echo "FAILED -> @$1: no box knows that handle: $1" >&2
+            # No receipt in the window, and no one on the roster to name.
+            echo "FAILED -> @$1: nobody filed it within 5s: no box knows that handle, or the daemon that holds it is stopped or not linked to the hub" >&2
             return 1
         fi
         # The frame WAS sent and may well have been filed; nothing claimed

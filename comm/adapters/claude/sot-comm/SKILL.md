@@ -94,7 +94,7 @@ frame. A failure is loud, non-zero and one form:
 
 - `FAILED -> @h: <reason>` — the reason is the daemon's own sentence
   (`no box knows that handle: h` — check the spelling first; `no live session
-  holds @h`; `unknown op: comm.file` — the hub is older than this route), or
+  holds @h`; `nobody filed it within 5s: …` — that box's backend is stopped or cannot reach the hub; nothing was kept, so send again later; `unknown op: comm.file` — the hub is older than this route), or
   `the daemon did not answer at <endpoint>` with the transport's own complaint
   after it when it had one.
 
