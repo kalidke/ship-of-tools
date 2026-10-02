@@ -503,6 +503,23 @@ for v in up down serve status "" --help bogus; do
         if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-probe.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-probe.sh $v ($kind) changed the comm home"; fi
     done
 done
+# comm-worktree-new.sh gates before any git write: a child refuses it, and no worktree or branch is made.
+WTR="$WORK/wtp/repo"; mkdir -p "$WTR"
+{ git init -q "$WTR" && git -C "$WTR" config core.hooksPath /dev/null \
+    && git -C "$WTR" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m init; } >/dev/null 2>&1 \
+    || { echo "FATAL: setup git repo for comm-worktree-new.sh" >&2; exit 1; }
+for v in "c1" "c1 --no-spawn"; do
+    for kind in child nodechild; do
+        before="$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")"
+        run "$kind" "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" $v
+        eq  "child: comm-worktree-new.sh $v ($kind) exits 1" "$RC" 1
+        has "child: comm-worktree-new.sh $v ($kind) names the cause" "$OUT" "comm-worktree-new.sh: this process runs under"
+        if [ ! -e "$WORK/wtp/worktrees" ] && ! git -C "$WTR" show-ref --quiet --verify refs/heads/wt/c1; then ok "child: comm-worktree-new.sh $v ($kind) makes no worktree or branch"; else bad "child: comm-worktree-new.sh $v ($kind) made a worktree or branch"; fi
+        if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-worktree-new.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-worktree-new.sh $v ($kind) changed the comm home"; fi
+    done
+done
+run own "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" c2 --no-spawn
+if [ "$RC" -eq 0 ] && [ -d "$WORK/wtp/worktrees/repo-wt-c2" ] && git -C "$WTR" show-ref --quiet --verify refs/heads/wt/c2; then ok "own: comm-worktree-new.sh c2 --no-spawn makes the worktree and branch"; else bad "own: comm-worktree-new.sh c2 --no-spawn (rc $RC: $OUT)"; fi
 # A fresh comm home: a refused child makes no registry skeleton.
 H2="$WORK/home2"; mkdir -p "$H2"
 before="$(snap "$H2")"

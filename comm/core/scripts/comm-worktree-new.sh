@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # comm-worktree-new.sh — create a git worktree of the current repo and spawn a
 # parallel sot-comm session bound to it.
+# A second agent inside a session is refused before any git write.
 #
 # The spawned session's comm HANDLE and on-disk worktree DIR are both
 # `<repo>-wt-<shortname>`. Its frontend workspace LABEL is `<prefix>-wt-<shortname>`
@@ -35,6 +36,10 @@
 #                   durable). e.g. ".SoT" -> label ".SoT-wt-<short>" sorts left.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/comm-lib.sh"
+# A second agent inside the session makes no worktree (a plain one is `git worktree
+# add`); the gate comes before option parsing and any git write, --help included.
+_why="$(sot_require_agent)" || { echo "comm-worktree-new.sh: $_why" >&2; exit 1; }
 
 usage() { sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 

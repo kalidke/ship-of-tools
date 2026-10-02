@@ -482,7 +482,8 @@ Monitor exists.
   Windows every comm script that reads mail, sends, joins or stamps refuses
   ("update sotd") until the installed `sotd.exe` has the `ancestors` subcommand, so the
   scripts and `sotd.exe` ship together. A refused process may neither spawn nor
-  despawn rows (`comm-probe.sh`'s included), and no hook of it writes anything
+  despawn rows (`comm-probe.sh`'s included) nor run `comm-worktree-new.sh`, which
+  refuses it before any git write, and no hook of it writes anything
   under the comm home. An agent that needs its own handle is started as
   its own row.
 - What that check does not see: a process reparented away from its agent; an
