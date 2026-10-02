@@ -3967,56 +3967,13 @@ fn pane_overlay_lines(reason: Option<String>, notice: Option<String>) -> Vec<Str
     reason.into_iter().chain(notice).collect()
 }
 
-/// ADR 0042 slice L1b fix 2: how many bytes of an incoming chunk fit in
-/// `queue_pane_pending_input`'s buffer, given it already holds
-/// `buffered_len` bytes and the whole buffer is capped at `cap` — pulled
-/// out so the truncation arithmetic is unit-testable without
-/// constructing a `State`. Saturating: a buffer already at or past `cap`
-/// (shouldn't happen, but not asserted on) has zero room, not a panic.
-fn pending_input_room(buffered_len: usize, incoming_len: usize, cap: usize) -> usize {
-    let room = cap.saturating_sub(buffered_len);
-    incoming_len.min(room)
-}
-
-/// Session-pane input held while `pane_feed == PaneFeed::Pending` (ADR 0042
-/// L1b fix 2), and the count a disconnect threw away (never replayed).
-#[derive(Default)]
-struct PanePendingInput {
-    /// For the attach to flush; capped at `TAKE_QUEUE_CAP`.
-    bytes: Vec<u8>,
-    /// Inputs in `bytes`, so a discard can say how many.
-    inputs: usize,
-    /// Inputs discarded this outage; > 0 paints the notice.
-    discarded: usize,
-}
-
-impl PanePendingInput {
-    fn queue(&mut self, b: &[u8]) {
-        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
-        let take = pending_input_room(self.bytes.len(), b.len(), cap);
-        self.bytes.extend_from_slice(&b[..take]);
-        self.inputs += 1;
-    }
-
-    fn discard(&mut self) {
-        self.discarded += self.inputs;
-        self.bytes.clear();
-        self.inputs = 0;
-    }
-
-    /// Hands the bytes to the attach; also ends the notice.
-    fn take(&mut self) -> Vec<u8> {
-        std::mem::take(self).bytes
-    }
-
-    /// Shown until the pane next attaches (`take`), so it outlives the outage.
-    fn notice(&self) -> Option<String> {
-        let n = self.discarded;
-        match n {
-            0 => None,
-            1 => Some("1 keystroke discarded during an outage, not sent".to_string()),
-            _ => Some(format!("{n} keystrokes discarded during an outage, not sent")),
-        }
+/// The agent pane's discarded-input notice: the frontend's own count plus
+/// the attach client's. Singular at one; `None` at none.
+fn pane_discard_notice(pane: usize, client: usize) -> Option<String> {
+    match pane + client {
+        0 => None,
+        1 => Some("1 keystroke discarded, not sent".to_string()),
+        n => Some(format!("{n} keystrokes discarded, not sent")),
     }
 }
 
@@ -4025,32 +3982,27 @@ mod pane_input_tests {
     use super::*;
 
     #[test]
-    fn pane_input_discard_counts_and_never_flushes() {
-        let mut q = PanePendingInput::default();
-        q.queue(b"a");
-        q.queue(b"b");
-        q.queue(b"c");
-        q.discard();
+    fn pane_discard_notice_counts_every_discarded_input() {
+        // The frontend's count (Pending-arm inputs, +1 each) plus the
+        // attach client's own count; absent at 0, singular at 1.
+        assert_eq!(pane_discard_notice(0, 0), None);
         assert_eq!(
-            q.notice().as_deref(),
-            Some("3 keystrokes discarded during an outage, not sent")
+            pane_discard_notice(1, 0).as_deref(),
+            Some("1 keystroke discarded, not sent")
         );
-        assert!(q.take().is_empty());
-    }
-
-    #[test]
-    fn pane_input_take_ends_the_outage() {
-        let mut q = PanePendingInput::default();
-        q.queue(b"a");
-        q.discard();
-        q.queue(b"x");
-        assert_eq!(q.take(), b"x");
-        assert_eq!(q.notice(), None);
+        assert_eq!(
+            pane_discard_notice(3, 0).as_deref(),
+            Some("3 keystrokes discarded, not sent")
+        );
+        assert_eq!(
+            pane_discard_notice(2, 2).as_deref(),
+            Some("4 keystrokes discarded, not sent")
+        );
     }
 
     #[test]
     fn pane_overlay_keeps_the_count_beside_any_reason() {
-        let n = || Some("2 keystrokes discarded during an outage, not sent".to_string());
+        let n = || Some("2 keystrokes discarded, not sent".to_string());
         assert_eq!(
             pane_overlay_lines(Some("dial failed".to_string()), n()),
             vec!["dial failed".to_string(), n().unwrap()]
@@ -4061,17 +4013,6 @@ mod pane_input_tests {
             vec!["dial failed".to_string()]
         );
         assert!(pane_overlay_lines(None, None).is_empty());
-    }
-
-    #[test]
-    fn pane_input_one_keystroke_is_singular() {
-        let mut q = PanePendingInput::default();
-        q.queue(b"a");
-        q.discard();
-        assert_eq!(
-            q.notice().as_deref(),
-            Some("1 keystroke discarded during an outage, not sent")
-        );
     }
 }
 
@@ -5318,18 +5259,12 @@ struct State {
     /// `Pending`: the very first attach is exactly as unresolved as any
     /// later switch.
     pane_feed: PaneFeed,
-    /// ADR 0042 slice L1b fix 2: input typed/pasted while `pane_feed ==
-    /// PaneFeed::Pending` — flushed through `send_input` once a capsule
-    /// attach resolves (`spawn_pane_attach_term` succeeds).
-    /// Cleared (not flushed) on every switch to a DIFFERENT target — input
-    /// buffered for the DEPARTING row must never reach whatever the new
-    /// one turns out to be. Capped at `sot_log::fe_client::TAKE_QUEUE_CAP`
-    /// (8 KiB, the same bound the take-transaction queue uses) — a
-    /// runaway paste while waiting must not grow unbounded. Discarded
-    /// (never replayed) when the pane's host disconnects, and input typed
-    /// while that host is down is discarded too; the count is shown in the
-    /// pane until the next attach takes the buffer.
-    pane_input: PanePendingInput,
+    /// Session-pane input discarded before the pane could take it: typed
+    /// while `pane_feed == PaneFeed::Pending`, or with no live client.
+    /// Never sent later. Cleared at the client's "attached" edge
+    /// (`pump_pane_attach_term`) and on a switch or reset of the row; the
+    /// pane's top line shows it plus the client's own count.
+    pane_inputs_discarded: usize,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).
@@ -6859,7 +6794,7 @@ impl State {
             pane_attach_episode_warnings: 0,
             pane_attach_presented: false,
             pane_feed: PaneFeed::Pending,
-            pane_input: PanePendingInput::default(),
+            pane_inputs_discarded: 0,
             term_size: None,
             repo_dir,
             relaunch_flag: Arc::new(std::sync::atomic::AtomicU8::new(0)),
@@ -10277,10 +10212,8 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        // ADR 0042 slice L1b fix 2: a switch always invalidates whatever
-        // was buffered for the DEPARTING target — it must never leak
-        // into the row we're about to select.
-        self.pane_input = PanePendingInput::default();
+        // A switch clears the departing row's discard count.
+        self.pane_inputs_discarded = 0;
         // ADR 0042 shrink round (rule A): the frontend ALWAYS asks the
         // daemon first — no more cache-hit fast path that attached
         // straight from a cached `workspace_runtime` entry. That fast
@@ -10512,43 +10445,10 @@ impl State {
         }
     }
 
-    /// ADR 0042 slice L1b fix 2: appends to the session pane's
-    /// pending-input buffer while `pane_feed == PaneFeed::Pending`,
-    /// capped at `sot_log::fe_client::TAKE_QUEUE_CAP` — the SAME bound
-    /// the take-transaction queue uses (reused, not reinvented: both are
-    /// the same shape of problem, input arriving before it's known where
-    /// it's allowed to go). Excess bytes are silently dropped, matching
-    /// the take queue's own cap behavior.
-    fn queue_pane_pending_input(&mut self, bytes: &[u8]) {
-        self.pane_input.queue(bytes);
-        if self.pane_host_down() {
-            self.pane_input.discard();
-        }
-    }
-
-    /// True while the session pane's host is known to be disconnected.
-    fn pane_host_down(&self) -> bool {
-        self.bl_pane_target
-            .as_ref()
-            .is_some_and(|(h, _)| self.host_connected.get(h) == Some(&false))
-    }
-
-    /// Flushes `pane_input` through the capsule client's own
-    /// `send_input` — call once `pane_feed` resolves to `Capsule`.
-    fn flush_pane_pending_input_to_capsule(&mut self) {
-        let bytes = self.pane_input.take();
-        if bytes.is_empty() {
-            return;
-        }
-        if let Some(t) = self.pane_attach_term.as_mut() {
-            t.send_input(&bytes);
-        }
-    }
-
     /// ADR 0042 slice L1b fix 2/3, narrowed post-notmux (every row is a
     /// capsule; there is no tmux fallback anymore): routes session-pane
-    /// input bytes to the capsule client's own `send_input`, or queues
-    /// in `pane_input` while resolution is still `Pending`. The
+    /// input bytes to the capsule client's own `send_input`, or counts them
+    /// as discarded while resolution is still `Pending`. The
     /// ONE routing point every input source (typed keystrokes, LLM-pane
     /// paste, ROI paste) shares, so a future source only has to call
     /// this rather than re-derive the branch.
@@ -10559,13 +10459,12 @@ impl State {
                     t.send_input(bytes);
                 } else {
                     // (a logic bug) `pane_feed` says Capsule but there's
-                    // no live client — never silently drop input, queue
-                    // it for whenever one attaches.
-                    self.queue_pane_pending_input(bytes);
+                    // no live client — count the drop, never silent.
+                    self.pane_inputs_discarded += 1;
                 }
             }
             PaneFeed::Pending => {
-                self.queue_pane_pending_input(bytes);
+                self.pane_inputs_discarded += 1;
             }
         }
     }
@@ -10660,6 +10559,7 @@ impl State {
         if status_after != status_before {
             if status_after == "attached" {
                 tracing::info!(since_request_ms, since_client_ms, "session pane: capsule attached");
+                self.pane_inputs_discarded = 0;
             } else {
                 self.pane_attach_episode_warnings += 1;
                 tracing::warn!(
@@ -13360,13 +13260,6 @@ impl State {
                     } // if event_host == self.active_host
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
-                    if self
-                        .bl_pane_target
-                        .as_ref()
-                        .is_some_and(|(h, _)| *h == event_host)
-                    {
-                        self.pane_input.discard();
-                    }
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
                     } else {
@@ -14977,7 +14870,6 @@ impl State {
                                 let (cols, rows) = self.pty_size.unwrap_or((80, 24));
                                 if self.spawn_pane_attach_term(&event_host, &target, cols, rows) {
                                     self.pane_feed = PaneFeed::Capsule;
-                                    self.flush_pane_pending_input_to_capsule();
                                     self.status =
                                         format!("attached BL → {target} (capsule, corrected)");
                                 } else {
@@ -15293,7 +15185,7 @@ impl State {
                                     .unwrap_or(false)
                             {
                                 self.pane_attach_term = None;
-                                self.pane_input = PanePendingInput::default();
+                                self.pane_inputs_discarded = 0;
                                 self.bl_pane_target = None;
                                 self.pane_feed = PaneFeed::Pending;
                             }
@@ -16635,7 +16527,13 @@ impl State {
         // client's own failure.
             self.pane_dial_error.as_deref(),
         );
-        let pane_overlay = pane_overlay_lines(pane_terminal_reason, self.pane_input.notice());
+        let pane_overlay = pane_overlay_lines(
+            pane_terminal_reason,
+            pane_discard_notice(
+                self.pane_inputs_discarded,
+                self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
+            ),
+        );
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
         // own parser being ready (`pump_pane_attach_term`'s "checkpoint
@@ -29964,22 +29862,6 @@ mod capsule_pane_tests {
     // `try_attach_capsule_pane` (ADR 0042 shrink round, rule A) — the
     // fast path was their only production call site, and once it was
     // gone they had none left.
-
-    #[test]
-    fn pending_input_room_caps_at_the_take_queue_bound() {
-        // ADR 0042 slice L1b fix 2: `queue_pane_pending_input` buffers
-        // input while `pane_feed == Pending`, capped at
-        // `sot_log::fe_client::TAKE_QUEUE_CAP` (the SAME bound the
-        // take-transaction queue uses) — this is the truncation math it
-        // runs, pulled out for a live-`State`-free test.
-        let cap = sot_log::fe_client::TAKE_QUEUE_CAP;
-        assert_eq!(pending_input_room(0, 100, cap), 100);
-        assert_eq!(pending_input_room(cap - 2, 100, cap), 2);
-        assert_eq!(pending_input_room(cap, 100, cap), 0);
-        // Saturating: a buffer somehow already PAST cap has zero room,
-        // not an underflow panic.
-        assert_eq!(pending_input_room(cap + 500, 100, cap), 0);
-    }
 
     /// BLOCKER (Codex review, lane B5 discharge): `lane_dial` must dial
     /// the SAME endpoint the control transport actually resolved for a
