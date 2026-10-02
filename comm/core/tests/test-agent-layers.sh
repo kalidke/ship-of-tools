@@ -14,6 +14,12 @@
 #      processes), then the child (a second agent between the first and the
 #      tool shell).
 #
+# A process whose identity names a row (a self file `<host>__<id>.txt`, or
+# SOT_WORKSPACE_ID with no self file) must also reach THAT row's capsule: the top,
+# another row's capsule and a capsule with an unreadable command line are refused
+# (rc 2); a process that names no row passes at the top and at any capsule. The
+# row cases run beneath `in_row` (lib-home-guard.sh), a capsule stand-in.
+#
 # HERMETIC: a temp $SOT_COMM_HOME, a pinned $SOT_COMM_TEST_HOST, per-handle
 # $SOT_COMM_SELF_FILEs — never the real ~/.sot-comm.
 #
@@ -207,6 +213,54 @@ wtbl 2 "a quoted TAB stays inside its argument, and the rest is read: two layers
 wtbl 2 "a quoted TAB against a space in the child: two layers" \
     "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A B\"" "node.exe${TAB}$WCJS \"A${TAB}B\"" "sot-capsule.exe${TAB}sot-capsule.exe run"
 
+# --- 1b2. the row rule: a process that names a row must reach that row's capsule ---
+R_ROW_TEXT="does not run inside that row's capsule"
+# rreq WANT DESC TEXT SELF WSID RECORD... : req with an identity set only inside its subshell
+# (SELF is a self file path, WSID a SOT_WORKSPACE_ID; empty sets neither).
+rreq() {
+    local want="$1" desc="$2" text="$3" self="$4" wsid="$5" res; shift 5; CHAIN=("$@")
+    res="$( [ -z "$self" ] || export SOT_COMM_SELF_FILE="$self"; [ -z "$wsid" ] || export SOT_WORKSPACE_ID="$wsid"
+            _sot_ancestor_chain() { local r; [ "${#CHAIN[@]}" -gt 0 ] || return 1; for r in "${CHAIN[@]}"; do printf '%s\n' "${r//|/$US}"; done
+                                    case "$r" in '!'*) ;; *) echo '!end' ;; esac; }
+            o="$(sot_require_agent)"; echo "rc=$?|$o" )"
+    case "$res" in "rc=$want|"*"$text"*) ok "row rule: $desc" ;; *) bad "row rule: $desc (want rc=$want and '$text', got: $res)" ;; esac
+}
+SA="$WORK/self/h__ws-a.txt"
+rreq 2 "a chain to the top, naming ws-a"                  "$R_ROW_TEXT" "$SA" "" bash claude
+rreq 2 "ws-b's leg, naming ws-a"                          "$R_ROW_TEXT" "$SA" "" bash claude "sot-capsule|run|/s/workspaces/ws-b/voyages/v1|v1|--cols|80"
+rreq 2 "a capsule with no arguments"                      "$R_ROW_TEXT" "$SA" "" bash claude sot-capsule
+rreq 2 "ws-a only after --"                               "$R_ROW_TEXT" "$SA" "" bash claude "sot-capsule|supervise|/s/workspaces/ws-b|--start|--|/s/workspaces/ws-a/voyages/v1"
+rreq 2 "a prefix id: ws-ab's leg for row ws-a"            "$R_ROW_TEXT" "$SA" "" bash claude "sot-capsule|run|/s/workspaces/ws-ab/voyages/v1|v1"
+rreq 2 "no self file, SOT_WORKSPACE_ID=ws-a, at the top"  "$R_ROW_TEXT" "" ws-a bash claude
+rreq 0 "ws-a's leg"                                       "" "$SA" "" bash claude "sot-capsule|run|/s/workspaces/ws-a/voyages/v1|v1|--cols|80"
+rreq 0 "ws-a's supervisor"                                "" "$SA" "" bash "sot-capsule|supervise|/s/workspaces/ws-a|--start|--|claude"
+rreq 0 "a ps-split path"                                  "" "$SA" "" bash claude "sot-capsule|run|/Users/a|b/.local/state/sot/workspaces/ws-a/voyages/v1|v1"
+rreq 0 "a backslash path"                                 "" "$SA" "" bash claude 'sot-capsule|run|C:\s\workspaces\ws-a\voyages\v1'
+rreq 0 "h__nopane.txt names no row, at the top"           "" "$WORK/self/h__nopane.txt" "" bash claude
+rreq 0 "self-x.txt with SOT_WORKSPACE_ID set names no row, at the top" "" "$WORK/self/self-x.txt" ws-a bash claude
+rreq 0 "nothing set, at the top"                          "" "" "" bash claude
+rreq 0 "self-x.txt names no row, inside ws-b's leg"       "" "$WORK/self/self-x.txt" "" bash claude "sot-capsule|run|/s/workspaces/ws-b/voyages/v1|v1"
+rreq 1 "two agents inside ws-a's leg"                     "has no comm identity" "$SA" "" bash codex bash claude "sot-capsule|run|/s/workspaces/ws-a/voyages/v1|v1"
+rreq 1 "two agents at the top with row ws-a"              "has no comm identity" "$SA" "" bash codex bash claude
+
+# rwinreq WANT DESC TEXT SELF WSID SOTD_RC LINE... : winreq with an identity set only inside its subshell.
+rwinreq() {
+    local want="$1" desc="$2" text="$3" self="$4" wsid="$5" src="$6" res; shift 6
+    printf '%s\n' "$@" > "$WORK/sotd-win.out"
+    printf '#!/bin/sh\n[ "$1" = ancestors ] || exit 9\ncat "%s"\nexit %s\n' "$WORK/sotd-win.out" "$src" > "$WORK/sotd-win"; chmod +x "$WORK/sotd-win"
+    res="$( [ -z "$self" ] || export SOT_COMM_SELF_FILE="$self"; [ -z "$wsid" ] || export SOT_WORKSPACE_ID="$wsid"
+            _sot_is_windows() { return 0; }; export SOTD_BIN="$WORK/sotd-win"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
+    case "$res" in "rc=$want|"*"$text"*) ok "sotd.exe row rule: $desc" ;; *) bad "sotd.exe row rule: $desc (want rc=$want and '$text', got: $res)" ;; esac
+}
+WSANDBOX=("bash.exe${TAB}bash.exe -c x" "bash.exe${TAB}bash.exe")
+rwinreq 2 "the sandbox gap: exit 0 and only bash.exe lines"  "$R_ROW_TEXT" "$SA" "" 0 "${WSANDBOX[@]}"
+rwinreq 0 "the same output with no row named (the sshd case)" "" "" "" 0 "${WSANDBOX[@]}"
+rwinreq 0 "a quoted leg under claude.exe"                    "" "$SA" "" 0 "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe" \
+    "sot-capsule.exe${TAB}\"C:\\p\\sot-capsule.exe\" run \"C:\\Users\\a b\\AppData\\Local\\sot\\workspaces\\ws-a\\voyages\\v1\" v1 --cols 80 --rows 24"
+rwinreq 2 "a capsule with an empty command line"             "$R_ROW_TEXT" "$SA" "" 0 "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe" "sot-capsule.exe${TAB}"
+rwinreq 2 "ws-b's leg"                                       "$R_ROW_TEXT" "$SA" "" 0 "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe" \
+    "sot-capsule.exe${TAB}\"C:\\p\\sot-capsule.exe\" run \"C:\\s\\workspaces\\ws-b\\voyages\\v1\" v1"
+
 # --- 1c. the two non-Linux parsers, as stdin filters (Linux walks /proc, so they run nowhere else) ---
 pipes() { tr "$US" '|' | tr '\n' ' ' | sed 's/ $//'; }
 eq "ps filter: a chain to the top, spaces become field breaks" \
@@ -249,6 +303,8 @@ chain() {
         child) F "${cap[@]}" bash "$WORK/fake.sh" claude hold.sh bash "$WORK/fake.sh" codex hold.sh "${tool[@]}" ;;
         npm)   F "${cap[@]}" bash "$WORK/fake.sh" node "$WORK/npm/codex" hold.sh "${tool[@]}" ;;
         bash)  F "${cap[@]}" bash hold.sh "${tool[@]}" ;;
+        # One agent beneath the stand-in for row $ROWID's capsule (lib-home-guard.sh).
+        rown)  in_row "$ROWID" bash "$WORK/fake.sh" claude hold.sh "${tool[@]}" ;;
         # An npm agent is `node <script>`; the script runs CMD in its own shell.
         # NODE_ARGS is node's argv after `node`; "$@" is CMD, which the script runs.
         nodechild) F "${cap[@]}" bash "$WORK/fake.sh" claude hold.sh node "${NODE_ARGS[@]}" "$@" ;;
@@ -565,6 +621,40 @@ stop_hook own
 has   "an old lib (rc 127): the Stop hook says so in a systemMessage" "$OUT" '"systemMessage":"sot-comm: '
 hasnt "an old lib (rc 127): the Stop hook does not block" "$OUT" '"decision"'
 ln -sfn "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"
+
+# --- the row rule, end to end: a process naming a row must run inside that row's capsule ---
+mkdir -p "$WORK/self"
+RA="row-a"; SELF_WA="$WORK/self/testhost__ws-a.txt"; CUR_A="$SOT_COMM_HOME/read/$RA.cursor"
+ROWID=ws-a; run rown "$SELF_WA" "$JOIN" --name "$RA" || true; [ "$RC" -eq 0 ] || { echo "FATAL: setup join $RA in its row: $OUT" >&2; exit 1; }
+run own "$SELF_PEER" "$SEND" "@$RA" "frame-row"; [ "$RC" -eq 0 ] || { echo "FATAL: setup send to $RA: $OUT" >&2; exit 1; }
+cur0="$(sum "$CUR_A")"
+ROWID=ws-b; run rown "$SELF_WA" "$POLL"
+eq  "row rule: poll beneath ws-b's capsule, naming ws-a, exits 1 (the library's rc 2)" "$RC" 1
+has "row rule: that refusal names the cause" "$OUT" "$R_ROW_TEXT"
+hasnt "row rule: that poll shows no frame" "$OUT" "frame-row"
+eq  "row rule: that poll leaves the cursor alone" "$(sum "$CUR_A")" "$cur0"
+ROWID=ws-a; run rown "$SELF_WA" "$POLL"
+eq  "row rule: poll beneath ws-a's capsule, naming ws-a, succeeds" "$RC" 0
+# An orphan: its shell exits at once, so no ws-a capsule is above it.
+ORC="$WORK/orphan.rc"; rm -f "${ORC:?}"
+( cd "$WORK" && export SOT_COMM_SELF_FILE="$SELF_WA" RCF && in_row ws-a bash -c '( sleep 1; "$@" > "$0.out" 2>&1; echo $? > "$0" ) < /dev/null > /dev/null 2>&1 & exit 0' "$ORC" "$POLL" ) > /dev/null 2>&1
+for ((i = 0; i < 100; i++)); do [ -s "$ORC" ] && break; sleep 0.1; done
+eq  "row rule: an orphan naming ws-a, reparented away from its capsule, exits 1 (the library's rc 2)" "$(cat "$ORC" 2>/dev/null)" 1
+has "row rule: the orphan's refusal names the cause" "$(cat "$ORC.out" 2>/dev/null)" "$R_ROW_TEXT"
+
+# --- the matrix runner's private copy of the probe row's self file ---------------
+SELF_P2="$WORK/self/testhost__ws-p2.txt"; PRIVD="$WORK/matrix-priv"; mkdir -p "$PRIVD"
+ROWID=ws-p2; run rown "$SELF_P2" "$JOIN" --name probe2-testhost || true; [ "$RC" -eq 0 ] || { echo "FATAL: setup join probe2-testhost: $OUT" >&2; exit 1; }
+PRIV="$( . "$SCRIPT_DIR/comm-matrix.sh" > /dev/null 2>&1; matrix_private_self "$SELF_P2" "$PRIVD" 2> /dev/null )"
+PINBOX="$SOT_COMM_HOME/inbox/$PEER.jsonl"; pin0="$(sum "$PINBOX")"
+ROWID=ws-dev; run rown "$SELF_P2" "$SEND" "@$PEER" "matrix-orig"
+eq  "matrix: sending from the developer's row with the probe row's own self file exits 1 (the library's rc 2)" "$RC" 1
+has "matrix: that refusal names the cause" "$OUT" "$R_ROW_TEXT"
+eq  "matrix: that send filed nothing" "$(sum "$PINBOX")" "$pin0"
+run rown "$PRIV" "$SEND" "@$PEER" "matrix-copy"
+eq  "matrix: sending with the private copy exits 0" "$RC" 0
+has "matrix: the private copy's send is filed" "$OUT" "filed -> @$PEER"
+has "matrix: the peer's inbox line carries the probe row as sender" "$(tail -n 1 "$PINBOX" 2>/dev/null)" "probe2-testhost"
 
 echo "agent layers: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

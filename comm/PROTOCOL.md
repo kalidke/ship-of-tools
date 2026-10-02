@@ -475,8 +475,7 @@ Monitor exists.
   `sotd.exe` that fails or is too old) is refused, not trusted. On Windows, an
   ancestor whose record cannot be opened, or whose creation time is after its
   child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
-  command line are refused. A reused pid means the real parent has exited, the
-  twin of reparenting. On Windows an unreadable command line is recorded as
+  command line are refused. On Windows an unreadable command line is recorded as
   arguments unknown, which equals nothing: a native agent so recorded never
   counts once with its node host, though a standalone one is one layer. On
   Windows every comm script that reads mail, sends, joins or stamps refuses
@@ -485,11 +484,31 @@ Monitor exists.
   despawn rows (`comm-probe.sh`'s included), and no hook of it writes anything
   under the comm home. An agent that needs its own handle is started as
   its own row.
-- What that check does not see: a process reparented away from its agent; an
-  agent whose name is not in the list; a macOS agent whose argv[0] contains a
-  space; on Windows, an agent above an ancestor whose record cannot be opened or
-  that was created after its child; and a shim that starts `node` under the
-  agent's own name (a volta-style shim), which may be refused instead. On macOS
+- A process whose identity names a row acts as that row's handle only if that
+  row's capsule is one of its ancestors. The identity names row `<id>` when its
+  pinned self file is named `<host>__<id>.txt` and `<id>` is not `nopane`. When
+  no self file is pinned, it names the row `SOT_WORKSPACE_ID` gives. A capsule is
+  that row's when one of its arguments before `--` (with `\` read as `/`) ends
+  in `/workspaces/<id>` or contains `/workspaces/<id>/voyages/`. The process is
+  refused, and nothing is read, sent or stamped, when its walk ends in any of
+  three ways: at the top, at another row's capsule, or at a capsule whose
+  command line cannot be read. So for a process that names a row, two kinds of
+  early stop no longer pass: being reparented away from the row, and, on
+  Windows, a walk that stops at an ancestor it cannot open (a sandboxed agent's
+  child may be unable to open its parent even under the same account) or at a
+  reused pid. Only a process that names no row may end its walk at the top,
+  which is how a session outside any row passes, including one under another
+  account's sshd. A private identity file for a process outside any row must not
+  be named `<host>__<id>.txt`.
+- What the check does not see: for a process that names no row, an agent above a
+  reparenting, or on Windows above an ancestor that cannot be opened or that was
+  created after its child; an agent whose name is not in the list; a macOS agent
+  whose argv[0] contains a space; a shim that starts `node` under the agent's own
+  name (a volta-style shim), which may be refused instead; and a second agent
+  that removes both `SOT_COMM_SELF_FILE` and `SOT_WORKSPACE_ID` from its
+  environment, which then falls to the host's shared no-pane identity. On macOS a
+  capsule binary installed under a path that holds a space is not recognised
+  (`ps` splits its argv[0]), so a process naming its row is refused there. On macOS
   the walk reads `ps`, which folds runs of white space, so a native agent started
   directly by its node host with arguments that differ only in white space counts
   as one layer with it; exact argv on macOS comes after 0.6.6. An argument that itself contains the

@@ -212,6 +212,14 @@ matrix_preflight() {
     echo
 }
 
+# The runner runs outside the probe row, so it pins a private copy of the row's
+# self file that names no row (PROTOCOL.md's row rule): SELF_FILE, copied to
+# DIR/matrix-self.txt; prints that path, or nothing and returns 1 when the copy fails.
+matrix_private_self() {  # SELF_FILE DIR
+    cp "$1" "$2/matrix-self.txt" 2>/dev/null || return 1
+    printf '%s\n' "$2/matrix-self.txt"
+}
+
 # Runs only when executed, not sourced (the hermetic test sources this for the
 # decision helpers above and must not send anything).
 [ "${BASH_SOURCE[0]}" = "${0}" ] || return 0
@@ -242,7 +250,9 @@ INBOX="$INBOX_DIR/$ME.jsonl"
 # moves into the row's own root. It has to be this row and no other: a handle
 # with no declared row on this box has nothing to file a remote box's reply,
 # so a private runner handle would make every inbound line fail for a reason
-# that has nothing to do with the path under test.
+# that has nothing to do with the path under test. It adopts the row's identity
+# through a private copy (matrix_private_self), since the runner is not inside
+# the row's capsule.
 matrix_self_file() {  # HANDLE -> path of the self file that names it
     local f
     for f in "$COMM_HOME/self"/*; do
@@ -261,7 +271,13 @@ MY_ROOT="$(sed -n '3p' "$SELF_FILE_PATH" 2>/dev/null)"; MY_ROOT="${MY_ROOT#root=
     echo "FATAL: @$ME's self file ($SELF_FILE_PATH) names no usable root" >&2
     exit 2
 }
-export SOT_COMM_SELF_FILE="$SELF_FILE_PATH"
+MATRIX_PRIV_DIR="$(mktemp -d)" || { echo "FATAL: mktemp failed" >&2; exit 2; }
+trap 'rm -rf "${MATRIX_PRIV_DIR:?}"' EXIT
+SOT_COMM_SELF_FILE="$(matrix_private_self "$SELF_FILE_PATH" "$MATRIX_PRIV_DIR")" || {
+    echo "FATAL: cannot copy @$ME's self file ($SELF_FILE_PATH)" >&2
+    exit 2
+}
+export SOT_COMM_SELF_FILE
 cd "$MY_ROOT" || exit 2
 
 matrix_preflight "$EXPECT" "$BOXES" "$SELF"

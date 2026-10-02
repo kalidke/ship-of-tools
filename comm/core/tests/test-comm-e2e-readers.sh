@@ -151,7 +151,7 @@ done
 # $D/proj (env -C), so every identity shares one project root.
 HANDLES=(e2e-here e2e-peer e2e-v3); SENDERS=(e2e-snd-here e2e-snd-peer)
 join() {  # NAME HOST-TAG
-    env -C "$D/proj" SOT_COMM_NAME="$1" SOT_COMM_SELF_FILE="$D/self/$2__ws-$1.txt" SOT_COMM_TEST_HOST="$2" \
+    in_row "ws-$1" env -C "$D/proj" SOT_COMM_NAME="$1" SOT_COMM_SELF_FILE="$D/self/$2__ws-$1.txt" SOT_COMM_TEST_HOST="$2" \
         bash "$D/bin/comm-join.sh" --name "$1" >/dev/null 2>&1 || { echo "FATAL: join of $1 failed" >&2; exit 1; }
 }
 for h in "${HANDLES[@]}"; do join "$h" e2e-reg; done
@@ -181,9 +181,12 @@ unset SOT_WORKSPACE_ID SOT_COMM_HOOKS
 now() { date +%s%3N; }
 jitter() { local ms=$(( $1 + RANDOM % $2 )); sleep "$((ms / 1000)).$(printf %03d $((ms % 1000)))"; }
 run() { env -C "$D/proj" "$@"; }
+# The identity names a row, so every gated call runs beneath a stand-in for that row's capsule.
+inrow() { local id="$1"; shift; ( exec -a sot-capsule bash -c 'shift; "$@"; exit $?' _ "/in-row/state/workspaces/$id/voyages/v0" "$@" ); }
+rrun() { inrow "ws-$H" env -C "$D/proj" "$@"; }   # run, beneath the row's capsule
 hook_once() {  # LABEL
     local s e rc out blk busy
-    s="$(now)"; out="$(printf '{}' | run timeout 30 bash "$D/bin/comm-status-idle.sh" 2>&1)"; rc=$?; e="$(now)"
+    s="$(now)"; out="$(printf '{}' | rrun timeout 30 bash "$D/bin/comm-status-idle.sh" 2>&1)"; rc=$?; e="$(now)"
     blk=0; busy=0
     case "$out" in *'"decision":"block"'*) blk=1 ;; esac
     case "$out" in *"is being written"*) busy=1 ;; esac
@@ -192,7 +195,7 @@ hook_once() {  # LABEL
 }
 poll_once() {  # LABEL
     local t rc out
-    out="$(run bash "$D/bin/comm-poll.sh" 2>&1)"; rc=$?; t="$(now)"
+    out="$(rrun bash "$D/bin/comm-poll.sh" 2>&1)"; rc=$?; t="$(now)"
     printf '%s rc=%s %s\n' "$t" "$rc" "$1" >> "$L/pollrc-$TAG.log"
     [ -z "$out" ] || printf '%s\n' "$out" | sed "s/^/$t /" >> "$L/pollout-$TAG.log"
     [ "$1" != final2 ] || [ -z "$out" ] || printf '%s\n' "$out" | sed "s/^/$t /" >> "$L/pollstrict-$TAG.log"
@@ -233,11 +236,13 @@ D="$1"; S="$2"; PACED="$3"; BURST="$4"
 E="$D/e2e"
 export SOT_COMM_HOME="$D" SOT_COMM_NAME="$S" SOT_COMM_SELF_FILE="$D/self/e2e-snd__ws-$S.txt" SOT_COMM_TEST_HOST=e2e-snd
 unset SOT_WORKSPACE_ID SOT_COMM_HOOKS
+# The identity names a row, so every gated call runs beneath a stand-in for that row's capsule.
+inrow() { local id="$1"; shift; ( exec -a sot-capsule bash -c 'shift; "$@"; exit $?' _ "/in-row/state/workspaces/$id/voyages/v0" "$@" ); }
 send_round() {  # PREFIX ROUND
     local h id out rc
     for h in e2e-here e2e-peer e2e-v3; do
         id="m-$S-$h-$1$2"
-        out="$(env -C "$D/proj" bash "$D/bin/comm-send.sh" "@$h" "$id" 2>&1)"; rc=$?
+        out="$(inrow "ws-$S" env -C "$D/proj" bash "$D/bin/comm-send.sh" "@$h" "$id" 2>&1)"; rc=$?
         case "$out" in *"filed -> @$h"*) [ "$rc" -eq 0 ] && st=filed || st=FAILED ;; *) st=FAILED ;; esac
         printf '%s %s %s %s %s\n' "$(date +%s%3N)" "$h" "$id" "$st" "$(printf '%s' "$out" | tr '\n' ' ')" >> "$D/log/send-$S.log"
     done
@@ -256,7 +261,9 @@ D="$1"; S="$2"; h="$3"; id="$4"
 export SOT_COMM_HOME="$D" SOT_COMM_NAME="$S" SOT_COMM_SELF_FILE="$D/self/e2e-snd__ws-$S.txt" SOT_COMM_TEST_HOST=e2e-snd
 unset SOT_WORKSPACE_ID SOT_COMM_HOOKS
 st="$(date +%s%3N)"
-out="$(env -C "$D/proj" bash "$D/bin/comm-send.sh" "@$h" "$id" 2>&1)"; rc=$?
+# The identity names a row, so every gated call runs beneath a stand-in for that row's capsule.
+inrow() { local id="$1"; shift; ( exec -a sot-capsule bash -c 'shift; "$@"; exit $?' _ "/in-row/state/workspaces/$id/voyages/v0" "$@" ); }
+out="$(inrow "ws-$S" env -C "$D/proj" bash "$D/bin/comm-send.sh" "@$h" "$id" 2>&1)"; rc=$?
 case "$out" in *"filed -> @$h"*) [ "$rc" -eq 0 ] && r=filed || r=FAILED ;; *) r=FAILED ;; esac
 printf '%s %s %s %s %s\n' "$st" "$(date +%s%3N)" "$h" "$id" "$r" >> "$D/log/strict-$S.log"
 EOF

@@ -1813,9 +1813,12 @@ _sot_identity_routable() {
 # sot-capsule, so a daemon that was started from an agent's shell puts nothing
 # above its rows. An ancestry that cannot be read in full before the capsule or
 # the top (a cap of 64, an unreadable record, a parse that did not finish) is
-# refused, never trusted. Not seen, by design: a process reparented away from
-# its agent, an agent not in the list, a macOS argv[0] holding a space, a shim
-# that hides the agent behind another name (PROTOCOL.md lists them).
+# refused, never trusted. A process that names a row (sot_capsule_workspace_id)
+# must reach THAT row's capsule, so reparenting away from the row, or a Windows
+# walk that stops early, refuses it. Still not seen, by design: for a process
+# that names no row, an agent above a reparenting; an agent not in the list, a
+# macOS argv[0] holding a space, a shim that hides the agent behind another name
+# (PROTOCOL.md lists them).
 _SOT_AGENTS=" claude codex "
 
 # _sot_ps_records ME — stdin: `ps -o pid= -o ppid= -o args=` lines. Prints ME's
@@ -1907,10 +1910,14 @@ _sot_ancestor_chain() {
     fi
 }
 
-# _sot_agent_layers — stdin: a chain from _sot_ancestor_chain. Prints one agent
+# _sot_agent_layers [ROW] — stdin: a chain from _sot_ancestor_chain. Prints one agent
 # name per layer, nearest first, stopping after the capsule's record, then `!ok`
 # when the chain was read to the capsule or the top; `!tree` and nothing more when
 # it ends short of both. Output without `!ok` is a filter that did not finish.
+# With a ROW id the end must be that row's capsule: the top prints `!norow`, and a
+# capsule none of whose arguments before `--` (with `\` read as `/`) ends in
+# /workspaces/ROW or holds /workspaces/ROW/voyages/ prints `!elsewhere`, both in
+# place of `!ok`. With no ROW the top and any capsule print `!ok`.
 # A record is an agent layer when argv[0] names one, or when argv[0] is node and
 # ANY argument names one (its basename minus .js/.mjs/.cjs) or lies in the npm
 # package of one. A node host and its native child count once when the child is
@@ -1919,7 +1926,8 @@ _sot_ancestor_chain() {
 # command line that could not be read) never counts once with its host, though a
 # standalone one still counts as one layer.
 _sot_agent_layers() {
-    awk -F "$(printf '\037')" -v agents="$_SOT_AGENTS" -v unk="$(printf '\036')" '
+    _SOT_ROW="${1:-}" awk -F "$(printf '\037')" -v agents="$_SOT_AGENTS" -v unk="$(printf '\036')" '
+        BEGIN { row = ENVIRON["_SOT_ROW"] }
         function nm(w) { sub(/^.*[\/\\]/, "", w); sub(/^-/, "", w); w = tolower(w); sub(/\.exe$/, "", w); return w }
         function agentof(a,   p, b) {
             p = a; gsub(/\\/, "/", p)
@@ -1928,7 +1936,15 @@ _sot_agent_layers() {
             if (index(p, "@anthropic-ai/claude-code") > 0) return "claude"
             if (index(p, "@openai/codex") > 0) return "codex"
             return "" }
-        /^!end$/ { fin = 1; print "!ok"; exit }
+        function ofrow(   i, a, k) {
+            k = "/workspaces/" row
+            for (i = 2; i <= NF; i++) {
+                if ($i == "--") break
+                a = $i; gsub(/\\/, "/", a)
+                if (length(a) >= length(k) && substr(a, length(a) - length(k) + 1) == k) return 1
+                if (index(a, k "/voyages/") > 0) return 1 }
+            return 0 }
+        /^!end$/ { fin = 1; print (row == "" ? "!ok" : "!norow"); exit }
         /^!/ { fin = 1; print "!tree"; exit }
         { w0 = nm($1); n = ""; kind = "native"; from = 2
           if (w0 == "node") {
@@ -1940,28 +1956,38 @@ _sot_agent_layers() {
           unknown = (kind == "native" && $2 == unk)
           if (agent && !(kind == "node" && pkind == "native" && pagent && !punk && pn == n && pafter == after)) print n
           pkind = kind; pn = n; pagent = agent; pafter = after; punk = unknown
-          if (w0 == "sot-capsule") { fin = 1; print "!ok"; exit } }
+          if (w0 == "sot-capsule") { fin = 1; print (row == "" || ofrow() ? "!ok" : "!elsewhere"); exit } }
         END { if (!fin) print "!tree" }'
 }
 
 # sot_require_agent — 0 when this process may act as its row's handle. Otherwise
 # prints ONE reason on stdout, the way sot_require_routable_identity does, and
 # returns 1 for a child (a second agent) or 2 for an ancestry that cannot be read
-# in full: it cannot be shown to be the session's own agent.
+# in full (it cannot be shown to be the session's own agent) or for a process that
+# names a row it does not run inside (its walk ends at the top or at another
+# capsule). Layers are judged first: a child is 1 whatever the row verdict.
 sot_require_agent() {
-    local chain layers l n=0 ok=0 inner="" outer=""
+    local chain layers l n=0 ok=0 inner="" outer="" row="" away=0
     chain="$(_sot_ancestor_chain)" || { _sot_agent_unreadable "$chain"; return 2; }
-    layers="$(printf '%s\n' "$chain" | _sot_agent_layers)"
+    row="$(sot_capsule_workspace_id)" || row=""
+    layers="$(printf '%s\n' "$chain" | _sot_agent_layers "$row")"
     while IFS= read -r l; do
         [ -n "$l" ] || continue
         [ "$l" != "!tree" ] || { _sot_agent_unreadable; return 2; }
         [ "$l" != "!ok" ] || { ok=1; continue; }
+        case "$l" in '!norow'|'!elsewhere') ok=1; away=1; continue ;; esac
         n=$((n + 1)); [ -n "$inner" ] || inner="$l"; outer="$l"
     done <<< "$layers"
     [ "$ok" = 1 ] || { _sot_agent_unreadable; return 2; }
-    [ "$n" -le 1 ] && return 0
-    echo "this process runs under $inner, started inside $outer's session, so it has no comm identity — nothing was read, sent or stamped; do not retry or join: an agent that needs its own handle is started as its own row"
-    return 1
+    if [ "$n" -gt 1 ]; then
+        echo "this process runs under $inner, started inside $outer's session, so it has no comm identity — nothing was read, sent or stamped; do not retry or join: an agent that needs its own handle is started as its own row"
+        return 1
+    fi
+    if [ "$away" = 1 ]; then
+        echo "this process names row $row but does not run inside that row's capsule, so it has no comm identity; nothing was read, sent or stamped; start it inside the row, or as its own row"
+        return 2
+    fi
+    return 0
 }
 # _sot_agent_unreadable [CHAIN_OUTPUT] — the reason; a sotd.exe failure is named.
 _sot_agent_unreadable() {
