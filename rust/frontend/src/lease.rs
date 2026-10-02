@@ -640,6 +640,113 @@ mod tests {
         assert_eq!(step, LeaveStep::Show(vec![(host.clone(), 3)]));
     }
 
+    /// A daemon that grants, logs the leave frame and then `eof` when the
+    /// stream ends, and replies to the leave after `delay` (never when None).
+    fn leave_fake(
+        listener: interprocess::local_socket::tokio::Listener,
+        delay: Option<Duration>,
+        not_ended: u32,
+    ) -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>) {
+        let log = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let replied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (l, r) = (log.clone(), replied.clone());
+        tokio::spawn(async move {
+            let conn = listener.accept().await.unwrap();
+            let (rx, mut tx) = conn.split();
+            let mut rx = codec::buffered(rx);
+            let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            let granted = serde_json::json!({"outcome": "granted"});
+            codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
+            let (leaving, _) = codec::read_frame(&mut rx).await.unwrap();
+            l.lock().unwrap().push(format!("{} {}", leaving.op, leaving.payload));
+            if let Some(d) = delay {
+                tokio::time::sleep(d).await;
+                r.store(true, Ordering::SeqCst);
+                let res = serde_json::json!({"not_ended": not_ended});
+                codec::write_frame(&mut tx, &Frame::res(leaving.id, op::FE_LEAVING, res), None).await.unwrap();
+            }
+            while codec::read_frame(&mut rx).await.is_ok() {}
+            l.lock().unwrap().push("eof".to_string());
+        });
+        (log, replied)
+    }
+
+    /// Poll the way the event loop does until the step is not a wait.
+    async fn poll_out(leaving: &mut Leaving) -> LeaveStep {
+        loop {
+            let step = leaving.poll(Instant::now());
+            if !matches!(step, LeaveStep::Wait(_)) {
+                return step;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    async fn leave_is_logged(log: &Arc<std::sync::Mutex<Vec<String>>>) {
+        for _ in 0..100 {
+            if !log.lock().unwrap().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn keep_reaches_the_daemon_before_eof() {
+        let (listener, path) = bind("keepleave");
+        let (log, replied) = leave_fake(listener, Some(Duration::from_millis(300)), 0);
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)));
+        leave_is_logged(&log).await;
+        {
+            let seen = log.lock().unwrap();
+            assert_eq!(seen.len(), 1, "the leave line reaches the daemon before any eof: {seen:?}");
+            assert!(seen[0].starts_with(op::FE_LEAVING) && seen[0].contains(r#""intent":"keep""#), "{seen:?}");
+        }
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "no reply yet");
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Exit);
+        assert!(replied.load(Ordering::SeqCst), "done only after the reply");
+        drop((leaving, leases));
+    }
+
+    #[tokio::test]
+    async fn close_waits_for_its_reply() {
+        let (listener, path) = bind("closeleave");
+        let (log, replied) = leave_fake(listener, Some(Duration::from_millis(300)), 0);
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)));
+        leave_is_logged(&log).await;
+        {
+            let seen = log.lock().unwrap();
+            assert_eq!(seen.len(), 1, "the leave line reaches the daemon before any eof: {seen:?}");
+            assert!(seen[0].starts_with(op::FE_LEAVING) && seen[0].contains(r#""intent":"close""#), "{seen:?}");
+        }
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "no reply yet");
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Exit);
+        assert!(replied.load(Ordering::SeqCst), "done only after the reply");
+        drop((leaving, leases));
+
+        // A withheld reply ends the wait only at the close-ack bound (shortened here).
+        let (listener, path) = bind("closenoreply");
+        let (_log, replied) = leave_fake(listener, None, 0);
+        let leases = Leases::new(false, vec![host.clone()]);
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        let start = Instant::now();
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, start).unwrap();
+        leaving.deadline = start + Duration::from_millis(400);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "waits inside the bound");
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Exit);
+        assert!(start.elapsed() >= Duration::from_millis(400), "done only once the bound passed");
+        assert!(!replied.load(Ordering::SeqCst));
+    }
+
     // PIN, NOT FAIL-FIRST: interprocess 2.4.2 already creates the socket
     // SOCK_CLOEXEC (os/unix/c_wrappers.rs:177), so this passed on its first
     // run. On Windows the pipe client handle is non-inheritable because
