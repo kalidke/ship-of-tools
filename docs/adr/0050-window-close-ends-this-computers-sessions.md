@@ -62,7 +62,8 @@ When intents arrive in order on one lease, the latest wins.
 - Any granted lease clears a handover; a handover that expires with no lease held is a
   shutdown.
 - `fe.leaving{close}` from the last holder is answered after the shutdown, with the count
-  of rows that could not be ended; every other `fe.leaving` is answered at once with zero.
+  of rows not ended, including any no window has yet acknowledged; every other
+  `fe.leaving` is answered at once with zero.
   `fe.notice_seen{n}` clears the recorded count iff it equals `n`.
 - Every deadline is wall-clock unix milliseconds, so the handover deadline survives a
   restart; one 1 s ticker checks expiry.
@@ -73,13 +74,14 @@ In this order: a backstop thread sleeps `SHUTDOWN_BOUND` (120 s) and exits 1 if 
 process is still alive, leaving the next start to finish the job; the record is marked
 closing and new leases are refused, the listener dropped and the socket unlinked, before
 any row is touched; the run gate closes and in-flight starts drain, until the rows
-deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every row and the drawer end
-without resuming anything, retrying a kept row once a second to that same deadline; the
+deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
+drawer end without resuming anything, retrying a kept row once a second to that same
+deadline, and a row of any other runtime is left running and counted not ended; the
 daemon's own children are signalled and given 3 s; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten; rows not ended stay registered and running, and are counted. The product
-never runs `pkill`.
+never runs `pkill` or `tmux kill-server`.
 
 Exit codes: 0 is a requested shutdown and stays down; 75 is an update restart and starts
 again; 1 is a failure (lock timeout or refuse-live). The bounds chain is
@@ -116,9 +118,8 @@ read by every end, a startup Cleanup included.
    deadline plans Cleanup; a handover in the future, or recorded holders, plans a pending
    window; only `not_ended` or `forget` resumes. The plan is a pure function of the
    record, the clock and the boot identity; it takes no process-liveness input.
-3. **Cleanup** ends the registered rows without resuming them (deadline `SHUTDOWN_BOUND`),
-   writes the record, then resumes what remains: the anchor and the not-ended rows. The
-   daemon stays up; a start never exits on a recorded close, and zero sessions is a valid
+3. **Cleanup** ends the registered rows without resuming them (deadline `SHUTDOWN_BOUND`)
+   and writes the record. The daemon stays up; a start never exits on a recorded close, and zero sessions is a valid
    start.
 4. **A8 is lite.** When holders are recorded, the daemon resumes at once and arms the
    persisted handover deadline (`HANDOVER_BOUND`, 60 s). No lease by that deadline means a
@@ -180,12 +181,10 @@ connection is the only handle.
   `lease_end_while_data_conn_busy`, `non_lease_fe_never_decides`,
   `fast_reopen_never_reaches_dying_daemon`, `closing_flag_spans_shutdown`,
   `shutdown_bound_is_end_to_end`.
-- (b) Ten start tests are not built: `unremovable_registration_is_never_resumed`,
-  `cleanup_interrupted_by_kill_never_resumes`, `end_ids_refused_by_gate`,
-  `end_id_leaves_only_with_its_end_record`, `not_ended_after_bound_is_counted`,
-  `recreate_of_held_back_row_is_refused_and_leaves_it`,
+- (b) Six start tests are not built: `unremovable_registration_is_never_resumed`,
+  `cleanup_interrupted_by_kill_never_resumes`, `not_ended_after_bound_is_counted`,
   `restart_with_live_unrelated_pid_still_cleans_up`, `not_ended_survives_unacked_lease`,
-  `new_row_starts_while_old_rows_are_held_back`, `converge_lease_survives_daemon_restart`.
+  `converge_lease_survives_daemon_restart`.
 - (c) The create gate keeps the id, and the rollback of a failed create can remove a
   pre-existing row. This is a limit only because the start has no held-back state.
 - (d) `second_daemon_refuses_live` was not run on Windows.

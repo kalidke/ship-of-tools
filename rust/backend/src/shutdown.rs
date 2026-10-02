@@ -2,10 +2,11 @@
 //! and the signal that takes the daemon's own children down with it.
 //!
 //! [`end_rows`] ends every capsule row and the drawer by one deadline,
-//! retrying a refused end once per second; what it could not end is
-//! counted, never guessed. [`fired`] is the one process-wide signal every
-//! child owner selects on, because `kill_on_drop` does not run at
-//! `process::exit`; [`ChildGuard`] counts the children still alive.
+//! retrying a refused end once per second; any other row, and what it
+//! could not end, is counted, never guessed. [`fired`] is the one
+//! process-wide signal every child owner selects on, because
+//! `kill_on_drop` does not run at `process::exit`; [`ChildGuard`] counts
+//! the children still alive.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -78,7 +79,7 @@ pub(crate) async fn run(
     }
 
     let report = match sot_log::state_dir::sot_state_dir() {
-        Some(state_root) => end_rows(capsule_rows(&workspaces), &workspaces, &ws_events, &state_root, rows_deadline).await,
+        Some(state_root) => end_rows(workspaces.list(), &workspaces, &ws_events, &state_root, rows_deadline).await,
         None => EndReport::default(),
     };
 
@@ -132,6 +133,8 @@ enum Ended {
 /// resuming any: concurrently at `resume_all`'s limit, each
 /// retried while refused until `deadline`. An end still running at the
 /// deadline is abandoned and counted not ended; it dies with the process.
+/// A row of any runtime but capsule is counted not ended and never
+/// touched: the product never runs `pkill` or `tmux kill-server`.
 pub(crate) async fn end_rows(
     rows: Vec<Arc<Workspace>>,
     workspaces: &Workspaces,
@@ -147,6 +150,10 @@ pub(crate) async fn end_rows(
         let is_anchor = anchor.as_deref() == Some(ws.workspace_id.as_str());
         let (limit, workspaces, ws_events) = (limit.clone(), workspaces.clone(), ws_events.clone());
         joins.push((ws.workspace_id.clone(), tokio::spawn(async move {
+            if ws.runtime != "capsule" {
+                tracing::warn!(workspace_id = %ws.workspace_id, runtime = %ws.runtime, "window closed: a row this end cannot end; it stays registered and running");
+                return Ended::Not;
+            }
             let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
                 return Ended::Not;
             };
@@ -182,12 +189,6 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
         }
     }
     report
-}
-
-/// Every capsule row registered now: an end's targets, listed by its
-/// caller so a row registered later is never this end's.
-pub(crate) fn capsule_rows(workspaces: &Workspaces) -> Vec<Arc<Workspace>> {
-    workspaces.list().into_iter().filter(|ws| ws.runtime == "capsule").collect()
 }
 
 /// The drawer is a target iff its pointer exists in the state root (#17).
@@ -463,16 +464,6 @@ mod tests {
     #[test]
     fn drawer_is_an_end_target() {
         let root = tempfile::tempdir().expect("tempdir");
-        let reg = Workspaces::new();
-        let mut row = Workspace::from_label("cap", PathBuf::from("/p/cap"), false, "none".into(), String::new(), String::new());
-        row.runtime = "capsule".to_string();
-        let row = reg.insert(row);
-        let mut other = Workspace::from_label("tm", PathBuf::from("/p/tm"), false, "none".into(), String::new(), String::new());
-        other.runtime = "tmux".to_string();
-        reg.insert(other);
-
-        let rows = capsule_rows(&reg);
-        assert_eq!(rows.iter().map(|w| w.workspace_id.clone()).collect::<Vec<_>>(), vec![row.workspace_id.clone()]);
         assert!(!drawer_is_target(root.path()), "no pointer, no drawer to end");
 
         std::fs::write(sot_log::pointer::pointer_path(root.path()), "x").expect("pointer");
@@ -512,6 +503,18 @@ mod tests {
             .await
             .expect("end_rows did not return by its deadline");
         assert_eq!(report, EndReport { ended: vec!["done".into()], not_ended: 1, forget: Vec::new() });
+    }
+
+    #[tokio::test]
+    async fn non_capsule_row_is_counted_not_ended() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let reg = Workspaces::new();
+        let mut row = Workspace::from_label("tm", PathBuf::from("/p/tm"), false, "none".into(), String::new(), String::new());
+        row.runtime = "tmux".to_string();
+        reg.insert(row);
+        let (events, _rx) = broadcast::channel(4);
+        let report = end_rows(reg.list(), &reg, &events, root.path(), Instant::now() + Duration::from_secs(3)).await;
+        assert_eq!(report.not_ended, 1, "a row the shutdown cannot end was not counted");
     }
 
     #[tokio::test]

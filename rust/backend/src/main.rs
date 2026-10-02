@@ -31,8 +31,6 @@ mod http_serve;
 mod julia;
 mod kernel;
 mod lane_bridge;
-// The lease core lands before the accept loop and start that call it.
-#[allow(dead_code)]
 mod lease;
 mod mathjax;
 mod monitor;
@@ -47,8 +45,6 @@ mod repl;
 mod server;
 mod session;
 mod session_state;
-// The end and the child signal land before the shutdown that calls them.
-#[allow(dead_code)]
 mod shutdown;
 mod site_serve;
 mod startup;
