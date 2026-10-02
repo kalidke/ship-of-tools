@@ -54,6 +54,7 @@ fn sotd_on(env: &Env, extra: &[(&str, &str)]) -> tokio::process::Command {
 
 #[tokio::test]
 async fn second_daemon_refuses_live() {
+    let _serial = SERIAL.lock().await;
     let env = Env::new("lockl");
     env.spawn_sotd();
     poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "the first daemon to accept").await;
@@ -70,6 +71,7 @@ async fn second_daemon_refuses_live() {
 
 #[tokio::test]
 async fn second_daemon_waits_for_lock() {
+    let _serial = SERIAL.lock().await;
     let env = Env::new("lockw");
     std::fs::create_dir_all(state_dir(&env)).expect("create the state dir");
     let lock = sot_log::fence::try_lock_daemon(&state_dir(&env))
@@ -122,6 +124,7 @@ async fn second_daemon_waits_for_lock() {
 
 #[tokio::test]
 async fn daemon_lock_timeout_exits_1() {
+    let _serial = SERIAL.lock().await;
     let env = Env::new("lockt");
     std::fs::create_dir_all(state_dir(&env)).expect("create the state dir");
     let _lock = sot_log::fence::try_lock_daemon(&state_dir(&env))
@@ -147,7 +150,7 @@ async fn daemon_lock_timeout_exits_1() {
 const EXIT_WITHIN: Duration = Duration::from_secs(60);
 
 /// `Env::new` points this process's `SOT_RUNTIME_DIR` at its own dir, and
-/// the tests below read rows through it: one at a time.
+/// every test reads rows through it: each takes this before `Env::new`.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Not a test of its own: the window the tests below spawn

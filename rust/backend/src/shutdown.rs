@@ -78,7 +78,7 @@ pub(crate) async fn run(
     }
 
     let report = match sot_log::state_dir::sot_state_dir() {
-        Some(state_root) => end_rows(&workspaces, &ws_events, &state_root, rows_deadline).await,
+        Some(state_root) => end_rows(capsule_rows(&workspaces), &workspaces, &ws_events, &state_root, rows_deadline).await,
         None => EndReport::default(),
     };
 
@@ -128,17 +128,18 @@ enum Ended {
     Not,
 }
 
-/// End every capsule row, and the drawer iff its pointer exists (#17),
-/// without resuming any: concurrently at `resume_all`'s limit, each
+/// End `rows`, and the drawer iff its pointer exists (#17), without
+/// resuming any: concurrently at `resume_all`'s limit, each
 /// retried while refused until `deadline`. An end still running at the
 /// deadline is abandoned and counted not ended; it dies with the process.
 pub(crate) async fn end_rows(
+    rows: Vec<Arc<Workspace>>,
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
     state_root: &Path,
     deadline: Instant,
 ) -> EndReport {
-    let (rows, drawer) = targets(workspaces, state_root);
+    let drawer = drawer_is_target(state_root);
     let anchor = workspaces.default_id();
     let limit = Arc::new(tokio::sync::Semaphore::new(crate::capsule_workspace::LANE_CONCURRENCY));
     let mut joins = Vec::with_capacity(rows.len() + 1);
@@ -183,11 +184,15 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
     report
 }
 
-/// Every capsule row, and whether the drawer is a target: it is iff its
-/// pointer exists in the state root (#17).
-fn targets(workspaces: &Workspaces, state_root: &Path) -> (Vec<Arc<Workspace>>, bool) {
-    let rows = workspaces.list().into_iter().filter(|ws| ws.runtime == "capsule").collect();
-    (rows, sot_log::pointer::pointer_path(state_root).is_file())
+/// Every capsule row registered now: an end's targets, listed by its
+/// caller so a row registered later is never this end's.
+pub(crate) fn capsule_rows(workspaces: &Workspaces) -> Vec<Arc<Workspace>> {
+    workspaces.list().into_iter().filter(|ws| ws.runtime == "capsule").collect()
+}
+
+/// The drawer is a target iff its pointer exists in the state root (#17).
+fn drawer_is_target(state_root: &Path) -> bool {
+    sot_log::pointer::pointer_path(state_root).is_file()
 }
 
 /// One row, as `workspace.destroy` ends it but with no resume first (#11).
@@ -466,13 +471,12 @@ mod tests {
         other.runtime = "tmux".to_string();
         reg.insert(other);
 
-        let (rows, drawer) = targets(&reg, root.path());
+        let rows = capsule_rows(&reg);
         assert_eq!(rows.iter().map(|w| w.workspace_id.clone()).collect::<Vec<_>>(), vec![row.workspace_id.clone()]);
-        assert!(!drawer, "no pointer, no drawer to end");
+        assert!(!drawer_is_target(root.path()), "no pointer, no drawer to end");
 
         std::fs::write(sot_log::pointer::pointer_path(root.path()), "x").expect("pointer");
-        let (_, drawer) = targets(&reg, root.path());
-        assert!(drawer, "a drawer pointer makes the drawer an end target");
+        assert!(drawer_is_target(root.path()), "a drawer pointer makes the drawer an end target");
     }
 
     #[tokio::test(start_paused = true)]

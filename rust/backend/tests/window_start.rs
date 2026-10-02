@@ -48,14 +48,19 @@ fn read_record(env: &Env) -> Option<serde_json::Value> {
 
 /// A record as a shutdown's step 1 leaves it: `closing`, this boot.
 fn write_closing_record(env: &Env) {
+    write_record(env, true, &[]);
+}
+
+/// A record of this boot with no holder and no deadline.
+fn write_record(env: &Env, closing: bool, forget: &[&str]) {
     let rec = serde_json::json!({
         "v": 1,
         "boot": sot_log::challenge::boot_identity().unwrap_or_default(),
         "holders": [],
         "handover_until_ms": null,
-        "closing": true,
+        "closing": closing,
         "not_ended": 0,
-        "forget": [],
+        "forget": forget,
     });
     std::fs::create_dir_all(state_dir(env)).unwrap();
     std::fs::write(record_path(env), serde_json::to_vec(&rec).unwrap()).unwrap();
@@ -272,6 +277,36 @@ async fn startup_cleanup_never_resumes() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_ended_and_forgotten(&env, &row, "a closing record over a dead capsule").await;
+    env.kill_daemon_bounded().await;
+}
+
+/// E4 (e): a row the record says to forget is dropped at every start,
+/// before any resume, whatever the plan.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn forgotten_rows_never_resume() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("forget");
+    env.spawn_sotd();
+    let row = ready_row(&env, "forget-row", None).await;
+    env.kill_daemon_bounded().await;
+    kill_row_capsule(&row);
+    write_record(&env, false, &[&row.id]);
+
+    env.spawn_sotd();
+    let listed = find_row(&workspace_list(&env).await, &row.id).is_some();
+    let legs = row_legs(&row);
+    let until = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < until {
+        assert!(
+            !support::any_process_matches(&legs),
+            "a start resumed forgotten row {}: a sot-capsule appeared for its state dir",
+            row.id
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!listed, "the start still registers forgotten row {}", row.id);
+    assert!(!row_toml(&env, &row.slug).exists(), "forgotten row {}'s toml remains", row.id);
     env.kill_daemon_bounded().await;
 }
 

@@ -66,10 +66,6 @@ When intents arrive in order on one lease, the latest wins.
   `fe.notice_seen{n}` clears the recorded count iff it equals `n`.
 - Every deadline is wall-clock unix milliseconds, so the handover deadline survives a
   restart; one 1 s ticker checks expiry.
-- A recorded holder that has not re-leased since this start counts as present, not last,
-  until the persisted hold deadline. A `Close` from the last live lease while one is
-  awaited is deferred and logged; at the deadline, with no lease held, it is a shutdown.
-  A lease granted before then cancels it (ruling a).
 
 ### Shutdown
 
@@ -94,8 +90,8 @@ successor waits for its lock.
 ### The record, `held.json`
 
 A small file in the daemon's state root, written by tmp file, fsync and rename under the
-lease mutex: the writing daemon's boot, the live holders, the handover and hold
-deadlines, `closing`, the `not_ended` count and the `forget` list (ids that ended but
+lease mutex: the writing daemon's boot, the live holders, the handover
+deadline, `closing`, the `not_ended` count and the `forget` list (ids that ended but
 whose registration file could not be removed). It exists iff some field is non-empty or
 true, so one window's `Keep` or `Close` never deletes another's holder entry. On Unix the
 parent directory is synced after the rename and after the delete. On Windows the replace
@@ -116,7 +112,7 @@ read by every end, a startup Cleanup included.
    path. With no state root it logs a warning and runs unfenced, with no record.
 2. After the scan and the default-row seed, it reads the record, applies `forget`, and
    plans: no record resumes; an unreadable record, an unknown version, `closing`, a boot
-   that differs from the daemon's own (both non-empty), or a passed handover or hold
+   that differs from the daemon's own (both non-empty), or a passed handover
    deadline plans Cleanup; a handover in the future, or recorded holders, plans a pending
    window; only `not_ended` or `forget` resumes. The plan is a pure function of the
    record, the clock and the boot identity; it takes no process-liveness input.
@@ -131,6 +127,7 @@ read by every end, a startup Cleanup included.
    that says closing or names another boot. A kill during Cleanup therefore re-runs
    Cleanup, which fails toward close. This replaces an explicit `end` field in the record
    that an earlier draft carried; no such field exists.
+   Every startup Cleanup, whatever its cause, keeps the record moving only toward close until `finish_cleanup`.
 6. A not-ended count above zero is sent with every grant until one window acknowledges it.
 
 ### What the window and the launchers do

@@ -237,9 +237,15 @@ impl Leases {
         now_ms: u64,
     ) -> (Self, mpsc::UnboundedReceiver<StartEvent>) {
         let (starts, events) = mpsc::unbounded_channel();
-        let startup_cleanup = record.as_deref().is_some_and(|path| {
-            startup_plan(&read_record(path), own_boot.as_deref().ok_or(()), now_ms) == StartPlan::Cleanup
-        });
+        let read = record.as_deref().map(read_record);
+        let startup_cleanup = read
+            .as_ref()
+            .is_some_and(|read| startup_plan(read, own_boot.as_deref().ok_or(()), now_ms) == StartPlan::Cleanup);
+        // The count survives a restart until a window acks it.
+        let not_ended = match &read {
+            Some(Ok(Some(rec))) => rec.not_ended,
+            _ => 0,
+        };
         let state = State {
             own_boot,
             path: record,
@@ -248,7 +254,7 @@ impl Leases {
             handover_until_ms: None,
             pending_until_ms: None,
             phase: Phase::Open,
-            not_ended: 0,
+            not_ended,
             forget: Vec::new(),
             closer_waits: false,
             startup_cleanup,
@@ -416,13 +422,14 @@ impl Leases {
         written
     }
 
-    /// The end of a startup Cleanup: its report written as the record. It
-    /// never touches the phase, so a shutdown that began during the
-    /// Cleanup stays `closing` until its own step 5.
+    /// The end of a startup Cleanup: its report written as the record, its
+    /// count added to the one the start loaded. It never touches the
+    /// phase, so a shutdown that began during the Cleanup stays `closing`
+    /// until its own step 5.
     pub(crate) fn finish_cleanup(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
         st.startup_cleanup = false;
-        st.not_ended = not_ended;
+        st.not_ended = st.not_ended.saturating_add(not_ended);
         st.forget = forget;
         st.persist()
     }
@@ -903,6 +910,22 @@ mod tests {
     }
 
     #[test]
+    fn not_ended_survives_restart_until_acked() {
+        let f = restart(&HeldRecord { not_ended: 3, ..empty() });
+        f.grant(&id(1));
+        assert_eq!(f.leases.notice(), 3, "the first grant after a restart lost the record's not_ended");
+        assert_eq!(f.on_disk().map(|r| r.not_ended), Some(3), "the first grant's record lost the not_ended count");
+        f.leases.notice_seen(3).unwrap();
+        assert_eq!(f.leases.notice(), 0, "an ack of the loaded count did not clear it");
+        assert_eq!(f.on_disk().map(|r| r.not_ended), Some(0));
+
+        let f = restart(&HeldRecord { closing: true, not_ended: 3, ..empty() });
+        f.leases.finish_cleanup(2, Vec::new()).unwrap();
+        assert_eq!(f.leases.notice(), 5, "a startup Cleanup's count replaced the loaded one instead of adding to it");
+        assert_eq!(f.on_disk().map(|r| r.not_ended), Some(5));
+    }
+
+    #[test]
     fn lease_during_startup_cleanup_keeps_the_record() {
         let closing = HeldRecord { closing: true, ..empty() };
         let other_boot = HeldRecord { boot: "boot-b".into(), holders: vec![id(9)], ..empty() };
@@ -1346,12 +1369,6 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             r#"{"v":1,"boot":"boot-a","holders":[{"boot":"boot-a","pid":1,"created":7001}],"handover_until_ms":null,"closing":true,"not_ended":3,"forget":["w1"]}"#
         );
-        std::fs::write(
-            &path,
-            r#"{"v":1,"boot":"boot-a","holders":[],"handover_until_ms":null,"hold_until_ms":1000001,"closing":true,"not_ended":0,"forget":[]}"#,
-        )
-        .unwrap();
-        assert_eq!(read_record(&path), Ok(Some(HeldRecord { closing: true, ..empty() })), "a record that still carries hold_until_ms parses");
         let keeps: [(&str, fn(&mut HeldRecord)); 5] = [
             ("holders", |r| r.holders = vec![id(1)]),
             ("handover", |r| r.handover_until_ms = Some(T0)),
