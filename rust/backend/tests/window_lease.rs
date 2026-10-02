@@ -362,6 +362,7 @@ async fn slow_row(state_dir: &Path) -> sot_log::fence::SupervisorLock {
     poll_until(|| { let dir = dir.clone(); async move { sot_log::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }
 
+#[cfg(target_os = "linux")]
 fn capsules_left(env: &Env) -> bool {
     support::any_process_matches(&env.leg_pgrep_pattern())
 }
@@ -388,6 +389,7 @@ async fn last_one_out_two_windows() {
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the last window's EOF is a close: {}", daemon.said());
     assert!(!env.socket_path.exists(), "the socket outlived the daemon");
     assert!(!row_toml(&env, "last-one").exists(), "the row's toml outlived the close");
+    #[cfg(target_os = "linux")]
     assert!(!capsules_left(&env), "a sot-capsule for this state root outlived the close");
     assert!(held_record(&env).is_none(), "held.json outlived a clean close: {:?}", held_record(&env));
 }
