@@ -1,4 +1,6 @@
 SOT_LAUNCH_WAIT_S=160  # = rust/protocol/src/ops.rs lease::LAUNCH_WAIT; scripts/tests/installer-state.sh compares them
+SOT_LOG_KEEP=5               # a start leaves at most this many nohup daemon logs (sot_prune_logs)
+SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes down to (sot_prune_logs)
 
 # sot-daemon.sh -- the one place the sotd unit, the all-in-one sot-launch
 # wrapper and the backend ensure are written down. Sourced by install.sh,
@@ -162,22 +164,61 @@ sot_service_owned() {  # <prefix>
     [ "$(sot_unit_owner_path < "$HOME/.config/systemd/user/sotd.service" 2>/dev/null)" = "$1/bin/sotd" ]
 }
 
+# Prune DIR's nohup daemon logs before a start. Oldest first (the legacy fixed
+# sotd.log, then sotd.<UTC stamp>Z-<pid>.log by name, which is start order),
+# delete while more than SOT_LOG_KEEP remain or the unprotected total exceeds
+# SOT_LOG_CAP_BYTES. The newest is protected: a previous daemon that is still
+# shutting down may hold it, so a single protected file can exceed the cap. A
+# failed rm is logged in one line and skipped; it leaves both bounds.
+sot_prune_logs() {  # <dir>
+    local dir="$1" f newest="" count total=0 size err
+    set --
+    [ -f "$dir/sotd.log" ] && set -- "$dir/sotd.log"
+    for f in "$dir"/sotd.[0-9]*Z-*.log; do
+        [ -f "$f" ] && set -- "$@" "$f"
+    done
+    count=$#
+    for f in "$@"; do newest="$f"; done
+    for f in "$@"; do
+        [ "$f" = "$newest" ] && continue
+        size="$(wc -c < "$f" 2>/dev/null)" || size=0
+        total=$((total + ${size:-0}))
+    done
+    for f in "$@"; do
+        [ "$count" -gt "$SOT_LOG_KEEP" ] || [ "$total" -gt "$SOT_LOG_CAP_BYTES" ] || break
+        [ "$f" != "$newest" ] || break
+        size="$(wc -c < "$f" 2>/dev/null)" || size=0
+        err="$(rm -f -- "${f:?}" 2>&1)" || echo "kept old log $f: $err" >&2
+        count=$((count - 1))
+        total=$((total - ${size:-0}))
+    done
+    return 0
+}
+
 # Make the backend's socket answer: return 0 once it does, 1 (with the reason
 # on stderr) if it cannot. Waits SOT_LAUNCH_WAIT_S for a successor while a
 # previous instance is still shutting down. Never removes the socket: the
 # daemon unlinks a stale one itself, and an ensure-side rm can delete a
 # successor's fresh bind. Never kills a daemon it started: the daemon's own
 # lock wait is shorter than this one. A backend it starts itself logs under
-# the install, never to a path another user can hold.
+# the install to a file of its own, <prefix>/logs/sotd.<UTC start>Z-<pid>.log,
+# never to a path another user can hold; the newest by name is the current one.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
-    local logfile="$1/logs/sotd.log"
+    local logdir="$1/logs" logfile="" stamp
     sot_socket_open "$socket" && return 0
     if sot_service_owned "$prefix"; then
         mode=systemd
     else
-        mkdir -p "${logfile%/*}" || { echo "ERROR: cannot create ${logfile%/*}" >&2; return 1; }
-        nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >"$logfile" 2>&1 </dev/null &
+        mkdir -p "$logdir" || { echo "ERROR: cannot create $logdir" >&2; return 1; }
+        sot_prune_logs "$logdir"
+        # Milliseconds where date has %N (GNU); 000 where it does not (BSD).
+        stamp="$(date -u +%Y%m%d-%H%M%S-%3N)"
+        case "$stamp" in *-[0-9][0-9][0-9]) ;; *) stamp="$(date -u +%Y%m%d-%H%M%S)-000" ;; esac
+        logfile="$logdir/sotd.${stamp}Z-$$.log"
+        # Append, never truncate: the name is new, and a file another daemon
+        # still writes is never cut short.
+        nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >>"$logfile" 2>&1 </dev/null &
         pid=$!
     fi
     start="$(date +%s)"
@@ -206,29 +247,58 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     return 1
 }
 
-# Copy FILE to BACKUP beside it and move it in, so a backup exists only
-# whole; a failed copy removes its temp file and returns 1.
+# The one copy helper: copy SRC to DST.new, set MODE when one is given, and
+# move it over DST, so DST only ever exists whole. Any failure removes DST.new
+# and returns 1. sot-apply.sh and install.sh carry byte-identical copies
+# (they copy before any checkout is known); a test pins all three equal.
+sot_install_copy() {  # <src> <dst> [mode]
+    if cp -p "$1" "$2.new" && { [ -z "${3:-}" ] || chmod "$3" "$2.new"; } && mv -f "$2.new" "$2"; then
+        return 0
+    fi
+    rm -f "${2:?}.new"
+    return 1
+}
+
+# Copy FILE to BACKUP, whole or not at all.
 sot_backup() {  # <file> <backup>
-    cp -p "$1" "$2.new" && mv -f "$2.new" "$2" || { rm -f "$2.new"; return 1; }
+    sot_install_copy "$1" "$2"
+}
+
+# True when the sot-launch wrapper is one of ours and embeds PREFIX.
+sot_wrapper_owned() {  # <prefix>
+    local wrapper="$HOME/.local/bin/sot-launch"
+    [ -f "$wrapper" ] \
+       && { grep -q '^# sot-launch: all-in-one$' "$wrapper" || grep -q '^start_daemon_if_needed()' "$wrapper"; } \
+       && [ "$(sot_wrapper_owner_prefix < "$wrapper")" = "$1" ]
+}
+
+# Back up the unit and the wrapper this install owns, the files
+# sot_rerender_owned rewrites, to UNIT-BAK and WRAP-BAK; returns 1 at the
+# first that fails.
+sot_backup_owned() {  # <prefix> <unit-bak> <wrap-bak>
+    if sot_service_owned "$1"; then
+        sot_backup "$HOME/.config/systemd/user/sotd.service" "$2" || return 1
+    fi
+    if sot_wrapper_owned "$1"; then
+        sot_backup "$HOME/.local/bin/sot-launch" "$3" || return 1
+    fi
+    return 0
 }
 
 # Re-render, from CHECKOUT's own templates, the unit and the wrapper this
-# install owns, so an update carries their text along with the binaries.
-sot_rerender_owned() {  # <prefix> <target> <checkout> <unit-bak> <wrap-bak>
-    local prefix="$1" target="$2" checkout="$3" unit_bak="$4" wrap_bak="$5"
+# install owns, so an update carries their text along with the binaries. The
+# caller has already taken sot_backup_owned's backups of the same files.
+sot_rerender_owned() {  # <prefix> <target> <checkout>
+    local prefix="$1" target="$2" checkout="$3"
     local unit="$HOME/.config/systemd/user/sotd.service" wrapper="$HOME/.local/bin/sot-launch"
     if sot_service_owned "$prefix"; then
-        sot_backup "$unit" "$unit_bak" \
-            && render_sotd_unit "$prefix" "$checkout/deploy/sotd.service" "$unit" || return 1
+        render_sotd_unit "$prefix" "$checkout/deploy/sotd.service" "$unit" || return 1
         # The file on disk is right either way; the live check reads NeedDaemonReload.
         timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
             || echo "sot-apply: systemctl --user daemon-reload failed (the unit file is current)" >&2
     fi
-    if [ -f "$wrapper" ] \
-       && { grep -q '^# sot-launch: all-in-one$' "$wrapper" || grep -q '^start_daemon_if_needed()' "$wrapper"; } \
-       && [ "$(sot_wrapper_owner_prefix < "$wrapper")" = "$prefix" ]; then
-        sot_backup "$wrapper" "$wrap_bak" \
-            && render_sot_launch "$prefix" "$target" "$wrapper" || return 1
+    if sot_wrapper_owned "$prefix"; then
+        render_sot_launch "$prefix" "$target" "$wrapper" || return 1
     fi
     return 0
 }

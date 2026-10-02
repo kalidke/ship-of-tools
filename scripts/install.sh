@@ -47,6 +47,16 @@ GLIBC_FLOOR_FE="2.35"
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): the first
+# copies below run before the checkout that holds the library exists.
+sot_install_copy() {  # <src> <dst> [mode]
+    if cp -p "$1" "$2.new" && { [ -z "${3:-}" ] || chmod "$3" "$2.new"; } && mv -f "$2.new" "$2"; then
+        return 0
+    fi
+    rm -f "${2:?}.new"
+    return 1
+}
+
 # Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
 # manifest, sed substitution, launcher heredocs) cannot carry safely, plus
 # a newline, which turns one generated line into two — a second
@@ -470,14 +480,18 @@ BINDIR="$WORK/sot-$VER-$TARGET"
 # that predate the capsule runtime lack it, hence the skip for it alone.
 for b in sot sotd sot-capsule; do
     [ "$b" = sot-capsule ] && [ ! -f "$BINDIR/$b" ] && continue
-    [ -f "$PREFIX/bin/$b" ] && cp "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev"
-    install -m 0755 "$BINDIR/$b" "$PREFIX/bin/$b"
+    if [ -f "$PREFIX/bin/$b" ]; then
+        sot_install_copy "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" || die "backing up $PREFIX/bin/$b failed"
+    fi
+    sot_install_copy "$BINDIR/$b" "$PREFIX/bin/$b" 0755 || die "installing $PREFIX/bin/$b failed"
     # Gatekeeper: strip any quarantine attr (browser downloads carry it).
     [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
 done
 # The offline apply/rollback script (Phase C3). Newer releases ship it in the
 # archive; otherwise it lands from the checkout below.
-[ -f "$BINDIR/sot-apply" ] && install -m 0755 "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply"
+if [ -f "$BINDIR/sot-apply" ]; then
+    sot_install_copy "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
+fi
 # A manual installer run is a NEW transaction: stale rollback state from a
 # previous auto-apply must not pair old last-good pointers with these fresh
 # .prev binaries (a later crash-loop rollback would mix versions).
@@ -681,7 +695,7 @@ mkdir -p "$PREFIX/julia"
 ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
 # sot-apply from the checkout when the release archive predates shipping it.
 if [ ! -f "$PREFIX/bin/sot-apply" ] && [ -f "$CHECKOUT/scripts/sot-apply.sh" ]; then
-    install -m 0755 "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply"
+    sot_install_copy "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
 fi
 # Keep the previously-active version dir for rollback; prune everything else.
 for v in "$REPO_DIR/versions"/*; do
@@ -870,7 +884,7 @@ EOF
         # checkout's logo with sips+iconutil (both ship with macOS).
         APP="$HOME/Applications/Ship of Tools.app"
         mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-        cat > "$APP/Contents/Info.plist" <<EOF
+        cat > "$WORK/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -882,11 +896,12 @@ EOF
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 EOF
-        cat > "$APP/Contents/MacOS/sot-launch" <<EOF
+        sot_install_copy "$WORK/Info.plist" "$APP/Contents/Info.plist" 0644 || die "writing $APP/Contents/Info.plist failed"
+        cat > "$WORK/sot-launch.app" <<EOF
 #!/usr/bin/env bash
 exec "$HOME/.local/bin/sot-launch"
 EOF
-        chmod +x "$APP/Contents/MacOS/sot-launch"
+        sot_install_copy "$WORK/sot-launch.app" "$APP/Contents/MacOS/sot-launch" 0755 || die "writing $APP/Contents/MacOS/sot-launch failed"
         LOGO="$CHECKOUT/logo.png"
         if [ -f "$LOGO" ] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
             ICONSET="$WORK/sot.iconset"; mkdir -p "$ICONSET"

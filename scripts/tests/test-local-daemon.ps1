@@ -785,7 +785,8 @@ try {
         Write-Host "`n=== 13. LogsStayBounded: a spawn prunes old logs to the cap and never touches a held one ===" -ForegroundColor Cyan
         # The bounds are read from the script. Old stamped files of one size,
         # so the newest $LogKeep fit under the cap and all of them do not; the
-        # oldest file, at the old fixed name, is held the way section 12 holds it.
+        # old fixed name is held the way section 12 holds it, and an unheld
+        # leftover of the old rotation is the oldest of all.
         $ld13 = Get-Content -LiteralPath $script -Raw
         $keep13 = [int]([regex]::Match($ld13, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
         $cap13 = [int64]([regex]::Match($ld13, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
@@ -798,11 +799,13 @@ try {
         $size13 = [int64][math]::Floor($cap13 / ($keep13 + 1))
         $old13 = @()
         for ($i13 = 0; $i13 -lt $keep13 + 3; $i13++) {
-            $n13 = Join-Path $log13dir ('sotd-local.stdout.20200101-0000{0:d2}-{1}.log' -f $i13, (1000 + $i13))
+            $n13 = Join-Path $log13dir ('sotd-local.stdout.20200101-0000{0:d2}-000Z-{1}.log' -f $i13, (1000 + $i13))
             $fs13 = [System.IO.File]::Create($n13)
             try { $fs13.SetLength($size13) } finally { $fs13.Dispose() }
             $old13 += $n13
         }
+        $tmp13 = Join-Path $log13dir 'sotd-local.stdout.log.rotating.4242.tmp'
+        [System.IO.File]::WriteAllText($tmp13, "leftover-13`r`n")
         $out13 = Join-Path $log13dir 'sotd-local.stdout.log'
         $held13 = $null
         try {
@@ -816,6 +819,10 @@ try {
             Check '13: exactly one sotd is on the pipe' (@(Get-DaemonProcs (Get-PipePath $pipe13)).Count -eq 1) "found $(@(Get-DaemonProcs (Get-PipePath $pipe13)).Count)"
             $kept13 = @($old13 | Select-Object -Last $keep13 | Where-Object { (Test-Path -LiteralPath $_) -and ((Get-Item -LiteralPath $_).Length -eq $size13) })
             Check "13: the newest $keep13 files are kept" ($kept13.Count -eq $keep13) "kept $($kept13.Count) of $keep13"
+            $gone13 = @(@($tmp13) + $old13 | Where-Object { -not (Test-Path -LiteralPath $_) })
+            $want13 = @(@($tmp13) + @($old13 | Select-Object -First 3))
+            Check '13: the deleted files are exactly the oldest, in order' (($gone13 -join ',') -ceq ($want13 -join ',')) "deleted: $($gone13 -join ', ')"
+            Check '13: the held log is kept with one line naming it' (($run13 | Out-String) -match ('kept log ' + [regex]::Escape($out13) + ': \S')) "log: $run13"
             $held13text = ''
             if (Test-Path -LiteralPath $out13) {
                 $fs13 = New-Object System.IO.FileStream($out13, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
@@ -844,6 +851,96 @@ try {
         }
     }
 } catch { Check '13: section ran' $false $_.Exception.Message }
+try {
+    if ($compiled) {
+        Write-Host "`n=== 13b. LogsStayBoundedByCap: within the file count, the cap still prunes, oldest first, and keeps the newest ===" -ForegroundColor Cyan
+        # $LogKeep files of half the cap each: the count is within bounds and
+        # the unprotected total is over the cap, so only the cap prunes.
+        $ld13b = Get-Content -LiteralPath $script -Raw
+        $keep13b = [int]([regex]::Match($ld13b, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
+        $cap13b = [int64]([regex]::Match($ld13b, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
+        Clear-FakeEnv
+        $p13b = New-FakePrefix 'p13b'
+        $pipe13b = New-TestPipeName
+        $log13bdir = Join-Path $p13b 'logs'
+        New-Item -ItemType Directory -Force -Path $log13bdir | Out-Null
+        $size13b = [int64][math]::Floor($cap13b / 2)
+        $old13b = @()
+        for ($i13b = 0; $i13b -lt $keep13b; $i13b++) {
+            $n13b = Join-Path $log13bdir ('sotd-local.stdout.20200101-0000{0:d2}-000Z-{1}.log' -f $i13b, (1000 + $i13b))
+            $fs13b = [System.IO.File]::Create($n13b)
+            try { $fs13b.SetLength($size13b) } finally { $fs13b.Dispose() }
+            $old13b += $n13b
+        }
+        try {
+            $run13b = & $script -Prefix $p13b -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe13b -ProjectRoot $root 6>&1 2>&1
+            $exit13b = $LASTEXITCODE
+            Check '13b: the spawn exits 0' ($exit13b -eq 0) "got $exit13b; log: $run13b"
+            Check '13b: the successor answers' (Wait-Pipe $pipe13b) 'pipe never opened'
+            $gone13b = @($old13b | Where-Object { -not (Test-Path -LiteralPath $_) })
+            $want13b = @($old13b | Select-Object -First ($keep13b - 3))
+            Check '13b: the deleted files are exactly the oldest, in order' (($gone13b -join ',') -ceq ($want13b -join ',')) "deleted: $($gone13b -join ', ')"
+            Check '13b: the newest closed log is kept' (Test-Path -LiteralPath $old13b[$old13b.Count - 1]) 'the newest old log is gone'
+            $unprot13b = [int64]0
+            foreach ($f13b in @($old13b | Select-Object -First ($keep13b - 1))) {
+                if (Test-Path -LiteralPath $f13b) { $unprot13b += (Get-Item -LiteralPath $f13b).Length }
+            }
+            Check '13b: the unprotected total is at most the cap' ($unprot13b -le $cap13b) "total $unprot13b, cap $cap13b"
+        } finally {
+            Stop-FakeOn $pipe13b
+            Clear-FakeEnv
+        }
+    }
+} catch { Check '13b: section ran' $false $_.Exception.Message }
+try {
+    if ($compiled) {
+        Write-Host "`n=== 14. HeldLogAllowsDelete: a held log is kept even when its holder allows delete sharing ===" -ForegroundColor Cyan
+        # Fail-first for the exclusive-open delete: a holder that grants
+        # FileShare.Delete lets a plain delete succeed. Stamped files in both
+        # the earlier and the current name format put the stream over both
+        # bounds for either version of the script, so the held old fixed name
+        # is a delete candidate either way.
+        $ld14 = Get-Content -LiteralPath $script -Raw
+        $keep14 = [int]([regex]::Match($ld14, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
+        $cap14 = [int64]([regex]::Match($ld14, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
+        Clear-FakeEnv
+        $p14 = New-FakePrefix 'p14'
+        $pipe14 = New-TestPipeName
+        $log14dir = Join-Path $p14 'logs'
+        New-Item -ItemType Directory -Force -Path $log14dir | Out-Null
+        $size14 = [int64][math]::Floor($cap14 / $keep14)
+        for ($i14 = 0; $i14 -le $keep14; $i14++) {
+            foreach ($fmt14 in @('sotd-local.stdout.20200101-0000{0:d2}-{1}.log', 'sotd-local.stdout.20200101-0000{0:d2}-000Z-{1}.log')) {
+                $fs14 = [System.IO.File]::Create((Join-Path $log14dir ($fmt14 -f $i14, (1000 + $i14))))
+                try { $fs14.SetLength($size14) } finally { $fs14.Dispose() }
+            }
+        }
+        $out14 = Join-Path $log14dir 'sotd-local.stdout.log'
+        $held14 = $null
+        try {
+            $held14 = New-Object System.IO.FileStream($out14, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]'ReadWrite, Delete')
+            $bytes14 = [System.Text.Encoding]::ASCII.GetBytes("known-line-14`r`n")
+            $held14.Write($bytes14, 0, $bytes14.Length); $held14.Flush()
+            $run14 = & $script -Prefix $p14 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe14 -ProjectRoot $root 6>&1 2>&1
+            $exit14 = $LASTEXITCODE
+            Check '14: the spawn exits 0' ($exit14 -eq 0) "got $exit14; log: $run14"
+            Check '14: the successor answers' (Wait-Pipe $pipe14) 'pipe never opened'
+            $after14 = [System.Text.Encoding]::ASCII.GetBytes("after-14`r`n")
+            $held14.Write($after14, 0, $after14.Length); $held14.Flush()
+            $text14 = ''
+            try {
+                $fs14 = New-Object System.IO.FileStream($out14, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]'ReadWrite, Delete')
+                try { $text14 = (New-Object System.IO.StreamReader($fs14)).ReadToEnd() } finally { $fs14.Dispose() }
+            } catch { $text14 = "unreadable: $($_.Exception.Message)" }
+            Check '14: the held file survives and holds its lines' ($text14 -ceq "known-line-14`r`nafter-14`r`n") "held file text: '$text14'"
+            Check '14: one line names the kept file and its error' (($run14 | Out-String) -match ('kept log ' + [regex]::Escape($out14) + ': \S')) "log: $run14"
+        } finally {
+            if ($held14) { $held14.Dispose() }
+            Stop-FakeOn $pipe14
+            Clear-FakeEnv
+        }
+    }
+} catch { Check '14: section ran' $false $_.Exception.Message }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still

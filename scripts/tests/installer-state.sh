@@ -381,6 +381,12 @@ reap_stub() {  # <dir>: signal only the pid the stub recorded
     pid="$(cat "$1/pid" 2>/dev/null || true)"
     [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
 }
+# The newest nohup daemon log in a logs dir, found by name, or nothing.
+newest_log() {  # <logs-dir>
+    local f n=""
+    for f in "$1"/sotd.[0-9]*Z-*.log; do [ -f "$f" ] && n="$f"; done
+    printf '%s' "$n"
+}
 
 # ---------------------------------------------------------------------------
 case_start "owner_helpers_agree"
@@ -418,7 +424,7 @@ choice_row() {  # <name> <manifest systemd|none> <owner this|other> <systemctl 1
     elif grep -q '^sotd ' "$d/log"; then how="nohup"
     else how="none"; fi
     check "$1 (rc 0, started by $5)" "0 $5" "$ENS_RC $how"
-    [ "$5" != nohup ] || check "$1: the log is under its prefix" "yes" "$([ -f "$prefix/logs/sotd.log" ] && echo yes || echo no)"
+    [ "$5" != nohup ] || check "$1: the log is under its prefix" "yes" "$([ -n "$(newest_log "$prefix/logs")" ] && echo yes || echo no)"
     reap_stub "$d"
 }
 choice_row no-manifest none this 1 nohup
@@ -434,7 +440,7 @@ check "a daemon that binds after 12 s is waited for" "0" "$ENS_RC"
 case "$ENS_ERR" in *"waiting for the backend"*) check "the waiting line is printed" ok ok ;; *) check "the waiting line is printed" "a waiting line" "$ENS_ERR" ;; esac
 alive=no; kill -0 "$(cat "$d/pid")" 2>/dev/null && alive=yes
 check "the started daemon is still alive" "yes" "$alive"
-check "the log is under its prefix" "yes" "$([ -f "$d/prefix/logs/sotd.log" ] && echo yes || echo no)"
+check "the log is under its prefix" "yes" "$([ -n "$(newest_log "$d/prefix/logs")" ] && echo yes || echo no)"
 reap_stub "$d"
 
 # ---------------------------------------------------------------------------
@@ -444,7 +450,39 @@ STUB_EXIT=3 run_ensure "$d" "$d/prefix" 0
 check "a start that exits without binding returns 1" "1" "$ENS_RC"
 case "$ENS_ERR" in *"exited (3)"*) check "the exit code is named" ok ok ;; *) check "the exit code is named" "exited (3)" "$ENS_ERR" ;; esac
 check "and does so in under 5 s" "yes" "$([ "$ENS_SECS" -lt 5 ] && echo yes || echo "no (${ENS_SECS}s)")"
-check "the log is under its prefix" "yes" "$([ -f "$d/prefix/logs/sotd.log" ] && echo yes || echo no)"
+check "the log is under its prefix" "yes" "$([ -n "$(newest_log "$d/prefix/logs")" ] && echo yes || echo no)"
+log_now="$(newest_log "$d/prefix/logs")"
+check "the error names this start's own log" "yes" \
+    "$([ -n "$log_now" ] && case "$ENS_ERR" in *"see $log_now"*) echo yes ;; *) echo no ;; esac || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "ensure_keeps_old_logs"
+# A previous start's log keeps its line, and this start writes a file of its own.
+d="$WORK/logs-prev"; mkdir -p "$d/home" "$d/prefix/logs"
+prev="$d/prefix/logs/sotd.20200101-000000-000Z-1.log"
+printf 'known-line-prev\n' > "$prev"
+STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0
+check "the previous log keeps its line" "known-line-prev" "$(cat "$prev")"
+check "this start logs to a new file of its own" "yes" \
+    "$(n="$(newest_log "$d/prefix/logs")"; [ -n "$n" ] && [ "$n" != "$prev" ] && echo yes || echo no)"
+reap_stub "$d"
+# A legacy sotd.log still held open by a daemon that is shutting down.
+d="$WORK/logs-legacy"; mkdir -p "$d/home" "$d/prefix/logs"
+legacy="$d/prefix/logs/sotd.log"
+exec 7>>"$legacy"
+printf 'known-line-legacy\n' >&7
+STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0
+printf 'after-legacy\n' >&7
+exec 7>&-
+check "a held legacy sotd.log keeps its lines" "known-line-legacy after-legacy" "$(tr '\n' ' ' < "$legacy" | sed 's/ $//')"
+reap_stub "$d"
+# Eight old 6MB logs: over the count and over the cap, oldest first.
+d="$WORK/logs-cap"; mkdir -p "$d/home" "$d/prefix/logs"
+for i in 0 1 2 3 4 5 6 7; do truncate -s 6M "$d/prefix/logs/sotd.20200101-00000$i-000Z-$((1000 + i)).log"; done
+STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0
+check "the oldest five go and the newest three stay" "567" \
+    "$(for i in 0 1 2 3 4 5 6 7; do [ -e "$d/prefix/logs/sotd.20200101-00000$i-000Z-$((1000 + i)).log" ] && printf '%s' "$i"; done; true)"
+reap_stub "$d"
 
 # ---------------------------------------------------------------------------
 case_start "no_shared_tmp_log"
@@ -624,7 +662,7 @@ FE
     [ "$2" != 1 ] || python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
     ( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_PREFIX= SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
     check "$3" "started $d/home/.local/share/sot/bin/sotd fe yes" "$(events "$d")"
-    check "$3: the log is under its prefix" "yes" "$([ -f "$d/home/.local/share/sot/logs/sotd.log" ] && echo yes || echo no)"
+    check "$3: the log is under its prefix" "yes" "$([ -n "$(newest_log "$d/home/.local/share/sot/logs")" ] && echo yes || echo no)"
     reap_stub "$d"
 }
 dev_row "$WORK/dev" 0 "the dev launcher starts the plan's own local backend before the frontend"
@@ -696,11 +734,12 @@ mk_apply_fixture() {  # <dir> <owned-unit 0|1> <owned-wrapper 0|1>
     chmod 0755 "$h/.local/bin/sot-launch"
     cp "$h/.config/systemd/user/sotd.service" "$d/unit.orig"; cp "$h/.local/bin/sot-launch" "$d/wrap.orig"
 }
-run_apply() {  # <dir> [args]: rmdir is not in $TOOLS, so the staging lock is cleared here
+run_apply() {  # <dir> [args]: sets AP_RC; rmdir is not in $TOOLS, so the staging lock is cleared here
     local d="$1"; shift
     rm -rf "${d:?}/prefix/updates/.lock"
+    AP_RC=0
     ( HOME="$d/home" PATH="$d/stubs:$TOOLS" STUB_LOG="$d/log" STUB_SOCKET="$d/sot.sock" \
-        "$d/prefix/bin/sot-apply" "$@" ) > "$d/out" 2>&1 || true
+        "$d/prefix/bin/sot-apply" "$@" ) > "$d/out" 2>&1 || AP_RC=$?
 }
 reloads() { grep -c '^--user daemon-reload$' "$1/log" || true; }
 
@@ -813,31 +852,75 @@ for which in unit wrapper; do
         wrapper) half_cp_stub "$d" '*/sot-launch.prev-*' ;;
     esac
     run_apply "$d"
-    check "$which: the apply fails at the re-render" "1" "$(grep -c 're-rendering the unit or wrapper failed' "$d/out" || true)"
+    check "$which: the apply fails at the backup" "1" "$(grep -c 'backing up the unit or wrapper failed' "$d/out" || true)"
     check "$which: the unit is byte-identical" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
     check "$which: the wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
-    check "$which: no partial backup is left" "no" \
-        "$([ -e "$d/prefix/updates/sotd.service.prev-linux-x86_64.new" ] || [ -e "$d/prefix/updates/sot-launch.prev-linux-x86_64.new" ] && echo yes || echo no)"
+    check "$which: no partial backup is left" "0" "$(find "$d/prefix" "$d/home" -name '*.new*' | wc -l | tr -d ' ')"
 done
 
 # ---------------------------------------------------------------------------
-case_start "failed_binary_install_restores_only_this_apply"
-# A .prev left by an older apply, then the first binary's install fails.
-d="$WORK/ap10"; mk_apply_fixture "$d" 1 1
-printf 'older-sotd\n' > "$d/prefix/bin/sotd.prev"
-cp "$d/prefix/bin/sot-apply" "$d/apply.orig"
-cat > "$d/stubs/install" <<INST
+for k in sot sotd; do
+    case_start "failed_${k}_install_restores_only_this_apply"
+    # Backups left by an older apply, then installing $k fails after every
+    # binary before it was replaced.
+    d="$WORK/ap10-$k"; mk_apply_fixture "$d" 1 1
+    printf 'older-sot\n' > "$d/prefix/bin/sot.prev"; printf 'older-sotd\n' > "$d/prefix/bin/sotd.prev"
+    cp "$d/prefix/bin/sot-apply" "$d/apply.orig"
+    cat > "$d/stubs/install" <<INST
 #!/bin/sh
 for a; do dst="\$a"; done
-case "\$dst" in */bin/sot.new) exit 1 ;; esac
+case "\$dst" in */bin/$k.new) exit 1 ;; esac
 exec "$TOOLS/install" "\$@"
 INST
-chmod +x "$d/stubs/install"
+    chmod +x "$d/stubs/install"
+    run_apply "$d"
+    check "$k: the apply fails installing $k" "1" "$(grep -c "installing $k failed" "$d/out" || true)"
+    check "$k: every binary has its pre-apply bytes" "old-sot old-sotd same" \
+        "$(cat "$d/prefix/bin/sot") $(cat "$d/prefix/bin/sotd") $(cmp -s "$d/apply.orig" "$d/prefix/bin/sot-apply" && echo same || echo differ)"
+    check "$k: install.json still names the old version" "1" "$(grep -c '"version": "9.9.8"' "$d/prefix/install.json" || true)"
+done
+
+# ---------------------------------------------------------------------------
+case_start "backup_failure_replaces_nothing"
+# An older apply's backups, then the second binary's backup fails half-written.
+d="$WORK/ap11"; mk_apply_fixture "$d" 1 1
+printf 'older-sot\n' > "$d/prefix/bin/sot.prev"; printf 'older-sotd\n' > "$d/prefix/bin/sotd.prev"
+printf 'older-unit\n' > "$d/prefix/updates/sotd.service.prev-linux-x86_64"
+printf 'older-wrap\n' > "$d/prefix/updates/sot-launch.prev-linux-x86_64"
+cp "$d/prefix/bin/sot-apply" "$d/apply.orig"
+half_cp_stub "$d" '*/bin/sotd.prev*'
 run_apply "$d"
-check "the apply fails at the first binary" "1" "$(grep -c 'installing sot failed' "$d/out" || true)"
-check "every binary has its pre-apply bytes" "old-sot old-sotd same" \
-    "$(cat "$d/prefix/bin/sot") $(cat "$d/prefix/bin/sotd") $(cmp -s "$d/apply.orig" "$d/prefix/bin/sot-apply" && echo same || echo differ)"
-check "install.json still names the old version" "1" "$(grep -c '"version": "9.9.8"' "$d/prefix/install.json" || true)"
+check "the apply exits non-zero" "yes" "$([ "$AP_RC" -ne 0 ] && echo yes || echo no)"
+check "the failed backup is named" "1" "$(grep -c 'backing up sotd failed' "$d/out" || true)"
+check "no installed file changed" "old-sot old-sotd same same same" \
+    "$(cat "$d/prefix/bin/sot") $(cat "$d/prefix/bin/sotd") $(cmp -s "$d/apply.orig" "$d/prefix/bin/sot-apply" && echo same || echo differ) $(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ) $(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+check "the old backup set is intact" "older-sot older-sotd older-unit older-wrap" \
+    "$(cat "$d/prefix/bin/sot.prev") $(cat "$d/prefix/bin/sotd.prev") $(cat "$d/prefix/updates/sotd.service.prev-linux-x86_64") $(cat "$d/prefix/updates/sot-launch.prev-linux-x86_64")"
+check "no .new is left" "0" "$(find "$d/prefix" "$d/home" -name '*.new*' | wc -l | tr -d ' ')"
+check "repo/current and install.json are unchanged" "$d/prev-co 1" \
+    "$(readlink "$d/prefix/repo/current") $(grep -c '"tag": "v9.9.8"' "$d/prefix/install.json" || true)"
+
+# ---------------------------------------------------------------------------
+case_start "rollback_copy_failure_fails_the_rollback"
+d="$WORK/ap12"; mk_apply_fixture "$d" 1 1; run_apply "$d"
+check "the apply installed the new tag" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
+cp "$d/prefix/install.json" "$d/record.applied"
+half_cp_stub "$d" '*/bin/sotd|*/bin/sotd.new'
+run_apply "$d" --rollback
+check "the rollback exits non-zero" "yes" "$([ "$AP_RC" -ne 0 ] && echo yes || echo no)"
+check "the error names the binary" "1" "$(grep -cF "could not restore $d/prefix/bin/sotd " "$d/out" || true)"
+check "install.json is unchanged" "same" "$(cmp -s "$d/record.applied" "$d/prefix/install.json" && echo same || echo differ)"
+check "repo/current is unchanged" "$d/co" "$(readlink "$d/prefix/repo/current")"
+check "no rollback-complete line" "0" "$(grep -c 'rollback complete' "$d/out" || true)"
+
+# ---------------------------------------------------------------------------
+case_start "one_copy_helper"
+helper_text() { sed -n '/^sot_install_copy() {/,/^}/p' "$1"; }
+check "the library defines sot_install_copy" "yes" "$([ -n "$(helper_text "$LIB")" ] && echo yes || echo no)"
+for f in "$SRC/scripts/sot-apply.sh" "$SRC/scripts/install.sh"; do
+    check "$(basename "$f")'s sot_install_copy is byte-identical to the library's" "$(helper_text "$LIB")" "$(helper_text "$f")"
+done
+check "no other script defines it" "3" "$(grep -rl '^sot_install_copy() {' "$SRC/scripts" | wc -l | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
 printf '\n'

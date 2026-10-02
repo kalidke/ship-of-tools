@@ -91,16 +91,22 @@
 # binary is still resolvable at its original location.
 #
 # Spawn hygiene: every start redirects stdout/stderr to files of its own,
-# <prefix>\logs\sotd-local.{stdout,stderr}.<yyyyMMdd-HHmmss>-<pid>.log
-# (local start time, then this launcher's pid), so the newest by name is the
-# current one. A start never truncates, renames or deletes a file another
-# process still holds: the previous daemon may still be writing its
-# shutdown lines while this one starts. Before each spawn, each stream keeps
-# its newest $LogKeep files and deletes older ones, oldest first, until its
-# total is at most $LogCapBytes; a delete that fails (the file is held) is
-# skipped and logged. The old fixed names (sotd-local.{stdout,stderr}.log
-# and their .1) count as the oldest. The cap applies across starts; one
-# running daemon's own file still grows within its run. The daemon's own
+# <prefix>\logs\sotd-local.{stdout,stderr}.<yyyyMMdd-HHmmss-fff>Z-<pid>.log
+# (UTC start time to the millisecond, then this launcher's pid), so among
+# stamped names the newest by name is the current one, across DST. A start
+# never truncates, renames or deletes a file another process still holds:
+# the previous daemon may still be writing its shutdown lines while this one
+# starts. Before each spawn, each stream walks its files oldest first -- the
+# old rotation's *.rotating.<pid>.tmp leftovers, then the old fixed names
+# (sotd-local.{stdout,stderr}.log.1, then .log), then stamped names -- and
+# deletes while it has more than $LogKeep files or its unprotected total
+# exceeds $LogCapBytes. Protected, never deleted and outside both bounds: the
+# newest log (the previous daemon's last words; never a leftover), and any
+# file another process holds. A delete is an exclusive DeleteOnClose open, so
+# a file with any other handle open, even one that allows delete sharing,
+# fails the open and is skipped with one log line naming the real error.
+# Known limits: one protected file can exceed the cap, and one running
+# daemon's own file still grows within its run. The daemon's own
 # private log (rust/backend/src/main.rs::open_private_log_file, via
 # paths::state_dir()) is a SEPARATE, HOME-derived path that today has no
 # Windows branch -- a known gap, not fixed here (see the ADR amendment). If
@@ -160,8 +166,8 @@ $LaunchWaitSeconds = 160        # = ops.rs lease::LAUNCH_WAIT
 $DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
 
 # Daemon stdout/stderr log bounds, per stream (see "Spawn hygiene" above).
-$LogKeep = 5                    # the newest files a start never deletes
-$LogCapBytes = 16MB             # older files go, oldest first, down to this total
+$LogKeep = 5                    # a start leaves at most this many files per stream
+$LogCapBytes = 16MB             # unprotected files go, oldest first, down to this total
 
 $ErrorActionPreference = 'Continue'
 
@@ -186,23 +192,34 @@ function Write-LocalDaemonLog {
 # Prune one stream's logs before a spawn (see "Spawn hygiene" in the header).
 function Remove-OldDaemonLogs {
     param([string]$Dir, [string]$Stream)
-    $files = @()
+    $all = @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue)
+    # Oldest first, ordered by kind and not by name: the fixed names sort
+    # after every stamp.
+    $files = @($all | Where-Object { $_.Name -match "^sotd-local\.$Stream\.log\.rotating\.\d+\.tmp$" } | Sort-Object Name)
+    $logs = @()
     foreach ($n in @("sotd-local.$Stream.log.1", "sotd-local.$Stream.log")) {
-        $f = Get-Item -LiteralPath (Join-Path $Dir $n) -ErrorAction SilentlyContinue
-        if ($f) { $files += $f }
+        $logs += @($all | Where-Object { $_.Name -eq $n })
     }
-    $files += @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match "^sotd-local\.$Stream\.\d{8}-\d{6}-\d+\.log$" } |
-        Sort-Object Name)
-    $total = 0
-    foreach ($f in $files) { $total += $f.Length }
-    for ($i = 0; ($i -lt $files.Count - $LogKeep) -and ($total -gt $LogCapBytes); $i++) {
+    $logs += @($all | Where-Object { $_.Name -match "^sotd-local\.$Stream\.\d{8}-\d{6}-\d{3}Z-\d+\.log$" } | Sort-Object Name)
+    $files += $logs
+    $newest = ''
+    if ($logs.Count -gt 0) { $newest = $logs[$logs.Count - 1].FullName }
+    $count = $files.Count
+    $total = [int64]0
+    foreach ($f in $files) { if ($f.FullName -ne $newest) { $total += $f.Length } }
+    foreach ($f in $files) {
+        if (($count -le $LogKeep) -and ($total -le $LogCapBytes)) { break }
+        if ($f.FullName -eq $newest) { break }
         try {
-            Remove-Item -LiteralPath $files[$i].FullName -Force -ErrorAction Stop
-            $total -= $files[$i].Length
+            $s = [System.IO.FileStream]::new($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose)
+            $s.Dispose()
         } catch {
-            Write-LocalDaemonLog "kept held log $($files[$i].FullName) - $($_.Exception.Message)"
+            Write-LocalDaemonLog ("kept log {0}: {1}" -f $f.FullName, ($_.Exception.Message -replace '\s*[\r\n]+\s*', ' '))
         }
+        # Deleted or held, the file leaves both bounds.
+        $count--
+        $total -= $f.Length
     }
 }
 
@@ -395,7 +412,7 @@ if (-not $daemonExe) {
 $logDir = Join-Path $Prefix 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 foreach ($stream in @('stdout', 'stderr')) { Remove-OldDaemonLogs -Dir $logDir -Stream $stream }
-$logStamp = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $PID
+$logStamp = '{0}Z-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'), $PID
 $daemonStdout = Join-Path $logDir "sotd-local.stdout.$logStamp.log"
 $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 
