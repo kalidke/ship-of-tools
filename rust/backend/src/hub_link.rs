@@ -78,6 +78,7 @@ async fn link_once(
     workspaces: &Workspaces,
 ) -> Result<(), String> {
     let mut child = sot_protocol::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))?;
+    let _child_guard = crate::shutdown::ChildGuard::new();
     let mut tx = child.stdin.take().ok_or("no stdin")?;
     let mut rx = codec::buffered(child.stdout.take().ok_or("no stdout")?);
     let stderr = child.stderr.take().ok_or("no stderr")?;
@@ -97,7 +98,15 @@ async fn link_once(
             }
         });
     }
-    let result = converse(&mut tx, &mut rx, self_host, name, workspaces).await;
+    let result = tokio::select! {
+        result = converse(&mut tx, &mut rx, self_host, name, workspaces) => result,
+        // The daemon is shutting down: nothing kills this child at
+        // `process::exit`, so it is killed here.
+        _ = crate::shutdown::fired() => {
+            let _ = child.kill().await;
+            return Ok(());
+        }
+    };
     if result.is_err() {
         if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             return Err(format!("{}: {line}", result.unwrap_err()));

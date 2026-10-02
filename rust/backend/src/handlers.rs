@@ -4865,7 +4865,7 @@ pub async fn handle_workspace_create(
 /// ADR 0042 slice L1a (Codex review finding 3): whether a capsule
 /// workspace's row (and its persisted toml) may be safely removed by
 /// `workspace.destroy`.
-enum CapsuleDestroyOutcome {
+pub(crate) enum CapsuleDestroyOutcome {
     /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
     /// `AlreadyEnded` — see `capsule_workspace::EndRunOutcome`) — the row
     /// may be removed; the state directory never is. Human-readable
@@ -4883,7 +4883,7 @@ enum CapsuleDestroyOutcome {
 /// may remove the row. Pure/portable so it's unit-testable without a real
 /// Windows lane; `#[cfg(test)]` below is its only caller off Windows.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
+pub(crate) fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
     use crate::capsule_workspace::EndRunOutcome as O;
     match o {
         O::RecordVerified => CapsuleDestroyOutcome::Removable("run ended and verified".to_string()),
@@ -4940,7 +4940,7 @@ fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> Cap
 /// through unexamined so it stays locked across the reset below too
 /// (ADR 0043 decision 33, Codex review round 2) — dropped only once this
 /// function returns, whichever arm it takes.
-async fn end_default_row_run(
+pub(crate) async fn end_default_row_run(
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
     workspace_id: &str,
@@ -4997,6 +4997,8 @@ async fn end_default_row_run(
 /// `end_run` has a real lane to ask, rather than falling straight to its
 /// own fence/leg proof. A resume failure is logged and never fails the
 /// call — `end_run`'s own arms decide the outcome regardless.
+/// `resume_first` false skips that resume: a window's close ends rows
+/// without resuming any (`shutdown::end_rows`).
 ///
 /// Every mutation runs under the row's own guard, from the first probe
 /// through the outcome this returns — a terminal `Phase` mark alone
@@ -5010,7 +5012,7 @@ async fn end_default_row_run(
 /// call here AND whatever the caller does with a confirmed outcome
 /// (row removal, or the default row's own reset) afterward. The caller
 /// holds it through that follow-up, then drops it.
-async fn destroy_capsule_workspace(
+pub(crate) async fn destroy_capsule_workspace(
     workspace_id: &str,
     reason: &str,
     agent_kind: &str,
@@ -5018,6 +5020,7 @@ async fn destroy_capsule_workspace(
     slug: &str,
     project_root: &std::path::Path,
     workspaces: &Workspaces,
+    resume_first: bool,
 ) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
     {
         let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
@@ -5081,15 +5084,25 @@ async fn destroy_capsule_workspace(
                 );
             };
             let held = guard.blocking_lock_owned();
-            match crate::capsule_workspace::resume_locked(
-                &state_root,
-                &workspace_id,
-                &agent_kind,
-                &agent_name,
-                &slug,
-                &project_root,
-                workspaces_for_guard.clone(),
-            ) {
+            // Without the resume, its membership recheck still runs, so the
+            // "row already gone" arm below holds for an end with no resume.
+            let resumed = if resume_first {
+                crate::capsule_workspace::resume_locked(
+                    &state_root,
+                    &workspace_id,
+                    &agent_kind,
+                    &agent_name,
+                    &slug,
+                    &project_root,
+                    workspaces_for_guard.clone(),
+                )
+            } else {
+                workspaces_for_guard
+                    .resolve(Some(&workspace_id))
+                    .map(|_| "not resumed")
+                    .ok_or_else(|| "unknown workspace".to_string())
+            };
+            match resumed {
                 // BLOCKER (Codex review, 2026-09-11): a pending resume can
                 // outlive deletion. `resume_locked` returns this exact
                 // sentinel phase ONLY when it just spawned a fresh
@@ -5232,6 +5245,29 @@ fn default_row_end_response(
     }
 }
 
+/// Remove a row's tomls from disk so neither registration path brings the
+/// workspace back on next daemon startup: `scan_disk` reads the modern
+/// workspaces/ toml, and the ADR-0013 migration reads the legacy
+/// sessions/ toml. A missing file is success; `false` means a remove
+/// failed (logged).
+pub(crate) fn remove_row_files(slug: &str) -> bool {
+    let mut toml_removed = true;
+    for toml_path in [
+        crate::workspaces::toml_path_for(slug),
+        crate::workspaces::legacy_toml_path_for(slug),
+    ] {
+        match std::fs::remove_file(&toml_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
+                toml_removed = false;
+            }
+        }
+    }
+    toml_removed
+}
+
 pub async fn handle_workspace_destroy(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -5282,6 +5318,7 @@ pub async fn handle_workspace_destroy(
             &ws.slug,
             &ws.project_root,
             workspaces,
+            true,
         )
         .await;
         let (payload, confirmed_ended) =
@@ -5339,6 +5376,7 @@ pub async fn handle_workspace_destroy(
             &slug,
             &ws.project_root,
             workspaces,
+            true,
         )
         .await;
         match outcome {
@@ -5385,25 +5423,9 @@ pub async fn handle_workspace_destroy(
         );
     }
 
-    // Remove the tomls from disk so neither registration path brings the
-    // workspace back on next daemon startup: `scan_disk` reads the modern
-    // workspaces/ toml, and the ADR-0013 migration reads the legacy
-    // sessions/ toml. Best-effort: a missing file is success; a remove
-    // error is logged + reported but doesn't block the in-memory removal.
-    let mut toml_removed = true;
-    for toml_path in [
-        crate::workspaces::toml_path_for(&slug),
-        crate::workspaces::legacy_toml_path_for(&slug),
-    ] {
-        match std::fs::remove_file(&toml_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                tracing::warn!(error = %e, path = ?toml_path, "workspace toml remove failed");
-                toml_removed = false;
-            }
-        }
-    }
+    // Best-effort: a remove error is logged + reported but doesn't block
+    // the in-memory removal.
+    let toml_removed = remove_row_files(&slug);
 
     // Drop from in-memory registry last. The Arc<Workspace> dropped
     // here is also the one holding the kernel/repl handles; when the
@@ -7429,7 +7451,7 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// the registry couldn't be pruned. Writes via a temp file + atomic rename so
 /// a concurrent bash mutator (comm-join / comm-status / …) can't see a torn
 /// file.
-fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
+pub(crate) fn remove_comm_agents_for_workspace(agent_name: &str, workspace_id: &str, host: &str) -> Vec<String> {
     remove_comm_agents_for_workspace_bounded(agent_name, workspace_id, host, COMM_PRUNE_LOCK_BOUND)
 }
 
@@ -10057,6 +10079,7 @@ mod workspace_destroy_default_row_tests {
             "local",
             std::path::Path::new("/p/local"),
             &reg,
+            true,
         )
         .await;
         // The guard IS taken now (Codex review: the deleted fast path's

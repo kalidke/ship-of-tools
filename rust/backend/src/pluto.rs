@@ -212,6 +212,7 @@ async fn supervisor_task(
     mut stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     mut submit_rx: mpsc::Receiver<Submission>,
 ) {
+    let _child_guard = crate::shutdown::ChildGuard::new();
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
     // to each OPEN in order; we pop the matching reply on each URL/ERR.
     let mut pending: VecDeque<oneshot::Sender<Result<String>>> = VecDeque::new();
@@ -219,6 +220,12 @@ async fn supervisor_task(
     loop {
         tokio::select! {
             biased;
+            // The daemon is shutting down: nothing kills this child at
+            // `process::exit`, so it is killed here.
+            _ = crate::shutdown::fired() => {
+                let _ = child.kill().await;
+                break;
+            }
             sub = submit_rx.recv() => {
                 let Some(sub) = sub else {
                     drop(stdin);

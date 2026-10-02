@@ -44,6 +44,9 @@ mod repl;
 mod server;
 mod session;
 mod session_state;
+// The end and the child signal land before the shutdown that calls them.
+#[allow(dead_code)]
+mod shutdown;
 mod site_serve;
 mod status_cli;
 mod stdio_bridge;

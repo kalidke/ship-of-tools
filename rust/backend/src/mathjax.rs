@@ -174,6 +174,7 @@ async fn supervisor_task(
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
 ) {
+    let _child_guard = crate::shutdown::ChildGuard::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<RenderedSvg>>> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = BufReader::new(stdout).lines();
@@ -181,6 +182,12 @@ async fn supervisor_task(
     loop {
         tokio::select! {
             biased;
+            // The daemon is shutting down: nothing kills this child at
+            // `process::exit`, so it is killed here.
+            _ = crate::shutdown::fired() => {
+                let _ = child.kill().await;
+                break;
+            }
             // Drain incoming submissions, write to child stdin.
             sub = submit_rx.recv() => {
                 let Some(sub) = sub else {

@@ -621,6 +621,7 @@ async fn supervisor_task(
     lifecycle: SharedLifecycle,
     my_gen: u64,
 ) {
+    let _child_guard = crate::shutdown::ChildGuard::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
     // cleared when its `done` frame routes. On child death each survivor gets
@@ -638,6 +639,12 @@ async fn supervisor_task(
     loop {
         tokio::select! {
             biased;
+            // The daemon is shutting down: nothing kills this child at
+            // `process::exit`, so it is killed here.
+            _ = crate::shutdown::fired() => {
+                let _ = child.kill().await;
+                break;
+            }
             sub = submit_rx.recv() => {
                 let Some(sub) = sub else {
                     drop(stdin);

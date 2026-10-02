@@ -356,6 +356,7 @@ async fn run_one_generation(
         Ok(c) => c,
         Err(e) => return (false, format!("spawn {julia_bin} failed: {e}")),
     };
+    let _child_guard = crate::shutdown::ChildGuard::new();
 
     let mut stdin = match child.stdin.take() {
         Some(s) => s,
@@ -397,6 +398,12 @@ async fn run_one_generation(
     loop {
         tokio::select! {
             biased;
+            // The daemon is shutting down: nothing kills this child at
+            // `process::exit`, so it is killed here.
+            _ = crate::shutdown::fired() => {
+                let _ = child.kill().await;
+                return (published_running, "the daemon is shutting down".to_string());
+            }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
             // function returning drops `child` (`kill_on_drop`) and
