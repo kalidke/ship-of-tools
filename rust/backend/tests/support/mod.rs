@@ -791,6 +791,37 @@ impl Drop for Env {
             let _ = child.wait();
         }
 
+        // (2, Windows) the counterpart of the Linux leg sweep below: a
+        // capsule outlives a killed daemon BY DESIGN (it breaks away from
+        // the daemon's job), so without this a test's supervisors, `run`
+        // legs and the agent trees under them stay alive after the test
+        // ends. Supervisors first so no NEW leg appears after a pass's
+        // own kill; `taskkill /T` takes each one's whole tree (the agent,
+        // its cmd.exe and conhost.exe). Repeated until a pass finds none
+        // or 5 s pass. Best-effort: never panics.
+        #[cfg(windows)]
+        {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let pids = own_capsule_pids(&self.state_root);
+                if pids.is_empty() || Instant::now() >= deadline {
+                    break;
+                }
+                for pid in pids {
+                    let _ = Command::new("taskkill")
+                        .arg("/F")
+                        .arg("/T")
+                        .arg("/PID")
+                        .arg(pid.to_string())
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+
         #[cfg(target_os = "linux")]
         {
             // (2) sweep this env's own legs, anchored, REPEATED until a
@@ -870,6 +901,81 @@ fn regex_escape_path(path: &Path) -> String {
 pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) -> String {
     format!("^{} {subcommand} {}", regex_escape_path(exe), regex_escape_path(state_root))
 }
+/// Windows: the pids of every `sot-capsule.exe` this test build's own
+/// executable started over `state_root`, supervisors first, then `run`
+/// legs, then any other subcommand. One PowerShell call over stdin (no
+/// command-line quoting to get wrong); a path is embedded as a
+/// single-quoted literal with its quotes doubled, and matched with
+/// `.ToLower().Contains(...)`, never `-like`, since a path may hold `[`.
+/// Empty when PowerShell itself cannot be run. The script ends with an
+/// empty line: `-Command -` runs a multi-line statement read from stdin
+/// only once an empty line follows it.
+#[cfg(windows)]
+pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
+    use std::io::Write;
+    fn lit(p: &Path) -> String {
+        format!("'{}'", p.to_string_lossy().replace('\'', "''"))
+    }
+    let script = format!(
+        "$exe = ({exe}).ToLower(); $root = ({root}).ToLower();\n\
+         Get-CimInstance Win32_Process -Filter \"Name='sot-capsule.exe'\" | ForEach-Object {{\n\
+           if ($_.ExecutablePath -and $_.CommandLine) {{\n\
+             $cl = $_.CommandLine.ToLower();\n\
+             if ($_.ExecutablePath.ToLower() -eq $exe -and $cl.Contains($root)) {{\n\
+               $kind = 'other';\n\
+               if ($cl.Contains(' supervise ')) {{ $kind = 'supervise' }}\n\
+               elseif ($cl.Contains(' run ')) {{ $kind = 'run' }}\n\
+               Write-Output ('{{0}} {{1}}' -f $_.ProcessId, $kind)\n\
+             }}\n\
+           }}\n\
+         }}\n\
+         \n",
+        exe = lit(&sot_capsule_exe()),
+        root = lit(state_root),
+    );
+    let Ok(mut child) = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(script.as_bytes());
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return Vec::new();
+    };
+    let mut found: Vec<(u8, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (pid, kind) = l.trim().split_once(' ')?;
+            let rank = match kind {
+                "supervise" => 0,
+                "run" => 1,
+                _ => 2,
+            };
+            Some((rank, pid.parse().ok()?))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().map(|(_, pid)| pid).collect()
+}
+
+/// `PATH` with every directory removed that contains a file named any of
+/// `names`, so a test that needs an agent to be ABSENT does not depend on
+/// what the box it runs on happens to have installed.
+#[allow(dead_code)]
+pub fn path_without(names: &[&str]) -> std::ffi::OsString {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let kept: Vec<PathBuf> = std::env::split_paths(&path)
+        .filter(|dir| !names.iter().any(|n| dir.join(n).is_file()))
+        .collect();
+    std::env::join_paths(kept).expect("rejoin scrubbed PATH")
+}
+
 /// Whether any live process's command line matches `pattern` — the
 /// read-only half of the anchored sweep, reused by [`Env`]'s own `Drop`
 /// (to poll the sweep to completion) and by the F4 cleanup-contract test

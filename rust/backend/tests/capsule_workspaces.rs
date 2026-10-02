@@ -2610,8 +2610,8 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// already gone fully silent by the time `workspace.destroy` reached it
 /// surfaced as "supervisor lane unreachable" and was reported `Kept`
 /// forever -- the row could never actually be destroyed. On Windows this
-/// test uses the SAME "no `claude` on a CI runner's PATH" precondition to
-/// force the failure deterministically (no new fixture machinery). On
+/// test scrubs `claude` from the daemon's PATH to force the failure
+/// deterministically (no new fixture machinery). On
 /// The supervisor-epoch ruling's addition (b), end to end: a capsule
 /// that dies inside its OWN bootstrap -- before it ever binds its lane,
 /// so no `status` is ever served and no identity ever reaches this
@@ -2733,11 +2733,15 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
     // Windows, but pre-writing it here makes the precondition explicit
     // and independent of that default ever changing.
     env.seed_default_capsule_toml("claude");
-    // Windows: no `claude.exe` exists on a CI runner's PATH, so the
-    // literal argv `agent_argv` hands `sot-capsule` fails to spawn every
-    // time -- unchanged, exactly as before this port.
+    // Windows: the daemon's PATH is scrubbed of every directory holding a
+    // `claude`, so the literal argv `agent_argv` hands `sot-capsule` fails
+    // to spawn every time, on a box with the agent installed as on one
+    // without -- never assumed absent.
     #[cfg(windows)]
-    env.spawn_sotd();
+    {
+        let scrubbed = path_without(&["claude.exe", "claude.cmd", "claude"]);
+        env.spawn_sotd_with_env(&[("PATH", scrubbed.to_str().expect("scrubbed PATH is not UTF-8"))]);
+    }
     // Linux: `agent_argv`'s own resolution step means a genuinely absent
     // `claude` would refuse at the DAEMON level instead (never reaching
     // `sot-capsule`'s own anti-flap/Terminal logic this test exercises)
@@ -5267,4 +5271,55 @@ async fn lane_connect_refuses_a_voyage_id_the_target_row_does_not_own() {
     assert_eq!(res["ok"].as_bool(), Some(true), "{res:?}");
 
     env.kill_daemon_bounded().await;
+}
+
+/// A Windows test's capsules end with its `Env`: capsules outlive a killed
+/// daemon by design, so `Env`'s `Drop` sweeps its own, as the Linux leg
+/// sweep does.
+#[cfg(windows)]
+#[tokio::test]
+async fn env_drop_leaves_no_capsule_of_its_own() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+
+    let env = Env::new("edl");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    // No agent requested: the row's producer is the platform shell, which
+    // launches on every Windows host.
+    let create_req = serde_json::json!({
+        "label": "edl-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+
+    let state_root = env.state_root.clone();
+    assert!(
+        !own_capsule_pids(&state_root).is_empty(),
+        "a ready capsule row must have capsule processes over {state_root:?}"
+    );
+
+    drop(env);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let left = own_capsule_pids(&state_root);
+        if left.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Env's Drop left capsule processes alive: {left:?}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
