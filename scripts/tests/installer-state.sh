@@ -666,6 +666,30 @@ check "the applied tag is recorded" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/
 check "a foreign wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 
 # ---------------------------------------------------------------------------
+case_start "apply_failure_restores_unit_and_wrapper"
+d="$WORK/ap5"; mk_apply_fixture "$d" 1 1
+chmod 0555 "$d/home/.local/bin"
+run_apply "$d"
+chmod 0755 "$d/home/.local/bin"
+check "the unit is byte-equal to the original" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
+check "two daemon-reloads (re-render, restore)" "2" "$(reloads "$d")"
+check "sotd is back to its pre-apply content" "old-sotd" "$(cat "$d/prefix/bin/sotd")"
+check "repo/current points at the previous checkout" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
+check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+check "the wrapper is byte-equal to the original" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+
+# ---------------------------------------------------------------------------
+case_start "rollback_restores_unit_and_wrapper"
+d="$WORK/ap6"; mk_apply_fixture "$d" 1 1; run_apply "$d"
+check "the apply re-rendered the unit" "1" "$(grep -c '^Restart=on-failure$' "$d/home/.config/systemd/user/sotd.service" || true)"
+run_apply "$d" --rollback
+check "the unit is byte-equal to the original" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
+check "the wrapper is byte-equal to the original" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+check "the wrapper is executable" "yes" "$([ -x "$d/home/.local/bin/sot-launch" ] && echo yes || echo no)"
+check "a daemon-reload followed the restore" "2" "$(reloads "$d")"
+check "the checkout flipped back" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'

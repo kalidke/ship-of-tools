@@ -96,6 +96,32 @@ printf '%s@%s#sh\n' "$$" "$(hostname 2>/dev/null || echo unknown)" > "$LOCK/owne
 cleanup() { rm -f "${LOCK:?}/owner" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
+# Put back the unit and wrapper sot_rerender_owned backed up. A backup exists
+# only when this install owned and re-rendered that file in the latest apply,
+# so no second ownership check is needed. Failures only log: rollback goes on.
+restore_rendered() {
+    UNIT_FILE="$HOME/.config/systemd/user/sotd.service"
+    WRAP_FILE="$HOME/.local/bin/sot-launch"
+    if [ -f "$UNIT_BAK" ]; then
+        if cp -p "$UNIT_BAK" "$UNIT_FILE.new" && mv -f "$UNIT_FILE.new" "$UNIT_FILE"; then
+            log "restored $UNIT_FILE"
+        else
+            log "could not restore $UNIT_FILE (backup kept at $UNIT_BAK)"
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
+                || log "systemctl --user daemon-reload failed (the unit file is restored)"
+        fi
+    fi
+    if [ -f "$WRAP_BAK" ]; then
+        if cp -p "$WRAP_BAK" "$WRAP_FILE.new" && mv -f "$WRAP_FILE.new" "$WRAP_FILE"; then
+            log "restored $WRAP_FILE"
+        else
+            log "could not restore $WRAP_FILE (backup kept at $WRAP_BAK)"
+        fi
+    fi
+}
+
 # ---- rollback mode -----------------------------------------------------------
 # sot-apply --rollback: restore the last-good transaction after a crash-loop
 # (invoked by sot-launch's supervisor, gated there on a FRESH just-applied
@@ -118,6 +144,7 @@ if [ "${1:-}" = "--rollback" ]; then
     done
     ln -sfn "$LG_CHECKOUT" "$PREFIX/repo/current"
     ln -sfn "$LG_CHECKOUT" "$PREFIX/julia/current" 2>/dev/null
+    restore_rendered
     case "$BAD_TAG" in
         v[0-9]*) : > "$UPDATES/bad-$BAD_TAG-$TARGET" ;;
     esac
@@ -229,6 +256,7 @@ restore_previous() {
         ln -sfn "$PREV_CHECKOUT" "$PREFIX/repo/current" 2>/dev/null
         ln -sfn "$PREV_CHECKOUT" "$PREFIX/julia/current" 2>/dev/null
     fi
+    restore_rendered
     # Pending stays: the stage verified clean, so the failure is local
     # (permissions, disk); retrying at the next launch is safe and fail-open.
     exit 0
