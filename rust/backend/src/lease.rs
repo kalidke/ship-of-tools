@@ -176,9 +176,16 @@ impl State {
         }
     }
 
-    fn persist(&self) {
-        let Some(path) = &self.path else { return };
-        if let Err(e) = write_or_delete(path, &self.record()) {
+    fn persist(&self) -> std::io::Result<()> {
+        let Some(path) = &self.path else { return Ok(()) };
+        write_or_delete(path, &self.record())
+    }
+
+    /// For a write that follows an event that already happened (a
+    /// departure, an expiry, shutdown step 1): refusing it would be a
+    /// silent keep-alive, so a failure is logged and the event stands.
+    fn persist_or_log(&self) {
+        if let (Err(e), Some(path)) = (self.persist(), &self.path) {
             tracing::error!(path = %path.display(), "held record not written: {e}");
         }
     }
@@ -193,7 +200,7 @@ impl State {
         self.phase = Phase::Closing;
         self.handover_until_ms = None;
         self.pending = None;
-        self.persist();
+        self.persist_or_log();
         true
     }
 }
@@ -238,7 +245,8 @@ impl Leases {
     /// `Granted` iff the token passed and the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
     /// generation, clears an in-process handover, and may complete a
-    /// pending start.
+    /// pending start. A grant whose record cannot be written is undone and
+    /// refused as `Undetermined`, so a grant never outruns its record.
     pub(crate) fn grant(
         &self,
         req: &FeLeaseReq,
@@ -268,7 +276,7 @@ impl Leases {
         let who = ProcessIdentity { boot: req.boot.clone(), pid: req.pid, created: req.created };
         let gen = st.next_gen;
         st.next_gen += 1;
-        st.handover_until_ms = None;
+        let handover_until_ms = st.handover_until_ms.take();
         let qualified = st.pending.as_ref().is_some_and(|p| {
             !p.expired
                 && now_ms < p.until_ms
@@ -277,11 +285,18 @@ impl Leases {
                     Qualify::Holders(holders) => holders.contains(&who),
                 }
         });
-        if qualified {
-            st.pending = None;
-        }
+        let cleared = if qualified { st.pending.take() } else { None };
         st.held.push((gen, who));
-        st.persist();
+        if let Err(e) = st.persist() {
+            st.held.pop();
+            st.handover_until_ms = handover_until_ms;
+            if qualified {
+                st.pending = cleared;
+            }
+            let path = st.path.as_deref().unwrap_or(Path::new(""));
+            tracing::error!(path = %path.display(), "fe.lease refused: held record not written: {e}");
+            return (LeaseOutcome::Undetermined, None);
+        }
         drop(st);
         if qualified {
             let _ = self.starts.send(StartEvent::Qualified);
@@ -300,7 +315,7 @@ impl Leases {
         };
         st.held.remove(at);
         if !st.held.is_empty() || st.phase != Phase::Open {
-            st.persist();
+            st.persist_or_log();
             return Decision::None;
         }
         match intent.unwrap_or(LeaveIntent::Close) {
@@ -311,12 +326,12 @@ impl Leases {
                 Decision::Shutdown
             }
             LeaveIntent::Keep => {
-                st.persist();
+                st.persist_or_log();
                 Decision::None
             }
             LeaveIntent::Handover => {
                 st.handover_until_ms = Some(now_ms.saturating_add(handover_bound_ms()));
-                st.persist();
+                st.persist_or_log();
                 Decision::Handover
             }
         }
@@ -353,7 +368,7 @@ impl Leases {
     /// An end's report, written as the record: shutdown step 5, or a
     /// Cleanup's write. It ends a shutdown's `closing` (leases stay
     /// refused) and a pending start whose Cleanup this was.
-    pub(crate) fn finish(&self, not_ended: u32, forget: Vec<String>) {
+    pub(crate) fn finish(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
         if st.phase == Phase::Closing {
             st.phase = Phase::Finished;
@@ -363,7 +378,7 @@ impl Leases {
         }
         st.not_ended = not_ended;
         st.forget = forget;
-        st.persist();
+        st.persist()
     }
 
     /// The count every grant carries until a window acks it.
@@ -373,12 +388,13 @@ impl Leases {
 
     /// `fe.notice_seen{n}`: clears the count iff it equals `n`, so an ack
     /// of an older count never hides a newer one.
-    pub(crate) fn notice_seen(&self, n: u32) {
+    pub(crate) fn notice_seen(&self, n: u32) -> std::io::Result<()> {
         let mut st = self.lock();
         if n != 0 && st.not_ended == n {
             st.not_ended = 0;
-            st.persist();
+            return st.persist();
         }
+        Ok(())
     }
 
     pub(crate) fn record(&self) -> HeldRecord {
@@ -387,10 +403,10 @@ impl Leases {
 
     /// A start's Pending plan: the record keeps its holders, or its
     /// handover deadline, until a qualifying lease or the Cleanup.
-    pub(crate) fn install_pending(&self, until_ms: u64, qualify: Qualify) {
+    pub(crate) fn install_pending(&self, until_ms: u64, qualify: Qualify) -> std::io::Result<()> {
         let mut st = self.lock();
         st.pending = Some(Pending { until_ms, qualify, expired: false });
-        st.persist();
+        st.persist()
     }
 
     /// Resolves once a shutdown has begun.
@@ -420,14 +436,15 @@ pub(crate) fn read_record(path: &Path) -> Result<Option<HeldRecord>, String> {
     serde_json::from_value(value).map(Some).map_err(|e| err(e.to_string()))
 }
 
-/// Writes `rec` (tmp file, fsync, rename), or deletes the file when the
-/// record is empty.
+/// Writes `rec` (tmp file, fsync, rename, directory sync), or deletes the
+/// file when the record is empty.
 pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<()> {
     if rec.is_empty() {
-        return match std::fs::remove_file(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            r => r,
-        };
+        match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            r => r?,
+        }
+        return sync_dir(path);
     }
     let bytes = serde_json::to_vec(rec).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("json.tmp");
@@ -437,7 +454,20 @@ pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<
         f.write_all(&bytes)?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, path)
+    std::fs::rename(&tmp, path)?;
+    sync_dir(path)
+}
+
+/// A rename or a delete is durable only once its directory is synced.
+/// Windows has no directory sync: std cannot open a directory handle there.
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// Whether a claimed boot matches this daemon's. Strict is plain equality.
@@ -577,6 +607,33 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn grant_refused_when_record_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |f: &Fixture, m: u32| {
+            std::fs::set_permissions(f.path.parent().unwrap(), std::fs::Permissions::from_mode(m)).unwrap()
+        };
+        let f = fixture(Some(BOOT));
+        let a = f.grant(&id(1));
+        mode(&f, 0o500);
+        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, T0), (LeaseOutcome::Undetermined, None), "refused, never Granted");
+        assert_eq!(f.leases.record().holders, vec![id(1)], "the refused grant's entry is undone");
+        mode(&f, 0o700);
+        assert_ne!(f.grant(&id(2)), a, "a later grant has a new generation");
+
+        let mut f = fixture(Some(BOOT));
+        f.leases.install_pending(T0 + handover_bound_ms(), Qualify::Holders(vec![id(1)])).unwrap();
+        let before = f.leases.record();
+        mode(&f, 0o500);
+        assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true, T0), (LeaseOutcome::Undetermined, None));
+        assert!(f.starts.try_recv().is_err(), "a refused grant completes nothing");
+        assert_eq!(f.leases.record(), before, "every in-memory change is undone");
+        mode(&f, 0o700);
+        f.grant(&id(1));
+        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "the pending start survived the refusal");
+    }
+
     #[tokio::test]
     async fn departure_table() {
         use LeaveIntent::*;
@@ -670,7 +727,7 @@ mod tests {
     fn pending_start_table() {
         let until = T0 + handover_bound_ms();
         let mut f = fixture(Some(BOOT));
-        f.leases.install_pending(until, Qualify::Any);
+        f.leases.install_pending(until, Qualify::Any).unwrap();
         assert_eq!(f.on_disk(), Some(HeldRecord { handover_until_ms: Some(until), ..empty() }));
         f.grant(&id(9));
         assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "any grant completes a handover start");
@@ -678,7 +735,7 @@ mod tests {
         assert_eq!(f.leases.tick(until), Tick::None);
 
         let mut f = fixture(Some(BOOT));
-        f.leases.install_pending(until, Qualify::Holders(vec![id(1)]));
+        f.leases.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
         assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }));
         f.grant(&id(2));
         assert!(f.starts.try_recv().is_err(), "an unrecorded window does not complete it");
@@ -689,7 +746,7 @@ mod tests {
 
         for qualify in [Qualify::Any, Qualify::Holders(vec![id(1)])] {
             let mut f = fixture(Some(BOOT));
-            f.leases.install_pending(until, qualify.clone());
+            f.leases.install_pending(until, qualify.clone()).unwrap();
             assert_eq!(f.leases.tick(until - 1), Tick::None);
             assert_eq!(f.leases.tick(until), Tick::Cleanup, "{qualify:?}");
             assert_eq!(f.leases.tick(until + 1), Tick::None, "handed out once");
@@ -697,7 +754,7 @@ mod tests {
             assert_ne!(startup_plan(&read, Ok(BOOT), until + 1), StartPlan::Resume, "a kill mid-Cleanup never resumes, {qualify:?}");
             f.leases.grant(&req(&id(1)), &peer(&id(1)), true, until);
             assert!(f.starts.try_recv().is_err(), "a lease after expiry does not complete it");
-            f.leases.finish(0, vec![]);
+            f.leases.finish(0, vec![]).unwrap();
             assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }), "{qualify:?}");
         }
     }
@@ -705,16 +762,16 @@ mod tests {
     #[test]
     fn notice_clears_only_on_matching_ack() {
         let f = fixture(Some(BOOT));
-        f.leases.finish(2, vec![]);
+        f.leases.finish(2, vec![]).unwrap();
         assert_eq!(f.leases.notice(), 2);
         assert_eq!(f.on_disk(), Some(HeldRecord { not_ended: 2, ..empty() }));
         f.grant(&id(1));
         assert_eq!(f.leases.notice(), 2, "a grant does not ack it");
         for stale in [0, 1, 3] {
-            f.leases.notice_seen(stale);
+            f.leases.notice_seen(stale).unwrap();
             assert_eq!(f.leases.notice(), 2, "an ack of {stale}");
         }
-        f.leases.notice_seen(2);
+        f.leases.notice_seen(2).unwrap();
         assert_eq!(f.leases.notice(), 0);
         assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }));
     }
@@ -829,5 +886,24 @@ mod tests {
             std::fs::write(&path, bad).unwrap();
             assert!(read_record(&path).is_err(), "{bad}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_write_syncs_its_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(bounds::HELD_RECORD_FILE);
+        let mode = |m: u32| std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(m)).unwrap();
+        let full = HeldRecord { holders: vec![id(1)], ..empty() };
+        // Write and search but no read: the rename and the delete succeed,
+        // and only the directory's open for its sync fails.
+        mode(0o300);
+        assert!(write_or_delete(&path, &full).is_err(), "a write whose directory cannot be synced");
+        mode(0o700);
+        write_or_delete(&path, &full).unwrap();
+        mode(0o300);
+        assert!(write_or_delete(&path, &empty()).is_err(), "a delete whose directory cannot be synced");
+        mode(0o700);
     }
 }
