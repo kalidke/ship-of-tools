@@ -793,6 +793,10 @@ mod tests {
         assert_eq!(lease_notice(false, &[Unreached]), Some(NOTICE_NO_BACKEND));
         assert_eq!(lease_notice(false, &[]), Some(NOTICE_NO_BACKEND));
         assert_eq!(lease_notice(false, &[Undetermined, Unsupported]), Some(NOTICE_UNDETERMINED));
+        for set in [&[Undetermined][..], &[Unsupported], &[Foreign], &[Unreached], &[]] {
+            let notice = lease_notice(false, set).expect("a no-lease set has a notice");
+            assert!(notice.starts_with("closing will not end sessions"), "{notice}");
+        }
         // A granted slot whose holder has ended reads as unreached.
         let (tx, rx) = mpsc::unbounded_channel::<HolderCmd>();
         drop(rx);

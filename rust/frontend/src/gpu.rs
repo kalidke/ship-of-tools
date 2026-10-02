@@ -696,6 +696,13 @@ fn prompt_takes_key(keep: bool, tab: bool, action: Option<Action>, repeat: bool)
     quit_prompt_key(keep, key)
 }
 
+/// A focus change away from the navigation pane dismisses the Ctrl+Q prompt
+/// without quitting; no other prompt reacts to focus.
+fn quit_prompt_on_focus(prompt: Option<&NavPrompt>, to: PaneFocus) -> Option<QuitPromptStep> {
+    (matches!(prompt, Some(NavPrompt::ConfirmQuit { .. })) && to != PaneFocus::NavTree)
+        .then_some(QuitPromptStep::Cancel)
+}
+
 fn quit_prompt_line(keep: bool) -> String {
     let (no, yes) = if keep { ("No", "[Yes]") } else { ("[No]", "Yes") };
     format!("Keep the daemon and sessions running?  {no}  {yes}   Tab switches \u{b7} Enter confirms \u{b7} Esc cancels")
@@ -11899,7 +11906,7 @@ impl State {
         // the prompt puts them back (5th-gate follow-up) — the focus move is
         // ours, not theirs, so it shouldn't outlive the prompt.
         self.scale_entry_prior_focus = Some(self.focus);
-        self.focus = PaneFocus::NavTree;
+        self.set_focus(PaneFocus::NavTree);
         self.status = "pixel size (nm): ".to_string();
         self.window.request_redraw();
         true
@@ -11955,7 +11962,7 @@ impl State {
         // in (the Preview they're calibrating), so their next zoom/pan key
         // lands there rather than in the tree.
         if let Some(prior) = self.scale_entry_prior_focus.take() {
-            self.focus = prior;
+            self.set_focus(prior);
         }
         self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
@@ -12056,6 +12063,16 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// The one write of `focus`: moving it off the navigation pane dismisses
+    /// the quit prompt (`quit_prompt_on_focus`), so the prompt is on screen
+    /// only while the tree has focus.
+    fn set_focus(&mut self, to: PaneFocus) {
+        if quit_prompt_on_focus(self.nav_prompt.as_ref(), to) == Some(QuitPromptStep::Cancel) {
+            self.cancel_nav_prompt();
+        }
+        self.focus = to;
+    }
+
     /// Dismiss the active NavTree prompt without acting. The cancel message is
     /// variant-aware so the user sees which prompt they backed out of.
     fn cancel_nav_prompt(&mut self) {
@@ -12070,7 +12087,7 @@ impl State {
         // `scale_entry_prior_focus`). Only fires for that prompt; the other
         // variants are opened FROM the tree and never moved focus.
         if let Some(prior) = self.scale_entry_prior_focus.take() {
-            self.focus = prior;
+            self.set_focus(prior);
         }
         self.window.request_redraw();
     }
@@ -12951,18 +12968,18 @@ impl State {
         self.help.open(context);
         self.drawer = DrawerContent::Help;
         self.maximized = false;
-        self.focus = PaneFocus::Repl;
+        self.set_focus(PaneFocus::Repl);
         self.window.request_redraw();
     }
 
     fn close_help_drawer(&mut self) {
         if let Some((focus, drawer, maximized)) = self.help_origin.take() {
-            self.focus = focus;
+            self.set_focus(focus);
             self.drawer = drawer;
             self.maximized = maximized;
         } else {
             self.drawer = DrawerContent::Closed;
-            self.focus = PaneFocus::NavTree;
+            self.set_focus(PaneFocus::NavTree);
         }
         self.help.peek = None;
         self.window.request_redraw();
@@ -15419,7 +15436,7 @@ impl State {
                                 .contains(&crate::settings::Slot::Llm);
                             if has_llm {
                                 self.wide_preview = false;
-                                self.focus = PaneFocus::Llm;
+                                self.set_focus(PaneFocus::Llm);
                             }
                             self.window.request_redraw();
                         }
@@ -15780,7 +15797,7 @@ impl State {
                     // handed — drop wide-preview so the pane (and the
                     // focus move) are actually visible.
                     self.wide_preview = false;
-                    self.focus = PaneFocus::Llm;
+                    self.set_focus(PaneFocus::Llm);
                     self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
                     self.window.request_redraw();
                 }
@@ -20604,7 +20621,7 @@ impl ApplicationHandler for App {
                             // any existing selection so a click elsewhere
                             // dismisses the highlight.
                             if let Some(cell) = state.llm_cell_at_px(state.cursor_px, true) {
-                                state.focus = PaneFocus::Llm;
+                                state.set_focus(PaneFocus::Llm);
                                 state.llm_selection = Some((cell, cell));
                                 state.llm_drag_active = true;
                                 state.window.request_redraw();
@@ -21069,7 +21086,7 @@ impl ApplicationHandler for App {
                             DrawerContent::Help => preset.drawer.or(Some(crate::settings::Slot::Repl)),
                             _ => preset.drawer,
                         };
-                        state.focus = state.focus.move_in(dir, &columns, drawer);
+                        state.set_focus(state.focus.move_in(dir, &columns, drawer));
                         // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
                         // Cmd+Arrow on macOS) instead of a hard-coded
                         // "Ctrl+" prefix, which used to print "Ctrl+Left"
@@ -21171,7 +21188,7 @@ impl ApplicationHandler for App {
                     if action == Some(Action::ToggleWidePreview) {
                         state.wide_preview = !state.wide_preview;
                         if state.wide_preview && state.focus == PaneFocus::Llm {
-                            state.focus = PaneFocus::Preview;
+                            state.set_focus(PaneFocus::Preview);
                         }
                         state.last_key = Some(label);
                         state.window.request_redraw();
@@ -21221,9 +21238,9 @@ impl ApplicationHandler for App {
                         state.help_origin = None;
                         state.drawer = state.drawer.toggle(slot);
                         if state.drawer.is_open() {
-                            state.focus = PaneFocus::Repl;
+                            state.set_focus(PaneFocus::Repl);
                         } else if state.focus == PaneFocus::Repl {
-                            state.focus = PaneFocus::NavTree;
+                            state.set_focus(PaneFocus::NavTree);
                         }
                         // Monitor drawer subscribe/unsubscribe lifecycle (ADR
                         // 0020): subscribe + prefill on open, unsubscribe on
@@ -22148,7 +22165,7 @@ impl ApplicationHandler for App {
                             // — exit only happens from tree focus, which
                             // is the safer default for an input pane.
                             _ if action == Some(Action::ReturnNav) && !event.repeat => {
-                                state.focus = PaneFocus::NavTree;
+                                state.set_focus(PaneFocus::NavTree);
                             }
                             // Shift+Enter inserts a literal newline into
                             // the input buffer instead of submitting —
@@ -22725,7 +22742,7 @@ impl ApplicationHandler for App {
                         }
                         match action {
                             Some(Action::ReturnNav) if !event.repeat => {
-                                state.focus = PaneFocus::NavTree;
+                                state.set_focus(PaneFocus::NavTree);
                             }
                             // ADR 0022: `c` captures the visible image ROI and
                             // sends it to the LLM pane. `capture_roi` no-ops
@@ -24417,6 +24434,42 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quit_prompt_on_focus_table() {
+        let others = [
+            Some(NavPrompt::ConfirmDelete { node_id: String::new(), label: String::new() }),
+            None,
+        ];
+        for to in [PaneFocus::NavTree, PaneFocus::Preview, PaneFocus::Llm, PaneFocus::Repl] {
+            for keep in [false, true] {
+                let want = (to != PaneFocus::NavTree).then_some(QuitPromptStep::Cancel);
+                assert_eq!(quit_prompt_on_focus(Some(&NavPrompt::ConfirmQuit { keep }), to), want);
+            }
+            for p in &others {
+                assert_eq!(quit_prompt_on_focus(p.as_ref(), to), None);
+            }
+        }
+    }
+
+    #[test]
+    fn focus_written_only_by_set_focus() {
+        let pat = [".focus", " = "].concat();
+        assert_eq!(include_str!("gpu.rs").matches(pat.as_str()).count(), 1);
+        let src = include_str!("gpu.rs");
+        let at = src.find(pat.as_str()).unwrap();
+        assert!(src[..at].rfind("fn set_focus").is_some_and(|f| at - f < 600));
+    }
+
+    #[test]
+    fn no_lease_notice_is_pinned_above_a_tall_list() {
+        use crate::lease::{lease_notice, Standing::*};
+        for set in [&[Undetermined][..], &[Unsupported], &[Foreign], &[Unreached], &[]] {
+            let notice = lease_notice(false, set).unwrap();
+            let (_, pinned) = nav_pinned_rows(None, Some(notice), None, 80, 5);
+            assert!(pinned.join(" ").contains("closing will not end sessions"), "{pinned:?}");
+        }
+    }
+
     #[test]
     fn quit_prompt_key_table() {
         use QuitKey::*;
