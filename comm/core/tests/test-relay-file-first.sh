@@ -16,13 +16,12 @@
 #      `code`, is `FAILED -> @h: <the daemon's own words>` exit 1; no answer is
 #      `FAILED -> @h: the daemon did not answer at <endpoint>`, and only then
 #      does the transport's stderr lengthen the reason.
-#   4. The NOT-MINE LEG, deleted in B2: a `not_here` answer falls back to
+#   4. The NOT-MINE LEG: a `not_here` answer falls back to
 #      `agent.send`, whose verdict is the FILER'S RECEIPT (ADR 0048):
 #      `filed -> @h (by <filer>, relay)` exit 0 when a receipt carrying this
 #      sender's own frame id arrives. A receipt is ONLY ever positive, so
 #      silence is the negative: NOT CONFIRMED, with the attached roster as a
-#      diagnostic; an empty roster is `FAILED -> @h: no box knows that handle`,
-#      decided on the ack. The name-suffix GUESS (a target whose name ends in
+#      diagnostic; an empty roster with no receipt is `FAILED -> @h: nobody filed it within 5s: …`. The name-suffix GUESS (a target whose name ends in
 #      an attached `fe@<host>`) is gone from the script; a case below is the
 #      regression guard that the suffix now means nothing at all.
 #
@@ -172,7 +171,7 @@ case_the_hubs_answer_is_the_delivery() {
     return 0
 }
 
-# The not-mine leg's receipt vocabulary, deleted in B2: in each case below the
+# The not-mine leg's receipt vocabulary: in each case below the
 # hub answers `not_here` first, so the `agent.send` fallback runs.
 case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
@@ -313,20 +312,34 @@ case_annotation_absent_for_a_malformed_row() {
     return 0
 }
 
-case_an_empty_roster_is_failed_no_box_knows() {
+case_a_hub_link_receipt_is_filed_with_no_frontend_attached() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
-    # The not-mine leg, deleted in B2. The hub does not list it and nobody at
-    # all is attached: there is nowhere for the frame to land and nothing that
-    # could ever receipt it. Decided on the ACK -- this case must not spend
-    # the five-second receipt window.
-    write_row_ssh_stub "$dir" not_here no yes 0 none '[]'
+    # A hub link files and receipts but says hello as role cli, so it is never
+    # on the roster: with no frontend attached the ack's roster is empty, and
+    # the receipt must still be waited for and read as the verdict.
+    write_row_ssh_stub "$dir" not_here yes yes 0 none '[]' echo "sotd-$PEER_HOST"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "window closed"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC, want 0 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST (by sotd-$PEER_HOST, relay)" \
+        || { echo "  verdict was '$RELAY_OUT', want the filed line"; return 1; }
+    return 0
+}
+
+case_an_empty_roster_with_no_receipt_is_failed() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    # Not listed, nobody on the roster, no receipt: FAILED, naming both causes the sender cannot tell apart.
+    # The stub hangs after the ack, so only the 5 s receipt window ends the wait.
+    write_row_ssh_stub "$dir" not_here no yes hang none '[]'
+    local t0=$SECONDS
     relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "into the void"
+    [ $((SECONDS - t0)) -ge 5 ] || { echo "  decided after $((SECONDS - t0))s, want the full 5 s receipt window"; return 1; }
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
-    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: no box knows that handle: peer-$PEER_HOST" \
-        || { echo "  stderr was '$RELAY_ERR', want the no-box-knows FAILED line"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: nobody filed it within 5s: no box knows that handle, or the daemon that holds it is stopped or not linked to the hub" \
+        || { echo "  stderr was '$RELAY_ERR', want the nobody-filed FAILED line"; return 1; }
     contains "$RELAY_ERR" "NOT CONFIRMED" \
-        && { echo "  an empty roster waited for a receipt: '$RELAY_ERR'"; return 1; }
+        && { echo "  an empty roster gave NOT CONFIRMED: '$RELAY_ERR'"; return 1; }
     return 0
 }
 
@@ -443,17 +456,18 @@ _stderr_text() {  # KIND
     esac
 }
 
-# write_row_ssh_stub DIR COMMFILE RECEIPT ACK EXIT STDERR_KIND [RECEIVERS] [ID_MODE]
+# write_row_ssh_stub DIR COMMFILE RECEIPT ACK EXIT STDERR_KIND [RECEIVERS] [ID_MODE] [FILER]
 # -- a stub `ssh` (and the same script as `nc`, for a unix: endpoint) that says
 # exactly what one row asks for; each connection is one run of it. COMMFILE is
 # the hub's `comm.file` answer: ok, code, nocode, not_here, or none. The row is
 # baked into the script's own header (and its stderr text into a file beside
 # it, which keeps every quote in that text out of the generated script), so
 # the body below is one static template for all 54 rows. RECEIVERS is the
-# ack's roster (the first one files); ID_MODE `wrong` receipts another frame.
+# ack's roster (the first one files); ID_MODE `wrong` receipts another frame;
+# FILER names the receipt's filer (default: the roster's first name).
 write_row_ssh_stub() {
     local dir="$1" commfile="$2" receipt="$3" ack="$4" status="$5" errkind="$6"
-    local receivers="${7:-[\"peer-$PEER_HOST\"]}" idmode="${8:-echo}"
+    local receivers="${7:-[\"peer-$PEER_HOST\"]}" idmode="${8:-echo}" filer="${9:-}"
     local hang=no
     if [ "$status" = hang ]; then hang=yes; status=0; fi
     _stderr_text "$errkind" > "$dir/stderr.txt"
@@ -462,9 +476,10 @@ write_row_ssh_stub() {
         printf "d='%s'\n" "$dir"
         printf 'commfile=%s\nreceipt=%s\nack=%s\nhang=%s\nstatus=%s\nidmode=%s\n' \
             "$commfile" "$receipt" "$ack" "$hang" "$status" "$idmode"
-        printf "receivers='%s'\n" "$receivers"
+        printf "receivers='%s'\nfiler='%s'\n" "$receivers" "$filer"
         cat <<'STUB'
 receiver=$(printf '%s' "$receivers" | sed -n 's/^\["\([^"]*\)".*/\1/p')
+[ -n "$filer" ] && receiver="$filer"
 [ -s "$d/stderr.txt" ] && cat "$d/stderr.txt" >&2
 while IFS= read -r line; do
     case "$line" in
@@ -643,7 +658,8 @@ check "the hub's own answer is the delivery: one comm.file frame, no id, no file
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
 check "a target whose name ends in an attached frontend's host gets no credit for it" case_the_name_suffix_means_nothing_now
 check "a receipt carrying another frame's id is not this send's verdict" case_a_receipt_for_another_frame_is_not_a_verdict
-check "not-mine: an ack with an empty receivers list is FAILED, no box knows it, decided on the ack" case_an_empty_roster_is_failed_no_box_knows
+check "a hub link's receipt is filed though no frontend is attached" case_a_hub_link_receipt_is_filed_with_no_frontend_attached
+check "not-mine: an empty roster and no receipt is FAILED naming both causes" case_an_empty_roster_with_no_receipt_is_failed
 check "a working recipient is annotated with its stamped age and turn-boundary wording" case_annotation_working_recipient
 check "a recipient stopped on an open question is annotated 'needs its own user', quoted and truncated" case_annotation_recipient_needs_its_own_user
 check "a stale heartbeat overrides a fresh 'working' stamp" case_annotation_stale_heartbeat_overrides_working

@@ -1668,8 +1668,9 @@ pub struct AgentSendReq {
 
 /// `agent.send` response. `receivers` names the connections the daemon's
 /// client roster showed as positioned to see `to`, snapshotted BEFORE the
-/// publish (`Clients::receivers_for`) — empty means the send landed with
-/// nobody there to read it, even though `ok` is still true. `ok` reflects
+/// publish (`Clients::receivers_for`). A backend's hub link (role `cli`) is
+/// never on that roster yet can file the frame, so an empty list does not
+/// mean nobody will read it. `ok` reflects
 /// only that the request parsed and was published onto the broadcast bus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSendRes {
