@@ -29,3 +29,28 @@ pub(crate) fn aim(rel: &str, own_rel: &str, hash: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The aim rule's one table, `(target, own, accepted)`: `row_scope`'s unit
+/// test runs it against [`aim`], and `tests/capsule_workspaces.rs` runs it
+/// against the test scope guard through `tests/support`'s copy of this file.
+#[cfg(test)]
+pub(crate) fn aim_table(h: &str) -> Vec<(String, String, bool)> {
+    let other = if h == "0123456789abcdef" { "fedcba9876543210" } else { "0123456789abcdef" };
+    let ours = format!("/a/app.slice/sot-row-{h}-x.scope");
+    let own = "/a/app.slice/run-u1.scope".to_string();
+    vec![
+        (ours.clone(), own.clone(), true),
+        (ours.clone(), ours.clone(), false),
+        ("/a/app.slice".to_string(), own.clone(), false),
+        (format!("/a/sot-row-{h}-y.scope"), format!("/a/sot-row-{h}-y.scope/app.slice/run-u1.scope"), false),
+        ("/".to_string(), own.clone(), false),
+        (format!("/a/app.slice/sot-row-{other}-x.scope"), own.clone(), false),
+        ("run-u5.scope".to_string(), own.clone(), false),
+        ("/a/app.slice/run-u5.scope".to_string(), own.clone(), false),
+        ("/a/app.slice/run-u123.scope".to_string(), own.clone(), false),
+        (format!("a/app.slice/sot-row-{h}-x.scope"), own.clone(), false),
+        (format!("/a/app.slice/../app.slice/sot-row-{h}-x.scope"), own.clone(), false),
+        (format!("/a/./app.slice/sot-row-{h}-x.scope"), own.clone(), false),
+        (format!("/a/app.slice/sot-row-{h}-x.service"), own, false),
+    ]
+}

@@ -39,6 +39,8 @@ mod paths;
 mod pluto;
 mod proxy;
 mod reauth;
+#[cfg(target_os = "linux")]
+mod row_scope_aim;
 mod awareness;
 mod repl;
 mod server;

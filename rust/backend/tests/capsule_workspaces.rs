@@ -3299,6 +3299,23 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
     env.kill_daemon_bounded().await;
 }
 
+/// A4b: the test scope guard refuses every target production's aim rule
+/// refuses — one table over one `#[path]` source — so a test's `Drop` can
+/// never write `cgroup.kill` outside the scope of a row the test created.
+#[test]
+#[cfg(target_os = "linux")]
+fn scope_guard_refuses_everything_the_aim_rule_refuses() {
+    let state = tempfile::tempdir().expect("tempdir");
+    let h = sot_log::state_dir::state_dir_hash(state.path());
+    for (target, own, accepted) in row_scope_aim::aim_table(&h) {
+        assert_eq!(row_scope_aim::aim(&target, &own, &h).is_ok(), accepted, "aim on {target:?} with own {own:?}");
+        // `forget`: the accepted row's path does not exist, and even so no
+        // guard built here is ever dropped.
+        let armed = std::panic::catch_unwind(|| std::mem::forget(arm_scope_guard_against(&target, &own, state.path())));
+        assert_eq!(armed.is_ok(), accepted, "arm_scope_guard on {target:?} with own {own:?}");
+    }
+}
+
 /// ADR 0043 decision 32 (lane L2), test 2: on a host that denies the
 /// escape (a stubbed `systemd-run` standing in for "no reachable
 /// `systemd --user` manager", so this runs deterministically regardless

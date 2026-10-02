@@ -1422,6 +1422,164 @@ mod capsule_sibling_present_tests {
     }
 }
 
+/// A4b: a row's own systemd scope is the kill domain of everything the row
+/// started, including a descendant that left the agent's process group
+/// (`setsid`), which the leg's `killpg` cannot reach. The scope's unit name
+/// is the record: `sot-row-<state_dir_hash>-<uuid>.scope`, held by systemd.
+#[cfg(target_os = "linux")]
+pub(crate) mod row_scope {
+    use crate::row_scope_aim::{aim, prefix};
+    use sot_log::state_dir::state_dir_hash;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    pub(crate) const CGROUP_ROOT: &str = "/sys/fs/cgroup";
+    /// The cgroup fence's own `QUIESCENCE_TIMEOUT` (`sot_log::claude`).
+    pub(crate) const SCOPE_EMPTY_BOUND: Duration = Duration::from_secs(10);
+    /// Scopes an end could not empty within the bound, by state dir. The
+    /// next end of that row re-kills them before anything else: after the
+    /// stop, a retry would otherwise prove the row absent and count it
+    /// ended while its scope still holds processes.
+    static UNEMPTIED: OnceLock<Mutex<HashMap<PathBuf, Vec<String>>>> = OnceLock::new();
+
+    /// `systemd-run --unit` value for a new scoped supervisor of this row.
+    pub(crate) fn unit_name(state_dir: &Path) -> String {
+        format!("{}{}.scope", prefix(&state_dir_hash(state_dir)), uuid::Uuid::now_v7().simple())
+    }
+
+    /// This process's own cgroup2 path, the `0::` line of `/proc/self/cgroup`.
+    pub(crate) fn own_rel() -> Option<String> {
+        rel_of(&std::fs::read_to_string("/proc/self/cgroup").ok()?)
+    }
+
+    fn rel_of(proc_cgroup: &str) -> Option<String> {
+        proc_cgroup.lines().find_map(|l| l.strip_prefix("0::")).map(|rel| rel.trim().to_string())
+    }
+
+    /// The scope of the supervisor `pid`, captured before the end.
+    pub(crate) fn capture(root: &Path, state_dir: &Path, pid: u32) -> Option<String> {
+        let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+        capture_from(root, state_dir, &text)
+    }
+
+    pub(crate) fn capture_from(_root: &Path, _state_dir: &Path, _proc_cgroup: &str) -> Option<String> {
+        None
+    }
+
+    pub(crate) fn end(_root: &Path, _own_rel: &str, _state_dir: &Path, _rel: &str, _bound: Duration) -> Result<(), String> {
+        Ok(())
+    }
+
+    pub(crate) fn recheck(_root: &Path, _own_rel: &str, _state_dir: &Path, _bound: Duration) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// `root{rel}` as a fake cgroup: an empty `cgroup.kill` and the
+        /// given `cgroup.events`. Never under `/sys/fs/cgroup`.
+        fn fake_scope(root: &Path, rel: &str, events: &str) -> PathBuf {
+            let dir = root.join(rel.trim_start_matches('/'));
+            std::fs::create_dir_all(&dir).expect("mkdir fake scope");
+            std::fs::write(dir.join("cgroup.kill"), "").expect("write cgroup.kill");
+            std::fs::write(dir.join("cgroup.events"), events).expect("write cgroup.events");
+            dir
+        }
+
+        const OWN: &str = "/a/app.slice/run-u1.scope";
+
+        #[test]
+        fn scope_aim_refuses_everything_but_this_rows_scope() {
+            let state = tempfile::tempdir().expect("tempdir");
+            let h = state_dir_hash(state.path());
+            for (target, own, accepted) in crate::row_scope_aim::aim_table(&h) {
+                let verdict = aim(&target, &own, &h);
+                assert_eq!(
+                    verdict.is_ok(),
+                    accepted,
+                    "aim {} {target:?} with own {own:?}: {verdict:?}",
+                    if accepted { "refused" } else { "accepted" }
+                );
+            }
+        }
+
+        #[test]
+        fn capture_finds_only_this_rows_scope() {
+            let (state, other_state, root) =
+                (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (h, other) = (state_dir_hash(state.path()), state_dir_hash(other_state.path()));
+            let ours = format!("/a/app.slice/sot-row-{h}-x.scope");
+            fake_scope(root.path(), &ours, "populated 1\n");
+            let theirs = format!("/a/app.slice/sot-row-{other}-x.scope");
+            fake_scope(root.path(), &theirs, "populated 1\n");
+            let no_kill = format!("/a/app.slice/sot-row-{h}-y.scope");
+            std::fs::create_dir_all(root.path().join(no_kill.trim_start_matches('/'))).unwrap();
+            let at = |text: String| capture_from(root.path(), state.path(), &text);
+
+            assert_eq!(at(format!("0::{ours}\n")), Some(ours.clone()), "this row's scope");
+            assert_eq!(at("0::/a/app.slice/run-u5.scope\n".to_string()), None, "a run-u scope");
+            assert_eq!(at(format!("0::{theirs}\n")), None, "another row's scope");
+            assert_eq!(at(format!("12:pids:{ours}\n1:name=systemd:{ours}\n")), None, "v1 lines only");
+            assert_eq!(at(format!("0::{no_kill}\n")), None, "no cgroup.kill");
+        }
+
+        #[test]
+        fn scope_end_kills_every_scope_of_this_row_and_nothing_else() {
+            let (state, other_state, root) =
+                (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let (h, other) = (state_dir_hash(state.path()), state_dir_hash(other_state.path()));
+            let a = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{h}-a.scope"), "populated 0\nfrozen 0\n");
+            let b = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{h}-b.scope"), "populated 0\nfrozen 0\n");
+            let c = fake_scope(root.path(), &format!("/a/app.slice/sot-row-{other}-c.scope"), "populated 0\nfrozen 0\n");
+
+            let rel = format!("/a/app.slice/sot-row-{h}-a.scope");
+            end(root.path(), OWN, state.path(), &rel, Duration::from_millis(200)).expect("end");
+            let kill = |d: &Path| std::fs::read_to_string(d.join("cgroup.kill")).unwrap();
+            assert_eq!(kill(&a), "1", "the captured scope was not killed");
+            assert_eq!(kill(&b), "1", "a sibling scope of this row was not killed");
+            assert_eq!(kill(&c), "", "another row's scope was killed");
+        }
+
+        #[test]
+        fn scope_that_does_not_empty_keeps_the_row_not_ended() {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let h = state_dir_hash(state.path());
+            let rel = format!("/a/app.slice/sot-row-{h}-a.scope");
+            let dir = fake_scope(root.path(), &rel, "populated 1\nfrozen 0\n");
+            let bound = Duration::from_millis(100);
+
+            let err = end(root.path(), OWN, state.path(), &rel, bound).expect_err("end on a populated scope");
+            assert!(err.contains("did not empty"), "{err}");
+            recheck(root.path(), OWN, state.path(), bound).expect_err("recheck on a still-populated scope");
+            std::fs::write(dir.join("cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
+            recheck(root.path(), OWN, state.path(), bound).expect("recheck once emptied");
+            recheck(root.path(), OWN, state.path(), bound).expect("a second recheck");
+
+            let fresh = tempfile::tempdir().unwrap();
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(fresh.path()));
+            let dir = fake_scope(root.path(), &rel, "populated 1\n");
+            end(root.path(), OWN, fresh.path(), &rel, bound).expect_err("end on a populated scope");
+            std::fs::remove_dir_all(&dir).unwrap();
+            recheck(root.path(), OWN, fresh.path(), bound).expect("a scope that is gone is empty");
+        }
+
+        #[test]
+        fn scope_events_unreadable_is_not_empty() {
+            let (state, root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            let rel = format!("/a/app.slice/sot-row-{}-a.scope", state_dir_hash(state.path()));
+            let dir = root.path().join(rel.trim_start_matches('/'));
+            std::fs::create_dir_all(dir.join("cgroup.events")).unwrap();
+            std::fs::write(dir.join("cgroup.kill"), "").unwrap();
+            end(root.path(), OWN, state.path(), &rel, Duration::from_millis(100))
+                .expect_err("an unreadable cgroup.events is not an empty scope");
+        }
+    }
+}
+
 /// Every platform `sotd` ships for. The gate this module carried until
 /// the supervisor-epoch ruling was never about what macOS can do:
 /// `sot-capsule supervise` is built and shipped in the macOS release
