@@ -281,7 +281,19 @@ ln -sfn "$CHECKOUT" "$PREFIX/repo/current" || restore_previous "flipping repo/cu
 mkdir -p "$PREFIX/julia" && ln -sfn "$CHECKOUT" "$PREFIX/julia/current" \
     || restore_previous "flipping julia/current failed"
 
+# ---- re-render the unit and wrapper this install owns -------------------------
+# Before the install.json rewrite, so a failure here leaves the record naming
+# the restored release: the library comes from the commit being applied, and
+# an older target without one re-renders nothing.
+if [ -r "$CHECKOUT/scripts/lib/sot-daemon.sh" ]; then
+    . "$CHECKOUT/scripts/lib/sot-daemon.sh" \
+        && sot_rerender_owned "$PREFIX" "$TARGET" "$CHECKOUT" "$UNIT_BAK" "$WRAP_BAK" \
+        || restore_previous "re-rendering the unit or wrapper failed"
+fi
+
 # ---- rewrite install.json (preserve role/prefix/config/service) --------------
+# The last fallible step: the atomic mv names the new tag only once
+# everything it describes is in place.
 VERSION="${TAG#v}"
 if [ -f "$PREFIX/install.json" ]; then
     if ! sed -e 's|"version": *"[^"]*"|"version": "'"$VERSION"'"|' \
@@ -291,15 +303,6 @@ if [ -f "$PREFIX/install.json" ]; then
        || ! mv -f "$PREFIX/install.json.tmp" "$PREFIX/install.json"; then
         restore_previous "rewriting install.json failed"
     fi
-fi
-
-# ---- re-render the unit and wrapper this install owns -------------------------
-# The last fallible step: the library comes from the commit being applied, and
-# an older target without one re-renders nothing.
-if [ -r "$CHECKOUT/scripts/lib/sot-daemon.sh" ]; then
-    . "$CHECKOUT/scripts/lib/sot-daemon.sh" \
-        && sot_rerender_owned "$PREFIX" "$TARGET" "$CHECKOUT" "$UNIT_BAK" "$WRAP_BAK" \
-        || restore_previous "re-rendering the unit or wrapper failed"
 fi
 
 # Success: arm the crash-loop health window, clear the pointer.

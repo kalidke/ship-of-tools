@@ -719,6 +719,36 @@ check "a daemon-reload followed the restore" "2" "$(reloads "$d")"
 check "the checkout flipped back" "$d/prev-co" "$(readlink "$d/prefix/repo/current")"
 
 # ---------------------------------------------------------------------------
+case_start "failed_apply_keeps_old_record_and_pending"
+d="$WORK/ap7"; mk_apply_fixture "$d" 1 1
+chmod 0555 "$d/home/.local/bin"
+run_apply "$d"
+chmod 0755 "$d/home/.local/bin"
+check "install.json still names the old tag" "1" "$(grep -c '"tag": "v9.9.8"' "$d/prefix/install.json" || true)"
+check "install.json still names the old commit" "1" "$(grep -c '"commit": "aaa"' "$d/prefix/install.json" || true)"
+check "the pending pointer is still armed" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+run_apply "$d"
+check "a second apply installs the new tag" "1 new-sotd no" \
+    "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true) $(cat "$d/prefix/bin/sotd") $([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+case_start "partial_wrapper_write_restores"
+d="$WORK/ap8"; mk_apply_fixture "$d" 1 1
+cat > "$d/stubs/cat" <<'CAT'
+#!/bin/sh
+# A disk that fills mid-write: half the text lands, then the write fails.
+in="$(head -c 1000000)"
+printf '%s' "$in" | head -c "$((${#in} / 2))"
+exit 1
+CAT
+chmod +x "$d/stubs/cat"
+run_apply "$d"
+check "the apply fails and restores" "1" "$(grep -c 'restoring previous binaries' "$d/out" || true)"
+check "the old wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+check "the pending pointer is kept" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
+check "no temp file is left beside the wrapper" "no" "$([ -e "$d/home/.local/bin/sot-launch.new" ] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'

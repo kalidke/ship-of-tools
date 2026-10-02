@@ -25,18 +25,20 @@ sot_wrapper_owner_prefix() {
         | head -1
 }
 
-# Write the sotd.service unit for PREFIX from TEMPLATE into DEST.
+# Write the sotd.service unit for PREFIX from TEMPLATE into DEST. Like every
+# rendered file it is written beside DEST and moved in, so a failed write
+# leaves the old file whole and returns 1.
 render_sotd_unit() {  # <prefix> <template> <dest>
     sed -e "s|@SOT_BIN@|$1/bin/sotd|" \
         -e "s|@SOT_APPLY@|$1/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
-        "$2" > "$3"
+        "$2" > "$3.new" && mv -f "$3.new" "$3" || { rm -f "$3.new"; return 1; }
 }
 
 # Write the all-in-one sot-launch wrapper for PREFIX / TARGET into DEST.
 render_sot_launch() {  # <prefix> <target> <dest>
     local prefix="$1" target="$2" dest="$3"
-    cat > "$dest" <<EOF
+    cat > "$dest.new" <<EOF || { rm -f "$dest.new"; return 1; }
 #!/usr/bin/env bash
 # sot-launch: all-in-one
 # All-in-one launcher: apply any armed pending update (offline pointer flip,
@@ -117,7 +119,7 @@ while :; do
     exit "\$RC"
 done
 EOF
-    chmod +x "$dest"
+    chmod +x "$dest.new" && mv -f "$dest.new" "$dest" || { rm -f "$dest.new"; return 1; }
 }
 
 # True when SOCKET accepts a connection (or, with an nc that cannot probe a
@@ -199,15 +201,14 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
 # Re-render, from CHECKOUT's own templates, the unit and the wrapper this
 # install owns, so an update carries their text along with the binaries.
 # Each file is backed up first (UNIT_BAK / WRAP_BAK exist only when that file
-# was re-rendered); the new text is written beside the target and moved in, so
-# a running wrapper keeps its old inode. Returns 1 on any write failure.
+# was re-rendered); the render writes beside the target and moves it in, so a
+# running wrapper keeps its old inode. Returns 1 on any write failure.
 sot_rerender_owned() {  # <prefix> <target> <checkout> <unit-bak> <wrap-bak>
     local prefix="$1" target="$2" checkout="$3" unit_bak="$4" wrap_bak="$5"
     local unit="$HOME/.config/systemd/user/sotd.service" wrapper="$HOME/.local/bin/sot-launch"
     if sot_service_owned "$prefix"; then
         cp -p "$unit" "$unit_bak" \
-            && render_sotd_unit "$prefix" "$checkout/deploy/sotd.service" "$unit.new" \
-            && mv -f "$unit.new" "$unit" || return 1
+            && render_sotd_unit "$prefix" "$checkout/deploy/sotd.service" "$unit" || return 1
         # The file on disk is right either way; the live check reads NeedDaemonReload.
         timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
             || echo "sot-apply: systemctl --user daemon-reload failed (the unit file is current)" >&2
@@ -216,8 +217,7 @@ sot_rerender_owned() {  # <prefix> <target> <checkout> <unit-bak> <wrap-bak>
        && { grep -q '^# sot-launch: all-in-one$' "$wrapper" || grep -q '^start_daemon_if_needed()' "$wrapper"; } \
        && [ "$(sot_wrapper_owner_prefix < "$wrapper")" = "$prefix" ]; then
         cp -p "$wrapper" "$wrap_bak" \
-            && render_sot_launch "$prefix" "$target" "$wrapper.new" \
-            && mv -f "$wrapper.new" "$wrapper" || return 1
+            && render_sot_launch "$prefix" "$target" "$wrapper" || return 1
     fi
     return 0
 }
