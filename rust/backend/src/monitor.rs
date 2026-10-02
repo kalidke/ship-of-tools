@@ -911,7 +911,8 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
 /// the label. The entry whose label or target equals this box's
 /// `host_name()` is sampled locally (no ssh), so one file serves whichever
 /// box the daemon runs on. No file, or a file the parser rejects (logged),
-/// falls back to this host alone.
+/// falls back to this host alone. A non-Linux daemon then drops its own host
+/// (`without_local_sampler`).
 ///
 /// Called ONCE, from `server::serve`, before any connection is accepted.
 /// The roster is fixed for the life of the daemon: editing `hosts.toml`
@@ -920,7 +921,7 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
 /// said here.
 /// The sampling roster this box actually executes. The declared monitor
 /// table is HUB-SCOPED DECLARATION: only the declared hub runs it. Every
-/// other daemon samples the host it runs on and nothing else — it is not
+/// other daemon samples the host it runs on (on Linux) and nothing else — it is not
 /// the monitoring authority, and asking it to ssh targets it may not
 /// resolve produced a partial record that looked like a whole one.
 fn sampling_roster(topo: &sot_protocol::topology::Topology, local: &str) -> Vec<MonitorHost> {
@@ -955,24 +956,27 @@ pub fn load_hosts() -> Vec<MonitorHost> {
     } else {
         hosts
     };
-    without_local_sampler(hosts, cfg!(windows))
+    without_local_sampler(hosts, cfg!(target_os = "linux"))
 }
 
-/// The sampler is a Linux script fed to `bash -s` (`/proc`, `nvidia-smi`).
-/// On Windows the only `bash` is git-bash, the daemon runs without a
-/// console, and every 5-second respawn of the dying script opened a new
+/// The sampler is a Linux script fed to `bash -s` (`/proc`, `nvidia-smi`),
+/// so only a Linux daemon samples its own host. Elsewhere it can produce
+/// nothing: on Windows the only `bash` is git-bash, the daemon runs without
+/// a console, and every 5-second respawn of the dying script opened a new
 /// console window into the git install directory (field report,
-/// 2026-09-17). A Windows daemon samples nothing locally; ssh targets on
-/// a hub's roster are untouched. `on_windows` is a parameter so both
-/// branches are unit-testable on one platform.
-fn without_local_sampler(hosts: Vec<MonitorHost>, on_windows: bool) -> Vec<MonitorHost> {
-    if !on_windows {
+/// 2026-09-17); on macOS there is no `/proc`, so the script loops every
+/// second spawning short-lived processes for no sample. A daemon on any
+/// other OS samples nothing locally; ssh targets on a hub's roster are
+/// untouched. `linux_host` is a parameter so both branches are
+/// unit-testable on one platform.
+fn without_local_sampler(hosts: Vec<MonitorHost>, linux_host: bool) -> Vec<MonitorHost> {
+    if linux_host {
         return hosts;
     }
     let kept: Vec<MonitorHost> = hosts.into_iter().filter(|h| !h.local).collect();
     tracing::info!(
         count = kept.len(),
-        "monitor: Windows daemon; the local host is not sampled (the sampler is a Linux script)"
+        "monitor: not a Linux host; the local host is not sampled (the sampler is a Linux script)"
     );
     kept
 }
@@ -1012,19 +1016,19 @@ mod config_tests {
     /// it. Every other box samples itself and nothing else, regardless of
     /// what the file declares.
     #[test]
-    fn windows_daemon_drops_only_the_local_sampler() {
+    fn only_a_linux_daemon_samples_itself() {
         let hosts = vec![
             MonitorHost { name: "here".into(), ssh_alias: None, local: true },
             MonitorHost { name: "there".into(), ssh_alias: Some("there".into()), local: false },
         ];
-        let unix = without_local_sampler(hosts.clone(), false);
-        assert_eq!(unix.len(), 2);
-        let win = without_local_sampler(hosts, true);
-        assert_eq!(win.len(), 1);
-        assert_eq!(win[0].name, "there");
+        let linux = without_local_sampler(hosts.clone(), true);
+        assert_eq!(linux.len(), 2);
+        let other = without_local_sampler(hosts, false);
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].name, "there");
         assert!(without_local_sampler(
             vec![MonitorHost { name: "here".into(), ssh_alias: None, local: true }],
-            true
+            false
         )
         .is_empty());
     }
@@ -1055,9 +1059,9 @@ mod config_tests {
         std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
         let hosts = load_hosts();
         std::env::remove_var("SOT_HOSTS");
-        if cfg!(windows) {
+        if !cfg!(target_os = "linux") {
             // The fallback single-host roster is still local-only, and
-            // load_hosts() strips the local sampler on Windows same as any
+            // load_hosts() strips the local sampler off Linux same as any
             // other roster: no declaration means an empty roster there.
             assert!(hosts.is_empty());
         } else {
