@@ -2878,7 +2878,7 @@ mod tests {
         }
     }
 
-    /// A failed fsync after an acked key halts before the next forward.
+    /// A failed fsync after an acked key halts before the next forward; a stale-epoch refusal is fsynced before its reply.
     #[test]
     fn input_wal_fsync_error_after_an_ack_halts_before_the_next_forward() {
         let dir = tempfile::tempdir().unwrap();
@@ -2892,6 +2892,13 @@ mod tests {
             .unwrap();
         assert!(matches!(out, InputOutcome::Recorded));
         assert!(w.has_unsynced());
+        // A stale-epoch refusal's fsync covers its `input` (and k1's `forwarded`) before the reply.
+        let k3 = [3u8; 16];
+        let out = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, k3, b"z", false)
+            .unwrap();
+        assert!(matches!(out, InputOutcome::RefusedStale));
+        assert!(!w.has_unsynced(), "a stale-epoch refusal is fsynced before its reply");
+        assert_eq!(store.dedupe_index[&k3].state, DedupeState::Refused);
         w.inject_fault_on_next_append_sync();
         let err = run_input_wal(&mut ctx, &mut w, &mut store, &mut witness, &mut fw, "c1", 1, k2, b"y", true)
             .unwrap_err();
