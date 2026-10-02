@@ -10365,6 +10365,9 @@ impl State {
                     .unwrap_or(0);
                 tracing::info!(since_request_ms, "session pane: warm capsule client reused");
                 c.set_viewed(true);
+                if c.status_line() == "attached" {
+                    self.pane_inputs_discarded = 0;
+                }
                 self.pane_attach_term = Some(c);
                 self.pane_dial_error = None;
                 self.pane_hold = None;
