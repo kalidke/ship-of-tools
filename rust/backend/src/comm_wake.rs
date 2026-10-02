@@ -16,8 +16,11 @@
 //! watched: Claude Code draws a background-agent footer there that ticks every
 //! second at rest.
 //! A row whose registry entry carries a `stop_at` mark under [`STOP_HOOK_BOUND`]
-//! old is running its Stop hook, which shows a free, still prompt; it is skipped,
-//! asked before the hold and again after it.
+//! old is running its Stop hook, which shows a free, still prompt; once the mark
+//! has landed the row is skipped, asked before the hold and again after it. The
+//! hook's 1 s lock wait bounds the lock, not the write; the mark lands about
+//! 0.13 s after the hook starts on Linux, inside the 1.5 s hold, but that is not
+//! guaranteed.
 //! The prompt glyph is `❯`, or on Windows either `❯` or `>` (Claude Code's
 //! fallback when its unicode check fails, which on Windows depends on the
 //! environment). On both OSes the line sits directly between the input box's
@@ -28,14 +31,16 @@
 //! whose Stop ended without `stop` (Esc, an API error, a killed hook) for at most
 //! the bound + [`TICK`] + [`STILL_FOR`]; this fails closed and its end-of-turn check still reads the mail.
 //! The converse fails open: a working row with no fresh mark (no hooks, the mark
-//! not written, a hook run past the bound) whose rows through the box hold still
+//! not written or not yet landed, a hook run past the bound) whose rows through the box hold still
 //! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
 //! A permission menu is not free by construction (its options use an ASCII
 //! space and it is never boxed), though it holds still. The menu fixtures are
 //! synthetic (built from the bundle's layout; no menu screen has been
 //! captured), and this assumes the cursor follows focus into a dialog. The Windows-only gap:
 //! while the NBSP is not required there, an agents-view task box with an empty
-//! placeholder (a voice state) reads free.
+//! placeholder (a voice state) reads free. Known test gap: no test covers the
+//! re-check after the hold (`wake_if_free` asks `is_free` again before typing);
+//! deleting it passes every test, and a test that does not flake needs a seam.
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
@@ -210,8 +215,9 @@ fn counts(line: &[u8], handle: &str) -> bool {
         && v.get("from").and_then(|f| f.as_str()) != Some(handle)
 }
 
-/// Whether the registry says `handle`'s Stop hook is running: its `stop_at` mark lies within
-/// [`STOP_HOOK_BOUND`] of `now_secs`, either side. Both ends are `%Y-%m-%dT%H:%M:%SZ`, so string order is time order.
+/// Whether the registry says `handle`'s Stop hook is running: its `stop_at` mark is at most [`STOP_HOOK_BOUND`]
+/// old and at most 1 s ahead of `now_secs` (the stamp's rounding). A mark further ahead is a backward clock step and
+/// holds nothing, so no mark holds a row past the bound. Both ends are `%Y-%m-%dT%H:%M:%SZ`, so string order is time order.
 fn stop_hook_running(registry: &[u8], handle: &str, now_secs: u64) -> bool {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(registry) else {
         return false;
@@ -221,7 +227,7 @@ fn stop_hook_running(registry: &[u8], handle: &str, now_secs: u64) -> bool {
     };
     let iso = crate::handlers::iso8601_utc_from_secs;
     let bound = STOP_HOOK_BOUND.as_secs();
-    at >= iso(now_secs.saturating_sub(bound)).as_str() && at <= iso(now_secs + bound).as_str()
+    at >= iso(now_secs.saturating_sub(bound)).as_str() && at <= iso(now_secs + 1).as_str()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -780,10 +786,10 @@ mod tests {
         let at = |off: i64| iso((now as i64 + off) as u64);
         let reg = |entry: &str| format!(r#"{{"agents":{{"h":{entry}}}}}"#).into_bytes();
         let mark = |off: i64| reg(&format!(r#"{{"floor":"user","stop_at":"{}"}}"#, at(off)));
-        for off in [0, -60, 60] {
+        for off in [0, -60, 1] {
             assert!(stop_hook_running(&mark(off), "h", now), "offset {off}");
         }
-        for off in [-61, 61] {
+        for off in [-61, 2, 60] {
             assert!(!stop_hook_running(&mark(off), "h", now), "offset {off}");
         }
         assert!(!stop_hook_running(&reg(r#"{"floor":"user"}"#), "h", now));

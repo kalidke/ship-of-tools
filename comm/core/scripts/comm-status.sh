@@ -12,10 +12,11 @@
 #            USER prompt also clears `question` and `done` (typing into the
 #            session answers it and reads it); a machine prompt clears
 #            nothing.
-#   stop     a turn just ended (sent at EVERY Stop, after any marker stamp
-#            below has already run): sets `done` when `floor` was `user` and
-#            neither `question` nor `waiting` is set, then clears `floor` and
-#            the Stop hook's `stop_at` mark.
+#   stop     a turn just ended (sent by the Stop that lets the turn end, after
+#            any marker stamp below has already run; a Stop that blocks sends
+#            none): sets `done` when `floor` was `user` and neither `question`
+#            nor `waiting` is set, then clears `floor` and the Stop hook's
+#            `stop_at` mark.
 #
 # Five verbs are DECLARATIONS — the model's own word (the Stop hook's marker
 # stamp and the two yield hooks send these too, on the model's behalf):

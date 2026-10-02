@@ -189,7 +189,10 @@ if [ -z "${NAME:-}" ] || [ "$_reg_rc" -eq 1 ]; then
     turn_floor; exit 0
 fi
 
-# The comm wake holds the row while this mark is under a minute old, `stop` deletes it, and the 1 s lock wait means a mark that lands at all lands inside the daemon's 1.5 s hold.
+# The comm wake holds the row while this mark is under a minute old, and
+# `stop` deletes it. It protects the row once it has landed: the 1 s lock
+# wait bounds the lock, not the write (measured about 0.13 s on Linux), so
+# landing inside the daemon's 1.5 s hold is likely, not guaranteed.
 stop_mark() { registry_replace 'if .agents[$n] then .agents[$n].stop_at = $t else . end' --arg n "$NAME" --arg t "$(now_iso)"; }
 ( . "$FE_LIB" >/dev/null 2>&1 && SOT_LOCK_WAIT_SECS=1 with_lock stop_mark ) >/dev/null 2>&1 || true
 
@@ -459,8 +462,6 @@ if [ -n "$marker_state" ]; then
             [ -z "${_findings_file:-}" ] || rm -f -- "${_findings_file:?}" 2>/dev/null
         fi
     fi
-    # Every Stop that lets the turn end sends `stop` (ADR 0044 amendment); the
-    # audit's block above leaves `floor` set, so the turn is not over yet.
     turn_floor
     exit 0
 fi
