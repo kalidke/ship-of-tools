@@ -20,7 +20,7 @@
 // `--project-root`), constructed at startup whether or not a toml
 // exists for it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -644,24 +644,14 @@ pub struct Workspaces {
 struct RunGate {
     /// Set once by the shutdown; refuses every start from then on.
     closing: bool,
-    /// Rows registered at a pending start, refused until their window
-    /// comes back or the pending start cleans them up.
-    held_back: HashSet<String>,
     /// Permits not yet dropped.
     in_flight: usize,
 }
 
 impl RunGate {
-    /// Why `workspace_id` may not start now, if it may not. One arm per
-    /// reason, first match wins.
-    fn refusal(&self, workspace_id: &str) -> Option<&'static str> {
-        if self.closing {
-            Some("this computer's backend is shutting down")
-        } else if self.held_back.contains(workspace_id) {
-            Some("this session is waiting for its window to come back")
-        } else {
-            None
-        }
+    /// Why no start may begin now, if none may.
+    fn refusal(&self) -> Option<&'static str> {
+        self.closing.then_some("this computer's backend is shutting down")
     }
 }
 
@@ -938,23 +928,11 @@ impl Workspaces {
     /// that names the workspace and the reason.
     pub fn begin_start(&self, workspace_id: &str) -> Result<StartPermit, String> {
         let mut gate = self.gate.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(reason) = gate.refusal(workspace_id) {
+        if let Some(reason) = gate.refusal() {
             return Err(format!("workspace {workspace_id} cannot start: {reason}"));
         }
         gate.in_flight += 1;
         Ok(StartPermit(self.gate.clone()))
-    }
-
-    /// Refuses starts for `ids` until [`Self::release_held_back`].
-    // The pending start calls these; it lands after the gate.
-    #[allow(dead_code)]
-    pub fn hold_back(&self, ids: impl IntoIterator<Item = String>) {
-        self.gate.0.lock().unwrap_or_else(|e| e.into_inner()).held_back.extend(ids);
-    }
-
-    #[allow(dead_code)]
-    pub fn release_held_back(&self) {
-        self.gate.0.lock().unwrap_or_else(|e| e.into_inner()).held_back.clear();
     }
 
     /// Closes the gate for good, then waits until every permit has dropped
@@ -2116,15 +2094,6 @@ mod tests {
         assert!(reg.begin_start("ws-a-1").is_ok());
         assert!(reg.begin_start("ws-b-2").is_ok());
 
-        // Held back: that id only, with a text naming it; release admits it again.
-        reg.hold_back(["ws-a-1".to_string()]);
-        let refused = reg.begin_start("ws-a-1").err().expect("a held-back id is refused");
-        assert!(refused.contains("ws-a-1"), "{refused}");
-        assert!(refused.contains("this session is waiting for its window to come back"), "{refused}");
-        assert!(reg.begin_start("ws-b-2").is_ok());
-        reg.release_held_back();
-        assert!(reg.begin_start("ws-a-1").is_ok());
-
         // Settle returns true once a held permit drops.
         let permit = reg.begin_start("ws-b-2").expect("open gate");
         let dropper = std::thread::spawn(move || {
@@ -2134,7 +2103,7 @@ mod tests {
         assert!(reg.close_gate_and_settle(Instant::now() + std::time::Duration::from_secs(5)));
         dropper.join().unwrap();
 
-        // Closing refuses every id, held back or not.
+        // Closing refuses every id.
         for id in ["ws-a-1", "ws-b-2", "ws-new-3"] {
             let refused = reg.begin_start(id).err().expect("a closing gate refuses every start");
             assert!(refused.contains(id), "{refused}");

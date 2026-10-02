@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sot_protocol::ops::lease as bounds;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
-use crate::lease::{self, Leases, StartEvent, StartPlan};
+use crate::lease::{self, Leases, StartPlan};
 use crate::workspaces::{Workspace, WorkspaceChanged, Workspaces};
 
 /// The daemon's leases, built from the record before any connection is
@@ -37,9 +37,7 @@ pub(crate) fn begin(
              ({} unset)",
             crate::capsule_workspace::STATE_ROOT_HINT
         );
-        let (leases, starts) = Leases::new(own_boot.ok(), None, now_ms);
-        log_starts(starts);
-        return Arc::new(leases);
+        return Arc::new(Leases::new(own_boot.ok(), None, None, false));
     };
     let path = state_root.join(bounds::HELD_RECORD_FILE);
     let read = lease::read_record(&path);
@@ -51,10 +49,10 @@ pub(crate) fn begin(
         _ => Vec::new(),
     };
     let plan = lease::startup_plan(&read, own_boot.as_deref().map_err(|_| ()), now_ms);
-    let (leases, starts) = Leases::new(own_boot.ok(), Some(path), now_ms);
+    let loaded = read.as_ref().ok().and_then(Option::as_ref);
+    let leases = Leases::new(own_boot.ok(), Some(path), loaded, plan == StartPlan::Cleanup);
     leases.keep_unremoved(&unremoved);
     let leases = Arc::new(leases);
-    log_starts(starts);
     tracing::info!(?plan, "start plan from the held record");
     match plan {
         StartPlan::Resume => {
@@ -69,7 +67,7 @@ pub(crate) fn begin(
         StartPlan::Cleanup => {
             // The rows registered now, before any listener binds: a row a
             // window creates later is never this Cleanup's to end.
-            let rows = crate::shutdown::capsule_rows(workspaces);
+            let rows = workspaces.list();
             tokio::spawn(cleanup(leases.clone(), rows, state_root, workspaces.clone(), ws_events.clone()));
         }
     }
@@ -112,16 +110,6 @@ async fn cleanup(
     if let Err(e) = leases.finish_cleanup(report.not_ended, report.forget) {
         tracing::error!("startup cleanup's record was not written: {e}");
     }
-}
-
-/// Every row was resumed at start, so a lease only ends the
-/// wait; it is logged.
-fn log_starts(mut starts: mpsc::UnboundedReceiver<StartEvent>) {
-    tokio::spawn(async move {
-        while let Some(event) = starts.recv().await {
-            tracing::info!(?event, "a window completed the pending start");
-        }
-    });
 }
 
 #[cfg(all(test, unix))]
