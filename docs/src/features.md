@@ -16,7 +16,7 @@ macOS equivalents are in [Keybindings](ref/keybindings.md).
   <li><strong>Navigation and previews</strong>: <a href="#Walk-the-project,-see-the-file">walk the project</a> · <a href="#Modules-mode">Modules mode</a> · <a href="#PDF,-paged">PDF</a> · <a href="#Pan-and-zoom-images">pan and zoom</a> · <a href="#Pin-a-file">pin a file</a> · <a href="#Edit-a-file-yourself">edit a file</a></li>
   <li><strong>The REPL</strong>: <a href="#Run-code,-see-figures-inline">run code, see figures inline</a></li>
   <li><strong>The window</strong>: <a href="#Searchable-help">searchable help</a></li>
-  <li><strong>Your machines</strong>: <a href="#Your-machines">a remote backend, several frontends, sessions that outlive the window</a></li>
+  <li><strong>Your machines</strong>: <a href="#Your-machines">a remote backend, several frontends, sessions that outlive the connection</a></li>
 </ul>
 ```
 
@@ -205,10 +205,11 @@ The setup is in [Going remote](start/remote.md).
 - **Several frontends.** A desktop and a laptop can attach to the same backend
   at once and see the same sessions, work-state colours and REPLs. See
   [A second frontend](guide/second-frontend.md).
-- **Sessions outlive the window.** Agent sessions run under their own
-  supervisor, and their REPLs under the backend daemon, so closing the window
-  or a dropped connection stops nothing, and with a remote backend neither
-  does closing the laptop lid; the next launch reattaches.
+- **Sessions outlive the connection.** Agent sessions run under their own
+  supervisor, and their REPLs under the backend daemon, so a dropped
+  connection stops nothing, and with a remote backend neither does closing the
+  laptop lid or the window; the next launch reattaches. Closing the last window
+  on the computer that runs the backend ends its sessions; `Ctrl+Q` can keep them.
   See [Sessions and persistence](concepts/sessions.md).
 
 ```@raw html

@@ -108,7 +108,7 @@ agent pane with the project directory as its working directory. The first time
 Claude Code starts in a folder it asks, in the agent pane, whether you trust
 the files in it; answer there once and the session continues. Each session
 runs under its own supervisor process on the backend (a *capsule*), so it
-keeps running when the window closes.
+keeps running while you switch sessions or the connection drops.
 
 ## 5. Ask the agent to run something
 
@@ -134,8 +134,11 @@ See [How agents use the REPL](@ref agents-repl).
 
 - In Sessions mode, `Shift+D` pressed twice on a session's row ends that
   session; any other command in between cancels.
-- `Ctrl+Q`, with the navigation pane focused, closes the window. The backend
-  and its sessions keep running; `sot-launch` opens the window again.
+- Closing the window ends the backend on this computer and every session it
+  runs; the next window starts with none. `Ctrl+Q`, with the navigation pane
+  focused, asks first: **Keep the daemon and sessions running?** No is the
+  default; `Tab` selects Yes, `Enter` confirms, `Esc` cancels. See
+  [What keeps running](running.md).
 
 ## Next
 

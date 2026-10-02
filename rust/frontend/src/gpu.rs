@@ -43,6 +43,7 @@ use crate::preview::quad::{Quad, QuadPipeline, ScreenRect};
 use crate::preview::svg::quad_from_svg_bytes;
 use crate::settings::Settings;
 use crate::transport::OutgoingReq;
+use sot_protocol::ops::LeaveIntent;
 use sot_protocol::{ReplFrame, TreeNode};
 
 /// `(host, identifier)` — the composite identity backing every
@@ -627,6 +628,10 @@ enum NavPrompt {
         /// Display label of the row, echoed in the confirm prompt.
         label: String,
     },
+    /// Ctrl+Q in navigation focus: ask whether to keep the daemon and its
+    /// sessions running. `keep` is the highlighted answer (No by default);
+    /// Tab flips it, Enter confirms, Esc cancels.
+    ConfirmQuit { keep: bool },
     /// Ctrl+S on a raster that carries NO physical scale (ADR 0034 §4 live
     /// entry): type the pixel size in MICRONS. Enter validates + fires
     /// `preview.set_scale` (which persists the sidecar and returns the
@@ -642,6 +647,128 @@ enum NavPrompt {
         /// Live nm-per-pixel buffer, rendered after `pixel size (nm): `.
         input: String,
     },
+}
+
+/// A key the Ctrl+Q prompt reacts to.
+#[derive(Clone, Copy)]
+enum QuitKey {
+    Tab,
+    Enter,
+    Esc,
+    Other,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QuitPromptStep {
+    Stay { keep: bool },
+    Leave(LeaveIntent),
+    Cancel,
+    Ignore,
+}
+
+/// The Ctrl+Q prompt's key table: Tab flips the answer, Enter confirms it,
+/// Esc cancels, anything else changes nothing.
+fn quit_prompt_key(keep: bool, key: QuitKey) -> QuitPromptStep {
+    match key {
+        QuitKey::Tab => QuitPromptStep::Stay { keep: !keep },
+        QuitKey::Enter => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
+        QuitKey::Esc => QuitPromptStep::Cancel,
+        QuitKey::Other => QuitPromptStep::Ignore,
+    }
+}
+
+/// The Ctrl+Q prompt's reading of a key. It owns the keyboard while open,
+/// so every key reaches it before any global binding: Tab, Enter and Esc act
+/// as `quit_prompt_key` says, and repeats and every other key do nothing.
+fn prompt_takes_key(keep: bool, tab: bool, action: Option<Action>, repeat: bool) -> QuitPromptStep {
+    if repeat {
+        return QuitPromptStep::Ignore;
+    }
+    let key = if tab {
+        QuitKey::Tab
+    } else if action == Some(Action::Confirm) {
+        QuitKey::Enter
+    } else if action == Some(Action::Cancel) {
+        QuitKey::Esc
+    } else {
+        QuitKey::Other
+    };
+    quit_prompt_key(keep, key)
+}
+
+/// A focus change away from the navigation pane dismisses the Ctrl+Q prompt
+/// without quitting; no other prompt reacts to focus.
+fn quit_prompt_on_focus(prompt: Option<&NavPrompt>, to: PaneFocus) -> Option<QuitPromptStep> {
+    (matches!(prompt, Some(NavPrompt::ConfirmQuit { .. })) && to != PaneFocus::NavTree)
+        .then_some(QuitPromptStep::Cancel)
+}
+
+/// The quit prompt as its text and its choice; the choice ends the prompt
+/// (`nav_pinned_rows` keeps it whole on the last row).
+fn quit_prompt_line(keep: bool) -> (String, String) {
+    let choice = if keep { "No  [Yes]" } else { "[No]  Yes" };
+    (
+        "Keep the daemon and sessions running?  Tab switches \u{b7} Enter confirms \u{b7} Esc cancels".to_string(),
+        choice.to_string(),
+    )
+}
+
+/// Why the window is being asked to exit.
+#[derive(Clone, Copy)]
+enum ExitReason {
+    WindowClose,
+    QuitKey,
+    Relaunch(i32),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ExitStep {
+    Ask,
+    Leave { intent: LeaveIntent, code: i32 },
+    Supersede,
+    Now { code: i32 },
+    Ignore,
+}
+
+/// What an exit request does. A window already leaving exits at once, with
+/// 0, on a second close, except that an X or OS close during a Keep
+/// supersedes it with a Close: the user's latest intent wins, so a second
+/// close during a Handover never relaunches. A relaunch then defers to the
+/// leave in progress.
+fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
+    match (reason, leaving) {
+        (ExitReason::WindowClose, None) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
+        (ExitReason::QuitKey, None) => ExitStep::Ask,
+        (ExitReason::Relaunch(code), None) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
+        (ExitReason::WindowClose, Some(LeaveIntent::Keep)) => ExitStep::Supersede,
+        (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now { code: 0 },
+        (ExitReason::Relaunch(_), Some(_)) => ExitStep::Ignore,
+    }
+}
+
+/// A second close exits at once with `code` (0), and the leave in progress
+/// takes that code: winit still runs `about_to_wait` while it shuts down, and
+/// its poll exits with the leave's own code, so no restart code outlives a
+/// close.
+fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
+    if let Some(l) = leaving {
+        l.exit_code = code;
+    }
+    code
+}
+
+/// The slot maximization gives the whole area, if any. While a leave has a
+/// line to show, none: the nav pane draws that line (`nav_pinned_rows`).
+fn maximize_slot(maximized: bool, focus: PaneFocus, leave_line: bool) -> Option<crate::settings::Slot> {
+    (maximized && !leave_line).then(|| focus.slot())
+}
+
+/// Whether the redraw that set `should_exit` ends the event loop. A window
+/// that is leaving exits only from `about_to_wait`'s poll, with its own
+/// exit code once the acks are in. The capture harness never leases and
+/// `about_to_wait` returns early for it, so its exit is here.
+fn redraw_exits(should_exit: bool, leaving: bool, harness: bool) -> bool {
+    should_exit && (harness || !leaving)
 }
 
 /// Outcome of a Ctrl+N create round-trip, as `finish_pending_create` needs
@@ -3576,6 +3703,7 @@ pub struct App {
         tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
     )>,
     pending_transports: Option<Vec<PendingTransport>>,
+    leases: Arc<crate::lease::Leases>,
     /// Tracks Ctrl/Shift/Alt/Super state for Ctrl+Arrow pane navigation.
     /// winit 0.30 publishes modifier changes via `WindowEvent::ModifiersChanged`
     /// separately from key presses, so we keep a running copy and consult
@@ -3594,6 +3722,7 @@ impl App {
             tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
         )>,
         pending_transports: Option<Vec<PendingTransport>>,
+        leases: Arc<crate::lease::Leases>,
     ) -> Self {
         Self {
             state: None,
@@ -3603,6 +3732,7 @@ impl App {
             evt_tx: Some(evt_tx),
             conns,
             pending_transports,
+            leases,
             modifiers: winit::keyboard::ModifiersState::empty(),
         }
     }
@@ -4900,6 +5030,19 @@ struct State {
     /// `PendingTransport` list `conns` is built from, before `resumed()`
     /// consumes it (`spawn_pane_attach_term` is the only reader).
     host_transports: HashMap<crate::dial::HostKey, crate::transport::TransportConfig>,
+    leases: Arc<crate::lease::Leases>,
+    /// This window's own state root, as the daemon names it in a granted
+    /// lease; the attach-only drawer needs a lease that carries it (ADR 0050).
+    #[cfg(windows)]
+    own_state_root: Option<String>,
+    /// Not-ended counts not yet reported to the daemon, newest last; acked
+    /// right after a presented frame draws them (`acks_for_frame`).
+    notice_acks: Vec<(crate::dial::HostKey, u32)>,
+    /// The not-ended line a lease grant reported once a frame showed it, and
+    /// when it stops showing.
+    not_ended_shown: Option<(String, std::time::Instant)>,
+    /// Set once the window is on its way out and waiting for the daemons' acks.
+    leaving: Option<crate::lease::Leaving>,
     /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
     /// transport each host's CONTROL connection actually resolved to
     /// (`ResolvedDial`'s own doc) — recorded from every `Connected` evt,
@@ -5617,6 +5760,158 @@ fn truncate_to_cells(text: &str, cells: usize) -> (String, usize) {
     (out, w)
 }
 
+/// Which backend the drawer uses (ADR 0041, ADR 0050). The attach-only
+/// drawer needs this computer's backend, and that backend must hold this
+/// window's lease: a granted lease whose `state_root` is this window's own.
+/// The choice is made once, so an attach drawer already running stays and a
+/// plain terminal already running is never swapped out.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn drawer_uses_attach(
+    setting: bool,
+    attach_live: bool,
+    local_live: bool,
+    granted_roots: &[String],
+    own_root: Option<&str>,
+) -> bool {
+    attach_live || (setting && !local_live && own_root.is_some_and(|r| granted_roots.iter().any(|g| g == r)))
+}
+
+/// Wrap a status text into lines of display cells: the first line has
+/// `first_w` cells (the pane's width less the "status: " label), the rest
+/// `rest_w`. Breaks at a space where one falls in the line, else mid-word;
+/// a first line with no room for text comes back empty. Width is in cells,
+/// so wide glyphs never straddle a break; a glyph wider than `rest_w` still
+/// takes a line to itself, so the loop always advances. `rest_w == 0` (no
+/// pane) returns the text whole.
+fn wrap_status(text: &str, first_w: usize, rest_w: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    if rest_w == 0 {
+        return vec![text.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut rest = text;
+    let mut limit = first_w;
+    let mut first = true;
+    loop {
+        // The longest prefix that fits `limit` cells, and the last space in it.
+        let (mut w, mut end, mut last_space) = (0usize, 0usize, None);
+        for (i, ch) in rest.char_indices() {
+            let cw = ch.width().unwrap_or(0);
+            if w + cw > limit {
+                break;
+            }
+            if ch == ' ' {
+                last_space = Some(i);
+            }
+            w += cw;
+            end = i + ch.len_utf8();
+        }
+        if end == rest.len() {
+            out.push(rest.to_string());
+            return out;
+        }
+        let (cut, skip) = if rest[end..].starts_with(' ') {
+            (end, 1)
+        } else if let Some(sp) = last_space.filter(|&sp| sp > 0) {
+            (sp, 1)
+        } else if end == 0 && first {
+            (0, 0)
+        } else if end == 0 {
+            (rest.chars().next().map_or(0, char::len_utf8), 0)
+        } else {
+            (end, 0)
+        };
+        out.push(rest[..cut].to_string());
+        rest = &rest[cut + skip..];
+        if rest.is_empty() {
+            return out;
+        }
+        limit = rest_w;
+        first = false;
+    }
+}
+
+/// The nav pane's status lines: "status: " heads the first, and the text
+/// wraps under it at `width` cells.
+fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
+    let label = "status: ";
+    let text = Style::default().fg(Color::LightGreen);
+    let first_w = width.saturating_sub(unicode_width::UnicodeWidthStr::width(label));
+    let mut segs = wrap_status(status, first_w, width).into_iter();
+    let mut lines = vec![RtLine::from(vec![
+        Span::styled(label, Style::default().fg(Color::DarkGray)),
+        Span::styled(segs.next().unwrap_or_default(), text),
+    ])];
+    lines.extend(segs.map(|seg| RtLine::from(vec![Span::styled(seg, text)])));
+    lines
+}
+
+/// The nav pane's pinned rows, drawn under the scrolled list so no scroll
+/// hides them: the lease notice, then `line` (the not-ended count or
+/// `closing…`), then the open prompt, each wrapped at `width` cells. A pane
+/// too short for them all gives whole lines in priority order (the prompt,
+/// then `line`, then the notice) and drops the rest whole; a prompt that
+/// does not fit keeps only its last row. A prompt is its text and its choice
+/// (empty for none); the choice joins the last wrapped row if it fits there,
+/// else takes its own row, so the kept last row always holds it whole; in a
+/// pane narrower than the choice it is dropped, never cut. `line` may be two
+/// lines, kept or dropped together. Returns the height left to the
+/// list, the rows, and whether `line` was drawn whole.
+fn nav_pinned_rows(
+    prompt: Option<(&str, &str)>,
+    notice: Option<&str>,
+    line: Option<&str>,
+    width: usize,
+    pane_height: usize,
+) -> (usize, Vec<String>, bool) {
+    let wrap = |text: Option<&str>| -> Vec<String> {
+        text.map(|t| t.split('\n').flat_map(|l| wrap_status(l, width, width)).collect()).unwrap_or_default()
+    };
+    let prompt_in = prompt;
+    let mut prompt = wrap(prompt.map(|(text, _)| text));
+    if let Some((_, choice)) = prompt_in.filter(|(_, c)| !c.is_empty() && c.chars().count() <= width) {
+        match prompt.last_mut() {
+            Some(last) if last.chars().count() + 3 + choice.chars().count() <= width => {
+                last.push_str("   ");
+                last.push_str(choice);
+            }
+            _ => prompt.push(choice.to_string()),
+        }
+    }
+    if prompt.len() > pane_height {
+        prompt.drain(..prompt.len() - pane_height.min(1));
+    }
+    let mut left = pane_height - prompt.len();
+    let mut whole = |rows: Vec<String>| {
+        if rows.len() > left {
+            return Vec::new();
+        }
+        left -= rows.len();
+        rows
+    };
+    let line = whole(wrap(line));
+    let notice = whole(wrap(notice));
+    let drawn = !line.is_empty();
+    let rows = [notice, line, prompt].concat();
+    (pane_height - rows.len(), rows, drawn)
+}
+
+/// The `fe.notice_seen` acks a presented frame owes: none unless it drew the
+/// not-ended line, else each daemon's newest pending count. The daemon clears
+/// only on an equal count, so an older one is dropped, not sent.
+fn acks_for_frame(pending: &[(crate::dial::HostKey, u32)], drawn: bool) -> Vec<(crate::dial::HostKey, u32)> {
+    let mut out: Vec<(crate::dial::HostKey, u32)> = Vec::new();
+    if drawn {
+        for (host, n) in pending {
+            match out.iter_mut().find(|(h, _)| h == host) {
+                Some(slot) => slot.1 = *n,
+                None => out.push((host.clone(), *n)),
+            }
+        }
+    }
+    out
+}
+
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
 /// Cache key for the PNG preview view-state cache. Takes a `files:<rel>`
 /// node id and a `(w, h)` and returns the parent-dir portion of the id
@@ -6106,6 +6401,7 @@ impl State {
             crate::dial::HostKey,
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
+        leases: Arc<crate::lease::Leases>,
     ) -> Result<Self> {
         // Loaded here (rather than at each of its several uses below) so
         // `last_host` and the window-geometry fields below all read the
@@ -6715,6 +7011,12 @@ impl State {
             // `conns` came from, before that list is consumed spawning
             // each host's transport task — empty here only briefly.
             host_transports: HashMap::new(),
+            leases,
+            #[cfg(windows)]
+            own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::state_dir::state_dir_hash(&d)),
+            notice_acks: Vec::new(),
+            not_ended_shown: None,
+            leaving: None,
             host_resolved_dial: HashMap::new(),
             link_gates: HashMap::new(),
             declared_host: HashMap::new(),
@@ -11660,7 +11962,7 @@ impl State {
         // the prompt puts them back (5th-gate follow-up) — the focus move is
         // ours, not theirs, so it shouldn't outlive the prompt.
         self.scale_entry_prior_focus = Some(self.focus);
-        self.focus = PaneFocus::NavTree;
+        self.set_focus(PaneFocus::NavTree);
         self.status = "pixel size (nm): ".to_string();
         self.window.request_redraw();
         true
@@ -11716,7 +12018,7 @@ impl State {
         // in (the Preview they're calibrating), so their next zoom/pan key
         // lands there rather than in the tree.
         if let Some(prior) = self.scale_entry_prior_focus.take() {
-            self.focus = prior;
+            self.set_focus(prior);
         }
         self.status = format!("pixel size {raw} nm · saving…");
         self.window.request_redraw();
@@ -11817,11 +12119,22 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// The one write of `focus`: moving it off the navigation pane dismisses
+    /// the quit prompt (`quit_prompt_on_focus`), so the prompt is on screen
+    /// only while the tree has focus.
+    fn set_focus(&mut self, to: PaneFocus) {
+        if quit_prompt_on_focus(self.nav_prompt.as_ref(), to) == Some(QuitPromptStep::Cancel) {
+            self.cancel_nav_prompt();
+        }
+        self.focus = to;
+    }
+
     /// Dismiss the active NavTree prompt without acting. The cancel message is
     /// variant-aware so the user sees which prompt they backed out of.
     fn cancel_nav_prompt(&mut self) {
         self.status = match self.nav_prompt {
             Some(NavPrompt::ConfirmDelete { .. }) => "delete · cancelled".to_string(),
+            Some(NavPrompt::ConfirmQuit { .. }) => "quit · cancelled".to_string(),
             Some(NavPrompt::ScaleEntry { .. }) => "pixel size · cancelled".to_string(),
             _ => "new file · cancelled".to_string(),
         };
@@ -11830,7 +12143,7 @@ impl State {
         // `scale_entry_prior_focus`). Only fires for that prompt; the other
         // variants are opened FROM the tree and never moved focus.
         if let Some(prior) = self.scale_entry_prior_focus.take() {
-            self.focus = prior;
+            self.set_focus(prior);
         }
         self.window.request_redraw();
     }
@@ -12711,18 +13024,18 @@ impl State {
         self.help.open(context);
         self.drawer = DrawerContent::Help;
         self.maximized = false;
-        self.focus = PaneFocus::Repl;
+        self.set_focus(PaneFocus::Repl);
         self.window.request_redraw();
     }
 
     fn close_help_drawer(&mut self) {
         if let Some((focus, drawer, maximized)) = self.help_origin.take() {
-            self.focus = focus;
+            self.set_focus(focus);
             self.drawer = drawer;
             self.maximized = maximized;
         } else {
             self.drawer = DrawerContent::Closed;
-            self.focus = PaneFocus::NavTree;
+            self.set_focus(PaneFocus::NavTree);
         }
         self.help.peek = None;
         self.window.request_redraw();
@@ -13284,6 +13597,12 @@ impl State {
                             });
                         }
                     } // if event_host == self.active_host
+                }
+                crate::transport::IncomingEvt::NotEnded { count } => {
+                    if count > 0 {
+                        self.notice_acks.push((event_host.clone(), count));
+                        self.window.request_redraw();
+                    }
                 }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
                     if event_host == self.active_host {
@@ -15173,7 +15492,7 @@ impl State {
                                 .contains(&crate::settings::Slot::Llm);
                             if has_llm {
                                 self.wide_preview = false;
-                                self.focus = PaneFocus::Llm;
+                                self.set_focus(PaneFocus::Llm);
                             }
                             self.window.request_redraw();
                         }
@@ -15510,16 +15829,6 @@ impl State {
                          ROI x={x} y={y}, {w}×{h} px. Cropped PNG: {path}"
                     );
                     let bytes = bracketed_paste_bytes(&msg);
-                    // ADR 0042 slice L1b fix 3: routed through the ONE
-                    // session-pane input dispatcher, exactly like
-                    // `forward_clipboard_paste_to_llm` — a live capsule
-                    // gets `send_input` on its own connection, a pending
-                    // resolution buffers, and only a confirmed tmux row
-                    // reaches the daemon's `pty.write`. Before this fix
-                    // the ROI paste always went straight to `pty.write`,
-                    // landing in whatever tmux pty the daemon still had
-                    // open even while a capsule was live and selected.
-                    self.send_pane_input(&bytes);
                     // Focus follows the paste: the capture key's whole
                     // point is to ask the agent about what you're looking
                     // at, and the pasted line is deliberately unsent (no
@@ -15534,7 +15843,19 @@ impl State {
                     // handed — drop wide-preview so the pane (and the
                     // focus move) are actually visible.
                     self.wide_preview = false;
-                    self.focus = PaneFocus::Llm;
+                    self.set_focus(PaneFocus::Llm);
+                    // After `set_focus`, so an open quit prompt is dismissed
+                    // before the agent pane takes the bytes.
+                    // ADR 0042 slice L1b fix 3: routed through the ONE
+                    // session-pane input dispatcher, exactly like
+                    // `forward_clipboard_paste_to_llm` — a live capsule
+                    // gets `send_input` on its own connection, a pending
+                    // resolution buffers, and only a confirmed tmux row
+                    // reaches the daemon's `pty.write`. Before this fix
+                    // the ROI paste always went straight to `pty.write`,
+                    // landing in whatever tmux pty the daemon still had
+                    // open even while a capsule was live and selected.
+                    self.send_pane_input(&bytes);
                     self.status = format!("ROI {w}×{h} of {name} → LLM pane · Enter to send");
                     self.window.request_redraw();
                 }
@@ -15988,11 +16309,7 @@ impl State {
     /// ADR 0041 step 6 U3: drains checkpoint/output/notice/status/
     /// terminal/fe_down events from an EXISTING attach client. Called by
     /// the caller on every redraw whenever `self.attach_term.is_some()`
-    /// — deliberately NOT gated on `self.drawer` (Codex review round,
-    /// finding 2): the quit dispatcher's own `ShouldExit` outcome must
-    /// reach `self.should_exit` even while the drawer is closed, or a
-    /// window-close request issued with the Terminal drawer hidden would
-    /// never actually exit.
+    /// — deliberately NOT gated on `self.drawer`.
     #[cfg(windows)]
     fn pump_attach_term(&mut self) {
         let Some(t) = self.attach_term.as_mut() else {
@@ -16015,37 +16332,60 @@ impl State {
                 self.status = t.status_line().to_string();
             }
         }
-        if t.should_exit() {
-            self.should_exit = true;
-            self.window.request_redraw();
-        }
     }
 
     /// ADR 0041 step 6 U3 ruling (a): the ONE quit dispatcher every
     /// user-requested exit routes through — the window-close request and
     /// the Quit keybind both call this instead of `event_loop.exit()`
-    /// directly. Exit 75 (self-relaunch), a crash, and `--capture` are
-    /// excluded by construction: none of their call sites reach this
-    /// method (see `window_event`'s relaunch-flag branch and the
-    /// `capture_now` path in `redraw`, both untouched by this unit).
+    /// directly. Exit 75 (self-relaunch) reaches `leave` from
+    /// `window_event`'s relaunch-flag branch instead; a crash and
+    /// `--capture` never reach it.
     ///
-    /// When attach-only is not live for this drawer (the flag is off,
-    /// the drawer was never opened, or this is not Windows) there is no
-    /// supervisor lane to notify, so this degrades to exactly today's
-    /// behavior: `event_loop.exit()` immediately. When it IS live, this
-    /// sends `end_run` and holds the window open in the "ending session"
-    /// state until `record_closed` (or the cutoff) — `pump_attach_term`
-    /// and `about_to_wait`'s `should_exit` check carry the rest.
-    fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: &str) {
-        #[cfg(windows)]
-        if let Some(t) = self.attach_term.as_mut() {
-            t.request_quit(reason);
-            self.status = "ending session\u{2026}".to_string();
-            self.window.request_redraw();
-            return;
+    /// `exit_intent` decides: the window's close button leaves with Close,
+    /// Ctrl+Q asks first (`NavPrompt::ConfirmQuit`), and a second request
+    /// while leaving exits at once (an X during a Keep closes instead). `leave` tells each held lease's daemon
+    /// what to do with this computer's sessions and the window exits once
+    /// the acks are in (`about_to_wait`).
+    fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
+        match exit_intent(reason, self.leaving.as_ref().map(|l| l.intent)) {
+            ExitStep::Ask => {
+                self.nav_prompt = Some(NavPrompt::ConfirmQuit { keep: false });
+                self.window.request_redraw();
+            }
+            ExitStep::Now { code } => {
+                // A leave already queued (a Close after a Keep) is written
+                // before the runtime and its streams go.
+                self.leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
+                let code = close_now(self.leaving.as_mut(), code);
+                self.finish_exit(event_loop, code);
+            }
+            ExitStep::Ignore => {}
+            ExitStep::Supersede => self.leave(event_loop, LeaveIntent::Close, 0),
+            ExitStep::Leave { intent, code } => self.leave(event_loop, intent, code),
         }
-        let _ = reason;
+    }
+
+    /// Start leaving: tell every held lease's daemon `intent`. With a lease
+    /// to leave, the exit itself happens in `about_to_wait` once the acks are
+    /// in; with none, at once. The window never ends the drawer's session
+    /// itself: the daemon's Close ends it, and a Keep keeps it.
+    fn leave(&mut self, event_loop: &ActiveEventLoop, intent: LeaveIntent, code: i32) {
+        self.nav_prompt = None;
+        self.leaving = self.leases.leave_all(intent, code, std::time::Instant::now());
         self.should_exit = true;
+        if self.leaving.is_some() {
+            self.window.request_redraw();
+        } else {
+            self.finish_exit(event_loop, code);
+        }
+    }
+
+    fn finish_exit(&mut self, event_loop: &ActiveEventLoop, code: i32) {
+        if code != 0 {
+            #[cfg(windows)]
+            allow_next_foreground();
+            std::process::exit(code);
+        }
         event_loop.exit();
     }
 
@@ -16248,20 +16588,31 @@ impl State {
         // pass tail to paint.
         let mut nav_spill_segs_out: Vec<NavSpillSeg> = Vec::new();
 
-        // When a NavTree text prompt is up, the status line becomes the
-        // prompt's input field so the user sees what they're typing — least
-        // invasive spot (no extra chrome row, no layout shift). A block
-        // cursor (▏) marks the insertion point.
-        let status = match &self.nav_prompt {
-            Some(NavPrompt::CreateFile { input, .. }) => format!("new file or dir/: {input}▏"),
-            Some(NavPrompt::ConfirmDelete { label, .. }) => {
-                format!("delete {label}? [y/N]")
-            }
-            Some(NavPrompt::ScaleEntry { input, .. }) => {
-                format!("pixel size (nm): {input}▏")
-            }
-            None => self.status.clone(),
+        // A NavTree prompt, the not-ended count or `closing…`, and the lease
+        // notice are pinned under the nav list (`nav_pinned_rows`), so no
+        // scroll hides what Enter would confirm. A text prompt is the
+        // input field the user types into; a block cursor (▏) marks the
+        // insertion point.
+        let status = self.status.clone();
+        let nav_prompt_line = match &self.nav_prompt {
+            Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
+            Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),
+            Some(NavPrompt::ScaleEntry { input, .. }) => Some((format!("pixel size (nm): {input}▏"), String::new())),
+            Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
+            None => None,
         };
+        // The not-ended line the pending acks owe; it shows until a
+        // presented frame has drawn it, then holds as `not_ended_shown`.
+        let owed_line = crate::lease::not_ended_line(
+            acks_for_frame(&self.notice_acks, true).iter().map(|(_, n)| n).sum(),
+        );
+        let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| owed_line.clone()).or_else(|| {
+            let now = std::time::Instant::now();
+            self.not_ended_shown.as_ref().filter(|(_, until)| now < *until).map(|(l, _)| l.clone())
+        });
+        let mut owed_drawn = false;
+        let mut leaving_drawn = false;
+        let lease_notice = self.leases.notice();
         // Local wall-clock of the machine running the frontend, sampled once
         // per frame and turned into the top-right chrome clock text at the
         // paint site below (`clock_label`, which also prefixes the date
@@ -16287,7 +16638,8 @@ impl State {
         let mode = self.mode;
         let focus = self.focus;
         let help_context = self.help_context();
-        let maximized = self.maximized;
+        let maximize_slot =
+            maximize_slot(self.maximized, focus, self.leaving.as_ref().and_then(|l| l.line()).is_some());
         // State-nav selected-session contrast lever, snapshotted for the draw
         // closure (it mustn't borrow `self`).
         let contrast_dim = self.contrast_dim;
@@ -16409,16 +16761,19 @@ impl State {
         // did before this unit — "When off, NOTHING the FE does today
         // changes."
         #[cfg(windows)]
-        let use_attach_only = self.settings.attach_only;
+        let use_attach_only = drawer_uses_attach(
+            self.settings.attach_only,
+            self.attach_term.is_some(),
+            self.local_term.is_some(),
+            &self.leases.granted_state_roots(),
+            self.own_state_root.as_deref(),
+        );
         #[cfg(not(windows))]
         let use_attach_only = false;
 
         // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
         // spawn (gated on the drawer being open) is separate from pump
-        // (which must run on EVERY redraw regardless of drawer
-        // visibility, so a quit dispatched while the drawer is closed
-        // still reaches `should_exit` — see `pump_attach_term`'s own
-        // doc for why gating pump on visibility would starve it).
+        // (which runs on EVERY redraw regardless of drawer visibility).
         #[cfg(windows)]
         if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
             self.spawn_attach_term();
@@ -16430,6 +16785,12 @@ impl State {
 
         if self.drawer == DrawerContent::Terminal && !use_attach_only {
             if self.local_term.is_none() {
+                #[cfg(windows)]
+                if self.settings.attach_only {
+                    self.status =
+                        "attach-only terminal needs this computer's backend to hold this window; opened a plain terminal"
+                            .to_string();
+                }
                 let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
                 // cwd = repo root, so the plain shell starts in the
@@ -16956,12 +17317,8 @@ impl State {
                 // pane absorbs the area; zero-sized siblings' paint
                 // paths no-op (the pty.open/resize guard at
                 // `cols >= 2 && rows >= 2` similarly keeps the BL
-                // backend safe). Toggle: Ctrl+z.
-                let maximize_slot = if maximized {
-                    Some(focus.slot())
-                } else {
-                    None
-                };
+                // backend safe). Toggle: Ctrl+z. A leave's line restores the
+                // panes (`maximize_slot`).
                 let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
                 // Names preserved so the rest of the closure reads
                 // unchanged: nav = old TL (left column), preview = old
@@ -17000,11 +17357,26 @@ impl State {
                     if nav_focus { "· [FOCUS]" } else { "" }
                 );
                 // Help lives on the focused border; keep the nav header compact.
-                let mut body_lines = Vec::new();
-                body_lines.push(RtLine::from(vec![
-                    Span::styled("status: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(status.clone(), Style::default().fg(Color::LightGreen)),
-                ]));
+                // The status text wraps at the pane's width (a toast is a
+                // sentence): "status: " heads the first line only. Everything
+                // below counts from body_lines.len(), and the cursor's body
+                // position (a header of one status line and a spacer, computed
+                // before the draw) shifts by the extra lines here.
+                let nav_w = nav_rect.width as usize;
+                let (nav_list_h, nav_pinned, line_whole) = nav_pinned_rows(
+                    nav_prompt_line.as_ref().map(|(t, c)| (t.as_str(), c.as_str())),
+                    lease_notice,
+                    nav_line.as_deref(),
+                    nav_w,
+                    nav_rect.height as usize,
+                );
+                let nav_list_rect = ratatui::layout::Rect { height: nav_list_h as u16, ..nav_rect };
+                // Only a line drawn whole is acked: a grant's count here, the
+                // leaving line once presented (`Leaving::presented`).
+                owed_drawn = line_whole && owed_line.is_some() && nav_line == owed_line;
+                leaving_drawn = line_whole;
+                let mut body_lines = status_spans(&status, nav_w);
+                let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
                 body_lines.push(RtLine::from(""));
                 if tree_empty {
                     body_lines.push(RtLine::from(vec![Span::styled(
@@ -17152,7 +17524,7 @@ impl State {
                 // releases it. Header lines scroll off the top as a
                 // simple trade; sub-paneled header/footer is a later
                 // refinement.
-                let nav_inner_h = nav_rect.height as usize;
+                let nav_inner_h = nav_list_h;
                 let body_len = body_lines.len();
                 if !nav_has_cursor || body_len <= nav_inner_h {
                     nav_scroll = 0;
@@ -17190,7 +17562,7 @@ impl State {
                         .saturating_sub(nav_rect.x) as usize;
                     let first = nav_scroll as usize;
                     let tree_span = tree_rows_body_start..tree_rows_body_end;
-                    let visible = body_lines.iter().skip(first).take(nav_rect.height as usize);
+                    let visible = body_lines.iter().skip(first).take(nav_list_h);
                     for (vis_idx, line) in visible.enumerate() {
                         if !tree_span.contains(&(first + vis_idx)) {
                             continue;
@@ -17389,7 +17761,20 @@ impl State {
                 // only render when the drawer is actually showing the REPL;
                 // when it shows the Terminal (G3) the vt100 grid is painted
                 // into `repl_rect` after the wireframe instead.
-                frame.render_widget(nav_body, nav_rect);
+                frame.render_widget(nav_body, nav_list_rect);
+                frame.render_widget(
+                    Paragraph::new(
+                        nav_pinned
+                            .iter()
+                            .map(|r| RtLine::from(Span::styled(r.clone(), Style::default().fg(Color::LightGreen))))
+                            .collect::<Vec<_>>(),
+                    ),
+                    ratatui::layout::Rect {
+                        y: nav_rect.y + nav_list_h as u16,
+                        height: nav_pinned.len() as u16,
+                        ..nav_rect
+                    },
+                );
                 if drawer == DrawerContent::Help {
                     help::render(frame, repl_rect, help_state, help_bindings);
                 }
@@ -19442,6 +19827,25 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        let acks = acks_for_frame(&self.notice_acks, owed_drawn);
+        if !acks.is_empty() {
+            for (h, n) in &acks {
+                self.leases.notice_seen(h, *n);
+            }
+            self.notice_acks.clear();
+            if self.leaving.is_none() {
+                self.not_ended_shown = owed_line.map(|l| (l, std::time::Instant::now() + NOTIFY_STICKY));
+            }
+        }
+        // The leaving line holds from the frame that presents it, and only
+        // then are its counts acked.
+        if leaving_drawn {
+            if let Some(l) = self.leaving.as_mut() {
+                for (h, n) in l.presented(std::time::Instant::now()) {
+                    self.leases.notice_seen(&h, n);
+                }
+            }
+        }
         self.text.trim();
 
         if let Some((buf, padded_bpr, unpadded_bpr)) = readback {
@@ -19968,7 +20372,7 @@ impl ApplicationHandler for App {
                 return;
             }
         };
-        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone()) {
+        match State::new(event_loop, evt_rx, &self.cli, self.conns.clone(), self.leases.clone()) {
             Ok(mut state) => {
                 // Spawn one transport task per host once the window exists,
                 // since each task needs an Arc<Window> to call
@@ -19999,6 +20403,7 @@ impl ApplicationHandler for App {
                             state.window.clone(),
                             state.reconnect_now.clone(),
                             gate,
+                            state.leases.clone(),
                         );
                     }
                     // ADR 0035: spawn the proxy manager whenever there's a
@@ -20173,29 +20578,29 @@ impl ApplicationHandler for App {
         // saved on events, and the OS reclaims the window/GPU surface.
         let relaunch_code = state
             .relaunch_flag
-            .load(std::sync::atomic::Ordering::Relaxed);
+            .swap(0, std::sync::atomic::Ordering::Relaxed);
         if relaunch_code != 0 {
             tracing::info!(
                 exit_code = relaunch_code,
                 "relaunch requested; exiting for supervisor respawn"
             );
             state.persist_resume_state();
-            // We currently own the OS foreground, so we're allowed to hand the
-            // foreground right to the about-to-spawn replacement. ASFW_ANY lifts
-            // the Win32 foreground lock for the next SetForegroundWindow from
-            // any process — which the relaunched FE issues on its first paint
-            // (force_os_foreground). Without this the new process is blocked
-            // and only flashes the taskbar. ADR 0017.
-            #[cfg(windows)]
-            allow_next_foreground();
-            std::process::exit(relaunch_code as i32);
+            // The exit hands the OS foreground to the about-to-spawn
+            // replacement (`finish_exit`, ADR 0017). The daemon keeps the
+            // sessions for a minute (Handover) while the new window opens.
+            if matches!(
+                exit_intent(ExitReason::Relaunch(relaunch_code as i32), state.leaving.as_ref().map(|l| l.intent)),
+                ExitStep::Leave { .. }
+            ) {
+                state.leave(event_loop, LeaveIntent::Handover, relaunch_code as i32);
+            }
         }
         // FE control commands (ADR 0019): drain whatever the watcher enqueued
         // and dispatch on the main thread — same code paths as the keybinds.
         // Cheap no-op when the queue is empty.
         state.drain_fe_commands();
         match event {
-            WindowEvent::CloseRequested => state.request_quit(event_loop, "window close requested"),
+            WindowEvent::CloseRequested => state.request_quit(event_loop, ExitReason::WindowClose),
             WindowEvent::Resized(size) => {
                 state.resize(size);
                 state.persist_resume_state();
@@ -20260,7 +20665,7 @@ impl ApplicationHandler for App {
                             // any existing selection so a click elsewhere
                             // dismisses the highlight.
                             if let Some(cell) = state.llm_cell_at_px(state.cursor_px, true) {
-                                state.focus = PaneFocus::Llm;
+                                state.set_focus(PaneFocus::Llm);
                                 state.llm_selection = Some((cell, cell));
                                 state.llm_drag_active = true;
                                 state.window.request_redraw();
@@ -20480,7 +20885,7 @@ impl ApplicationHandler for App {
                             ));
                         }
                     }
-                    if state.should_exit {
+                    if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
                         event_loop.exit();
                     }
                 }
@@ -20521,6 +20926,21 @@ impl ApplicationHandler for App {
                 let context = state.help_context();
                 let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
                     Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
+                // The Ctrl+Q prompt owns the keyboard while it is open: it
+                // reads every key before any global binding (`prompt_takes_key`).
+                if let Some(NavPrompt::ConfirmQuit { keep }) = &state.nav_prompt {
+                    let tab = matches!(event.logical_key, Key::Named(NamedKey::Tab));
+                    match prompt_takes_key(*keep, tab, action, event.repeat) {
+                        QuitPromptStep::Stay { keep } => {
+                            state.nav_prompt = Some(NavPrompt::ConfirmQuit { keep });
+                            state.window.request_redraw();
+                        }
+                        QuitPromptStep::Cancel => state.cancel_nav_prompt(),
+                        QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0),
+                        QuitPromptStep::Ignore => {}
+                    }
+                    return;
+                }
                 if !event.repeat && action == Some(Action::ToggleHelpDrawer) {
                     if state.drawer == DrawerContent::Help { state.close_help_drawer(); }
                     else { state.open_help_drawer(context); }
@@ -20709,7 +21129,7 @@ impl ApplicationHandler for App {
                             DrawerContent::Help => preset.drawer.or(Some(crate::settings::Slot::Repl)),
                             _ => preset.drawer,
                         };
-                        state.focus = state.focus.move_in(dir, &columns, drawer);
+                        state.set_focus(state.focus.move_in(dir, &columns, drawer));
                         // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
                         // Cmd+Arrow on macOS) instead of a hard-coded
                         // "Ctrl+" prefix, which used to print "Ctrl+Left"
@@ -20811,7 +21231,7 @@ impl ApplicationHandler for App {
                     if action == Some(Action::ToggleWidePreview) {
                         state.wide_preview = !state.wide_preview;
                         if state.wide_preview && state.focus == PaneFocus::Llm {
-                            state.focus = PaneFocus::Preview;
+                            state.set_focus(PaneFocus::Preview);
                         }
                         state.last_key = Some(label);
                         state.window.request_redraw();
@@ -20861,9 +21281,9 @@ impl ApplicationHandler for App {
                         state.help_origin = None;
                         state.drawer = state.drawer.toggle(slot);
                         if state.drawer.is_open() {
-                            state.focus = PaneFocus::Repl;
+                            state.set_focus(PaneFocus::Repl);
                         } else if state.focus == PaneFocus::Repl {
-                            state.focus = PaneFocus::NavTree;
+                            state.set_focus(PaneFocus::NavTree);
                         }
                         // Monitor drawer subscribe/unsubscribe lifecycle (ADR
                         // 0020): subscribe + prefill on open, unsubscribe on
@@ -21133,7 +21553,7 @@ impl ApplicationHandler for App {
                         if !event.repeat
                             && action == Some(Action::Quit)
                         {
-                            state.request_quit(event_loop, "Ctrl+Q quit action");
+                            state.request_quit(event_loop, ExitReason::QuitKey);
                             return;
                         }
                         // Ctrl+C: copy the cursored row's file path to the
@@ -21788,7 +22208,7 @@ impl ApplicationHandler for App {
                             // — exit only happens from tree focus, which
                             // is the safer default for an input pane.
                             _ if action == Some(Action::ReturnNav) && !event.repeat => {
-                                state.focus = PaneFocus::NavTree;
+                                state.set_focus(PaneFocus::NavTree);
                             }
                             // Shift+Enter inserts a literal newline into
                             // the input buffer instead of submitting —
@@ -22365,7 +22785,7 @@ impl ApplicationHandler for App {
                         }
                         match action {
                             Some(Action::ReturnNav) if !event.repeat => {
-                                state.focus = PaneFocus::NavTree;
+                                state.set_focus(PaneFocus::NavTree);
                             }
                             // ADR 0022: `c` captures the visible image ROI and
                             // sends it to the LLM pane. `capture_roi` no-ops
@@ -22671,17 +23091,31 @@ impl ApplicationHandler for App {
         if state.capture_path.is_some() {
             return;
         }
-        // ADR 0041 step 6 U3 ruling (a): the quit dispatcher's own
-        // `Ended` outcome (from `pump_attach_term`, run during `redraw`,
-        // which has no `event_loop` of its own) reaches an actual exit
-        // HERE — the one place every idle cycle already passes through
-        // with both `state` and `event_loop` in hand. Every OTHER
-        // `should_exit` setter (the Quit keybind, the capture harness)
-        // already calls `event_loop.exit()` at its own call site; this
-        // check is additive for the one setter that cannot.
+        // A leaving window exits only here, once its acks are in, with its
+        // own exit code: the redraw exit skips it (`redraw_exits`).
         if state.should_exit {
-            event_loop.exit();
-            return;
+            let now = std::time::Instant::now();
+            match state.leaving.as_mut().map(|l| l.poll(now)) {
+                Some(crate::lease::LeaveStep::Wait(t)) => {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(t));
+                    // A line owed to a frame whose redraw was throttled: go on
+                    // to the frame-budget reschedule below, so that frame
+                    // draws now and starts the hold (`Leaving::presented`).
+                    if !(state.dirty && state.leaving.as_ref().is_some_and(|l| l.owes_frame())) {
+                        return;
+                    }
+                }
+                Some(crate::lease::LeaveStep::Show) => {
+                    state.window.request_redraw();
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(now + crate::lease::NOT_ENDED_PRESENT_WAIT));
+                    return;
+                }
+                Some(crate::lease::LeaveStep::Exit) | None => {
+                    let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
+                    state.finish_exit(event_loop, code);
+                    return;
+                }
+            }
         }
         if state.help_peek_expired() {
             state.help.peek = None;
@@ -22694,6 +23128,13 @@ impl ApplicationHandler for App {
             if std::time::Instant::now() >= until {
                 state.notify_sticky_until = None;
                 state.rebuild_connection_status();
+                state.window.request_redraw();
+            }
+        }
+        // The not-ended line's own expiry, same pattern as the toast.
+        if let Some((_, until)) = state.not_ended_shown {
+            if std::time::Instant::now() >= until {
+                state.not_ended_shown = None;
                 state.window.request_redraw();
             }
         }
@@ -24035,6 +24476,258 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quit_prompt_on_focus_table() {
+        let others = [
+            Some(NavPrompt::ConfirmDelete { node_id: String::new(), label: String::new() }),
+            None,
+        ];
+        for to in [PaneFocus::NavTree, PaneFocus::Preview, PaneFocus::Llm, PaneFocus::Repl] {
+            for keep in [false, true] {
+                let want = (to != PaneFocus::NavTree).then_some(QuitPromptStep::Cancel);
+                assert_eq!(quit_prompt_on_focus(Some(&NavPrompt::ConfirmQuit { keep }), to), want);
+            }
+            for p in &others {
+                assert_eq!(quit_prompt_on_focus(p.as_ref(), to), None);
+            }
+        }
+    }
+
+    /// The focus writes in `src` other than the spaced one
+    /// `focus_written_only_by_set_focus` counts: unspaced, swapped or
+    /// replaced through `mem`, or named in a destructuring assignment. Each
+    /// pattern is split so this test's own text does not match.
+    fn stray_focus_writes(src: &str) -> Vec<String> {
+        let src = src.replace("\r\n", "\n");
+        let mut hits = Vec::new();
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        // A `&mut` borrow of the field, which can write it anywhere.
+        for (i, _) in src.match_indices("&mut ") {
+            let path: String = src[i + 5..].chars().take_while(|&c| ident(c) || c == '.').collect();
+            if path.ends_with(".focus") {
+                hits.push(src[i..].lines().next().unwrap_or_default().to_string());
+            }
+        }
+        let tight = [".focus", "="].concat();
+        for (i, _) in src.match_indices(tight.as_str()) {
+            if !src[i + tight.len()..].starts_with('=') {
+                hits.push(src[i..].lines().next().unwrap_or_default().to_string());
+            }
+        }
+        for f in [["mem::", "swap("].concat(), ["mem::", "replace("].concat()] {
+            for (i, _) in src.match_indices(f.as_str()) {
+                let call = &src[i..i + src[i..].find(';').unwrap_or(src.len() - i)];
+                if call.contains(".focus") {
+                    hits.push(call.to_string());
+                }
+            }
+        }
+        let names_focus = |lhs: &str| {
+            lhs.match_indices("focus").any(|(i, _)| !lhs[..i].ends_with(ident) && !lhs[i + 5..].starts_with(ident))
+        };
+        let mut off = 0;
+        for line in src.split_inclusive('\n') {
+            let at = off + line.len() - line.trim_start().len();
+            off += line.len();
+            let line = line.trim_end_matches('\n');
+            let t = line.trim_start();
+            if t.starts_with("let ") {
+                continue;
+            }
+            // The first `=` that assigns: not `==`, `=>`, `!=`, `<=` or `>=`.
+            let Some(eq) = t.char_indices().map(|(i, _)| i).find(|&i| {
+                t[i..].starts_with('=') && !t[i + 1..].starts_with(['=', '>']) && !t[..i].ends_with(['=', '!', '<', '>'])
+            }) else {
+                continue;
+            };
+            let mut lhs = t[..eq].trim_end().to_string();
+            // A pattern over several lines ends in a lone bracket: take it
+            // whole, from its opening bracket's line, as one line.
+            if let Some((open, close)) = [('(', ')'), ('[', ']'), ('{', '}')].into_iter().find(|&(_, c)| lhs == c.to_string()) {
+                let mut depth = 0i32;
+                let start = src[..=at].char_indices().rev().find(|&(_, c)| {
+                    depth += (c == close) as i32 - (c == open) as i32;
+                    depth == 0
+                });
+                if let Some((i, _)) = start {
+                    let from = src[..i].rfind('\n').map_or(0, |n| n + 1);
+                    lhs = src[from..=at].split_whitespace().collect::<Vec<_>>().join(" ");
+                }
+            }
+            if lhs.starts_with("let ") {
+                continue;
+            }
+            if (lhs.starts_with(['(', '[']) || lhs.ends_with('}')) && names_focus(&lhs) {
+                hits.push(line.to_string());
+            }
+        }
+        hits
+    }
+
+    #[test]
+    fn focus_written_only_by_set_focus() {
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
+        // The one spaced write is `set_focus`'s (the field assigned, not compared).
+        let pat = [".focus", " = "].concat();
+        assert_eq!(src.matches(pat.as_str()).count(), 1);
+        let at = src.find(pat.as_str()).unwrap();
+        assert!(src[..at].rfind("fn set_focus").is_some_and(|f| at - f < 600));
+        assert_eq!(stray_focus_writes(&src), Vec::<String>::new());
+        // Every other spelling is caught (`FOCUS` keeps this text from matching).
+        for case in [
+            "x.FOCUS=y;",
+            "std::mem::swap(&mut a, &mut s.FOCUS);",
+            "(s.FOCUS, b) = (c, d);",
+            "State { FOCUS, .. } = other;",
+            "(\n    self.FOCUS,\n    other,\n) = pair;",
+            "(\r\n    self.FOCUS,\r\n    other,\r\n) = pair;",
+            "let f = &mut self.FOCUS;",
+        ] {
+            let case = case.replace("FOCUS", "focus");
+            assert!(!stray_focus_writes(&case).is_empty(), "missed: {case:?}");
+        }
+    }
+
+    #[test]
+    fn leave_never_ends_the_drawer() {
+        // `leave` serves every intent alike: no early return, and no end of
+        // the drawer's session from the window (the daemon's Close ends it,
+        // a Keep keeps it).
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
+        let start = src.find(&["fn leave(&mut self, event_loop: &ActiveEventLoop, ", "intent"].concat()).unwrap();
+        let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
+        for banned in ["attach_term", "request_quit", "return"] {
+            assert!(!body.contains(banned), "`leave` contains `{banned}`");
+        }
+        // Every leave sets `should_exit` before it polls or exits, so
+        // `about_to_wait` polls the acks.
+        let set = body.find(&["self.should_exit = ", "true;"].concat()).expect("`leave` sets `should_exit`");
+        assert!(body.find("request_redraw").is_some_and(|i| set < i), "{body}");
+        assert!(body.find("self.finish_exit(").is_some_and(|i| set < i), "{body}");
+    }
+
+    #[test]
+    fn roi_paste_dismisses_the_prompt_first() {
+        // An open quit prompt is dismissed (`set_focus`) before the agent
+        // pane takes the ROI paste's bytes.
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
+        let at = src.find(&["\"ROI {w}", "×{h} of {name}"].concat()).unwrap();
+        let arm = &src[at.saturating_sub(4000)..at];
+        let focus = arm.rfind(&["self.set_focus(", "PaneFocus::Llm);"].concat()).unwrap();
+        let send = arm.rfind(&["self.send_pane_input(", "&bytes);"].concat()).unwrap();
+        assert!(focus < send, "the ROI paste reaches the agent before the focus move dismisses the prompt");
+    }
+
+    #[test]
+    fn no_lease_notice_is_pinned_above_a_tall_list() {
+        use crate::lease::{lease_notice, Standing::*};
+        for set in [&[Undetermined][..], &[Unsupported], &[Foreign], &[Unreached], &[]] {
+            let notice = lease_notice(false, set).unwrap();
+            let (_, pinned, _) = nav_pinned_rows(None, Some(notice), None, 80, 5);
+            assert!(pinned.join(" ").contains("closing will not end sessions"), "{pinned:?}");
+        }
+    }
+
+    #[test]
+    fn quit_prompt_key_table() {
+        use QuitKey::*;
+        use QuitPromptStep::*;
+        assert_eq!(quit_prompt_key(false, Tab), Stay { keep: true });
+        assert_eq!(quit_prompt_key(true, Tab), Stay { keep: false });
+        assert_eq!(quit_prompt_key(false, Enter), Leave(LeaveIntent::Close));
+        assert_eq!(quit_prompt_key(true, Enter), Leave(LeaveIntent::Keep));
+        assert_eq!(quit_prompt_key(false, Esc), Cancel);
+        assert_eq!(quit_prompt_key(true, Esc), Cancel);
+        assert_eq!(quit_prompt_key(false, Other), Ignore);
+        assert_eq!(quit_prompt_key(true, Other), Ignore);
+        // The prompt sees every key before global dispatch: Ctrl+T (the
+        // terminal drawer) and Ctrl+= (font size) do nothing while it is open.
+        assert_eq!(prompt_takes_key(false, false, Some(Action::ToggleTerminalDrawer), false), Ignore);
+        assert_eq!(prompt_takes_key(true, false, Some(Action::FontScaleUp), false), Ignore);
+        assert_eq!(prompt_takes_key(false, false, None, false), Ignore);
+        assert_eq!(prompt_takes_key(false, true, None, false), Stay { keep: true });
+        assert_eq!(prompt_takes_key(true, false, Some(Action::Confirm), false), Leave(LeaveIntent::Keep));
+        assert_eq!(prompt_takes_key(false, false, Some(Action::Cancel), false), Cancel);
+        assert_eq!(prompt_takes_key(false, false, Some(Action::Confirm), true), Ignore);
+        assert_eq!(prompt_takes_key(false, true, None, true), Ignore);
+        let (_, no) = quit_prompt_line(false);
+        assert!(no.contains("[No]") && no.contains("Yes") && !no.contains("[Yes]"));
+        let (_, yes) = quit_prompt_line(true);
+        assert!(yes.contains("[Yes]") && !yes.contains("[No]"));
+    }
+
+    #[test]
+    fn exit_intent_table() {
+        use ExitReason::*;
+        use ExitStep::*;
+        let (keep, close, handover) = (Some(LeaveIntent::Keep), Some(LeaveIntent::Close), Some(LeaveIntent::Handover));
+        assert_eq!(exit_intent(WindowClose, None), Leave { intent: LeaveIntent::Close, code: 0 });
+        assert_eq!(exit_intent(QuitKey, None), Ask);
+        assert_eq!(exit_intent(Relaunch(75), None), Leave { intent: LeaveIntent::Handover, code: 75 });
+        assert_eq!(exit_intent(Relaunch(76), None), Leave { intent: LeaveIntent::Handover, code: 76 });
+        // The user's latest intent wins: an X or OS close during a Keep closes.
+        assert_eq!(exit_intent(WindowClose, keep), Supersede);
+        // A second close exits 0: during a Handover it never relaunches.
+        assert_eq!(exit_intent(WindowClose, close), Now { code: 0 });
+        assert_eq!(exit_intent(WindowClose, handover), Now { code: 0 });
+        for leaving in [keep, close, handover] {
+            assert_eq!(exit_intent(QuitKey, leaving), Now { code: 0 });
+            assert_eq!(exit_intent(Relaunch(75), leaving), Ignore);
+        }
+    }
+
+    #[test]
+    fn second_close_during_handover_exits_zero_on_every_path() {
+        use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
+        let t0 = std::time::Instant::now();
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let mut leaving = Some(Leaving::new(LeaveIntent::Handover, 75, vec![("h".to_string(), rx)], t0));
+        // The second close, as `request_quit` applies it.
+        let ExitStep::Now { code } = exit_intent(ExitReason::WindowClose, leaving.as_ref().map(|l| l.intent)) else {
+            panic!("a second close exits at once");
+        };
+        assert_eq!(close_now(leaving.as_mut(), code), 0);
+        // The handover's ack is then ready, and winit still runs
+        // `about_to_wait`: its poll exits with the leave's code.
+        ack.send(LeaveOutcome::Replied(0)).unwrap();
+        assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
+        assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
+    }
+
+    #[test]
+    fn leave_count_shows_with_nav_collapsed() {
+        use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
+        let area = ratatui::layout::Rect::new(0, 0, 160, 48);
+        let preset = crate::settings::LayoutPreset::default_ultrawide();
+        let nav = |slot| crate::layout::compute(area, &preset, false, slot).rect_for(crate::settings::Slot::Nav);
+        assert_eq!(nav(maximize_slot(true, PaneFocus::Preview, false)).width, 0, "a maximized preview hides nav");
+        // A leave whose reply carried a count.
+        let t0 = std::time::Instant::now();
+        let (ack, rx) = tokio::sync::oneshot::channel();
+        let mut leaving = Leaving::new(LeaveIntent::Close, 0, vec![("h".to_string(), rx)], t0);
+        ack.send(LeaveOutcome::Replied(7)).unwrap();
+        assert_eq!(leaving.poll(t0), LeaveStep::Show);
+        // One frame, laid out as `redraw` lays it out with the preview maximized.
+        let line = leaving.line();
+        let rect = nav(maximize_slot(true, PaneFocus::Preview, line.is_some()));
+        let (_, _, whole) = nav_pinned_rows(None, None, line.as_deref(), rect.width as usize, rect.height as usize);
+        assert!(whole, "the count line is drawn whole in a {}x{} nav pane", rect.width, rect.height);
+        assert_eq!(leaving.presented(t0), vec![("h".to_string(), 7)], "and acked");
+    }
+
+    #[test]
+    fn redraw_exit_table() {
+        // A leaving window exits only from `about_to_wait`.
+        assert!(!redraw_exits(true, true, false));
+        assert!(!redraw_exits(false, true, false));
+        // The capture harness exits at its redraw.
+        assert!(redraw_exits(true, false, true));
+        // A plain `should_exit` with nothing leaving exits.
+        assert!(redraw_exits(true, false, false));
+        assert!(!redraw_exits(false, false, false));
+        assert!(!redraw_exits(false, false, true));
+    }
+
     use super::*;
     use sot_protocol::TreeNode;
 
@@ -25055,6 +25748,182 @@ mod tests {
         assert_eq!(nav_spill_take(100, 20, 0), None);
         // Degenerate nav width still respects the cap.
         assert_eq!(nav_spill_take(5, 0, 3), Some(3));
+    }
+
+    #[test]
+    fn attach_only_requires_matching_state_root() {
+        let roots = vec!["r".to_string()];
+        // (what, setting, attach_live, local_live, roots, own_root, want)
+        let cases: &[(&str, bool, bool, bool, &[String], Option<&str>, bool)] = &[
+            ("setting on, matching root, no terminals", true, false, false, &roots, Some("r"), true),
+            ("setting off", false, false, false, &roots, Some("r"), false),
+            ("no granted lease", true, false, false, &[], Some("r"), false),
+            ("a root that differs", true, false, false, &roots, Some("x"), false),
+            ("own root unknown", true, false, false, &roots, None, false),
+            ("attach already live, setting off", false, true, false, &[], None, true),
+            ("plain terminal already live", true, false, true, &roots, Some("r"), false),
+        ];
+        for (what, setting, attach, local, granted, own, want) in cases {
+            assert_eq!(drawer_uses_attach(*setting, *attach, *local, granted, *own), *want, "{what}");
+        }
+    }
+
+    #[test]
+    fn wrap_status_table() {
+        // (description, text, first_w, rest_w, expected lines). A 20-wide pane
+        // gives the text 12 cells after "status: " on the first line.
+        let cases: &[(&str, &str, usize, usize, &[&str])] = &[
+            ("empty", "", 12, 20, &[""]),
+            ("fits", "ready", 12, 20, &["ready"]),
+            ("exactly the first line", "abcdefghijkl", 12, 20, &["abcdefghijkl"]),
+            ("one cell over, no space: hard break", "abcdefghijklm", 12, 20, &["abcdefghijkl", "m"]),
+            ("two lines, break at the last space", "hello world again today", 12, 20, &["hello world", "again today"]),
+            ("a space exactly at the edge", "hello world", 5, 13, &["hello", "world"]),
+            ("three lines", "aaa bbb ccc ddd eee fff", 6, 14, &["aaa", "bbb ccc ddd", "eee fff"]),
+            ("a word longer than the width", "abcdefghijklmnopqrstuv", 2, 10, &["ab", "cdefghijkl", "mnopqrstuv"]),
+            ("width smaller than the label", "abcdefgh", 0, 5, &["", "abcde", "fgh"]),
+            ("a wide glyph never straddles", "日本語", 3, 11, &["日", "本語"]),
+            ("a glyph wider than the line still advances", "日本", 1, 1, &["", "日", "本"]),
+            ("a trailing space at the break adds no empty line", "hello ", 5, 20, &["hello"]),
+            ("no pane", "abc def", 0, 0, &["abc def"]),
+        ];
+        for (what, text, first_w, rest_w, want) in cases {
+            let got = wrap_status(text, *first_w, *rest_w);
+            assert_eq!(got, *want, "{what}");
+            // Every line fits its width, and nothing but the break spaces is lost.
+            if *rest_w > 0 {
+                use unicode_width::UnicodeWidthStr;
+                for (i, line) in got.iter().enumerate() {
+                    let cap = if i == 0 { *first_w } else { *rest_w };
+                    assert!(line.width() <= cap || line.chars().count() == 1, "{what}: line {i} too wide");
+                }
+            }
+        }
+        // A 120-character toast at the default nav width wraps in full.
+        let toast = "The quick brown fox jumps over the lazy dog while the build finishes and every suite reports back to the lane ok";
+        let lines = wrap_status(toast, 22, 30);
+        assert_eq!(lines.join(" "), toast);
+    }
+
+    fn line_text(line: &RtLine) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn status_spans_show_text_once() {
+        let short: Vec<String> = status_spans("ready", 40).iter().map(line_text).collect();
+        assert_eq!(short, ["status: ready"]);
+        let text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
+        let lines: Vec<String> = status_spans(text, 20).iter().map(line_text).collect();
+        let segs = wrap_status(text, 12, 20);
+        assert!(segs.len() > 2, "the text must wrap: {segs:?}");
+        let mut want = vec![format!("status: {}", segs[0])];
+        want.extend(segs[1..].iter().cloned());
+        assert_eq!(lines, want);
+        let all = lines.join(" ");
+        assert_eq!(all, format!("status: {text}"));
+        assert_eq!(all.matches("status: ").count(), 1);
+        for seg in &segs {
+            assert_eq!(all.matches(seg.as_str()).count(), 1, "{seg}");
+        }
+    }
+
+    #[test]
+    fn notice_ack_table() {
+        let (a, b) = ("a".to_string(), "b".to_string());
+        // Hidden by a prompt: no ack, and the count stays pending.
+        assert_eq!(acks_for_frame(&[(a.clone(), 2)], false), vec![]);
+        // Drawn: its ack.
+        assert_eq!(acks_for_frame(&[(a.clone(), 2)], true), vec![(a.clone(), 2)]);
+        // Two pending from one daemon, the newer drawn: the newer's ack only.
+        assert_eq!(acks_for_frame(&[(a.clone(), 2), (a.clone(), 3)], true), vec![(a.clone(), 3)]);
+        // Two daemons: one ack each, its own count.
+        assert_eq!(
+            acks_for_frame(&[(a.clone(), 2), (b.clone(), 1), (a.clone(), 4)], true),
+            vec![(a.clone(), 4), (b.clone(), 1)]
+        );
+        assert_eq!(acks_for_frame(&[], true), vec![]);
+    }
+
+    #[test]
+    fn quit_prompt_visible_when_scrolled() {
+        // The pinned rows never read the list or its scroll: however long
+        // the list and however far it is scrolled, they sit under it.
+        let (text, choice) = quit_prompt_line(false);
+        let prompt = Some((text.as_str(), choice.as_str()));
+        let (list_h, rows, _) = nav_pinned_rows(prompt, None, None, 30, 20);
+        assert!(rows.join(" ").starts_with(&text) && rows.join(" ").ends_with(&choice), "{rows:?}");
+        assert_eq!(list_h + rows.len(), 20);
+        assert!(rows.len() > 1 && list_h > 0);
+        // With no prompt open, the not-ended line shows under the notice.
+        let notice = "closing will not end sessions: there is no backend on this computer";
+        let ended = "2 sessions could not be ended and are still running";
+        let (_, rows, whole) = nav_pinned_rows(None, Some(notice), Some(ended), 30, 20);
+        assert_eq!((rows.join(" "), whole), (format!("{notice} {ended}"), true));
+        // Nothing pinned: the list keeps the pane.
+        assert_eq!(nav_pinned_rows(None, None, None, 30, 20), (20, vec![], false));
+        assert_eq!(nav_pinned_rows(prompt, None, None, 30, 0), (0, vec![], false));
+    }
+
+    #[test]
+    fn pinned_lines_are_whole_or_dropped() {
+        let (text, choice) = quit_prompt_line(false);
+        let prompt = Some((text.as_str(), choice.as_str()));
+        let notice = "closing will not end sessions: there is no backend on this computer";
+        let ended = "2 sessions could not be ended and are still running";
+        let owed = [("h".to_string(), 2)];
+        let own = nav_pinned_rows(prompt, None, None, 30, 20).1;
+        let flat = own.join(" ");
+        // A height that fits all of them: every line whole, and the count is acked.
+        let (list_h, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, 20);
+        assert_eq!(rows.join(" "), format!("{notice} {ended} {flat}"));
+        assert_eq!(list_h + rows.len(), 20);
+        assert!(whole);
+        assert_eq!(acks_for_frame(&owed, whole), owed.to_vec());
+        // Height 1: the choice, whole, and no ack.
+        let (list_h, rows, whole) = nav_pinned_rows(prompt, None, Some(ended), 30, 1);
+        assert_eq!(list_h, 0);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("[No]  Yes"), "{rows:?}");
+        assert_eq!(acks_for_frame(&owed, whole), vec![]);
+        let (ktext, kchoice) = quit_prompt_line(true);
+        let (_, rows, whole) = nav_pinned_rows(Some((&ktext, &kchoice)), None, Some(ended), 30, 1);
+        assert!(rows.len() == 1 && rows[0].contains("No  [Yes]"), "{rows:?}");
+        assert_eq!(acks_for_frame(&owed, whole), vec![]);
+        // Room for the prompt and the count only: the notice goes, whole.
+        let h = own.len() + wrap_status(ended, 30, 30).len();
+        let (_, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, h);
+        assert_eq!((rows.join(" "), whole), (format!("{ended} {flat}"), true));
+        // One row less: the count goes whole, never leaving its tail.
+        let (_, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, h - 1);
+        assert_eq!((rows.join(" "), whole), (flat.clone(), false));
+    }
+
+    #[test]
+    fn quit_choice_is_whole_on_the_last_row() {
+        // No room left on the last wrapped row: the choice has its own row.
+        let rows = nav_pinned_rows(Some(("aaaa bbbb", "[No]  Yes")), None, None, 9, 20).1;
+        assert_eq!(rows.last().map(String::as_str), Some("[No]  Yes"));
+        assert_eq!(rows.len(), 2);
+        // Room on the last row: the choice joins it after three spaces.
+        let rows = nav_pinned_rows(Some(("aa", "[No]  Yes")), None, None, 20, 20).1;
+        assert_eq!(rows, vec!["aa   [No]  Yes".to_string()]);
+        // A short pane keeps the last row, which is the whole choice.
+        let rows = nav_pinned_rows(Some(("aaaa bbbb", "[No]  Yes")), None, None, 9, 1).1;
+        assert_eq!(rows, vec!["[No]  Yes".to_string()]);
+    }
+
+    #[test]
+    fn narrow_pane_never_cuts_the_choice() {
+        // A pane narrower than the choice's 9 columns drops the choice row
+        // whole; the prompt's text still shows.
+        for keep in [false, true] {
+            let (_, choice) = quit_prompt_line(keep);
+            let rows = nav_pinned_rows(Some(("aaaa bbbb", choice.as_str())), None, None, 8, 20).1;
+            assert_eq!(rows, vec!["aaaa".to_string(), "bbbb".to_string()]);
+            let rows = nav_pinned_rows(Some(("aaaa bbbb", choice.as_str())), None, None, 8, 1).1;
+            assert_eq!(rows, vec!["bbbb".to_string()]);
+        }
     }
 
     #[test]

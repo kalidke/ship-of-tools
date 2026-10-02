@@ -17,6 +17,7 @@ mod help;
 mod dial;
 mod keybindings;
 mod layout;
+mod lease;
 mod monitor_view;
 mod paths;
 mod preview;
@@ -125,6 +126,10 @@ fn main() -> Result<()> {
         token: cli.token.clone(),
     };
     let connections = dial::resolve_connections(&dials, &cli_override);
+    let leases = lease::Leases::new(
+        lease::lease_exempt(cli.ephemeral, cli.capture.is_some(), cli.no_lease),
+        lease::pipe_hosts(&connections),
+    );
     tracing::info!(hosts = ?connections.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(), "connection set resolved");
 
     // Channel from every transport task → GPU thread, fanned in. std::sync::mpsc
@@ -160,7 +165,7 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut app = gpu::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports));
+    let mut app = gpu::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

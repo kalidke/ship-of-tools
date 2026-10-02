@@ -202,3 +202,108 @@ pub enum StatusFailure {
     Foreign,
     Undetermined,
 }
+
+/// One process, named so a pid reuse or a different computer cannot
+/// match it: the boot it ran under, its pid, and its OS creation stamp.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ProcessIdentity {
+    pub boot: String,
+    pub pid: u32,
+    pub created: u64,
+}
+
+/// This computer's boot, as text a different computer cannot share:
+/// Linux `boot_id`, macOS `kern.boottime` as `<sec>.<usec>`, Windows
+/// `""` (its `created` is an absolute FILETIME already).
+#[cfg(target_os = "linux")]
+pub fn boot_identity() -> std::io::Result<String> {
+    let id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    Ok(id.trim().to_string())
+}
+
+#[cfg(target_os = "macos")]
+pub fn boot_identity() -> std::io::Result<String> {
+    let mut tv: libc::timeval = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::timeval>();
+    // SAFETY: the name is NUL-terminated; the out-buffer is a local
+    // `timeval` and `len` its true size.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.boottime".as_ptr(),
+            std::ptr::addr_of_mut!(tv).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(format!("{}.{}", tv.tv_sec, tv.tv_usec))
+}
+
+#[cfg(windows)]
+pub fn boot_identity() -> std::io::Result<String> {
+    Ok(String::new())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+pub fn boot_identity() -> std::io::Result<String> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// This process's [`ProcessIdentity`].
+pub fn self_identity() -> std::io::Result<ProcessIdentity> {
+    #[cfg(target_os = "linux")]
+    let created = crate::challenge_unix::self_start_ticks()?;
+    #[cfg(target_os = "macos")]
+    let created = u64::from(crate::challenge_macos::self_pidversion()?);
+    #[cfg(windows)]
+    let created = {
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        // SAFETY: the current-process pseudo-handle needs no closing.
+        crate::challenge_win::creation_filetime_bits(unsafe { GetCurrentProcess() })?
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let created: u64 = return Err(std::io::ErrorKind::Unsupported.into());
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    Ok(ProcessIdentity {
+        boot: boot_identity()?,
+        pid: std::process::id(),
+        created,
+    })
+}
+
+/// The creation stamp of `pid`, in the units `self_identity` reports.
+#[cfg(target_os = "linux")]
+pub fn process_created(pid: u32) -> std::io::Result<u64> {
+    crate::challenge_unix::process_start_ticks(pid)
+}
+
+#[cfg(windows)]
+pub fn process_created(pid: u32) -> std::io::Result<u64> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: a plain OpenProcess; the handle is closed on every path.
+    let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if h.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let r = crate::challenge_win::creation_filetime_bits(h);
+    unsafe { CloseHandle(h) };
+    r
+}
+
+#[cfg(test)]
+mod identity_tests {
+    #[allow(unused_imports)]
+    use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn boot_identity_is_stable_and_nonempty() {
+        let a = boot_identity().unwrap();
+        assert!(!a.is_empty());
+        assert_eq!(a, boot_identity().unwrap());
+    }
+}

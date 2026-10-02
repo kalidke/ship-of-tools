@@ -101,7 +101,7 @@ actions! {
     SessionCreateBare, "session.create_bare", ["Shift+Enter"], "Create without agent", "Create a workspace in the selected folder with a shell and no agent.", "Picker", Picker;
     SessionCreate, "session.create", ["Enter"], "Create with Claude", "Create a workspace in the selected folder with a Claude Code agent.", "Picker", Picker;
     SessionAccountNext, "session.account_next", ["Tab"], "Next account", "Cycle which login account the new session will use. Hidden when only one account is discovered.", "Picker", Picker;
-    Quit, "quit", ["Primary+q"], "Quit SoT", "Close the frontend from navigation focus.", "Navigation", Nav;
+    Quit, "quit", ["Primary+q"], "Quit SoT", "Close the window from navigation focus, asking whether to keep the daemon and sessions running.", "Navigation", Nav;
     CopyPath, "files.copy_path", ["Primary+c", "c"], "Copy path", "Copy the selected file's backend path to the clipboard.", "Files", FileNav;
     NewFile, "files.new", ["Primary+n"], "New file or folder", "Create a file, or a folder when the name ends with /, in the selected directory.", "Files", Files;
     DeleteFile, "files.delete", ["Primary+d"], "Delete file", "Delete the selected file after confirmation. Directories are refused.", "Files", FileNav;

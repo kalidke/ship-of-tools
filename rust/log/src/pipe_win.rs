@@ -234,8 +234,10 @@ use crate::client::{Client, Endpoint};
 use crate::transport::{
     join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
     BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL,
-    JOIN_POLL_INTERVAL, READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+    READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
+#[cfg(any(test, feature = "test-support"))]
+use crate::transport::JOIN_POLL_INTERVAL;
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};

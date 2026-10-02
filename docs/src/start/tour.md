@@ -57,7 +57,7 @@ nothing runs there until you create a session.
    the agent is working, waiting for your answer or done; the colours are in
    [Work-state colours](../concepts/work-state.md).
 
-The session keeps running when you switch rows or close the window.
+The session keeps running when you switch rows. Closing the window ends it; see [What keeps running](running.md).
 
 ## Files mode — `f`
 
@@ -158,7 +158,7 @@ A few global keys manage the window itself:
 | Restore layout | `Esc` | one layer per press: un-maximize first, then exit wide-preview (only while maximized or in wide-preview) |
 | Font scale | `Ctrl+=` / `Ctrl+-` | zoom the UI font up / down (`Ctrl+0` resets) |
 | Reconnect | `F5` | reconnect the transport after a drop |
-| Quit | `Ctrl+Q` | real quit (nav focus only) |
+| Quit | `Ctrl+Q` | close the window, asking whether to keep the daemon and sessions running (nav focus only) |
 
 Plain arrows move within a pane, `Ctrl+Arrow` moves *between* panes, and
 `Shift+Arrow` switches sessions. The same chords are scoped so they do not
