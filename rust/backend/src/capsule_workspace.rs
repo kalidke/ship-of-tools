@@ -4231,7 +4231,7 @@ pub mod headless {
         let first = wake_lines(&client);
         let seen = free_test_lines(client.screen());
         // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the attempt
-        // leaves a file at each point, for a stub that moves focus at exactly those points: `hold` when the hold
+        // leaves a file at each point, for a stub that moves focus at exactly `hold` and `final-ok`: `hold` when the hold
         // begins (the screen was free), `final-ok` when the live final check passes (before typing), `done` when
         // the client is shut down. An attach or checkpoint failure before the hold (above) returns early and
         // writes no `done`.
@@ -4321,8 +4321,7 @@ pub mod headless {
         Ok(n)
     }
 
-    /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above: once the text is
-    /// recorded, a failure here is a `false`, never an `Err`; the error itself is kept for [`wake_if_free`].
+    /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above.
     fn send_enter(client: &mut Client, op_budget: Duration) -> Result<(), HeadlessError> {
         send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).map(|_| ())
     }
