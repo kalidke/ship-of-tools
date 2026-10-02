@@ -449,6 +449,10 @@ jobs:
           if [ -z "$tag" ]; then
             echo "no releases found for ${{ github.repository }} (fork with no releases?) -- skipping" >&2
           fi
+          if [ -n "$tag" ] && ! curl -fsS -o /dev/null -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/contents/scripts/lib/sot-daemon.sh?ref=$tag"; then
+            echo "newest published release $tag predates scripts/lib/sot-daemon.sh: the smoke resumes once a release carries it" >&2
+            tag=""
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Fresh --be-only install into a clean $HOME
         if: steps.latest.outputs.tag != ''

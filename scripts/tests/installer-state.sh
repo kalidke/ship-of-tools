@@ -1019,6 +1019,27 @@ check "a good write names the alias and is executable" "1 yes" \
     "$(grep -c '^export SOT_HOST="be-alias"$' "$d/sot-launch" || true) $([ -x "$d/sot-launch" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
+case_start "a pinned run against a release older than scripts/lib/sot-daemon.sh refuses first"
+# curl is stubbed: the library URL is a 404 (an old tree), anything else is
+# logged and fails. Nothing may be created under the prefix.
+d="$WORK/old-tree"; mkdir -p "$d/stubs" "$d/home"
+cat > "$d/stubs/curl" <<'STUBEOF'
+#!/bin/sh
+echo "$*" >> "$CURL_LOG"
+case "$*" in *scripts/lib/sot-daemon.sh*) exit 22 ;; esac
+exit 22
+STUBEOF
+chmod +x "$d/stubs/curl"
+rc=0
+out="$(env -i HOME="$d/home" PATH="$d/stubs:/usr/bin:/bin" CURL_LOG="$d/curl.log" SOT_INSTALL_TAG=v0.0.1 \
+    bash "$(dirname "$0")/../install.sh" --local --no-service --prefix "$d/prefix" 2>&1)" || rc=$?
+check "the install exits non-zero" "yes" "$([ "$rc" -ne 0 ] && echo yes || echo no)"
+check "it says the release predates this installer" "1" \
+    "$(printf '%s\n' "$out" | grep -c 'release v0.0.1 predates this installer (no scripts/lib/sot-daemon.sh)' || true)"
+check "the prefix was never created" "gone" "$([ -e "$d/prefix" ] && echo exists || echo gone)"
+check "no release asset was requested" "0" "$(grep -c 'releases/download' "$d/curl.log" || true)"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
