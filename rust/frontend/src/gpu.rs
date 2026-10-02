@@ -97,9 +97,10 @@ impl Mode {
 }
 
 /// The mode a launch opens in: `--start-mode` if given, else the persisted
-/// `last_mode` (B5), else Files.
-fn initial_mode(cli: Option<&str>, persisted: Option<&str>) -> Mode {
-    match cli.or(persisted) {
+/// `last_mode` (B5), else Files. A `harness` run ignores the persisted mode:
+/// harness runs must be deterministic, as for the workspace restore.
+fn initial_mode(cli: Option<&str>, persisted: Option<&str>, harness: bool) -> Mode {
+    match cli.or(persisted.filter(|_| !harness)) {
         Some("modules") => Mode::Modules,
         Some("sessions") => Mode::Sessions,
         Some("hosts") => Mode::Hosts,
@@ -6638,6 +6639,7 @@ impl State {
             mode: initial_mode(
                 cli.start_mode.as_deref(),
                 persisted_geom.last_mode.as_deref(),
+                harness,
             ),
             concept_target_fired: None,
             last_cursor_pos: None,
@@ -24190,11 +24192,13 @@ mod tests {
 
     #[test]
     fn initial_mode_resumes_the_persisted_mode_unless_the_cli_names_one() {
-        assert_eq!(initial_mode(None, Some("sessions")), Mode::Sessions);
-        assert_eq!(initial_mode(Some("hosts"), Some("modules")), Mode::Hosts);
-        assert_eq!(initial_mode(Some("files"), Some("sessions")), Mode::Files);
-        assert_eq!(initial_mode(None, None), Mode::Files);
-        assert_eq!(initial_mode(None, Some("bogus")), Mode::Files);
+        assert_eq!(initial_mode(None, Some("sessions"), false), Mode::Sessions);
+        assert_eq!(initial_mode(Some("hosts"), Some("modules"), false), Mode::Hosts);
+        assert_eq!(initial_mode(Some("files"), Some("sessions"), false), Mode::Files);
+        assert_eq!(initial_mode(None, None, false), Mode::Files);
+        assert_eq!(initial_mode(None, Some("bogus"), false), Mode::Files);
+        assert_eq!(initial_mode(None, Some("sessions"), true), Mode::Files);
+        assert_eq!(initial_mode(Some("hosts"), Some("modules"), true), Mode::Hosts);
     }
 
     fn fixed_now() -> chrono::NaiveDateTime {
