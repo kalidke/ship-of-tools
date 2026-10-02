@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         token_set = cli.token.is_some(),
         capture = ?cli.capture,
         scale = cli.scale,
-        start_mode = %cli.start_mode,
+        start_mode = ?cli.start_mode,
         "cli parsed"
     );
 

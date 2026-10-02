@@ -96,6 +96,17 @@ impl Mode {
     }
 }
 
+/// The mode a launch opens in: `--start-mode` if given, else the persisted
+/// `last_mode` (B5), else Files.
+fn initial_mode(cli: Option<&str>, persisted: Option<&str>) -> Mode {
+    match cli.or(persisted) {
+        Some("modules") => Mode::Modules,
+        Some("sessions") => Mode::Sessions,
+        Some("hosts") => Mode::Hosts,
+        _ => Mode::Files,
+    }
+}
+
 /// Which of the four quadrant panes has keyboard focus. Spatial moves
 /// via Ctrl+Arrow. Tab is deliberately not a focus switcher — it must
 /// reach the terminal panes for shell/REPL completion. Status-line and
@@ -6460,25 +6471,10 @@ impl State {
             pending_deleted_node_id: None,
             notify_sticky_until: None,
             tree: TreeView::new(),
-            mode: {
-                // CLI override takes precedence; otherwise resume from
-                // the persisted last_mode (B5). Default Files.
-                let persisted = crate::state_persistence::load();
-                if cli.start_mode == "modules" {
-                    Mode::Modules
-                } else if cli.start_mode == "sessions" {
-                    Mode::Sessions
-                } else if cli.start_mode == "files" {
-                    Mode::Files
-                } else {
-                    match persisted.last_mode.as_deref() {
-                        Some("modules") => Mode::Modules,
-                        Some("sessions") => Mode::Sessions,
-                        Some("hosts") => Mode::Hosts,
-                        _ => Mode::Files,
-                    }
-                }
-            },
+            mode: initial_mode(
+                cli.start_mode.as_deref(),
+                persisted_geom.last_mode.as_deref(),
+            ),
             concept_target_fired: None,
             last_cursor_pos: None,
             cursor_moved_at: None,
@@ -23905,6 +23901,15 @@ fn force_os_foreground(window: &winit::window::Window) -> bool {
 mod tests {
     use super::*;
     use sot_protocol::TreeNode;
+
+    #[test]
+    fn initial_mode_resumes_the_persisted_mode_unless_the_cli_names_one() {
+        assert_eq!(initial_mode(None, Some("sessions")), Mode::Sessions);
+        assert_eq!(initial_mode(Some("hosts"), Some("modules")), Mode::Hosts);
+        assert_eq!(initial_mode(Some("files"), Some("sessions")), Mode::Files);
+        assert_eq!(initial_mode(None, None), Mode::Files);
+        assert_eq!(initial_mode(None, Some("bogus")), Mode::Files);
+    }
 
     fn fixed_now() -> chrono::NaiveDateTime {
         // A Monday, so the weekday abbreviation is unambiguous.

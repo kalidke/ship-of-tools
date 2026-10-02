@@ -53,9 +53,9 @@ pub struct Cli {
     /// is still too small or shrink it to fit more on screen.
     pub scale: f32,
     /// Which mode the chrome opens in. Mostly useful for the `--capture`
-    /// path, where we can't inject `m`/`f` keystrokes mid-render. Accepts
-    /// `files` or `modules`; defaults to `files`.
-    pub start_mode: String,
+    /// path, where we can't inject `m`/`f` keystrokes mid-render.
+    /// files|modules|sessions|hosts; `None` resumes the persisted last mode.
+    pub start_mode: Option<String>,
     /// Initial cursor row in the TreeView, applied as soon as the first
     /// `tree.root` response lands. Like `--start-mode`, this is for the
     /// `--capture` path where we can't inject arrow keys. Out-of-range
@@ -232,7 +232,7 @@ impl Cli {
         let mut token: Option<String> = None;
         let mut capture: Option<PathBuf> = None;
         let mut scale: f32 = 1.0;
-        let mut start_mode: String = "files".to_string();
+        let mut start_mode: Option<String> = None;
         let mut start_selected: Option<usize> = None;
         let mut auto_expand = false;
         let mut demo_function_methods: Option<(String, String)> = None;
@@ -308,7 +308,7 @@ impl Cli {
                 "--start-mode" => {
                     if let Some(v) = args.next() {
                         if matches!(v.as_str(), "files" | "modules" | "sessions" | "hosts") {
-                            start_mode = v;
+                            start_mode = Some(v);
                         }
                     }
                 }
