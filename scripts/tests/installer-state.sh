@@ -19,6 +19,8 @@ SOT_INSTALL_SOURCE_ONLY=1
 export SOT_INSTALL_SOURCE_ONLY
 # shellcheck source=../install.sh
 . "$(dirname "$0")/../install.sh"
+# shellcheck source=../lib/sot-daemon.sh
+. "$(dirname "$0")/../lib/sot-daemon.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK:?}"' EXIT
@@ -289,10 +291,10 @@ check "a live daemon from another prefix refuses before any FE file is even look
     "refuse:the sotd.service running for this user runs $OTHER_PREFIX/bin/sotd; this install targets $GPREFIX/bin/sotd" \
     "$(installer_ownership_gate "$OTHER_PREFIX/bin/sotd" "$GHOME" "$GPREFIX" Linux 1 0)"
 
-# --- sot-launch: an nc that cannot probe a UNIX socket never deletes it -----
+case_start "ensure_never_removes_the_socket"
+# --- an nc that cannot probe a UNIX socket never deletes it -----
 # netcat-traditional has no -U, so its probe of a LIVE daemon's socket failed and
-# the wrapper removed the socket. The two functions are taken from the wrapper
-# text install.sh writes, with its \$ escapes undone.
+# the wrapper removed the socket.
 LBIN="$WORK/launch-bin"; mkdir -p "$LBIN"
 cat > "$LBIN/nc" <<'NC'
 #!/bin/sh
@@ -307,11 +309,9 @@ SOTD
 chmod +x "$LBIN/nc" "$LBIN/sotd"
 LSOCK="$WORK/sot.sock"
 python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$LSOCK"
-LAUNCH_FNS="$(sed -n '/^socket_open() {$/,/^}$/p; /^start_daemon_if_needed() {$/,/^}$/p' "$(dirname "$0")/../install.sh" | sed 's/\\\$/$/g')"
-LAUNCH_RC="$(SOCKET="$LSOCK" PREFIX="$WORK/launch" PATH="$LBIN:$PATH" bash -c "$LAUNCH_FNS"'
-    mkdir -p "$PREFIX/bin"; ln -sf "'"$LBIN"'/sotd" "$PREFIX/bin/sotd"
+LAUNCH_RC="$(SOCKET="$LSOCK" PATH="$LBIN:$PATH" bash -c '. "'"$(dirname "$0")"'/../lib/sot-daemon.sh"
     sleep() { if [ "$1" = 1 ]; then command sleep 1; fi; }  # the probe waits for real, the retries do not
-    start_daemon_if_needed; echo $?' 2>/dev/null)" || LAUNCH_RC=exited
+    sot_daemon_ensure "'"$WORK"'/launch" "'"$LBIN"'/sotd" "$SOCKET"; echo $?' 2>/dev/null)" || LAUNCH_RC=exited
 check "an nc without -U leaves the socket in place and starts no daemon" \
     "0 socket=yes started=no" \
     "$LAUNCH_RC socket=$([ -S "$LSOCK" ] && echo yes || echo no) started=$([ -e "$LBIN/sotd-started" ] && echo yes || echo no)"
