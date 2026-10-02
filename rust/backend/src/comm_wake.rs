@@ -272,6 +272,20 @@ fn is_rule(line: &str) -> bool {
     !line.is_empty() && line.chars().all(|c| c == RULE)
 }
 
+/// An input-box border: a rule, or a rule with one ` label ` set into it, as Claude Code draws a named
+/// session's box top (`───── name ─`; seen 2026-10-02, v2.1.285).
+fn is_border(line: &str) -> bool {
+    let line = line.trim_end_matches(' ');
+    if is_rule(line) {
+        return true;
+    }
+    let Some(inner) = line.strip_prefix(RULE).and_then(|l| l.strip_suffix(RULE)) else {
+        return false;
+    };
+    let label = inner.trim_matches(RULE);
+    label.len() > 2 && label.starts_with(' ') && label.ends_with(' ') && !label.contains(RULE)
+}
+
 /// Whether the input prompt's own separator, U+00A0 after the glyph, is required on Windows. On Linux it always
 /// is. Off until a Windows screen read shows the NBSP survives ConPTY; while off, a bare glyph also counts there,
 /// and an agents-view task box with an empty placeholder (a voice state) reads free: a named Windows-only gap.
@@ -282,8 +296,8 @@ fn nbsp_required(windows: bool) -> bool {
 }
 
 /// The free-prompt test, all of: (a) only spaces before the glyph; (b) the cursor
-/// is just after the glyph, or one more; (c) the line sits directly between two
-/// rule lines, the input box's; (d) the glyph is followed by U+00A0, the main
+/// is just after the glyph, or one more; (c) the line sits directly between the
+/// input box's two borders (a rule, optionally labelled); (d) the glyph is followed by U+00A0, the main
 /// prompt's own mark (menus and dialog inputs draw an ASCII space), or, where
 /// the NBSP is not required ([`NBSP_ON_WINDOWS`]), by nothing but spaces. A
 /// menu, a dialog or a draft is not free. One frame cannot tell a working row,
@@ -301,7 +315,7 @@ pub(crate) fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent
     let Some(line) = lines.get(row) else {
         return false;
     };
-    let boxed = row > 0 && is_rule(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_rule(l));
+    let boxed = row > 0 && is_border(&lines[row - 1]) && lines.get(row + 1).is_some_and(|l| is_border(l));
     if !boxed {
         return false;
     }
@@ -948,6 +962,22 @@ mod tests {
             // The agents-view task box with an empty placeholder (a voice state) reads as a bare glyph: free
             // wherever the NBSP is not required, the named Windows-only gap.
             assert_eq!(bfree("\u{276f}", 2, windows), !nbsp_required(windows));
+        }
+    }
+
+    /// REAL, 2026-10-02 journal, Claude Code 2.1.285, 83 columns, cursor 41;3: a named session's box.
+    #[test]
+    fn a_named_session_box_is_free() {
+        let rule = |n: usize| "\u{2500}".repeat(n);
+        let top = format!("{} daemon-shutdown-on-window-close \u{2500}", rule(49));
+        let prompt = "\u{276f}\u{a0}".to_string();
+        for windows in [false, true] {
+            assert!(prompt_free_on(&[top.clone(), prompt.clone(), rule(83)], Some((1, 2)), "claude", windows));
+        }
+        let glued = format!("{}label\u{2500}", rule(10)); // no spaces around the label: not a border
+        let two = format!("{} a {} b \u{2500}", rule(10), rule(10)); // two labels: not a border
+        for bad in [glued, two] {
+            assert!(!prompt_free_on(&[bad, prompt.clone(), rule(83)], Some((1, 2)), "claude", false));
         }
     }
 }
