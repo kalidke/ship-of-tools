@@ -39,17 +39,34 @@ pub async fn run(workspaces: Workspaces) {
     };
     let name = format!("sotd-{self_host}");
     tracing::info!(%recipe, %name, "hub link starting");
+    hold_link(&recipe, &self_host, &name, &workspaces, crate::shutdown::process()).await;
+}
+
+/// Keep the link up until `sig` fires; it never reconnects after.
+async fn hold_link(
+    recipe: &sot_protocol::ssh_bridge::SshRecipe,
+    self_host: &str,
+    name: &str,
+    workspaces: &Workspaces,
+    sig: &'static crate::shutdown::Signal,
+) {
     let mut wait = BACKOFF_FLOOR;
     loop {
+        if sig.is_fired() {
+            return;
+        }
         let began = Instant::now();
-        match link_once(&recipe, &self_host, &name, &workspaces).await {
+        match link_once(recipe, self_host, name, workspaces, sig).await {
             Ok(()) => tracing::info!("hub link closed"),
             Err(e) => tracing::warn!("hub link dropped: {e}"),
         }
         if began.elapsed() >= STABLE {
             wait = BACKOFF_FLOOR;
         }
-        tokio::time::sleep(wait).await;
+        tokio::select! {
+            _ = tokio::time::sleep(wait) => {}
+            _ = sig.fired() => return,
+        }
         wait = (wait * 2).min(BACKOFF_CAP);
     }
 }
@@ -70,15 +87,31 @@ fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::ssh_bridge::SshRec
     sot_protocol::ssh_bridge::SshRecipe::new(target, None).map(Some)
 }
 
+/// The ssh child. Tests swap the program for a stub, nothing else.
+fn spawn_link(recipe: &sot_protocol::ssh_bridge::SshRecipe) -> Result<tokio::process::Child, String> {
+    #[cfg(test)]
+    if let Some(program) = tests::STUB_PROGRAM.lock().unwrap().as_ref() {
+        return tokio::process::Command::new(program)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("spawn {recipe}: {e}"));
+    }
+    sot_protocol::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))
+}
+
 /// One connection, from spawn to the first failure. The child dies with `child`.
 async fn link_once(
     recipe: &sot_protocol::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
     workspaces: &Workspaces,
+    sig: &'static crate::shutdown::Signal,
 ) -> Result<(), String> {
-    let mut child = sot_protocol::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))?;
-    let _child_guard = crate::shutdown::ChildGuard::new();
+    let mut child = spawn_link(recipe)?;
+    let _child_guard = sig.guard();
     let mut tx = child.stdin.take().ok_or("no stdin")?;
     let mut rx = codec::buffered(child.stdout.take().ok_or("no stdout")?);
     let stderr = child.stderr.take().ok_or("no stderr")?;
@@ -102,7 +135,7 @@ async fn link_once(
         result = converse(&mut tx, &mut rx, self_host, name, workspaces) => result,
         // The daemon is shutting down: nothing kills this child at
         // `process::exit`, so it is killed here.
-        _ = crate::shutdown::fired() => {
+        _ = sig.fired() => {
             let _ = child.kill().await;
             return Ok(());
         }
@@ -279,6 +312,39 @@ fn registry_handles(home: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    pub(super) static STUB_PROGRAM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    /// The shutdown signal kills the ssh child; the loop neither reconnects nor leaves a guard counted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_kills_the_link_child_and_never_reconnects() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let counter = dir.path().join("spawns");
+        let stub = dir.path().join("stub-ssh");
+        std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
+        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let workspaces = Workspaces::new();
+        let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", &workspaces, sig).await });
+        let began = Instant::now();
+        while sig.live() == 0 {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the link loop outlived the shutdown")
+            .expect("link task");
+        assert_eq!(sig.live(), 0);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "reconnected after the fire");
+        *STUB_PROGRAM.lock().unwrap() = None;
+    }
 
     fn setup(registry: &str, fe: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let t = tempfile::tempdir().unwrap();
