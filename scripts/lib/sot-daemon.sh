@@ -1,3 +1,5 @@
+SOT_LAUNCH_WAIT_S=160  # = rust/protocol/src/ops.rs lease::LAUNCH_WAIT; scripts/tests/installer-state.sh compares them
+
 # sot-daemon.sh -- the one place the sotd unit, the all-in-one sot-launch
 # wrapper and the backend ensure are written down. Sourced by install.sh,
 # sot-apply.sh, launch-sot.sh and, through the text render_sot_launch writes,
@@ -157,13 +159,53 @@ sot_socket_open() {  # <socket>
     return 0
 }
 
-# Start the backend if its socket is not open, and wait for it.
+# True when this install owns a systemd user unit for the backend: systemctl
+# is here, the manifest says systemd, and the unit file install.sh wrote
+# points at this prefix's sotd. Reads the FILE, not `systemctl cat`, so apply,
+# ensure and rollback ask one question the same way.
+sot_service_owned() {  # <prefix>
+    command -v systemctl >/dev/null 2>&1 || return 1
+    grep -q '"service": *"systemd"' "$1/install.json" 2>/dev/null || return 1
+    [ "$(sot_unit_owner_path < "$HOME/.config/systemd/user/sotd.service" 2>/dev/null)" = "$1/bin/sotd" ]
+}
+
+# Make the backend's socket answer: return 0 once it does, 1 (with the reason
+# on stderr) if it cannot. Waits SOT_LAUNCH_WAIT_S for a successor while a
+# previous instance is still shutting down. Never removes the socket: the
+# daemon unlinks a stale one itself, and an ensure-side rm can delete a
+# successor's fresh bind. Never kills a daemon it started: the daemon's own
+# lock wait is shorter than this one.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
-    local prefix="$1" sotd_bin="$2" socket="$3" i
-    if ! sot_socket_open "$socket"; then
-        [ -z "${socket:-}" ] || rm -f -- "${socket:?}" 2>/dev/null || true
-        nohup "$sotd_bin" --project-root "$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-        i=0; while [ $i -lt 40 ]; do sot_socket_open "$socket" && break; sleep 0.25; i=$((i+1)); done
-        sot_socket_open "$socket" || { echo "ERROR: backend did not open $socket; see /tmp/sotd.log" >&2; exit 1; }
+    local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
+    sot_socket_open "$socket" && return 0
+    if sot_service_owned "$prefix"; then
+        mode=systemd
+    else
+        nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
+        pid=$!
     fi
+    start="$(date +%s)"
+    while :; do
+        now="$(date +%s)"
+        [ "$now" -lt $((start + SOT_LAUNCH_WAIT_S)) ] || break
+        [ "$mode" != systemd ] || systemctl --user start sotd.service >/dev/null 2>&1
+        sot_socket_open "$socket" && return 0
+        if [ "$mode" = nohup ] && ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null
+            code=$?
+            # Another daemon may have won the lock.
+            sot_socket_open "$socket" && return 0
+            echo "ERROR: the backend exited ($code) before opening $socket; see /tmp/sotd.log" >&2
+            return 1
+        fi
+        if [ "$warned" = 0 ] && [ "$now" -ge $((start + 3)) ]; then
+            echo "waiting for the backend (a previous one may still be shutting down)" >&2
+            warned=1
+        fi
+        sleep 0.25
+    done
+    echo "ERROR: the backend did not open $socket within ${SOT_LAUNCH_WAIT_S}s" >&2
+    if [ "$mode" = systemd ]; then echo "see journalctl --user -u sotd.service" >&2
+    else echo "see /tmp/sotd.log" >&2; fi
+    return 1
 }

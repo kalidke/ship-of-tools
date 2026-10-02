@@ -58,6 +58,7 @@ remote regardless of its `GatewayPorts` (default `no`).
   systemd-aware (diverts to `systemctl --user restart sotd.service` when the unit
   is enabled, else keeps the legacy detached-nohup path) so it no longer races
   `Restart=always`.
+  Amended 2026-10-02 (0.6.6): sotd.service is Restart=on-failure; exit 0 is a requested shutdown and stays down, exit 75 is an update restart, anything else is a crash and restarts.
 - `loginctl enable-linger <user>` — both the daemon and the tunnels are restored
   on boot with no interactive login.
 

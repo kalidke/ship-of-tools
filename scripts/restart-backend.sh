@@ -84,8 +84,8 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 # If sotd is supervised by systemd --user (sotd.service), let systemd own the
-# lifecycle: a manual kill+nohup here would race its Restart=always. `systemctl
-# restart` picks up the freshly-built on-disk binary too.
+# lifecycle: a manual kill+nohup here would race the unit's own restart policy.
+# `systemctl restart` picks up the freshly-built on-disk binary too.
 if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     echo "sotd is systemd-supervised (sotd.service) — restarting via systemctl --user"
     systemctl --user restart sotd.service

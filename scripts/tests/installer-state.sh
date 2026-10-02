@@ -317,6 +317,139 @@ check "an nc without -U leaves the socket in place and starts no daemon" \
     "$LAUNCH_RC socket=$([ -S "$LSOCK" ] && echo yes || echo no) started=$([ -e "$LBIN/sotd-started" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
+# New tests never see the host's /usr/bin: PATH is a recording-stub dir plus a
+# dir of symlinks to exactly the tools the library needs.
+mk_tools() {  # <dir>
+    mkdir -p "$1"
+    local t p
+    for t in bash sh env cat sed grep head cut awk mkdir rm mv cp ln chmod touch readlink basename dirname date sleep nohup id uname hostname python3 git sha256sum install timeout stat cmp mktemp find wc; do
+        p="$(command -v "$t")" || { printf 'FAIL mk_tools: %s is missing\n' "$t" >&2; exit 1; }
+        ln -sf "$p" "$1/$t"
+    done
+}
+TOOLS="$WORK/tools"; mk_tools "$TOOLS"
+LIB="$(dirname "$0")/../lib/sot-daemon.sh"
+
+# Recording stubs. The sotd stub binds the --socket it is given after
+# STUB_DELAY seconds (or exits STUB_EXIT without binding), then stays up.
+mk_stubs() {  # <dir>
+    mkdir -p "$1"
+    cat > "$1/nc" <<'NC'
+#!/bin/sh
+case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
+exit 0
+NC
+    cat > "$1/systemctl" <<'SC'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STUB_LOG"
+case "$*" in
+    *"start sotd.service"*)
+        python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$STUB_SOCKET" ;;
+esac
+exit 0
+SC
+    cat > "$1/sotd" <<'SD'
+#!/bin/sh
+printf 'sotd %s\n' "$*" >> "$STUB_LOG"
+printf '%s\n' "$$" > "$STUB_PIDFILE"
+[ -z "${STUB_EXIT:-}" ] || exit "$STUB_EXIT"
+while [ $# -gt 0 ] && [ "$1" != --socket ]; do shift; done
+[ $# -gt 0 ] || exit 4
+exec python3 -c 'import socket,sys,time; time.sleep(float(sys.argv[2])); socket.socket(socket.AF_UNIX).bind(sys.argv[1]); time.sleep(60)' "$2" "${STUB_DELAY:-0}"
+SD
+    chmod +x "$1/nc" "$1/systemctl" "$1/sotd"
+}
+# Run sot_daemon_ensure under the sandboxed PATH. Sets ENS_RC, ENS_SECS, ENS_ERR.
+run_ensure() {  # <dir> <prefix> <with-systemctl 1|0>
+    local d="$1" prefix="$2" sc="$3" t0 t1 path="$1/stubs:$TOOLS"
+    mkdir -p "$d/stubs"
+    mk_stubs "$d/stubs"
+    [ "$sc" = 1 ] || rm -f "$d/stubs/systemctl"
+    : > "$d/log"
+    t0="$(date +%s)"
+    ENS_RC=0
+    ( HOME="$d/home" PATH="$path" STUB_LOG="$d/log" STUB_SOCKET="$d/sot.sock" STUB_PIDFILE="$d/pid" \
+        STUB_DELAY="${STUB_DELAY:-0}" STUB_EXIT="${STUB_EXIT:-}" \
+        bash -c '. "$1"; sot_daemon_ensure "$2" "$3" "$4"' ensure "$LIB" "$prefix" "$d/stubs/sotd" "$d/sot.sock" \
+        2> "$d/err" ) || ENS_RC=$?
+    t1="$(date +%s)"
+    ENS_SECS=$((t1 - t0))
+    ENS_ERR="$(cat "$d/err")"
+}
+reap_stub() {  # <dir>: signal only the pid the stub recorded
+    local pid
+    pid="$(cat "$1/pid" 2>/dev/null || true)"
+    [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+case_start "owner_helpers_agree"
+for fixture in "$old_unit" "$wrapped_unit" "$no_execstart"; do
+    check "unit owner: install.sh and the library agree" \
+        "$(printf '%s\n' "$fixture" | installer_unit_owner_path)" "$(printf '%s\n' "$fixture" | sot_unit_owner_path)"
+done
+for fixture in 'PENDING="/opt/sot-a/updates/pending-linux-x86_64.json"' \
+               'export SOT_FRONTEND_BIN="/opt/sot-b/bin/sot"' \
+               'exec "/opt/sot-c/bin/sot" "$@"' \
+               '#!/usr/bin/env bash'; do
+    check "wrapper owner: install.sh and the library agree" \
+        "$(printf '%s\n' "$fixture" | installer_wrapper_owner_prefix)" "$(printf '%s\n' "$fixture" | sot_wrapper_owner_prefix)"
+done
+
+# ---------------------------------------------------------------------------
+case_start "rendered_unit_restarts_on_failure"
+RU="$WORK/rendered.service"
+render_sotd_unit /opt/sot-r "$(dirname "$0")/../../deploy/sotd.service" "$RU"
+check "the rendered unit restarts on failure" "1" "$(grep -c '^Restart=on-failure$' "$RU" || true)"
+check "the rendered unit has no Restart=always" "0" "$(grep -c '^Restart=always$' "$RU" || true)"
+check "the rendered unit's owner path is the prefix's sotd" "/opt/sot-r/bin/sotd" "$(sot_unit_owner_path < "$RU")"
+
+# ---------------------------------------------------------------------------
+case_start "ensure_choice_table"
+# <manifest> <unit-owner> <systemctl on PATH> -> how the backend was started
+choice_row() {  # <name> <manifest systemd|none> <owner this|other> <systemctl 1|0> <expected>
+    local d="$WORK/choice-$1" prefix="$WORK/choice-$1/prefix" how
+    mkdir -p "$d/home/.config/systemd/user" "$prefix"
+    [ "$2" != systemd ] || printf '{"service": "systemd"}\n' > "$prefix/install.json"
+    if [ "$3" = this ]; then render_sotd_unit "$prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/home/.config/systemd/user/sotd.service"
+    else render_sotd_unit "$WORK/elsewhere" "$(dirname "$0")/../../deploy/sotd.service" "$d/home/.config/systemd/user/sotd.service"; fi
+    STUB_DELAY=0 run_ensure "$d" "$prefix" "$4"
+    if grep -q -- '--user start sotd.service' "$d/log"; then how="systemctl"
+    elif grep -q '^sotd ' "$d/log"; then how="nohup"
+    else how="none"; fi
+    check "$1 (rc 0, started by $5)" "0 $5" "$ENS_RC $how"
+    reap_stub "$d"
+}
+choice_row no-manifest none this 1 nohup
+choice_row other-prefix systemd other 1 nohup
+choice_row owned systemd this 1 systemctl
+choice_row no-systemctl systemd this 0 nohup
+
+# ---------------------------------------------------------------------------
+case_start "ensure_waits_for_a_late_bind"
+d="$WORK/late"; mkdir -p "$d/home"
+STUB_DELAY=12 run_ensure "$d" "$d/prefix" 0
+check "a daemon that binds after 12 s is waited for" "0" "$ENS_RC"
+case "$ENS_ERR" in *"waiting for the backend"*) check "the waiting line is printed" ok ok ;; *) check "the waiting line is printed" "a waiting line" "$ENS_ERR" ;; esac
+alive=no; kill -0 "$(cat "$d/pid")" 2>/dev/null && alive=yes
+check "the started daemon is still alive" "yes" "$alive"
+reap_stub "$d"
+
+# ---------------------------------------------------------------------------
+case_start "ensure_reports_a_dead_start"
+d="$WORK/dead"; mkdir -p "$d/home"
+STUB_EXIT=3 run_ensure "$d" "$d/prefix" 0
+check "a start that exits without binding returns 1" "1" "$ENS_RC"
+case "$ENS_ERR" in *"exited (3)"*) check "the exit code is named" ok ok ;; *) check "the exit code is named" "exited (3)" "$ENS_ERR" ;; esac
+check "and does so in under 5 s" "yes" "$([ "$ENS_SECS" -lt 5 ] && echo yes || echo "no (${ENS_SECS}s)")"
+
+# ---------------------------------------------------------------------------
+case_start "launcher_bounds_match_ops"
+OPS_WAIT="$(sed -n 's/.*pub const LAUNCH_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops.rs")"
+LIB_WAIT="$(sed -n 's/^SOT_LAUNCH_WAIT_S=\([0-9]*\).*/\1/p' "$LIB")"
+check "the library's launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$LIB_WAIT"
+
+# ---------------------------------------------------------------------------
 printf '\n'
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
