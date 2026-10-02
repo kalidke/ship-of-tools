@@ -50,8 +50,8 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
              echo 'Allow this action? (y/n)'\n\
              while [ -f '{dialog}' ]; do sleep 0.1; done\n\
            fi\n\
-           printf '%s\\n\\342\\235\\257\\302\\240\\n%s\\n footer 0\\033[2A\\033[3G' \"$rule\" \"$rule\"\n\
-           ( n=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\0338' $n; fi; sleep 0.2; done ) &\n\
+           printf '%s\\033[K\\n\\342\\235\\257\\302\\240\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$rule\"\n\
+           ( n=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
            IFS= read -r line\n\
            kill $spid\n\
