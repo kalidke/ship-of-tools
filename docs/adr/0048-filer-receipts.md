@@ -407,6 +407,8 @@ Verdicts, in the order the first that applies wins:
 > transport's reason>`, else `FAILED -> @h: the daemon did not answer at
 > <endpoint>`; and the ack-without-`id` row is gone, because a daemon that
 > predates receipts also predates `comm.file` and refuses it first.
+>
+> *Amended 2026-10-01 (rc9.12):* an empty roster no longer decides a directed send. A backend's hub link (role `cli`) files and receipts without ever being on the roster, so a directed send waits the 5 s window for a receipt and, with none, prints `FAILED -> @h: nobody filed it within 5s: …`; only a broadcast and a hub that dropped the id are still decided on the ack.
 
 Everything a receipt cannot exist for is decided on the ack — a broadcast, a hub
 that dropped the id, an empty roster — so no path waits out five seconds for an

@@ -330,13 +330,16 @@ case_an_empty_roster_with_no_receipt_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
     # Not listed, nobody on the roster, no receipt: FAILED, naming both causes the sender cannot tell apart.
-    write_row_ssh_stub "$dir" not_here no yes 0 none '[]'
+    # The stub hangs after the ack, so only the 5 s receipt window ends the wait.
+    write_row_ssh_stub "$dir" not_here no yes hang none '[]'
+    local t0=$SECONDS
     relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "into the void"
+    [ $((SECONDS - t0)) -ge 5 ] || { echo "  decided after $((SECONDS - t0))s, want the full 5 s receipt window"; return 1; }
     [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
     contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: nobody filed it within 5s: no box knows that handle, or the daemon that holds it is stopped or not linked to the hub" \
         || { echo "  stderr was '$RELAY_ERR', want the nobody-filed FAILED line"; return 1; }
     contains "$RELAY_ERR" "NOT CONFIRMED" \
-        && { echo "  an empty roster waited for a receipt: '$RELAY_ERR'"; return 1; }
+        && { echo "  an empty roster gave NOT CONFIRMED: '$RELAY_ERR'"; return 1; }
     return 0
 }
 
