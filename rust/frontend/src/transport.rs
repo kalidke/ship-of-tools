@@ -1630,6 +1630,7 @@ pub fn spawn(
     out_rx: UnboundedReceiver<OutgoingReq>,
     window: Arc<Window>,
     reconnect_now: Arc<tokio::sync::Notify>,
+    gate: sot_protocol::ssh_bridge::LinkGate,
 ) {
     rt.spawn(async move {
         // Reconnect loop with exponential backoff capped at 5s. The
@@ -1659,6 +1660,7 @@ pub fn spawn(
                 &mut out_rx,
                 window.clone(),
                 &mut backoff_ms,
+                &gate,
             )
             .await
             {
@@ -1710,6 +1712,7 @@ async fn connect_and_run(
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
     window: Arc<Window>,
     backoff_ms: &mut u64,
+    gate: &sot_protocol::ssh_bridge::LinkGate,
 ) -> Result<()> {
     match &config.dial {
         Dial::Pipe(pipe_path) => {
@@ -1732,11 +1735,12 @@ async fn connect_and_run(
                 &window,
                 backoff_ms,
                 ResolvedDial::Local,
+                None,
             )
             .await
         }
         Dial::Ssh(recipe) => {
-            let mut child = sot_protocol::ssh_bridge::spawn_async(recipe)
+            let mut child = sot_protocol::ssh_bridge::LinkGate::probe(recipe)
                 .with_context(|| format!("spawn ssh {recipe}"))?;
             let stdin = child.stdin.take().expect("spawned with a piped stdin");
             let stdout = child.stdout.take().expect("spawned with a piped stdout");
@@ -1764,6 +1768,8 @@ async fn connect_and_run(
             // Pre-hello, same labeling rule as the pipe branch above.
             tracing::info!(dial = %host, %recipe, "connected via ssh child");
             let rx = codec::buffered(stdout);
+            // The gate goes down inside `run_protocol`'s own wrapper, before
+            // the stderr wait below, so no lane dials while that wait runs.
             let result = run_protocol(
                 host,
                 rx,
@@ -1774,6 +1780,7 @@ async fn connect_and_run(
                 &window,
                 backoff_ms,
                 ResolvedDial::Ssh(recipe.clone()),
+                Some(gate),
             )
             .await;
             // `child` is dropped when this arm returns (`kill_on_drop`), after the
@@ -1984,19 +1991,74 @@ async fn read_hello_reply<R: tokio::io::AsyncBufRead + Unpin>(
         .map_err(|_| anyhow::anyhow!("hello reply timed out after {timeout:?}"))?
 }
 
+/// What `run_protocol` needs of the window: a redraw request. A trait so a
+/// test can run the protocol without a real window.
+trait Redraw {
+    fn request_redraw(&self);
+}
+
+impl Redraw for Arc<Window> {
+    fn request_redraw(&self) {
+        Window::request_redraw(self);
+    }
+}
+
+/// The daemon answered the hello with a refusal (bad token, protocol skew):
+/// a reply, so the link itself is fine and the gate stays up.
+#[derive(Debug)]
+struct HelloRefused(String);
+
+impl std::fmt::Display for HelloRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for HelloRefused {}
+
+/// Run the session and write the link gate: up at any hello reply (inside
+/// [`run_session`]), down when the session ends for any reason except a
+/// refusal of the hello itself. `gate` is `None` for a local connection,
+/// which has no ssh link to gate.
+async fn run_protocol<R, W, Wn>(
+    host: HostKey,
+    rx: tokio::io::BufReader<R>,
+    tx: W,
+    token: Option<&str>,
+    evt_tx: &StdSender<(HostKey, IncomingEvt)>,
+    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    window: &Wn,
+    backoff_ms: &mut u64,
+    resolved: ResolvedDial,
+    gate: Option<&sot_protocol::ssh_bridge::LinkGate>,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    Wn: Redraw,
+{
+    let result = run_session(host, rx, tx, token, evt_tx, out_rx, window, backoff_ms, resolved, gate).await;
+    if let Some(gate) = gate {
+        if !matches!(&result, Err(e) if e.is::<HelloRefused>()) {
+            gate.set_up(false);
+        }
+    }
+    result
+}
+
 /// Drive the wire protocol over an already-connected stream's halves. Generic
 /// over the read/write types so the same code path serves the local-socket
 /// transport and an ssh child's stdio — C3 as amended §0: adding this
 /// transport inside the protocol CRATE is not a wire-protocol change; the
 /// frames this function reads/writes are untouched.
-async fn run_protocol<R, W>(
+async fn run_session<R, W, Wn>(
     host: HostKey,
     mut rx: tokio::io::BufReader<R>,
     mut tx: W,
     token: Option<&str>,
     evt_tx: &StdSender<(HostKey, IncomingEvt)>,
     out_rx: &mut UnboundedReceiver<OutgoingReq>,
-    window: &Arc<Window>,
+    window: &Wn,
     backoff_ms: &mut u64,
     // C3 as amended §5: which transport `connect_and_run` actually
     // connected — `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh`
@@ -2004,10 +2066,12 @@ async fn run_protocol<R, W>(
     // arms only when NOT `Local` — keyed on the transport that CONNECTED,
     // not the CLI shape.
     resolved: ResolvedDial,
+    gate: Option<&sot_protocol::ssh_bridge::LinkGate>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
+    Wn: Redraw,
 {
     let mut next_id: u64 = 1;
     // PendingGuard, not a bare HashMap: its Drop flushes any surviving
@@ -2086,6 +2150,10 @@ where
     if frame.id != hello_id {
         anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
     }
+    // Any reply, a refusal included, proves the link.
+    if let Some(gate) = gate {
+        gate.set_up(true);
+    }
     if let Some(r) = frame.rev {
         session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);
     }
@@ -2101,7 +2169,7 @@ where
             .unwrap_or("");
         if code == "token_mismatch" {
             tracing::error!(code, "hello rejected: authentication failed ({err_msg})");
-            anyhow::bail!("authentication failed: {err_msg}");
+            return Err(HelloRefused(format!("authentication failed: {err_msg}")).into());
         }
         if code == "protocol_mismatch" {
             // ADR 0030 §2: a version skew, not a transient drop. Build a
@@ -2116,10 +2184,10 @@ where
             tracing::error!(code, "hello rejected: {err_msg}");
             emit(IncomingEvt::ProtocolMismatch { message });
             window.request_redraw();
-            anyhow::bail!("hello rejected: {err_msg} (code={code})");
+            return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
         }
         tracing::error!(code, "hello rejected: {err_msg}");
-        anyhow::bail!("hello rejected: {err_msg} (code={code})");
+        return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
     }
     let hello_res: HelloRes = serde_json::from_value(frame.payload).context("hello res")?;
     // ADR 0030 §2: a successful hello from a pre-versioning backend comes back
@@ -2193,7 +2261,11 @@ where
     // the backend's id-format conventions in the frontend. Today files mode
     // uses `files:` for the root; that may change.
     let mut root_node_id = String::new();
-    if frame.id == tree_id {
+    if frame.id == tree_id && frame.payload.get("error").is_some() {
+        // An unreadable default directory is no reason to end the session:
+        // that would cycle the transport and flap the link gate.
+        tracing::warn!(payload = %frame.payload, "tree.root preamble refused; staying connected");
+    } else if frame.id == tree_id {
         let res: TreeRootRes = serde_json::from_value(frame.payload).context("tree.root res")?;
         root_node_id = res.node.id.clone();
         emit(IncomingEvt::TreeRoot {
@@ -2231,7 +2303,11 @@ where
     .await?;
     let (frame, blob) = codec::read_frame(&mut rx).await?;
     note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
-    if frame.id == prev_id {
+    if frame.id == prev_id && frame.payload.get("error").is_some() {
+        // Same rule as the tree.root preamble: with no readable root there
+        // is nothing to preview, and the session stays up.
+        tracing::warn!(payload = %frame.payload, "preview.get preamble refused; staying connected");
+    } else if frame.id == prev_id {
         let res: PreviewGetRes =
             serde_json::from_value(frame.payload).context("preview.get res")?;
         let bytes = blob.unwrap_or_default();
@@ -4418,6 +4494,117 @@ pub(crate) fn protocol_mismatch_message(payload: &serde_json::Value, err_msg: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- ADR 0045 decision 4: the link gate. ---
+
+    struct NoWindow;
+    impl Redraw for NoWindow {
+        fn request_redraw(&self) {}
+    }
+
+    /// A fake daemon on one end of an in-memory stream: answers the hello
+    /// with `hello_reply`, then (when `answer_preamble`) answers the
+    /// tree.root and preview.get preamble with an `{error}` payload, and
+    /// holds the stream open until `hold` is dropped.
+    async fn run_against_fake_daemon(
+        host: &str,
+        hello_reply: serde_json::Value,
+        answer_preamble: bool,
+        gate: sot_protocol::ssh_bridge::LinkGate,
+    ) -> (
+        tokio::task::JoinHandle<Result<()>>,
+        tokio::task::JoinHandle<()>,
+        std::sync::mpsc::Receiver<(HostKey, IncomingEvt)>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (near, far) = tokio::io::duplex(1 << 16);
+        let (hold_tx, hold_rx) = tokio::sync::oneshot::channel::<()>();
+        let daemon = tokio::spawn(async move {
+            let (rx, mut tx) = tokio::io::split(far);
+            let mut rx = codec::buffered(rx);
+            let (hello, _) = codec::read_frame(&mut rx).await.unwrap();
+            codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, hello_reply).with_rev(0), None).await.unwrap();
+            if answer_preamble {
+                for _ in 0..2 {
+                    let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+                    let err = serde_json::json!({ "error": "cannot read the default directory", "code": "io" });
+                    codec::write_frame(&mut tx, &Frame::res(req.id, &req.op, err).with_rev(0), None).await.unwrap();
+                }
+            }
+            let _ = hold_rx.await;
+        });
+        let (evt_tx, evt_rx) = std::sync::mpsc::channel();
+        let host = host.to_string();
+        let session = tokio::spawn(async move {
+            let (rx, tx) = tokio::io::split(near);
+            let (_out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel();
+            let mut backoff_ms = 200;
+            let result = run_protocol(
+                host.clone(),
+                codec::buffered(rx),
+                tx,
+                None,
+                &evt_tx,
+                &mut out_rx,
+                &NoWindow,
+                &mut backoff_ms,
+                ResolvedDial::Local,
+                Some(&gate),
+            )
+            .await;
+            let _ = std::fs::remove_file(crate::state::state_path(&host));
+            result
+        });
+        (session, daemon, evt_rx, hold_tx)
+    }
+
+    fn hello_ok() -> serde_json::Value {
+        serde_json::json!({ "session_id": "sess-1", "revision": 0, "snapshot_pending": false })
+    }
+
+    #[tokio::test]
+    async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
+        let gate = sot_protocol::ssh_bridge::LinkGate::default();
+        gate.set_up(false);
+        let (session, daemon, evt_rx, hold) =
+            run_against_fake_daemon("gate-test-up-down", hello_ok(), true, gate.clone()).await;
+        let t0 = std::time::Instant::now();
+        while evt_rx.try_recv().map_or(true, |(_, e)| !matches!(e, IncomingEvt::Connected { .. })) {
+            assert!(t0.elapsed() < std::time::Duration::from_secs(5), "no Connected event");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(gate.is_up(), "a hello reply proves the link");
+        drop(hold);
+        daemon.await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
+        assert!(result.is_err(), "the daemon closing ends the session");
+        assert!(!gate.is_up(), "the gate is down by the time run_protocol has returned");
+    }
+
+    #[tokio::test]
+    async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
+        let gate = sot_protocol::ssh_bridge::LinkGate::default();
+        gate.set_up(false);
+        let reply = serde_json::json!({ "error": "protocol skew", "code": "protocol_mismatch" });
+        let (session, _daemon, _evt_rx, _hold) =
+            run_against_fake_daemon("gate-test-mismatch", reply, false, gate.clone()).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
+        assert!(result.unwrap_err().is::<HelloRefused>());
+        assert!(gate.is_up(), "a refusal is a reply: the link is up");
+    }
+
+    #[tokio::test]
+    async fn a_tree_root_error_reply_does_not_end_the_session() {
+        let gate = sot_protocol::ssh_bridge::LinkGate::default();
+        let (session, _daemon, _evt_rx, _hold) =
+            run_against_fake_daemon("gate-test-tree-root", hello_ok(), true, gate.clone()).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        assert!(!session.is_finished(), "the session must still be connected after 1 s");
+        assert!(gate.is_up());
+        session.abort();
+        let _ = std::fs::remove_file(crate::state::state_path(&"gate-test-tree-root".to_string()));
+    }
+
 
     // --- Field incident 2026-09-08, defect (b): the read path must never
     // stall on synchronous per-frame disk I/O. ---

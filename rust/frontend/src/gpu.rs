@@ -4108,6 +4108,7 @@ enum ProxyTarget {
 fn lane_dial(
     config: &crate::transport::TransportConfig,
     resolved: ResolvedDial,
+    gate: &sot_protocol::ssh_bridge::LinkGate,
 ) -> Option<(sot_protocol::lane_client::LaneDial, Option<String>)> {
     match resolved {
         ResolvedDial::Local => match &config.dial {
@@ -4118,7 +4119,7 @@ fn lane_dial(
             crate::transport::Dial::Ssh(_) => None,
         },
         ResolvedDial::Ssh(recipe) => {
-            Some((sot_protocol::lane_client::LaneDial::Ssh(recipe), config.token.clone()))
+            Some((sot_protocol::lane_client::LaneDial::Ssh(recipe, gate.clone()), config.token.clone()))
         }
     }
 }
@@ -4942,6 +4943,11 @@ struct State {
     /// lane dials the SAME endpoint, never a second independent guess.
     /// Absent for a host that hasn't connected yet.
     host_resolved_dial: HashMap<crate::dial::HostKey, ResolvedDial>,
+    /// One link gate per host (`sot_protocol::ssh_bridge::LinkGate`): the
+    /// host's control transport writes it, and every other site that starts
+    /// an ssh login to the host (lane dials, the page proxy) asks it.
+    /// Always taken through `entry().or_default()`, so there is exactly one.
+    link_gates: HashMap<crate::dial::HostKey, sot_protocol::ssh_bridge::LinkGate>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
     /// for each dial — `HostKey` stays the stable dial label. Read by
     /// `host_label` (display: Hosts mode, Sessions labels, the status
@@ -5500,6 +5506,7 @@ struct State {
             std::net::TcpListener,
             sot_protocol::ssh_bridge::SshRecipe,
             Option<String>,
+            sot_protocol::ssh_bridge::LinkGate,
         )>,
     >,
     proxy_ensured: std::collections::HashSet<u16>,
@@ -6751,6 +6758,7 @@ impl State {
             // each host's transport task — empty here only briefly.
             host_transports: HashMap::new(),
             host_resolved_dial: HashMap::new(),
+            link_gates: HashMap::new(),
             declared_host: HashMap::new(),
             last_declared_sessions: None,
             active_host,
@@ -8265,6 +8273,7 @@ impl State {
             }
             ProxyTarget::Dial(recipe, token) => (recipe.clone(), token.clone()),
         };
+        let gate = self.link_gates.entry(host.clone()).or_default().clone();
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
             return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
         };
@@ -8283,7 +8292,7 @@ impl State {
                     self.proxy_ensured.remove(&port);
                     return false;
                 }
-                if tx.send((listener, recipe.clone(), token)).is_err() {
+                if tx.send((listener, recipe.clone(), token, gate)).is_err() {
                     tracing::warn!(port, "proxy: manager gone; not arming");
                     self.proxy_ensured.remove(&port);
                     return false;
@@ -10452,7 +10461,8 @@ impl State {
         // ADR 0045 decision 1 (Codex review): dials the SAME endpoint the
         // control transport already resolved for this host — never a
         // second, independent preference guess (`lane_dial`'s own doc).
-        let Some((dial, token)) = lane_dial(config, resolved) else {
+        let gate = self.link_gates.entry(host.clone()).or_default().clone();
+        let Some((dial, token)) = lane_dial(config, resolved, &gate) else {
             let msg = format!("'{host}' has no usable transport for its resolved connection");
             self.pane_dial_error = Some(msg.clone());
             self.status = msg;
@@ -20066,6 +20076,7 @@ impl ApplicationHandler for App {
                         .map(|(host, config, _)| (host.clone(), config.clone()))
                         .collect();
                     for (host, config, req_rx) in transports {
+                        let gate = state.link_gates.entry(host.clone()).or_default().clone();
                         crate::transport::spawn(
                             rt,
                             host,
@@ -20074,6 +20085,7 @@ impl ApplicationHandler for App {
                             req_rx,
                             state.window.clone(),
                             state.reconnect_now.clone(),
+                            gate,
                         );
                     }
                     // ADR 0035: spawn the proxy manager whenever there's a
@@ -30005,12 +30017,12 @@ mod capsule_pane_tests {
         };
         // A pipe-configured host whose control connection resolved LOCAL —
         // the lane dial follows.
-        match lane_dial(&pipe_config, ResolvedDial::Local) {
+        match lane_dial(&pipe_config, ResolvedDial::Local, &Default::default()) {
             Some((sot_protocol::lane_client::LaneDial::Local(path), token)) => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
                 assert_eq!(token.as_deref(), Some("tok"));
             }
-            Some((sot_protocol::lane_client::LaneDial::Ssh(_), _)) => {
+            Some((sot_protocol::lane_client::LaneDial::Ssh(..), _)) => {
                 panic!("must follow the resolved Local selection, not guess ssh")
             }
             Some((sot_protocol::lane_client::LaneDial::Tcp(_), _)) => {
@@ -30025,8 +30037,8 @@ mod capsule_pane_tests {
             dial: crate::transport::Dial::Ssh(recipe.clone()),
             token: Some("tok".to_string()),
         };
-        match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone())) {
-            Some((sot_protocol::lane_client::LaneDial::Ssh(got), token)) => {
+        match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone()), &Default::default()) {
+            Some((sot_protocol::lane_client::LaneDial::Ssh(got, _), token)) => {
                 assert_eq!(got, recipe);
                 assert_eq!(token.as_deref(), Some("tok"));
             }
@@ -30041,7 +30053,7 @@ mod capsule_pane_tests {
         // Resolved Local but `config.dial` holds Ssh (shouldn't happen —
         // the control connection could not have resolved Local without a
         // configured pipe) degrades to no dial rather than panicking.
-        assert!(lane_dial(&ssh_config, ResolvedDial::Local).is_none());
+        assert!(lane_dial(&ssh_config, ResolvedDial::Local, &Default::default()).is_none());
     }
 
     /// Cross-host figure defect (topology plan step 7): `resolve_proxy_target`

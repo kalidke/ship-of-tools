@@ -160,6 +160,9 @@ pub(crate) enum LaneError {
     /// identity check on the lane it dialed could not complete. Retried
     /// exactly like `Unreachable`.
     Undetermined(String),
+    /// ADR 0045 decision 4: the host's link is down and the dial started
+    /// no ssh. Treated as a failed dial: no absence charge, backoff.
+    LinkDown,
     /// The capsule refused the attach, carrying the reason IT named
     /// rather than collapsing into `Protocol("attach_refused")`. The
     /// reason is not decoration: `SubscriberCap` held by orphaned watcher
@@ -202,6 +205,7 @@ impl std::fmt::Display for LaneError {
             LaneError::Refused { code, detail } => write!(f, "refused ({code}): {detail}"),
             LaneError::Unreachable(s) => write!(f, "unreachable: {s}"),
             LaneError::Undetermined(s) => write!(f, "undetermined: {s}"),
+            LaneError::LinkDown => write!(f, "host link down"),
             LaneError::AttachRefused(r) => write!(f, "attach refused: {}", attach_refused_text(*r)),
         }
     }
@@ -230,6 +234,7 @@ fn classify_transport(e: TransportError) -> LaneError {
         TransportError::Refused { code, detail } => LaneError::Refused { code, detail },
         TransportError::Unreachable(io) => LaneError::Unreachable(io.to_string()),
         TransportError::Undetermined { detail, .. } => LaneError::Undetermined(detail),
+        TransportError::LinkDown => LaneError::LinkDown,
         other => LaneError::Io(transport_error_to_io(other)),
     }
 }
@@ -455,7 +460,7 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
         Err(e) => match classify_transport(e) {
             LaneError::Refused { code, .. } if code == "unauthenticated" => reconnect.classify_access_denied(),
             LaneError::Refused { code, detail } => reconnect.classify_lane_refused(code, detail),
-            LaneError::Unreachable(_) | LaneError::Undetermined(_) => {
+            LaneError::Unreachable(_) | LaneError::Undetermined(_) | LaneError::LinkDown => {
                 reconnect.clear_unresponsive();
                 ReconnectDecision::Retry
             }
@@ -466,7 +471,7 @@ fn on_supervisor_absent_or_unresponsive<E: Endpoint>(
                     reconnect.classify_unresponsive(now)
                 }
             }
-            _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined"),
+            _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined/LinkDown"),
         },
     }
 }
@@ -665,11 +670,12 @@ fn converge_on_ready<E: Endpoint>(
                     };
                     return ReadyOutcome::Terminal(msg);
                 }
-                e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_)) => {
+                e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_) | LaneError::LinkDown) => {
                     reconnect.clear_unresponsive();
                     let msg = match &e {
                         LaneError::Unreachable(d) => format!("daemon unreachable — retrying ({d})"),
                         LaneError::Undetermined(_) => "daemon could not identify the lane — retrying".to_string(),
+                        LaneError::LinkDown => "host offline — retrying".to_string(),
                         _ => unreachable!("matched above"),
                     };
                     emit(WorkerEvent::Status(msg));
@@ -688,7 +694,7 @@ fn converge_on_ready<E: Endpoint>(
                         WaitOutcome::Continue => continue,
                     }
                 }
-                _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined"),
+                _ => unreachable!("classify_transport only ever produces Io/Refused/Unreachable/Undetermined/LinkDown"),
             },
         }
     }
@@ -1252,11 +1258,12 @@ fn run_worker<E: Endpoint>(
                 emit(WorkerEvent::Terminal(msg));
                 return;
             }
-            Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_))) => {
+            Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_) | LaneError::LinkDown)) => {
                 reconnect.clear_unresponsive();
                 let msg = match &e {
                     LaneError::Unreachable(d) => format!("daemon unreachable — retrying ({d})"),
                     LaneError::Undetermined(_) => "daemon could not identify the lane — retrying".to_string(),
+                        LaneError::LinkDown => "host offline — retrying".to_string(),
                     _ => unreachable!("matched above"),
                 };
                 emit(WorkerEvent::Status(msg));

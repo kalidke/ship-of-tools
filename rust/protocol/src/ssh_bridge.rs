@@ -110,7 +110,7 @@ pub fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
 /// Spawn the child for a synchronous caller — the lane client, which
 /// implements `sot_log::client::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
-pub fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
+fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
     let (program, args) = argv(recipe);
     std::process::Command::new(program)
         .args(args)
@@ -125,7 +125,7 @@ pub fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
 /// `Child` (the branch returning, the splice task ending) never leaves an
 /// orphaned `ssh` running past its client — the async twin of
 /// `BridgedClient`'s own explicit `Drop` on the sync side.
-pub fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
+fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
     let (program, args) = argv(recipe);
     tokio::process::Command::new(program)
         .args(args)
@@ -134,6 +134,68 @@ pub fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child>
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
+}
+
+/// Why a gated spawn did not start a child.
+#[derive(Debug)]
+pub enum SpawnError {
+    /// The host's link is down; no ssh was started.
+    LinkDown,
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpawnError::LinkDown => write!(f, "the host's link is down; no ssh was started"),
+            SpawnError::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for SpawnError {}
+
+/// One host's link state, shared by every frontend site that starts an ssh
+/// login to it. While the link is down no gated spawn starts a child, so a
+/// new start site cannot be written without asking the gate: the ungated
+/// spawn functions above are private, and [`LinkGate::probe`] is the one
+/// ungated spawn. Only the host's control transport writes the gate (up at
+/// any hello reply, down when its session ends), and it is the only caller
+/// of `probe`. A default gate is up.
+#[derive(Debug, Clone, Default)]
+pub struct LinkGate {
+    down: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl LinkGate {
+    pub fn is_up(&self) -> bool {
+        !self.down.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Transport only.
+    pub fn set_up(&self, up: bool) {
+        self.down.store(!up, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn spawn_sync(&self, recipe: &SshRecipe) -> Result<std::process::Child, SpawnError> {
+        if !self.is_up() {
+            return Err(SpawnError::LinkDown);
+        }
+        spawn_sync(recipe).map_err(SpawnError::Io)
+    }
+
+    pub fn spawn_async(&self, recipe: &SshRecipe) -> Result<tokio::process::Child, SpawnError> {
+        if !self.is_up() {
+            return Err(SpawnError::LinkDown);
+        }
+        spawn_async(recipe).map_err(SpawnError::Io)
+    }
+
+    /// The one ungated spawn: the transport's own reconnect probe, which
+    /// is what discovers that a link is back.
+    pub fn probe(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
+        spawn_async(recipe)
+    }
 }
 
 /// After an async caller's own operation over a spawned child has
@@ -162,6 +224,17 @@ pub async fn last_stderr_after_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_down_gate_spawns_no_child() {
+        let recipe = SshRecipe::new("hub", None).unwrap();
+        let gate = LinkGate::default();
+        assert!(gate.is_up());
+        gate.set_up(false);
+        assert!(matches!(gate.spawn_sync(&recipe), Err(SpawnError::LinkDown)));
+        assert!(matches!(gate.spawn_async(&recipe), Err(SpawnError::LinkDown)));
+        assert!(matches!(gate.clone().spawn_sync(&recipe), Err(SpawnError::LinkDown)), "clones share one flag");
+    }
 
     #[test]
     fn recipe_rejects_a_leading_dash_in_either_half() {

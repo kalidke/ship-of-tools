@@ -532,6 +532,11 @@ pub enum TransportError {
     /// unwrap it back into a bare `io::Error`.
     #[error("the daemon's lane bridge is unreachable: {0}")]
     Unreachable(std::io::Error),
+    /// ADR 0045 decision 4: the host's link is down — its control
+    /// transport's last attempt got no hello reply — so no ssh was
+    /// started. A connect site never retries it on its own clock.
+    #[error("the host's link is down; no ssh was started")]
+    LinkDown,
 }
 
 impl TransportError {

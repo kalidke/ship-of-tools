@@ -24,8 +24,7 @@
 
 use std::net::TcpListener as StdTcpListener;
 
-use anyhow::Context;
-use sot_protocol::ssh_bridge::SshRecipe;
+use sot_protocol::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -40,10 +39,10 @@ use tokio::sync::mpsc::UnboundedReceiver;
 /// configured (Unix-socket transports carry none).
 pub fn spawn_proxy_manager(
     rt: &tokio::runtime::Runtime,
-    mut listener_rx: UnboundedReceiver<(StdTcpListener, SshRecipe, Option<String>)>,
+    mut listener_rx: UnboundedReceiver<(StdTcpListener, SshRecipe, Option<String>, LinkGate)>,
 ) {
     rt.spawn(async move {
-        while let Some((std_listener, recipe, token)) = listener_rx.recv().await {
+        while let Some((std_listener, recipe, token, gate)) = listener_rx.recv().await {
             let port = match std_listener.local_addr() {
                 Ok(a) => a.port(),
                 Err(e) => {
@@ -66,12 +65,13 @@ pub fn spawn_proxy_manager(
                         Ok((browser, _peer)) => {
                             let recipe = recipe.clone();
                             let token = token.clone();
+                            let gate = gate.clone();
                             tokio::spawn(async move {
                                 // A dead child here is a blank page with no
                                 // other carrier — `debug!` → `warn!` (C3 as
                                 // amended §6): a reason at `debug` is
                                 // invisible in a normal run.
-                                if let Err(e) = pipe_one(browser, &recipe, port, token.as_deref()).await {
+                                if let Err(e) = pipe_one(browser, &recipe, &gate, port, token.as_deref()).await {
                                     tracing::warn!(port, error = %e, "proxy: connection ended");
                                 }
                             });
@@ -95,15 +95,20 @@ pub fn spawn_proxy_manager(
 /// as the child's first bytes — the daemon peeks that op on ANY accepted
 /// connection (`server.rs`), so the frames are byte-identical to the old
 /// tcp-forwarded leg — then splice bytes both ways until either side closes
-/// (carrying a WebSocket upgrade verbatim).
+/// (carrying a WebSocket upgrade verbatim). While the host's link is down
+/// (`gate`) no child is spawned and the browser connection closes at once.
 async fn pipe_one(
     browser: tokio::net::TcpStream,
     recipe: &SshRecipe,
+    gate: &LinkGate,
     port: u16,
     token: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut child = sot_protocol::ssh_bridge::spawn_async(recipe)
-        .with_context(|| format!("spawn ssh {recipe}"))?;
+    let mut child = match gate.spawn_async(recipe) {
+        Ok(child) => child,
+        Err(SpawnError::LinkDown) => return Err(SpawnError::LinkDown.into()),
+        Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
+    };
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
     let d_rd = child.stdout.take().expect("spawned with a piped stdout");
     let stderr = child.stderr.take().expect("spawned with a piped stderr");
@@ -208,6 +213,35 @@ pub fn proxy_port_from_url(url: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    /// ADR 0045 decision 4: with the host's link down a browser connection
+    /// closes at once with `LinkDown` and no ssh child is spawned.
+    #[tokio::test]
+    async fn a_down_gate_closes_every_browser_connection_without_a_spawn() {
+        use tokio::io::AsyncReadExt;
+        let gate = sot_protocol::ssh_bridge::LinkGate::default();
+        gate.set_up(false);
+        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        for _ in 0..5 {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let (browser, _) = listener.accept().await.unwrap();
+            let t0 = std::time::Instant::now();
+            let err = super::pipe_one(browser, &recipe, &gate, addr.port(), None).await.unwrap_err();
+            assert!(
+                matches!(err.downcast_ref::<sot_protocol::ssh_bridge::SpawnError>(), Some(sot_protocol::ssh_bridge::SpawnError::LinkDown)),
+                "got {err:#}"
+            );
+            let mut buf = [0u8; 1];
+            let n = tokio::time::timeout(std::time::Duration::from_millis(200), client.read(&mut buf))
+                .await
+                .expect("the browser connection must close at once")
+                .unwrap_or(0);
+            assert_eq!(n, 0);
+            assert!(t0.elapsed() < std::time::Duration::from_millis(200));
+        }
+    }
+
     use super::proxy_port_from_url;
 
     #[test]

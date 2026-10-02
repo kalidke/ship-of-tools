@@ -83,7 +83,9 @@ use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 pub enum LaneDial {
     Tcp(SocketAddr),
     Local(PathBuf),
-    Ssh(crate::ssh_bridge::SshRecipe),
+    /// The recipe and its host's link gate: a down gate makes the dial
+    /// fail with `TransportError::LinkDown` and start no ssh.
+    Ssh(crate::ssh_bridge::SshRecipe, crate::ssh_bridge::LinkGate),
 }
 
 /// An `Endpoint` value naming one daemon connection, never a row. `token`
@@ -255,8 +257,12 @@ struct BridgedClient {
 }
 
 impl BridgedClient {
-    fn spawn(recipe: &crate::ssh_bridge::SshRecipe) -> std::io::Result<Self> {
-        Self::wrap(crate::ssh_bridge::spawn_sync(recipe)?)
+    fn spawn(recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<Self, TransportError> {
+        match gate.spawn_sync(recipe) {
+            Ok(child) => Self::wrap(child).map_err(TransportError::Unreachable),
+            Err(crate::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
+            Err(crate::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
+        }
     }
 
     /// The shared construction path — real `ssh` child ([`spawn`] above)
@@ -677,8 +683,8 @@ impl DaemonLaneEndpoint {
                 let client = sot_log::pipe_win::connect_pipe_path_unchallenged(path_str, &dial_cancel).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Pipe(client)
             }
-            LaneDial::Ssh(recipe) => {
-                let client = BridgedClient::spawn(recipe).map_err(TransportError::Unreachable)?;
+            LaneDial::Ssh(recipe, gate) => {
+                let client = BridgedClient::spawn(recipe, gate)?;
                 LaneStream::Bridged(client)
             }
         };
@@ -811,6 +817,20 @@ mod tests {
             Err(TransportError::Refused { code, .. }) => assert_eq!(code, "no_bridge"),
             other => panic!("expected Refused{{code: no_bridge}}, got {other:?}"),
         }
+    }
+
+    /// ADR 0045 decision 4: a lane dial over ssh while the host's link is
+    /// down fails at once with `LinkDown` and starts no child.
+    #[test]
+    fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
+        let gate = crate::ssh_bridge::LinkGate::default();
+        gate.set_up(false);
+        let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, gate), token: None };
+        let t0 = Instant::now();
+        let result = endpoint.dial("row", "supervisor", None);
+        assert!(matches!(result, Err(TransportError::LinkDown)), "got {:?}", result.err());
+        assert!(t0.elapsed() < Duration::from_millis(50));
     }
 
     /// `dial_failed` is the daemon's OWN dial/authenticate step failing
