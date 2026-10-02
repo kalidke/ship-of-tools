@@ -10,6 +10,16 @@ same computer, unless the user chose to keep them. A remote backend is unaffecte
 sessions outlive any window, as ADR 0010 and ADR 0043 describe. The daemon decides; the
 window and the launchers only tell it what happened.
 
+### Rulings
+- (a) The lease is the only proof a window is open, and its end (EOF) the only proof it closed.
+- (b) Never silent: a session that could not be ended is always shown.
+- (c) Ctrl+Q Yes is the only open-ended keep; a relaunch is a bounded handover.
+- (d) Leases are fenced by generation.
+- (e) A start never resurrects what a close ended.
+- (f) The Windows stop is never cut short.
+
+When intents arrive in order on one lease, the latest wins.
+
 ### The lease (proof and grant)
 
 - A window opens a dedicated connection to the local daemon and sends `fe.lease` as its
@@ -48,7 +58,7 @@ window and the launchers only tell it what happened.
   crate), persisted.
 - After a `Keep`, the daemon keeps reading that connection until EOF. A later well-formed
   `Close` on it supersedes the keep and is applied in order, so an X after a Keep never
-  leaves sessions running; EOF after a keep stays a keep (ruling d).
+  leaves sessions running; EOF after a keep stays a keep (latest intent wins).
 - Any granted lease clears a handover; a handover that expires with no lease held is a
   shutdown.
 - `fe.leaving{close}` from the last holder is answered after the shutdown, with the count
@@ -59,7 +69,7 @@ window and the launchers only tell it what happened.
 - A recorded holder that has not re-leased since this start counts as present, not last,
   until the persisted hold deadline. A `Close` from the last live lease while one is
   awaited is deferred and logged; at the deadline, with no lease held, it is a shutdown.
-  A lease granted before then cancels it (rulings b, c and d).
+  A lease granted before then cancels it (ruling a).
 
 ### Shutdown
 
