@@ -911,7 +911,8 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
 /// the label. The entry whose label or target equals this box's
 /// `host_name()` is sampled locally (no ssh), so one file serves whichever
 /// box the daemon runs on. No file, or a file the parser rejects (logged),
-/// falls back to this host alone.
+/// falls back to this host alone. A non-Linux daemon then drops its own host
+/// (`without_local_sampler`).
 ///
 /// Called ONCE, from `server::serve`, before any connection is accepted.
 /// The roster is fixed for the life of the daemon: editing `hosts.toml`
@@ -920,7 +921,7 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
 /// said here.
 /// The sampling roster this box actually executes. The declared monitor
 /// table is HUB-SCOPED DECLARATION: only the declared hub runs it. Every
-/// other daemon samples the host it runs on and nothing else — it is not
+/// other daemon samples the host it runs on (on Linux) and nothing else — it is not
 /// the monitoring authority, and asking it to ssh targets it may not
 /// resolve produced a partial record that looked like a whole one.
 fn sampling_roster(topo: &sot_protocol::topology::Topology, local: &str) -> Vec<MonitorHost> {

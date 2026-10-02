@@ -72,6 +72,9 @@ here rather than edited into the text, so the change is visible.
   discarded, is captured and logged at the hub once per death (deduped on the
   reason) so the ssh failure that caused it is diagnosable — the drawer's own
   stale marker is unchanged; the reason is a journal fact, not a wire field.
+- *Amended 2026-10-01 (rc9.12):* only a Linux daemon samples its own host
+  (the sampler reads `/proc`); Windows never did, and macOS no longer runs it.
+  "Samples the host it runs on" above holds on Linux only.
 
 Also worth naming, because it has cost a debugging session: the monitored host
 list is read ONCE, at daemon start. There is no reload path. A live roster would

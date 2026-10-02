@@ -345,13 +345,14 @@ the drawer subscribes to the hub regardless of which host you're navigating —
 the monitoring authority. For each host in the roster the hub runs a small
 sampler:
 
-- **its own host** locally; **remote hosts** as `ssh <alias> bash -s`, with the
+- **its own host** locally, on Linux only (a macOS or Windows daemon does not
+  sample its own host); **remote hosts** as `ssh <alias> bash -s`, with the
   script fed over stdin — **zero footprint**, no daemon, nothing written to the
   remote's disk.
 - CPU% from `/proc/stat`, RAM% from `/proc/meminfo`, GPU from `nvidia-smi`. All
   world-readable, so **no sudo and no privileges** are needed.
 
-A daemon that is **not** the hub samples only the host it runs on — it never ssh's
+A daemon that is **not** the hub samples only the host it runs on (on Linux) — it never ssh's
 anywhere, so a wrong or unreachable alias on some other box can't wedge it.
 Dialling a non-hub daemon directly shows that daemon's own single panel, not the
 fleet; to see the fleet, dial the hub.
@@ -367,7 +368,7 @@ without a round-trip. Restarting the hub restarts that history.
 Which hosts appear comes from the `[monitor]` section of
 `~/.config/sot/hosts.toml` (or the file `$SOT_HOSTS` names); see
 [Configuration Files](../ref/config.md). With no `[monitor]` section, or on a
-non-hub daemon, only that daemon's own host is sampled; the `[host.*]` entries are
+non-hub daemon, only that daemon's own host is sampled (on Linux); the `[host.*]` entries are
 frontend connection targets and are not monitored implicitly.
 
 **The list binds when the daemon starts.** Editing `hosts.toml` while the hub is
