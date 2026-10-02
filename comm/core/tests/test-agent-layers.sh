@@ -61,7 +61,7 @@ if [ -n "${SIMWIN:-}" ]; then
     _sot_is_windows() { return 0; }
     SOTD_BIN="$SIMWIN/sotd"
     _SOT_PROC="$SIMWIN/proc.$$"
-    rm -rf "$_SOT_PROC"; mkdir -p "$_SOT_PROC"
+    rm -rf "${_SOT_PROC:?}"; mkdir -p "$_SOT_PROC"
     _sim_p=$$
     while [ "$_sim_p" -gt 1 ] && IFS= read -r _sim_l < "/proc/$_sim_p/stat" 2>/dev/null; do
         _sim_l="${_sim_l##*) }"; _sim_l="${_sim_l#* }"; _sim_pp="${_sim_l%% *}"
@@ -219,7 +219,7 @@ bsotd() {  # FROM RC LINE... : the stub's answer to --from FROM, and its status
 # 9001, 9002, ... in order (a `!` line none).
 bwalk() {
     local rc="$1" l i=9000 out=(); shift
-    rm -rf "$BR"; bproc $$ 1 9000 bash -c x
+    rm -rf "${BR:?}"; bproc $$ 1 9000 bash -c x
     for l in "$@"; do case "$l" in '!'*) out+=("$l") ;; *) i=$((i + 1)); out+=("$i${TAB}$l") ;; esac; done
     bsotd 9000 "$rc" "${out[@]}"
 }
@@ -374,21 +374,21 @@ eq "windows filter: the C runtime's backslash and quote rules" "$(printf '%s\n' 
 CAPA="sot-capsule.exe${TAB}sot-capsule.exe run C:\\s\\workspaces\\ws-a\\voyages\\v1 v1"
 CLA="claude.exe${TAB}claude --x"
 WCX="runs under codex, started inside claude's session"
-rm -rf "$BR"; bproc $$ 7001 9000 bash /s/comm-poll.sh; bproc 7001 1 9001 bash -c tool
+rm -rf "${BR:?}"; bproc $$ 7001 9000 bash /s/comm-poll.sh; bproc 7001 1 9001 bash -c tool
 bsotd 9001 0 "9101${TAB}bash.exe${TAB}C:\\git\\bin\\bash.exe -c tool" "9102${TAB}$CLA" "9103${TAB}$CAPA"
 breq 0 "windows walk: a script started as a script reaches its row's capsule through its MSYS parent" "" "$SA" ""
 # codex.exe started by a script: sotd stops at that script (an MSYS exec, no live Windows parent).
-rm -rf "$BR"; bproc $$ 7001 9000 bash /s/comm-poll.sh; bproc 7001 1 9001 bash -c poll
+rm -rf "${BR:?}"; bproc $$ 7001 9000 bash /s/comm-poll.sh; bproc 7001 1 9001 bash -c poll
 bsotd 9001 0 "9201${TAB}codex.exe${TAB}codex exec x" "9202${TAB}bash.exe${TAB}bash w.sh"
 bproc 7002 7003 9202 bash w.sh; bproc 7003 1 9003 bash -c tool
 bsotd 9003 0 "9301${TAB}bash.exe${TAB}C:\\git\\bin\\bash.exe -c tool" "9302${TAB}$CLA" "9303${TAB}$CAPA"
 breq 1 "windows walk: where sotd stops at a live MSYS process, its Cygwin parent carries the walk to claude" "$WCX" "$SA" ""
 breq 1 "windows walk: the same with no row named still sees the second agent" "$WCX" "" ""
 # The same, but the stopped-at process reports its native image's winpid (the line before).
-rm -rf "$BR/7002"; bproc 7002 7003 9201 bash w.sh
+rm -rf "${BR:?}/7002"; bproc 7002 7003 9201 bash w.sh
 breq 1 "windows walk: where sotd stops at a stub, the line before names its Cygwin process" "$WCX" "$SA" ""
 # Both lines map: the last line's own process is taken first.
-rm -rf "$BR"; bproc $$ 7001 9000 bash /s/x.sh; bproc 7001 1 9001 bash -c poll
+rm -rf "${BR:?}"; bproc $$ 7001 9000 bash /s/x.sh; bproc 7001 1 9001 bash -c poll
 bsotd 9001 0 "9401${TAB}a.exe${TAB}a.exe" "9402${TAB}bash.exe${TAB}bash s.sh"
 bproc 7402 7403 9402 bash s.sh; bproc 7403 1 9403 bash -c tool
 bproc 7401 7404 9401 bash t.sh; bproc 7404 1 9404 bash -c other
@@ -396,21 +396,21 @@ bsotd 9403 0 "9501${TAB}$CLA" "9502${TAB}$CAPA"
 bsotd 9404 0 "9601${TAB}codex.exe${TAB}codex" "9602${TAB}$CLA" "9603${TAB}$CAPA"
 breq 0 "windows walk: the last line's own process is tried before the line before's" "" "$SA" ""
 # The stopped-at process has a native parent: that is the top.
-rm -rf "$BR"; bproc $$ 7001 9000 bash /s/x.sh; bproc 7001 1 9001 bash -c poll
+rm -rf "${BR:?}"; bproc $$ 7001 9000 bash /s/x.sh; bproc 7001 1 9001 bash -c poll
 bsotd 9001 0 "9701${TAB}codex.exe${TAB}codex" "9702${TAB}bash.exe${TAB}bash -c y"; bproc 7702 1 9702 bash -c y
 breq 2 "windows walk: a stopped-at process with a native parent is the top, refused for a row" "$R_ROW_TEXT" "$SA" ""
 breq 0 "windows walk: the same top passes with no row named" "" "" ""
 # sotd printed nothing: the head's native parent is the top.
-rm -rf "$BR"; bproc $$ 1 9000 bash /s/x.sh; bsotd 9000 0
+rm -rf "${BR:?}"; bproc $$ 1 9000 bash /s/x.sh; bsotd 9000 0
 breq 2 "windows walk: sotd prints no line, the top, refused for a row" "$R_ROW_TEXT" "$SA" ""
 breq 0 "windows walk: the same passes with no row named" "" "" ""
 # Unreadable: a head with no winpid; a sotd line with no pid.
-rm -rf "$BR"; bproc $$ 1 9000 bash /s/x.sh; rm -f "$BR/$$/winpid"
+rm -rf "${BR:?}"; bproc $$ 1 9000 bash /s/x.sh; rm -f "${BR:?}/$$/winpid"
 breq 2 "windows walk: a head whose winpid cannot be read is refused" "$R_TREE_TEXT" "" ""
-rm -rf "$BR"; bproc $$ 1 9000 bash /s/x.sh; bsotd 9000 0 "bash.exe${TAB}bash.exe -c x" "$CLA" "sot-capsule.exe${TAB}sot-capsule.exe run"
+rm -rf "${BR:?}"; bproc $$ 1 9000 bash /s/x.sh; bsotd 9000 0 "bash.exe${TAB}bash.exe -c x" "$CLA" "sot-capsule.exe${TAB}sot-capsule.exe run"
 breq 2 "windows walk: a sotd line with no pid (built before --from) is refused" "$R_TREE_TEXT" "" ""
 # The 64 cap counts both kinds of record: 41 from /proc, then a capsule at sotd's 31st line.
-rm -rf "$BR"; bproc $$ 7001 9000 bash x
+rm -rf "${BR:?}"; bproc $$ 7001 9000 bash x
 for ((i = 7001; i < 7040; i++)); do bproc "$i" "$((i + 1))" "$((i + 2000))" bash x; done; bproc 7040 1 9040 bash x
 CAPL=(); for ((i = 1; i <= 30; i++)); do CAPL+=("$((9900 + i))${TAB}bash.exe${TAB}bash.exe"); done
 bsotd 9040 0 "${CAPL[@]}" "9999${TAB}$CAPA"
@@ -870,7 +870,7 @@ for v in "$SELF_WW" "$WORK/self/self-x.txt"; do
     run wown "$v" bash "$WORK/hold.sh" "${WCOD[@]}"
     eq  "windows walk: codex.exe started by a script, $lbl: poll refuses" "$RC" 1
     has "windows walk: codex.exe started by a script, $lbl: the walk goes on past that script to claude" "$OUT" "$WCX"
-    rm -rf "$SIMWIN/home-6b"; mkdir -p "$SIMWIN/home-6b"
+    rm -rf "${SIMWIN:?}/home-6b"; mkdir -p "$SIMWIN/home-6b"
     run wown "$v" bash "$WORK/fake.sh" codex "$SIMWIN/probe.sh"
     has "windows walk: 6b, $lbl: the probe's own gate counts claude above codex" "$OUT" "require rc=1 this process $WCX"
     has "windows walk: 6b, $lbl: its send is refused at the gate" "$OUT" "FAILED -> @$PEER: this process $WCX"
