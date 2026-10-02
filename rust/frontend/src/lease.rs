@@ -1224,7 +1224,11 @@ mod tests {
         // An X queues a Close; a second X exits at once.
         let _close = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
         window.block_on(leases.written(LEAVE_WRITE_WAIT));
+        // The exit closes every handle, not just the runtime: on Windows the
+        // pipe's halves share one handle, which stays open while any owner lives.
         drop(window);
+        drop(_close);
+        drop(leases);
         let seen = daemon.block_on(finish(fake, &log));
         assert!(
             seen.len() == 3 && is_leave(&seen[0], "keep") && is_leave(&seen[1], "close"),
