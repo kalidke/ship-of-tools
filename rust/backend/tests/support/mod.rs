@@ -913,25 +913,39 @@ pub fn build_leg_pgrep_pattern(exe: &Path, subcommand: &str, state_root: &Path) 
 #[cfg(windows)]
 pub fn own_capsule_pids(state_root: &Path) -> Vec<u32> {
     use std::io::Write;
-    fn lit(p: &Path) -> String {
-        format!("'{}'", p.to_string_lossy().replace('\'', "''"))
+    // A path as given AND as the filesystem names it: a TEMP in 8.3 short
+    // form (`RUNNER~1`) reaches a capsule's command line in long form, and
+    // `canonicalize` gives that long form (its `\\?\` prefix stripped).
+    fn lits(p: &Path) -> String {
+        let mut forms = vec![p.to_string_lossy().into_owned()];
+        if let Ok(c) = std::fs::canonicalize(p) {
+            let c = c.to_string_lossy().into_owned();
+            let c = c.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(c);
+            if !forms.contains(&c) {
+                forms.push(c);
+            }
+        }
+        let quoted: Vec<String> = forms.iter().map(|f| format!("'{}'", f.replace('\'', "''").to_lowercase())).collect();
+        format!("@({})", quoted.join(", "))
     }
     let script = format!(
-        "$exe = ({exe}).ToLower(); $root = ({root}).ToLower();\n\
-         Get-CimInstance Win32_Process -Filter \"Name='sot-capsule.exe'\" | ForEach-Object {{\n\
-           if ($_.ExecutablePath -and $_.CommandLine) {{\n\
-             $cl = $_.CommandLine.ToLower();\n\
-             if ($_.ExecutablePath.ToLower() -eq $exe -and $cl.Contains($root)) {{\n\
+        "$exes = {exe}; $roots = {root};\n\
+         foreach ($p in @(Get-CimInstance Win32_Process -Filter \"Name='sot-capsule.exe'\")) {{\n\
+           if ($p.ExecutablePath -and $p.CommandLine) {{\n\
+             $cl = $p.CommandLine.ToLower();\n\
+             $inRoot = $false;\n\
+             foreach ($r in $roots) {{ if ($cl.Contains($r)) {{ $inRoot = $true }} }}\n\
+             if (($exes -contains $p.ExecutablePath.ToLower()) -and $inRoot) {{\n\
                $kind = 'other';\n\
                if ($cl.Contains(' supervise ')) {{ $kind = 'supervise' }}\n\
                elseif ($cl.Contains(' run ')) {{ $kind = 'run' }}\n\
-               Write-Output ('{{0}} {{1}}' -f $_.ProcessId, $kind)\n\
+               Write-Output ('{{0}} {{1}}' -f $p.ProcessId, $kind)\n\
              }}\n\
            }}\n\
          }}\n\
          \n",
-        exe = lit(&sot_capsule_exe()),
-        root = lit(state_root),
+        exe = lits(&sot_capsule_exe()),
+        root = lits(state_root),
     );
     let Ok(mut child) = Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", "-"])
