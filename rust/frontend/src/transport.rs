@@ -4552,7 +4552,6 @@ mod tests {
                 Some(&gate),
             )
             .await;
-            let _ = std::fs::remove_file(crate::state::state_path(&host));
             result
         });
         (session, daemon, evt_rx, hold_tx)
@@ -4605,7 +4604,7 @@ mod tests {
         assert!(!session.is_finished(), "the session must still be connected after 1 s");
         assert!(gate.is_up());
         session.abort();
-        let _ = std::fs::remove_file(crate::state::state_path(&"gate-test-tree-root".to_string()));
+        let _ = session.await;
     }
 
 

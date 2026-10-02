@@ -116,8 +116,8 @@ Known limits of the link gate:
   always-up gate.
 - A gate starts up and stays so until the transport's first attempt.
 - A partly queued input cut at the 8 KiB take queue, and a queue cleared
-  on a lost pen, are reported by their own status line, not the discard
-  count.
+  on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
+  reported by their own status line, not the discard count.
 - A refused browser connection logs one warning per attempt.
 
 Later work in this same design (per-user isolation for the browser-facing

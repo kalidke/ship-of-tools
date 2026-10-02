@@ -27,7 +27,7 @@ use crate::topology::is_plain_host_name;
 ///
 /// Constructible only through [`SshRecipe::new`] — never with the struct
 /// literal from outside this module — so nothing downstream can hand
-/// [`argv`] an unchecked half. `target` becomes ssh's own argv element (a
+/// `argv` an unchecked half. `target` becomes ssh's own argv element (a
 /// value beginning with `-` would otherwise be read as an ssh OPTION, e.g.
 /// `-oProxyCommand=…`, run on THIS box); `host` is interpolated into the
 /// remote command STRING a shell on the far end parses. Both are checked

@@ -168,6 +168,10 @@ pub(crate) mod test_env {
     pub(crate) struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_state: Option<std::ffi::OsString>,
+        #[cfg(windows)]
+        local_app_data: Option<std::ffi::OsString>,
+        #[cfg(windows)]
+        user_profile: Option<std::ffi::OsString>,
         dir: PathBuf,
     }
     impl Drop for EnvGuard {
@@ -175,6 +179,17 @@ pub(crate) mod test_env {
             match self.xdg_state.take() {
                 Some(v) => std::env::set_var("XDG_STATE_HOME", v),
                 None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+            #[cfg(windows)]
+            {
+                match self.local_app_data.take() {
+                    Some(v) => std::env::set_var("LOCALAPPDATA", v),
+                    None => std::env::remove_var("LOCALAPPDATA"),
+                }
+                match self.user_profile.take() {
+                    Some(v) => std::env::set_var("USERPROFILE", v),
+                    None => std::env::remove_var("USERPROFILE"),
+                }
             }
             let _ = std::fs::remove_dir_all(&self.dir);
         }
@@ -194,9 +209,19 @@ pub(crate) mod test_env {
         let g = EnvGuard {
             _serial,
             xdg_state: std::env::var_os("XDG_STATE_HOME"),
+            #[cfg(windows)]
+            local_app_data: std::env::var_os("LOCALAPPDATA"),
+            #[cfg(windows)]
+            user_profile: std::env::var_os("USERPROFILE"),
             dir: dir.clone(),
         };
         std::env::set_var("XDG_STATE_HOME", &dir);
+        // On Windows the state dir resolves LOCALAPPDATA, then USERPROFILE.
+        #[cfg(windows)]
+        {
+            std::env::set_var("LOCALAPPDATA", &dir);
+            std::env::set_var("USERPROFILE", &dir);
+        }
         g
     }
 }

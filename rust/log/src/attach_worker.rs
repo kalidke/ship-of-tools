@@ -1688,7 +1688,7 @@ fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Duration, held
     }
 }
 
-/// The S3a/S3b pause for a down link: one status line, then a tick-by-tick
+/// The pause for a down link: one status line, then a tick-by-tick
 /// wait that reads the channel through [`hold`] (a `Resize` is kept for the
 /// next attach, an `Input` is counted) until the endpoint's link is up AND
 /// the client is viewed. A tick always passes first, so an endpoint that
@@ -2265,19 +2265,18 @@ fn run_steady_state<E: Endpoint + Sync>(
                     emit(WorkerEvent::InputsDiscarded);
                 }
                 Ok(WorkerMsg::Input(bytes, _reservation, _)) => {
-                    // A current input ends the count of discarded ones.
-                    if discarded.swap(0, Ordering::AcqRel) > 0 {
-                        emit(WorkerEvent::InputsDiscarded);
-                    }
+                    // A current input that is queued or sent ends the count
+                    // of discarded ones; one dropped whole adds to it.
+                    let mut dropped = false;
                     match take.role() {
                     Role::Watching => {
                         for action in take.on_input_while_watching(&bytes) {
-                            apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
+                            dropped |= apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                         }
                     }
                     Role::Taking | Role::Resizing => {
                         for action in take.on_input_while_pending(&bytes) {
-                            apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
+                            dropped |= apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                         }
                     }
                     Role::Driving => {
@@ -2286,12 +2285,15 @@ fn run_steady_state<E: Endpoint + Sync>(
                             // input already outstanding queues the next one
                             // rather than dropping it.
                             for action in take.queue_while_driving(&bytes) {
-                                apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
+                                dropped |= apply_input_action::<E>(action, attach_conn, controller_id, &emit, discarded);
                             }
                         } else {
                             send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
                         }
                     }
+                    }
+                    if !dropped && discarded.swap(0, Ordering::AcqRel) > 0 {
+                        emit(WorkerEvent::InputsDiscarded);
                     }
                 }
                 Ok(WorkerMsg::Resize(c, r)) => {
@@ -2402,18 +2404,21 @@ fn send_new_input<E: Endpoint>(
 
 /// [`apply_single_take_action`] for the actions a typed input produced:
 /// an input dropped whole is counted in the worker's one discard counter.
+/// Returns whether this action was that whole drop.
 fn apply_input_action<E: Endpoint>(
     action: TakeAction,
     attach_conn: &E::Client,
     controller_id: &str,
     emit: &dyn Fn(WorkerEvent),
     discarded: &AtomicUsize,
-) {
+) -> bool {
     if action == TakeAction::InputDropped {
         discarded.fetch_add(1, Ordering::AcqRel);
         emit(WorkerEvent::InputsDiscarded);
+        true
     } else {
         apply_single_take_action::<E>(action, attach_conn, controller_id, emit);
+        false
     }
 }
 
@@ -3587,6 +3592,14 @@ mod tests {
         let started = Instant::now();
         while discarded.load(Ordering::SeqCst) != 1 {
             assert!(started.elapsed() < WORKER_TICK * 5, "the dropped input was never counted");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // Back-to-back whole drops accumulate; none wipes the count.
+        tx.send(input_msg(b"y", 0)).unwrap();
+        let started = Instant::now();
+        while discarded.load(Ordering::SeqCst) != 2 {
+            assert!(started.elapsed() < WORKER_TICK * 5, "the second dropped input was not added to the count");
             thread::sleep(Duration::from_millis(5));
         }
 
