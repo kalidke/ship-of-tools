@@ -80,7 +80,12 @@ pub(crate) async fn run(
 
     let report = match sot_log::state_dir::sot_state_dir() {
         Some(state_root) => end_rows(workspaces.list(), &workspaces, &ws_events, &state_root, rows_deadline).await,
-        None => EndReport::default(),
+        None => {
+            // No state root: nothing can be ended, so every row is counted.
+            let rows = workspaces.list().len() as u32;
+            tracing::warn!(rows, "shutdown: no state root, so no row was ended; all are counted not ended");
+            EndReport { not_ended: rows, ..Default::default() }
+        }
     };
 
     fire();
