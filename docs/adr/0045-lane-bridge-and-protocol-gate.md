@@ -115,13 +115,14 @@ migration mechanism, not two.
    120 s health window. Invariant: a hiccup and a genuinely dead row
    must never look alike to the client deciding whether to keep waiting.
 
-   **AMENDED 2026-10-01, a fourth bridge variant.**
+   **AMENDED 2026-10-01, a fourth bridge variant (wording corrected 2026-10-01).**
    `TransportError::LinkDown` ("the host's link is down; no ssh was
    started") is returned by a lane dial over ssh while that host's
    `LinkGate` is down, before any child is spawned (`LaneError::LinkDown`
-   in the attach worker). A connect site never retries it on its own
-   clock: the lanes a viewed row owns pause on it, every other site
-   treats it as a failed dial. Only the host's control transport writes
+   in the attach worker). The attach worker's supervisor and voyage
+   dials (S3a/S3b) never retry it on their own clock: every worker pauses
+   on it. The other connect sites (S3c-S3e) treat it as a failed dial under
+   their existing pacing; no ssh starts. Only the host's control transport writes
    the gate, and `LinkGate::probe` is the one ungated ssh spawn.
 
 5. **An `Endpoint` is a value; the row is named once.** The four trait

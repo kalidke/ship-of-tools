@@ -1019,7 +1019,7 @@ impl<E: Endpoint> AttachWorker<E> {
         Ok(Self { msg_tx, ingress_bytes, ingress_bound, attach_gen, discarded, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
     }
 
-    /// Whether this worker's pane is on screen; a worker whose host's link is down pauses only while unviewed.
+    /// Whether this worker's pane is on screen. A worker pauses on a down link whether viewed or not, and resumes only when the link is up AND the client is viewed.
     pub fn set_viewed(&self, viewed: bool) {
         self.viewed.store(viewed, Ordering::Release);
     }
@@ -2367,9 +2367,8 @@ fn run_steady_state<E: Endpoint + Sync>(
 enum FrameOutcome {
     Handled,
     Ignored,
-    /// `take_refused{not_attached}` — the caller ends this episode
-    /// PRESERVING the take transaction (ruling (b), Codex review round
-    /// finding 4).
+    /// `take_refused{not_attached}` — the caller ends this episode; the
+    /// take transaction's queue is discarded and counted at the reset.
     ReattachRequested,
 }
 

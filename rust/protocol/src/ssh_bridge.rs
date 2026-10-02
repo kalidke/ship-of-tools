@@ -95,7 +95,7 @@ const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInter
 /// remote command string), the remote command is ONE further argv
 /// element that `sotd stdio-bridge` command with `--host <host>` appended
 /// only when the recipe carries one.
-pub fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
+fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
     let mut args: Vec<String> = SSH_OPTS.iter().map(|s| s.to_string()).collect();
     args.push(recipe.target.clone());
     let mut remote = format!("{PATH_PRELUDE}; sotd stdio-bridge");

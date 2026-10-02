@@ -110,6 +110,16 @@ per-cause exit codes to learn.
 
 ## What this page does not yet cover
 
+Known limits of the link gate:
+
+- Backend ssh callers are outside this frontend invariant and pass an
+  always-up gate.
+- A gate starts up and stays so until the transport's first attempt.
+- A partly queued input cut at the 8 KiB take queue, and a queue cleared
+  on a lost pen, are reported by their own status line, not the discard
+  count.
+- A refused browser connection logs one warning per attempt.
+
 Later work in this same design (per-user isolation for the browser-facing
 ports, the pipe/socket owner checks, and the daemon-side account guard)
 lands in stages after this one and extends this page when it does.
