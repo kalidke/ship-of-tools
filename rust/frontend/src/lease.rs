@@ -54,7 +54,6 @@ pub enum Standing {
     Unreached,
 }
 
-#[allow(dead_code)] // `Leave` is built by the exits
 enum HolderCmd {
     Leave(LeaveIntent, oneshot::Sender<u32>),
     NoticeSeen(u32),
@@ -69,6 +68,9 @@ struct Slot {
 pub struct Leases {
     exempt: bool,
     slots: Mutex<HashMap<HostKey, Slot>>,
+    /// `lease::LEASE_REPLY_WAIT` and `lease::NOTICE_ACK_WAIT`; tests shorten them.
+    reply_wait: Duration,
+    notice_wait: Duration,
 }
 
 impl Leases {
@@ -77,7 +79,12 @@ impl Leases {
             .into_iter()
             .map(|h| (h, Slot { standing: Standing::Pending, holder: None }))
             .collect();
-        Arc::new(Self { exempt, slots: Mutex::new(slots) })
+        Arc::new(Self {
+            exempt,
+            slots: Mutex::new(slots),
+            reply_wait: lease::LEASE_REPLY_WAIT,
+            notice_wait: lease::NOTICE_ACK_WAIT,
+        })
     }
 
     /// Granted, and the holder task that owns the stream is still running.
@@ -126,7 +133,7 @@ impl Leases {
             }
         };
         let req = FeLeaseReq { boot: ident.boot, pid: ident.pid, created: ident.created, token: token.map(str::to_string) };
-        let attempt = tokio::time::timeout(lease::LEASE_REPLY_WAIT, async {
+        let attempt = tokio::time::timeout(self.reply_wait, async {
             let stream = connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
             let mut rx = codec::buffered(rx);
@@ -159,7 +166,7 @@ impl Leases {
         };
         match res.outcome {
             LeaseOutcome::Granted => {
-                let holder = spawn_holder(rx, tx);
+                let holder = spawn_holder(rx, tx, self.notice_wait);
                 self.set(host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 tracing::info!(%host, not_ended = res.not_ended, "window lease: granted");
                 Ok(res.not_ended)
@@ -335,7 +342,7 @@ pub fn not_ended_line(n: u32) -> Option<String> {
 
 /// Own the stream for the process's life. A reader task forwards frames into
 /// a channel so the holder's `select!` never cancels a read mid-line.
-fn spawn_holder<R, W>(mut rx: R, mut tx: W) -> mpsc::UnboundedSender<HolderCmd>
+fn spawn_holder<R, W>(mut rx: R, mut tx: W, notice_wait: Duration) -> mpsc::UnboundedSender<HolderCmd>
 where
     R: AsyncBufRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -366,7 +373,7 @@ where
                         HolderCmd::NoticeSeen(n) => (
                             Frame::req(id, op::FE_NOTICE_SEEN, serde_json::json!(FeNoticeSeenReq { not_ended: n })),
                             None,
-                            Some(lease::NOTICE_ACK_WAIT),
+                            Some(notice_wait),
                         ),
                     };
                     if codec::write_frame(&mut tx, &frame, None).await.is_err() {
@@ -380,8 +387,17 @@ where
                         }
                         None
                     };
+                    // A slow reply is not a dead daemon: ending the holder here
+                    // would close the stream, which the daemon reads as Close.
+                    // Only a closed frame channel or a write error ends it.
                     let reply = match wait {
-                        Some(w) => tokio::time::timeout(w, reply).await.ok().flatten(),
+                        Some(w) => match tokio::time::timeout(w, reply).await {
+                            Ok(r) => r,
+                            Err(_) => {
+                                tracing::warn!("window lease: no reply to fe.notice_seen in time");
+                                continue;
+                            }
+                        },
                         None => reply.await,
                     };
                     let Some(reply) = reply else { break };
@@ -471,21 +487,31 @@ mod tests {
                 let (rx, mut tx) = conn.split();
                 let mut rx = codec::buffered(rx);
                 let (req, _) = codec::read_frame(&mut rx).await.unwrap();
-                let payload = if n == 1 {
-                    serde_json::json!({"error": "unknown op: fe.lease"})
-                } else {
-                    serde_json::json!({"outcome": "granted", "state_root": "r"})
+                let payload = match n {
+                    1 => serde_json::json!({"error": "unknown op: fe.lease"}),
+                    2 => serde_json::json!({"outcome": "closing"}),
+                    3 => {
+                        // No reply: hold the connection open past the wait.
+                        tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            drop((rx, tx));
+                        });
+                        continue;
+                    }
+                    4 => serde_json::json!({"outcome": "foreign"}),
+                    5 => serde_json::json!({"outcome": "undetermined"}),
+                    _ => serde_json::json!({"outcome": "granted", "state_root": "r"}),
                 };
                 codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, payload), None)
                     .await
                     .unwrap();
-                if n == 2 {
+                if n == 6 {
                     let rx_drop = drop_rx.take().unwrap();
                     tokio::spawn(async move {
                         let _ = rx_drop.await;
                         drop((rx, tx));
                     });
-                } else if n > 2 {
+                } else if n > 6 {
                     tokio::spawn(async move {
                         tokio::time::sleep(Duration::from_secs(30)).await;
                         drop((rx, tx));
@@ -494,15 +520,32 @@ mod tests {
             }
         });
         let host = "local".to_string();
-        let leases = Leases::new(false, vec![host.clone()]);
+        let mut leases = Leases::new(false, vec![host.clone()]);
+        Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(100);
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(leases.standing(&host), Some(Standing::Unsupported));
-        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        // Closing, and no reply in time: each a failed connect.
+        assert!(leases.before_data_connection(&host, &path, None).await.is_err());
         assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert_eq!(leases.standing(&host), Some(Standing::Unreached));
+        assert!(leases.before_data_connection(&host, &path, None).await.is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(leases.standing(&host), Some(Standing::Unreached));
+        // Foreign and Undetermined proceed unleased, and the next connection asks again.
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+        assert_eq!(leases.standing(&host), Some(Standing::Foreign));
+        assert!(!leases.held(&host));
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        assert_eq!(count.load(Ordering::SeqCst), 5);
+        assert_eq!(leases.standing(&host), Some(Standing::Undetermined));
+        assert!(!leases.held(&host));
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        assert_eq!(count.load(Ordering::SeqCst), 6);
         assert_eq!(leases.standing(&host), Some(Standing::Granted { state_root: Some("r".into()) }));
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
-        assert_eq!(count.load(Ordering::SeqCst), 2, "a held lease is not retaken");
+        assert_eq!(count.load(Ordering::SeqCst), 6, "a held lease is not retaken");
         drop_tx.send(()).unwrap();
         for _ in 0..40 {
             if !leases.held(&host) {
@@ -512,7 +555,35 @@ mod tests {
         }
         assert!(!leases.held(&host), "the dropped stream ends the lease");
         leases.before_data_connection(&host, &path, None).await.unwrap();
-        assert_eq!(count.load(Ordering::SeqCst), 3);
+        assert_eq!(count.load(Ordering::SeqCst), 7);
+    }
+
+    #[tokio::test]
+    async fn notice_seen_timeout_keeps_the_lease() {
+        let (listener, path) = bind("slowseen");
+        let (eof_tx, eof_rx) = oneshot::channel::<bool>();
+        tokio::spawn(async move {
+            let conn = listener.accept().await.unwrap();
+            let (rx, mut tx) = conn.split();
+            let mut rx = codec::buffered(rx);
+            let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            let granted = serde_json::json!({"outcome": "granted"});
+            codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
+            let (seen, _) = codec::read_frame(&mut rx).await.unwrap();
+            assert_eq!(seen.op, op::FE_NOTICE_SEEN);
+            // Never answer; report whether the window's end of the stream closes.
+            let eof = tokio::time::timeout(Duration::from_millis(500), codec::read_frame(&mut rx)).await.is_ok();
+            let _ = eof_tx.send(eof);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            drop(tx);
+        });
+        let host = "local".to_string();
+        let mut leases = Leases::new(false, vec![host.clone()]);
+        Arc::get_mut(&mut leases).unwrap().notice_wait = Duration::from_millis(50);
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        leases.notice_seen(&host, 2);
+        assert!(!eof_rx.await.unwrap(), "the fake daemon read an EOF after a slow notice_seen reply");
+        assert!(leases.held(&host), "a slow notice_seen reply must not end the lease");
     }
 
     #[tokio::test]

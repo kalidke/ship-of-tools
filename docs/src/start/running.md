@@ -4,7 +4,7 @@ The window and the sessions on its computer end together: closing the window end
 
 ## Closing the window
 
-- The window's close button, or the system's close, ends everything at once. A window that crashes or is killed counts as closed.
+- The window's close button, or the system's close, ends everything: the window shows `closing…` and waits up to 125 seconds for the sessions to end. A window that crashes or is killed counts as closed.
 - `Ctrl+Q`, with the navigation pane focused, asks **Keep the daemon and sessions running?** No is the default. `Tab` selects Yes, `Enter` confirms, and `Esc` cancels and leaves the window open. Yes closes the window and leaves the backend and every session running; the next window shows them again.
 - While sessions end, the bottom of the navigation pane reads `closing…`. If a session cannot be ended, the window shows how many are still running before it closes, and the next window shows the count again. Those sessions stay listed; end them in Sessions mode with `Shift+D`.
 - When the window relaunches itself for an update, the sessions wait one minute for the new window. If none opens, they end as on a close.
