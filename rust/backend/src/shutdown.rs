@@ -271,36 +271,41 @@ where
 
 /// One shutdown signal and the count of children still alive under it.
 /// The process has one ([`fire`], [`fired`], [`ChildGuard::new`]).
-struct Signal {
+pub(crate) struct Signal {
     fired: watch::Sender<bool>,
     live: AtomicUsize,
 }
 
 impl Signal {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Signal { fired: watch::channel(false).0, live: AtomicUsize::new(0) }
     }
 
-    fn fire(&self) {
+    pub(crate) fn fire(&self) {
         self.fired.send_replace(true);
     }
 
-    async fn fired(&self) {
+    pub(crate) fn is_fired(&self) -> bool {
+        *self.fired.borrow()
+    }
+
+    pub(crate) async fn fired(&self) {
         let mut rx = self.fired.subscribe();
         let _ = rx.wait_for(|fired| *fired).await;
     }
 
-    fn guard(&'static self) -> ChildGuard {
+    pub(crate) fn guard(&'static self) -> ChildGuard {
         self.live.fetch_add(1, Ordering::SeqCst);
         ChildGuard(&self.live)
     }
 
-    fn live(&self) -> usize {
+    pub(crate) fn live(&self) -> usize {
         self.live.load(Ordering::SeqCst)
     }
 }
 
-fn process() -> &'static Signal {
+/// The daemon's one signal; every production owner is given this.
+pub(crate) fn process() -> &'static Signal {
     static SIGNAL: OnceLock<Signal> = OnceLock::new();
     SIGNAL.get_or_init(Signal::new)
 }
