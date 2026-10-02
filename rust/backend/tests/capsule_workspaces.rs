@@ -3212,6 +3212,93 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
     env.kill_daemon_bounded().await;
 }
 
+/// A4b: a destroy ends EVERY process the row started, including a
+/// descendant that left the agent's process group with `setsid`, which
+/// the leg's `killpg` cannot reach: the row's own systemd scope is its
+/// kill domain. The fake `claude` starts such an escapee; after the
+/// destroy the row's scope must read `populated 0` or be gone. Skips
+/// loudly, like the user-service test above, where no user manager is
+/// reachable (force with `SOT_TEST_REQUIRE_USER_MANAGER=1`).
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn destroy_ends_a_child_that_left_the_agents_process_group() {
+    let _serial = SERIAL.lock().await;
+    assert!(
+        sot_capsule_exe().is_file(),
+        "{CAPSULE_EXE_NAME} not found next to sotd[.exe] at {:?} — build it first \
+         (cargo build -p sot-log --bin sot-capsule) into the SAME target dir \
+         this test's own sotd[.exe] was built into",
+        sot_capsule_exe()
+    );
+    if let Err(e) = user_manager_available_for_test() {
+        if std::env::var("SOT_TEST_REQUIRE_USER_MANAGER").as_deref() == Ok("1") {
+            panic!("SOT_TEST_REQUIRE_USER_MANAGER=1 but no user manager is reachable: {e}");
+        }
+        eprintln!("SKIPPED: no user manager: {e}");
+        return;
+    }
+
+    let env = Env::new("esc");
+    let (dir, pidfile) = env.seed_fake_claude_with_escapee();
+    env.spawn_sotd_with_prepended_path(&dir);
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+
+    let create_req = serde_json::json!({
+        "label": "esc-workspace",
+        "project_root": env.workspace_project_root.to_string_lossy(),
+        "runtime": "capsule",
+        "agent": "claude",
+    });
+    let create_res = call(&mut conn, next_id, op::WORKSPACE_CREATE, create_req).await;
+    next_id += 1;
+    assert!(create_res.payload.get("error").is_none(), "workspace.create failed: {:?}", create_res.payload);
+    let workspace_id = create_res.payload["workspace_id"].as_str().expect("workspace_id").to_string();
+
+    poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
+    let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
+    let (_status, process) = tokio::task::spawn_blocking({
+        let dir = state_dir.clone();
+        move || sot_log::supervisor_client::query_status(&dir)
+    })
+    .await
+    .unwrap()
+    .expect("query_status on a ready row");
+    let pid = process.pid();
+    drop(process);
+
+    // The guard is also the isolation assertion: production's aim rule
+    // accepts the scope only as this row's, never this test's own cgroup
+    // or an ancestor of it.
+    let scope = cgroup_rel(pid);
+    let _guard = arm_scope_guard(&scope, &state_dir);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let escapee: u32 = loop {
+        if let Some(e) = std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse().ok()) {
+            break e;
+        }
+        assert!(Instant::now() < deadline, "the escapee never wrote {pidfile:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(cgroup_rel(escapee), scope, "the escapee is not in the row's scope");
+    assert_eq!(
+        unsafe { libc::getsid(escapee as i32) },
+        escapee as i32,
+        "the escapee did not leave the agent's session"
+    );
+
+    let destroy = call(&mut conn, next_id, op::WORKSPACE_DESTROY, serde_json::json!({ "workspace_id": workspace_id })).await;
+    next_id += 1;
+    assert!(destroy.payload.get("error").is_none(), "workspace.destroy failed: {:?}", destroy.payload);
+
+    assert_scope_empties(&scope, Duration::from_secs(5)).await;
+
+    // The daemon survived the kill of the row's scope.
+    let list = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await;
+    assert!(list.payload.get("error").is_none(), "workspace.list after the destroy: {:?}", list.payload);
+    env.kill_daemon_bounded().await;
+}
+
 /// ADR 0043 decision 32 (lane L2), test 2: on a host that denies the
 /// escape (a stubbed `systemd-run` standing in for "no reachable
 /// `systemd --user` manager", so this runs deterministically regardless

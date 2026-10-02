@@ -26,6 +26,13 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use interprocess::local_socket::GenericFilePath;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
+
+/// A4b: production's own aim rule, one source — [`arm_scope_guard`]
+/// refuses exactly what `capsule_workspace::row_scope` refuses.
+#[cfg(target_os = "linux")]
+#[path = "../../src/row_scope_aim.rs"]
+pub mod row_scope_aim;
+
 /// The daemon's comm-registry poller (server.rs, the ADE state-nav live
 /// refresh) reads `<comm home>/registry.json` every 1.5s and broadcasts a
 /// `workspace.changed` evt on any change; `paths::sot_comm_home` resolves
@@ -511,6 +518,30 @@ impl Env {
         dir
     }
 
+    /// A4b: a fake `claude` that starts a child in a NEW session
+    /// (`setsid`), which the leg's `killpg` cannot reach, then stays up
+    /// itself. Returns the fakebin dir and the pidfile the escapee's
+    /// session leader writes its pid to. The 120 s lifetimes cap any leak.
+    #[cfg(target_os = "linux")]
+    pub fn seed_fake_claude_with_escapee(&self) -> (PathBuf, PathBuf) {
+        let dir = self._tmp.path().join("fakebin");
+        std::fs::create_dir_all(&dir).expect("mkdir fakebin");
+        let pidfile = self._tmp.path().join("escapee.pid");
+        let claude = dir.join("claude");
+        std::fs::write(
+            &claude,
+            format!(
+                "#!/bin/sh\nsetsid sh -c 'echo $$ > \"{}\"; sleep 120; :' </dev/null >/dev/null 2>&1 &\nexec sleep 120\n",
+                pidfile.display()
+            ),
+        )
+        .expect("write fake claude with escapee");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake claude with escapee");
+        (dir, pidfile)
+    }
+
     /// [`Env::spawn_sotd`], but with `prepend_dir` inserted at the FRONT
     /// of the daemon's own `PATH` — Linux only, used ONLY alongside
     /// [`Env::seed_fake_unlaunchable_claude`] to guarantee its stub
@@ -892,6 +923,74 @@ fn drain_stderr_bounded(mut pipe: impl std::io::Read + Send + 'static, bound: Du
     });
     rx.recv_timeout(bound).unwrap_or_default()
 }
+
+/// A4b: the cgroup2 path of `pid`, the trimmed `0::` line of
+/// `/proc/<pid>/cgroup`.
+#[cfg(target_os = "linux")]
+pub fn cgroup_rel(pid: u32) -> String {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .unwrap_or_else(|e| panic!("read /proc/{pid}/cgroup: {e}"));
+    text.lines()
+        .find_map(|l| l.strip_prefix("0::"))
+        .map(|rel| rel.trim().to_string())
+        .unwrap_or_else(|| panic!("no 0:: line in /proc/{pid}/cgroup: {text:?}"))
+}
+
+/// A4b: kills a row scope this test created when the test ends, panic or
+/// not. Only [`arm_scope_guard`] builds one.
+#[cfg(target_os = "linux")]
+pub struct ScopeKillGuard(PathBuf);
+
+#[cfg(target_os = "linux")]
+impl Drop for ScopeKillGuard {
+    fn drop(&mut self) {
+        let kill = self.0.join("cgroup.kill");
+        if kill.exists() {
+            let _ = std::fs::write(&kill, "1");
+        }
+    }
+}
+
+/// A4b: a guard on `/sys/fs/cgroup{rel}`, armed only when PRODUCTION's aim
+/// rule accepts `rel` for this test's own row: the prefix carries
+/// `state_dir`'s hash, and `rel` is not this test process's own cgroup or
+/// an ancestor of it. Panics otherwise, so a capture bug or a reused pid
+/// can never aim the guard at a live session.
+#[cfg(target_os = "linux")]
+pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
+    arm_scope_guard_against(rel, &cgroup_rel(std::process::id()), state_dir)
+}
+
+/// [`arm_scope_guard`] with the caller's own cgroup given, for the aim table.
+#[cfg(target_os = "linux")]
+pub fn arm_scope_guard_against(rel: &str, own_rel: &str, state_dir: &Path) -> ScopeKillGuard {
+    let hash = sot_log::state_dir::state_dir_hash(state_dir);
+    if let Err(e) = row_scope_aim::aim(rel, own_rel, &hash) {
+        panic!("arm_scope_guard: the production aim rule refuses this target: {e}");
+    }
+    ScopeKillGuard(Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/')))
+}
+
+/// A4b: polls every 100 ms until the scope's `cgroup.events` is gone or
+/// reads `populated 0`; on timeout panics with that file and `cgroup.procs`.
+#[cfg(target_os = "linux")]
+pub async fn assert_scope_empties(rel: &str, within: Duration) {
+    let dir = Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+    let deadline = Instant::now() + within;
+    loop {
+        let events = match std::fs::read_to_string(dir.join("cgroup.events")) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Ok(text) if text.lines().any(|l| l.trim() == "populated 0") => return,
+            other => other,
+        };
+        if Instant::now() >= deadline {
+            let procs = std::fs::read_to_string(dir.join("cgroup.procs"));
+            panic!("scope {rel} did not empty within {within:?}: cgroup.events {events:?}, cgroup.procs {procs:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// ADR 0043 decision 32, test 1's own SKIP gate: does THIS test runner
 /// have a `systemd --user` manager reachable at all? Same capability
 /// question `capsule_workspace::runtime::user_scope_available` answers in
