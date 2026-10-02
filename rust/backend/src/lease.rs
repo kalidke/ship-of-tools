@@ -259,22 +259,20 @@ impl Leases {
         if st.phase != Phase::Open {
             return (LeaseOutcome::Closing, None);
         }
-        let Some(own_boot) = st.own_boot.as_deref() else {
-            return (LeaseOutcome::Undetermined, None);
+        let who = match claim(st.own_boot.as_deref(), req, peer, token_ok) {
+            Ok(who) => who,
+            Err((outcome, check)) => {
+                tracing::warn!(
+                    claimed_boot = %req.boot,
+                    own_boot = ?st.own_boot,
+                    claimed_pid = req.pid,
+                    claimed_created = req.created,
+                    ?peer,
+                    "fe.lease refused ({outcome:?}): {check}"
+                );
+                return (outcome, None);
+            }
         };
-        let peer = match peer {
-            PeerAuthOutcome::Undetermined => return (LeaseOutcome::Undetermined, None),
-            PeerAuthOutcome::Foreign => return (LeaseOutcome::Foreign, None),
-            PeerAuthOutcome::Authenticated(peer) => peer,
-        };
-        if !token_ok {
-            tracing::warn!(pid = req.pid, "fe.lease refused: bad or missing token");
-            return (LeaseOutcome::Foreign, None);
-        }
-        if !boots_match(&req.boot, own_boot, cfg!(windows)) || req.pid != peer.pid || req.created != peer.created {
-            return (LeaseOutcome::Foreign, None);
-        }
-        let who = ProcessIdentity { boot: req.boot.clone(), pid: req.pid, created: req.created };
         let gen = st.next_gen;
         st.next_gen += 1;
         let handover_until_ms = st.handover_until_ms.take();
@@ -477,6 +475,38 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The grant rule's claim checks, in order: the claimant's identity, or
+/// the refusal and the check that failed. A bad token is `Foreign`: the
+/// peer is not proven ours, and only a broken install hits it.
+fn claim(
+    own_boot: Option<&str>,
+    req: &FeLeaseReq,
+    peer: &PeerAuthOutcome,
+    token_ok: bool,
+) -> Result<ProcessIdentity, (LeaseOutcome, &'static str)> {
+    let Some(own_boot) = own_boot else {
+        return Err((LeaseOutcome::Undetermined, "own boot unknown"));
+    };
+    let peer = match peer {
+        PeerAuthOutcome::Undetermined => return Err((LeaseOutcome::Undetermined, "peer undetermined")),
+        PeerAuthOutcome::Foreign => return Err((LeaseOutcome::Foreign, "peer foreign")),
+        PeerAuthOutcome::Authenticated(peer) => peer,
+    };
+    if !token_ok {
+        return Err((LeaseOutcome::Foreign, "bad token"));
+    }
+    if !boots_match(&req.boot, own_boot, cfg!(windows)) {
+        return Err((LeaseOutcome::Foreign, "boot mismatch"));
+    }
+    if req.pid != peer.pid {
+        return Err((LeaseOutcome::Foreign, "pid mismatch"));
+    }
+    if req.created != peer.created {
+        return Err((LeaseOutcome::Foreign, "created mismatch"));
+    }
+    Ok(ProcessIdentity { boot: req.boot.clone(), pid: req.pid, created: req.created })
+}
+
 /// Whether a claimed boot matches this daemon's. Strict is plain equality.
 /// Lenient (Windows) also accepts an empty side: the peer proof there is
 /// the pipe client's pid plus its absolute creation time, which a
@@ -575,26 +605,27 @@ mod tests {
     fn lease_claim_table() {
         use LeaseOutcome::*;
         let me = id(4242);
-        let claim = |edit: fn(&mut FeLeaseReq)| {
+        let edited = |edit: fn(&mut FeLeaseReq)| {
             let mut r = req(&me);
             edit(&mut r);
             r
         };
-        let cases: Vec<(&str, FeLeaseReq, PeerAuthOutcome, bool, LeaseOutcome)> = vec![
-            ("equal identity", req(&me), peer(&me), true, Granted),
-            ("different pid", claim(|r| r.pid += 1), peer(&me), true, Foreign),
-            ("different created", claim(|r| r.created += 1), peer(&me), true, Foreign),
-            ("different boot, same pid and created", claim(|r| r.boot = "boot-b".into()), peer(&me), true, Foreign),
-            ("foreign peer", req(&me), PeerAuthOutcome::Foreign, true, Foreign),
-            ("undetermined peer", req(&me), PeerAuthOutcome::Undetermined, true, Undetermined),
-            ("undetermined peer, bad token", req(&me), PeerAuthOutcome::Undetermined, false, Undetermined),
-            ("bad token", req(&me), peer(&me), false, Foreign),
+        let cases: Vec<(&str, FeLeaseReq, PeerAuthOutcome, bool, LeaseOutcome, Option<&str>)> = vec![
+            ("equal identity", req(&me), peer(&me), true, Granted, None),
+            ("different pid", edited(|r| r.pid += 1), peer(&me), true, Foreign, Some("pid mismatch")),
+            ("different created", edited(|r| r.created += 1), peer(&me), true, Foreign, Some("created mismatch")),
+            ("different boot, same pid and created", edited(|r| r.boot = "boot-b".into()), peer(&me), true, Foreign, Some("boot mismatch")),
+            ("foreign peer", req(&me), PeerAuthOutcome::Foreign, true, Foreign, Some("peer foreign")),
+            ("undetermined peer", req(&me), PeerAuthOutcome::Undetermined, true, Undetermined, Some("peer undetermined")),
+            ("undetermined peer, bad token", req(&me), PeerAuthOutcome::Undetermined, false, Undetermined, Some("peer undetermined")),
+            ("bad token", req(&me), peer(&me), false, Foreign, Some("bad token")),
         ];
         let f = fixture(Some(BOOT));
-        for (name, r, p, token_ok, want) in &cases {
+        for (name, r, p, token_ok, want, why) in &cases {
             let (got, gen) = f.leases.grant(r, p, *token_ok, T0);
             assert_eq!(got, *want, "{name}");
             assert_eq!(gen.is_some(), *want == Granted, "{name}: a generation iff granted");
+            assert_eq!(claim(Some(BOOT), r, p, *token_ok).err(), why.map(|why| (*want, why)), "{name}: the check named");
         }
         let a = f.grant(&me);
         let b = f.grant(&me);
@@ -604,6 +635,7 @@ mod tests {
         let f = fixture(None);
         for p in [peer(&me), PeerAuthOutcome::Foreign] {
             assert_eq!(f.leases.grant(&req(&me), &p, true, T0).0, Undetermined, "missing daemon boot, {p:?}");
+            assert_eq!(claim(None, &req(&me), &p, true).err(), Some((Undetermined, "own boot unknown")), "{p:?}");
         }
         assert_eq!(f.on_disk(), None, "a refusal records nothing");
 
