@@ -3945,6 +3945,20 @@ fn pane_terminal_reason_text(shows_reason: bool, client_status: Option<&str>) ->
     shows_reason.then(|| client_status.unwrap_or_default().to_string())
 }
 
+/// The agent pane's reason line. A daemon's protocol refusal leads: it is
+/// the root cause of whatever the retained client or the dial reports.
+/// Then the client's own reason, then the row's dial error.
+fn pane_reason_line(
+    mismatch: Option<&str>,
+    client: Option<String>,
+    dial_error: Option<&str>,
+) -> Option<String> {
+    mismatch
+        .map(str::to_owned)
+        .or(client)
+        .or_else(|| dial_error.map(str::to_owned))
+}
+
 /// The agent pane's overlay, one row each, top down: why it is not live,
 /// then the discarded-input count. Separate rows, so a long reason never
 /// truncates the count off the pane and the count never hides the reason.
@@ -16578,27 +16592,28 @@ impl State {
         // own explanation to whatever last touched the status bar.
         let pane_attach_status = self.pane_attach_term.as_ref().map(|t| t.status_line());
         let pane_attach_is_attached = pane_attach_status == Some("attached");
-        let pane_terminal_reason: Option<String> = pane_terminal_reason_text(
-            pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
-            pane_attach_status,
-        )
+        // A daemon that refused this frontend's protocol is the root cause of
+        // whatever the client or the dial reports, so its line leads.
+        let pane_host = self
+            .bl_pane_target
+            .as_ref()
+            .map(|(h, _)| h)
+            .unwrap_or(&self.active_host);
+        let pane_terminal_reason: Option<String> = pane_reason_line(
+            self.protocol_mismatch
+                .get(pane_host)
+                .and_then(|m| m.lines().next()),
+            pane_terminal_reason_text(
+                pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
+                pane_attach_status,
+            ),
         // SHOULD-FIX (Codex review, lane B5 discharge): no live client at
         // all (a dial that never got to attach in the first place) still
         // needs a persistent, non-clobberable reason when this row's
         // host has a known-broken dial — same priority tier as a live
         // client's own failure.
-        .or_else(|| self.pane_dial_error.clone())
-        .or_else(|| {
-            let h = self
-                .bl_pane_target
-                .as_ref()
-                .map(|(h, _)| h)
-                .unwrap_or(&self.active_host);
-            self.protocol_mismatch
-                .get(h)
-                .and_then(|m| m.lines().next())
-                .map(str::to_owned)
-        });
+            self.pane_dial_error.as_deref(),
+        );
         let pane_overlay = pane_overlay_lines(pane_terminal_reason, self.pane_input.notice());
         // Switch-latency Phase 1, item 3: the acceptance metric itself
         // (keypress → current screen visible), not merely the client's
@@ -30286,5 +30301,20 @@ mod capsule_pane_tests {
     #[test]
     fn pane_terminal_reason_text_is_none_when_no_reason_is_shown() {
         assert_eq!(pane_terminal_reason_text(false, Some("attached")), None);
+    }
+
+    #[test]
+    fn pane_reason_line_leads_with_a_protocol_refusal() {
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(
+            pane_reason_line(Some("frontend out of date"), s("connecting…"), Some("dial failed")),
+            s("frontend out of date")
+        );
+        assert_eq!(
+            pane_reason_line(None, s("connecting…"), Some("dial failed")),
+            s("connecting…")
+        );
+        assert_eq!(pane_reason_line(None, None, Some("dial failed")), s("dial failed"));
+        assert_eq!(pane_reason_line(None, None, None), None);
     }
 }
