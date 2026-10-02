@@ -191,8 +191,9 @@ fi
 
 # The comm wake holds the row while this mark is under a minute old, and
 # `stop` deletes it. It protects the row once it has landed: the 1 s lock
-# wait bounds the lock, not the write (measured about 0.13 s on Linux), so
-# landing inside the daemon's 1.5 s hold is likely, not guaranteed.
+# wait bounds the lock, not the write (on Linux the mark landed about 0.13 s
+# after the hook started), so landing inside the daemon's 1.5 s hold is
+# likely, not guaranteed.
 stop_mark() { registry_replace 'if .agents[$n] then .agents[$n].stop_at = $t else . end' --arg n "$NAME" --arg t "$(now_iso)"; }
 ( . "$FE_LIB" >/dev/null 2>&1 && SOT_LOCK_WAIT_SECS=1 with_lock stop_mark ) >/dev/null 2>&1 || true
 

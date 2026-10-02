@@ -29,9 +29,10 @@
 //! counts until the NBSP is shown to survive ConPTY (`NBSP_ON_WINDOWS`). A row at rest whose
 //! rows through the box never hold still (a live clock, an animation) is never woken, and neither is a row
 //! whose Stop ended without `stop` (Esc, an API error, a killed hook) for at most
-//! the bound + [`TICK`] + [`STILL_FOR`]; this fails closed and its end-of-turn check still reads the mail.
+//! the bound + 1 s + [`TICK`] + [`STILL_FOR`]; this fails closed and its end-of-turn check still reads the mail.
 //! The converse fails open: a working row with no fresh mark (no hooks, the mark
-//! not written or not yet landed, a hook run past the bound) whose rows through the box hold still
+//! not written or not yet landed, a hook run past the bound, a mark more than 1 s ahead (a backward
+//! clock step)) whose rows through the box hold still
 //! for [`STILL_FOR`] is typed into, and the line lands as a queued message.
 //! A permission menu is not free by construction (its options use an ASCII
 //! space and it is never boxed), though it holds still. The menu fixtures are
@@ -39,8 +40,9 @@
 //! captured), and this assumes the cursor follows focus into a dialog. The Windows-only gap:
 //! while the NBSP is not required there, an agents-view task box with an empty
 //! placeholder (a voice state) reads free. Known test gap: no test covers the
-//! re-check after the hold (`wake_if_free` asks `is_free` again before typing);
-//! deleting it passes every test, and a test that does not flake needs a seam.
+//! re-check after the hold (`wake_if_free` asks `is_free` again before typing),
+//! nor `check_row`'s registry-then-clock order; deleting either passes every
+//! test, and a test that does not flake needs a seam.
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
@@ -56,7 +58,7 @@ pub const TICK: Duration = Duration::from_secs(2);
 /// Mail still unread this long after a wake gets one more line.
 const REPEAT_AFTER: Duration = Duration::from_secs(600);
 /// The Stop hook's longest run (its auditor call is capped at 45 s; Codex kills the hook at 10 s). A row whose
-/// registry entry carries a `stop_at` mark within this of now is running its Stop hook and is not typed into; an
+/// registry entry carries a `stop_at` mark at most this old is running its Stop hook and is not typed into; an
 /// older mark is a Stop that never ended (Esc, an API error, a killed hook).
 const STOP_HOOK_BOUND: Duration = Duration::from_secs(60);
 const WAKE_LINE: &[u8] = b"[sot-comm] you have mail: run comm-poll.sh";
@@ -216,8 +218,10 @@ fn counts(line: &[u8], handle: &str) -> bool {
 }
 
 /// Whether the registry says `handle`'s Stop hook is running: its `stop_at` mark is at most [`STOP_HOOK_BOUND`]
-/// old and at most 1 s ahead of `now_secs` (the stamp's rounding). A mark further ahead is a backward clock step and
-/// holds nothing, so no mark holds a row past the bound. Both ends are `%Y-%m-%dT%H:%M:%SZ`, so string order is time order.
+/// old and at most 1 s ahead of `now_secs`. The caller takes `now_secs` after reading the registry, so on a steady clock
+/// a mark the read saw is never ahead and the 1 s is slack; a mark further ahead (a backward clock step) holds nothing.
+/// On a steady clock no mark holds a row past the bound + 1 s (the stamp is cut to the second); a backward step after
+/// the stamp extends the hold by the step. Both ends are `%Y-%m-%dT%H:%M:%SZ`, so string order is time order.
 fn stop_hook_running(registry: &[u8], handle: &str, now_secs: u64) -> bool {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(registry) else {
         return false;
@@ -388,8 +392,9 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         return Step::Skip;
     }
     let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::handlers::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         prompt_free(l, c, a) && !stop_hook_running(&registry, handle, now)
     };
     match wake_if_free(
