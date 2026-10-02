@@ -63,8 +63,10 @@
 #
 # -Stop first waits (up to $DaemonLockWaitSeconds) for the daemon to finish
 # its own shutdown when one is under way -- -FrontendKilled, or held.json
-# says closing -- because a kill mid-shutdown cuts it short. Only a daemon
-# still there after the wait is killed.
+# says closing or cannot be read -- because a kill mid-shutdown cuts it
+# short. When held.json names a deadline (a deferred close or a pending
+# handover decides only then), it waits until that deadline plus the same
+# bound (Get-StopWaitMs). Only a daemon still there after the wait is killed.
 #
 # -Stop: sotd installs no signal/console-control handler on either platform
 # (grepped: no SIGTERM/ctrl_c handling in rust/backend/src/*.rs) and exposes
@@ -346,6 +348,28 @@ function Get-LocalDaemonProcess {
         Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) }
 }
 
+# How long -Stop waits for the daemon's own shutdown, in ms, from held.json:
+# $State is 'missing', 'unreadable' or 'read', $Text the text read, $NowMs
+# wall-clock unix ms. Any deadline (hold_until_ms, handover_until_ms, both
+# unix ms) waits until it plus DAEMON_LOCK_WAIT; closing, or a record that
+# exists but cannot be read or parsed, waits DAEMON_LOCK_WAIT; else 0.
+function Get-StopWaitMs([string]$State, [string]$Text, [int64]$NowMs) {
+    $boundMs = [int64]$DaemonLockWaitSeconds * 1000
+    if ($State -eq 'missing') { return [int64]0 }
+    if ($State -ne 'read') { return $boundMs }
+    $held = $null
+    try { $held = $Text | ConvertFrom-Json -ErrorAction Stop } catch { return $boundMs }
+    if ($null -eq $held) { return $boundMs }
+    $deadline = $null
+    foreach ($name in @('hold_until_ms', 'handover_until_ms')) {
+        $v = $held.$name
+        if (($null -ne $v) -and (($null -eq $deadline) -or ([int64]$v -gt $deadline))) { $deadline = [int64]$v }
+    }
+    if ($null -ne $deadline) { return [math]::Max($deadline - $NowMs, [int64]0) + $boundMs }
+    if ($held.closing -eq $true) { return $boundMs }
+    return [int64]0
+}
+
 if ($Stop) {
     $procs = @(Get-LocalDaemonProcess)
     if ($procs.Count -eq 0) {
@@ -354,17 +378,23 @@ if ($Stop) {
     }
     # Is a shutdown under way? held.json lives in the state root the daemon
     # derives (state_dir.rs): LOCALAPPDATA, else USERPROFILE\AppData\Local, plus \sot.
-    $closing = $false
-    try {
-        $stateBase = $env:LOCALAPPDATA
-        if (-not $stateBase) { $stateBase = Join-Path $env:USERPROFILE 'AppData\Local' }
-        $heldPath = Join-Path (Join-Path $stateBase 'sot') 'held.json'
-        $closing = ((Get-Content -Raw -LiteralPath $heldPath -ErrorAction Stop | ConvertFrom-Json).closing -eq $true)
-    } catch { $closing = $false }
-    if ($FrontendKilled -or $closing) {
-        Write-LocalDaemonLog "stop: waiting up to ${DaemonLockWaitSeconds}s for the daemon to finish its own shutdown (frontendKilled=$([bool]$FrontendKilled) closing=$closing)"
+    $stateBase = $env:LOCALAPPDATA
+    if (-not $stateBase) { $stateBase = Join-Path $env:USERPROFILE 'AppData\Local' }
+    $heldPath = Join-Path (Join-Path $stateBase 'sot') 'held.json'
+    $heldState = 'missing'
+    $heldText = ''
+    if (Test-Path -LiteralPath $heldPath) {
+        try {
+            $heldText = Get-Content -Raw -LiteralPath $heldPath -ErrorAction Stop
+            $heldState = 'read'
+        } catch { $heldState = 'unreadable' }
+    }
+    $waitMs = Get-StopWaitMs $heldState $heldText ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+    if ($FrontendKilled) { $waitMs = [math]::Max($waitMs, [int64]$DaemonLockWaitSeconds * 1000) }
+    if ($waitMs -gt 0) {
+        Write-LocalDaemonLog "stop: waiting up to $([math]::Ceiling($waitMs / 1000))s for the daemon to finish its own shutdown (frontendKilled=$([bool]$FrontendKilled) held=$heldState)"
         $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
-        while (@(Get-LocalDaemonProcess).Count -gt 0 -and $waitSw.Elapsed.TotalSeconds -lt $DaemonLockWaitSeconds) {
+        while (@(Get-LocalDaemonProcess).Count -gt 0 -and $waitSw.Elapsed.TotalMilliseconds -lt $waitMs) {
             Start-Sleep -Milliseconds 500
         }
         $procs = @(Get-LocalDaemonProcess)

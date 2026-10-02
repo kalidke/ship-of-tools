@@ -31,10 +31,10 @@ log() { echo "sot-apply: $*" >&2; }
 # Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): this script
 # runs as an installed binary, before any checkout is known.
 sot_install_copy() {  # <src> <dst> [mode]
-    if cp -p "$1" "$2.new" && { [ -z "${3:-}" ] || chmod "$3" "$2.new"; } && mv -f "$2.new" "$2"; then
+    if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
         return 0
     fi
-    rm -f "${2:?}.new"
+    rm -f "${2:?}.new.$$"
     return 1
 }
 

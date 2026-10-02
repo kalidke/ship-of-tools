@@ -157,11 +157,12 @@ if (-not $SkipDaemonVerify) {
     } catch { W "daemon pre-check skipped: $($_.Exception.Message)" }
 }
 
-# 1. Supervisor first - stop the respawn/race.
-foreach ($s in Get-Sup) { W "kill supervisor pid=$($s.ProcessId)"; Stop-Process -Id $s.ProcessId -Force -ErrorAction SilentlyContinue }
+# 1. Supervisor first - stop the respawn/race. A converge supervisor holds a
+#    lease, so its kill is a lease end like a window's: it sets $feKilled too.
+$feKilled = $false
+foreach ($s in Get-Sup) { W "kill supervisor pid=$($s.ProcessId)"; Stop-Process -Id $s.ProcessId -Force -ErrorAction SilentlyContinue; $feKilled = $true }
 
 # 2. Frontend - FIN over the still-open tunnel detaches the daemon client now.
-$feKilled = $false
 foreach ($f in Get-FE) { W "kill FE pid=$($f.ProcessId)"; Stop-Process -Id $f.ProcessId -Force -ErrorAction SilentlyContinue; $feKilled = $true }
 
 # 3. Let the FIN propagate + the daemon deregister BEFORE the tunnel dies -

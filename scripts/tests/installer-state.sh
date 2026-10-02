@@ -476,13 +476,31 @@ printf 'after-legacy\n' >&7
 exec 7>&-
 check "a held legacy sotd.log keeps its lines" "known-line-legacy after-legacy" "$(tr '\n' ' ' < "$legacy" | sed 's/ $//')"
 reap_stub "$d"
-# Eight old 6MB logs: over the count and over the cap, oldest first.
+# Eight old 6MB logs: over the count and over the cap, oldest first. Their
+# pids are above any pid_max, so no live process protects them.
 d="$WORK/logs-cap"; mkdir -p "$d/home" "$d/prefix/logs"
-for i in 0 1 2 3 4 5 6 7; do truncate -s 6M "$d/prefix/logs/sotd.20200101-00000$i-000Z-$((1000 + i)).log"; done
+for i in 0 1 2 3 4 5 6 7; do truncate -s 6M "$d/prefix/logs/sotd.20200101-00000$i-000Z-$((99999990 + i)).log"; done
 STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0
 check "the oldest five go and the newest three stay" "567" \
-    "$(for i in 0 1 2 3 4 5 6 7; do [ -e "$d/prefix/logs/sotd.20200101-00000$i-000Z-$((1000 + i)).log" ] && printf '%s' "$i"; done; true)"
+    "$(for i in 0 1 2 3 4 5 6 7; do [ -e "$d/prefix/logs/sotd.20200101-00000$i-000Z-$((99999990 + i)).log" ] && printf '%s' "$i"; done; true)"
 reap_stub "$d"
+
+# ---------------------------------------------------------------------------
+case_start "a_live_writers_log_is_kept"
+# The oldest log names this shell's own live pid, as a daemon still shutting
+# down names its own; six newer dead ones put the dir over the count.
+d="$WORK/logs-live"; mkdir -p "$d"
+live="$d/sotd.20200101-000000-000Z-$$.log"
+printf 'known-line-live\n' > "$live"
+for i in 1 2 3 4 5 6; do printf 'x\n' > "$d/sotd.20200101-00000$i-000Z-$((99999990 + i)).log"; done
+sot_prune_logs "$d"
+check "a log whose writer lives keeps its line" "known-line-live" "$(cat "$live" 2>/dev/null || echo deleted)"
+check "the two oldest dead logs go in its place" "3456" \
+    "$(for i in 1 2 3 4 5 6; do [ -e "$d/sotd.20200101-00000$i-000Z-$((99999990 + i)).log" ] && printf '%s' "$i"; done; true)"
+# Pin: bash below 4.1 exits a set -u shell on "$@" with no positional
+# parameters; this host's bash cannot show that red.
+mkdir -p "$WORK/logs-empty"
+check "an empty log dir prunes under set -u" "ok" "$(set -u; sot_prune_logs "$WORK/logs-empty" && echo ok)"
 
 # ---------------------------------------------------------------------------
 case_start "no_shared_tmp_log"
@@ -828,7 +846,7 @@ run_apply "$d"
 check "the apply fails at the re-render and restores" "1" "$(grep -c 're-rendering the unit or wrapper failed .* restoring previous binaries' "$d/out" || true)"
 check "the old wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 check "the pending pointer is kept" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
-check "no temp file is left beside the wrapper" "no" "$([ -e "$d/home/.local/bin/sot-launch.new" ] && echo yes || echo no)"
+check "no temp file is left beside the wrapper" "0" "$(find "$d/home/.local/bin" -name 'sot-launch.new*' | wc -l | tr -d ' ')"
 
 # ---------------------------------------------------------------------------
 # A disk that fills during a backup copy: half the bytes land, then cp fails.
@@ -905,7 +923,7 @@ case_start "rollback_copy_failure_fails_the_rollback"
 d="$WORK/ap12"; mk_apply_fixture "$d" 1 1; run_apply "$d"
 check "the apply installed the new tag" "1" "$(grep -c '"tag": "v9.9.9"' "$d/prefix/install.json" || true)"
 cp "$d/prefix/install.json" "$d/record.applied"
-half_cp_stub "$d" '*/bin/sotd|*/bin/sotd.new'
+half_cp_stub "$d" '*/bin/sotd|*/bin/sotd.new.*'
 run_apply "$d" --rollback
 check "the rollback exits non-zero" "yes" "$([ "$AP_RC" -ne 0 ] && echo yes || echo no)"
 check "the error names the binary" "1" "$(grep -cF "could not restore $d/prefix/bin/sotd " "$d/out" || true)"
@@ -921,6 +939,27 @@ for f in "$SRC/scripts/sot-apply.sh" "$SRC/scripts/install.sh"; do
     check "$(basename "$f")'s sot_install_copy is byte-identical to the library's" "$(helper_text "$LIB")" "$(helper_text "$f")"
 done
 check "no other script defines it" "3" "$(grep -rl '^sot_install_copy() {' "$SRC/scripts" | wc -l | tr -d ' ')"
+# A stale <dst>.new another writer left (or still writes) is never reused.
+d="$WORK/copy-stale"; mkdir -p "$d"
+printf 'source\n' > "$d/src"; printf 'old\n' > "$d/dst"; printf 'junk\n' > "$d/dst.new"
+sot_install_copy "$d/src" "$d/dst"
+check "the destination equals the source" "source" "$(cat "$d/dst")"
+check "a stale dst.new is untouched" "junk" "$(cat "$d/dst.new" 2>/dev/null || echo gone)"
+check "no temp file of this copy is left" "0" "$(find "$d" -name 'dst.new.*' | wc -l | tr -d ' ')"
+
+# ---------------------------------------------------------------------------
+case_start "remote_wrapper_failed_write_keeps_the_old"
+# The --backend wrapper: a cat that fails before writing a byte.
+d="$WORK/remote-wrap"; mkdir -p "$d/stubs"
+printf '#!/bin/sh\necho old-wrapper\n' > "$d/sot-launch"; cp "$d/sot-launch" "$d/wrap.orig"
+printf '#!/bin/sh\nexit 1\n' > "$d/stubs/cat"; chmod +x "$d/stubs/cat"
+rc=0; ( PATH="$d/stubs:$PATH"; installer_render_remote_launch /opt/sot be-alias "$d/sot-launch" ) 2>/dev/null || rc=$?
+check "the failed write returns 1" "1" "$rc"
+check "the old remote wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/sot-launch" && echo same || echo differ)"
+check "no temp file is left beside it" "0" "$(find "$d" -name 'sot-launch.new*' | wc -l | tr -d ' ')"
+installer_render_remote_launch /opt/sot be-alias "$d/sot-launch"
+check "a good write names the alias and is executable" "1 yes" \
+    "$(grep -c '^export SOT_HOST="be-alias"$' "$d/sot-launch" || true) $([ -x "$d/sot-launch" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

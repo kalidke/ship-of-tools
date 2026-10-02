@@ -50,10 +50,10 @@ die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): the first
 # copies below run before the checkout that holds the library exists.
 sot_install_copy() {  # <src> <dst> [mode]
-    if cp -p "$1" "$2.new" && { [ -z "${3:-}" ] || chmod "$3" "$2.new"; } && mv -f "$2.new" "$2"; then
+    if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
         return 0
     fi
-    rm -f "${2:?}.new"
+    rm -f "${2:?}.new.$$"
     return 1
 }
 
@@ -284,6 +284,44 @@ installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <comm
   "frontend": $frontend_json
 }
 EOF
+}
+
+# Write the FE-only wrapper for PREFIX that dials BE-ALIAS over SSH into DEST:
+# beside DEST under a name of this shell's own ($$), then moved in, so a
+# failed write leaves the old wrapper whole and returns 1.
+installer_render_remote_launch() {  # <prefix> <be-alias> <dest>
+    local prefix="$1" be_alias="$2" tmp="$3.new.$$"
+    cat > "$tmp" <<EOF || { rm -f "$tmp"; return 1; }
+#!/usr/bin/env bash
+# FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
+# Item 2 follow-up: this used to be a second, hand-maintained copy of
+# scripts/launch-sot.sh's tunnel-open + backend-ensure + frontend-invoke
+# logic (one fixed tunnel, no per-host support) -- it now delegates to the
+# pinned checkout's own copy instead, so the two never drift.
+#
+# Kept from the old heredoc (install-layout-specific; no equivalent in
+# launch-sot.sh itself, which only knows git pull / cargo build, not
+# sot-apply's staged $prefix/repo/versions flip): applying an armed
+# pending update (staged by the frontend's own self-check) before every
+# launch. Exit-75 respawn and crash-loop rollback are DROPPED, not kept --
+# launch-sot.sh has never had them for the plain Unix launcher either
+# (that's Windows-only today, ADR 0017 / relaunch-sot.ps1), so this
+# wrapper now matches every other Unix launch path instead of being the
+# one with more supervision than the rest.
+#
+# SOT_REMOTE_REPO is deliberately left UNSET: this install has no local
+# knowledge of the remote's checkout (never had one -- the old heredoc
+# only ever queried the remote's installed sotd directly).
+if [ -x "$prefix/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+fi
+export SOT_HOST="$be_alias"
+export SOT_FRONTEND_BIN="$prefix/bin/sot"
+export SOT_NO_UPDATE=1
+exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
+EOF
+    chmod +x "$tmp" && mv -f "$tmp" "$3" || { rm -f "$tmp"; return 1; }
 }
 
 installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
@@ -845,36 +883,8 @@ if [ "$WANT_FRONTEND" = 1 ]; then
     if [ -z "$BE_ALIAS" ]; then
         render_sot_launch "$PREFIX" "$TARGET" "$HOME/.local/bin/sot-launch"
     else
-        cat > "$HOME/.local/bin/sot-launch" <<EOF
-#!/usr/bin/env bash
-# FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
-# Item 2 follow-up: this used to be a second, hand-maintained copy of
-# scripts/launch-sot.sh's tunnel-open + backend-ensure + frontend-invoke
-# logic (one fixed tunnel, no per-host support) -- it now delegates to the
-# pinned checkout's own copy instead, so the two never drift.
-#
-# Kept from the old heredoc (install-layout-specific; no equivalent in
-# launch-sot.sh itself, which only knows git pull / cargo build, not
-# sot-apply's staged $PREFIX/repo/versions flip): applying an armed
-# pending update (staged by the frontend's own self-check) before every
-# launch. Exit-75 respawn and crash-loop rollback are DROPPED, not kept --
-# launch-sot.sh has never had them for the plain Unix launcher either
-# (that's Windows-only today, ADR 0017 / relaunch-sot.ps1), so this
-# wrapper now matches every other Unix launch path instead of being the
-# one with more supervision than the rest.
-#
-# SOT_REMOTE_REPO is deliberately left UNSET: this install has no local
-# knowledge of the remote's checkout (never had one -- the old heredoc
-# only ever queried the remote's installed sotd directly).
-if [ -x "$PREFIX/bin/sot-apply" ]; then
-    APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
-    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
-fi
-export SOT_HOST="$BE_ALIAS"
-export SOT_FRONTEND_BIN="$PREFIX/bin/sot"
-export SOT_NO_UPDATE=1
-exec "$PREFIX/repo/current/scripts/launch-sot.sh" "\$@"
-EOF
+        installer_render_remote_launch "$PREFIX" "$BE_ALIAS" "$HOME/.local/bin/sot-launch" \
+            || die "writing $HOME/.local/bin/sot-launch failed"
     fi
     chmod +x "$HOME/.local/bin/sot-launch"
     if [ "$OS" = Darwin ]; then
@@ -979,8 +989,8 @@ COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # Temp file plus rename: a heredoc straight onto the live path truncates it
 # first, so an interrupt would leave the machine with no readable manifest.
 installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" "$WANT_DAEMON" "$WANT_FRONTEND" \
-    > "$PREFIX/install.json.new"
-mv "$PREFIX/install.json.new" "$PREFIX/install.json"
+    > "$PREFIX/install.json.new.$$"
+mv "$PREFIX/install.json.new.$$" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
 
 say "DONE — Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."

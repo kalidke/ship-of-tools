@@ -28,19 +28,19 @@ sot_wrapper_owner_prefix() {
 }
 
 # Write the sotd.service unit for PREFIX from TEMPLATE into DEST. Like every
-# rendered file it is written beside DEST and moved in, so a failed write
-# leaves the old file whole and returns 1.
+# rendered file it is written beside DEST, under a name of this shell's own
+# ($$), and moved in, so a failed write leaves the old file whole and returns 1.
 render_sotd_unit() {  # <prefix> <template> <dest>
     sed -e "s|@SOT_BIN@|$1/bin/sotd|" \
         -e "s|@SOT_APPLY@|$1/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
-        "$2" > "$3.new" && chmod 0644 "$3.new" && mv -f "$3.new" "$3" || { rm -f "$3.new"; return 1; }
+        "$2" > "$3.new.$$" && chmod 0644 "$3.new.$$" && mv -f "$3.new.$$" "$3" || { rm -f "$3.new.$$"; return 1; }
 }
 
 # Write the all-in-one sot-launch wrapper for PREFIX / TARGET into DEST.
 render_sot_launch() {  # <prefix> <target> <dest>
     local prefix="$1" target="$2" dest="$3"
-    cat > "$dest.new" <<EOF || { rm -f "$dest.new"; return 1; }
+    cat > "$dest.new.$$" <<EOF || { rm -f "$dest.new.$$"; return 1; }
 #!/usr/bin/env bash
 # sot-launch: all-in-one
 # All-in-one launcher: apply any armed pending update (offline pointer flip,
@@ -120,7 +120,7 @@ while :; do
     exit "\$RC"
 done
 EOF
-    chmod +x "$dest.new" && mv -f "$dest.new" "$dest" || { rm -f "$dest.new"; return 1; }
+    chmod +x "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" || { rm -f "$dest.new.$$"; return 1; }
 }
 
 # True when SOCKET accepts a connection (or, with an nc that cannot probe a
@@ -164,11 +164,21 @@ sot_service_owned() {  # <prefix>
     [ "$(sot_unit_owner_path < "$HOME/.config/systemd/user/sotd.service" 2>/dev/null)" = "$1/bin/sotd" ]
 }
 
+# True when LOG is NEWEST or the pid in its name sotd.<stamp>Z-<pid>.log is alive.
+sot_log_protected() {  # <log> <newest>
+    local p="${1##*/}"
+    [ "$1" = "$2" ] && return 0
+    p="${p##*Z-}"; p="${p%.log}"
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$p" 2>/dev/null
+}
+
 # Prune DIR's nohup daemon logs before a start. Oldest first (the legacy fixed
 # sotd.log, then sotd.<UTC stamp>Z-<pid>.log by name, which is start order),
 # delete while more than SOT_LOG_KEEP remain or the unprotected total exceeds
-# SOT_LOG_CAP_BYTES. The newest is protected: a previous daemon that is still
-# shutting down may hold it, so a single protected file can exceed the cap. A
+# SOT_LOG_CAP_BYTES. A log is protected while the <pid> in its name answers
+# kill -0 (its writer lives), or while it is the newest (the legacy sotd.log has
+# no pid); a protected file is never deleted and is left out of the total. A
 # failed rm is logged in one line and skipped; it leaves both bounds.
 sot_prune_logs() {  # <dir>
     local dir="$1" f newest="" count total=0 size err
@@ -178,15 +188,16 @@ sot_prune_logs() {  # <dir>
         [ -f "$f" ] && set -- "$@" "$f"
     done
     count=$#
-    for f in "$@"; do newest="$f"; done
-    for f in "$@"; do
-        [ "$f" = "$newest" ] && continue
+    # ${1+"$@"}, not "$@": with no logs, bash below 4.1 exits a set -u shell.
+    for f in ${1+"$@"}; do newest="$f"; done
+    for f in ${1+"$@"}; do
+        sot_log_protected "$f" "$newest" && continue
         size="$(wc -c < "$f" 2>/dev/null)" || size=0
         total=$((total + ${size:-0}))
     done
-    for f in "$@"; do
+    for f in ${1+"$@"}; do
         [ "$count" -gt "$SOT_LOG_KEEP" ] || [ "$total" -gt "$SOT_LOG_CAP_BYTES" ] || break
-        [ "$f" != "$newest" ] || break
+        sot_log_protected "$f" "$newest" && continue
         size="$(wc -c < "$f" 2>/dev/null)" || size=0
         err="$(rm -f -- "${f:?}" 2>&1)" || echo "kept old log $f: $err" >&2
         count=$((count - 1))
@@ -205,7 +216,7 @@ sot_prune_logs() {  # <dir>
 # never to a path another user can hold; the newest by name is the current one.
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
-    local logdir="$1/logs" logfile="" stamp
+    local logdir="$1/logs" logfile="" stamp err
     sot_socket_open "$socket" && return 0
     if sot_service_owned "$prefix"; then
         mode=systemd
@@ -220,6 +231,14 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         # still writes is never cut short.
         nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >>"$logfile" 2>&1 </dev/null &
         pid=$!
+        # Name the log for the daemon that writes it, so a prune keeps it while
+        # that daemon lives; a rename never disturbs the open file. On failure
+        # this shell's own pid in the old name protects it until the ensure ends.
+        if err="$(mv -f -- "$logfile" "$logdir/sotd.${stamp}Z-$pid.log" 2>&1)"; then
+            logfile="$logdir/sotd.${stamp}Z-$pid.log"
+        else
+            echo "kept the log name $logfile: $err" >&2
+        fi
     fi
     start="$(date +%s)"
     while :; do
@@ -247,15 +266,15 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     return 1
 }
 
-# The one copy helper: copy SRC to DST.new, set MODE when one is given, and
-# move it over DST, so DST only ever exists whole. Any failure removes DST.new
-# and returns 1. sot-apply.sh and install.sh carry byte-identical copies
+# The one copy helper: copy SRC to DST.new.<pid> (this shell's own, so two
+# writers never share it), set MODE when one is given, and move it over DST, so
+# DST only ever exists whole. Any failure removes the temp file and returns 1. sot-apply.sh and install.sh carry byte-identical copies
 # (they copy before any checkout is known); a test pins all three equal.
 sot_install_copy() {  # <src> <dst> [mode]
-    if cp -p "$1" "$2.new" && { [ -z "${3:-}" ] || chmod "$3" "$2.new"; } && mv -f "$2.new" "$2"; then
+    if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
         return 0
     fi
-    rm -f "${2:?}.new"
+    rm -f "${2:?}.new.$$"
     return 1
 }
 

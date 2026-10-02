@@ -941,6 +941,33 @@ try {
         }
     }
 } catch { Check '14: section ran' $false $_.Exception.Message }
+try {
+    Write-Host "`n=== 15. StopWaitMs: how long -Stop waits, from held.json ===" -ForegroundColor Cyan
+    # A pin, not fail-first: Get-StopWaitMs is new. Any deadline waits until
+    # it plus DAEMON_LOCK_WAIT; closing, or a record that exists but cannot be
+    # read or parsed, waits the bound; nothing under way waits 0.
+    $ast15 = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$null)
+    $fn15 = $ast15.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Get-StopWaitMs' }, $true)
+    Check '15: Get-StopWaitMs is defined' ($null -ne $fn15) 'function not found'
+    if ($fn15) {
+        . ([scriptblock]::Create($fn15.Extent.Text))
+        $DaemonLockWaitSeconds = [int]([regex]::Match((Get-Content -LiteralPath $script -Raw), '(?m)^\$DaemonLockWaitSeconds\s*=\s*(\d+)').Groups[1].Value)
+        $now15 = [int64]1759400000000
+        $rows15 = @(
+            @('missing', 'missing', '', 0),
+            @('unreadable', 'unreadable', '', 150000),
+            @('unparsable text', 'read', 'not json', 150000),
+            @('closing:true', 'read', '{"v":2,"boot":"","holders":[],"handover_until_ms":null,"hold_until_ms":null,"closing":true,"not_ended":0}', 150000),
+            @('closing:false, no deadline field', 'read', '{"v":2,"boot":"","holders":[],"closing":false,"not_ended":0}', 0),
+            @('a deadline 40 s ahead', 'read', ('{"v":2,"boot":"","holders":[],"hold_until_ms":' + ($now15 + 40000) + ',"closing":false,"not_ended":0}'), 190000),
+            @('a deadline 5 s past', 'read', ('{"v":2,"boot":"","holders":[],"handover_until_ms":' + ($now15 - 5000) + ',"closing":false,"not_ended":0}'), 150000)
+        )
+        foreach ($r15 in $rows15) {
+            $got15 = Get-StopWaitMs $r15[1] $r15[2] $now15
+            Check "15: $($r15[0]) waits $($r15[3]) ms" ($got15 -eq $r15[3]) "got $got15"
+        }
+    }
+} catch { Check '15: section ran' $false $_.Exception.Message }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still
