@@ -28,6 +28,10 @@ const NOTICE_UNSUPPORTED: &str =
     "closing will not end sessions: this computer's backend is older than this window";
 const NOTICE_NO_BACKEND: &str =
     "closing will not end sessions: there is no backend on this computer";
+const LEAVE_UNCONFIRMED_CLOSE: &str =
+    "closing: this computer's backend did not confirm the sessions ended";
+const LEAVE_UNCONFIRMED_KEEP: &str =
+    "keep was not confirmed: this computer's backend may have ended the sessions";
 
 /// A window that never leases: `--ephemeral`, `--capture`, `--no-lease`.
 pub fn lease_exempt(ephemeral: bool, capture: bool, no_lease: bool) -> bool {
@@ -55,19 +59,39 @@ pub enum Standing {
 }
 
 enum HolderCmd {
-    Leave(LeaveIntent, oneshot::Sender<u32>),
+    Leave(LeaveIntent, oneshot::Sender<LeaveOutcome>),
     NoticeSeen(u32),
 }
+
+/// How one lease's leave ended. A zero count is only a real reply of 0.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaveOutcome {
+    Replied(u32),
+    Failed(String),
+    TimedOut,
+}
+
+type PendingAck = (HostKey, oneshot::Receiver<LeaveOutcome>);
 
 struct Slot {
     standing: Standing,
     holder: Option<mpsc::UnboundedSender<HolderCmd>>,
 }
 
+/// The slots and the leave, under one lock, so a lease that a handshake
+/// already in flight grants after `leave_all` took its snapshot still leaves.
+struct Book {
+    slots: HashMap<HostKey, Slot>,
+    /// Set by `leave_all`; from then on no handshake starts.
+    leaving: Option<LeaveIntent>,
+    /// Where such a late lease's ack joins the `Leaving` wait.
+    late: Option<mpsc::UnboundedSender<PendingAck>>,
+}
+
 /// Every lease this window holds or wants, one slot per local host.
 pub struct Leases {
     exempt: bool,
-    slots: Mutex<HashMap<HostKey, Slot>>,
+    book: Mutex<Book>,
     /// `lease::LEASE_REPLY_WAIT` and `lease::NOTICE_ACK_WAIT`; tests shorten them.
     reply_wait: Duration,
     notice_wait: Duration,
@@ -81,7 +105,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            slots: Mutex::new(slots),
+            book: Mutex::new(Book { slots, leaving: None, late: None }),
             reply_wait: lease::LEASE_REPLY_WAIT,
             notice_wait: lease::NOTICE_ACK_WAIT,
         })
@@ -89,8 +113,8 @@ impl Leases {
 
     /// Granted, and the holder task that owns the stream is still running.
     pub(crate) fn held(&self, host: &HostKey) -> bool {
-        let slots = self.slots.lock().unwrap();
-        slots.get(host).is_some_and(|s| {
+        let book = self.book.lock().unwrap();
+        book.slots.get(host).is_some_and(|s| {
             matches!(s.standing, Standing::Granted { .. })
                 && s.holder.as_ref().is_some_and(|h| !h.is_closed())
         })
@@ -105,11 +129,20 @@ impl Leases {
 
     #[cfg(test)]
     fn standing(&self, host: &HostKey) -> Option<Standing> {
-        self.slots.lock().unwrap().get(host).map(Self::resolved)
+        self.book.lock().unwrap().slots.get(host).map(Self::resolved)
     }
 
     fn set(&self, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
-        self.slots.lock().unwrap().insert(host.clone(), Slot { standing, holder });
+        let mut book = self.book.lock().unwrap();
+        // A grant from a handshake in flight when the window began to leave:
+        // this lease leaves at once too, and its ack joins the same wait.
+        if let (Some(intent), Some(late), Some(h)) = (book.leaving, &book.late, &holder) {
+            let (tx, rx) = oneshot::channel();
+            if h.send(HolderCmd::Leave(intent, tx)).is_ok() {
+                let _ = late.send((host.clone(), rx));
+            }
+        }
+        book.slots.insert(host.clone(), Slot { standing, holder });
     }
 
     /// Claim the daemon on a dedicated connection before a data connection is
@@ -123,6 +156,10 @@ impl Leases {
     ) -> Result<u32> {
         if self.exempt || self.held(host) {
             return Ok(0);
+        }
+        // The window is leaving: no new lease, and the failed-connect path.
+        if self.book.lock().unwrap().leaving.is_some() {
+            return Err(anyhow!("this window is closing").context("window lease"));
         }
         let ident = match self_identity() {
             Ok(i) => i,
@@ -192,15 +229,16 @@ impl Leases {
     /// The status-line notice for the current standings, if any.
     pub fn notice(&self) -> Option<&'static str> {
         let standings: Vec<Standing> =
-            self.slots.lock().unwrap().values().map(Self::resolved).collect();
+            self.book.lock().unwrap().slots.values().map(Self::resolved).collect();
         lease_notice(self.exempt, &standings)
     }
 
     /// The state roots of every granted lease.
     pub fn granted_state_roots(&self) -> Vec<String> {
-        self.slots
+        self.book
             .lock()
             .unwrap()
+            .slots
             .values()
             .filter_map(|s| match Self::resolved(s) {
                 Standing::Granted { state_root } => state_root,
@@ -211,17 +249,24 @@ impl Leases {
 
     /// Tell the daemon the not-ended line for `host` has been shown.
     pub fn notice_seen(&self, host: &HostKey, n: u32) {
-        let slots = self.slots.lock().unwrap();
-        if let Some(h) = slots.get(host).and_then(|s| s.holder.as_ref()) {
+        let book = self.book.lock().unwrap();
+        if let Some(h) = book.slots.get(host).and_then(|s| s.holder.as_ref()) {
             let _ = h.send(HolderCmd::NoticeSeen(n));
         }
     }
 
     /// Ask every held lease's daemon to end (or keep) its sessions. None when
-    /// no lease is held: the window can exit at once.
+    /// no lease is held: the window can exit at once. From here no new lease
+    /// is taken, and one that a handshake in flight grants leaves too (`set`).
+    /// A second call (an X during a Keep) supersedes the first: each holder
+    /// writes the new line after the old one, and the old acks are dropped.
     pub fn leave_all(&self, intent: LeaveIntent, exit_code: i32, now: Instant) -> Option<Leaving> {
+        let mut book = self.book.lock().unwrap();
+        let (late_tx, late) = mpsc::unbounded_channel();
+        book.leaving = Some(intent);
+        book.late = Some(late_tx);
         let mut pending = Vec::new();
-        for (host, slot) in self.slots.lock().unwrap().iter() {
+        for (host, slot) in book.slots.iter() {
             if !matches!(Self::resolved(slot), Standing::Granted { .. }) {
                 continue;
             }
@@ -233,26 +278,37 @@ impl Leases {
             }
         }
         if pending.is_empty() {
-            None
-        } else {
-            Some(Leaving::new(intent, exit_code, pending, now))
+            return None;
         }
+        let mut leaving = Leaving::new(intent, exit_code, pending, now);
+        leaving.late = Some(late);
+        Some(leaving)
     }
 }
 
-/// How long the not-ended line holds before the window exits.
+/// How long the leaving line holds, from the presented frame that drew it,
+/// before the window exits.
 pub const NOT_ENDED_EXIT_HOLD: Duration = Duration::from_secs(3);
+/// How long a line waits for a frame to present it (a minimized or occluded
+/// window may never); then the window exits without its ack.
+pub const NOT_ENDED_PRESENT_WAIT: Duration = Duration::from_secs(2);
 /// How often the window polls the acks while leaving.
 pub const LEAVE_POLL: Duration = Duration::from_millis(250);
 
-/// A window on its way out: waiting for the daemons' acks.
+/// A window on its way out: waiting for the daemons' acks, then for a frame
+/// to show what they left to say.
 pub struct Leaving {
     pub intent: LeaveIntent,
     pub exit_code: i32,
-    pending: Vec<(HostKey, oneshot::Receiver<u32>)>,
-    acks: Vec<(HostKey, u32)>,
+    pending: Vec<PendingAck>,
+    /// Acks of leases granted after the leave began (`Leases::set`).
+    late: Option<mpsc::UnboundedReceiver<PendingAck>>,
+    outcomes: Vec<(HostKey, LeaveOutcome)>,
     deadline: Instant,
-    shown: Option<u32>,
+    /// The line the outcomes left to show, and when the poll first had it.
+    shown: Option<(String, Instant)>,
+    /// The counts that line acks once a presented frame has drawn it.
+    acks: Vec<(HostKey, u32)>,
     hold_until: Option<Instant>,
 }
 
@@ -260,7 +316,7 @@ pub struct Leaving {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LeaveStep {
     Wait(Instant),
-    Show(Vec<(HostKey, u32)>),
+    Show,
     Exit,
 }
 
@@ -268,25 +324,53 @@ impl Leaving {
     pub fn new(
         intent: LeaveIntent,
         exit_code: i32,
-        pending: Vec<(HostKey, oneshot::Receiver<u32>)>,
+        pending: Vec<PendingAck>,
         now: Instant,
     ) -> Self {
         let wait = match intent {
             LeaveIntent::Close => lease::CLOSE_ACK_WAIT,
             _ => lease::KEEP_ACK_WAIT,
         };
-        Self { intent, exit_code, pending, acks: Vec::new(), deadline: now + wait, shown: None, hold_until: None }
+        Self {
+            intent,
+            exit_code,
+            pending,
+            late: None,
+            outcomes: Vec::new(),
+            deadline: now + wait,
+            shown: None,
+            acks: Vec::new(),
+            hold_until: None,
+        }
     }
 
     pub fn poll(&mut self, now: Instant) -> LeaveStep {
         if let Some(t) = self.hold_until {
             return if now >= t { LeaveStep::Exit } else { LeaveStep::Wait(t) };
         }
+        if let Some((_, since)) = &self.shown {
+            // No frame has presented the line (a minimized or occluded window
+            // may never). Past the bound the window exits unacked, so the
+            // daemon keeps the count and the next window shows it.
+            let bound = *since + NOT_ENDED_PRESENT_WAIT;
+            if now < bound {
+                return LeaveStep::Wait(bound);
+            }
+            tracing::warn!(intent = ?self.intent, "window lease: no frame showed the leaving line; exiting without its ack");
+            return LeaveStep::Exit;
+        }
+        if let Some(late) = self.late.as_mut() {
+            while let Ok(p) = late.try_recv() {
+                self.pending.push(p);
+            }
+        }
         let mut still = Vec::new();
         for (host, mut rx) in std::mem::take(&mut self.pending) {
             match rx.try_recv() {
-                Ok(n) => self.acks.push((host, n)),
-                Err(TryRecvError::Closed) => self.acks.push((host, 0)),
+                Ok(o) => self.outcomes.push((host, o)),
+                Err(TryRecvError::Closed) => {
+                    self.outcomes.push((host, LeaveOutcome::Failed("the lease ended before its reply".to_string())))
+                }
                 Err(TryRecvError::Empty) => still.push((host, rx)),
             }
         }
@@ -294,20 +378,38 @@ impl Leaving {
         if !self.pending.is_empty() && now < self.deadline {
             return LeaveStep::Wait(self.deadline.min(now + LEAVE_POLL));
         }
-        let nonzero: Vec<(HostKey, u32)> = self.acks.iter().filter(|(_, n)| *n > 0).cloned().collect();
-        if nonzero.is_empty() {
-            return LeaveStep::Exit;
+        let timed_out = std::mem::take(&mut self.pending).into_iter().map(|(h, _)| (h, LeaveOutcome::TimedOut));
+        self.outcomes.extend(timed_out);
+        let report = leave_report(self.intent, &self.outcomes);
+        for (host, outcome) in &report.warn {
+            tracing::warn!(%host, intent = ?self.intent, ?outcome, "window lease: the leave was not confirmed");
         }
-        self.shown = Some(nonzero.iter().map(|(_, n)| n).sum());
-        self.hold_until = Some(now + NOT_ENDED_EXIT_HOLD);
-        LeaveStep::Show(nonzero)
+        let Some(line) = report.line else { return LeaveStep::Exit };
+        self.shown = Some((line, now));
+        self.acks = report.acks;
+        LeaveStep::Show
     }
 
-    /// The status line while leaving: the not-ended count once shown,
-    /// otherwise `closing…` (a handover has none).
+    /// A presented frame drew the line whole: the hold starts from it, and
+    /// the counts the line showed are acked now (returned once).
+    pub fn presented(&mut self, now: Instant) -> Vec<(HostKey, u32)> {
+        if self.shown.is_none() || self.hold_until.is_some() {
+            return Vec::new();
+        }
+        self.hold_until = Some(now + NOT_ENDED_EXIT_HOLD);
+        std::mem::take(&mut self.acks)
+    }
+
+    /// A line is owed a frame that has not presented it yet.
+    pub fn owes_frame(&self) -> bool {
+        self.shown.is_some() && self.hold_until.is_none()
+    }
+
+    /// The status line while leaving: what the outcomes left to show, once
+    /// they are in, otherwise `closing…` (a handover has none).
     pub fn line(&self) -> Option<String> {
-        match (self.shown, self.intent) {
-            (Some(n), _) => not_ended_line(n),
+        match (&self.shown, self.intent) {
+            (Some((line, _)), _) => Some(line.clone()),
             (None, LeaveIntent::Handover) => None,
             (None, _) => Some("closing…".to_string()),
         }
@@ -329,6 +431,44 @@ pub fn lease_notice(exempt: bool, standings: &[Standing]) -> Option<&'static str
     } else {
         Some(NOTICE_NO_BACKEND)
     }
+}
+
+/// What a finished leave shows, acks and warns.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LeaveReport {
+    line: Option<String>,
+    acks: Vec<(HostKey, u32)>,
+    warn: Vec<(HostKey, LeaveOutcome)>,
+}
+
+/// A nonzero reply shows its count, acked once a frame has drawn it. A
+/// failure or no reply is warned and, but for a handover (the relaunched
+/// window's own lease shows its standing), shows its intent's line in place
+/// of the count; that count, not drawn, is not acked, so the next window
+/// shows it.
+fn leave_report(intent: LeaveIntent, outcomes: &[(HostKey, LeaveOutcome)]) -> LeaveReport {
+    let mut report = LeaveReport::default();
+    for (host, outcome) in outcomes {
+        match outcome {
+            LeaveOutcome::Replied(0) => {}
+            LeaveOutcome::Replied(n) => report.acks.push((host.clone(), *n)),
+            _ => report.warn.push((host.clone(), outcome.clone())),
+        }
+    }
+    let unconfirmed = match intent {
+        _ if report.warn.is_empty() => None,
+        LeaveIntent::Close => Some(LEAVE_UNCONFIRMED_CLOSE),
+        LeaveIntent::Keep => Some(LEAVE_UNCONFIRMED_KEEP),
+        LeaveIntent::Handover => None,
+    };
+    report.line = match unconfirmed {
+        Some(line) => {
+            report.acks.clear();
+            Some(line.to_string())
+        }
+        None => not_ended_line(report.acks.iter().map(|(_, n)| n).sum()),
+    };
+    report
 }
 
 /// What the status line says about sessions an earlier close could not end.
@@ -358,60 +498,59 @@ where
     });
     tokio::spawn(async move {
         let mut next_id: u64 = 2;
+        // Leave acks by request id. A second leave (an X during a Keep) is
+        // written at once, while the first still awaits its reply.
+        let mut leaves: Vec<(u64, oneshot::Sender<LeaveOutcome>)> = Vec::new();
         loop {
             tokio::select! {
                 cmd = cmd_rx.recv() => {
                     let Some(cmd) = cmd else { break };
                     let id = next_id;
                     next_id += 1;
-                    let (frame, ack, wait) = match cmd {
-                        HolderCmd::Leave(intent, ack) => (
-                            Frame::req(id, op::FE_LEAVING, serde_json::json!(FeLeavingReq { intent })),
-                            Some(ack),
-                            None,
-                        ),
-                        HolderCmd::NoticeSeen(n) => (
-                            Frame::req(id, op::FE_NOTICE_SEEN, serde_json::json!(FeNoticeSeenReq { not_ended: n })),
-                            None,
-                            Some(notice_wait),
-                        ),
-                    };
-                    if codec::write_frame(&mut tx, &frame, None).await.is_err() {
-                        break;
-                    }
-                    let reply = async {
-                        while let Some(f) = frame_rx.recv().await {
-                            if f.id == id {
-                                return Some(f);
+                    match cmd {
+                        HolderCmd::Leave(intent, ack) => {
+                            let frame = Frame::req(id, op::FE_LEAVING, serde_json::json!(FeLeavingReq { intent }));
+                            if let Err(e) = codec::write_frame(&mut tx, &frame, None).await {
+                                let _ = ack.send(LeaveOutcome::Failed(format!("write: {e:#}")));
+                                break;
+                            }
+                            leaves.push((id, ack));
+                        }
+                        HolderCmd::NoticeSeen(n) => {
+                            let frame = Frame::req(id, op::FE_NOTICE_SEEN, serde_json::json!(FeNoticeSeenReq { not_ended: n }));
+                            if codec::write_frame(&mut tx, &frame, None).await.is_err() {
+                                break;
+                            }
+                            let reply = async {
+                                while let Some(f) = frame_rx.recv().await {
+                                    if f.id == id {
+                                        return Some(f);
+                                    }
+                                }
+                                None
+                            };
+                            // A slow reply is not a dead daemon: ending the holder here
+                            // would close the stream, which the daemon reads as Close.
+                            // Only a closed frame channel or a write error ends it.
+                            match tokio::time::timeout(notice_wait, reply).await {
+                                Ok(Some(_)) => {}
+                                Ok(None) => break,
+                                Err(_) => tracing::warn!("window lease: no reply to fe.notice_seen in time"),
                             }
                         }
-                        None
-                    };
-                    // A slow reply is not a dead daemon: ending the holder here
-                    // would close the stream, which the daemon reads as Close.
-                    // Only a closed frame channel or a write error ends it.
-                    let reply = match wait {
-                        Some(w) => match tokio::time::timeout(w, reply).await {
-                            Ok(r) => r,
-                            Err(_) => {
-                                tracing::warn!("window lease: no reply to fe.notice_seen in time");
-                                continue;
-                            }
-                        },
-                        None => reply.await,
-                    };
-                    let Some(reply) = reply else { break };
-                    if let Some(ack) = ack {
-                        let res: FeLeavingRes = serde_json::from_value(reply.payload).unwrap_or_default();
-                        let _ = ack.send(res.not_ended);
                     }
                 }
                 f = frame_rx.recv() => {
-                    if f.is_none() {
-                        break;
+                    let Some(f) = f else { break };
+                    if let Some(i) = leaves.iter().position(|(id, _)| *id == f.id) {
+                        let res: FeLeavingRes = serde_json::from_value(f.payload).unwrap_or_default();
+                        let _ = leaves.swap_remove(i).1.send(LeaveOutcome::Replied(res.not_ended));
                     }
                 }
             }
+        }
+        for (_, ack) in leaves {
+            let _ = ack.send(LeaveOutcome::Failed("the stream ended before the reply".to_string()));
         }
     });
     cmd_tx
@@ -637,114 +776,202 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
             step = leaving.poll(Instant::now());
         }
-        assert_eq!(step, LeaveStep::Show(vec![(host.clone(), 3)]));
+        assert_eq!(step, LeaveStep::Show);
+        assert_eq!(leaving.line(), not_ended_line(3));
     }
 
-    /// A daemon that grants, logs the leave frame and then `eof` when the
-    /// stream ends, and replies to the leave after `delay` (never when None).
+    /// A daemon that grants (once `gate` has signalled the request and been
+    /// opened, when given), then logs each frame the window writes, and
+    /// `eof` the moment the stream ends, concurrently with its replies. It
+    /// answers each leave whose intent is `reply_to`, after `delay`, with the
+    /// sentinel `not_ended: 7`, and marks it replied only once that is written.
     fn leave_fake(
         listener: interprocess::local_socket::tokio::Listener,
-        delay: Option<Duration>,
-        not_ended: u32,
-    ) -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>) {
+        gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
+        reply_to: Option<&'static str>,
+        delay: Duration,
+    ) -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::atomic::AtomicBool>, tokio::task::JoinHandle<()>) {
         let log = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let replied = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (l, r) = (log.clone(), replied.clone());
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let conn = listener.accept().await.unwrap();
             let (rx, mut tx) = conn.split();
             let mut rx = codec::buffered(rx);
             let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            if let Some((asked, open)) = gate {
+                asked.send(()).unwrap();
+                open.await.unwrap();
+            }
             let granted = serde_json::json!({"outcome": "granted"});
             codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
-            let (leaving, _) = codec::read_frame(&mut rx).await.unwrap();
-            l.lock().unwrap().push(format!("{} {}", leaving.op, leaving.payload));
-            if let Some(d) = delay {
-                tokio::time::sleep(d).await;
-                r.store(true, Ordering::SeqCst);
-                let res = serde_json::json!({"not_ended": not_ended});
-                codec::write_frame(&mut tx, &Frame::res(leaving.id, op::FE_LEAVING, res), None).await.unwrap();
-            }
-            while codec::read_frame(&mut rx).await.is_ok() {}
-            l.lock().unwrap().push("eof".to_string());
+            let (want_tx, mut want_rx) = mpsc::unbounded_channel::<u64>();
+            let reader = async move {
+                while let Ok((f, _)) = codec::read_frame(&mut rx).await {
+                    l.lock().unwrap().push(format!("{} {}", f.op, f.payload));
+                    if reply_to.is_some_and(|i| f.payload["intent"] == i) {
+                        want_tx.send(f.id).unwrap();
+                    }
+                }
+                l.lock().unwrap().push("eof".to_string());
+            };
+            let writer = async move {
+                while let Some(id) = want_rx.recv().await {
+                    tokio::time::sleep(delay).await;
+                    let res = Frame::res(id, op::FE_LEAVING, serde_json::json!({"not_ended": 7}));
+                    codec::write_frame(&mut tx, &res, None).await.unwrap();
+                    r.store(true, Ordering::SeqCst);
+                }
+            };
+            tokio::join!(reader, writer);
         });
-        (log, replied)
+        (log, replied, task)
     }
 
-    /// Poll the way the event loop does until the step is not a wait.
+    /// Poll the way the event loop does until the step is not a wait (3 s at most).
     async fn poll_out(leaving: &mut Leaving) -> LeaveStep {
-        loop {
+        for _ in 0..150 {
             let step = leaving.poll(Instant::now());
             if !matches!(step, LeaveStep::Wait(_)) {
                 return step;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        leaving.poll(Instant::now())
     }
 
-    async fn leave_is_logged(log: &Arc<std::sync::Mutex<Vec<String>>>) {
+    /// The fake's log once it has `n` entries (1 s at most).
+    async fn logged(log: &Arc<std::sync::Mutex<Vec<String>>>, n: usize) -> Vec<String> {
         for _ in 0..100 {
-            if !log.lock().unwrap().is_empty() {
-                return;
+            if log.lock().unwrap().len() >= n {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        log.lock().unwrap().clone()
+    }
+
+    fn is_leave(entry: &str, intent: &str) -> bool {
+        entry.starts_with(op::FE_LEAVING) && entry.contains(&format!(r#""intent":"{intent}""#))
+    }
+
+    /// Join the fake once the window's side is dropped (a panic in it fails
+    /// the test); its whole log, which ends with `eof`.
+    async fn finish(fake: tokio::task::JoinHandle<()>, log: &Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+        tokio::time::timeout(Duration::from_secs(5), fake).await.expect("the fake never saw eof").unwrap();
+        let seen = log.lock().unwrap().clone();
+        assert_eq!(seen.last().map(String::as_str), Some("eof"), "{seen:?}");
+        seen
     }
 
     #[tokio::test]
     async fn keep_reaches_the_daemon_before_eof() {
         let (listener, path) = bind("keepleave");
-        let (log, replied) = leave_fake(listener, Some(Duration::from_millis(300)), 0);
+        let (log, replied, fake) = leave_fake(listener, None, Some("keep"), Duration::from_millis(300));
         let host = "local".to_string();
         let leases = Leases::new(false, vec![host.clone()]);
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
         let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
         assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)));
-        leave_is_logged(&log).await;
-        {
-            let seen = log.lock().unwrap();
-            assert_eq!(seen.len(), 1, "the leave line reaches the daemon before any eof: {seen:?}");
-            assert!(seen[0].starts_with(op::FE_LEAVING) && seen[0].contains(r#""intent":"keep""#), "{seen:?}");
-        }
+        let seen = logged(&log, 1).await;
+        assert!(seen.len() == 1 && is_leave(&seen[0], "keep"), "the leave line reaches the daemon before any eof: {seen:?}");
         assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "no reply yet");
-        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Exit);
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
         assert!(replied.load(Ordering::SeqCst), "done only after the reply");
+        assert_eq!(leaving.line(), not_ended_line(7), "the window received the reply's own count");
         drop((leaving, leases));
+        assert_eq!(finish(fake, &log).await.len(), 2);
     }
 
     #[tokio::test]
     async fn close_waits_for_its_reply() {
         let (listener, path) = bind("closeleave");
-        let (log, replied) = leave_fake(listener, Some(Duration::from_millis(300)), 0);
+        let (log, replied, fake) = leave_fake(listener, None, Some("close"), Duration::from_millis(300));
         let host = "local".to_string();
         let leases = Leases::new(false, vec![host.clone()]);
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
         let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
         assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)));
-        leave_is_logged(&log).await;
-        {
-            let seen = log.lock().unwrap();
-            assert_eq!(seen.len(), 1, "the leave line reaches the daemon before any eof: {seen:?}");
-            assert!(seen[0].starts_with(op::FE_LEAVING) && seen[0].contains(r#""intent":"close""#), "{seen:?}");
-        }
+        let seen = logged(&log, 1).await;
+        assert!(seen.len() == 1 && is_leave(&seen[0], "close"), "the leave line reaches the daemon before any eof: {seen:?}");
         assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "no reply yet");
-        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Exit);
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
         assert!(replied.load(Ordering::SeqCst), "done only after the reply");
+        assert_eq!(leaving.line(), not_ended_line(7), "the window received the reply's own count");
         drop((leaving, leases));
+        assert_eq!(finish(fake, &log).await.len(), 2);
 
-        // A withheld reply ends the wait only at the close-ack bound (shortened here).
+        // A withheld reply ends the wait at the close-ack bound itself.
         let (listener, path) = bind("closenoreply");
-        let (_log, replied) = leave_fake(listener, None, 0);
+        let (log, replied, fake) = leave_fake(listener, None, None, Duration::ZERO);
         let leases = Leases::new(false, vec![host.clone()]);
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
-        let start = Instant::now();
-        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, start).unwrap();
-        leaving.deadline = start + Duration::from_millis(400);
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "waits inside the bound");
-        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Exit);
-        assert!(start.elapsed() >= Duration::from_millis(400), "done only once the bound passed");
+        let t0 = Instant::now();
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, t0).unwrap();
+        let seen = logged(&log, 1).await;
+        assert!(seen.len() == 1 && is_leave(&seen[0], "close"), "{seen:?}");
+        let ms = Duration::from_millis;
+        assert!(matches!(leaving.poll(t0 + lease::CLOSE_ACK_WAIT - ms(1)), LeaveStep::Wait(_)), "waits inside the bound");
+        assert_eq!(leaving.poll(t0 + lease::CLOSE_ACK_WAIT), LeaveStep::Show, "the bound ends the wait");
+        assert_eq!(leaving.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE), "and says the close was not confirmed");
         assert!(!replied.load(Ordering::SeqCst));
+        drop((leaving, leases));
+        assert_eq!(finish(fake, &log).await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn close_after_keep_supersedes() {
+        let (listener, path) = bind("supersede");
+        // The keep's reply is withheld; the close's comes after 300 ms.
+        let (log, _replied, fake) = leave_fake(listener, None, Some("close"), Duration::from_millis(300));
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+        let keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
+        assert_eq!(logged(&log, 1).await.len(), 1);
+        // The X during the keep's ack wait (`exit_intent`'s Supersede).
+        let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
+        drop(keep);
+        assert!(matches!(leaving.poll(Instant::now()), LeaveStep::Wait(_)), "the close waits for its reply");
+        let seen = logged(&log, 2).await;
+        assert!(seen.len() == 2 && is_leave(&seen[0], "keep") && is_leave(&seen[1], "close"), "keep, then close: {seen:?}");
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
+        assert_eq!(leaving.line(), not_ended_line(7), "the close's own reply");
+        drop((leaving, leases));
+        assert_eq!(finish(fake, &log).await.len(), 3, "keep, close, then eof");
+    }
+
+    #[tokio::test]
+    async fn late_grant_gets_the_leave() {
+        let (la, pa) = bind("latea");
+        let (lb, pb) = bind("lateb");
+        let (lc, pc) = bind("latec");
+        let (log_a, _, fake_a) = leave_fake(la, None, Some("keep"), Duration::ZERO);
+        let (asked_tx, asked) = oneshot::channel();
+        let (open, open_rx) = oneshot::channel();
+        let (log_b, _, fake_b) = leave_fake(lb, Some((asked_tx, open_rx)), Some("keep"), Duration::ZERO);
+        let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
+        let mut leases = Leases::new(false, vec![a.clone(), b.clone(), c.clone()]);
+        Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_secs(2);
+        assert_eq!(leases.before_data_connection(&a, &pa, None).await.unwrap(), 0);
+        let in_flight = {
+            let leases = leases.clone();
+            tokio::spawn(async move { leases.before_data_connection(&b, &pb, None).await })
+        };
+        asked.await.unwrap();
+        let mut leaving = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
+        open.send(()).unwrap();
+        assert_eq!(in_flight.await.unwrap().unwrap(), 0);
+        // A handshake started after the leave is refused, and never connects.
+        assert!(leases.before_data_connection(&c, &pc, None).await.is_err());
+        assert!(tokio::time::timeout(Duration::from_millis(200), lc.accept()).await.is_err(), "a lease after the leave");
+        // Both acks are in the one wait: 7 from each.
+        assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show);
+        assert_eq!(leaving.line(), not_ended_line(14));
+        drop((leaving, leases));
+        let seen_b = finish(fake_b, &log_b).await;
+        assert!(seen_b.len() == 2 && is_leave(&seen_b[0], "keep"), "the late lease got the keep before eof: {seen_b:?}");
+        assert_eq!(finish(fake_a, &log_a).await.len(), 2);
     }
 
     // PIN, NOT FAIL-FIRST: interprocess 2.4.2 already creates the socket
@@ -819,33 +1046,95 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
         assert_eq!(l.line().as_deref(), Some("closing…"));
-        tx.send(2).unwrap();
-        assert_eq!(l.poll(t0), LeaveStep::Show(vec![(h.clone(), 2)]));
+        tx.send(LeaveOutcome::Replied(2)).unwrap();
+        assert_eq!(l.poll(t0), LeaveStep::Show);
         assert_eq!(l.line().unwrap(), "2 sessions could not be ended and are still running");
+        assert_eq!(l.presented(t0), vec![(h.clone(), 2)]);
         assert_eq!(l.poll(t0 + s(1)), LeaveStep::Wait(t0 + s(3)));
         assert_eq!(l.poll(t0 + s(3)), LeaveStep::Exit);
 
         let (tx, rx) = oneshot::channel();
         let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
-        tx.send(0).unwrap();
+        tx.send(LeaveOutcome::Replied(0)).unwrap();
         assert_eq!(l.poll(t0), LeaveStep::Exit);
 
-        let (tx, rx) = oneshot::channel::<u32>();
-        let mut l = Leaving::new(LeaveIntent::Keep, 0, vec![(h.clone(), rx)], t0);
-        drop(tx);
-        assert_eq!(l.poll(t0), LeaveStep::Exit);
-
-        let (_tx, rx) = oneshot::channel::<u32>();
+        let (_tx, rx) = oneshot::channel::<LeaveOutcome>();
         let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
         assert_eq!(l.poll(t0 + s(124)), LeaveStep::Wait(t0 + s(124) + LEAVE_POLL));
-        assert_eq!(l.poll(t0 + s(125)), LeaveStep::Exit);
+        assert_eq!(l.poll(t0 + s(125)), LeaveStep::Show);
 
-        let (_tx, rx) = oneshot::channel::<u32>();
+        let (_tx, rx) = oneshot::channel::<LeaveOutcome>();
         let mut l = Leaving::new(LeaveIntent::Keep, 0, vec![(h.clone(), rx)], t0);
         assert_eq!(l.line().as_deref(), Some("closing…"));
-        assert_eq!(l.poll(t0 + s(10)), LeaveStep::Exit);
+        assert_eq!(l.poll(t0 + s(10)), LeaveStep::Show);
+        assert_eq!(l.line().as_deref(), Some(LEAVE_UNCONFIRMED_KEEP));
 
         let l = Leaving::new(LeaveIntent::Handover, 75, vec![], t0);
         assert_eq!(l.line(), None);
+    }
+
+    #[test]
+    fn not_ended_holds_from_the_presented_frame() {
+        let h = "h".to_string();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let (tx, rx) = oneshot::channel();
+        let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
+        tx.send(LeaveOutcome::Replied(2)).unwrap();
+        // The count arrives at t0; the step names no ack to send.
+        assert_eq!(l.poll(t0), LeaveStep::Show);
+        assert!(matches!(l.poll(t0 + ms(1000)), LeaveStep::Wait(_)), "no frame yet: still waiting");
+        let t1 = t0 + ms(1500);
+        let acks = l.presented(t1);
+        assert_eq!(l.poll(t1 + NOT_ENDED_EXIT_HOLD - ms(1)), LeaveStep::Wait(t1 + NOT_ENDED_EXIT_HOLD), "held from the presented frame");
+        assert_eq!(l.poll(t1 + NOT_ENDED_EXIT_HOLD), LeaveStep::Exit);
+        assert_eq!(acks, vec![(h.clone(), 2)], "the ack goes with the presented frame");
+        assert_eq!(l.presented(t1 + ms(10)), vec![], "and only once");
+
+        // Nothing presented (a minimized window): exit at the bound, unacked.
+        let (tx, rx) = oneshot::channel();
+        let mut l = Leaving::new(LeaveIntent::Close, 0, vec![(h.clone(), rx)], t0);
+        tx.send(LeaveOutcome::Replied(2)).unwrap();
+        assert_eq!(l.poll(t0), LeaveStep::Show);
+        assert_eq!(l.poll(t0 + NOT_ENDED_PRESENT_WAIT - ms(1)), LeaveStep::Wait(t0 + NOT_ENDED_PRESENT_WAIT));
+        assert_eq!(l.poll(t0 + NOT_ENDED_PRESENT_WAIT), LeaveStep::Exit);
+    }
+
+    #[test]
+    fn leave_failure_table() {
+        use LeaveIntent::*;
+        use LeaveOutcome::*;
+        let h = "h".to_string();
+        let one = |intent, o: LeaveOutcome| leave_report(intent, &[(h.clone(), o)]);
+        let failed = |line: Option<&str>, o: &LeaveOutcome| LeaveReport {
+            line: line.map(str::to_string),
+            acks: vec![],
+            warn: vec![(h.clone(), o.clone())],
+        };
+        // A reply of 0 is the only quiet exit; a reply of n shows (and acks) n.
+        assert_eq!(one(Close, Replied(0)), LeaveReport::default());
+        assert_eq!(
+            one(Close, Replied(3)),
+            LeaveReport { line: not_ended_line(3), acks: vec![(h.clone(), 3)], warn: vec![] }
+        );
+        // A write error, EOF before the reply, and the deadline: a warn and
+        // the intent's line; a handover only warns.
+        let write = Failed("write: broken pipe".to_string());
+        let eof = Failed("the stream ended before the reply".to_string());
+        for o in [write, eof, TimedOut] {
+            assert_eq!(one(Close, o.clone()), failed(Some(LEAVE_UNCONFIRMED_CLOSE), &o));
+            assert_eq!(one(Keep, o.clone()), failed(Some(LEAVE_UNCONFIRMED_KEEP), &o));
+            assert_eq!(one(Handover, o.clone()), failed(None, &o));
+        }
+        // Beside a count the failure line shows, and the count, not drawn, is not acked.
+        let mixed = leave_report(Close, &[("a".to_string(), Replied(2)), ("b".to_string(), TimedOut)]);
+        assert_eq!((mixed.line.as_deref(), mixed.acks), (Some(LEAVE_UNCONFIRMED_CLOSE), vec![]));
+        // Through `poll`: a dropped reply is a failure, never a zero-count ack.
+        let t0 = Instant::now();
+        let (tx, rx) = oneshot::channel::<LeaveOutcome>();
+        let mut l = Leaving::new(Close, 0, vec![(h.clone(), rx)], t0);
+        drop(tx);
+        assert_eq!(l.poll(t0), LeaveStep::Show);
+        assert_eq!(l.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE));
     }
 }
