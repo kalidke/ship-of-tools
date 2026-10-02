@@ -75,6 +75,15 @@ gout="$(sotd probe 2>&1)"; grc=$?
 eq  "guard: the sotd stub exits 97" "$grc" 97
 has "guard: the sotd stub says it refused" "$gout" "refused daemon discovery"
 eq  "guard: pgrep resolves to the refusing stub" "$(command -v pgrep)" "$_GUARD_STUBS/pgrep"
+for gs in powershell.exe pwsh pwsh.exe; do
+    eq  "guard: $gs resolves to the refusing stub" "$(command -v "$gs")" "$_GUARD_STUBS/$gs"
+    gout="$("$gs" -NoProfile 2>&1)"; grc=$?
+    eq  "guard: the $gs stub exits 97" "$grc" 97
+    has "guard: the $gs stub says it refused" "$gout" "refused daemon discovery"
+done
+case "${LOCALAPPDATA:-}" in "$WORK/guard/"*) ok "guard: LOCALAPPDATA is under the guard directory" ;; *) bad "guard: LOCALAPPDATA is under the guard directory (got '${LOCALAPPDATA:-}')" ;; esac
+gout="$( . "$SCRIPT_DIR/../scripts/comm-lib.sh" >/dev/null 2>&1; _sot_windows_local_pipe 2>/dev/null )"; grc=$?
+if [ "$grc" -ne 0 ] && [ -z "$gout" ]; then ok "guard: _sot_windows_local_pipe finds no pipe (on every host)"; else bad "guard: _sot_windows_local_pipe finds no pipe (rc=$grc out='$gout')"; fi
 gout="$( . "$SCRIPT_DIR/../scripts/comm-lib.sh" >/dev/null 2>&1; sot_daemon_endpoint 2>/dev/null; sot_relay_endpoint 2>/dev/null )"
 eq  "guard: the tree's own comm-lib finds no daemon and no hub" "$gout" ""
 
@@ -131,6 +140,12 @@ tblu 1 "npm codex over its native child, by package" bash "/v/codex/codex" "node
 tblu 2 "node after a native agent of a different name" bash "/v/claude" "node|/n/bin/codex.js" "sot-capsule|run"
 tblu 1 "node after its own native agent, same name" bash codex "node|/n/bin/codex.js" "sot-capsule|run"
 tblu 2 "an upper-case windows agent name"           bash.exe CLAUDE.EXE codex.exe sot-capsule.exe
+tblu 2 "node --require x.cjs, then the npm claude package" bash "node|--require|/tmp/x.cjs|/n/node_modules/@anthropic-ai/claude-code/cli.js" codex "sot-capsule|run"
+tblu 2 "node --require x.cjs, then an agent script"  bash "node|--require|/tmp/x.cjs|/n/bin/codex.js|exec" claude "sot-capsule|run"
+tbl  2 "node /x y/codex.js as split tokens (ps)"    bash "node /x y/codex.js" claude "sot-capsule run"
+tbl  2 "a package path with a space, split (ps)"    bash "node /tmp/agent dir/node_modules/@anthropic-ai/claude-code/cli.js" codex "sot-capsule run"
+tbl  2 "a package path with a space, split inside the agent basename (ps)" bash "node /tmp/a b/codex.mjs" claude "sot-capsule run"
+tblu 1 "node whose arguments name no agent"         bash "node|--require|/tmp/x.cjs|/n/build.js" claude "sot-capsule|run"
 
 # --- 1b. an unreadable ancestry is its own refusal (rc 2), not a child (rc 1) ----
 R_TREE_TEXT="cannot read this process's ancestry"
@@ -140,6 +155,47 @@ req 2 "a truncated record before the capsule"        "$R_TREE_TEXT" bash codex '
 req 2 "a truncated record hides the outer agent"     "$R_TREE_TEXT" bash claude bash '!truncated'
 req 0 "a capsule reached before any truncation"      "" bash claude "sot-capsule|run" '!truncated'
 req 2 "no chain at all"                              "$R_TREE_TEXT"
+
+# A parse that does not finish is refused too: a filter that dies with no output
+# (no awk), and a sotd.exe whose exit status is not 0 or 3.
+mkdir -p "$WORK/badawk"; printf '#!/bin/sh\nexit 1\n' > "$WORK/badawk/awk"; chmod +x "$WORK/badawk/awk"
+res="$( PATH="$WORK/badawk:$PATH"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
+case "$res" in "rc=2|"*"$R_TREE_TEXT"*) ok "require: an awk that exits 1 with no output is refused" ;; *) bad "require: an awk that exits 1 with no output is refused (got: $res)" ;; esac
+# winreq WANT_RC DESC TEXT SOTD_RC LINE... : sot_require_agent over a stub sotd.exe on a "Windows" host.
+winreq() {
+    local want="$1" desc="$2" text="$3" src="$4" res; shift 4
+    printf '%s\n' "$@" > "$WORK/sotd-win.out"
+    printf '#!/bin/sh\n[ "$1" = ancestors ] || exit 9\ncat "%s"\nexit %s\n' "$WORK/sotd-win.out" "$src" > "$WORK/sotd-win"; chmod +x "$WORK/sotd-win"
+    res="$( _sot_is_windows() { return 0; }; export SOTD_BIN="$WORK/sotd-win"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
+    case "$res" in "rc=$want|"*"$text"*) ok "sotd.exe: $desc" ;; *) bad "sotd.exe: $desc (want rc=$want and '$text', got: $res)" ;; esac
+}
+TAB=$'\t'
+WALK=("bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe" "sot-capsule.exe${TAB}sot-capsule.exe run")
+winreq 0 "exit 0, the walk reaches the capsule"        ""            0 "${WALK[@]}"
+winreq 2 "exit 3 is refused as a truncated walk"       "$R_TREE_TEXT" 3 "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe"
+winreq 2 "exit 2 is refused and says to update sotd"   "update sotd" 2 "bash.exe${TAB}bash.exe -c x" "claude.exe${TAB}claude.exe"
+winreq 2 "exit 1 is refused and says to update sotd"   "update sotd" 1 "${WALK[@]}"
+winreq 2 "node.exe with an empty command line is refused"   "$R_TREE_TEXT" 0 "bash.exe${TAB}bash.exe -c x" "node.exe${TAB}" "${WALK[@]:1}"
+winreq 2 "a !truncated line is refused"                "$R_TREE_TEXT" 3 "bash.exe${TAB}bash.exe -c x" '!truncated'
+
+# --- 1c. the two non-Linux parsers, as stdin filters (Linux walks /proc, so they run nowhere else) ---
+pipes() { tr "$US" '|' | tr '\n' ' ' | sed 's/ $//'; }
+eq "ps filter: a chain to the top, spaces become field breaks" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99    98 node /x y/codex.js' '   98     1 sot-capsule run' | _sot_ps_records 100 | pipes)" \
+    "bash|-c|x node|/x|y/codex.js sot-capsule|run !end"
+eq "ps filter: a parent missing from the table is a truncated walk" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   50     1 init' | _sot_ps_records 100 | pipes)" "bash|-c|x !truncated"
+eq "ps filter: my own pid missing prints nothing" "$(printf '%s\n' '   50     1 init' | _sot_ps_records 100 | pipes)" ""
+eq "ps filter: a chain past 64 is truncated at 64" \
+    "$(for ((i = 1000; i < 1070; i++)); do printf '%s %s bash\n' "$i" "$((i + 1))"; done | _sot_ps_records 1000 | awk 'END { print NR, $0 }')" "65 !truncated"
+eq "windows filter: arguments, quotes and an escaped quote; argv[0] is dropped" \
+    "$(printf '%s\n' "bash.exe${TAB}C:\\git\\bash.exe -c \"x y\"" "a.exe${TAB}a.exe \"p\\\"q\"" | _sot_win_records | pipes)" 'bash.exe|-c|x y a.exe|p"q !end'
+eq "windows filter: a node.exe with an empty command line is truncated, and nothing follows" \
+    "$(printf '%s\n' "bash.exe${TAB}bash.exe" "node.exe${TAB}" "claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
+eq "windows filter: any other exe with an empty command line is its name alone" \
+    "$(printf '%s\n' "claude.exe${TAB}" | _sot_win_records | pipes)" "claude.exe !end"
+eq "windows filter: a !truncated line passes through and ends the output" \
+    "$(printf '%s\n' "bash.exe${TAB}bash.exe" '!truncated' | _sot_win_records | pipes)" "bash.exe !truncated"
 
 # --- 2. end to end --------------------------------------------------------------
 printf '%s\n' 'n=$1; shift; exec -a "$n" bash "$@"' > "$WORK/fake.sh"
@@ -276,13 +332,44 @@ eq  "child: poll under claude then node claude-code/cli.js refuses" "$RC" 1
 NODE_ARGS=(--no-warnings "$WORK/x y/codex.js")
 run nodechild "$SELF_ROW" "$POLL"
 eq  "child: poll under claude then node --no-warnings 'x y/codex.js' refuses" "$RC" 1
+: > "$WORK/x.cjs"
+NODE_ARGS=(--require "$WORK/x.cjs" "$WORK/nm/node_modules/@anthropic-ai/claude-code/cli.js")
+run nodechild "$SELF_ROW" "$POLL"
+eq  "child: poll under claude then node --require x.cjs claude-code/cli.js refuses" "$RC" 1
+has "child: that refusal names the cause" "$OUT" "has no comm identity"
 eq  "child: none of those moved the cursor" "$(sum "$CURSOR")" "$cur0"
 
+# --- a node host and a native child: one layer only when the child is the host's own forwarding ---
+# A copy of bash named claude / codex is the native binary; the -c command is compound, so
+# bash cannot exec its last command and drop the native process from the chain.
+mkdir -p "$WORK/natbin" "$WORK/nat/node_modules/@anthropic-ai/claude-code" "$WORK/nat/node_modules/@openai/codex/bin"
+cp "$(command -v bash)" "$WORK/natbin/claude"; cp "$(command -v bash)" "$WORK/natbin/codex"
+# claude: a tool run by node's cli.js, started with its own arguments (they differ from the host's).
+printf '%s\n' 'const r = require("child_process").spawnSync(process.env.NAT_BIN, ["-c", process.env.NAT_CMD], { stdio: "inherit" }); process.exit(r.status === null ? 1 : r.status);' > "$WORK/nat/node_modules/@anthropic-ai/claude-code/cli.js"
+# codex: the npm launcher forwards its own arguments to the native binary.
+printf '%s\n' 'const r = require("child_process").spawnSync(process.env.NAT_BIN, process.argv.slice(2), { stdio: "inherit" }); process.exit(r.status === null ? 1 : r.status);' > "$WORK/nat/node_modules/@openai/codex/bin/codex.js"
+NATCHAIN="$WORK/natchain.txt"
+NAT_CMD="$(printf '%q; rc=$?; bash -c %q _ %q > %q; exit $rc' "$POLL" '. "$1"; _sot_ancestor_chain' "$SCRIPTS_DIR/comm-lib.sh" "$NATCHAIN")"
+natrun() {  # NATIVE_NAME HOST_ARGS...  (NAT_BIN, NAT_CMD in the environment)
+    local nat="$1"; shift; rm -f "$NATCHAIN"; cd "$WORK" || return 1
+    OUT="$(SOT_COMM_SELF_FILE="$SELF_ROW" NAT_BIN="$WORK/natbin/$nat" NAT_CMD="$NAT_CMD" F sot-capsule hold.sh node "$@" 2>&1)"; RC=$?
+}
+natchain_has() { case "$(tr "$US" '|' < "$NATCHAIN" 2>/dev/null)" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+cur0="$(sum "$CURSOR")"
+natrun claude "$WORK/nat/node_modules/@anthropic-ai/claude-code/cli.js" --permission-mode auto
+eq  "child: node cli.js whose tool runs native claude -c with other arguments is refused" "$RC" 1
+has "child: that refusal names the cause" "$OUT" "has no comm identity"
+if natchain_has "$WORK/natbin/claude|-c|"; then ok "child: the native claude is in the recorded chain"; else bad "child: the native claude is in the recorded chain"; fi
+eq  "child: that refusal did not move the cursor" "$(sum "$CURSOR")" "$cur0"
+natrun codex "$WORK/nat/node_modules/@openai/codex/bin/codex.js" -c "$NAT_CMD"
+eq  "own: node codex.js forwarding its arguments to the native codex is one layer: poll succeeds" "$RC" 0
+if natchain_has "$WORK/natbin/codex|-c|"; then ok "own: the native codex is in the recorded chain"; else bad "own: the native codex is in the recorded chain"; fi
+
 # --- a refused child changes nothing under the comm home --------------------------
-# Every verb, both hooks: the files (by content), and the listing (no new file,
-# no registry skeleton), before and after. A legacy self file (no root=) is one
+# Every verb, both hooks: the files (by content, size and mtime), and the listing
+# (no new file, no registry skeleton), before and after. A legacy self file (no root=) is one
 # the context call would heal, and a refusal comes before that.
-snap() { { find "$1" | sort; find "$1" -type f -exec sha256sum {} + | sort; } 2>&1; }
+snap() { { find "$1" | sort; find "$1" -type f -exec sha256sum {} + | sort; find "$1" -type f -exec stat -c '%n %s %Y' {} + | sort; } 2>&1; }
 SELF_LEG="$WORK/self-legacy.txt"; head -2 "$SELF_ROW" > "$SELF_LEG"
 NODE_ARGS=("$WORK/nm/node_modules/@openai/codex/bin/codex.js")
 nochange() {  # DESC KIND CMD...
@@ -304,16 +391,39 @@ for kind in child nodechild; do
     nochange "leave ($kind)"  "$kind" run_k "$SCRIPTS_DIR/comm-leave.sh"
     nochange "leave --name ($kind)" "$kind" run_k "$SCRIPTS_DIR/comm-leave.sh" --name "$PEER"
     nochange "the Stop hook ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-stop-$kind" bash "$HOOKS_DIR/comm-status-idle.sh"
-    mkdir -p "$SOT_COMM_HOME/state"; : > "$SOT_COMM_HOME/state/hb-agl-nc-$kind.tick"; touch -d '2020-01-01' "$SOT_COMM_HOME/state/hb-agl-nc-$kind.tick"
+    nochange "comm-context.sh ($kind)"       "$kind" run_k "$SCRIPTS_DIR/comm-context.sh"
+    nochange "comm-session-start.sh ($kind)" "$kind" run_k "$SCRIPTS_DIR/comm-session-start.sh"
+    nochange "comm-relay.sh send ($kind)"    "$kind" run_k "$SCRIPTS_DIR/comm-relay.sh" send "@$PEER" from-child
+    nochange "comm-bootstrap.sh ($kind)"     "$kind" run_k "$SCRIPTS_DIR/comm-bootstrap.sh" some-row
     NC_IN='{"tool_name":"Bash"}' nochange "the heartbeat ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-$kind" bash "$FLAT/comm-status-heartbeat.sh"
+    # An AskUserQuestion answer marker is the owner's: a child's hook must not consume it.
+    mkdir -p "$SOT_COMM_HOME/state"; ASKQ="$SOT_COMM_HOME/state/askq-agl-q-$kind.marker"; : > "$ASKQ"
+    NC_IN='{"tool_name":"AskUserQuestion","tool_use_id":"agl-q-'"$kind"'"}' nochange "the heartbeat on an AskUserQuestion answer ($kind)" "$kind" run_k env CLAUDE_CODE_SESSION_ID="agl-nc-q-$kind" bash "$FLAT/comm-status-heartbeat.sh"
+    if [ -f "$ASKQ" ]; then ok "child: the AskUserQuestion marker survives the heartbeat ($kind)"; else bad "child: the AskUserQuestion marker survives the heartbeat ($kind)"; fi
 done
+# The row's own agent does consume it (the answer earns the prompt).
+ASKQ="$SOT_COMM_HOME/state/askq-agl-q-own.marker"; : > "$ASKQ"
+printf '%s' '{"tool_name":"AskUserQuestion","tool_use_id":"agl-q-own"}' | CLAUDE_CODE_SESSION_ID=agl-nc-q-own chain own "$SELF_ROW" bash "$FLAT/comm-status-heartbeat.sh" >/dev/null 2>&1 || true
+if [ ! -f "$ASKQ" ]; then ok "own: the heartbeat consumes the AskUserQuestion marker"; else bad "own: the heartbeat consumes the AskUserQuestion marker"; fi
 # A fresh comm home: a refused child makes no registry skeleton.
 H2="$WORK/home2"; mkdir -p "$H2"
 before="$(snap "$H2")"
 for v in "$POLL" "$STATUS working q" "$SCRIPTS_DIR/comm-leave.sh"; do
     ( export SOT_COMM_HOME="$H2"; chain child "$SELF_LEG" $v ) >/dev/null 2>&1 || true
 done
+for v in "$SCRIPTS_DIR/comm-context.sh" "$SCRIPTS_DIR/comm-session-start.sh"; do
+    ( export SOT_COMM_HOME="$H2"; chain child "$SELF_LEG" $v ) >/dev/null 2>&1 || true
+done
 if [ "$(snap "$H2")" = "$before" ]; then ok "child: no registry skeleton in a fresh comm home"; else bad "child: a refused verb made files in a fresh comm home: $(snap "$H2" | tr '\n' ' ' | cut -c1-300)"; fi
+
+# A comm home with a registry and no state directory: a refused child's heartbeat
+# makes no state directory and no tick; the row's own agent makes both.
+H3="$WORK/home3"; mkdir -p "$H3"; cp "$REG" "$H3/registry.json"
+before="$(snap "$H3")"
+printf '{"tool_name":"Bash"}' | ( export SOT_COMM_HOME="$H3" CLAUDE_CODE_SESSION_ID=agl-h3; chain child "$SELF_LEG" bash "$FLAT/comm-status-heartbeat.sh" ) >/dev/null 2>&1 || true
+if [ "$(snap "$H3")" = "$before" ]; then ok "child: the heartbeat makes no state directory or tick in a comm home with a registry"; else bad "child: the heartbeat made files in a comm home with a registry: $(snap "$H3" | tr '\n' ' ' | cut -c1-300)"; fi
+printf '{"tool_name":"Bash"}' | ( export SOT_COMM_HOME="$H3" CLAUDE_CODE_SESSION_ID=agl-h3; chain own "$SELF_LEG" bash "$FLAT/comm-status-heartbeat.sh" ) >/dev/null 2>&1 || true
+if [ "$(snap "$H3")" != "$before" ]; then ok "own: the same heartbeat makes its tick"; else bad "own: the same heartbeat makes its tick"; fi
 
 # --- the leave gate: a child cannot remove a row, the row's own agent can --------
 LV="leaver"

@@ -155,3 +155,39 @@ mod win {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_parent_that_cannot_be_opened_is_the_top() {
+        assert_eq!(step(500, 3, true, None, 100), Step::Top);
+    }
+
+    #[test]
+    fn a_parent_created_after_its_child_is_the_top() {
+        assert_eq!(step(500, 3, true, Some(101), 100), Step::Top);
+    }
+
+    #[test]
+    fn a_parent_created_with_or_before_its_child_is_the_next_step() {
+        assert_eq!(step(500, 3, true, Some(100), 100), Step::Next(100));
+        assert_eq!(step(500, 3, true, Some(7), 100), Step::Next(7));
+    }
+
+    #[test]
+    fn a_parent_missing_from_the_snapshot_and_the_system_pids_are_the_top() {
+        assert_eq!(step(500, 3, false, Some(7), 100), Step::Top);
+        assert_eq!(step(0, 3, true, Some(7), 100), Step::Top);
+        assert_eq!(step(4, 3, true, Some(7), 100), Step::Top);
+    }
+
+    #[test]
+    fn only_the_64_line_cap_is_truncation() {
+        assert_eq!(step(500, 63, true, Some(7), 100), Step::Next(7));
+        assert_eq!(step(500, 64, true, Some(7), 100), Step::Truncated);
+        // the cap is for a chain that goes on; a top at line 64 is a whole walk
+        assert_eq!(step(500, 64, true, None, 100), Step::Top);
+    }
+}
