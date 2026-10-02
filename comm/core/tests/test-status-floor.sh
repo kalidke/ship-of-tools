@@ -311,6 +311,31 @@ case_marker_question_without_text_leaves_the_floor() {
     IT $'SITREP-QUESTION:' >/dev/null
     expect /machine/-/-/- floor-kept
 }
+# Only the refusal (rc 2) skips the floor: any other stamp failure falls
+# through to the turn's `stop`, as before. A stub comm-status.sh fails every
+# declaration with rc 1 and hands `stop` to the real script.
+case_non_refusal_stamp_failure_still_floors() {
+    local real="$WORK/real-bin"; mv "$SOT_COMM_HOME/bin" "$real" && mkdir "$SOT_COMM_HOME/bin"
+    local f; for f in "$real"/*; do ln -s "$f" "$SOT_COMM_HOME/bin/${f##*/}"; done
+    rm "$SOT_COMM_HOME/bin/comm-status.sh"
+    printf '#!/bin/bash\n[ "$1" = stop ] && exec "%s" "$@"\nexit 1\n' "$real/comm-status.sh" > "$SOT_COMM_HOME/bin/comm-status.sh"
+    chmod +x "$SOT_COMM_HOME/bin/comm-status.sh"
+    seed_facts '{"floor":"machine"}'
+    IT $'SITREP: all done' >/dev/null
+    local rc=$?
+    rm -rf "$SOT_COMM_HOME/bin"; mv "$real" "$SOT_COMM_HOME/bin"
+    expect idle/-/-/-/- floor-dropped
+}
+# The refusal writes no temp file: TMPDIR stays empty.
+case_refused_stamp_leaves_no_temp_file() {
+    local v td rc
+    for v in blocked waiting; do
+        td="$WORK/tmp-$v"; mkdir -p "$td"; seed_facts '{"note":"n"}'; rc=0
+        TMPDIR="$td" "$ST" "$v" >/dev/null 2>&1 || rc=$?
+        [ "$rc" = 2 ] || { echo "    $v: rc $rc"; return 1; }
+        [ -z "$(ls -A "$td")" ] || { echo "    $v: left $(ls -A "$td")"; return 1; }
+    done
+}
 case_human_answer_clears_question_ends_blue() {
     seed idle; W "$GENUINE"; "$ST" blocked "the question?" >/dev/null; floor_now
     expect blocked/-/q/-/- parked || return 1
@@ -954,6 +979,8 @@ check "waiting clears an open question and prints what it hid" case_waiting_clea
 check "a blocked or waiting with no text is refused, nothing written" case_textless_blocked_or_waiting_is_refused
 check "the AskUserQuestion hook carries the question text" case_askq_hook_carries_the_question
 check "a SITREP-QUESTION: with no text leaves a running floor and no question" case_marker_question_without_text_leaves_the_floor
+check "a stamp failure other than the refusal still floors the turn" case_non_refusal_stamp_failure_still_floors
+check "a refused stamp leaves no temp file" case_refused_stamp_leaves_no_temp_file
 check "the user's answer clears the question and ends blue" case_human_answer_clears_question_ends_blue
 check "a question outranks a wait; the wait returns once answered" case_red_over_purple
 check "a wait survives a user turn and a machine turn" case_purple_survives_user_and_machine_turns

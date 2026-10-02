@@ -70,7 +70,8 @@
 # BLOCKS the stop / forces a continuation) fires ONLY for a joined comm agent — a
 # non-comm session (human shell, etc.) takes the plain idle-floor path and is
 # NEVER blocked. Every failure path also falls through to the floor + exit 0, so
-# the hook can never wedge a turn.
+# the hook can never wedge a turn; the one exception is a refused marker stamp
+# (rc 2), which exits 0 and leaves the running floor in place.
 #
 # Source of truth: comm/adapters/claude/hooks/comm-status-idle.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
@@ -438,10 +439,12 @@ fi
 if [ -n "$marker_state" ]; then
     # Explicit: the marker IS the model's report. `waiting` sets the fact;
     # every other marker clears it (comm-status.sh's declaration reduction).
-    # A refused stamp (blocked or waiting with no text) ends the hook here, with
-    # no `stop`: the running floor stays and no empty question is written.
-    if [ -x "$STATUS" ] && ! "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1; then
-        exit 0
+    # Only rc 2 (a refused stamp: blocked or waiting with no text) ends the hook
+    # here, with no `stop`: the running floor stays and no empty question is
+    # written. Any other failure falls through to the audit and the floor.
+    if [ -x "$STATUS" ]; then
+        stamp_rc=0; "$STATUS" "$marker_state" "$marker_summary" >/dev/null 2>&1 || stamp_rc=$?
+        [ "$stamp_rc" -ne 2 ] || exit 0
     fi
 
     # ARTIFACT AUDIT EXCEPTION (2026-09-14): the row is already stamped from

@@ -118,22 +118,23 @@ status_txn() {
     local row_rc=0 row
     row="$(sot_registry_read "$NAME")" || row_rc=$?
     case "$row_rc" in 0) ;; 1) return 0 ;; *) echo "$UNREADABLE" >&2; return 1 ;; esac   # row gone: no-op
+    # A question or wait always carries readable text: with none given and none
+    # of its own on the row, the stamp is refused (inside the lock, no write,
+    # before any temp file exists).
+    local pq=""
+    if [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; then
+        local fld=waiting own_len out; [ "$VERB" = blocked ] && fld=question
+        # One read: the length of the verb's own text, then the pending question.
+        out="$(printf '%s' "$row" | jq -r "\"\(((.$fld // \"\") | length))\\n\(.question // \"\")\"" 2>/dev/null)"
+        own_len="${out%%$'\n'*}"; pq="${out#*$'\n'}"
+        if [ -z "$SUM" ] && [ "${own_len:-0}" -eq 0 ]; then
+            echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2
+        fi
+    fi
     # MSYS2 argv-conversion guard (comm-lib.sh's sot_jq_rawfile): SUM is
     # free-text and must never reach jq via --arg.
     local sum_file; sum_file="$(sot_jq_rawfile "$SUM")" || return 1
     local ts rc=0
-    # A question or wait always carries readable text: with none given and none
-    # of its own on the row, the stamp is refused (inside the lock, no write).
-    if [ -z "$SUM" ] && { [ "$VERB" = blocked ] || [ "$VERB" = waiting ]; }; then
-        local own fld=waiting; [ "$VERB" = blocked ] && fld=question
-        own="$(printf '%s' "$row" | jq -r ".$fld // \"\"" 2>/dev/null)"
-        [ -n "$own" ] || { echo "comm-status.sh: $VERB needs its text -- stamp discarded" >&2; return 2; }
-    fi
-    # `waiting` clears a pending question; say what it hid.
-    if [ "$VERB" = waiting ]; then
-        local pq; pq="$(printf '%s' "$row" | jq -r '.question // ""' 2>/dev/null)"
-        [ -z "$pq" ] || echo "cleared pending question: $pq" >&2
-    fi
     ts="$(now_iso)"
     registry_replace '
       .agents[$n] |= (
@@ -169,6 +170,10 @@ status_txn() {
     ' --arg n "$NAME" --arg st "$VERB" --arg o "$ORIGIN" --arg t "$ts" --arg h "$HAVE" \
       --rawfile sum "$sum_file" || rc=$?
     rm -f "${sum_file:?}"
+    # `waiting` clears a pending question; say what it hid, once the write held.
+    if [ "$rc" -eq 0 ] && [ "$VERB" = waiting ] && [ -n "$pq" ]; then
+        echo "cleared pending question: $pq" >&2
+    fi
     return $rc
 }
 with_lock status_txn

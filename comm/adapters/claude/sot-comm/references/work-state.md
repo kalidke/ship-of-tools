@@ -22,7 +22,7 @@ A row is a small SET OF FACTS, not one state you set directly:
 | `question` | the question text | `blocked "<q>"` | a `prompt` event with origin `user`; `waiting`; explicit `working`/`idle`/`done` |
 | `waiting` | the wait summary | `waiting "<s>"` | explicit `working`/`idle`/`done` |
 | `done` | `true` | explicit `done`; `stop` (when `floor` was `user` and nothing else is pending) | a `prompt` event with origin `user`; explicit `working`/`idle`/`blocked`/`waiting`; viewing the row |
-| `note` | the declaration's own line | any declaration with a summary | a declaration with `""` |
+| `note` | the declaration's own line | `working`/`idle`/`done` with a summary | `working`/`idle`/`done` with `""`; `blocked` or `waiting` with text |
 
 Every write (event or declaration) re-reduces `state` and `summary` from
 whatever facts remain, in ONE place, `comm-status.sh`:
@@ -162,10 +162,16 @@ ones. The same finding won't re-fire within 30 minutes.
 Kill switch: `SOT_TURN_AUDITOR=0` (env) or `touch ~/.sot-comm/auditor.off`
 (falls back to the legacy `?`-grep nudge).
 
-## Known limit
+## Known limits
 
 One red row was seen with an empty question, and the process that wrote the
 empty text was never identified. The refusal above means a textless
 `blocked` or `waiting` can no longer paint a row, so the fix does not depend
 on finding it. If a row ever shows red with text its own session never wrote,
 re-open it.
+
+Two more limits are known. An AskUserQuestion payload with no question text
+still leaves the answer marker before the stamp is refused (real payloads
+always carry the text; the next heartbeat consumes the marker). A refused
+marker stamp gives the model no feedback: the row simply stays green until the
+turn's next stamp.
