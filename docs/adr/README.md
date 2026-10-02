@@ -47,6 +47,7 @@ Every ADR's line 3 begins with one of three status tokens:
 - [0045](0045-lane-bridge-and-protocol-gate.md) — The lane bridge, and the protocol-versioned lane gate
 - [0046](0046-declared-identity-and-daemon-owned-rows.md) — Declared identity, daemon-owned rows, and the resident attach
 - [0049](0049-messaging-on-one-page.md) — messaging on one page
+- [0050](0050-window-close-ends-this-computers-sessions.md) — the window close ends this computer's sessions
 
 ## Superseded records
 

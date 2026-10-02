@@ -7,6 +7,8 @@ the session-start re-arm) is RETIRED by ADR 0041 (P3 FE-local capsules);
 
 > **Update — 2026-09-03: sentinel exit code 76 = "converge" (launcher family fix).**
 > `relaunch-sot.ps1 -Converge` writes `converge` as the sentinel file's content instead of a bare timestamp; the frontend exits 76 instead of 75, and `launch-sot.ps1`'s supervisor re-runs its self-update prelude (pull) and freshness pass (rebuild + `ShipTools.update_comm()`) before respawning — the rest of §2–§3 is unchanged.
+>
+> **Amended 2026-10-02 (0.6.6):** exits 75 and 76 are relaunches, so the window sends a `Handover` departure on its lease before exiting. A handover is bounded: if no window leases again within 60 seconds, the backend ends this computer's sessions as a close would. See ADR 0050.
 
 ## Context
 

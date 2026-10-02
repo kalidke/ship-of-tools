@@ -205,10 +205,11 @@ The setup is in [Going remote](start/remote.md).
 - **Several frontends.** A desktop and a laptop can attach to the same backend
   at once and see the same sessions, work-state colours and REPLs. See
   [A second frontend](guide/second-frontend.md).
-- **Sessions outlive the window.** Agent sessions run under their own
-  supervisor, and their REPLs under the backend daemon, so closing the window
-  or a dropped connection stops nothing, and with a remote backend neither
-  does closing the laptop lid; the next launch reattaches.
+- **Remote sessions outlive the window.** Agent sessions run under their own
+  supervisor, and their REPLs under the backend daemon, so a dropped connection
+  stops nothing, and with a remote backend neither does closing the window or
+  the laptop lid; the next launch reattaches. On the same computer, closing the
+  window ends that computer's sessions (Ctrl+Q then Yes keeps them).
   See [Sessions and persistence](concepts/sessions.md).
 
 ```@raw html
