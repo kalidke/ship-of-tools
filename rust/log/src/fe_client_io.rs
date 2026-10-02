@@ -425,6 +425,9 @@ impl<E: Endpoint> FeAttachClient<E> {
                     self.parser.process(&bytes);
                     changed = true;
                 }
+                Ok(WorkerEvent::InputsDiscarded) => {
+                    changed = true;
+                }
                 Ok(WorkerEvent::Notice(text)) => {
                     self.notice = Some(text);
                     changed = true;
@@ -503,6 +506,13 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// the switch, park and reuse path, never from a key.
     pub fn set_viewed(&self, viewed: bool) {
         self.worker.set_viewed(viewed);
+    }
+
+    /// Inputs the worker discarded without delivering (typed before the
+    /// current attach, or refused at the ingress bound) since the last
+    /// one it delivered.
+    pub fn inputs_discarded(&self) -> usize {
+        self.worker.inputs_discarded()
     }
 
     /// Forwards keystroke bytes to the worker, which drives the

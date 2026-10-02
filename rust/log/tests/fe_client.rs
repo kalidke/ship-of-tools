@@ -802,6 +802,123 @@ fn reconnect_after_the_capsule_is_killed_restores_the_screen_from_the_new_checkp
     wait_for_exit(&mut guard2, Duration::from_secs(30));
 }
 
+/// Keys typed while an ATTACHED pane re-attaches are never delivered once it
+/// attaches, even into a restarted session: only a key typed after the pane
+/// reports attached reaches the capsule. The new capsule is frozen so the
+/// attach handshake stalls while the keys are typed.
+#[test]
+#[cfg(target_os = "linux")]
+fn keys_typed_while_a_pane_re_attaches_are_never_delivered() {
+    let _serial = serial();
+    let _runtime = isolated_runtime_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let h = state_dir_hash(&state_dir);
+
+    let mut guard1 = spawn_supervisor(&state_dir, "--start", SHELL);
+    let conn1 = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage, _leg) = wait_for_ready(&conn1, Duration::from_secs(90));
+
+    let (_woke, wake) = wake_flag();
+    let mut client = FeAttachClient::attach(
+        PlatformEndpoint::default(),
+        h.clone(),
+        80,
+        24,
+        "fe-client-win-test-stale".to_string(),
+        "test-handle".to_string(),
+        None,
+        wake,
+    )
+    .expect("attach");
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.trim().chars().any(|c| !c.is_whitespace())),
+        "no checkpoint content ever reached the client's screen before the kill"
+    );
+    let old_leg = b"echo SOT_FE_OLD_LEG\r\n";
+    client.send_input(old_leg);
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_OLD_LEG")),
+        "first-leg marker never reached the screen"
+    );
+    let r0 = poll_until(
+        || {
+            client.pump();
+            (client.recorded_bytes() == old_leg.len() as u64).then(|| client.recorded_bytes())
+        },
+        Duration::from_secs(30),
+        "the old leg's input to be fully recorded",
+    );
+
+    let pid = capsule_pid(&voyage);
+    taskkill(pid);
+    let _ = guard1.child_mut().kill();
+    let _ = guard1.child_mut().wait();
+
+    let mut guard2 = spawn_supervisor(&state_dir, "--resume", SHELL);
+    let conn2 = wait_for_lane(&h, Duration::from_secs(30));
+    let (voyage2, _leg2) = wait_for_ready(&conn2, Duration::from_secs(90));
+    assert_eq!(voyage2, voyage, "a fresh spawn under --resume must keep the SAME voyage pointer");
+
+    // Freeze the new capsule: the re-attach cannot complete while the keys are typed.
+    let capsule2 = capsule_pid(&voyage2);
+    assert_eq!(unsafe { libc::kill(capsule2 as libc::pid_t, libc::SIGSTOP) }, 0);
+    let typing_until = Instant::now() + Duration::from_secs(8);
+    let mut n = 0usize;
+    while Instant::now() < typing_until {
+        client.send_input(b"echo SOT_FE_STALE\r");
+        n += 1;
+        client.pump();
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(n > 0);
+    assert_eq!(unsafe { libc::kill(capsule2 as libc::pid_t, libc::SIGCONT) }, 0);
+
+    poll_until(
+        || {
+            client.pump();
+            let fresh = !screen_text(client.screen()).contains("SOT_FE_OLD_LEG");
+            (fresh && client.status_line() == "attached").then_some(())
+        },
+        Duration::from_secs(120),
+        "the client to re-attach to a fresh screen",
+    );
+    // The keys typed during the re-attach are counted, not silently lost.
+    poll_until(
+        || {
+            client.pump();
+            (client.inputs_discarded() == n).then_some(())
+        },
+        Duration::from_secs(5),
+        "every key typed during the re-attach to be counted as discarded",
+    );
+    let after = b"echo SOT_FE_AFTER\r";
+    client.send_input(after);
+    assert!(
+        poll_screen(&mut client, Duration::from_secs(30), |t| t.contains("SOT_FE_AFTER")),
+        "the post-attach marker never reached the screen"
+    );
+    assert_eq!(
+        client.recorded_bytes() - r0,
+        after.len() as u64,
+        "only the key typed after attach may be recorded; {n} keys typed during the re-attach were delivered"
+    );
+    assert!(
+        !screen_text(client.screen()).contains("SOT_FE_STALE"),
+        "a key typed before the pane attached reached the restarted session"
+    );
+    assert_eq!(client.inputs_discarded(), 0, "a delivered key clears the discard count");
+
+    drop(client);
+    // The first management connection idles out during the freeze; dial a fresh one.
+    drop(conn2);
+    let conn3 = wait_for_lane(&h, Duration::from_secs(30));
+    end_run_and_wait_verified(&conn3, &voyage2);
+    let _ = command(&conn3, "test-stale-stop", SupervisorOp::Stop);
+    wait_for_exit(&mut guard2, Duration::from_secs(30));
+}
+
 // -----------------------------------------------------------------------
 // ADR 0042 amendment (2026-09-07): the HEADLESS client (`attach_headless`)
 // — the daemon's own `pty.input`/`pty.screen` attach, never the frontend's.

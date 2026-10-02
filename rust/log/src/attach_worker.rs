@@ -845,7 +845,9 @@ impl Drop for IngressReservation {
 }
 
 enum WorkerMsg {
-    Input(Vec<u8>, IngressReservation),
+    /// The bytes, their reservation, and the attach generation read when
+    /// the caller sent them (see `attach_gen` in [`AttachWorker`]).
+    Input(Vec<u8>, IngressReservation, u64),
     Resize(u16, u16),
     Quit(String),
     Shutdown,
@@ -858,6 +860,8 @@ enum WorkerMsg {
 /// applies each of these to the parser/UI state.
 pub enum WorkerEvent {
     Checkpoint(Vec<u8>),
+    /// The count behind `inputs_discarded` changed; payload-free.
+    InputsDiscarded,
     Output(Vec<u8>),
     Notice(String),
     Status(String),
@@ -921,6 +925,14 @@ pub struct AttachWorker<E: Endpoint> {
     msg_tx: Sender<WorkerMsg>,
     ingress_bytes: Arc<AtomicUsize>,
     ingress_bound: usize,
+    /// Bumped by the worker immediately before each attach's checkpoint
+    /// is emitted; an input stamped with an older value was sent before
+    /// that attach and is discarded and counted, never delivered.
+    attach_gen: Arc<AtomicU64>,
+    /// Inputs that were discarded and not yet followed by a delivered
+    /// one: read while not attached, stamped before the current attach,
+    /// or refused at the ingress bound.
+    discarded: Arc<AtomicUsize>,
     /// The episode reader's own byte-accounted backpressure — see
     /// [`QueuedBytes`]'s own doc. Released by [`Self::ack_output_consumed`].
     queued_bytes: Arc<QueuedBytes>,
@@ -973,8 +985,11 @@ impl<E: Endpoint> AttachWorker<E> {
         let worker_queued_bytes = Arc::clone(&queued_bytes);
         let ingress_bytes = Arc::new(AtomicUsize::new(0));
         let discarded = Arc::new(AtomicUsize::new(0));
+        let attach_gen = Arc::new(AtomicU64::new(0));
         let viewed = Arc::new(AtomicBool::new(true));
         let worker_viewed = Arc::clone(&viewed);
+        let worker_discarded = Arc::clone(&discarded);
+        let worker_attach_gen = Arc::clone(&attach_gen);
 
         let worker_handle = thread::Builder::new()
             .name("sot-fe-attach-worker".to_string())
@@ -994,13 +1009,14 @@ impl<E: Endpoint> AttachWorker<E> {
                     recorded_bytes,
                     last_input_outcome,
                     take_epoch_pub,
-                    discarded,
+                    worker_discarded,
+                    worker_attach_gen,
                     Arc::clone(&worker_viewed),
                     headless,
                 );
             })?;
 
-        Ok(Self { msg_tx, ingress_bytes, ingress_bound, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
+        Ok(Self { msg_tx, ingress_bytes, ingress_bound, attach_gen, discarded, queued_bytes, viewed, worker_handle: Some(worker_handle), _endpoint: PhantomData })
     }
 
     /// A sink that consumes [`WorkerEvent::Output`] bytes calls this with
@@ -1048,6 +1064,7 @@ impl<E: Endpoint> AttachWorker<E> {
             // only when something is ALREADY reserved and admitting this
             // one too would push the total past the bound.
             if cur > 0 && cur.saturating_add(n) > self.ingress_bound {
+                self.discarded.fetch_add(1, Ordering::AcqRel);
                 return Err(IngressRefused);
             }
             match self.ingress_bytes.compare_exchange_weak(cur, cur.saturating_add(n), Ordering::AcqRel, Ordering::Acquire) {
@@ -1062,8 +1079,15 @@ impl<E: Endpoint> AttachWorker<E> {
         // the same); on failure the returned `SendError` carries the
         // message right back here, and letting the `Result` drop
         // unused drops it immediately.
-        let _ = self.msg_tx.send(WorkerMsg::Input(bytes, reservation));
+        let gen = self.attach_gen.load(Ordering::Acquire);
+        let _ = self.msg_tx.send(WorkerMsg::Input(bytes, reservation, gen));
         Ok(())
+    }
+
+    /// How many inputs have been discarded since the last one that was
+    /// delivered (see the `discarded` field).
+    pub fn inputs_discarded(&self) -> usize {
+        self.discarded.load(Ordering::Acquire)
     }
 
     pub fn resize(&self, cols: u16, rows: u16) {
@@ -1108,6 +1132,8 @@ impl<E: Endpoint> AttachWorker<E> {
             msg_tx,
             ingress_bytes: Arc::new(AtomicUsize::new(0)),
             ingress_bound: usize::MAX,
+            attach_gen: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicUsize::new(0)),
             queued_bytes: Arc::new(QueuedBytes::new()),
             viewed: Arc::new(AtomicBool::new(true)),
             worker_handle: None,
@@ -1162,6 +1188,7 @@ fn run_worker<E: Endpoint>(
     last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: Arc<AtomicU64>,
     discarded: Arc<AtomicUsize>,
+    attach_gen: Arc<AtomicU64>,
     viewed: Arc<AtomicBool>,
     headless: bool,
 ) where
@@ -1182,11 +1209,6 @@ fn run_worker<E: Endpoint>(
         (!headless).then(|| Instant::now() + FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND);
     let mut take_epoch: u64 = 0;
     let mut shutdown = false;
-    // Ruling (b), Codex review round finding 4: set when
-    // `take_refused{not_attached}` fires, so the NEXT episode's own
-    // arrival at a fresh checkpoint knows to `retry_take()` (preserving
-    // role+queue) instead of `reset_to_watching()`.
-    let mut preserve_take_on_reconnect = false;
     // ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
     // #194): the version THIS episode's `hello` asks for. Starts at the
     // newest this build speaks; a `hello_refused` naming a version this
@@ -1201,7 +1223,7 @@ fn run_worker<E: Endpoint>(
     // dropped — applied the instant a fresh supervisor connection
     // exists, since `end_run` needs only that lane, never the attach
     // lane.
-    let mut held = Held { quit: None, resize: None, discarded };
+    let mut held = Held { quit: None, resize: None, discarded: Arc::clone(&discarded) };
 
     let emit = |e: WorkerEvent| sink(e);
 
@@ -1344,16 +1366,24 @@ fn run_worker<E: Endpoint>(
             // the id `converge_on_ready` confirmed against the
             // supervisor's own `Status` reply, not a locally cached
             // pointer read.
+            let mut canceled_input = false;
             if let fe_client::ReconnectResendDecision::Cancel { canceled } =
                 outstanding.resend_after_reconnect(&voyage, take_epoch)
             {
+                canceled_input = true;
                 emit(WorkerEvent::Status(format!(
                     "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
                     canceled.bytes.len()
                 )));
             }
-            take.reset_to_watching();
-            preserve_take_on_reconnect = false;
+            let mut lost = take.reset_to_watching();
+            if canceled_input {
+                lost += 1;
+            }
+            if lost > 0 {
+                discarded.fetch_add(lost, Ordering::AcqRel);
+                emit(WorkerEvent::InputsDiscarded);
+            }
             take_intent = TakeIntent::Ordinary;
             voyage_uuid = Some(voyage.clone());
         }
@@ -1441,6 +1471,10 @@ fn run_worker<E: Endpoint>(
         // needed.
         // First completed attach: never tolerate EndedNoRespawn again.
         first_attach_deadline = None;
+        // Stamped BEFORE the checkpoint is emitted: a headless caller may
+        // send as soon as it applies the checkpoint, and that input must
+        // read as current. An input sent earlier read the older value.
+        let attached_gen = attach_gen.fetch_add(1, Ordering::AcqRel) + 1;
         emit(WorkerEvent::Checkpoint(checkpoint));
         emit(WorkerEvent::Status("attached".to_string()));
         reconnect.attached();
@@ -1452,17 +1486,12 @@ fn run_worker<E: Endpoint>(
         // (pid, created) here and blocked input until it finished.
         emit(WorkerEvent::Notice(fe_client::attach_notice_text(&format!("{}", attach_identity.1))));
 
-        // Ruling (b), Codex review round finding 4: a `not_attached`
-        // reattach preserves the take transaction instead of resetting
-        // it -- re-issue `take` for the SAME still-queued bytes now that
-        // a fresh checkpoint has landed.
-        if preserve_take_on_reconnect {
-            preserve_take_on_reconnect = false;
-            for action in take.retry_take() {
-                apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
-            }
-        } else {
-            take.reset_to_watching();
+        // Anything still queued was typed before this attach: discarded
+        // and counted, never delivered.
+        let lost = take.reset_to_watching();
+        if lost > 0 {
+            discarded.fetch_add(lost, Ordering::AcqRel);
+            emit(WorkerEvent::InputsDiscarded);
         }
 
         // Ruling (f): fe_down marker on every attach after the first.
@@ -1485,9 +1514,6 @@ fn run_worker<E: Endpoint>(
                         apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
                     }
                 }
-                // Else: role is already Taking from the preserved
-                // not_attached retry above -- the same take_ok serves
-                // both purposes.
             }
             fe_client::ReconnectResendDecision::Cancel { canceled } => {
                 emit(WorkerEvent::Status(format!(
@@ -1545,6 +1571,8 @@ fn run_worker<E: Endpoint>(
             &recorded_bytes,
             &last_input_outcome,
             &take_epoch_pub,
+            attached_gen,
+            &discarded,
         );
 
         // Tear down this episode's connections before deciding what's
@@ -1582,13 +1610,6 @@ fn run_worker<E: Endpoint>(
                     WaitOutcome::Continue => {}
                 }
             }
-            SteadyOutcome::ReconnectPreserveTake => {
-                preserve_take_on_reconnect = true;
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
-                    WaitOutcome::Shutdown => shutdown = true,
-                    WaitOutcome::Continue => {}
-                }
-            }
         }
     }
 }
@@ -1597,13 +1618,9 @@ enum SteadyOutcome {
     Shutdown,
     QuitEnded,
     Terminal(String),
-    /// An ordinary episode end -- the NEXT episode resets the take
-    /// transaction to Watching.
+    /// An episode end -- the NEXT episode resets the take transaction to
+    /// Watching, counting any queued input as discarded.
     Reconnect,
-    /// `take_refused{not_attached}` ended this episode -- the NEXT
-    /// episode preserves the take transaction instead (ruling (b),
-    /// Codex review round finding 4).
-    ReconnectPreserveTake,
 }
 
 /// What the worker keeps of the commands it reads while it is NOT attached
@@ -2162,6 +2179,8 @@ fn run_steady_state<E: Endpoint + Sync>(
     recorded_bytes: &Arc<AtomicU64>,
     last_input_outcome: &Arc<Mutex<Option<InputOutcome>>>,
     take_epoch_pub: &Arc<AtomicU64>,
+    attached_gen: u64,
+    discarded: &Arc<AtomicUsize>,
 ) -> SteadyOutcome {
     // Whether the pane header currently shows the missed-probe line below:
     // one missed `Status` (a stalled link, not a dead supervisor) must not
@@ -2236,7 +2255,17 @@ fn run_steady_state<E: Endpoint + Sync>(
             }
             match msg {
                 Ok(WorkerMsg::Shutdown) => return SteadyOutcome::Shutdown,
-                Ok(WorkerMsg::Input(bytes, _reservation)) => match take.role() {
+                Ok(WorkerMsg::Input(_, _reservation, gen)) if gen < attached_gen => {
+                    // Sent before this attach: never delivered.
+                    discarded.fetch_add(1, Ordering::AcqRel);
+                    emit(WorkerEvent::InputsDiscarded);
+                }
+                Ok(WorkerMsg::Input(bytes, _reservation, _)) => {
+                    // A current input ends the count of discarded ones.
+                    if discarded.swap(0, Ordering::AcqRel) > 0 {
+                        emit(WorkerEvent::InputsDiscarded);
+                    }
+                    match take.role() {
                     Role::Watching => {
                         for action in take.on_input_while_watching(&bytes) {
                             apply_single_take_action::<E>(action, attach_conn, controller_id, &emit);
@@ -2259,7 +2288,8 @@ fn run_steady_state<E: Endpoint + Sync>(
                             send_new_input::<E>(attach_conn, outstanding, *take_epoch, controller_id, voyage, bytes);
                         }
                     }
-                },
+                    }
+                }
                 Ok(WorkerMsg::Resize(c, r)) => {
                     *cols = c;
                     *rows = r;
@@ -2293,7 +2323,7 @@ fn run_steady_state<E: Endpoint + Sync>(
                         frame, attach_conn, take, take_intent, outstanding, take_epoch, controller_id, voyage, *cols,
                         *rows, &emit, recorded_bytes, last_input_outcome, take_epoch_pub,
                     ) {
-                        FrameOutcome::ReattachRequested => return SteadyOutcome::ReconnectPreserveTake,
+                        FrameOutcome::ReattachRequested => return SteadyOutcome::Reconnect,
                         FrameOutcome::Handled | FrameOutcome::Ignored => {}
                     }
                 }
@@ -2399,7 +2429,7 @@ fn apply_single_take_action<E: Endpoint>(action: TakeAction, attach_conn: &E::Cl
         TakeAction::Reattach => {
             // Handled by the caller propagating `FrameOutcome::
             // ReattachRequested` up to `SteadyOutcome::
-            // ReconnectPreserveTake` -- nothing to send here (the
+            // Reconnect` -- nothing to send here (the
             // server already does not recognize this connection as
             // attached).
         }
@@ -2660,6 +2690,8 @@ mod tests {
         let worker = AttachWorker::<TestEndpoint> {
             msg_tx,
             ingress_bytes: Arc::new(AtomicUsize::new(0)),
+            attach_gen: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicUsize::new(0)),
             ingress_bound: 64,
             queued_bytes: Arc::new(QueuedBytes::new()),
             viewed: Arc::new(AtomicBool::new(true)),
@@ -2681,12 +2713,13 @@ mod tests {
             Err(IngressRefused),
             "a second send while the first is still queued must be refused"
         );
+        assert_eq!(worker.discarded.load(Ordering::SeqCst), 1, "a refusal is counted as a discarded input");
 
         // Draining the channel (as the worker's own loop would, popping
         // the message and letting its reservation drop) releases the
         // first charge.
         match msg_rx.recv().expect("the first send's own message is queued") {
-            WorkerMsg::Input(bytes, _reservation) => assert_eq!(bytes.len(), 100),
+            WorkerMsg::Input(bytes, _reservation, _) => assert_eq!(bytes.len(), 100),
             _ => panic!("expected WorkerMsg::Input"),
         }
 
@@ -3411,6 +3444,89 @@ mod tests {
     /// supervisor that does not answer. The inline probe made it wait the
     /// probe's whole `STATUS_BUDGET` (5 s); the bound here is ten times
     /// below that and five ticks of slack above an idle worker.
+    /// Runs `run_steady_state` on the stall endpoint at `attached_gen`,
+    /// with the liveness probe due at once.
+    fn spawn_stall_steady(
+        rx: Receiver<WorkerMsg>,
+        attach_conn: Arc<StallClient>,
+        sup_conn: StallClient,
+        attached_gen: u64,
+        discarded: Arc<AtomicUsize>,
+    ) -> thread::JoinHandle<SteadyOutcome> {
+        thread::spawn(move || {
+            let mut take = TakeTransaction::new();
+            let mut take_intent = TakeIntent::Ordinary;
+            let mut outstanding = OutstandingSlot::new();
+            let mut quit = QuitDispatcher::new();
+            let mut reconnect = ReconnectState::new();
+            let (mut cols, mut rows, mut take_epoch) = (80u16, 24u16, 0u64);
+            let mut last_poll = Instant::now().checked_sub(LIVENESS_POLL_INTERVAL).unwrap_or_else(Instant::now);
+            run_steady_state::<StallEndpoint>(
+                &StallEndpoint,
+                &rx,
+                &|_e| {},
+                "h",
+                &attach_conn,
+                sup_conn,
+                FrameReader::new(),
+                &mut take,
+                &mut take_intent,
+                &mut outstanding,
+                &mut quit,
+                &mut reconnect,
+                &mut cols,
+                &mut rows,
+                &mut take_epoch,
+                "controller-1",
+                "voyage-1",
+                &mut last_poll,
+                &Arc::new(AtomicU64::new(0)),
+                &Arc::new(Mutex::new(None)),
+                &Arc::new(AtomicU64::new(0)),
+                attached_gen,
+                &discarded,
+            )
+        })
+    }
+
+    fn input_msg(bytes: &[u8], gen: u64) -> WorkerMsg {
+        let reservation = IngressReservation { ingress_bytes: Arc::new(AtomicUsize::new(bytes.len())), n: bytes.len() };
+        WorkerMsg::Input(bytes.to_vec(), reservation, gen)
+    }
+
+    /// An input stamped before this attach is discarded and counted,
+    /// never sent; the first current input is sent and clears the count.
+    #[test]
+    fn an_input_stamped_before_the_attach_is_counted_not_sent_and_a_current_one_is_sent() {
+        let attach_state = Arc::new(StallState::default());
+        let sup_state = Arc::new(StallState::default());
+        let attach_conn = Arc::new(StallClient(Arc::clone(&attach_state)));
+        let sup_conn = StallClient(Arc::clone(&sup_state));
+        let (tx, rx) = mpsc::channel::<WorkerMsg>();
+        let discarded = Arc::new(AtomicUsize::new(0));
+        let worker = spawn_stall_steady(rx, attach_conn, sup_conn, 2, Arc::clone(&discarded));
+
+        tx.send(input_msg(b"x", 1)).unwrap();
+        let started = Instant::now();
+        while discarded.load(Ordering::SeqCst) != 1 {
+            assert!(started.elapsed() < WORKER_TICK * 5, "the stale input was never counted");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(attach_state.writes.lock().unwrap().is_empty(), "a stale input must write nothing");
+
+        tx.send(input_msg(b"y", 2)).unwrap();
+        let sent = Instant::now();
+        while attach_state.writes.lock().unwrap().is_empty() {
+            assert!(sent.elapsed() < WORKER_TICK * 5, "the current input was never sent");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(discarded.load(Ordering::SeqCst), 0, "a current input clears the count");
+
+        tx.send(WorkerMsg::Shutdown).unwrap();
+        let outcome = worker.join().expect("the worker thread must not panic");
+        assert!(matches!(outcome, SteadyOutcome::Shutdown));
+    }
+
     #[test]
     fn a_keystroke_is_written_while_a_status_probe_is_outstanding() {
         let attach_state = Arc::new(StallState::default());
@@ -3449,6 +3565,8 @@ mod tests {
                 &Arc::new(AtomicU64::new(0)),
                 &Arc::new(Mutex::new(None)),
                 &Arc::new(AtomicU64::new(0)),
+                1,
+                &Arc::new(AtomicUsize::new(0)),
             )
         });
 
@@ -3461,7 +3579,7 @@ mod tests {
 
         // Watching: the keystroke's `take` goes out on the attach connection.
         let reservation = IngressReservation { ingress_bytes: Arc::new(AtomicUsize::new(1)), n: 1 };
-        tx.send(WorkerMsg::Input(b"x".to_vec(), reservation)).unwrap();
+        tx.send(WorkerMsg::Input(b"x".to_vec(), reservation, 1)).unwrap();
         let sent = Instant::now();
         while attach_state.writes.lock().unwrap().is_empty() {
             assert!(sent.elapsed() < WORKER_TICK * 5, "the keystroke waited behind the outstanding Status probe");
@@ -3689,6 +3807,14 @@ mod tests {
         second.release();
         wait_attached(2);
 
+        // The worker reads the four stale inputs once it is attached;
+        // the poll is bounded only so a lost count fails the test.
+        let started = Instant::now();
+        while worker.inputs_discarded() != 4 {
+            assert!(started.elapsed() < bound, "the stale inputs were never counted: {}", worker.inputs_discarded());
+            thread::sleep(Duration::from_millis(5));
+        }
+
         worker.send_input(b"current".to_vec()).expect("ingress");
         let mut written: Vec<Vec<u8>> = Vec::new();
         loop {
@@ -3704,6 +3830,7 @@ mod tests {
             delivered.iter().all(|p| !p.contains("stale-")),
             "keys typed while the pane re-attached were delivered: {delivered:?}"
         );
+        assert_eq!(worker.inputs_discarded(), 0, "a current input clears the count");
 
         for c in conns.lock().unwrap().iter() {
             c.close();

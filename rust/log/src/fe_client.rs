@@ -110,11 +110,10 @@ pub enum TakeAction {
     /// [`Role::Watching`].
     PenLost,
     /// `take_refused{not_attached}`: "re-attaches first" — the caller
-    /// ends the current episode PRESERVING this transaction's role and
-    /// queue (never calls [`TakeTransaction::reset_to_watching`] for
-    /// this one teardown), reconnects, and once a fresh checkpoint
-    /// lands calls [`TakeTransaction::retry_take`] to re-issue `take`
-    /// for the SAME still-queued bytes.
+    /// ends the current episode and reconnects. The queue is discarded
+    /// at the next attach (the count is [`TakeTransaction::
+    /// reset_to_watching`]'s return), never delivered; only an input
+    /// already in flight is resent, under its idempotency key.
     Reattach,
 }
 
@@ -126,6 +125,9 @@ pub enum TakeAction {
 pub struct TakeTransaction {
     role: Role,
     queue: Vec<u8>,
+    /// How many non-empty inputs went into `queue` and have not been
+    /// taken or cleared.
+    queued_inputs: usize,
     checkpoint_retry_started_at: Option<Instant>,
     /// Gates [`Self::tick_checkpoint_retry`]'s own `SendTake` to the
     /// pinned 250 ms cadence (Codex review round, finding 4: the
@@ -156,6 +158,7 @@ impl TakeTransaction {
         Self {
             role: Role::Watching,
             queue: Vec::new(),
+            queued_inputs: 0,
             checkpoint_retry_started_at: None,
             next_retry_at: None,
             headless: false,
@@ -180,6 +183,9 @@ impl TakeTransaction {
         let room = TAKE_QUEUE_CAP.saturating_sub(self.queue.len());
         let take = room.min(bytes.len());
         self.queue.extend_from_slice(&bytes[..take]);
+        if take > 0 {
+            self.queued_inputs += 1;
+        }
         take < bytes.len()
     }
 
@@ -265,22 +271,16 @@ impl TakeTransaction {
         if self.queue.is_empty() {
             None
         } else {
+            self.queued_inputs = 0;
             Some(std::mem::take(&mut self.queue))
         }
     }
 
-    /// `take_refused{not_attached}`: role and queue are DELIBERATELY
-    /// left untouched here — see [`TakeAction::Reattach`]'s own doc.
+    /// `take_refused{not_attached}`: role and queue are left untouched
+    /// here; the reattach that follows resets the transaction and counts
+    /// the queue as discarded — see [`TakeAction::Reattach`]'s own doc.
     pub fn on_take_refused_not_attached(&mut self) -> Vec<TakeAction> {
         vec![TakeAction::Reattach]
-    }
-
-    /// Re-issue `take` for the still-queued bytes after a
-    /// `not_attached`-triggered reattach completed (role stays TAKING,
-    /// preserved across the episode boundary).
-    pub fn retry_take(&mut self) -> Vec<TakeAction> {
-        debug_assert_eq!(self.role, Role::Taking);
-        vec![TakeAction::SendTake]
     }
 
     /// `input_refused_stale` while DRIVING: "re-take first, then mint a
@@ -298,7 +298,7 @@ impl TakeTransaction {
         debug_assert_eq!(self.role, Role::Driving);
         if self.headless {
             self.role = Role::Watching;
-            self.queue.clear();
+            self.clear_queue();
             return vec![];
         }
         self.role = Role::Taking;
@@ -315,7 +315,7 @@ impl TakeTransaction {
     pub fn on_take_refused_checkpoint_in_flight(&mut self, now: Instant) -> Vec<TakeAction> {
         let started = *self.checkpoint_retry_started_at.get_or_insert(now);
         if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
-            self.queue.clear();
+            self.clear_queue();
             self.checkpoint_retry_started_at = None;
             self.next_retry_at = None;
             self.role = Role::Watching;
@@ -335,7 +335,7 @@ impl TakeTransaction {
             return vec![];
         };
         if now.duration_since(started) >= CHECKPOINT_IN_FLIGHT_BUDGET {
-            self.queue.clear();
+            self.clear_queue();
             self.checkpoint_retry_started_at = None;
             self.next_retry_at = None;
             self.role = Role::Watching;
@@ -371,20 +371,28 @@ impl TakeTransaction {
             }
             ResizeRefusedReason::NotDriver => {
                 self.role = Role::Watching;
-                self.queue.clear();
+                self.clear_queue();
                 vec![TakeAction::PenLost]
             }
         }
     }
 
-    /// A fresh attach (or an ORDINARY reconnect, one not preserving a
-    /// `not_attached` in-flight take) always arrives WATCHING — ADR
-    /// 0037's who-may-type, restated by ruling (d).
-    pub fn reset_to_watching(&mut self) {
+    /// A fresh attach (or an ORDINARY reconnect) always arrives WATCHING —
+    /// ADR 0037's who-may-type, restated by ruling (d). Returns how many
+    /// queued inputs were dropped, for the caller to count.
+    #[must_use]
+    pub fn reset_to_watching(&mut self) -> usize {
         self.role = Role::Watching;
-        self.queue.clear();
+        let queued = self.queued_inputs;
+        self.clear_queue();
         self.checkpoint_retry_started_at = None;
         self.next_retry_at = None;
+        queued
+    }
+
+    fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.queued_inputs = 0;
     }
 }
 
@@ -1060,18 +1068,17 @@ mod tests {
     }
 
     #[test]
-    fn take_refused_not_attached_preserves_role_and_queue() {
+    fn take_refused_not_attached_leaves_the_queue_to_be_counted_at_the_reset() {
         let mut t = TakeTransaction::new();
         t.on_input_while_watching(b"x");
+        t.on_input_while_pending(b"y");
         let actions = t.on_take_refused_not_attached();
         assert_eq!(actions, vec![TakeAction::Reattach]);
-        // Role and queue survive -- retry_take re-sends `take` for the
-        // SAME still-queued bytes after the caller's own reattach.
         assert_eq!(t.role(), Role::Taking);
-        assert_eq!(t.retry_take(), vec![TakeAction::SendTake]);
-        t.on_take_ok(1, 1);
-        t.on_resize_ok();
-        assert_eq!(t.take_queued(), Some(b"x".to_vec()));
+        // The reattach resets the transaction and reports both queued inputs.
+        assert_eq!(t.reset_to_watching(), 2);
+        assert_eq!(t.role(), Role::Watching);
+        assert_eq!(t.reset_to_watching(), 0);
     }
 
     /// Codex review round, finding 6: a stale-epoch refusal while
