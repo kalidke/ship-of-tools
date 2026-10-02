@@ -36,7 +36,14 @@ const MAX_SPREAD: Duration = Duration::from_secs(3);
 /// A footer line under the lower rule, like Claude Code's background-agent
 /// footer, is drawn once; while `foot` exists the loop also redraws it every
 /// 0.2 s with a counter.
-fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path) -> PathBuf {
+///
+/// More control files, in `ctl` (the daemon's `SOT_TEST_WAKE_MARKS` is `ctl/marks`): `suggest` draws a dim
+/// suggestion after the prompt's NBSP; `panel` draws a leader agents panel (`● main`, `○ worker`, the
+/// `← for agents` hint) under the lower rule in place of the footer, which reads free; with `panel`, `focus-hold`
+/// redraws it focused (`❯ ● main`, the hint gone) once the daemon's hold has begun (`marks/hold`), and
+/// `focus-after` does the same once its final check has passed (`marks/final-ok`) and then leaves the cursor on
+/// the panel's first line. Rows through the box, and for `focus-hold` the cursor, stay as they were.
+fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
@@ -50,8 +57,13 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
              echo 'Allow this action? (y/n)'\n\
              while [ -f '{dialog}' ]; do sleep 0.1; done\n\
            fi\n\
-           printf '%s\\033[K\\n\\342\\235\\257\\302\\240\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$rule\"\n\
-           ( n=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; sleep 0.2; done ) &\n\
+           sug=''; [ -f '{ctl}/suggest' ] && sug=$(printf '\\033[2mtry something\\033[22m')\n\
+           if [ -f '{ctl}/panel' ]; then\n\
+             printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n  \\342\\227\\217 main\\033[K\\n  \\342\\227\\213 worker\\033[K\\n  \\342\\217\\265\\342\\217\\265 auto mode on \\302\\267 \\342\\206\\220 for agents\\033[K\\033[4A\\033[3G' \"$rule\" \"$sug\" \"$rule\"\n\
+           else\n\
+             printf '%s\\033[K\\n\\342\\235\\257\\302\\240%s\\033[K\\n%s\\033[K\\n footer 0\\033[K\\033[2A\\033[3G' \"$rule\" \"$sug\" \"$rule\"\n\
+           fi\n\
+           ( n=0; fh=0; fa=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{ctl}/marks/hold' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; fi; if [ $fa = 0 ] && [ -f '{ctl}/marks/final-ok' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; fi; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
            IFS= read -r line\n\
            kill $spid\n\
@@ -64,6 +76,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
         dialog = dialog.display(),
         spin = spin.display(),
         foot = foot.display(),
+        ctl = ctl.display(),
         log = log.display(),
     );
     std::fs::write(&claude, script).expect("write stub claude");
@@ -156,17 +169,31 @@ async fn phase_of_row(row: &mut Row, ws: &str) -> String {
 const THREE_TICKS: Duration = Duration::from_secs(8);
 
 async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
-    assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not built next to sotd: see the header");
+    start_with(tag, log, in_dialog, &[], &[]).await
+}
+
+/// [`start`], with `ctl` control files (see [`write_stub_claude`]) created before the row starts, and `extra`
+/// env vars on the daemon. `SOT_TEST_WAKE_MARKS` is always set, to `ctl/marks`.
+async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
     let env = Env::new(tag);
     let log = log.unwrap_or_else(|| env._tmp.path().join("ping.log"));
     let dialog = env._tmp.path().join("dialog");
     let spin = env._tmp.path().join("spin");
     let foot = env._tmp.path().join("foot");
-    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin, &foot);
+    let ctl_dir = env._tmp.path().join("ctl");
+    std::fs::create_dir_all(&ctl_dir).unwrap();
+    for name in ctl {
+        std::fs::write(ctl_dir.join(name), b"").unwrap();
+    }
+    let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin, &foot, &ctl_dir);
     if in_dialog {
         std::fs::write(&dialog, b"").unwrap();
     }
-    env.spawn_sotd_with_prepended_path(&stub_dir);
+    let marks = ctl_dir.join("marks");
+    let marks = marks.to_string_lossy().to_string();
+    let mut env_vars = vec![("SOT_TEST_WAKE_MARKS", marks.as_str())];
+    env_vars.extend_from_slice(extra);
+    env.spawn_sotd_with_path_and_env(&stub_dir, &env_vars);
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let create = serde_json::json!({
         "label": "wake-row",
@@ -189,7 +216,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
 #[tokio::test]
 async fn an_idle_row_is_woken_once() {
     let _serial = SERIAL.lock().await;
-    let row = start("cwi", None, false).await;
+    let row = start_with("cwi", None, false, &["suggest"], &[]).await;
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
     // The mail is still unread; the same batch is not woken again.
@@ -334,7 +361,7 @@ async fn rows_with_mail_are_held_at_once() {
 #[tokio::test]
 async fn a_restarted_daemon_wakes_a_row_with_unread_mail_once() {
     let _serial = SERIAL.lock().await;
-    let row = start("cwr", None, false).await;
+    let row = start_with("cwr", None, false, &["suggest"], &[]).await;
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await);
     row.env.kill_daemon_bounded().await;
@@ -416,5 +443,51 @@ async fn comm_wake_e2e() {
     let row = start("cwe", Some(log.clone()), false).await;
     append_mail(&row.env, 1);
     assert!(wait_pings(&log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// The daemon's own log, whatever its state root holds.
+fn daemon_log(env: &Env) -> String {
+    fn find(dir: &Path, out: &mut String) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                find(&p, out);
+            } else if p.file_name().is_some_and(|n| n == "sotd.log") {
+                out.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
+            }
+        }
+    }
+    let mut out = String::new();
+    find(env._tmp.path(), &mut out);
+    out
+}
+
+/// No ping in this long: two holds plus slack.
+const NO_PING_FOR: Duration = Duration::from_millis(5000);
+
+/// Focus moves to the agents panel during the hold while the rows through the box and the cursor stay put: the
+/// final check reads the live screen, so nothing is typed.
+#[tokio::test]
+async fn panel_focus_arriving_during_the_hold_is_refused() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwph", None, false, &["panel", "focus-hold"], &[]).await;
+    append_mail(&row.env, 1);
+    tokio::time::sleep(NO_PING_FOR).await;
+    assert_eq!(pings(&row.log), 0, "typed into a row whose focus had moved to the panel");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// Focus moves off the input box right after the final check passes: the line is typed, the live screen then
+/// does not show it in main's box, so no Enter goes and the daemon logs it.
+#[tokio::test]
+async fn focus_moving_after_the_final_check_gets_no_enter() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwfa", None, false, &["panel", "focus-after"], &[("SOT_TEST_PACING_HOLD", "1")]).await;
+    append_mail(&row.env, 1);
+    tokio::time::sleep(NO_PING_FOR).await;
+    assert_eq!(pings(&row.log), 0, "sent Enter with focus off main's box");
+    assert!(daemon_log(&row.env).contains("did not show in main's input box; no Enter sent"), "no warn line in the daemon log");
     row.env.kill_daemon_bounded().await;
 }

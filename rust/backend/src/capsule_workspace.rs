@@ -4167,7 +4167,7 @@ pub mod headless {
             client.shutdown(SHUTDOWN_WAIT);
             return Err(e);
         }
-        let out = type_and_enter(&mut client, text, op_budget, quiet_budget, pacing_budget);
+        let out = type_and_enter(&mut client, text, op_budget, quiet_budget, pacing_budget, None);
         client.shutdown(SHUTDOWN_WAIT);
         out
     }
@@ -4179,12 +4179,15 @@ pub mod headless {
         NotFree,
         /// The line was typed; `enter_sent` is [`write_and_enter`]'s own flag.
         Woke { enter_sent: bool },
+        /// The line was typed but the screen then did not show it alone in main's input box; no Enter was sent.
+        TypedNoEnter,
     }
 
     /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
     /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
     /// [`free_test_lines`] reads them), and
-    /// only then type `line` and Enter as [`write_and_enter`] does. A screen
+    /// only then type `line` and, if `typed` (asked of the live screen after the pacing wait) says the line sits
+    /// alone in main's input box, Enter, as [`write_and_enter`] does. A screen
     /// that is not free gets no hold (it still costs the attach); one that is
     /// must then hold identical (the cursor, and every row through the line
     /// under it) for `still_for`, else it is a working row and nothing is
@@ -4196,6 +4199,7 @@ pub mod headless {
         controller_id: &str,
         line: &[u8],
         is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
+        typed: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
         agent: &str,
         still_for: Duration,
         op_budget: Duration,
@@ -4210,9 +4214,19 @@ pub mod headless {
         let cursor = client.screen().cursor_position();
         let first = wake_lines(&client);
         let seen = free_test_lines(client.screen());
+        // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the hold
+        // and the passed final check leave a file each, for a stub that moves focus at exactly those points.
+        let marks = std::env::var_os("SOT_TEST_WAKE_MARKS").map(std::path::PathBuf::from);
+        let mark = |name: &str| {
+            if let Some(dir) = &marks {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(name), b"");
+            }
+        };
         let out = if !is_free(&seen, Some(cursor), agent) {
             Ok(WakeOutcome::NotFree)
         } else {
+            mark("hold");
             let held_from = Instant::now();
             let mut still = true;
             while still && held_from.elapsed() < still_for {
@@ -4220,9 +4234,17 @@ pub mod headless {
                 client.pump();
                 still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(&client), cursor.0) == held_rows(&first, cursor.0);
             }
-            if still && is_free(&seen, Some(cursor), agent) {
-                type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget)
-                    .map(|(_, enter_sent)| WakeOutcome::Woke { enter_sent })
+            // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
+            if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
+                mark("final-ok");
+                let gate = |c: &Client| typed(&free_test_lines(c.screen()), Some(c.screen().cursor_position()), agent);
+                type_and_enter(&mut client, line, op_budget, quiet_budget, pacing_budget, Some(&gate)).map(|(_, enter_sent)| {
+                    if enter_sent {
+                        WakeOutcome::Woke { enter_sent }
+                    } else {
+                        WakeOutcome::TypedNoEnter
+                    }
+                })
             } else {
                 Ok(WakeOutcome::NotFree)
             }
@@ -4239,6 +4261,7 @@ pub mod headless {
         op_budget: Duration,
         quiet_budget: Duration,
         pacing_budget: Duration,
+        enter_if: Option<&dyn Fn(&Client) -> bool>,
     ) -> Result<(usize, bool), HeadlessError> {
         let n = if text.is_empty() {
             0
@@ -4267,6 +4290,13 @@ pub mod headless {
             if lines != previous {
                 previous = lines;
                 last_change_at = Instant::now();
+            }
+        }
+
+        if let Some(enter_if) = enter_if {
+            client.pump();
+            if !enter_if(client) {
+                return Ok((n, false));
             }
         }
 

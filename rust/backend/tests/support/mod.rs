@@ -522,6 +522,12 @@ impl Env {
     /// path the test exercises.
     #[cfg(target_os = "linux")]
     pub fn spawn_sotd_with_prepended_path(&self, prepend_dir: &Path) {
+        self.spawn_sotd_with_path_and_env(prepend_dir, &[]);
+    }
+
+    /// [`Env::spawn_sotd_with_prepended_path`], plus `extra` env vars.
+    #[cfg(target_os = "linux")]
+    pub fn spawn_sotd_with_path_and_env(&self, prepend_dir: &Path, extra: &[(&str, &str)]) {
         let mut path = std::ffi::OsString::from(prepend_dir);
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
@@ -539,13 +545,14 @@ impl Env {
             .env("USERPROFILE", &self.home_root)
             .env("SOT_COMM_HOME", &self.comm_root)
             .env("PATH", path)
+            .envs(extra.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn sotd");
         let previous = self.daemon.borrow_mut().replace(child);
-        debug_assert!(previous.is_none(), "spawn_sotd_with_prepended_path called while a prior daemon was still tracked");
+        debug_assert!(previous.is_none(), "spawn_sotd_with_path_and_env called while a prior daemon was still tracked");
     }
 
     /// [`Env::spawn_sotd`], plus `extra` env vars — for a test-only knob
