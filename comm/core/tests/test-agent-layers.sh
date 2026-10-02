@@ -207,6 +207,13 @@ wtbl 2 "a quoted TAB stays inside its argument, and the rest is read: two layers
 wtbl 2 "a quoted TAB against a space in the child: two layers" \
     "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe \"A B\"" "node.exe${TAB}$WCJS \"A${TAB}B\"" "sot-capsule.exe${TAB}sot-capsule.exe run"
 
+# The Microsoft C runtime's rules for backslashes before a quote (and `""` inside quotes): a host
+# and a child whose arguments are the same under those rules are one layer, otherwise two.
+wpair() { wtbl "$1" "C runtime: host $2 against child $3" "bash.exe${TAB}bash.exe -c x" "codex.exe${TAB}codex.exe $3" "node.exe${TAB}$WCJS $2" "sot-capsule.exe${TAB}sot-capsule.exe run"; }
+wpair 1 '"a\\"' 'a\'; wpair 1 '"a\\\\"' 'a\\'; wpair 1 'a\\\"' '"a\\\""'; wpair 1 '"a b"\' '"a b\\"'   # F F C F
+wpair 1 '"a b\"' '"a b\""'; wpair 1 '"a""b c"' '"a\"b c"'; wpair 1 'p q' 'p q'                      # C F C
+wpair 2 '"a\\"' 'a\\'; wpair 2 'a\\\"' '"a\\"'; wpair 2 '"a b"' 'a b'                                 # C C C: arguments differ
+
 # --- 1c. the two non-Linux parsers, as stdin filters (Linux walks /proc, so they run nowhere else) ---
 pipes() { tr "$US" '|' | tr '\n' ' ' | sed 's/ $//'; }
 eq "ps filter: a chain to the top, spaces become field breaks" \
@@ -215,10 +222,28 @@ eq "ps filter: a chain to the top, spaces become field breaks" \
 eq "ps filter: a parent missing from the table is a truncated walk" \
     "$(printf '%s\n' '  100    99 bash -c x' '   50     1 init' | _sot_ps_records 100 | pipes)" "bash|-c|x !truncated"
 eq "ps filter: my own pid missing prints nothing" "$(printf '%s\n' '   50     1 init' | _sot_ps_records 100 | pipes)" ""
+# mtbl WANT DESC LINE... : the layers a macOS chain counts, through the ps filter (`ps` lines, caller first).
+mtbl() {
+    local want="$1" desc="$2" got; shift 2
+    got="$(printf '%s\n' "$@" | _sot_ps_records 100 | _sot_agent_layers 2>/dev/null | awk 'NF && $0 != "!ok"' | wc -l | tr -d ' ')"
+    eq "macOS table: $desc" "$got" "$want"
+}
+B='  100    99 bash -c x'; CAP='   97     1 sot-capsule run'
+mtbl 2 "a (claude) whose arguments ps cannot read under a codex is a second layer" "$B" '   99    98 codex exec y' '   98    97 (claude)' "$CAP"
+mtbl 2 "a (claude) never dedupes with its node host" "$B" '   99    98 (claude)' '   98    97 node /n/node_modules/@anthropic-ai/claude-code/cli.js -p q' "$CAP"
+mtbl 1 "a standalone (claude) is one layer" "$B" '   99    97 (claude)' "$CAP"
+mtbl 1 "a readable claude under a login shell is one layer" "$B" '   99    98 claude -p q' '   98    97 -zsh' '   97     1 (login)'
+eq "ps filter: a (name) record is the name with arguments unknown" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99    97 (claude)' "$CAP" | _sot_ps_records 100 | pipes)" "bash|-c|x claude|$(printf '\036') sot-capsule|run !end"
+eq "ps filter: a (node) record is truncated, and nothing follows" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99    97 (node)' | _sot_ps_records 100 | pipes)" "bash|-c|x !truncated"
+eq "ps filter: a (name with spaces) record keeps the whole name" \
+    "$(printf '%s\n' '  100    99 bash -c x' '   99     1 (Foo Helper)' | _sot_ps_records 100 | pipes)" "bash|-c|x Foo Helper|$(printf '\036') !end"
 eq "ps filter: a chain past 64 is truncated at 64" \
     "$(for ((i = 1000; i < 1070; i++)); do printf '%s %s bash\n' "$i" "$((i + 1))"; done | _sot_ps_records 1000 | awk 'END { print NR, $0 }')" "65 !truncated"
 eq "windows filter: arguments, quotes and an escaped quote; argv[0] is dropped" \
     "$(printf '%s\n' "bash.exe${TAB}C:\\git\\bash.exe -c \"x y\"" "a.exe${TAB}a.exe \"p\\\"q\"" | _sot_win_records | pipes)" 'bash.exe|-c|x y a.exe|p"q !end'
+eq "windows filter: the C runtime's backslash and quote rules" "$(printf '%s\n' "a.exe${TAB}"'a.exe "a\\" a\\\" "a b"\ "a""b c" x\\y' | _sot_win_records | pipes)" 'a.exe|a\|a\"|a b\|a"b c|x\\y !end'
 eq "windows filter: a node.exe with an empty command line is truncated, and nothing follows" \
     "$(printf '%s\n' "bash.exe${TAB}bash.exe" "node.exe${TAB}" "claude.exe${TAB}claude.exe" | _sot_win_records | pipes)" "bash.exe !truncated"
 eq "windows filter: any other exe with an empty command line has arguments unknown (one RS argument), not an empty tail" \
@@ -495,6 +520,27 @@ for v in up down serve status "" --help bogus; do
         if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-probe.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-probe.sh $v ($kind) changed the comm home"; fi
     done
 done
+# comm-worktree-new.sh gates before any git write: a child refuses it, and no worktree or branch is made.
+WTR="$WORK/wtp/repo"; mkdir -p "$WTR"
+{ git init -q "$WTR" && git -C "$WTR" config core.hooksPath /dev/null \
+    && git -C "$WTR" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m init; } >/dev/null 2>&1 \
+    || { echo "FATAL: setup git repo for comm-worktree-new.sh" >&2; exit 1; }
+for v in "c1" "c1 --no-spawn"; do
+    for kind in child nodechild; do
+        before="$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")"
+        run "$kind" "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" $v
+        eq  "child: comm-worktree-new.sh $v ($kind) exits 1" "$RC" 1
+        has "child: comm-worktree-new.sh $v ($kind) names the cause" "$OUT" "comm-worktree-new.sh: this process runs under"
+        if [ ! -e "$WORK/wtp/worktrees" ] && ! git -C "$WTR" show-ref --quiet --verify refs/heads/wt/c1; then ok "child: comm-worktree-new.sh $v ($kind) makes no worktree or branch"; else bad "child: comm-worktree-new.sh $v ($kind) made a worktree or branch"; fi
+        if [ "$(snap "$SOT_COMM_HOME"; cat "$SELF_ROW")" = "$before" ]; then ok "child: comm-worktree-new.sh $v ($kind) changes nothing under the comm home"; else bad "child: comm-worktree-new.sh $v ($kind) changed the comm home"; fi
+    done
+done
+run own "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" c2 --no-spawn
+if [ "$RC" -eq 0 ] && [ -d "$WORK/wtp/worktrees/repo-wt-c2" ] && git -C "$WTR" show-ref --quiet --verify refs/heads/wt/c2; then ok "own: comm-worktree-new.sh c2 --no-spawn makes the worktree and branch"; else bad "own: comm-worktree-new.sh c2 --no-spawn (rc $RC: $OUT)"; fi
+run own "$SELF_ROW" bash -c 'cd "$1" && shift && exec "$@"' _ "$WTR" "$SCRIPTS_DIR/comm-worktree-new.sh" --help
+eq  "own: comm-worktree-new.sh --help exits 0" "$RC" 0
+has "own: comm-worktree-new.sh --help describes --expertise" "$OUT" "--expertise \"...\" comma-separated"
+has "own: comm-worktree-new.sh --help describes --display-prefix (the last option)" "$OUT" "--display-prefix L  override"
 # A fresh comm home: a refused child makes no registry skeleton.
 H2="$WORK/home2"; mkdir -p "$H2"
 before="$(snap "$H2")"

@@ -211,7 +211,9 @@ needs no knowledge of the priorities because `done` is the lowest tier.
   green; its Stop's origin correction and `stop` still close it correctly.
 - Declarations: `blocked "<q>"` sets `question` (keeps `waiting`: red
   outranks purple, and the wait returns when the answer turn ends).
-  `waiting "<s>"` sets `waiting` (keeps `question`). `working`, `idle` and
+  `waiting "<s>"` sets `waiting` (keeps `question`; *Amended (2026-10-01):*
+  `waiting` now clears `question`, and a `blocked` or `waiting` with no text
+  of its own is refused). `working`, `idle` and
   `done` clear `question` and `waiting`; `done` sets `done`, the other two
   clear it.
 - `AskUserQuestion` (Claude) and the permission prompt (Codex,

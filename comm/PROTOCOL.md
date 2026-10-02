@@ -467,7 +467,7 @@ Monitor exists.
   the top of its process tree outside a row. A `node` process is an agent when
   any of its arguments names one or lies in its npm package, and it counts once
   with its native child only when that child is its direct child and its
-  arguments after the binary equal the host's after its script. Agents are
+  arguments after the binary equal the host's after its script (on Windows, as the Microsoft C runtime splits each command line, its backslash and `""` rules included). Agents are
   named, not launchers: the list is the agents comm ships an adapter for, and it
   grows in the commit that adds one. The check reads each ancestor's full
   command line, and an ancestry it cannot read in full (a walk past 64
@@ -476,18 +476,22 @@ Monitor exists.
   ancestor whose record cannot be opened, or whose creation time is after its
   child's, ends the walk as the top; only the 64 cap and node.exe's unreadable
   command line are refused. A reused pid means the real parent has exited, the
-  twin of reparenting. On Windows an unreadable command line is recorded as
-  arguments unknown, which equals nothing: a native agent so recorded never
-  counts once with its node host, though a standalone one is one layer. On
+  twin of reparenting. On Windows, and on macOS where `ps` prints `(name)` for
+  arguments it cannot read, an unreadable command line is recorded as the
+  program name with arguments unknown, which equals nothing: a native agent so
+  recorded never counts once with its node host, though a standalone one is one
+  layer, and a `node` so recorded is refused. On
   Windows every comm script that reads mail, sends, joins or stamps refuses
   ("update sotd") until the installed `sotd.exe` has the `ancestors` subcommand, so the
   scripts and `sotd.exe` ship together. A refused process may neither spawn nor
-  despawn rows (`comm-probe.sh`'s included), and no hook of it writes anything
+  despawn rows (`comm-probe.sh`'s included) nor run `comm-worktree-new.sh`, which
+  refuses it before any git write, and no hook of it writes anything
   under the comm home. An agent that needs its own handle is started as
   its own row.
 - What that check does not see: a process reparented away from its agent; an
   agent whose name is not in the list; a macOS agent whose argv[0] contains a
-  space; on Windows, an agent above an ancestor whose record cannot be opened or
+  space; on macOS, an agent whose arguments `ps` cannot read and whose program
+  file is not named after it; on Windows, an agent above an ancestor whose record cannot be opened or
   that was created after its child; and a shim that starts `node` under the
   agent's own name (a volta-style shim), which may be refused instead. On macOS
   the walk reads `ps`, which folds runs of white space, so a native agent started
