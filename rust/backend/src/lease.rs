@@ -400,6 +400,20 @@ impl Leases {
             return Decision::None;
         };
         st.held.remove(at);
+        self.decide(st, intent, now_ms)
+    }
+
+    /// A `fe.leaving{close}` after this connection's own `Keep`: the
+    /// user's latest intent wins, so it is that window's `Close` departure
+    /// at this moment. With no other lease held it is the shutdown.
+    pub(crate) fn close_after_keep(&self, now_ms: u64) -> Decision {
+        let st = self.lock();
+        self.decide(st, Some(LeaveIntent::Close), now_ms)
+    }
+
+    /// What a departure decides once its lease is gone: nothing unless it
+    /// was the last.
+    fn decide(&self, mut st: MutexGuard<'_, State>, intent: Option<LeaveIntent>, now_ms: u64) -> Decision {
         if !st.held.is_empty() || st.phase != Phase::Open {
             st.persist_or_log();
             return Decision::None;
@@ -719,6 +733,9 @@ where
     let Some(gen) = gen else { return Ok(()) };
 
     let mut held = Some(gen);
+    // This lease departed with `Keep`: a later `fe.leaving{close}` on it
+    // still applies.
+    let mut kept = false;
     loop {
         let bytes = match read_line(&mut rx).await {
             Ok(Line::Complete(bytes)) => bytes,
@@ -746,7 +763,14 @@ where
                     continue;
                 };
                 let decision = match held.take() {
-                    Some(gen) => leases.depart(gen, Some(leaving.intent), now_ms()),
+                    Some(gen) => {
+                        kept = leaving.intent == LeaveIntent::Keep;
+                        leases.depart(gen, Some(leaving.intent), now_ms())
+                    }
+                    None if kept && leaving.intent == LeaveIntent::Close => {
+                        kept = false;
+                        leases.close_after_keep(now_ms())
+                    }
                     None => Decision::None,
                 };
                 if decision == Decision::Shutdown && leaving.intent == LeaveIntent::Close {

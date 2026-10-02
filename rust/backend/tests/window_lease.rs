@@ -623,3 +623,46 @@ async fn never_run_rows_count_as_ended() {
     assert!(!row_toml(&env, "never-run").exists(), "the never-started row was not forgotten");
     assert!(!row_toml(&env, "ran").exists(), "the ended row was not forgotten");
 }
+
+/// The user's latest intent wins: a `fe.leaving{close}` after a keep on
+/// the same lease is that window's close, so the last one shuts down.
+#[tokio::test]
+async fn close_after_keep_on_one_lease_shuts_down() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("keepx");
+    let mut daemon = Daemon::start(&env, &[]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_id, _sd) = create_row(&env, &mut conn, &mut next_id, "keep-then-x").await;
+    drop(conn);
+    let (mut w, _) = Window::open(&env.socket_path).await;
+    let ack = w.ask("keep", BOUND).await;
+    assert_eq!(ack["not_ended"], 0, "{ack:?}");
+    let ack = w.ask("close", EXIT_WITHIN).await;
+    assert_eq!(
+        daemon.exit_within(Duration::from_secs(30)).await,
+        Some(0),
+        "a close after a keep on the same lease did not shut down: {}",
+        daemon.said()
+    );
+    assert_eq!(ack["not_ended"], 0, "{ack:?}");
+    assert!(!row_toml(&env, "keep-then-x").exists(), "the close after a keep left the row");
+}
+
+/// A keep followed by EOF stays a keep: the daemon and its rows run on.
+#[tokio::test]
+async fn keep_then_eof_stays_up() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("keepeof");
+    let mut daemon = Daemon::start(&env, &[]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (id, _sd) = create_row(&env, &mut conn, &mut next_id, "kept").await;
+    let (mut w, _) = Window::open(&env.socket_path).await;
+    let ack = w.ask("keep", BOUND).await;
+    assert_eq!(ack["not_ended"], 0, "{ack:?}");
+    w.eof().await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(daemon.still_up(), "a keep then EOF shut the daemon down: {}", daemon.said());
+    let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    let row = find_row(&payload, &id).expect("the kept row is still registered");
+    assert_eq!(row["phase"], "ready", "the kept row is not running: {row:?}");
+}
