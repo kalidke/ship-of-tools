@@ -153,30 +153,39 @@ impl PaneFocus {
 
     /// Spatial neighbour of `self` in `dir`, walking only the panes the
     /// layout shows: `columns` is the preset's column order (ADR 0014) and
-    /// the REPL sits below them when `drawer_open`. Left/Right step along
-    /// `columns` and stop at its ends; Down enters the open drawer; Up from
-    /// a column stays. The drawer is not a column: Up leaves it for the
-    /// preview (else the first column), Left/Right for the first/last
-    /// column. A `self` the layout hides lands on the first column.
-    fn move_in(self, dir: SpatialDir, columns: &[crate::settings::Slot], drawer_open: bool) -> Self {
+    /// `drawer` is the slot the open drawer shows (`None` when closed or the
+    /// preset has none). Left/Right step along `columns` and stop at its
+    /// ends; Down enters the drawer; Up from a column stays. The drawer pane
+    /// is not a column: Up leaves it for the preview (else the first
+    /// column), Left/Right for the first/last column. A `self` the layout
+    /// hides lands on the first column.
+    fn move_in(
+        self,
+        dir: SpatialDir,
+        columns: &[crate::settings::Slot],
+        drawer: Option<crate::settings::Slot>,
+    ) -> Self {
         use crate::settings::Slot;
         use SpatialDir::*;
         let (Some(&first), Some(&last)) = (columns.first(), columns.last()) else {
             return self;
         };
         let Some(i) = columns.iter().position(|&c| c == self.slot()) else {
-            return Self::from_slot(match (self, dir) {
-                (PaneFocus::Repl, Up) if columns.contains(&Slot::Preview) => Slot::Preview,
-                (PaneFocus::Repl, Right) => last,
-                (PaneFocus::Repl, Down) => return self,
+            if drawer != Some(self.slot()) {
+                return Self::from_slot(first);
+            }
+            return Self::from_slot(match dir {
+                Up if columns.contains(&Slot::Preview) => Slot::Preview,
+                Right => last,
+                Down => return self,
                 _ => first,
             });
         };
         match dir {
             Left => Self::from_slot(columns[i.saturating_sub(1)]),
             Right => Self::from_slot(columns[(i + 1).min(columns.len() - 1)]),
-            Down if drawer_open => PaneFocus::Repl,
-            _ => self,
+            Down => drawer.map_or(self, Self::from_slot),
+            Up => self,
         }
     }
 }
@@ -20728,7 +20737,13 @@ impl ApplicationHandler for App {
                         } else {
                             preset.columns.clone()
                         };
-                        state.focus = state.focus.move_in(dir, &columns, state.drawer.is_open());
+                        // The slot redraw lays out in the drawer; Help borrows Repl's when the preset has none.
+                        let drawer = match state.drawer {
+                            DrawerContent::Closed => None,
+                            DrawerContent::Help => preset.drawer.or(Some(crate::settings::Slot::Repl)),
+                            _ => preset.drawer,
+                        };
+                        state.focus = state.focus.move_in(dir, &columns, drawer);
                         // Keymap-driven label (Ctrl+Arrow on Windows/Linux,
                         // Cmd+Arrow on macOS) instead of a hard-coded
                         // "Ctrl+" prefix, which used to print "Ctrl+Left"
@@ -24111,20 +24126,27 @@ mod tests {
         use PaneFocus::*;
         use SpatialDir::*;
         let full = [S::Nav, S::Preview, S::Llm];
-        assert_eq!(NavTree.move_in(Right, &full, false), Preview);
-        assert_eq!(Repl.move_in(Up, &full, true), Preview);
-        assert_eq!(Repl.move_in(Left, &full, true), NavTree);
-        assert_eq!(Repl.move_in(Right, &full, true), Llm);
+        assert_eq!(NavTree.move_in(Right, &full, None), Preview);
+        assert_eq!(Repl.move_in(Up, &full, Some(S::Repl)), Preview);
+        assert_eq!(Repl.move_in(Left, &full, Some(S::Repl)), NavTree);
+        assert_eq!(Repl.move_in(Right, &full, Some(S::Repl)), Llm);
         let portrait = [S::Nav, S::Preview];
-        assert_eq!(Preview.move_in(Right, &portrait, false), Preview);
-        assert_eq!(Repl.move_in(Right, &portrait, true), Preview);
-        assert_eq!(Preview.move_in(Down, &portrait, false), Preview);
-        assert_eq!(Preview.move_in(Down, &portrait, true), Repl);
-        assert_eq!(Llm.move_in(Left, &portrait, false), NavTree);
+        assert_eq!(Preview.move_in(Right, &portrait, None), Preview);
+        assert_eq!(Repl.move_in(Right, &portrait, Some(S::Repl)), Preview);
+        assert_eq!(Preview.move_in(Down, &portrait, None), Preview);
+        assert_eq!(Preview.move_in(Down, &portrait, Some(S::Repl)), Repl);
+        assert_eq!(Llm.move_in(Left, &portrait, None), NavTree);
         let no_preview = [S::Nav, S::Llm];
-        assert_eq!(NavTree.move_in(Right, &no_preview, false), Llm);
-        assert_eq!(Llm.move_in(Left, &no_preview, false), NavTree);
-        assert_eq!(Repl.move_in(Up, &no_preview, true), NavTree);
+        assert_eq!(NavTree.move_in(Right, &no_preview, None), Llm);
+        assert_eq!(Llm.move_in(Left, &no_preview, None), NavTree);
+        assert_eq!(Repl.move_in(Up, &no_preview, Some(S::Repl)), NavTree);
+        assert_eq!(Repl.move_in(Up, &full, None), NavTree);
+        let custom = [S::Nav, S::Llm];
+        assert_eq!(NavTree.move_in(Down, &custom, Some(S::Preview)), Preview);
+        assert_eq!(Preview.move_in(Up, &custom, Some(S::Preview)), NavTree);
+        assert_eq!(Preview.move_in(Right, &custom, Some(S::Preview)), Llm);
+        assert_eq!(Preview.move_in(Down, &custom, Some(S::Preview)), Preview);
+        assert_eq!(Repl.move_in(Down, &custom, Some(S::Preview)), NavTree);
     }
 
     #[test]
