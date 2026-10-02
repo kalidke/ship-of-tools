@@ -156,7 +156,7 @@ where
 /// Timeout-parameterized core of [`write_frame_to`], split out so the reaper's
 /// drop-on-stuck-peer behavior is unit-testable in milliseconds rather than the
 /// production `WRITE_TIMEOUT`.
-async fn write_frame_within<W>(
+pub(crate) async fn write_frame_within<W>(
     tx: &mut W,
     frame: &Frame,
     blob: Option<&[u8]>,
@@ -899,6 +899,11 @@ pub async fn run(opts: Opts) -> Result<()> {
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
 
+    // LEASES: replaced at merge by S's startup::begin
+    let (leases, _starts) = crate::lease::Leases::new(sot_log::challenge::boot_identity().ok(), sot_log::state_dir::sot_state_dir().map(|root| root.join(sot_protocol::ops::lease::HELD_RECORD_FILE)), crate::lease::now_ms());
+    let leases = Arc::new(leases);
+    tokio::spawn(crate::lease::ticker(leases.clone()));
+
     if let Some(path) = opts.socket {
         let s = session.clone();
         let tok = Arc::new(None);
@@ -919,10 +924,11 @@ pub async fn run(opts: Opts) -> Result<()> {
         let cl = clients.clone();
         let tps = topology_store.clone();
         let tpe = topo_changed_tx.clone();
+        let le = leases.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
                 path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
-                tpe,
+                tpe, le,
             )
             .await
         }));
@@ -1061,6 +1067,7 @@ async fn run_local(
     clients: Clients,
     topology_store: Arc<crate::topology_store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
+    leases: Arc<crate::lease::Leases>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -1102,8 +1109,16 @@ async fn run_local(
         .with_context(|| format!("bind {socket_path:?}"))?;
     tracing::info!(socket = ?socket_path, "listening (local)");
 
-    loop {
-        let stream: LocalStream = listener.accept().await.context("accept on sot socket")?;
+    // The accept loop ends when a shutdown begins: shutdown step 1 stops
+    // accepting by dropping the listener and unlinking the socket, on the
+    // same wake as the deciding departure, before any row is touched.
+    let decided = loop {
+        let stream: LocalStream = tokio::select! {
+            accepted = listener.accept() => accepted.context("accept on sot socket")?,
+            () = leases.gone() => break tokio::time::Instant::now(),
+        };
+        let peer_identity = crate::lease::accepted_peer(&stream);
+        let le = leases.clone();
         let s = session.clone();
         let tok = token.clone();
         let mj = mathjax.clone();
@@ -1127,7 +1142,7 @@ async fn run_local(
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
                 rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe,
-                cl, tps, tpe, "local", None,
+                cl, tps, tpe, "local", None, peer_identity, le,
             )
             .await
             {
@@ -1136,7 +1151,18 @@ async fn run_local(
                 tracing::info!(transport = "local", "connection closed");
             }
         });
+    };
+    drop(listener);
+    // The listener's drop already unlinks it; this covers a listener
+    // that does not.
+    #[cfg(unix)]
+    match std::fs::remove_file(&socket_path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(socket = ?socket_path, error = %e, "shutdown: socket not unlinked");
+        }
+        _ => {}
     }
+    crate::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 
 
@@ -1212,6 +1238,8 @@ async fn handle_connection<R, W>(
     topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
     transport: &'static str,
     peer: Option<String>,
+    peer_identity: sot_log::challenge::PeerAuthOutcome,
+    leases: Arc<crate::lease::Leases>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -1267,6 +1295,22 @@ where
                     f,
                     expected_token.as_deref(),
                     &workspaces,
+                )
+                .await;
+            }
+            // A lease (1.2) is a connection of its own: it never enters
+            // the hello-gated loop, the reaper or any handler.
+            if f.kind == Kind::Req && f.op == op::FE_LEASE {
+                tracing::info!(transport, ?peer_identity, "fe.lease — a lease connection");
+                let state_root = sot_log::state_dir::sot_state_dir();
+                return crate::lease::hold(
+                    buffered,
+                    tx,
+                    f,
+                    peer_identity,
+                    expected_token.as_deref(),
+                    &leases,
+                    state_root.as_deref(),
                 )
                 .await;
             }

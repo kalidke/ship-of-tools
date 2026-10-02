@@ -5,7 +5,8 @@
 //! A lease is a dedicated connection whose first frame is `fe.lease`; the
 //! connection is the handle, so a lease's generation never goes on the
 //! wire. This module is the pure core the connection's holder calls: it
-//! does no IO but the record write, and it never looks a process up. The
+//! does no IO but the record's read at construction and its write, and it
+//! never looks a process up. The
 //! peer's identity arrives already read from the OS at accept, and a
 //! restart's plan is a function of the record and this boot alone.
 //!
@@ -16,17 +17,39 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use sot_log::challenge::{PeerAuthOutcome, ProcessIdentity};
-use sot_protocol::ops::{lease as bounds, FeLeaseReq, LeaseOutcome, LeaveIntent};
+use sot_log::challenge::{PeerAuthOutcome, PeerAuthenticated, ProcessIdentity};
+use sot_protocol::ops::{
+    lease as bounds, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavingRes, FeNoticeSeenReq, FeNoticeSeenRes,
+    LeaseOutcome, LeaveIntent,
+};
+use sot_protocol::{Frame, Kind};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt as _, AsyncWrite};
 use tokio::sync::{mpsc, watch};
 
 /// `held.json`'s shape; a record with any other `v` plans Cleanup.
 const RECORD_V: u32 = 1;
 
 /// How long a relaunch handover, or a restart's recorded holders, keep
-/// the rows waiting for a window.
+/// the rows waiting for a window. `SOT_TEST_HANDOVER_BOUND_MS` overrides it
+/// for tests, read once per process; unset in every real deployment.
 pub(crate) fn handover_bound() -> std::time::Duration {
-    bounds::HANDOVER_BOUND
+    static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_HANDOVER_BOUND_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(bounds::HANDOVER_BOUND)
+}
+
+/// Wall-clock unix milliseconds: the one clock every lease deadline uses.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn handover_bound_ms() -> u64 {
@@ -43,17 +66,11 @@ pub(crate) struct HeldRecord {
     /// the BootId is unreadable). A
     /// record from another boot plans Cleanup at once.
     pub boot: String,
-    /// The live leases' identities, plus the recorded holders still
-    /// awaited: each until it re-leases or the hold passes.
+    /// The live leases' identities.
     pub holders: Vec<ProcessIdentity>,
-    /// An in-process or pending handover's deadline.
+    /// An in-process or pending handover's deadline, or a restart's
+    /// pending deadline: written once, so a restart never extends it.
     pub handover_until_ms: Option<u64>,
-    /// The deadline by which recorded holders must re-lease, set iff one
-    /// is still awaited. Written once: a restart never extends the
-    /// recorded holders' bound. Apart from `handover_until_ms`, so a
-    /// persisted hold never lets any granted lease complete a start.
-    #[serde(default)]
-    pub hold_until_ms: Option<u64>,
     /// True from shutdown step 1 to step 5.
     pub closing: bool,
     /// Sessions an earlier close could not end, until a window acks them.
@@ -67,20 +84,10 @@ impl HeldRecord {
     fn is_empty(&self) -> bool {
         self.holders.is_empty()
             && self.handover_until_ms.is_none()
-            && self.hold_until_ms.is_none()
             && !self.closing
             && self.not_ended == 0
             && self.forget.is_empty()
     }
-}
-
-/// What completes a pending start.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Qualify {
-    /// Any granted lease (the record carried a handover).
-    Any,
-    /// Only a lease whose `(boot, pid, created)` is one of these.
-    Holders(Vec<ProcessIdentity>),
 }
 
 /// A start's decision from the record ([`startup_plan`]).
@@ -90,15 +97,15 @@ pub(crate) enum StartPlan {
     /// End every row without resuming it, write the record, then resume
     /// what remains.
     Cleanup,
-    /// Hold back every row registered at start until a qualifying lease,
-    /// or Cleanup at `until_ms`.
-    Pending { until_ms: u64, qualify: Qualify },
+    /// Resume, and wait for a window as a pending handover does: any
+    /// granted lease clears it; at `until_ms` with no lease held it is a
+    /// shutdown.
+    Pending { until_ms: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StartEvent {
-    /// A lease completed the pending start: release the held-back rows
-    /// and resume them.
+    /// A granted lease cleared the pending start.
     Qualified,
 }
 
@@ -117,19 +124,9 @@ pub(crate) enum Decision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tick {
     None,
-    /// A handover expired with no lease held; as [`Decision::Shutdown`].
+    /// A handover or a pending start expired with no lease held; as
+    /// [`Decision::Shutdown`].
     Shutdown,
-    /// A pending start expired. Its holders stay in the record until
-    /// [`Leases::finish_cleanup`], so a kill mid-Cleanup cannot resume.
-    Cleanup,
-}
-
-/// A restart's pending start.
-struct Pending {
-    until_ms: u64,
-    qualify: Qualify,
-    /// Its Cleanup has been handed out; it no longer qualifies.
-    expired: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,38 +147,35 @@ struct State {
     /// One entry per granted lease, removed by its generation only.
     held: Vec<(u64, ProcessIdentity)>,
     handover_until_ms: Option<u64>,
-    /// Recorded holders that have not re-leased since this start. They
-    /// count as present, not last, until `hold_until_ms`.
-    awaited: Vec<ProcessIdentity>,
-    /// Set iff `awaited` is non-empty; taken from the record, never moved.
-    hold_until_ms: Option<u64>,
-    /// The last live lease closed while a recorded holder was awaited: at
-    /// the hold, with no lease held, that close is a shutdown.
-    close_at_hold: bool,
-    pending: Option<Pending>,
+    /// A restart's pending start, until a grant or its deadline.
+    pending_until_ms: Option<u64>,
     phase: Phase,
     not_ended: u32,
     forget: Vec<String>,
+    /// The deciding departure was a `fe.leaving{close}`: its window waits
+    /// for the shutdown's count (shutdown step 6).
+    closer_waits: bool,
+    /// The start's plan is Cleanup, for any cause, from construction until
+    /// [`Leases::finish_cleanup`]. Meanwhile the record only moves toward
+    /// close: until a shutdown begins nothing writes it (a grant still
+    /// answers the window, a departure still decides), so a kill
+    /// mid-Cleanup re-runs the Cleanup at the next start.
+    startup_cleanup: bool,
 }
 
 impl State {
     fn record(&self) -> HeldRecord {
         let mut holders: Vec<ProcessIdentity> = Vec::new();
-        for who in self.held.iter().map(|(_, who)| who).chain(&self.awaited) {
+        for (_, who) in &self.held {
             if !holders.contains(who) {
                 holders.push(who.clone());
             }
         }
-        let pending_until = match &self.pending {
-            Some(Pending { until_ms, qualify: Qualify::Any, .. }) => Some(*until_ms),
-            _ => None,
-        };
         HeldRecord {
             v: RECORD_V,
             boot: self.own_boot.clone().unwrap_or_default(),
             holders,
-            handover_until_ms: self.handover_until_ms.or(pending_until),
-            hold_until_ms: self.hold_until_ms,
+            handover_until_ms: self.handover_until_ms.or(self.pending_until_ms),
             closing: self.phase == Phase::Closing,
             not_ended: self.not_ended,
             forget: self.forget.clone(),
@@ -190,6 +184,10 @@ impl State {
 
     fn persist(&self) -> std::io::Result<()> {
         let Some(path) = &self.path else { return Ok(()) };
+        // A startup Cleanup's record only moves toward close.
+        if self.startup_cleanup && self.phase == Phase::Open {
+            return Ok(());
+        }
         write_or_delete(path, &self.record())
     }
 
@@ -202,15 +200,6 @@ impl State {
         }
     }
 
-    /// A recorded holder is still awaited and its hold has not passed.
-    fn in_hold(&self, now_ms: u64) -> bool {
-        !self.awaited.is_empty() && self.hold_until_ms.is_some_and(|until| now_ms < until)
-    }
-
-    fn awaited_pids(&self) -> Vec<u32> {
-        self.awaited.iter().map(|who| who.pid).collect()
-    }
-
     /// Shutdown step 1: record `closing` and refuse every later lease. A
     /// handover or pending start ends here; the shutdown ends its rows.
     /// True iff this call began the shutdown.
@@ -220,10 +209,7 @@ impl State {
         }
         self.phase = Phase::Closing;
         self.handover_until_ms = None;
-        self.pending = None;
-        self.awaited.clear();
-        self.hold_until_ms = None;
-        self.close_at_hold = false;
+        self.pending_until_ms = None;
         self.persist_or_log();
         true
     }
@@ -238,29 +224,42 @@ pub(crate) struct Leases {
     /// late it subscribes.
     gone: watch::Sender<bool>,
     starts: mpsc::UnboundedSender<StartEvent>,
+    /// Shutdown step 5's `not_ended`, for the waiting closer.
+    report: watch::Sender<Option<u32>>,
+    /// The waiting closer has been answered (step 6), or gave up.
+    answered: watch::Sender<bool>,
 }
 
 impl Leases {
     pub(crate) fn new(
         own_boot: Option<String>,
         record: Option<PathBuf>,
+        now_ms: u64,
     ) -> (Self, mpsc::UnboundedReceiver<StartEvent>) {
         let (starts, events) = mpsc::unbounded_channel();
+        let startup_cleanup = record.as_deref().is_some_and(|path| {
+            startup_plan(&read_record(path), own_boot.as_deref().ok_or(()), now_ms) == StartPlan::Cleanup
+        });
         let state = State {
             own_boot,
             path: record,
             next_gen: 1,
             held: Vec::new(),
             handover_until_ms: None,
-            awaited: Vec::new(),
-            hold_until_ms: None,
-            close_at_hold: false,
-            pending: None,
+            pending_until_ms: None,
             phase: Phase::Open,
             not_ended: 0,
             forget: Vec::new(),
+            closer_waits: false,
+            startup_cleanup,
         };
-        let leases = Leases { state: Arc::new(Mutex::new(state)), gone: watch::Sender::new(false), starts };
+        let leases = Leases {
+            state: Arc::new(Mutex::new(state)),
+            gone: watch::Sender::new(false),
+            starts,
+            report: watch::Sender::new(None),
+            answered: watch::Sender::new(false),
+        };
         (leases, events)
     }
 
@@ -272,10 +271,10 @@ impl Leases {
     /// `Undetermined` if the peer is, or this daemon's boot is unknown;
     /// `Granted` iff the token passed and the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
-    /// generation, clears an in-process handover and a close deferred to
-    /// the hold, stops awaiting its claimant, and may complete a pending
-    /// start. A grant whose record cannot be written is undone and
-    /// refused as `Undetermined`, so a grant never outruns its record.
+    /// generation, clears an in-process handover and, before its
+    /// deadline, a pending start. A grant whose record cannot be written
+    /// is undone and refused as `Undetermined`, so a grant never outruns
+    /// its record.
     pub(crate) fn grant(
         &self,
         req: &FeLeaseReq,
@@ -303,27 +302,15 @@ impl Leases {
         };
         let gen = st.next_gen;
         st.next_gen += 1;
-        let undo = (st.handover_until_ms.take(), st.awaited.clone(), st.hold_until_ms, st.close_at_hold);
-        st.awaited.retain(|w| *w != who);
-        if st.awaited.is_empty() {
-            st.hold_until_ms = None;
-        }
-        st.close_at_hold = false;
-        let qualified = st.pending.as_ref().is_some_and(|p| {
-            !p.expired
-                && now_ms < p.until_ms
-                && match &p.qualify {
-                    Qualify::Any => true,
-                    Qualify::Holders(holders) => holders.contains(&who),
-                }
-        });
-        let cleared = if qualified { st.pending.take() } else { None };
+        let handover = st.handover_until_ms.take();
+        let qualified = st.pending_until_ms.is_some_and(|until| now_ms < until);
+        let cleared = if qualified { st.pending_until_ms.take() } else { None };
         st.held.push((gen, who));
         if let Err(e) = st.persist() {
             st.held.pop();
-            (st.handover_until_ms, st.awaited, st.hold_until_ms, st.close_at_hold) = undo;
+            st.handover_until_ms = handover;
             if qualified {
-                st.pending = cleared;
+                st.pending_until_ms = cleared;
             }
             let path = st.path.as_deref().unwrap_or(Path::new(""));
             tracing::error!(path = %path.display(), "fe.lease refused: held record not written: {e}");
@@ -339,31 +326,35 @@ impl Leases {
     /// A lease's end: `intent` is its well-formed `fe.leaving`, `None` for
     /// an EOF or io error (which means `Close`). Only the last lease's end
     /// decides anything; an unknown or already-removed generation is a
-    /// no-op. A recorded holder inside its hold counts as present, so a
-    /// `Close` then waits for the hold.
+    /// no-op.
     pub(crate) fn depart(&self, gen: u64, intent: Option<LeaveIntent>, now_ms: u64) -> Decision {
         let mut st = self.lock();
         let Some(at) = st.held.iter().position(|(g, _)| *g == gen) else {
             return Decision::None;
         };
         st.held.remove(at);
+        self.decide(st, intent, now_ms)
+    }
+
+    /// A `fe.leaving{close}` after this connection's own `Keep`: the
+    /// user's latest intent wins, so it is that window's `Close` departure
+    /// at this moment. With no other lease held it is the shutdown.
+    pub(crate) fn close_after_keep(&self, now_ms: u64) -> Decision {
+        let st = self.lock();
+        self.decide(st, Some(LeaveIntent::Close), now_ms)
+    }
+
+    /// What a departure decides once its lease is gone: nothing unless it
+    /// was the last.
+    fn decide(&self, mut st: MutexGuard<'_, State>, intent: Option<LeaveIntent>, now_ms: u64) -> Decision {
         if !st.held.is_empty() || st.phase != Phase::Open {
             st.persist_or_log();
             return Decision::None;
         }
         match intent.unwrap_or(LeaveIntent::Close) {
-            LeaveIntent::Close if st.in_hold(now_ms) => {
-                st.close_at_hold = true;
-                tracing::info!(
-                    "window closed; staying until {} for recorded window(s) {:?} to re-lease",
-                    st.hold_until_ms.unwrap_or_default(),
-                    st.awaited_pids()
-                );
-                st.persist_or_log();
-                Decision::None
-            }
             LeaveIntent::Close => {
                 st.close();
+                st.closer_waits = intent.is_some();
                 drop(st);
                 self.gone.send_replace(true);
                 Decision::Shutdown
@@ -380,36 +371,20 @@ impl Leases {
         }
     }
 
-    /// The 1 s ticker's check, in order: a passed hold, once the rows are
-    /// released, stops awaiting the recorded holders, and a close deferred
-    /// to it is a shutdown; an expired pending start is a Cleanup, handed
-    /// out once; an expired handover with no lease held and no recorded
-    /// holder inside its hold is a shutdown.
+    /// The 1 s ticker's check: a passed pending start with a lease held is
+    /// cleared and decides nothing; a passed handover or pending start with
+    /// no lease held is a shutdown.
     pub(crate) fn tick(&self, now_ms: u64) -> Tick {
         let mut st = self.lock();
         if st.phase != Phase::Open {
             return Tick::None;
         }
-        if let Some(until) = st.hold_until_ms.filter(|until| *until <= now_ms) {
-            if st.close_at_hold && st.held.is_empty() {
-                let pids = st.awaited_pids();
-                tracing::info!("recorded window(s) {pids:?} did not re-lease by {until}: shutting down as a close");
-                st.close();
-                drop(st);
-                self.gone.send_replace(true);
-                return Tick::Shutdown;
-            }
-            if st.pending.is_none() {
-                st.awaited.clear();
-                st.hold_until_ms = None;
-                st.persist_or_log();
-            }
+        let passed = |until: Option<u64>| until.is_some_and(|until| until <= now_ms);
+        if passed(st.pending_until_ms) && !st.held.is_empty() {
+            st.pending_until_ms = None;
+            st.persist_or_log();
         }
-        if let Some(p) = st.pending.as_mut().filter(|p| !p.expired && p.until_ms <= now_ms) {
-            p.expired = true;
-            return Tick::Cleanup;
-        }
-        if st.held.is_empty() && st.handover_until_ms.is_some_and(|until| until <= now_ms) && !st.in_hold(now_ms) {
+        if st.held.is_empty() && (passed(st.handover_until_ms) || passed(st.pending_until_ms)) {
             st.close();
             drop(st);
             self.gone.send_replace(true);
@@ -435,21 +410,18 @@ impl Leases {
         }
         st.not_ended = not_ended;
         st.forget = forget;
-        st.persist()
+        let written = st.persist();
+        drop(st);
+        self.report.send_replace(Some(not_ended));
+        written
     }
 
-    /// The end of a startup Cleanup, from the plan or from an expired
-    /// pending start: its report written as the record, and the expired
-    /// pending start and its awaited holders cleared. It never touches the
-    /// phase, so a shutdown that began during the Cleanup stays `closing`
-    /// until its own step 5.
+    /// The end of a startup Cleanup: its report written as the record. It
+    /// never touches the phase, so a shutdown that began during the
+    /// Cleanup stays `closing` until its own step 5.
     pub(crate) fn finish_cleanup(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
-        if st.pending.as_ref().is_some_and(|p| p.expired) {
-            st.pending = None;
-        }
-        st.awaited.clear();
-        st.hold_until_ms = None;
+        st.startup_cleanup = false;
         st.not_ended = not_ended;
         st.forget = forget;
         st.persist()
@@ -475,17 +447,12 @@ impl Leases {
         self.lock().record()
     }
 
-    /// A start's Pending plan: the record keeps its handover deadline
-    /// until a qualifying lease or the Cleanup, and its holders, awaited,
-    /// until each re-leases or the hold `until_ms` passes. Written before
-    /// it returns, so the hold is on disk before any row is held back.
-    pub(crate) fn install_pending(&self, until_ms: u64, qualify: Qualify) -> std::io::Result<()> {
+    /// A start's Pending plan. Its deadline is written to the record as
+    /// `handover_until_ms` before it returns, so a restart inside the
+    /// window reads the same deadline and never extends it.
+    pub(crate) fn install_pending(&self, until_ms: u64) -> std::io::Result<()> {
         let mut st = self.lock();
-        if let Qualify::Holders(holders) = &qualify {
-            st.awaited = holders.clone();
-            st.hold_until_ms = Some(until_ms);
-        }
-        st.pending = Some(Pending { until_ms, qualify, expired: false });
+        st.pending_until_ms = Some(until_ms);
         st.persist()
     }
 
@@ -493,6 +460,263 @@ impl Leases {
     pub(crate) async fn gone(&self) {
         let _ = self.gone.subscribe().wait_for(|gone| *gone).await;
     }
+
+    /// The deciding departure's window waits for the shutdown's count.
+    pub(crate) fn closer_waits(&self) -> bool {
+        self.lock().closer_waits
+    }
+
+    /// Resolves with shutdown step 5's `not_ended`.
+    async fn report(&self) -> u32 {
+        let mut rx = self.report.subscribe();
+        let n = match rx.wait_for(Option::is_some).await {
+            Ok(n) => n.unwrap_or_default(),
+            Err(_) => 0,
+        };
+        n
+    }
+
+    /// Resolves once the waiting closer has been answered or gave up.
+    pub(crate) async fn answered(&self) {
+        let _ = self.answered.subscribe().wait_for(|done| *done).await;
+    }
+}
+
+/// The 1 s ticker: every lease deadline is checked here, never by a
+/// per-handover timer. It stops once a shutdown has begun.
+pub(crate) async fn ticker(leases: Arc<Leases>) {
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(1));
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = every.tick() => {}
+            () = leases.gone() => return,
+        }
+        leases.tick(now_ms());
+    }
+}
+
+/// The connecting process, read from the OS at accept, before the stream
+/// is split (1.2). Only Linux checks the uid, because it comes with the
+/// pid there; on macOS the socket directory and on Windows the pipe ACL
+/// already bind the peer to this user. Any OS-call failure is
+/// `Undetermined`.
+pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) -> PeerAuthOutcome {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream else {
+            return PeerAuthOutcome::Undetermined;
+        };
+        match sot_log::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
+            Ok((pid, created)) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
+            Err(_) => PeerAuthOutcome::Undetermined,
+        }
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        use interprocess::local_socket::traits::StreamCommon as _;
+        let Ok(creds) = stream.peer_creds() else {
+            return PeerAuthOutcome::Undetermined;
+        };
+        #[cfg(target_os = "linux")]
+        match creds.euid() {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            Some(uid) if uid == unsafe { libc::geteuid() } => {}
+            Some(_) => return PeerAuthOutcome::Foreign,
+            None => return PeerAuthOutcome::Undetermined,
+        }
+        let Some(pid) = creds.pid().and_then(|pid| u32::try_from(pid).ok()) else {
+            return PeerAuthOutcome::Undetermined;
+        };
+        match sot_log::challenge::process_created(pid) {
+            Ok(created) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
+            Err(_) => PeerAuthOutcome::Undetermined,
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = stream;
+        PeerAuthOutcome::Undetermined
+    }
+}
+
+/// A lease line's cap; an over-cap line is discarded up to its newline
+/// and answered with an error.
+const LINE_CAP: usize = 64 * 1024;
+
+/// One line of a lease connection.
+enum Line {
+    Complete(Vec<u8>),
+    OverCap,
+    /// EOF, including a partial line followed by EOF.
+    End,
+}
+
+async fn read_line<R: AsyncBufRead + Unpin>(rx: &mut R) -> std::io::Result<Line> {
+    let (mut line, mut over) = (Vec::new(), false);
+    loop {
+        let buf = rx.fill_buf().await?;
+        if buf.is_empty() {
+            return Ok(Line::End);
+        }
+        let (take, done) = match buf.iter().position(|b| *b == b'\n') {
+            Some(at) => (at + 1, true),
+            None => (buf.len(), false),
+        };
+        if !over {
+            line.extend_from_slice(&buf[..take]);
+            if line.len() > LINE_CAP {
+                over = true;
+                line = Vec::new();
+            }
+        }
+        rx.consume(take);
+        if done {
+            return Ok(if over { Line::OverCap } else { Line::Complete(line) });
+        }
+    }
+}
+
+/// One lease connection, from its `fe.lease` to its end (1.2, 1.3). The
+/// grant's answer carries the state root's hash and the unacked count. A
+/// granted lease departs at its well-formed `fe.leaving`, at EOF or at an
+/// io error (both `Close`); any other line is answered with an error and
+/// the lease continues, and the daemon never closes it. A
+/// `fe.leaving{close}` that decided the shutdown is answered after it,
+/// with the count it could not end.
+pub(crate) async fn hold<R, W>(
+    mut rx: R,
+    mut tx: W,
+    first: Frame,
+    peer: PeerAuthOutcome,
+    expected_token: Option<&str>,
+    leases: &Leases,
+    state_root: Option<&Path>,
+) -> anyhow::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let Ok(req) = serde_json::from_value::<FeLeaseReq>(first.payload.clone()) else {
+        return crate::proxy::reject(&mut tx, first.id, op::FE_LEASE, "bad_request", "malformed fe.lease").await;
+    };
+    let token_ok = expected_token.is_none_or(|expected| {
+        let presented = req.token.clone().unwrap_or_default();
+        crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes())
+    });
+    let (outcome, gen) = leases.grant(&req, &peer, token_ok, now_ms());
+    let granted = gen.is_some();
+    let res = FeLeaseRes {
+        outcome,
+        state_root: state_root.filter(|_| granted).map(sot_log::state_dir::state_dir_hash),
+        not_ended: if granted { leases.notice() } else { 0 },
+    };
+    reply(&mut tx, first.id, op::FE_LEASE, &res).await?;
+    let Some(gen) = gen else { return Ok(()) };
+
+    let mut held = Some(gen);
+    // This lease departed with `Keep`: a later `fe.leaving{close}` on it
+    // still applies.
+    let mut kept = false;
+    loop {
+        let bytes = match read_line(&mut rx).await {
+            Ok(Line::Complete(bytes)) => bytes,
+            Ok(Line::OverCap) => {
+                crate::proxy::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "line over the lease cap").await?;
+                continue;
+            }
+            Ok(Line::End) => break,
+            Err(e) => {
+                tracing::info!(error = %e, "lease connection read failed: it departs as a close");
+                break;
+            }
+        };
+        let frame = match serde_json::from_slice::<Frame>(&bytes) {
+            Ok(frame) if frame.kind == Kind::Req => frame,
+            _ => {
+                crate::proxy::reject(&mut tx, 0, op::FE_LEASE, "bad_request", "not a request").await?;
+                continue;
+            }
+        };
+        match frame.op.as_str() {
+            op::FE_LEAVING => {
+                let Ok(leaving) = serde_json::from_value::<FeLeavingReq>(frame.payload.clone()) else {
+                    crate::proxy::reject(&mut tx, frame.id, op::FE_LEAVING, "bad_request", "malformed fe.leaving").await?;
+                    continue;
+                };
+                let decision = match held.take() {
+                    Some(gen) => {
+                        kept = leaving.intent == LeaveIntent::Keep;
+                        leases.depart(gen, Some(leaving.intent), now_ms())
+                    }
+                    None if kept && leaving.intent == LeaveIntent::Close => {
+                        kept = false;
+                        leases.close_after_keep(now_ms())
+                    }
+                    None => Decision::None,
+                };
+                if decision == Decision::Shutdown && leaving.intent == LeaveIntent::Close {
+                    answer_close(&mut rx, &mut tx, frame.id, leases).await;
+                    return Ok(());
+                }
+                reply(&mut tx, frame.id, op::FE_LEAVING, &FeLeavingRes { not_ended: 0 }).await?;
+            }
+            op::FE_NOTICE_SEEN => {
+                let Ok(seen) = serde_json::from_value::<FeNoticeSeenReq>(frame.payload.clone()) else {
+                    crate::proxy::reject(&mut tx, frame.id, op::FE_NOTICE_SEEN, "bad_request", "malformed fe.notice_seen").await?;
+                    continue;
+                };
+                if let Err(e) = leases.notice_seen(seen.not_ended) {
+                    tracing::error!("held record not written after fe.notice_seen: {e}");
+                }
+                reply(&mut tx, frame.id, op::FE_NOTICE_SEEN, &FeNoticeSeenRes {}).await?;
+            }
+            other => {
+                crate::proxy::reject(&mut tx, frame.id, other, "bad_request", "not a lease request").await?;
+            }
+        }
+    }
+    if let Some(gen) = held {
+        leases.depart(gen, None, now_ms());
+    }
+    Ok(())
+}
+
+/// Shutdown step 6 for the window whose `fe.leaving{close}` decided it:
+/// the count after the shutdown, then up to `NOTICE_ACK_WAIT` for its
+/// `fe.notice_seen` when the count is above 0. Answered whatever happens,
+/// so the shutdown never waits on a broken window.
+async fn answer_close<R, W>(rx: &mut R, tx: &mut W, id: u64, leases: &Leases)
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let not_ended = leases.report().await;
+    if reply(tx, id, op::FE_LEAVING, &FeLeavingRes { not_ended }).await.is_ok() && not_ended > 0 {
+        let seen = async {
+            while let Ok(Line::Complete(bytes)) = read_line(rx).await {
+                let Ok(frame) = serde_json::from_slice::<Frame>(&bytes) else { continue };
+                if frame.op != op::FE_NOTICE_SEEN {
+                    continue;
+                }
+                if let Ok(seen) = serde_json::from_value::<FeNoticeSeenReq>(frame.payload) {
+                    if let Err(e) = leases.notice_seen(seen.not_ended) {
+                        tracing::error!("held record not written after fe.notice_seen: {e}");
+                    }
+                    let _ = reply(tx, frame.id, op::FE_NOTICE_SEEN, &FeNoticeSeenRes {}).await;
+                    return;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(bounds::NOTICE_ACK_WAIT, seen).await;
+    }
+    leases.answered.send_replace(true);
+}
+
+async fn reply<W: AsyncWrite + Unpin>(tx: &mut W, id: u64, op: &str, res: &impl Serialize) -> anyhow::Result<()> {
+    let frame = Frame::res(id, op, serde_json::to_value(res)?);
+    crate::server::write_frame_within(tx, &frame, None, bounds::LEASE_REPLY_WAIT).await
 }
 
 /// `Ok(None)` when there is no record; `Err` when it cannot be read,
@@ -588,14 +812,10 @@ pub(crate) fn startup_plan(
         if until_ms <= now_ms {
             return StartPlan::Cleanup;
         }
-        return StartPlan::Pending { until_ms, qualify: Qualify::Any };
-    }
-    if rec.hold_until_ms.is_some_and(|until| until <= now_ms) {
-        return StartPlan::Cleanup;
+        return StartPlan::Pending { until_ms };
     }
     if !rec.holders.is_empty() {
-        let until_ms = rec.hold_until_ms.unwrap_or(now_ms.saturating_add(handover_bound_ms()));
-        return StartPlan::Pending { until_ms, qualify: Qualify::Holders(rec.holders.clone()) };
+        return StartPlan::Pending { until_ms: now_ms.saturating_add(handover_bound_ms()) };
     }
     StartPlan::Resume
 }
@@ -603,7 +823,6 @@ pub(crate) fn startup_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sot_log::challenge::PeerAuthenticated;
     use std::time::Duration;
 
     const BOOT: &str = "boot-a";
@@ -627,7 +846,6 @@ mod tests {
             boot: BOOT.into(),
             holders: vec![],
             handover_until_ms: None,
-            hold_until_ms: None,
             closing: false,
             not_ended: 0,
             forget: vec![],
@@ -644,7 +862,7 @@ mod tests {
     fn fixture(own_boot: Option<&str>) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(bounds::HELD_RECORD_FILE);
-        let (leases, starts) = Leases::new(own_boot.map(String::from), Some(path.clone()));
+        let (leases, starts) = Leases::new(own_boot.map(String::from), Some(path.clone()), T0);
         Fixture { leases, starts, path, _dir: dir }
     }
 
@@ -658,6 +876,66 @@ mod tests {
         fn on_disk(&self) -> Option<HeldRecord> {
             read_record(&self.path).expect("the record parses")
         }
+
+        /// The start's plan at `now`, which must be Pending, installed;
+        /// its deadline.
+        fn install_planned(&self, now: u64) -> u64 {
+            let StartPlan::Pending { until_ms } = startup_plan(&read_record(&self.path), Ok(BOOT), now) else {
+                panic!("the record plans Pending");
+            };
+            self.leases.install_pending(until_ms).unwrap();
+            until_ms
+        }
+    }
+
+    /// A start at `T0` over `text`, the bytes the last daemon left: the
+    /// record on disk first, then this daemon built on it.
+    fn restart_raw(text: &str) -> Fixture {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(bounds::HELD_RECORD_FILE);
+        std::fs::write(&path, text).unwrap();
+        let (leases, starts) = Leases::new(Some(BOOT.into()), Some(path.clone()), T0);
+        Fixture { leases, starts, path, _dir: dir }
+    }
+
+    fn restart(rec: &HeldRecord) -> Fixture {
+        restart_raw(&serde_json::to_string(rec).unwrap())
+    }
+
+    #[test]
+    fn lease_during_startup_cleanup_keeps_the_record() {
+        let closing = HeldRecord { closing: true, ..empty() };
+        let other_boot = HeldRecord { boot: "boot-b".into(), holders: vec![id(9)], ..empty() };
+        for (what, rec) in [("closing", closing), ("another boot", other_boot)] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(bounds::HELD_RECORD_FILE);
+            write_or_delete(&path, &rec).unwrap();
+            let (leases, _starts) = Leases::new(Some(BOOT.into()), Some(path.clone()), T0);
+            let who = id(1);
+            let (outcome, _) = leases.grant(&req(&who), &peer(&who), true, T0);
+            assert_eq!(outcome, LeaseOutcome::Granted, "{what}: a grant still answers the window");
+            assert_eq!(
+                read_record(&path).unwrap(),
+                Some(rec.clone()),
+                "{what}: a grant during the startup Cleanup rewrote the record"
+            );
+            leases.finish_cleanup(0, Vec::new()).unwrap();
+            let after = read_record(&path).unwrap().expect("the holder is recorded once the Cleanup finishes");
+            assert_eq!(after.holders, vec![who], "{what}");
+            assert!(!after.closing, "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_expiry_shuts_down() {
+        let f = fixture(Some(BOOT));
+        f.leases.install_pending(T0 + 10).unwrap();
+        assert_eq!(f.leases.tick(T0 + 20), Tick::Shutdown);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), f.leases.gone()).await.is_ok(),
+            "a pending start that expired with no qualifying lease did not shut down"
+        );
+        assert!(f.on_disk().expect("the record").closing, "the shutdown did not record closing");
     }
 
     #[test]
@@ -721,7 +999,7 @@ mod tests {
         assert_ne!(f.grant(&id(2)), a, "a later grant has a new generation");
 
         let mut f = fixture(Some(BOOT));
-        f.leases.install_pending(T0 + handover_bound_ms(), Qualify::Holders(vec![id(1)])).unwrap();
+        f.leases.install_pending(T0 + handover_bound_ms()).unwrap();
         let before = f.leases.record();
         mode(&f, 0o500);
         assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true, T0), (LeaseOutcome::Undetermined, None));
@@ -825,96 +1103,30 @@ mod tests {
     fn pending_start_table() {
         let until = T0 + handover_bound_ms();
         let mut f = fixture(Some(BOOT));
-        f.leases.install_pending(until, Qualify::Any).unwrap();
+        f.leases.install_pending(until).unwrap();
         assert_eq!(f.on_disk(), Some(HeldRecord { handover_until_ms: Some(until), ..empty() }));
         f.grant(&id(9));
-        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "any grant completes a handover start");
+        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "any grant completes a pending start");
         assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(9)], ..empty() }));
         assert_eq!(f.leases.tick(until), Tick::None);
 
         let mut f = fixture(Some(BOOT));
-        f.leases.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
-        assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], hold_until_ms: Some(until), ..empty() }));
-        f.grant(&id(2));
-        assert!(f.starts.try_recv().is_err(), "an unrecorded window does not complete it");
-        assert_eq!(f.leases.record().holders, vec![id(2), id(1)]);
-        f.grant(&id(1));
-        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "a recorded holder completes it");
-        assert_eq!(f.leases.tick(until), Tick::None);
-
-        for qualify in [Qualify::Any, Qualify::Holders(vec![id(1)])] {
-            let mut f = fixture(Some(BOOT));
-            f.leases.install_pending(until, qualify.clone()).unwrap();
-            assert_eq!(f.leases.tick(until - 1), Tick::None);
-            assert_eq!(f.leases.tick(until), Tick::Cleanup, "{qualify:?}");
-            assert_eq!(f.leases.tick(until + 1), Tick::None, "handed out once");
-            let read = Ok(f.on_disk());
-            assert_ne!(startup_plan(&read, Ok(BOOT), until + 1), StartPlan::Resume, "a kill mid-Cleanup never resumes, {qualify:?}");
-            f.leases.grant(&req(&id(1)), &peer(&id(1)), true, until);
-            assert!(f.starts.try_recv().is_err(), "a lease after expiry does not complete it");
-            f.leases.finish_cleanup(0, vec![]).unwrap();
-            assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }), "{qualify:?}");
-        }
+        f.leases.install_pending(until).unwrap();
+        assert_eq!(f.leases.tick(until - 1), Tick::None);
+        assert_eq!(f.leases.tick(until), Tick::Shutdown, "expiry with no lease held");
+        assert_eq!(f.leases.tick(until + 1), Tick::None, "decided once");
+        assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }));
+        assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true, until).0, LeaseOutcome::Closing);
+        assert!(f.starts.try_recv().is_err(), "a lease after expiry does not complete it");
     }
 
     #[test]
     fn cleanup_finish_never_ends_a_shutdown() {
-        let until = T0 + handover_bound_ms();
-        let f = fixture(Some(BOOT));
-        f.leases.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
-        assert_eq!(f.leases.tick(until), Tick::Cleanup);
+        let f = restart(&HeldRecord { holders: vec![id(1)], handover_until_ms: Some(T0), ..empty() });
         f.leases.begin_close();
         f.leases.finish_cleanup(0, vec![]).unwrap();
         assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "closing until the shutdown's own step 5");
-        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, until).0, LeaseOutcome::Closing);
-    }
-
-    #[test]
-    fn recorded_holder_counts_until_hold_deadline() {
-        let (a, b) = (id(1), id(2));
-        let mut f = fixture(Some(BOOT));
-        write_or_delete(&f.path, &HeldRecord { holders: vec![a.clone(), b.clone()], ..empty() }).unwrap();
-        let StartPlan::Pending { until_ms: until, qualify } = startup_plan(&read_record(&f.path), Ok(BOOT), T0) else {
-            panic!("recorded holders plan Pending");
-        };
-        f.leases.install_pending(until, qualify).unwrap();
-        let ga = f.grant(&a);
-        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified), "the first recorded holder releases the rows");
-        let rec = f.on_disk().unwrap();
-        assert!(rec.holders.contains(&b), "B is still awaited: {rec:?}");
-        assert_eq!(rec.hold_until_ms, Some(until), "the same hold");
-        assert_eq!(f.leases.depart(ga, Some(LeaveIntent::Close), T0 + 1), Decision::None, "B counts as present");
-        assert_eq!(f.leases.grant(&req(&b), &peer(&b), true, until - 1).0, LeaseOutcome::Granted, "B re-leases in time");
-        assert_eq!(f.leases.tick(until + 1), Tick::None);
-        assert_eq!(f.leases.record().holders, vec![b]);
-    }
-
-    #[test]
-    fn hold_deadline_survives_restarts() {
-        let f = fixture(Some(BOOT));
-        write_or_delete(&f.path, &HeldRecord { holders: vec![id(1)], ..empty() }).unwrap();
-        let until = T0 + handover_bound_ms();
-        for now in [T0, T0 + 10_000, T0 + 20_000] {
-            let plan = startup_plan(&read_record(&f.path), Ok(BOOT), now);
-            assert_eq!(plan, StartPlan::Pending { until_ms: until, qualify: Qualify::Holders(vec![id(1)]) }, "a start at {now}");
-            let (restarted, _) = Leases::new(Some(BOOT.into()), Some(f.path.clone()));
-            restarted.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
-            assert_eq!(f.on_disk().unwrap().hold_until_ms, Some(until), "written at once, at {now}");
-        }
-        assert_eq!(startup_plan(&read_record(&f.path), Ok(BOOT), T0 + 61_000), StartPlan::Cleanup);
-    }
-
-    #[test]
-    fn absent_holder_ends_at_hold_deadline() {
-        let until = T0 + handover_bound_ms();
-        let f = fixture(Some(BOOT));
-        f.leases.install_pending(until, Qualify::Holders(vec![id(1), id(2)])).unwrap();
-        let a = f.grant(&id(1));
-        assert_eq!(f.leases.depart(a, Some(LeaveIntent::Close), T0 + 1), Decision::None, "deferred to the hold");
-        assert_eq!(f.leases.tick(until - 1), Tick::None);
-        assert_eq!(f.leases.tick(until), Tick::Shutdown, "the absent window did not re-lease: a close");
-        assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }));
-        assert_eq!(f.leases.grant(&req(&id(3)), &peer(&id(3)), true, until).0, LeaseOutcome::Closing);
+        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, T0).0, LeaseOutcome::Closing);
     }
 
     #[tokio::test]
@@ -1001,18 +1213,10 @@ mod tests {
             ("other boot, holders", rec(|r| (r.boot, r.holders) = ("boot-b".into(), vec![id(1)])), Cleanup),
             ("handover at its deadline", rec(|r| r.handover_until_ms = Some(T0)), Cleanup),
             ("handover passed", rec(|r| r.handover_until_ms = Some(T0 - 1)), Cleanup),
-            ("handover in the future", rec(|r| r.handover_until_ms = Some(T0 + 5)), Pending { until_ms: future, qualify: Qualify::Any }),
-            (
-                "holders",
-                rec(|r| r.holders = vec![id(1)]),
-                Pending { until_ms: T0 + handover_bound_ms(), qualify: Qualify::Holders(vec![id(1)]) },
-            ),
-            ("hold passed", rec(|r| (r.holders, r.hold_until_ms) = (vec![id(1)], Some(T0 - 1))), Cleanup),
-            (
-                "holders, hold in the future",
-                rec(|r| (r.holders, r.hold_until_ms) = (vec![id(1)], Some(T0 + 5))),
-                Pending { until_ms: future, qualify: Qualify::Holders(vec![id(1)]) },
-            ),
+            ("handover in the future", rec(|r| r.handover_until_ms = Some(T0 + 5)), Pending { until_ms: future }),
+            ("holders", rec(|r| r.holders = vec![id(1)]), Pending { until_ms: T0 + handover_bound_ms() }),
+            ("holders, handover passed", rec(|r| (r.holders, r.handover_until_ms) = (vec![id(1)], Some(T0 - 1))), Cleanup),
+            ("holders, handover in the future", rec(|r| (r.holders, r.handover_until_ms) = (vec![id(1)], Some(T0 + 5))), Pending { until_ms: future }),
             ("only not_ended and forget", rec(|r| (r.not_ended, r.forget) = (2, vec!["w".into()])), Resume),
         ];
         for (name, read, want) in &cases {
@@ -1027,25 +1231,99 @@ mod tests {
     }
 
     #[test]
-    fn deferred_close_survives_a_pending_expiry() {
-        let f = fixture(Some(BOOT));
-        let until = T0 + 60_000;
-        f.leases.install_pending(until, Qualify::Holders(vec![id(1), id(2)])).unwrap();
-        let gen = f.grant(&id(3));
-        assert_eq!(f.leases.depart(gen, Some(LeaveIntent::Close), T0), Decision::None);
-        assert_eq!(f.leases.tick(until), Tick::Shutdown, "a deferred close is a shutdown at the deadline");
-        assert!(f.on_disk().expect("the record is kept").closing);
-    }
-
-    #[test]
-    fn shutdown_forgets_awaited_holders() {
-        let f = fixture(Some(BOOT));
-        f.leases.install_pending(T0 + 60_000, Qualify::Holders(vec![id(1), id(2)])).unwrap();
+    fn shutdown_forgets_the_restart_pending() {
+        let f = restart(&HeldRecord { holders: vec![id(1), id(2)], ..empty() });
+        f.install_planned(T0);
         f.leases.begin_close();
         f.leases.finish_shutdown(0, vec![]).unwrap();
         let rec = f.on_disk();
-        assert!(rec.as_ref().map_or(true, |r| r.holders.is_empty() && r.hold_until_ms.is_none()), "{rec:?}");
+        assert!(rec.as_ref().map_or(true, |r| r.holders.is_empty() && r.handover_until_ms.is_none()), "{rec:?}");
         assert_eq!(startup_plan(&read_record(&f.path), Ok(BOOT), T0 + 1), StartPlan::Resume);
+    }
+
+    #[test]
+    fn restart_with_holders_any_lease_clears_the_pending() {
+        let (a, b) = (id(1), id(2));
+        let mut f = restart(&HeldRecord { holders: vec![a], ..empty() });
+        let until = f.install_planned(T0);
+        f.grant(&b);
+        assert_eq!(f.leases.tick(until), Tick::None, "any granted lease clears the restart's pending: its deadline decides nothing");
+        assert_eq!(f.starts.try_recv(), Ok(StartEvent::Qualified));
+    }
+
+    #[test]
+    fn lease_granted_before_install_pending_still_counts() {
+        let a = id(1);
+        let f = restart(&HeldRecord { holders: vec![a.clone()], ..empty() });
+        f.grant(&a);
+        let until = f.install_planned(T0);
+        assert_eq!(f.leases.tick(until), Tick::None, "a lease held when the pending was installed counts: its deadline decides nothing");
+        assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![a], ..empty() }), "the pending is cleared");
+    }
+
+    #[test]
+    fn close_after_pending_clears_is_immediate() {
+        let (a, b) = (id(1), id(2));
+        let f = restart(&HeldRecord { holders: vec![a.clone(), b], ..empty() });
+        f.install_planned(T0);
+        let gen = f.grant(&a);
+        assert_eq!(
+            f.leases.depart(gen, Some(LeaveIntent::Close), T0 + 1),
+            Decision::Shutdown,
+            "the last lease's Close after the pending cleared is a shutdown at once, never deferred for a recorded holder"
+        );
+        assert!(f.on_disk().expect("the record").closing);
+    }
+
+    #[test]
+    fn pending_deadline_is_persisted_once() {
+        let f = restart(&HeldRecord { holders: vec![id(1)], ..empty() });
+        let until = f.install_planned(T0);
+        assert_eq!(
+            f.on_disk().map(|r| r.handover_until_ms),
+            Some(Some(until)),
+            "install_pending writes its deadline as handover_until_ms"
+        );
+        for now in [T0 + 10_000, until - 1] {
+            let plan = startup_plan(&read_record(&f.path), Ok(BOOT), now);
+            assert!(matches!(plan, StartPlan::Pending { until_ms, .. } if until_ms == until), "a restart at {now} keeps the deadline: {plan:?}");
+        }
+        assert_eq!(startup_plan(&read_record(&f.path), Ok(BOOT), until), StartPlan::Cleanup, "a restart at the deadline");
+    }
+
+    #[test]
+    fn unreadable_record_cleanup_keeps_the_record_on_grant() {
+        let f = restart_raw("{not json");
+        f.grant(&id(1));
+        assert_eq!(
+            std::fs::read_to_string(&f.path).unwrap(),
+            "{not json",
+            "a grant during an unreadable record's Cleanup rewrote the record"
+        );
+        f.leases.finish_cleanup(0, vec![]).unwrap();
+        assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }), "recorded once the Cleanup finishes");
+    }
+
+    #[test]
+    fn keep_during_startup_cleanup_keeps_the_record() {
+        let passed = HeldRecord { holders: vec![id(9)], handover_until_ms: Some(T0 - 1), ..empty() };
+        for intent in [LeaveIntent::Keep, LeaveIntent::Handover] {
+            let f = restart(&passed);
+            let gen = f.grant(&id(1));
+            f.leases.depart(gen, Some(intent), T0);
+            assert_eq!(f.on_disk(), Some(passed.clone()), "a {intent:?} during the startup Cleanup deleted or rewrote the record");
+        }
+    }
+
+    #[test]
+    fn close_during_startup_cleanup_writes_closing() {
+        let f = restart_raw("{not json");
+        let gen = f.grant(&id(1));
+        assert_eq!(f.leases.depart(gen, Some(LeaveIntent::Close), T0), Decision::Shutdown);
+        assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "a last Close during the startup Cleanup");
+        let f = restart_raw("{not json");
+        f.leases.begin_close();
+        assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "begin_close during the startup Cleanup");
     }
 
     #[test]
@@ -1056,7 +1334,6 @@ mod tests {
         let full = HeldRecord {
             holders: vec![id(1)],
             handover_until_ms: Some(T0),
-            hold_until_ms: Some(T0 + 1),
             closing: true,
             not_ended: 3,
             forget: vec!["w1".into()],
@@ -1067,12 +1344,17 @@ mod tests {
         write_or_delete(&path, &HeldRecord { handover_until_ms: None, ..full }).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            r#"{"v":1,"boot":"boot-a","holders":[{"boot":"boot-a","pid":1,"created":7001}],"handover_until_ms":null,"hold_until_ms":1000001,"closing":true,"not_ended":3,"forget":["w1"]}"#
+            r#"{"v":1,"boot":"boot-a","holders":[{"boot":"boot-a","pid":1,"created":7001}],"handover_until_ms":null,"closing":true,"not_ended":3,"forget":["w1"]}"#
         );
-        let keeps: [(&str, fn(&mut HeldRecord)); 6] = [
+        std::fs::write(
+            &path,
+            r#"{"v":1,"boot":"boot-a","holders":[],"handover_until_ms":null,"hold_until_ms":1000001,"closing":true,"not_ended":0,"forget":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(read_record(&path), Ok(Some(HeldRecord { closing: true, ..empty() })), "a record that still carries hold_until_ms parses");
+        let keeps: [(&str, fn(&mut HeldRecord)); 5] = [
             ("holders", |r| r.holders = vec![id(1)]),
             ("handover", |r| r.handover_until_ms = Some(T0)),
-            ("hold", |r| r.hold_until_ms = Some(T0)),
             ("closing", |r| r.closing = true),
             ("not_ended", |r| r.not_ended = 1),
             ("forget", |r| r.forget = vec!["w".into()]),
