@@ -42,7 +42,8 @@ const MAX_SPREAD: Duration = Duration::from_secs(3);
 /// `← for agents` hint) under the lower rule in place of the footer, which reads free; with `panel`, `focus-hold`
 /// redraws it focused (`❯ ● main`, the hint gone) once the daemon's hold has begun (`marks/hold`), and
 /// `focus-after` does the same once its final check has passed (`marks/final-ok`) and then leaves the cursor on
-/// the panel's first line. Rows through the box, and for `focus-hold` the cursor, stay as they were.
+/// the panel's first line. Rows through the box, and for `focus-hold` the cursor, stay as they were. The stub
+/// writes `marks/focus-moved` at the moment it redraws for either of them.
 fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
@@ -464,6 +465,19 @@ async fn wait_for(what: &str, ready: impl Fn() -> bool) {
     assert!(ready(), "{what} not seen within {WAKE_WITHIN:?}");
 }
 
+/// [`wait_for`] for the stub's agents panel on the row's screen, which only an async read can see; the same
+/// bound and the same failure shape. Sent before this, the mail could be read ahead of the panel's first draw.
+async fn wait_for_panel(row: &mut Row) {
+    let deadline = Instant::now() + WAKE_WITHIN;
+    while Instant::now() < deadline {
+        if row.screen_has("for agents").await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(row.screen_has("for agents").await, "the stub's panel not seen within {WAKE_WITHIN:?}");
+}
+
 /// The wake attempt's marks (`SOT_TEST_WAKE_MARKS`, see [`start_with`]).
 fn marks(row: &Row) -> PathBuf {
     row.env._tmp.path().join("ctl").join("marks")
@@ -477,6 +491,7 @@ fn marks(row: &Row) -> PathBuf {
 async fn panel_focus_arriving_during_the_hold_is_refused() {
     let _serial = SERIAL.lock().await;
     let mut row = start_with("cwph", None, false, &["panel", "focus-hold"], &[]).await;
+    wait_for_panel(&mut row).await;
     append_mail(&row.env, 1);
     let m = marks(&row);
     wait_for("the attempt's done mark", || m.join("done").exists()).await;
@@ -493,7 +508,8 @@ async fn panel_focus_arriving_during_the_hold_is_refused() {
 #[tokio::test]
 async fn focus_moving_after_the_final_check_gets_no_enter() {
     let _serial = SERIAL.lock().await;
-    let row = start_with("cwfa", None, false, &["panel", "focus-after"], &[("SOT_TEST_PACING_HOLD", "1")]).await;
+    let mut row = start_with("cwfa", None, false, &["panel", "focus-after"], &[("SOT_TEST_PACING_HOLD", "1")]).await;
+    wait_for_panel(&mut row).await;
     append_mail(&row.env, 1);
     let m = marks(&row);
     wait_for("the attempt's done mark", || m.join("done").exists()).await;
