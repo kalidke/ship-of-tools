@@ -8,11 +8,14 @@
 # pointer, prunes old versions. All transaction state is namespaced by
 # TARGET: a shared $HOME serves several platforms from one updates root.
 #
-# FAIL-OPEN BY CONTRACT: every problem exits 0 with a "sot-apply:" log line.
-# A verification failure BEFORE mutation leaves everything untouched (and
-# clears a pointer whose stage is damaged, so the daemon re-stages instead
-# of looping). A failure AFTER mutation restores the previous binaries and
-# symlinks before exiting. Invoked by:
+# FAIL-OPEN BY CONTRACT: every problem leaves a working install and a
+# "sot-apply:" log line. A verification failure BEFORE mutation leaves
+# everything untouched and exits 0 (and clears a pointer whose stage is
+# damaged, so the daemon re-stages instead of looping). A backup that cannot
+# be written exits 1 before anything is replaced. A failure AFTER mutation
+# restores the previous binaries and symlinks and exits 0. A rollback that
+# cannot restore a binary exits 1 and leaves the record and links alone.
+# Every caller ignores the status. Invoked by:
 #   - sot-launch (all Unix roles) — which stops/restarts the daemon around it;
 #   - systemd:  ExecStartPre=-<prefix>/bin/sot-apply  (daemon already stopped);
 #   - sotd's update.apply op (arms + exits; the restart path runs this).
@@ -24,6 +27,16 @@
 set -u
 
 log() { echo "sot-apply: $*" >&2; }
+
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): this script
+# runs as an installed binary, before any checkout is known.
+sot_install_copy() {  # <src> <dst> [mode]
+    if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
+        return 0
+    fi
+    rm -f "${2:?}.new.$$"
+    return 1
+}
 
 # Prefix = parent of this script's bin dir.
 SELF="$0"
@@ -42,6 +55,8 @@ esac
 PENDING="$UPDATES/pending-$TARGET.json"
 LASTGOOD="$UPDATES/last-good-$TARGET.json"
 MARKER="$UPDATES/just-applied-$TARGET"
+UNIT_BAK="$UPDATES/sotd.service.prev-$TARGET"
+WRAP_BAK="$UPDATES/sot-launch.prev-$TARGET"
 
 # ---- prefer a STAGED release's OWN sot-apply, once -------------------------
 # Finding 1b (v0.6.5 macOS field report): the INSTALLED copy of this
@@ -94,6 +109,32 @@ printf '%s@%s#sh\n' "$$" "$(hostname 2>/dev/null || echo unknown)" > "$LOCK/owne
 cleanup() { rm -f "${LOCK:?}/owner" 2>/dev/null; rmdir "$LOCK" 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
+# Put back the unit and wrapper the latest apply backed up. A backup exists
+# only when that apply owned and re-rendered the file, so no second ownership
+# check is needed. Failures only log: rollback goes on.
+restore_rendered() {
+    UNIT_FILE="$HOME/.config/systemd/user/sotd.service"
+    WRAP_FILE="$HOME/.local/bin/sot-launch"
+    if [ -f "$UNIT_BAK" ]; then
+        if sot_install_copy "$UNIT_BAK" "$UNIT_FILE"; then
+            log "restored $UNIT_FILE"
+        else
+            log "could not restore $UNIT_FILE (backup kept at $UNIT_BAK)"
+        fi
+        if command -v systemctl >/dev/null 2>&1; then
+            timeout 10 systemctl --user daemon-reload >/dev/null 2>&1 \
+                || log "systemctl --user daemon-reload failed (the unit file is restored)"
+        fi
+    fi
+    if [ -f "$WRAP_BAK" ]; then
+        if sot_install_copy "$WRAP_BAK" "$WRAP_FILE"; then
+            log "restored $WRAP_FILE"
+        else
+            log "could not restore $WRAP_FILE (backup kept at $WRAP_BAK)"
+        fi
+    fi
+}
+
 # ---- rollback mode -----------------------------------------------------------
 # sot-apply --rollback: restore the last-good transaction after a crash-loop
 # (invoked by sot-launch's supervisor, gated there on a FRESH just-applied
@@ -111,11 +152,18 @@ if [ "${1:-}" = "--rollback" ]; then
         log "install already at last-good $LG_TAG — nothing to roll back"; exit 0
     fi
     log "ROLLING BACK to $LG_TAG (marking $BAD_TAG bad for $TARGET)"
+    # A binary that cannot be restored fails the rollback before the links
+    # or the record move, so they never name last-good beside a bad binary.
     for b in sot sotd sot-capsule sot-apply; do
-        [ -f "$PREFIX/bin/$b.prev" ] && cp -p "$PREFIX/bin/$b.prev" "$PREFIX/bin/$b"
+        [ -f "$PREFIX/bin/$b.prev" ] || continue
+        sot_install_copy "$PREFIX/bin/$b.prev" "$PREFIX/bin/$b" || {
+            log "ERROR: rollback could not restore $PREFIX/bin/$b from $PREFIX/bin/$b.prev; install.json and repo/current are unchanged"
+            exit 1
+        }
     done
     ln -sfn "$LG_CHECKOUT" "$PREFIX/repo/current"
     ln -sfn "$LG_CHECKOUT" "$PREFIX/julia/current" 2>/dev/null
+    restore_rendered
     case "$BAD_TAG" in
         v[0-9]*) : > "$UPDATES/bad-$BAD_TAG-$TARGET" ;;
     esac
@@ -206,25 +254,65 @@ HEAD="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null)"
 DIRTY="$(git -C "$CHECKOUT" status --porcelain -uno 2>/dev/null)"
 [ -z "$DIRTY" ] || { log "prepared checkout has modified tracked files — dropping pointer"; drop_pending; exit 0; }
 
-# ---- record last-good (the pre-apply state) for rollback ---------------------
+# ---- every backup, and last-good, before any replacement --------------------
+# Each backup is written whole as <backup>.new, then last-good. Only when all
+# of that is written does each .new move over its backup; a backup this apply
+# has no new copy of belongs to an older apply and goes. A failure up to
+# there removes every .new, keeps the old backups, replaces nothing and
+# exits 1, so the backups always belong to the latest apply.
+# The library comes from the commit being applied; an older target without
+# one backs up and re-renders no unit or wrapper.
+if [ -r "$CHECKOUT/scripts/lib/sot-daemon.sh" ]; then
+    . "$CHECKOUT/scripts/lib/sot-daemon.sh" || { log "cannot read $CHECKOUT/scripts/lib/sot-daemon.sh — nothing replaced"; exit 1; }
+fi
+drop_new_backups() {
+    rm -f "${PREFIX:?}/bin/sot.prev.new" "$PREFIX/bin/sotd.prev.new" "$PREFIX/bin/sot-capsule.prev.new" \
+        "$PREFIX/bin/sot-apply.prev.new" "${UNIT_BAK:?}.new" "${WRAP_BAK:?}.new"
+}
+backup_failed() {
+    drop_new_backups
+    log "$1 — nothing replaced"
+    exit 1
+}
+# A .new left by an interrupted apply must not be taken for this one's.
+drop_new_backups || backup_failed "clearing an old backup's .new failed"
+for b in sot sotd sot-capsule sot-apply; do
+    [ -f "$STAGED/$b" ] && [ -f "$PREFIX/bin/$b" ] || continue
+    sot_install_copy "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev.new" || backup_failed "backing up $b failed"
+done
+if command -v sot_backup_owned >/dev/null 2>&1; then
+    sot_backup_owned "$PREFIX" "$UNIT_BAK.new" "$WRAP_BAK.new" || backup_failed "backing up the unit or wrapper failed"
+fi
 PREV_CHECKOUT="$(readlink "$PREFIX/repo/current" 2>/dev/null || echo "")"
 {
     printf '{\n'
     printf '  "tag": "%s",\n' "$CUR_TAG"
     printf '  "checkout": "%s"\n' "$PREV_CHECKOUT"
     printf '}\n'
-} > "$LASTGOOD.tmp" && mv -f "$LASTGOOD.tmp" "$LASTGOOD"
+} > "$LASTGOOD.tmp" && mv -f "$LASTGOOD.tmp" "$LASTGOOD" \
+    || { rm -f "${LASTGOOD:?}.tmp"; backup_failed "recording last-good failed"; }
+publish_backup() {  # <backup>
+    if [ -f "$1.new" ]; then mv -f "$1.new" "$1"; else rm -f "${1:?}"; fi
+}
+for b in sot sotd sot-capsule sot-apply; do
+    publish_backup "$PREFIX/bin/$b.prev" || backup_failed "publishing $PREFIX/bin/$b.prev failed"
+done
+publish_backup "$UNIT_BAK" || backup_failed "publishing $UNIT_BAK failed"
+publish_backup "$WRAP_BAK" || backup_failed "publishing $WRAP_BAK failed"
 
 # ---- the flip: binaries, then pointers — all-or-restore ----------------------
 restore_previous() {
     log "$1 — restoring previous binaries and pointers"
     for r in sot sotd sot-capsule sot-apply; do
-        [ -f "$PREFIX/bin/$r.prev" ] && cp -p "$PREFIX/bin/$r.prev" "$PREFIX/bin/$r"
+        [ -f "$PREFIX/bin/$r.prev" ] || continue
+        sot_install_copy "$PREFIX/bin/$r.prev" "$PREFIX/bin/$r" \
+            || log "could not restore $PREFIX/bin/$r (backup kept at $PREFIX/bin/$r.prev)"
     done
     if [ -n "$PREV_CHECKOUT" ]; then
         ln -sfn "$PREV_CHECKOUT" "$PREFIX/repo/current" 2>/dev/null
         ln -sfn "$PREV_CHECKOUT" "$PREFIX/julia/current" 2>/dev/null
     fi
+    restore_rendered
     # Pending stays: the stage verified clean, so the failure is local
     # (permissions, disk); retrying at the next launch is safe and fail-open.
     exit 0
@@ -234,7 +322,6 @@ restore_previous() {
 # RUNNING copy of this script (sh keeps its fd on the old inode).
 for b in sot sotd sot-capsule sot-apply; do
     [ -f "$STAGED/$b" ] || continue
-    [ -f "$PREFIX/bin/$b" ] && cp -p "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" 2>/dev/null
     if ! install -m 0755 "$STAGED/$b" "$PREFIX/bin/$b.new" 2>/dev/null \
        || ! mv -f "$PREFIX/bin/$b.new" "$PREFIX/bin/$b"; then
         restore_previous "installing $b failed"
@@ -249,7 +336,17 @@ ln -sfn "$CHECKOUT" "$PREFIX/repo/current" || restore_previous "flipping repo/cu
 mkdir -p "$PREFIX/julia" && ln -sfn "$CHECKOUT" "$PREFIX/julia/current" \
     || restore_previous "flipping julia/current failed"
 
+# ---- re-render the unit and wrapper this install owns -------------------------
+# Before the install.json rewrite, so a failure here leaves the record naming
+# the restored release.
+if command -v sot_rerender_owned >/dev/null 2>&1; then
+    sot_rerender_owned "$PREFIX" "$TARGET" "$CHECKOUT" \
+        || restore_previous "re-rendering the unit or wrapper failed"
+fi
+
 # ---- rewrite install.json (preserve role/prefix/config/service) --------------
+# The atomic mv names the new tag only once everything it describes is in
+# place.
 VERSION="${TAG#v}"
 if [ -f "$PREFIX/install.json" ]; then
     if ! sed -e 's|"version": *"[^"]*"|"version": "'"$VERSION"'"|' \

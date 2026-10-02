@@ -13,8 +13,8 @@
 #   SOT_INSTALL_TAG=<tag> ./scripts/install.sh ...   # run THIS checkout's body
 #
 # Role: a declared hosts.toml naming this host (host_name()) wins — its
-# daemon/frontend flags say what gets installed and enabled here, no
-# --local/--backend/--be-only needed. Those flags are the fallback for a box
+# daemon/frontend flags say what gets installed and enabled here (a frontend
+# runs its own local daemon too), no --local/--backend/--be-only needed. Those flags are the fallback for a box
 # with no entry yet (a brand-new user, or one not sharing the hub's home).
 #
 # What it does (idempotent; re-run to upgrade):
@@ -46,6 +46,16 @@ GLIBC_FLOOR_FE="2.35"
 
 say()  { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Byte-identical to scripts/lib/sot-daemon.sh's (a test pins it): the first
+# copies below run before the checkout that holds the library exists.
+sot_install_copy() {  # <src> <dst> [mode]
+    if cp -p "$1" "$2.new.$$" && { [ -z "${3:-}" ] || chmod "$3" "$2.new.$$"; } && mv -f "$2.new.$$" "$2"; then
+        return 0
+    fi
+    rm -f "${2:?}.new.$$"
+    return 1
+}
 
 # Refuse characters a shell-embedded path (systemd unit ExecStart, JSON
 # manifest, sed substitution, launcher heredocs) cannot carry safely, plus
@@ -203,12 +213,16 @@ installer_self_host() {
     hostname 2>/dev/null | cut -d. -f1 | tr '[:upper:]' '[:lower:]'
 }
 
-# "daemon:0|1 frontend:0|1" for <self> in `sotd topology status`'s output —
-# the one parser (rust/protocol/src/topology.rs); this reads its plain-line
-# table, not hosts.toml itself, so it stays a consumer, not a second parser.
-# "none" when the table doesn't list self: no hosts.toml yet, or one that
-# doesn't name this box — both are the same "fall back to flags" signal to
-# the caller. Pure, so the decision is testable against canned status text.
+# "daemon:0|1 frontend:0|1" — what this box installs for <self>'s entry in
+# `sotd topology status`'s output, the one parser (rust/protocol/src/
+# topology.rs); this reads its plain-line table, not hosts.toml itself, so it
+# stays a consumer, not a second parser. A `frontend` entry installs a daemon
+# too, `daemon` declared or not: every box that runs a window runs its own
+# private local daemon, as on Windows. `daemon = true` adds only that other
+# boxes dial it through the hub, a list this installer never writes. "none"
+# when the table doesn't list self: no hosts.toml yet, or one that doesn't
+# name this box — both are the same "fall back to flags" signal to the
+# caller. Pure, so the decision is testable against canned status text.
 installer_topology_role() {  # <status-table-text> <self-host>
     printf '%s\n' "$1" | awk -v self="$2" '
         NR == 1 { next }  # header line "HOST DECLARED"
@@ -219,6 +233,7 @@ installer_topology_role() {  # <status-table-text> <self-host>
                 if (w[i] == "daemon") d = 1
                 if (w[i] == "frontend") f = 1
             }
+            if (f) d = 1
             printf "daemon:%d frontend:%d", d, f
             found = 1
             exit
@@ -276,6 +291,44 @@ installer_manifest_json() {  # <prefix> <config> <service> <version> <tag> <comm
 EOF
 }
 
+# Write the FE-only wrapper for PREFIX that dials BE-ALIAS over SSH into DEST:
+# beside DEST under a name of this shell's own ($$), then moved in, so a
+# failed write leaves the old wrapper whole and returns 1.
+installer_render_remote_launch() {  # <prefix> <be-alias> <dest>
+    local prefix="$1" be_alias="$2" tmp="$3.new.$$"
+    cat > "$tmp" <<EOF || { rm -f "$tmp"; return 1; }
+#!/usr/bin/env bash
+# FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
+# Item 2 follow-up: this used to be a second, hand-maintained copy of
+# scripts/launch-sot.sh's tunnel-open + backend-ensure + frontend-invoke
+# logic (one fixed tunnel, no per-host support) -- it now delegates to the
+# pinned checkout's own copy instead, so the two never drift.
+#
+# Kept from the old heredoc (install-layout-specific; no equivalent in
+# launch-sot.sh itself, which only knows git pull / cargo build, not
+# sot-apply's staged $prefix/repo/versions flip): applying an armed
+# pending update (staged by the frontend's own self-check) before every
+# launch. Exit-75 respawn and crash-loop rollback are DROPPED, not kept --
+# launch-sot.sh has never had them for the plain Unix launcher either
+# (that's Windows-only today, ADR 0017 / relaunch-sot.ps1), so this
+# wrapper now matches every other Unix launch path instead of being the
+# one with more supervision than the rest.
+#
+# SOT_REMOTE_REPO is deliberately left UNSET: this install has no local
+# knowledge of the remote's checkout (never had one -- the old heredoc
+# only ever queried the remote's installed sotd directly).
+if [ -x "$prefix/bin/sot-apply" ]; then
+    APPLY_OUT="\$("$prefix/bin/sot-apply" 2>&1)"
+    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
+fi
+export SOT_HOST="$be_alias"
+export SOT_FRONTEND_BIN="$prefix/bin/sot"
+export SOT_NO_UPDATE=1
+exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
+EOF
+    chmod +x "$tmp" && mv -f "$tmp" "$3" || { rm -f "$tmp"; return 1; }
+}
+
 installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
     # runtime: retire the keeper unit earlier installs enabled (ADR 0038,
     # superseded). No-op if the unit was never installed.
@@ -283,6 +336,47 @@ installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux
     [ -f "$unit" ] || return 0
     systemctl --user disable --now sot-tmux.service 2>/dev/null || true
     rm -f "${unit:?}"
+}
+
+# Step 6: a resolution with no daemon here must not leave a previously
+# installed LOCAL backend running (a wrong-topology remnant): disable it,
+# don't just orphan it. Only `--backend <host>` and a topology entry with
+# neither flag resolve that way; a box that runs a window resolves a daemon
+# of its own (installer_topology_role), so its unit is never disabled here.
+installer_retire_local_service() {  # <want-daemon 0|1>
+    if [ "$1" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
+        systemctl --user disable --now sotd.service || true
+        say "disabled the local sotd.service from a previous all-in-one install"
+    fi
+}
+
+# Step 7 on Linux: render, enable and start the sotd unit for PREFIX from
+# TEMPLATE. No JULIA_DEPOT_PATH (or any other) config is written here: owner
+# ruling 2026-09-02 forbids writing/overwriting depot config anywhere. The
+# unit itself (deploy/sotd.service) sources ~/.bashrc before exec'ing sotd, so
+# the daemon inherits whatever the owner's shell profile exports. A prior
+# install's forbidden drop-in is healed unconditionally near the top of this
+# script (step 0), not here.
+installer_enable_local_service() {  # <prefix> <template> <socket>
+    mkdir -p "$HOME/.config/systemd/user"
+    installer_retire_tmux_unit "$HOME/.config/systemd/user"
+    render_sotd_unit "$1" "$2" "$HOME/.config/systemd/user/sotd.service"
+    systemctl --user daemon-reload
+    systemctl --user enable --now sotd.service
+    loginctl enable-linger "$USER" 2>/dev/null || true
+    say "sotd running: $(systemctl --user is-active sotd.service) (socket $3)"
+}
+
+# Step 8's wrapper: the all-in-one one, which ensures this box's own daemon
+# (sot_daemon_ensure) before every window, unless this install names an
+# explicit remote backend to dial over SSH (--backend <alias>, or its
+# interactive equivalent) — the one window that runs without a local daemon.
+installer_render_wrapper() {  # <prefix> <target> <be-alias-or-empty> <dest>
+    if [ -z "$3" ]; then
+        render_sot_launch "$1" "$2" "$4"
+    else
+        installer_render_remote_launch "$1" "$3" "$4"
+    fi
 }
 
 # scripts/tests/installer-state.sh sources this file to exercise the
@@ -470,14 +564,18 @@ BINDIR="$WORK/sot-$VER-$TARGET"
 # that predate the capsule runtime lack it, hence the skip for it alone.
 for b in sot sotd sot-capsule; do
     [ "$b" = sot-capsule ] && [ ! -f "$BINDIR/$b" ] && continue
-    [ -f "$PREFIX/bin/$b" ] && cp "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev"
-    install -m 0755 "$BINDIR/$b" "$PREFIX/bin/$b"
+    if [ -f "$PREFIX/bin/$b" ]; then
+        sot_install_copy "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" || die "backing up $PREFIX/bin/$b failed"
+    fi
+    sot_install_copy "$BINDIR/$b" "$PREFIX/bin/$b" 0755 || die "installing $PREFIX/bin/$b failed"
     # Gatekeeper: strip any quarantine attr (browser downloads carry it).
     [ "$OS" = Darwin ] && xattr -d com.apple.quarantine "$PREFIX/bin/$b" 2>/dev/null || true
 done
 # The offline apply/rollback script (Phase C3). Newer releases ship it in the
 # archive; otherwise it lands from the checkout below.
-[ -f "$BINDIR/sot-apply" ] && install -m 0755 "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply"
+if [ -f "$BINDIR/sot-apply" ]; then
+    sot_install_copy "$BINDIR/sot-apply" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
+fi
 # A manual installer run is a NEW transaction: stale rollback state from a
 # previous auto-apply must not pair old last-good pointers with these fresh
 # .prev binaries (a later crash-loop rollback would mix versions).
@@ -503,7 +601,8 @@ fi
 # ---- role resolution: the declared topology, else flags -------------------------
 # D9 (dev/output/topology-plan.md §C/§D): the hub's hosts.toml is canonical —
 # when it names this host, that entry's daemon/frontend flags decide what's
-# installed and enabled here, no --local/--backend/--be-only or Q&A needed.
+# installed and enabled here, no --local/--backend/--be-only or Q&A needed;
+# a frontend entry installs its own local daemon too (installer_topology_role).
 # A box with no entry yet (a brand-new user) falls back to the role flag /
 # interactive choice below. --hub fetches a copy first, for a box that does
 # not share the hub's home; a box that does already has the file, no fetch
@@ -651,6 +750,7 @@ fi
 # moved tag, wrong ref, or half-checkout must fail HERE, not at first use.
 have="$(git -C "$CHECKOUT" rev-parse HEAD)"
 [ "$have" = "$want" ] || die "checkout HEAD ($have) != $VERSION commit ($want) — refusing"
+. "$CHECKOUT/scripts/lib/sot-daemon.sh" || die "cannot read $CHECKOUT/scripts/lib/sot-daemon.sh"
 # Flip repo/current to this version. Migration from the pre-Phase-C layout:
 # current used to BE the clone (a plain dir) — refuse if dirty, then delete
 # it (read-only by convention; its only untracked files are julia Manifests,
@@ -680,7 +780,7 @@ mkdir -p "$PREFIX/julia"
 ln -sfn "$CHECKOUT" "$PREFIX/julia/current"
 # sot-apply from the checkout when the release archive predates shipping it.
 if [ ! -f "$PREFIX/bin/sot-apply" ] && [ -f "$CHECKOUT/scripts/sot-apply.sh" ]; then
-    install -m 0755 "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply"
+    sot_install_copy "$CHECKOUT/scripts/sot-apply.sh" "$PREFIX/bin/sot-apply" 0755 || die "installing $PREFIX/bin/sot-apply failed"
 fi
 # Keep the previously-active version dir for rollback; prune everything else.
 for v in "$REPO_DIR/versions"/*; do
@@ -759,13 +859,8 @@ fi
 
 # ---- 6. config -----------------------------------------------------------------
 # hosts.toml is never written here — see "what this box knows about itself"
-# above. A resolution that does not want a daemon here must not leave a
-# previously-installed LOCAL backend running (a wrong-topology remnant):
-# disable it, don't just orphan it.
-if [ "$WANT_DAEMON" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
-    systemctl --user disable --now sotd.service || true
-    say "disabled the local sotd.service from a previous all-in-one install"
-fi
+# above.
+installer_retire_local_service "$WANT_DAEMON"
 [ -f "$CONFIG/settings.toml" ] || printf '# Ship of Tools settings — see .sot/settings.toml.example in the repo\n' > "$CONFIG/settings.toml"
 
 # Folder trust. A row the daemon spawns must reach its task without stopping
@@ -805,159 +900,14 @@ if [ "$OS" = Darwin ] && [ "$WANT_DAEMON" = 1 ]; then
     [ "$WANT_FRONTEND" = 0 ] && say "  be-only: start it with  $PREFIX/bin/sotd --project-root ~ --label sot"
 fi
 if [ "$OS" = Linux ] && [ "$WANT_DAEMON" = 1 ] && [ "$NO_SERVICE" = 0 ]; then
-    mkdir -p "$HOME/.config/systemd/user"
-    installer_retire_tmux_unit "$HOME/.config/systemd/user"
-    sed -e "s|@SOT_BIN@|$PREFIX/bin/sotd|" \
-        -e "s|@SOT_APPLY@|$PREFIX/bin/sot-apply|" \
-        -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
-        "$BINDIR/sotd.service" > "$HOME/.config/systemd/user/sotd.service"
-    # No JULIA_DEPOT_PATH (or any other) config is written here: owner ruling
-    # 2026-09-02 forbids writing/overwriting depot config anywhere. The unit
-    # itself (deploy/sotd.service) sources ~/.bashrc before exec'ing sotd, so
-    # the daemon inherits whatever the owner's shell profile exports. A prior
-    # install's forbidden drop-in is healed unconditionally near the top of
-    # this script (step 0), not here.
-    systemctl --user daemon-reload
-    systemctl --user enable --now sotd.service
-    loginctl enable-linger "$USER" 2>/dev/null || true
-    say "sotd running: $(systemctl --user is-active sotd.service) (socket $DEFAULT_SOCKET)"
+    installer_enable_local_service "$PREFIX" "$BINDIR/sotd.service" "$DEFAULT_SOCKET"
 fi
 
 # ---- 8. FE launcher -------------------------------------------------------------
 if [ "$WANT_FRONTEND" = 1 ]; then
     mkdir -p "$HOME/.local/bin"
-    # The all-in-one launcher (own daemon on demand) unless this install
-    # names an explicit remote backend to dial over SSH (--backend <alias>,
-    # or its interactive equivalent) — that shape has no topology-derived
-    # equivalent yet, so a listed frontend-only host also gets this one.
-    if [ -z "$BE_ALIAS" ]; then
-        cat > "$HOME/.local/bin/sot-launch" <<EOF
-#!/usr/bin/env bash
-# All-in-one launcher: apply any armed pending update (offline pointer flip,
-# fail-open), start the backend on demand if its per-user socket is missing
-# (macOS has no service wiring yet; Linux normally has the systemd unit),
-# then SUPERVISE the frontend: exit-75 respawn (ADR 0017 on Unix) and
-# crash-loop rollback of a just-applied update (ADR 0030 Phase C3).
-PENDING="$PREFIX/updates/pending-$TARGET.json"
-MARKER="$PREFIX/updates/just-applied-$TARGET"
-stop_daemon() { pkill -u "\$(id -u)" -f "$PREFIX/bin/sotd" 2>/dev/null && sleep 1; }
-# Single apply owner (ADR 0030 Phase C): on systemd installs the apply runs
-# ONLY inside ExecStartPre (daemon stopped, whole install — FE binary
-# included — flips together); a try-restart triggers it. Launcher-managed
-# daemons (macOS / --no-service) are stopped FIRST, then sot-apply runs here.
-apply_pending() {
-    [ -f "\$PENDING" ] || return 0
-    [ -x "$PREFIX/bin/sot-apply" ] || return 0
-    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active sotd.service >/dev/null 2>&1; then
-        echo "pending update armed — restarting sotd so ExecStartPre applies it" >&2
-        systemctl --user try-restart sotd.service || true
-    else
-        stop_daemon
-        APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
-        [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
-    fi
-}
-apply_pending
-SOCKET="\$("$PREFIX/bin/sotd" session-socket-path sot)"
-socket_open() {
-    [ -S "\$SOCKET" ] || return 1
-    if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
-        nc -U "\$SOCKET" </dev/null >/dev/null 2>&1 &
-        pid=\$!
-        sleep 1
-        if kill -0 "\$pid" 2>/dev/null; then
-            kill "\$pid" 2>/dev/null || true
-            wait "\$pid" 2>/dev/null || true
-            return 0
-        fi
-        wait "\$pid"
-        return \$?
-    fi
-    # No nc, or an nc without -U (netcat-traditional), cannot probe:
-    # the socket file is the best available evidence, and it is never removed
-    # on that evidence; the frontend still fails loud if the connect cannot
-    # complete.
-    return 0
-}
-start_daemon_if_needed() {
-    if ! socket_open; then
-        [ -z "\${SOCKET:-}" ] || rm -f -- "\${SOCKET:?}" 2>/dev/null || true
-        nohup "$PREFIX/bin/sotd" --project-root "\$HOME" --label sot >/tmp/sotd.log 2>&1 </dev/null &
-        i=0; while [ \$i -lt 40 ]; do socket_open && break; sleep 0.25; i=\$((i+1)); done
-        socket_open || { echo "ERROR: backend did not open \$SOCKET; see /tmp/sotd.log" >&2; exit 1; }
-    fi
-}
-start_daemon_if_needed
-FAILS=0; ROLLED=0
-while :; do
-    START="\$(date +%s)"
-    "$PREFIX/bin/sot" --socket "\$SOCKET"
-    RC=\$?
-    NOW="\$(date +%s)"
-    RUNTIME=\$((NOW - START))
-    # A healthy run closes the crash-loop health window.
-    [ "\$RUNTIME" -ge 60 ] && rm -f "\${MARKER:?}" 2>/dev/null
-    if [ "\$RC" -eq 75 ]; then
-        # ADR-0017 self-relaunch: pick up any staged update, then respawn.
-        apply_pending
-        start_daemon_if_needed
-        FAILS=0
-        continue
-    fi
-    if [ "\$RC" -ne 0 ] && [ "\$RUNTIME" -le 10 ]; then
-        FAILS=\$((FAILS + 1))
-        if [ "\$FAILS" -ge 2 ]; then
-            # Roll back ONLY inside the just-applied health window — an
-            # unrelated crash weeks later must not downgrade a healthy
-            # release.
-            if [ "\$ROLLED" -eq 0 ] && [ -f "\$MARKER" ] \
-               && [ -n "\$(find "\$MARKER" -mmin -30 2>/dev/null)" ]; then
-                echo "frontend crash-looped inside the post-update window — rolling back" >&2
-                stop_daemon
-                [ -x "$PREFIX/bin/sot-apply" ] && "$PREFIX/bin/sot-apply" --rollback >&2
-                start_daemon_if_needed
-                ROLLED=1; FAILS=0
-                continue
-            fi
-            exit "\$RC"
-        fi
-        continue
-    fi
-    exit "\$RC"
-done
-EOF
-    else
-        cat > "$HOME/.local/bin/sot-launch" <<EOF
-#!/usr/bin/env bash
-# FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
-# Item 2 follow-up: this used to be a second, hand-maintained copy of
-# scripts/launch-sot.sh's tunnel-open + backend-ensure + frontend-invoke
-# logic (one fixed tunnel, no per-host support) -- it now delegates to the
-# pinned checkout's own copy instead, so the two never drift.
-#
-# Kept from the old heredoc (install-layout-specific; no equivalent in
-# launch-sot.sh itself, which only knows git pull / cargo build, not
-# sot-apply's staged $PREFIX/repo/versions flip): applying an armed
-# pending update (staged by the frontend's own self-check) before every
-# launch. Exit-75 respawn and crash-loop rollback are DROPPED, not kept --
-# launch-sot.sh has never had them for the plain Unix launcher either
-# (that's Windows-only today, ADR 0017 / relaunch-sot.ps1), so this
-# wrapper now matches every other Unix launch path instead of being the
-# one with more supervision than the rest.
-#
-# SOT_REMOTE_REPO is deliberately left UNSET: this install has no local
-# knowledge of the remote's checkout (never had one -- the old heredoc
-# only ever queried the remote's installed sotd directly).
-if [ -x "$PREFIX/bin/sot-apply" ]; then
-    APPLY_OUT="\$("$PREFIX/bin/sot-apply" 2>&1)"
-    [ -n "\$APPLY_OUT" ] && printf '%s\n' "\$APPLY_OUT" >&2
-fi
-export SOT_HOST="$BE_ALIAS"
-export SOT_FRONTEND_BIN="$PREFIX/bin/sot"
-export SOT_NO_UPDATE=1
-exec "$PREFIX/repo/current/scripts/launch-sot.sh" "\$@"
-EOF
-    fi
+    installer_render_wrapper "$PREFIX" "$TARGET" "$BE_ALIAS" "$HOME/.local/bin/sot-launch" \
+        || die "writing $HOME/.local/bin/sot-launch failed"
     chmod +x "$HOME/.local/bin/sot-launch"
     if [ "$OS" = Darwin ]; then
         # A minimal .app bundle so the FE launches from Launchpad/Spotlight/
@@ -966,7 +916,7 @@ EOF
         # checkout's logo with sips+iconutil (both ship with macOS).
         APP="$HOME/Applications/Ship of Tools.app"
         mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-        cat > "$APP/Contents/Info.plist" <<EOF
+        cat > "$WORK/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -978,11 +928,12 @@ EOF
     <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 EOF
-        cat > "$APP/Contents/MacOS/sot-launch" <<EOF
+        sot_install_copy "$WORK/Info.plist" "$APP/Contents/Info.plist" 0644 || die "writing $APP/Contents/Info.plist failed"
+        cat > "$WORK/sot-launch.app" <<EOF
 #!/usr/bin/env bash
 exec "$HOME/.local/bin/sot-launch"
 EOF
-        chmod +x "$APP/Contents/MacOS/sot-launch"
+        sot_install_copy "$WORK/sot-launch.app" "$APP/Contents/MacOS/sot-launch" 0755 || die "writing $APP/Contents/MacOS/sot-launch failed"
         LOGO="$CHECKOUT/logo.png"
         if [ -f "$LOGO" ] && command -v sips >/dev/null && command -v iconutil >/dev/null; then
             ICONSET="$WORK/sot.iconset"; mkdir -p "$ICONSET"
@@ -1060,8 +1011,8 @@ COMMIT="$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # Temp file plus rename: a heredoc straight onto the live path truncates it
 # first, so an interrupt would leave the machine with no readable manifest.
 installer_manifest_json "$PREFIX" "$CONFIG" "$SERVICE" "${VERSION#v}" "$VERSION" "$COMMIT" "$(date -u +%FT%TZ)" "$HUB_ALIAS" "$WANT_DAEMON" "$WANT_FRONTEND" \
-    > "$PREFIX/install.json.new"
-mv "$PREFIX/install.json.new" "$PREFIX/install.json"
+    > "$PREFIX/install.json.new.$$"
+mv "$PREFIX/install.json.new.$$" "$PREFIX/install.json"
 say "wrote $PREFIX/install.json (schema 1, daemon=$WANT_DAEMON frontend=$WANT_FRONTEND, service=$SERVICE)"
 
 say "DONE — Ship of Tools $VERSION installed (daemon=$WANT_DAEMON frontend=$WANT_FRONTEND)."

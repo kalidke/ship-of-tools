@@ -19,24 +19,27 @@
 #                                          GHOST until the ADR-0027 keepalive
 #                                          reaper fires (~50s). That ghost is
 #                                          the "FE not detaching on close" bug.
-#   5. Stop the LOCAL sotd (ADR 0042    - LAST, only after the FE (its only
-#      L1c) via sot-local-daemon.ps1      possible local client) is already
-#      -Stop                              gone. Delegated to that script so
-#                                          the pipe-name/process-match logic
-#                                          has one home, shared with
-#                                          launch-sot.ps1's start path.
+#   5. Wait for the LOCAL sotd (ADR     - LAST, only after the FE (its only
+#      0042 L1c) via                      possible local client) is already
+#      sot-local-daemon.ps1 -Stop         gone. Killing the FE ends its
+#                                          lease, so this computer's daemon
+#                                          ends every local session and
+#                                          exits by itself; -Stop waits up
+#                                          to 150 s for that and kills it
+#                                          only after. Delegated to that
+#                                          script so the pipe-name/process-
+#                                          match logic has one home, shared
+#                                          with launch-sot.ps1's start path.
 #
 # The remote `sotd` is LEFT RUNNING on purpose (persistent-backend model, ADR
 # 0010/0013): workspaces, tmux sessions, kernel + REPL survive an FE detach so
 # `claude --continue` resumes. This tears down only the LOCAL frontend + its
 # transport - and, per step 5, the LOCAL sotd - never remote state.
 #
-# The LOCAL sotd's own capsule WORKSPACES are not affected by step 5: their
-# supervisors (sot-capsule.exe) are separate, DETACHED processes and the one
-# authority over a workspace's live state (ADR 0042 L1a) - stopping sotd
-# does not touch them, and the daemon re-adopts every still-running one via
-# `--resume` the next time it starts. Stopping sotd only drops its FE
-# attach connections (already gone by step 5) and its own bookkeeping.
+# The LOCAL sotd's own capsule WORKSPACES end with it: when the frontend's
+# lease ends, the daemon ends every local session and exits, and step 5 waits
+# for that (up to 150 s) before forcing anything. The remote sotd and its
+# sessions are untouched, as before.
 #
 # SCOPE: this kills EVERY local sot.exe and every launch-{sot,devenv}.ps1
 # supervisor on this machine - the right scope for "shut down everything here."
@@ -154,11 +157,12 @@ if (-not $SkipDaemonVerify) {
     } catch { W "daemon pre-check skipped: $($_.Exception.Message)" }
 }
 
-# 1. Supervisor first - stop the respawn/race.
-foreach ($s in Get-Sup) { W "kill supervisor pid=$($s.ProcessId)"; Stop-Process -Id $s.ProcessId -Force -ErrorAction SilentlyContinue }
+# 1. Supervisor first - stop the respawn/race. A converge supervisor holds a
+#    lease, so its kill is a lease end like a window's: it sets $feKilled too.
+$feKilled = $false
+foreach ($s in Get-Sup) { W "kill supervisor pid=$($s.ProcessId)"; Stop-Process -Id $s.ProcessId -Force -ErrorAction SilentlyContinue; $feKilled = $true }
 
 # 2. Frontend - FIN over the still-open tunnel detaches the daemon client now.
-$feKilled = $false
 foreach ($f in Get-FE) { W "kill FE pid=$($f.ProcessId)"; Stop-Process -Id $f.ProcessId -Force -ErrorAction SilentlyContinue; $feKilled = $true }
 
 # 3. Let the FIN propagate + the daemon deregister BEFORE the tunnel dies -
@@ -188,7 +192,7 @@ foreach ($t in Get-Tun) { W "kill tunnel pid=$($t.ProcessId)"; Stop-Process -Id 
 $sotLocalDaemon = Join-Path $PSScriptRoot 'sot-local-daemon.ps1'
 $localDaemonDown = $false
 if (Test-Path $sotLocalDaemon) {
-    $localOut = & $sotLocalDaemon -Stop 6>&1 2>&1
+    $localOut = & $sotLocalDaemon -Stop -FrontendKilled:$feKilled 6>&1 2>&1
     foreach ($l in @($localOut)) { if ("$l".Trim()) { W "$l" } }
     $localDaemonDown = ($LASTEXITCODE -eq 0)
 } else {
@@ -200,13 +204,14 @@ Start-Sleep -Milliseconds 500
 $feN = (Get-FE | Measure-Object).Count
 $supN = (Get-Sup | Measure-Object).Count
 $tunN = (Get-Tun | Measure-Object).Count
+$capN = (Get-CimInstance Win32_Process -Filter "Name='sot-capsule.exe'" | Where-Object { Test-OurPath $_.ExecutablePath } | Measure-Object).Count
 $localDaemonN = if ($localDaemonDown) { 0 } else { 1 }
-W "post: FE=$feN supervisor=$supN tunnel=$tunN localDaemon=$localDaemonN"
-$residue = $feN + $supN + $tunN + $localDaemonN
+W "post: FE=$feN supervisor=$supN tunnel=$tunN capsule=$capN localDaemon=$localDaemonN"
+$residue = $feN + $supN + $tunN + $capN + $localDaemonN
 if ($residue -eq 0) {
     W "CLEAN - local frontend and local daemon fully torn down; remote sotd left running by design."
 } else {
-    W "WARNING - residue remains (FE=$feN sup=$supN tun=$tunN localDaemon=$localDaemonN); inspect manually."
+    W "WARNING - residue remains (FE=$feN sup=$supN tun=$tunN cap=$capN localDaemon=$localDaemonN); inspect manually."
 }
 W "=== shutdown-sot done ==="
 # Codex follow-up, item 10: a non-zero exit when residue remains, so a

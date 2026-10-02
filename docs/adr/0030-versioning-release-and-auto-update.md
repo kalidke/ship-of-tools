@@ -43,7 +43,7 @@ Current state (verified 2026-07-01):
   (`%LOCALAPPDATA%\sot\bin`) and respawns on exit 75; `sotd` runs under `systemd --user`
   with `Restart=always` (ADR 0028); the BE spawns the Julia kernel from a path it controls
   (`rust/backend/src/kernel.rs`). An updater only has to put new bits where these
-  mechanisms already look.
+  mechanisms already look. Amended 2026-10-02 (0.6.6): sotd.service is Restart=on-failure; exit 0 is a requested shutdown and stays down, exit 75 is an update restart, anything else is a crash and restarts.
 - **Per-machine/dev state is committed**: `.sot/hosts.toml` (real hostnames + ssh aliases),
   `.sot/settings.toml`, `.sot/keybindings.toml`, `.claude-bus/` (cross-OS Claude message
   logs), `.claude-memory/` (33 Claude context files). This is a design flaw for a public

@@ -61,6 +61,13 @@
 # that's still exiting can leave the pipe briefly unconnectable without
 # actually being gone yet).
 #
+# -Stop first waits (up to $DaemonLockWaitSeconds) for the daemon to finish
+# its own shutdown when one is under way -- -FrontendKilled, or held.json
+# says closing or cannot be read -- because a kill mid-shutdown cuts it
+# short. When held.json names a deadline (a deferred close or a pending
+# handover decides only then), it waits until that deadline plus the same
+# bound (Get-StopWaitMs). Only a daemon still there after the wait is killed.
+#
 # -Stop: sotd installs no signal/console-control handler on either platform
 # (grepped: no SIGTERM/ctrl_c handling in rust/backend/src/*.rs) and exposes
 # no clean-stop IPC op. Linux's own "graceful" stop is systemd's UNHANDLED
@@ -85,22 +92,34 @@
 # `sotd.exe` as a mapped image while it runs, so if the daemon is up, ITS
 # binary is still resolvable at its original location.
 #
-# Spawn hygiene: stdout/stderr are redirected to
-# <prefix>\logs\sotd-local.{stdout,stderr}.log -- Start-Process TRUNCATES
-# these on every (re)start, same as the frontend's own logs (see
-# launch-sot.ps1's header); this is fine here because a start only happens
-# when the pipe was NOT already answering, i.e. rarely. ONE previous
-# generation is kept: right before the (re)start, each file that already
-# exists is renamed to its own `.1` (overwriting an older `.1`), so a
-# question about the PREVIOUS boot survives one restart -- no rotation
-# framework, just that one rename. The daemon's own
+# Spawn hygiene: every start redirects stdout/stderr to files of its own,
+# <prefix>\logs\sotd-local.{stdout,stderr}.<yyyyMMdd-HHmmss-fff>Z-<pid>.log
+# (UTC start time to the millisecond, then this launcher's pid), so among
+# stamped names the newest by name is the current one, across DST. A start
+# never truncates, renames or deletes a file another process still holds:
+# the previous daemon may still be writing its shutdown lines while this one
+# starts. Before each spawn, each stream walks its files oldest first -- the
+# old rotation's *.rotating.<pid>.tmp leftovers, then the old fixed names
+# (sotd-local.{stdout,stderr}.log.1, then .log), then stamped names -- and
+# deletes while it has more than $LogKeep files or its unprotected total
+# exceeds $LogCapBytes. Protected, never deleted and outside both bounds: the
+# newest log (the previous daemon's last words; never a leftover), and any
+# file another process holds. A delete is an exclusive DeleteOnClose open, so
+# a file with any other handle open, even one that allows delete sharing,
+# fails the open and is skipped with one log line naming the real error.
+# Known limits: one protected file can exceed the cap, and one running
+# daemon's own file still grows within its run. The daemon's own
 # private log (rust/backend/src/main.rs::open_private_log_file, via
 # paths::state_dir()) is a SEPARATE, HOME-derived path that today has no
 # Windows branch -- a known gap, not fixed here (see the ADR amendment). If
 # the spawned process exits before the pipe comes up, that's logged with its
 # exit code and the wait stops early rather than spinning out the full
-# bound; if the pipe never comes up within the bound, the process we just
-# spawned is stopped so a hung daemon can't accumulate across retries.
+# bound (unless the pipe answers: a spawn that exits counts as up iff it
+# does). A spawn is never killed: when a previous daemon is still shutting
+# down, the new one waits on the daemon lock and its own 150 s bound ends it,
+# so killing it here would only cut a successor off. The ensure waits up to
+# $LaunchWaitSeconds for the pipe and, if it never answers, leaves the
+# process running and exits 1.
 #
 # Standalone + parameterized (mirrors scripts/sot-apply.ps1's own -Prefix
 # test-override convention) so this is independently testable without the
@@ -137,8 +156,20 @@ param(
     # Named-pipe basename override (tests, so a test run never collides with
     # a real per-user daemon, and so a -Stop-only test needs no real binary
     # on disk). Default: queried from the resolved sotd.exe (see header).
-    [string]$PipeName
+    [string]$PipeName,
+    # Set by shutdown-sot.ps1 when it just ended the frontend: the daemon is
+    # then ending this computer's sessions by itself, and -Stop waits for it.
+    [switch]$FrontendKilled
 )
+
+# Bounds the launcher and the daemon agree on (rust/protocol/src/ops.rs;
+# scripts/tests/installer-state.sh checks both values against it).
+$LaunchWaitSeconds = 160        # = ops.rs lease::LAUNCH_WAIT
+$DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
+
+# Daemon stdout/stderr log bounds, per stream (see "Spawn hygiene" above).
+$LogKeep = 5                    # a start leaves at most this many files per stream
+$LogCapBytes = 16MB             # unprotected files go, oldest first, down to this total
 
 $ErrorActionPreference = 'Continue'
 
@@ -158,6 +189,40 @@ function Write-LocalDaemonLog {
         "$(Get-Date -Format o)  pid=$PID  $Message" |
             Out-File -FilePath (Join-Path $logDir 'sotd-local.log') -Append -Encoding utf8
     } catch { }
+}
+
+# Prune one stream's logs before a spawn (see "Spawn hygiene" in the header).
+function Remove-OldDaemonLogs {
+    param([string]$Dir, [string]$Stream)
+    $all = @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue)
+    # Oldest first, ordered by kind and not by name: the fixed names sort
+    # after every stamp.
+    $files = @($all | Where-Object { $_.Name -match "^sotd-local\.$Stream\.log\.rotating\.\d+\.tmp$" } | Sort-Object Name)
+    $logs = @()
+    foreach ($n in @("sotd-local.$Stream.log.1", "sotd-local.$Stream.log")) {
+        $logs += @($all | Where-Object { $_.Name -eq $n })
+    }
+    $logs += @($all | Where-Object { $_.Name -match "^sotd-local\.$Stream\.\d{8}-\d{6}-\d{3}Z-\d+\.log$" } | Sort-Object Name)
+    $files += $logs
+    $newest = ''
+    if ($logs.Count -gt 0) { $newest = $logs[$logs.Count - 1].FullName }
+    $count = $files.Count
+    $total = [int64]0
+    foreach ($f in $files) { if ($f.FullName -ne $newest) { $total += $f.Length } }
+    foreach ($f in $files) {
+        if (($count -le $LogKeep) -and ($total -le $LogCapBytes)) { break }
+        if ($f.FullName -eq $newest) { break }
+        try {
+            $s = [System.IO.FileStream]::new($f.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::DeleteOnClose)
+            $s.Dispose()
+        } catch {
+            Write-LocalDaemonLog ("kept log {0}: {1}" -f $f.FullName, ($_.Exception.Message -replace '\s*[\r\n]+\s*', ' '))
+        }
+        # Deleted or held, the file leaves both bounds.
+        $count--
+        $total -= $f.Length
+    }
 }
 
 # Bounded connect probe (500ms) -- see the header for why this replaces a
@@ -283,11 +348,60 @@ function Get-LocalDaemonProcess {
         Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) }
 }
 
+# How long -Stop waits for the daemon's own shutdown, in ms, from held.json:
+# $State is 'missing', 'unreadable' or 'read', $Text the text read, $NowMs
+# wall-clock unix ms. Any deadline (hold_until_ms, handover_until_ms, both
+# unix ms) waits until it plus DAEMON_LOCK_WAIT; closing, or a record that
+# exists but cannot be read or parsed, waits DAEMON_LOCK_WAIT; else 0.
+function Get-StopWaitMs([string]$State, [string]$Text, [int64]$NowMs) {
+    $boundMs = [int64]$DaemonLockWaitSeconds * 1000
+    if ($State -eq 'missing') { return [int64]0 }
+    if ($State -ne 'read') { return $boundMs }
+    $held = $null
+    try { $held = $Text | ConvertFrom-Json -ErrorAction Stop } catch { return $boundMs }
+    if ($null -eq $held) { return $boundMs }
+    $deadline = $null
+    foreach ($name in @('hold_until_ms', 'handover_until_ms')) {
+        $v = $held.$name
+        if (($null -ne $v) -and (($null -eq $deadline) -or ([int64]$v -gt $deadline))) { $deadline = [int64]$v }
+    }
+    if ($null -ne $deadline) { return [math]::Max($deadline - $NowMs, [int64]0) + $boundMs }
+    if ($held.closing -eq $true) { return $boundMs }
+    return [int64]0
+}
+
 if ($Stop) {
     $procs = @(Get-LocalDaemonProcess)
     if ($procs.Count -eq 0) {
         Write-LocalDaemonLog "stop: not running (no sotd.exe with pipe $PipeName)"
         exit 0
+    }
+    # Is a shutdown under way? held.json lives in the state root the daemon
+    # derives (state_dir.rs): LOCALAPPDATA, else USERPROFILE\AppData\Local, plus \sot.
+    $stateBase = $env:LOCALAPPDATA
+    if (-not $stateBase) { $stateBase = Join-Path $env:USERPROFILE 'AppData\Local' }
+    $heldPath = Join-Path (Join-Path $stateBase 'sot') 'held.json'
+    $heldState = 'missing'
+    $heldText = ''
+    if (Test-Path -LiteralPath $heldPath) {
+        try {
+            $heldText = Get-Content -Raw -LiteralPath $heldPath -ErrorAction Stop
+            $heldState = 'read'
+        } catch { $heldState = 'unreadable' }
+    }
+    $waitMs = Get-StopWaitMs $heldState $heldText ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+    if ($FrontendKilled) { $waitMs = [math]::Max($waitMs, [int64]$DaemonLockWaitSeconds * 1000) }
+    if ($waitMs -gt 0) {
+        Write-LocalDaemonLog "stop: waiting up to $([math]::Ceiling($waitMs / 1000))s for the daemon to finish its own shutdown (frontendKilled=$([bool]$FrontendKilled) held=$heldState)"
+        $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (@(Get-LocalDaemonProcess).Count -gt 0 -and $waitSw.Elapsed.TotalMilliseconds -lt $waitMs) {
+            Start-Sleep -Milliseconds 500
+        }
+        $procs = @(Get-LocalDaemonProcess)
+        if ($procs.Count -eq 0) {
+            Write-LocalDaemonLog "stop: the daemon exited by itself"
+            exit 0
+        }
     }
     foreach ($p in $procs) {
         Write-LocalDaemonLog "stop: killing pid=$($p.ProcessId)"
@@ -327,32 +441,10 @@ if (-not $daemonExe) {
 
 $logDir = Join-Path $Prefix 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$daemonStdout = Join-Path $logDir 'sotd-local.stdout.log'
-$daemonStderr = Join-Path $logDir 'sotd-local.stderr.log'
-
-# Keep ONE previous generation before Start-Process truncates these below
-# (see the header note) -- rename whatever is already there to `.1`,
-# overwriting an older `.1`. Two-step, not a direct Move-Item straight to
-# `.1`: with -Force, Move-Item can clear the existing `.1` destination and
-# THEN fail the actual move (e.g. the current file still has a lingering
-# handle even though the ensure path above only proved the PIPE is gone,
-# not the file) -- that would destroy the one kept generation and keep
-# nothing. Move current -> a unique temp name FIRST, with -ErrorAction
-# Stop so a failure there is a terminating error the try/catch actually
-# sees (this script runs under $ErrorActionPreference = 'Continue', so a
-# non-terminating provider error would otherwise sail past an empty
-# catch); `.1` is only touched once that succeeds, so a failed rotation
-# leaves the untouched original in place (a fresh boot then just starts
-# with no `.1`, same as before this existed) instead of losing both.
-foreach ($f in @($daemonStdout, $daemonStderr)) {
-    if (Test-Path $f) {
-        try {
-            $rotTemp = "$f.rotating.$PID.tmp"
-            Move-Item -Path $f -Destination $rotTemp -Force -ErrorAction Stop
-            Move-Item -Path $rotTemp -Destination "$f.1" -Force -ErrorAction Stop
-        } catch { }
-    }
-}
+foreach ($stream in @('stdout', 'stderr')) { Remove-OldDaemonLogs -Dir $logDir -Stream $stream }
+$logStamp = '{0}Z-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff'), $PID
+$daemonStdout = Join-Path $logDir "sotd-local.stdout.$logStamp.log"
+$daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 
 # Single pre-quoted argument STRING, not an array: PowerShell 5.1's
 # Start-Process joins an -ArgumentList array with spaces and drops the
@@ -373,28 +465,33 @@ try {
     Write-LocalDaemonLog "REFUSED: failed to start $daemonExe - $($_.Exception.Message)"
     exit 1
 }
-Write-LocalDaemonLog "spawned pid=$($proc.Id)"
+Write-LocalDaemonLog "spawned pid=$($proc.Id), output in $daemonStdout and $daemonStderr"
 
-# Bounded wait for the pipe to come up -- same 20x250ms=5s shape the remote
-# path already uses (launch-sot.ps1's socket-wait loop) for an analogous
-# "did the daemon we just started actually bind" check. Stops early (a) if
-# the process already exited (nothing to wait for) or (b) once the pipe
-# answers.
+# Wait for the pipe to come up, up to $LaunchWaitSeconds: a previous daemon
+# may still be shutting down, and the one just spawned waits on the daemon
+# lock behind it. Stops early once the pipe answers, or when the process
+# exited without the pipe answering. A spawn is never killed here.
 $up = $false
-for ($i = 0; $i -lt 20; $i++) {
+$waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+$loggedWait = $false
+while ($waitSw.Elapsed.TotalSeconds -lt $LaunchWaitSeconds) {
     Start-Sleep -Milliseconds 250
+    if (Test-SotPipeOpen $PipeName) { $up = $true; break }
     $proc.Refresh()
     if ($proc.HasExited) {
+        if (Test-SotPipeOpen $PipeName) { $up = $true; break }
         Write-LocalDaemonLog "REFUSED: $daemonExe exited during startup (code=$($proc.ExitCode))"
         exit 1
     }
-    if (Test-SotPipeOpen $PipeName) { $up = $true; break }
+    if (-not $loggedWait -and $waitSw.Elapsed.TotalSeconds -ge 3) {
+        Write-LocalDaemonLog "waiting for the backend (a previous one may still be shutting down)"
+        $loggedWait = $true
+    }
 }
 if ($up) {
     Write-LocalDaemonLog "pipe=$PipePath"
     exit 0
 } else {
-    Write-LocalDaemonLog "did not come up on $PipePath within 5s - stopping pid=$($proc.Id) so it cannot accumulate"
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+    Write-LocalDaemonLog "did not come up on $PipePath within ${LaunchWaitSeconds}s - leaving pid=$($proc.Id) running"
     exit 1
 }
