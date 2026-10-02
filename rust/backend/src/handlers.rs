@@ -4926,7 +4926,6 @@ pub(crate) enum CapsuleDestroyOutcome {
     /// may be removed; the state directory never is. Human-readable
     /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
     /// stays portable and unit-testable.
-    #[cfg_attr(not(windows), allow(dead_code))]
     Removable(String),
     /// Not confirmed (unreachable/starting/failed/refused/unknown) — the
     /// row and toml MUST be kept: never orphan a live run, never claim

@@ -1777,7 +1777,7 @@ pub(crate) mod row_scope {
             // The supervisor-outcome arms: the file lists the scope when
             // the stop runs, and the kill comes only after it.
             let mut at_stop = None;
-            crate::capsule_workspace::runtime::stop_then_end_scope(state.path(), Some(&rel), || {
+            crate::capsule_workspace::runtime::stop_then_end_scope(state.path(), Some(&rel), root.path(), &crate::capsule_workspace::row_scope::own_rel().unwrap_or_default(), || {
                 at_stop = Some((listed(state.path()), kill()))
             })
             .expect("end an empty scope");
@@ -2509,6 +2509,8 @@ mod runtime {
         // daemon counts the row ended while a scope may hold processes.
         #[cfg(target_os = "linux")]
         let (root, own) = (super::row_scope::root(), super::row_scope::own_rel().unwrap_or_default());
+        #[cfg(not(target_os = "linux"))]
+        let (root, own) = (PathBuf::new(), String::new());
 
         let (status, scope) = match sot_log::supervisor_client::query_status(state_dir) {
             Ok((status, process)) => {
@@ -2633,7 +2635,7 @@ mod runtime {
                 // round trip; retry the stop instead of fabricating a
                 // verified outcome this call never actually observed.
                 if let Err(d) =
-                    stop_and_end_scope(state_dir, "already ended (EndedNoRespawn) before this call", scope.as_deref())
+                    stop_and_end_scope(state_dir, "already ended (EndedNoRespawn) before this call", scope.as_deref(), &root, &own)
                 {
                     return Ok(R::NotEnded(d));
                 }
@@ -2654,6 +2656,8 @@ mod runtime {
                     state_dir,
                     "the authority was terminal before this call reached it",
                     scope.as_deref(),
+                    &root,
+                    &own,
                 ) {
                     return Ok(R::NotEnded(d));
                 }
@@ -2680,11 +2684,11 @@ mod runtime {
         let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(match outcome {
-            O::RecordVerified => match stop_and_end_scope(state_dir, "end_run confirmed verified", scope.as_deref()) {
+            O::RecordVerified => match stop_and_end_scope(state_dir, "end_run confirmed verified", scope.as_deref(), &root, &own) {
                 Ok(()) => R::RecordVerified,
                 Err(d) => R::NotEnded(d),
             },
-            O::RecordClosed => match stop_and_end_scope(state_dir, "end_run confirmed closed", scope.as_deref()) {
+            O::RecordClosed => match stop_and_end_scope(state_dir, "end_run confirmed closed", scope.as_deref(), &root, &own) {
                 Ok(()) => R::RecordClosed,
                 Err(d) => R::NotEnded(d),
             },
@@ -2863,24 +2867,24 @@ mod runtime {
     /// scopes and the one [`end_run`] captured, so a descendant that left
     /// the agent's process group ends with the row. `Err` keeps the row
     /// not ended.
-    fn stop_and_end_scope(state_dir: &Path, why: &'static str, scope: Option<&str>) -> Result<(), String> {
-        stop_then_end_scope(state_dir, scope, || stop_and_warn(state_dir, why))
+    fn stop_and_end_scope(state_dir: &Path, why: &'static str, scope: Option<&str>, root: &Path, own: &str) -> Result<(), String> {
+        stop_then_end_scope(state_dir, scope, root, own, || stop_and_warn(state_dir, why))
     }
 
     /// The graceful `stop`, then the scope end: a live supervisor is never
     /// hard-killed ahead of its graceful end, and the kill only finds what
     /// the protocol could not reach. `stop` is a parameter so a unit test
     /// can see the scope file at the stop.
-    pub(super) fn stop_then_end_scope(state_dir: &Path, scope: Option<&str>, stop: impl FnOnce()) -> Result<(), String> {
+    pub(super) fn stop_then_end_scope(state_dir: &Path, scope: Option<&str>, root: &Path, own: &str, stop: impl FnOnce()) -> Result<(), String> {
         stop();
         #[cfg(target_os = "linux")]
         {
-            use super::row_scope::{end, own_rel, root, SCOPE_EMPTY_BOUND};
-            end(&root(), &own_rel().unwrap_or_default(), state_dir, scope, SCOPE_EMPTY_BOUND)
+            use super::row_scope::{end, SCOPE_EMPTY_BOUND};
+            end(root, own, state_dir, scope, SCOPE_EMPTY_BOUND)
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (state_dir, scope);
+            let _ = (state_dir, scope, root, own);
             Ok(())
         }
     }

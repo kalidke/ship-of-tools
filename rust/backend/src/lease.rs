@@ -236,7 +236,7 @@ pub(crate) struct Leases {
     state: Arc<Mutex<State>>,
     /// `true` once a shutdown has begun; every waiter sees it, however
     /// late it subscribes.
-    gone: Arc<watch::Sender<bool>>,
+    gone: watch::Sender<bool>,
     starts: mpsc::UnboundedSender<StartEvent>,
 }
 
@@ -260,7 +260,7 @@ impl Leases {
             not_ended: 0,
             forget: Vec::new(),
         };
-        let leases = Leases { state: Arc::new(Mutex::new(state)), gone: Arc::new(watch::Sender::new(false)), starts };
+        let leases = Leases { state: Arc::new(Mutex::new(state)), gone: watch::Sender::new(false), starts };
         (leases, events)
     }
 
