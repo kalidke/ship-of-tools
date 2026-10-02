@@ -51,6 +51,12 @@ fn step(pid: u32, printed: usize, in_snapshot: bool, created: Option<u64>, child
     }
 }
 
+/// A command line as it is printed on one `<exe>\t<command line>` line.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn encode_command_line(text: &str) -> String {
+    text.replace(['\t', '\r', '\n'], " ")
+}
+
 /// Runs the subcommand and returns its exit status: 0 when at least one line
 /// was printed and the walk reached the top, 3 when it was truncated, else 1;
 /// 2 off Windows.
@@ -68,7 +74,7 @@ pub fn run() -> i32 {
 
 #[cfg(windows)]
 mod win {
-    use super::{step, Step};
+    use super::{encode_command_line, step, Step};
     use std::collections::HashMap;
     use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, UNICODE_STRING};
@@ -142,7 +148,7 @@ mod win {
                 }
             };
             CloseHandle(handle);
-            created.map(|c| (c, text.map(|t| t.replace(['\t', '\r', '\n'], " "))))
+            created.map(|c| (c, text.map(|t| encode_command_line(&t))))
         }
     }
 
@@ -217,5 +223,16 @@ mod tests {
         assert_eq!(step(500, 64, true, Some(7), 100), Step::Truncated);
         // the cap is for a chain that goes on; a top at line 64 is a whole walk
         assert_eq!(step(500, 64, true, None, 100), Step::Top);
+    }
+
+    #[test]
+    fn a_tab_a_newline_and_a_return_each_have_their_own_byte() {
+        assert_eq!(encode_command_line("a\tb"), "a\u{1d}b");
+        assert_eq!(encode_command_line("a\nb"), "a\u{1c}b");
+        assert_eq!(encode_command_line("a\rb"), "a\u{1b}b");
+        assert_ne!(encode_command_line("a\tb"), encode_command_line("a b"));
+        assert_ne!(encode_command_line("a\nb"), encode_command_line("a b"));
+        assert_ne!(encode_command_line("a\rb"), encode_command_line("a b"));
+        assert_eq!(encode_command_line("a b"), "a b");
     }
 }
