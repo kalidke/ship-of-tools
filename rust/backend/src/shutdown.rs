@@ -66,29 +66,39 @@ pub(crate) async fn end_rows(
     for ws in rows {
         let is_anchor = anchor.as_deref() == Some(ws.workspace_id.as_str());
         let (limit, workspaces, ws_events) = (limit.clone(), workspaces.clone(), ws_events.clone());
-        joins.push(tokio::spawn(async move {
+        joins.push((ws.workspace_id.clone(), tokio::spawn(async move {
             let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
                 return Ended::Not;
             };
             end_row(&ws, is_anchor, &workspaces, &ws_events, deadline).await
-        }));
+        })));
     }
     if drawer {
         let (limit, state_root) = (limit.clone(), state_root.to_path_buf());
-        joins.push(tokio::spawn(async move {
+        joins.push(("the drawer".to_string(), tokio::spawn(async move {
             let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
                 return Ended::Not;
             };
             end_drawer(state_root, deadline).await
-        }));
+        })));
     }
+    join_by(deadline, joins).await
+}
+
+/// Every target's end, each awaited no later than `deadline`: one still
+/// running then is abandoned and counted not ended.
+async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<Ended>)>) -> EndReport {
     let mut report = EndReport::default();
-    for j in joins {
-        match j.await {
-            Ok(Ended::Row(id)) => report.ended.push(id),
-            Ok(Ended::Forget(id)) => report.forget.push(id),
-            Ok(Ended::Drawer) => {}
-            Ok(Ended::Not) | Err(_) => report.not_ended += 1,
+    for (target, j) in joins {
+        match tokio::time::timeout_at(deadline, j).await {
+            Ok(Ok(Ended::Row(id))) => report.ended.push(id),
+            Ok(Ok(Ended::Forget(id))) => report.forget.push(id),
+            Ok(Ok(Ended::Drawer)) => {}
+            Ok(Ok(Ended::Not)) | Ok(Err(_)) => report.not_ended += 1,
+            Err(_) => {
+                tracing::warn!(%target, "window closed: its end was still running at the deadline; not ended");
+                report.not_ended += 1;
+            }
         }
     }
     report
@@ -135,18 +145,25 @@ async fn end_row(
         }
     };
     if is_anchor {
-        crate::handlers::end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, &agent_name, true, held)
-            .await;
+        let end =
+            crate::handlers::end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, &agent_name, true, held);
+        if tokio::time::timeout_at(deadline, end).await.is_err() {
+            tracing::warn!(workspace_id = %ws.workspace_id, "window closed: the anchor's end_default_row_run was still running at the deadline; not ended");
+            return Ended::Not;
+        }
         return Ended::Row(ws.workspace_id.clone());
     }
     // The ended agent cannot run its own comm-leave; prune its registry
     // rows, as `workspace.destroy` does.
     let (reg_agent, reg_ws, reg_host) =
         (agent_name.clone(), ws.workspace_id.clone(), crate::workspaces::declared_host());
-    let _ = tokio::task::spawn_blocking(move || {
+    let prune = tokio::task::spawn_blocking(move || {
         crate::handlers::remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
-    })
-    .await;
+    });
+    if tokio::time::timeout_at(deadline, prune).await.is_err() {
+        tracing::warn!(workspace_id = %ws.workspace_id, "window closed: the comm prune was still running at the deadline; not ended");
+        return Ended::Not;
+    }
     let slug = ws.slug.clone();
     let ended = forget_unless_removed(ws.workspace_id.clone(), deadline, || crate::handlers::remove_row_files(&slug)).await;
     let _ = workspaces.remove_by_id(&ws.workspace_id);
@@ -388,6 +405,19 @@ mod tests {
         })
         .await;
         assert_eq!(ended, Ended::Row("late".into()), "removed on a retry is not forgotten");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn end_rows_returns_by_the_shared_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let joins = vec![
+            ("stuck".to_string(), tokio::spawn(std::future::pending::<Ended>())),
+            ("done".to_string(), tokio::spawn(async { Ended::Row("done".into()) })),
+        ];
+        let report = tokio::time::timeout_at(deadline + Duration::from_secs(1), join_by(deadline, joins))
+            .await
+            .expect("end_rows did not return by its deadline");
+        assert_eq!(report, EndReport { ended: vec!["done".into()], not_ended: 1, forget: Vec::new() });
     }
 
     #[cfg(unix)]
