@@ -622,7 +622,7 @@ echo "fe \$([ -S "$d/sot.sock" ] && echo yes || echo no)" >> "$d/log"
 FE
     chmod +x "$d/stubs/nc" "$d/home/.local/share/sot/bin/sotd" "$d/fe"
     [ "$2" != 1 ] || python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
-    ( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
+    ( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_PREFIX= SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
     check "$3" "started $d/home/.local/share/sot/bin/sotd fe yes" "$(events "$d")"
     check "$3: the log is under its prefix" "yes" "$([ -f "$d/home/.local/share/sot/logs/sotd.log" ] && echo yes || echo no)"
     reap_stub "$d"
@@ -786,10 +786,58 @@ exit 1
 CAT
 chmod +x "$d/stubs/cat"
 run_apply "$d"
-check "the apply fails and restores" "1" "$(grep -c 'restoring previous binaries' "$d/out" || true)"
+check "the apply fails at the re-render and restores" "1" "$(grep -c 're-rendering the unit or wrapper failed .* restoring previous binaries' "$d/out" || true)"
 check "the old wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
 check "the pending pointer is kept" "yes" "$([ -f "$d/prefix/updates/pending-linux-x86_64.json" ] && echo yes || echo no)"
 check "no temp file is left beside the wrapper" "no" "$([ -e "$d/home/.local/bin/sot-launch.new" ] && echo yes || echo no)"
+
+# ---------------------------------------------------------------------------
+# A disk that fills during a backup copy: half the bytes land, then cp fails.
+# Every other copy is the real cp.
+half_cp_stub() {  # <dir> <destination glob>
+    cat > "$1/stubs/cp" <<CP
+#!/bin/sh
+for a; do src="\$dst"; dst="\$a"; done
+case "\$dst" in
+    $2) head -c "\$((\$(wc -c < "\$src") / 2))" "\$src" > "\$dst"; exit 1 ;;
+esac
+exec "$TOOLS/cp" "\$@"
+CP
+    chmod +x "$1/stubs/cp"
+}
+for which in unit wrapper; do
+    case_start "partial_${which}_backup_keeps_the_originals"
+    d="$WORK/ap9-$which"; mk_apply_fixture "$d" 1 1
+    case "$which" in
+        unit) half_cp_stub "$d" '*/sotd.service.prev-*' ;;
+        wrapper) half_cp_stub "$d" '*/sot-launch.prev-*' ;;
+    esac
+    run_apply "$d"
+    check "$which: the apply fails at the re-render" "1" "$(grep -c 're-rendering the unit or wrapper failed' "$d/out" || true)"
+    check "$which: the unit is byte-identical" "same" "$(cmp -s "$d/unit.orig" "$d/home/.config/systemd/user/sotd.service" && echo same || echo differ)"
+    check "$which: the wrapper is byte-identical" "same" "$(cmp -s "$d/wrap.orig" "$d/home/.local/bin/sot-launch" && echo same || echo differ)"
+    check "$which: no partial backup is left" "no" \
+        "$([ -e "$d/prefix/updates/sotd.service.prev-linux-x86_64.new" ] || [ -e "$d/prefix/updates/sot-launch.prev-linux-x86_64.new" ] && echo yes || echo no)"
+done
+
+# ---------------------------------------------------------------------------
+case_start "failed_binary_install_restores_only_this_apply"
+# A .prev left by an older apply, then the first binary's install fails.
+d="$WORK/ap10"; mk_apply_fixture "$d" 1 1
+printf 'older-sotd\n' > "$d/prefix/bin/sotd.prev"
+cp "$d/prefix/bin/sot-apply" "$d/apply.orig"
+cat > "$d/stubs/install" <<INST
+#!/bin/sh
+for a; do dst="\$a"; done
+case "\$dst" in */bin/sot.new) exit 1 ;; esac
+exec "$TOOLS/install" "\$@"
+INST
+chmod +x "$d/stubs/install"
+run_apply "$d"
+check "the apply fails at the first binary" "1" "$(grep -c 'installing sot failed' "$d/out" || true)"
+check "every binary has its pre-apply bytes" "old-sot old-sotd same" \
+    "$(cat "$d/prefix/bin/sot") $(cat "$d/prefix/bin/sotd") $(cmp -s "$d/apply.orig" "$d/prefix/bin/sot-apply" && echo same || echo differ)"
+check "install.json still names the old version" "1" "$(grep -c '"version": "9.9.8"' "$d/prefix/install.json" || true)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

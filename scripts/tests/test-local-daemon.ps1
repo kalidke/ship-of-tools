@@ -512,6 +512,7 @@ public static class FakeSotd
         Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
 
         # (a) -FrontendKilled, and the fake exits by itself after 6 s.
+        try {
         Clear-FakeEnv
         $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
         $p8a = New-FakePrefix 'p8a'
@@ -531,8 +532,10 @@ public static class FakeSotd
             Stop-FakeOn $pipe8a
             Clear-FakeEnv
         }
+        } catch { Check '8a: section ran' $false $_.Exception.Message }
 
         # (b) no switch, but held.json says the daemon is closing.
+        try {
         Clear-FakeEnv
         $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
         Set-Content -LiteralPath $heldPath -Value '{"v":1,"holders":[],"handover_until_ms":null,"closing":true,"not_ended":0,"forget":[]}' -Encoding ASCII
@@ -553,8 +556,10 @@ public static class FakeSotd
             Clear-FakeEnv
             Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
         }
+        } catch { Check '8b: section ran' $false $_.Exception.Message }
 
         # (c) control: no knob, no switch, no record -- killed at once.
+        try {
         Clear-FakeEnv
         $p8c = New-FakePrefix 'p8c'
         $pipe8c = New-TestPipeName
@@ -569,6 +574,7 @@ public static class FakeSotd
             Stop-FakeOn $pipe8c
             Clear-FakeEnv
         }
+        } catch { Check '8c: section ran' $false $_.Exception.Message }
         } catch { Check '8: section ran' $false $_.Exception.Message }
     }
 
@@ -738,7 +744,7 @@ try {
         # Diagnostic: the ensure can run while the previous daemon still holds
         # its stdout log open. Hold it here with the share mode a child would
         # (no FileShare.Delete), put a known line in it, spawn through the real
-        # path, and look for the line in the old name or a rotated one.
+        # path, and look for the line in every stdout log.
         Clear-FakeEnv
         $p12 = New-FakePrefix 'p12'
         $pipe12 = New-TestPipeName
@@ -750,13 +756,23 @@ try {
             $held12 = New-Object System.IO.FileStream($out12, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
             $bytes12 = [System.Text.Encoding]::ASCII.GetBytes("known-line-12`r`n")
             $held12.Write($bytes12, 0, $bytes12.Length); $held12.Flush()
-            $null = & $script -Prefix $p12 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe12 -ProjectRoot $root 6>&1 2>&1
+            $run12 = & $script -Prefix $p12 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe12 -ProjectRoot $root 6>&1 2>&1
+            $exit12 = $LASTEXITCODE
+            Check '12: the spawn exits 0' ($exit12 -eq 0) "got $exit12; log: $run12"
+            Check '12: the successor answers' (Wait-Pipe $pipe12) 'pipe never opened'
+            Check '12: exactly one sotd is on the pipe' (@(Get-DaemonProcs (Get-PipePath $pipe12)).Count -eq 1) "found $(@(Get-DaemonProcs (Get-PipePath $pipe12)).Count)"
             $kept12 = $false
-            foreach ($f12 in @(Get-ChildItem -LiteralPath $log12dir -Filter 'sotd-local.stdout.log*' -ErrorAction SilentlyContinue)) {
+            foreach ($f12 in @(Get-ChildItem -LiteralPath $log12dir -Filter 'sotd-local.stdout*.log' -ErrorAction SilentlyContinue)) {
                 $fs12 = New-Object System.IO.FileStream($f12.FullName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
                 try { if ((New-Object System.IO.StreamReader($fs12)).ReadToEnd() -match 'known-line-12') { $kept12 = $true } } finally { $fs12.Dispose() }
             }
-            Check '12: the held log line survives the successor spawn' $kept12 'known line found in no sotd-local.stdout.log* file'
+            Check '12: the held log line survives the successor spawn' $kept12 'known line found in no sotd-local.stdout*.log file'
+            $held12text = ''
+            if (Test-Path -LiteralPath $out12) {
+                $fs12 = New-Object System.IO.FileStream($out12, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try { $held12text = (New-Object System.IO.StreamReader($fs12)).ReadToEnd() } finally { $fs12.Dispose() }
+            }
+            Check '12: the held file is still there and still holds the line' ($held12text -match 'known-line-12') "held file text: '$held12text'"
         } finally {
             if ($held12) { $held12.Dispose() }
             Stop-FakeOn $pipe12
@@ -764,6 +780,70 @@ try {
         }
     }
 } catch { Check '12: section ran' $false $_.Exception.Message }
+try {
+    if ($compiled) {
+        Write-Host "`n=== 13. LogsStayBounded: a spawn prunes old logs to the cap and never touches a held one ===" -ForegroundColor Cyan
+        # The bounds are read from the script. Old stamped files of one size,
+        # so the newest $LogKeep fit under the cap and all of them do not; the
+        # oldest file, at the old fixed name, is held the way section 12 holds it.
+        $ld13 = Get-Content -LiteralPath $script -Raw
+        $keep13 = [int]([regex]::Match($ld13, '(?m)^\$LogKeep\s*=\s*(\d+)').Groups[1].Value)
+        $cap13 = [int64]([regex]::Match($ld13, '(?m)^\$LogCapBytes\s*=\s*(\d+)MB').Groups[1].Value) * 1MB
+        Check '13: the bounds are named in the script' (($keep13 -gt 0) -and ($cap13 -gt 0)) "keep=$keep13 cap=$cap13"
+        Clear-FakeEnv
+        $p13 = New-FakePrefix 'p13'
+        $pipe13 = New-TestPipeName
+        $log13dir = Join-Path $p13 'logs'
+        New-Item -ItemType Directory -Force -Path $log13dir | Out-Null
+        $size13 = [int64][math]::Floor($cap13 / ($keep13 + 1))
+        $old13 = @()
+        for ($i13 = 0; $i13 -lt $keep13 + 3; $i13++) {
+            $n13 = Join-Path $log13dir ('sotd-local.stdout.20200101-0000{0:d2}-{1}.log' -f $i13, (1000 + $i13))
+            $fs13 = [System.IO.File]::Create($n13)
+            try { $fs13.SetLength($size13) } finally { $fs13.Dispose() }
+            $old13 += $n13
+        }
+        $out13 = Join-Path $log13dir 'sotd-local.stdout.log'
+        $held13 = $null
+        try {
+            $held13 = New-Object System.IO.FileStream($out13, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+            $bytes13 = [System.Text.Encoding]::ASCII.GetBytes("known-line-13`r`n")
+            $held13.Write($bytes13, 0, $bytes13.Length); $held13.Flush()
+            $run13 = & $script -Prefix $p13 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe13 -ProjectRoot $root 6>&1 2>&1
+            $exit13 = $LASTEXITCODE
+            Check '13: the spawn exits 0' ($exit13 -eq 0) "got $exit13; log: $run13"
+            Check '13: the successor answers' (Wait-Pipe $pipe13) 'pipe never opened'
+            Check '13: exactly one sotd is on the pipe' (@(Get-DaemonProcs (Get-PipePath $pipe13)).Count -eq 1) "found $(@(Get-DaemonProcs (Get-PipePath $pipe13)).Count)"
+            $kept13 = @($old13 | Select-Object -Last $keep13 | Where-Object { (Test-Path -LiteralPath $_) -and ((Get-Item -LiteralPath $_).Length -eq $size13) })
+            Check "13: the newest $keep13 files are kept" ($kept13.Count -eq $keep13) "kept $($kept13.Count) of $keep13"
+            $held13text = ''
+            if (Test-Path -LiteralPath $out13) {
+                $fs13 = New-Object System.IO.FileStream($out13, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try { $held13text = (New-Object System.IO.StreamReader($fs13)).ReadToEnd() } finally { $fs13.Dispose() }
+            }
+            Check '13: the held file is kept unchanged' ($held13text -ceq "known-line-13`r`n") "held file text: '$held13text'"
+            # A line written through the held handle now reaches the same name,
+            # so no delete took the file out from under its holder.
+            $after13 = [System.Text.Encoding]::ASCII.GetBytes("after-13`r`n")
+            $held13.Write($after13, 0, $after13.Length); $held13.Flush()
+            $held13text = ''
+            if (Test-Path -LiteralPath $out13) {
+                $fs13 = New-Object System.IO.FileStream($out13, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try { $held13text = (New-Object System.IO.StreamReader($fs13)).ReadToEnd() } finally { $fs13.Dispose() }
+            }
+            Check '13: no delete touched the held file' ($held13text -ceq "known-line-13`r`nafter-13`r`n") "held file text: '$held13text'"
+            $unheld13 = [int64]0
+            foreach ($f13 in @(Get-ChildItem -LiteralPath $log13dir -Filter 'sotd-local.stdout*.log' -ErrorAction SilentlyContinue)) {
+                if ($f13.Name -ne 'sotd-local.stdout.log') { $unheld13 += $f13.Length }
+            }
+            Check '13: the unheld total is at most the cap' ($unheld13 -le $cap13) "total $unheld13, cap $cap13"
+        } finally {
+            if ($held13) { $held13.Dispose() }
+            Stop-FakeOn $pipe13
+            Clear-FakeEnv
+        }
+    }
+} catch { Check '13: section ran' $false $_.Exception.Message }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still

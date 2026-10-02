@@ -243,14 +243,18 @@ PREV_CHECKOUT="$(readlink "$PREFIX/repo/current" 2>/dev/null || echo "")"
     printf '  "checkout": "%s"\n' "$PREV_CHECKOUT"
     printf '}\n'
 } > "$LASTGOOD.tmp" && mv -f "$LASTGOOD.tmp" "$LASTGOOD"
-# Backups belong to the latest apply: sot_rerender_owned makes them below.
-rm -f "${UNIT_BAK:?}" "${WRAP_BAK:?}"
+# Backups belong to the latest apply: the flip and sot_rerender_owned make
+# them below.
+rm -f "${UNIT_BAK:?}" "${WRAP_BAK:?}" "${PREFIX:?}"/bin/*.prev
 
 # ---- the flip: binaries, then pointers — all-or-restore ----------------------
 restore_previous() {
     log "$1 — restoring previous binaries and pointers"
     for r in sot sotd sot-capsule sot-apply; do
-        [ -f "$PREFIX/bin/$r.prev" ] && cp -p "$PREFIX/bin/$r.prev" "$PREFIX/bin/$r"
+        [ -f "$PREFIX/bin/$r.prev" ] || continue
+        if ! { cp -p "$PREFIX/bin/$r.prev" "$PREFIX/bin/$r.new" && mv -f "$PREFIX/bin/$r.new" "$PREFIX/bin/$r"; }; then
+            log "could not restore $PREFIX/bin/$r (backup kept at $PREFIX/bin/$r.prev)"
+        fi
     done
     if [ -n "$PREV_CHECKOUT" ]; then
         ln -sfn "$PREV_CHECKOUT" "$PREFIX/repo/current" 2>/dev/null
@@ -266,7 +270,11 @@ restore_previous() {
 # RUNNING copy of this script (sh keeps its fd on the old inode).
 for b in sot sotd sot-capsule sot-apply; do
     [ -f "$STAGED/$b" ] || continue
-    [ -f "$PREFIX/bin/$b" ] && cp -p "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev" 2>/dev/null
+    if [ -f "$PREFIX/bin/$b" ] && ! { cp -p "$PREFIX/bin/$b" "$PREFIX/bin/$b.prev.new" \
+            && mv -f "$PREFIX/bin/$b.prev.new" "$PREFIX/bin/$b.prev"; }; then
+        rm -f "${PREFIX:?}/bin/$b.prev.new"
+        restore_previous "backing up $b failed"
+    fi
     if ! install -m 0755 "$STAGED/$b" "$PREFIX/bin/$b.new" 2>/dev/null \
        || ! mv -f "$PREFIX/bin/$b.new" "$PREFIX/bin/$b"; then
         restore_previous "installing $b failed"
@@ -292,8 +300,8 @@ if [ -r "$CHECKOUT/scripts/lib/sot-daemon.sh" ]; then
 fi
 
 # ---- rewrite install.json (preserve role/prefix/config/service) --------------
-# The last fallible step: the atomic mv names the new tag only once
-# everything it describes is in place.
+# The atomic mv names the new tag only once everything it describes is in
+# place.
 VERSION="${TAG#v}"
 if [ -f "$PREFIX/install.json" ]; then
     if ! sed -e 's|"version": *"[^"]*"|"version": "'"$VERSION"'"|' \

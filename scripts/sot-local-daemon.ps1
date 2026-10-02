@@ -90,15 +90,17 @@
 # `sotd.exe` as a mapped image while it runs, so if the daemon is up, ITS
 # binary is still resolvable at its original location.
 #
-# Spawn hygiene: stdout/stderr are redirected to
-# <prefix>\logs\sotd-local.{stdout,stderr}.log -- Start-Process TRUNCATES
-# these on every (re)start, same as the frontend's own logs (see
-# launch-sot.ps1's header); this is fine here because a start only happens
-# when the pipe was NOT already answering, i.e. rarely. ONE previous
-# generation is kept: right before the (re)start, each file that already
-# exists is renamed to its own `.1` (overwriting an older `.1`), so a
-# question about the PREVIOUS boot survives one restart -- no rotation
-# framework, just that one rename. The daemon's own
+# Spawn hygiene: every start redirects stdout/stderr to files of its own,
+# <prefix>\logs\sotd-local.{stdout,stderr}.<yyyyMMdd-HHmmss>-<pid>.log
+# (local start time, then this launcher's pid), so the newest by name is the
+# current one. A start never truncates, renames or deletes a file another
+# process still holds: the previous daemon may still be writing its
+# shutdown lines while this one starts. Before each spawn, each stream keeps
+# its newest $LogKeep files and deletes older ones, oldest first, until its
+# total is at most $LogCapBytes; a delete that fails (the file is held) is
+# skipped and logged. The old fixed names (sotd-local.{stdout,stderr}.log
+# and their .1) count as the oldest. The cap applies across starts; one
+# running daemon's own file still grows within its run. The daemon's own
 # private log (rust/backend/src/main.rs::open_private_log_file, via
 # paths::state_dir()) is a SEPARATE, HOME-derived path that today has no
 # Windows branch -- a known gap, not fixed here (see the ADR amendment). If
@@ -157,6 +159,10 @@ param(
 $LaunchWaitSeconds = 160        # = ops.rs lease::LAUNCH_WAIT
 $DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
 
+# Daemon stdout/stderr log bounds, per stream (see "Spawn hygiene" above).
+$LogKeep = 5                    # the newest files a start never deletes
+$LogCapBytes = 16MB             # older files go, oldest first, down to this total
+
 $ErrorActionPreference = 'Continue'
 
 if (-not $Prefix) { $Prefix = Join-Path $env:LOCALAPPDATA 'sot' }
@@ -175,6 +181,29 @@ function Write-LocalDaemonLog {
         "$(Get-Date -Format o)  pid=$PID  $Message" |
             Out-File -FilePath (Join-Path $logDir 'sotd-local.log') -Append -Encoding utf8
     } catch { }
+}
+
+# Prune one stream's logs before a spawn (see "Spawn hygiene" in the header).
+function Remove-OldDaemonLogs {
+    param([string]$Dir, [string]$Stream)
+    $files = @()
+    foreach ($n in @("sotd-local.$Stream.log.1", "sotd-local.$Stream.log")) {
+        $f = Get-Item -LiteralPath (Join-Path $Dir $n) -ErrorAction SilentlyContinue
+        if ($f) { $files += $f }
+    }
+    $files += @(Get-ChildItem -LiteralPath $Dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match "^sotd-local\.$Stream\.\d{8}-\d{6}-\d+\.log$" } |
+        Sort-Object Name)
+    $total = 0
+    foreach ($f in $files) { $total += $f.Length }
+    for ($i = 0; ($i -lt $files.Count - $LogKeep) -and ($total -gt $LogCapBytes); $i++) {
+        try {
+            Remove-Item -LiteralPath $files[$i].FullName -Force -ErrorAction Stop
+            $total -= $files[$i].Length
+        } catch {
+            Write-LocalDaemonLog "kept held log $($files[$i].FullName) - $($_.Exception.Message)"
+        }
+    }
 }
 
 # Bounded connect probe (500ms) -- see the header for why this replaces a
@@ -365,32 +394,10 @@ if (-not $daemonExe) {
 
 $logDir = Join-Path $Prefix 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-$daemonStdout = Join-Path $logDir 'sotd-local.stdout.log'
-$daemonStderr = Join-Path $logDir 'sotd-local.stderr.log'
-
-# Keep ONE previous generation before Start-Process truncates these below
-# (see the header note) -- rename whatever is already there to `.1`,
-# overwriting an older `.1`. Two-step, not a direct Move-Item straight to
-# `.1`: with -Force, Move-Item can clear the existing `.1` destination and
-# THEN fail the actual move (e.g. the current file still has a lingering
-# handle even though the ensure path above only proved the PIPE is gone,
-# not the file) -- that would destroy the one kept generation and keep
-# nothing. Move current -> a unique temp name FIRST, with -ErrorAction
-# Stop so a failure there is a terminating error the try/catch actually
-# sees (this script runs under $ErrorActionPreference = 'Continue', so a
-# non-terminating provider error would otherwise sail past an empty
-# catch); `.1` is only touched once that succeeds, so a failed rotation
-# leaves the untouched original in place (a fresh boot then just starts
-# with no `.1`, same as before this existed) instead of losing both.
-foreach ($f in @($daemonStdout, $daemonStderr)) {
-    if (Test-Path $f) {
-        try {
-            $rotTemp = "$f.rotating.$PID.tmp"
-            Move-Item -Path $f -Destination $rotTemp -Force -ErrorAction Stop
-            Move-Item -Path $rotTemp -Destination "$f.1" -Force -ErrorAction Stop
-        } catch { }
-    }
-}
+foreach ($stream in @('stdout', 'stderr')) { Remove-OldDaemonLogs -Dir $logDir -Stream $stream }
+$logStamp = '{0}-{1}' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $PID
+$daemonStdout = Join-Path $logDir "sotd-local.stdout.$logStamp.log"
+$daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 
 # Single pre-quoted argument STRING, not an array: PowerShell 5.1's
 # Start-Process joins an -ArgumentList array with spaces and drops the
@@ -411,7 +418,7 @@ try {
     Write-LocalDaemonLog "REFUSED: failed to start $daemonExe - $($_.Exception.Message)"
     exit 1
 }
-Write-LocalDaemonLog "spawned pid=$($proc.Id)"
+Write-LocalDaemonLog "spawned pid=$($proc.Id), output in $daemonStdout and $daemonStderr"
 
 # Wait for the pipe to come up, up to $LaunchWaitSeconds: a previous daemon
 # may still be shutting down, and the one just spawned waits on the daemon
