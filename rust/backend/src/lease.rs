@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 use sot_log::challenge::{PeerAuthOutcome, ProcessIdentity};
 use sot_protocol::ops::{lease as bounds, FeLeaseReq, LeaseOutcome, LeaveIntent};
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, watch};
 
 /// `held.json`'s shape; a record with any other `v` plans Cleanup.
 const RECORD_V: u32 = 1;
@@ -112,8 +112,8 @@ pub(crate) enum Tick {
     None,
     /// A handover expired with no lease held; as [`Decision::Shutdown`].
     Shutdown,
-    /// A pending start expired. Its holders stay in the record until the
-    /// Cleanup's [`Leases::finish`], so a kill mid-Cleanup cannot resume.
+    /// A pending start expired. Its holders stay in the record until
+    /// [`Leases::finish_cleanup`], so a kill mid-Cleanup cannot resume.
     Cleanup,
 }
 
@@ -210,8 +210,9 @@ impl State {
 #[derive(Clone)]
 pub(crate) struct Leases {
     state: Arc<Mutex<State>>,
-    /// Fired once, when a shutdown begins.
-    gone: Arc<Notify>,
+    /// `true` once a shutdown has begun; every waiter sees it, however
+    /// late it subscribes.
+    gone: Arc<watch::Sender<bool>>,
     starts: mpsc::UnboundedSender<StartEvent>,
 }
 
@@ -232,7 +233,7 @@ impl Leases {
             not_ended: 0,
             forget: Vec::new(),
         };
-        let leases = Leases { state: Arc::new(Mutex::new(state)), gone: Arc::new(Notify::new()), starts };
+        let leases = Leases { state: Arc::new(Mutex::new(state)), gone: Arc::new(watch::Sender::new(false)), starts };
         (leases, events)
     }
 
@@ -322,7 +323,7 @@ impl Leases {
             LeaveIntent::Close => {
                 st.close();
                 drop(st);
-                self.gone.notify_one();
+                self.gone.send_replace(true);
                 Decision::Shutdown
             }
             LeaveIntent::Keep => {
@@ -347,7 +348,7 @@ impl Leases {
         if st.held.is_empty() && st.handover_until_ms.is_some_and(|until| until <= now_ms) {
             st.close();
             drop(st);
-            self.gone.notify_one();
+            self.gone.send_replace(true);
             return Tick::Shutdown;
         }
         if let Some(p) = st.pending.as_mut().filter(|p| !p.expired && p.until_ms <= now_ms) {
@@ -361,18 +362,28 @@ impl Leases {
     /// Idempotent.
     pub(crate) fn begin_close(&self) {
         if self.lock().close() {
-            self.gone.notify_one();
+            self.gone.send_replace(true);
         }
     }
 
-    /// An end's report, written as the record: shutdown step 5, or a
-    /// Cleanup's write. It ends a shutdown's `closing` (leases stay
-    /// refused) and a pending start whose Cleanup this was.
-    pub(crate) fn finish(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
+    /// Shutdown step 5, the shutdown's report written as the record: it
+    /// ends `closing` (leases stay refused until the process exits).
+    pub(crate) fn finish_shutdown(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
         let mut st = self.lock();
         if st.phase == Phase::Closing {
             st.phase = Phase::Finished;
         }
+        st.not_ended = not_ended;
+        st.forget = forget;
+        st.persist()
+    }
+
+    /// The end of a startup Cleanup, from the plan or from an expired
+    /// pending start: its report written as the record, and the expired
+    /// pending start cleared. It never touches the phase, so a shutdown
+    /// that began during the Cleanup stays `closing` until its own step 5.
+    pub(crate) fn finish_cleanup(&self, not_ended: u32, forget: Vec<String>) -> std::io::Result<()> {
+        let mut st = self.lock();
         if st.pending.as_ref().is_some_and(|p| p.expired) {
             st.pending = None;
         }
@@ -411,11 +422,7 @@ impl Leases {
 
     /// Resolves once a shutdown has begun.
     pub(crate) async fn gone(&self) {
-        let notified = self.gone.notified();
-        let open = self.lock().phase == Phase::Open;
-        if open {
-            notified.await;
-        }
+        let _ = self.gone.subscribe().wait_for(|gone| *gone).await;
     }
 }
 
@@ -754,15 +761,44 @@ mod tests {
             assert_ne!(startup_plan(&read, Ok(BOOT), until + 1), StartPlan::Resume, "a kill mid-Cleanup never resumes, {qualify:?}");
             f.leases.grant(&req(&id(1)), &peer(&id(1)), true, until);
             assert!(f.starts.try_recv().is_err(), "a lease after expiry does not complete it");
-            f.leases.finish(0, vec![]).unwrap();
+            f.leases.finish_cleanup(0, vec![]).unwrap();
             assert_eq!(f.on_disk(), Some(HeldRecord { holders: vec![id(1)], ..empty() }), "{qualify:?}");
         }
     }
 
     #[test]
+    fn cleanup_finish_never_ends_a_shutdown() {
+        let until = T0 + handover_bound_ms();
+        let f = fixture(Some(BOOT));
+        f.leases.install_pending(until, Qualify::Holders(vec![id(1)])).unwrap();
+        assert_eq!(f.leases.tick(until), Tick::Cleanup);
+        f.leases.begin_close();
+        f.leases.finish_cleanup(0, vec![]).unwrap();
+        assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "closing until the shutdown's own step 5");
+        assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true, until).0, LeaseOutcome::Closing);
+    }
+
+    #[tokio::test]
+    async fn gone_wakes_every_waiter() {
+        let f = fixture(Some(BOOT));
+        let waiters: Vec<_> = (0..2)
+            .map(|_| {
+                let leases = f.leases.clone();
+                tokio::spawn(async move { leases.gone().await })
+            })
+            .collect();
+        tokio::task::yield_now().await;
+        f.leases.begin_close();
+        for w in waiters {
+            tokio::time::timeout(Duration::from_secs(1), w).await.expect("every waiter sees the shutdown").unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(1), f.leases.gone()).await.expect("a late waiter too");
+    }
+
+    #[test]
     fn notice_clears_only_on_matching_ack() {
         let f = fixture(Some(BOOT));
-        f.leases.finish(2, vec![]).unwrap();
+        f.leases.finish_cleanup(2, vec![]).unwrap();
         assert_eq!(f.leases.notice(), 2);
         assert_eq!(f.on_disk(), Some(HeldRecord { not_ended: 2, ..empty() }));
         f.grant(&id(1));
