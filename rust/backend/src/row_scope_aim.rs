@@ -11,8 +11,12 @@ pub(crate) fn prefix(hash: &str) -> String {
 
 /// Accept `rel` (a cgroup path relative to the cgroup2 root) only when it
 /// is a scope of the row whose hash is `hash`, and neither `own_rel` (the
-/// caller's own cgroup) nor an ancestor of it.
+/// caller's own cgroup) nor an ancestor of it. An unknown (empty) `own_rel`
+/// refuses every aim, since that check cannot then be made.
 pub(crate) fn aim(rel: &str, own_rel: &str, hash: &str) -> Result<(), String> {
+    if own_rel.is_empty() {
+        return Err(format!("the caller's own cgroup is unknown: {rel:?}"));
+    }
     if !rel.starts_with('/') {
         return Err(format!("not an absolute cgroup path: {rel:?}"));
     }
@@ -41,6 +45,7 @@ pub(crate) fn aim_table(h: &str) -> Vec<(String, String, bool)> {
     vec![
         (ours.clone(), own.clone(), true),
         (ours.clone(), ours.clone(), false),
+        (ours.clone(), String::new(), false),
         ("/a/app.slice".to_string(), own.clone(), false),
         (format!("/a/sot-row-{h}-y.scope"), format!("/a/sot-row-{h}-y.scope/app.slice/run-u1.scope"), false),
         ("/".to_string(), own.clone(), false),
