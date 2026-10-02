@@ -4,21 +4,24 @@
 # scripts to ~/.sot-comm/bin and each per-CLI adapter to that CLI's dir
 # (~/.claude/skills, $CODEX_HOME/skills, ~/.local/bin, hooks/plugins).
 # Named accounts (owner ruling): a `~/.claude-auth/<name>` account folder
-# gets skills, hooks, and everything else the default `~/.claude` folder
-# carries except the login via a SYMLINK the daemon creates at spawn
-# (`rust/backend/src/accounts.rs::ensure_account_links`) — the installer
-# itself never writes under `.claude-auth`.
+# gets skills and everything else the default `~/.claude` folder carries
+# except the login via a SYMLINK the daemon creates at spawn
+# (`rust/backend/src/accounts.rs::ensure_account_links`). The one thing the
+# installer itself writes under `.claude-auth` is the comm hooks: an account
+# holding a REAL settings.json of its own never sees the shared one, so the
+# hooks are merged into every account's settings.json that exists, each
+# real file once (`_claude_settings_targets`).
 # See comm/PROTOCOL.md for the wire contract.
 #
-# The Claude adapter additionally installs three work-state hooks
-# (UserPromptSubmit → working, Notification → blocked, Stop → idle; each shells
-# out to comm-status.sh) so an agent's state in the state-nav is event-driven —
-# instant and automatic, no model cooperation. Wiring them touches
-# <claude_dir>/settings.json, but via NON-clobbering jq merges (_add_comm_hook!)
-# that add one entry per event only if absent and preserve every existing hook;
-# if jq is missing the exact JSON to add by hand is printed, and if the file
-# won't parse it is left alone untouched (a missing file is created fresh
-# instead, since there is nothing there to preserve).
+# The Claude adapter additionally installs the work-state hooks listed in
+# `_COMM_STATE_HOOKS` (each shells out to a comm-status-*.sh script) so an
+# agent's state in the state-nav is event-driven — instant and automatic, no
+# model cooperation. Wiring them touches every Claude account's
+# settings.json, but via NON-clobbering jq merges (_add_comm_hook!) that add
+# one entry per event only if absent and preserve every existing hook; if jq
+# is missing the exact JSON to add by hand is printed, and if a file won't
+# parse it is left alone untouched (a missing file is created fresh in the
+# install's own Claude dir only, since there is nothing there to preserve).
 #
 # Install copies each file via copy-then-rename (`install_file`, an atomic
 # swap onto the destination — see below) and then prunes exact names — it never
@@ -783,11 +786,12 @@ function _install_adapter(cli::Symbol)
         _stage!(problems, "claude hooks") do
             _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home())
         end
-        # Named accounts (owner ruling) get skills and hooks via the
-        # shared-folder symlink the daemon creates at spawn
-        # (`rust/backend/src/accounts.rs::ensure_account_links`), not a
-        # second install pass here — the installer never writes under
-        # `.claude-auth`.
+        # Named accounts get skills via the shared-folder symlink the
+        # daemon creates at spawn (`rust/backend/src/accounts.rs::
+        # ensure_account_links`); the hooks are merged into every
+        # account's own settings.json by `_install_claude_hooks` itself,
+        # since an account with a real settings.json never sees the
+        # shared one.
     elseif cli === :codex
         # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
         # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
@@ -947,27 +951,124 @@ function _install_adapter(cli::Symbol)
     return nothing
 end
 
+# The account-name rule, character for character the daemon's
+# `is_account_name` (`rust/backend/src/accounts.rs`), so "every account"
+# here is exactly the set the daemon can spawn a session as. `\z`, not `$`:
+# PCRE's `$` also matches before a trailing newline.
+_is_account_name(name::AbstractString) = occursin(r"\A[a-z0-9][a-z0-9_-]*\z", name)
+
+# A dir compared by where it really is: absolute, links resolved when it
+# exists (a probe that cannot resolve falls back to the absolute path), no
+# trailing separator.
+function _dirkey(d::AbstractString)
+    a = abspath(d)
+    r = try
+        ispath(a) ? realpath(a) : a
+    catch
+        a
+    end
+    return rstrip(normpath(r), ['/', '\\'])
+end
+
+# `dir` is `root` or lies below it (path components, not string prefix).
+function _is_under(dir::AbstractString, root::AbstractString)
+    p, r = splitpath(_dirkey(dir)), splitpath(_dirkey(root))
+    return length(p) >= length(r) && p[1:length(r)] == r
+end
+
+"""
+    _claude_settings_targets(home, claude_dir) -> Vector{String}
+
+Every Claude account's settings.json the comm hooks go into, as the REAL
+files to write, each once, in this order: `claude_dir` (the install's own
+dir, `claude_home()`), the default `home/.claude`, then every
+`home/.claude-auth/<name>` folder whose name passes [`_is_account_name`]
+(sorted). Links are resolved (`realpath`), so a writer renames onto the
+target and a link stays a link, and two accounts linked to one file are one
+entry.
+
+A MISSING settings.json is returned (unresolved) for exactly one dir, the
+create dir: `claude_dir`, unless that is `home/.claude-auth` or lies in it
+(compared by real location, so a relative or linked `CLAUDE_CONFIG_DIR` is
+caught), in which case `home/.claude` (the backend's link then carries that file into the
+account), where `_add_comm_hook!` creates it fresh. No file is ever created
+under `.claude-auth`: a real file there would permanently shadow the shared
+settings.json the daemon links in at spawn (`ensure_account_links` leaves
+any existing entry alone). Any other dir without one is skipped. A dangling link, or a path that resolves to
+something other than a regular file, is skipped with a warning and never
+created through.
+"""
+function _claude_settings_targets(home::AbstractString, claude_dir::AbstractString)
+    dirs = [claude_dir, joinpath(home, ".claude")]
+    auth = joinpath(home, ".claude-auth")
+    create_dir = _is_under(claude_dir, auth) ? joinpath(home, ".claude") : claude_dir
+    names = try
+        isdir(auth) ? readdir(auth) : String[]  # sorted
+    catch err
+        @warn "could not list the Claude accounts folder — no account settings merged; add the comm hooks to each by hand" dir = auth error = err
+        String[]
+    end
+    for name in names
+        dir = joinpath(auth, name)
+        try
+            _is_account_name(name) && isdir(dir) && push!(dirs, dir)
+        catch err
+            @warn "could not read this Claude account folder — skipped; add the comm hooks to it by hand" dir = dir error = err
+        end
+    end
+    dirs = unique(_dirkey, dirs)
+    targets = String[]
+    for dir in dirs
+        try
+            path = joinpath(dir, "settings.json")
+            if !islink(path) && !ispath(path)
+                if _dirkey(dir) == _dirkey(create_dir)
+                    push!(targets, path)  # the one dir where a missing file is created fresh
+                elseif _is_under(dir, auth)
+                    @info "no settings.json in this Claude account folder — skipped, none created (the daemon links the shared one in at the account's first spawn)" dir = dir
+                end
+                continue
+            end
+            real = try
+                realpath(path)
+            catch
+                nothing
+            end
+            if real === nothing || !isfile(real)
+                @warn "settings.json is a dangling link or not a regular file — skipped; add the comm hooks to it by hand" file = path
+                continue
+            end
+            real in targets || push!(targets, real)
+        catch err
+            @warn "could not read this Claude folder's settings.json — skipped; add the comm hooks to it by hand" file = joinpath(dir, "settings.json") error = err
+        end
+    end
+    return targets
+end
+
 """
     _install_claude_hooks(srchooks, claude_dir)
 
 Install the comm hook script(s) from `srchooks` into `\$SOT_COMM_HOME/bin`
 (next to the comm-*.sh scripts they shell out to), then idempotently
-register the work-state hooks in `claude_dir/settings.json`. Called only
-for the default `~/.claude` (`_install_adapter`) — a named account gets the
-same hooks via the shared-folder symlink, not a second registration pass
-here.
+register the work-state hooks in every Claude account's
+settings.json: each real file [`_claude_settings_targets`] returns for
+`claude_dir` (the install's own dir, the default `~/.claude`, and each
+`~/.claude-auth/<name>` that has one), links resolved, each written once.
+The scripts are installed once, not per account.
 
 The work-state hooks make state **event-driven — instant, automatic, and free of
-model cooperation**: `UserPromptSubmit → working`, `Notification → blocked`,
-`Stop → idle`. They replace the pane-scraping heuristic, which could not be
+model cooperation**: `UserPromptSubmit → working`, `PreToolUse` on `AskUserQuestion` → blocked, `Stop → idle`, and a `PostToolUse`
+heartbeat. They replace the pane-scraping heuristic, which could not be
 instant (a poll), was fooled by an agent's own output, and could never tell
 "blocked on the user" from "idle".
 
 Each settings.json edit is a **non-destructive jq merge** (via [`_add_comm_hook!`]):
 it adds one entry for that event only if absent and preserves every other hook
-(repo-boundary-guard, tmux-send-guard, … are untouched). If settings.json is
-missing or unparseable, or `jq` is unavailable, it is left alone and the exact
-JSON to add by hand is printed. No-op if `srchooks` is absent.
+(repo-boundary-guard, tmux-send-guard, … are untouched). A missing settings.json is created fresh in one dir only, the create dir of [`_claude_settings_targets`], and
+never under `~/.claude-auth`; an
+unparseable one, or any file when `jq` is unavailable, is left alone and
+the exact JSON to add by hand is printed. No-op if `srchooks` is absent.
 """
 function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString)
     isdir(srchooks) || return nothing
@@ -980,14 +1081,23 @@ function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractStr
     # reduced from (ADR 0044 amendment): a turn starting sets `floor`, an
     # AskUserQuestion sets `question` then clears `floor` (a real turn end),
     # a turn ending sets `done` when nothing else is pending and clears
-    # `floor`. Retire any stale comm wiring first (e.g. the old
+    # `floor`. Retire any comm wiring that is no longer current first (e.g. the old
     # Notification→blocked that lit agents red on plain idle) so settings
     # ends up matching the current set declaratively, then add each via a
     # non-clobbering merge.
-    _remove_stale_comm_hooks!(claude_dir)
-    for (event, script, matcher) in _COMM_STATE_HOOKS
-        _add_comm_hook!(event, script, claude_dir; matcher = matcher)
+    failed = String[]
+    for settings in _claude_settings_targets(homedir(), claude_dir)
+        try
+            _remove_stale_comm_hooks!(settings)
+            for (event, script, matcher) in _COMM_STATE_HOOKS
+                _add_comm_hook!(event, script, settings; matcher = matcher)
+            end
+        catch err
+            @warn "could not merge the comm hooks into this settings.json — skipped; add them by hand" file = settings error = err
+            push!(failed, settings)
+        end
     end
+    isempty(failed) || error("could not merge the comm hooks into: " * join(failed, ", "))
     return nothing
 end
 
@@ -999,10 +1109,7 @@ end
 # AskUserQuestion tool (PreToolUse), NOT Notification: Notification also fires
 # on plain idle, which lit agents red while merely waiting. A question asked
 # in plain text has no automatic signal — an agent self-reports
-# `comm-status.sh blocked "<q>"` for those. The last TWO entries are NOT state
-# hooks: they tell a context-wiped session (compaction / `/clear`) to re-run
-# its session-start skill — the receive path survives both, so the re-run
-# restores context only (below).
+# `comm-status.sh blocked "<q>"` for those.
 const _COMM_STATE_HOOKS = [
     ("UserPromptSubmit", "comm-status-working.sh", nothing),     # turn starts    → prompt (sets floor)
     ("PreToolUse", "comm-status-blocked.sh", "AskUserQuestion"), # opens question → blocked, then stop (a real turn end)
@@ -1021,11 +1128,11 @@ const _COMM_STATE_HOOKS = [
 _hook_command(script::AbstractString) = "\$HOME/.sot-comm/bin/$script"
 
 """
-    _add_comm_hook!(event, script, claude_dir)
+    _add_comm_hook!(event, script, settings)
 
 Idempotently add a Claude Code hook for `event` (`"UserPromptSubmit"`,
 `"Notification"`, `"Stop"`, …) running `~/.sot-comm/bin/<script>` to
-`claude_dir/settings.json`, preserving all existing config. Uses `jq` so the
+`settings`, preserving all existing config. Uses `jq` so the
 merge is structural, not a clobbering rewrite. Falls back to printing the
 exact JSON to add by hand when jq is missing or the file can't be parsed —
 never overwrites a file it could not safely read.
@@ -1033,10 +1140,13 @@ never overwrites a file it could not safely read.
 A MISSING `settings.json` (e.g. a fresh `~/.claude` that has never been run
 yet) gets a fresh `{}` created first, so the install still gets the hook
 registration.
+
+`settings` must be the RESOLVED file ([`_claude_settings_targets`]), never a
+symlink: the publish is a rename, which replaces a link at the destination
+with a plain file instead of writing through it.
 """
-function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_dir::AbstractString;
+function _add_comm_hook!(event::AbstractString, script::AbstractString, settings::AbstractString;
                          matcher::Union{Nothing,AbstractString} = nothing)
-    settings = joinpath(claude_dir, "settings.json")
     cmd = _hook_command(script)
     m = matcher === nothing ? "" : matcher
     mfield = isempty(m) ? "" : """ "matcher": "$m", """
@@ -1047,7 +1157,7 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_d
         return nothing
     end
     if !isfile(settings)
-        mkpath(claude_dir)
+        mkpath(dirname(settings))
         write(settings, "{}")
         @info "Created settings.json for the comm hooks" file = settings
     end
@@ -1069,19 +1179,25 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_d
       end
     """
 
-    tmp = _tmp_name(settings)
+    tmp = ""
     ok = try
+        tmp = _settings_tmp(settings)
         run(pipeline(`jq --arg cmd $cmd --arg evt $event --arg m $m $prog $settings`; stdout = tmp))
         true
     catch err
         @warn "could not parse settings.json with jq — leaving it untouched; add the comm $event hook by hand" file = settings entry = manual error = err
-        isfile(tmp) && rm(tmp; force = true)
+        !isempty(tmp) && isfile(tmp) && rm(tmp; force = true)
         false
     end
     ok || return nothing
 
     # Detect whether jq actually changed anything (already-present → no-op).
     changed = read(tmp, String) != read(settings, String)
+    if !changed
+        rm(tmp; force = true)
+        @info "comm $event hook already present in settings.json" file = settings
+        return nothing
+    end
     # A bare rename, not `mv(...; force = true)`: that form falls back to
     # REMOVING settings.json first when a plain rename fails (e.g. the file
     # is open/locked), which can leave it missing rather than merely
@@ -1094,50 +1210,77 @@ function _add_comm_hook!(event::AbstractString, script::AbstractString, claude_d
         @warn "could not update settings.json (in use?) — leaving the previous copy in place; add the comm $event hook by hand" file = settings entry = manual error = err
         return nothing
     end
-    if changed
-        @info "Added comm $event hook to settings.json" file = settings command = cmd
-    else
-        @info "comm $event hook already present in settings.json" file = settings
-    end
+    @info "Added comm $event hook to settings.json" file = settings command = cmd
     return nothing
 end
 
-"""
-    _remove_stale_comm_hooks!(claude_dir)
+# The current comm wiring as jq data: one [event, command, matcher-or-""] per hook.
+_comm_keep_json() = "[" * join(("[\"$e\",\"$(_hook_command(s))\",\"$(something(m, ""))\"]"
+                                for (e, s, m) in _COMM_STATE_HOOKS), ",") * "]"
 
-Strip every comm hook (any `~/.sot-comm/bin/comm-status-*.sh` command, and the
-retired `comm-postcompact-reminder.sh` / `comm-postclear-reminder.sh`) from
-`claude_dir/settings.json`, across all events, dropping events left empty. Run
-before re-adding the current set ([`_install_claude_hooks`]) so settings ends up
-matching `_COMM_STATE_HOOKS` exactly — retiring wirings we no longer use (notably
-the old `Notification`→blocked that lit agents red on plain idle). Every non-comm
-hook is preserved. No-op if `jq` is missing or settings.json is absent/unparseable (a fresh
-`~/.claude` has nothing to prune yet either way).
+# A staging file for `settings` that has the settings file's mode BEFORE any
+# content is written into it (POSIX), so the contents are never readable more
+# widely than the file they replace. On Windows `filemode` is synthesized and
+# `chmod` rewrites the ACL, so no mode is set there.
+function _settings_tmp(settings::AbstractString)
+    tmp = _tmp_name(settings)
+    touch(tmp)
+    Sys.iswindows() || chmod(tmp, filemode(settings) & 0o7777)
+    return tmp
+end
+
 """
-function _remove_stale_comm_hooks!(claude_dir::AbstractString)
-    settings = joinpath(claude_dir, "settings.json")
+    _remove_stale_comm_hooks!(settings)
+
+Strip every comm command that is not part of the current wiring
+(`_COMM_STATE_HOOKS`, matched by event, command and matcher) from `settings` (a
+resolved file, see [`_add_comm_hook!`]) — retired scripts (any other
+`~/.sot-comm/bin/comm-status-*.sh`, the retired `comm-postcompact-reminder.sh` /
+`comm-postclear-reminder.sh`) and a current script wired to an old event or
+matcher (notably the old `Notification`→blocked that lit agents red on plain
+idle). Commands are removed one at a time, a group is dropped only when left
+empty and an event only when it has no groups, so every non-comm hook is
+preserved, including a user's own script whose name merely resembles a comm one
+(only commands under `.sot-comm/bin/` are comm commands), even one sharing a group with a comm command. A current hook is left
+in place, so a re-run rewrites nothing. No-op if `jq` is missing or settings.json
+is absent/unparseable (a fresh `~/.claude` has nothing to prune yet either way).
+"""
+function _remove_stale_comm_hooks!(settings::AbstractString)
     (Sys.which("jq") === nothing || !isfile(settings)) && return nothing
-    # For each event, keep only matcher-groups that do NOT run a comm-status-*.sh
-    # (or retired post-compact/clear reminder) command; then drop any event whose group list is now empty.
+    # Remove each comm command that is not current (see the docstring), one
+    # by one; a group is dropped only when that leaves it empty, then any
+    # event whose group list is now empty.
+    keep = _comm_keep_json()
     prog = """
+    def comm: (.command // "") | test("(^|/)[.]sot-comm/bin/comm-(status-|post(compact|clear)-reminder)");
+    def current(\$e; \$m): (.command // "") as \$c | any(\$keep[]; . == [\$e, \$c, \$m]);
     if .hooks then
       .hooks |= ( to_entries
-        | map(.value |= map(select(any((.hooks // [])[]?; (.command // "") | test("comm-(status-|post(compact|clear)-reminder)")) | not)))
+        | map(.key as \$e | .value |= map(
+            (.matcher // "") as \$m
+            | if any((.hooks // [])[]?; comm and (current(\$e; \$m) | not))
+              then (.hooks |= map(select((comm and (current(\$e; \$m) | not)) | not))) | select(.hooks | length > 0)
+              else . end))
         | map(select((.value | length) > 0))
         | from_entries )
     else . end
     """
-    tmp = _tmp_name(settings)
+    tmp = ""
     try
-        run(pipeline(`jq $prog $settings`; stdout = tmp))
+        tmp = _settings_tmp(settings)
+        run(pipeline(`jq --argjson keep $keep $prog $settings`; stdout = tmp))
         changed = read(tmp, String) != read(settings, String)
+        if !changed
+            rm(tmp; force = true)
+            return nothing
+        end
         # Bare rename, not `mv(...; force = true)` — see _add_comm_hook!'s
         # comment on the same line for why.
         Base.Filesystem.rename(tmp, settings)
-        changed && @info "Retired stale comm hooks from settings.json" file = settings
+        @info "Retired stale comm hooks from settings.json" file = settings
     catch err
         @warn "could not prune comm hooks from settings.json — leaving it untouched" file = settings error = err
-        isfile(tmp) && rm(tmp; force = true)
+        !isempty(tmp) && isfile(tmp) && rm(tmp; force = true)
     end
     return nothing
 end
