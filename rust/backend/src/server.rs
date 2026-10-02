@@ -900,7 +900,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
 
     // LEASES: replaced at merge by S's startup::begin
-    let (leases, _starts) = crate::lease::Leases::new(sot_log::challenge::boot_identity().ok(), sot_log::state_dir::sot_state_dir().map(|root| root.join(sot_protocol::ops::lease::HELD_RECORD_FILE)));
+    let (leases, _starts) = crate::lease::Leases::new(sot_log::challenge::boot_identity().ok(), sot_log::state_dir::sot_state_dir().map(|root| root.join(sot_protocol::ops::lease::HELD_RECORD_FILE)), crate::lease::now_ms());
     let leases = Arc::new(leases);
     tokio::spawn(crate::lease::ticker(leases.clone()));
 
