@@ -296,7 +296,7 @@ EOF
 # failed write leaves the old wrapper whole and returns 1.
 installer_render_remote_launch() {  # <prefix> <be-alias> <dest>
     local prefix="$1" be_alias="$2" tmp="$3.new.$$"
-    cat > "$tmp" <<EOF || { rm -f "$tmp"; return 1; }
+    cat > "$tmp" <<EOF || { rm -f "${tmp:?}"; return 1; }
 #!/usr/bin/env bash
 # FE-only install -> remote BE over SSH (key auth required, ADR 0030 §5).
 # Item 2 follow-up: this used to be a second, hand-maintained copy of
@@ -326,7 +326,7 @@ export SOT_FRONTEND_BIN="$prefix/bin/sot"
 export SOT_NO_UPDATE=1
 exec "$prefix/repo/current/scripts/launch-sot.sh" "\$@"
 EOF
-    chmod +x "$tmp" && mv -f "$tmp" "$3" || { rm -f "$tmp"; return 1; }
+    chmod +x "$tmp" && mv -f "$tmp" "$3" || { rm -f "${tmp:?}"; return 1; }
 }
 
 installer_retire_tmux_unit() {  # <systemd-user-dir> — v0.6.0 deleted the tmux

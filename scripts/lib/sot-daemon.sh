@@ -34,13 +34,13 @@ render_sotd_unit() {  # <prefix> <template> <dest>
     sed -e "s|@SOT_BIN@|$1/bin/sotd|" \
         -e "s|@SOT_APPLY@|$1/bin/sot-apply|" \
         -e "s|@SOT_PROJECT_ROOT@|$HOME|" \
-        "$2" > "$3.new.$$" && chmod 0644 "$3.new.$$" && mv -f "$3.new.$$" "$3" || { rm -f "$3.new.$$"; return 1; }
+        "$2" > "$3.new.$$" && chmod 0644 "$3.new.$$" && mv -f "$3.new.$$" "$3" || { rm -f "${3:?}.new.$$"; return 1; }
 }
 
 # Write the all-in-one sot-launch wrapper for PREFIX / TARGET into DEST.
 render_sot_launch() {  # <prefix> <target> <dest>
     local prefix="$1" target="$2" dest="$3"
-    cat > "$dest.new.$$" <<EOF || { rm -f "$dest.new.$$"; return 1; }
+    cat > "$dest.new.$$" <<EOF || { rm -f "${dest:?}.new.$$"; return 1; }
 #!/usr/bin/env bash
 # sot-launch: all-in-one
 # All-in-one launcher: apply any armed pending update (offline pointer flip,
@@ -120,7 +120,7 @@ while :; do
     exit "\$RC"
 done
 EOF
-    chmod +x "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" || { rm -f "$dest.new.$$"; return 1; }
+    chmod +x "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" || { rm -f "${dest:?}.new.$$"; return 1; }
 }
 
 # True when SOCKET accepts a connection (or, with an nc that cannot probe a

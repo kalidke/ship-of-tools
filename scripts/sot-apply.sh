@@ -266,7 +266,7 @@ if [ -r "$CHECKOUT/scripts/lib/sot-daemon.sh" ]; then
     . "$CHECKOUT/scripts/lib/sot-daemon.sh" || { log "cannot read $CHECKOUT/scripts/lib/sot-daemon.sh — nothing replaced"; exit 1; }
 fi
 drop_new_backups() {
-    rm -f "${PREFIX:?}/bin/sot.prev.new" "$PREFIX/bin/sotd.prev.new" "$PREFIX/bin/sot-capsule.prev.new" \
+    rm -f "${PREFIX:?}/bin/sot.prev.new" "${PREFIX:?}/bin/sotd.prev.new" "${PREFIX:?}/bin/sot-capsule.prev.new" \
         "$PREFIX/bin/sot-apply.prev.new" "${UNIT_BAK:?}.new" "${WRAP_BAK:?}.new"
 }
 backup_failed() {

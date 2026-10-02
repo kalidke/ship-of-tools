@@ -421,7 +421,7 @@ run_ensure() {  # <dir> <prefix> <with-systemctl 1|0>
     local d="$1" prefix="$2" sc="$3" t0 t1 path="$1/stubs:$TOOLS"
     mkdir -p "$d/stubs"
     mk_stubs "$d/stubs"
-    [ "$sc" = 1 ] || rm -f "$d/stubs/systemctl"
+    [ "$sc" = 1 ] || rm -f "${d:?}/stubs/systemctl"
     : > "$d/log"
     t0="$(date +%s)"
     ENS_RC=0
@@ -594,7 +594,7 @@ echo pkill >> "$STUB_LOG"
 exit 0
 PK
     chmod +x "$d/stubs/nc" "$d/stubs/systemctl" "$d/stubs/pkill"
-    [ "$owned" = 1 ] || rm -f "$d/stubs/systemctl"
+    [ "$owned" = 1 ] || rm -f "${d:?}/stubs/systemctl"
     cp "$LIB" "$lib/sot-daemon.sh"
     printf '%s\n' "$codes" > "$d/codes"
     : > "$d/log"
@@ -616,7 +616,7 @@ SOT
             cat > "$prefix/bin/sot-apply" <<SA
 #!/bin/sh
 echo apply >> "\$STUB_LOG"
-rm -f "$prefix/updates/pending-testtarget.json"
+rm -f "${prefix:?}/updates/pending-testtarget.json"
 printf '#!/bin/sh\necho hop >> "\$STUB_LOG"\n' > "$d/home/.local/bin/sot-launch.new"
 chmod +x "$d/home/.local/bin/sot-launch.new"
 mv "$d/home/.local/bin/sot-launch.new" "$d/home/.local/bin/sot-launch"
@@ -707,7 +707,7 @@ case_start "dev_launcher_ensures"
 dev_row() {  # <dir> <stale socket 0|1> <description>
     local d="$1"
     mkdir -p "$d/repo/scripts/lib" "$d/home/.local/share/sot/bin" "$d/stubs"
-    mk_stubs "$d/stubs"; rm -f "$d/stubs/systemctl" "$d/stubs/sotd"
+    mk_stubs "$d/stubs"; rm -f "${d:?}/stubs/systemctl" "${d:?}/stubs/sotd"
     cat > "$d/stubs/nc" <<'NC'
 #!/bin/sh
 case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
