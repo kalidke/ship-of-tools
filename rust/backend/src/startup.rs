@@ -172,7 +172,7 @@ mod tests {
         let leases = begin(Some(state.path().to_path_buf()), &workspaces, &ws_events);
         let req = FeLeaseReq { boot: own, pid: 1, created: 7001, token: None };
         let peer = PeerAuthOutcome::Authenticated(PeerAuthenticated { pid: 1, created: 7001 });
-        assert_eq!(leases.grant(&req, &peer, true, lease::now_ms()).0, LeaseOutcome::Granted);
+        assert_eq!(leases.grant(&req, &peer, true).0, LeaseOutcome::Granted);
         assert_eq!(
             lease::read_record(&path).unwrap().map(|r| r.forget),
             Some(vec![stuck.workspace_id.clone()]),

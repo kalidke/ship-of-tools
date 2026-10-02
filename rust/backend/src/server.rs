@@ -875,7 +875,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // handle). A `-dev` build (the whole fleet) disables it at the hard
     // guard inside `spawn_periodic`, which logs the disabled state and
     // returns without spawning anything.
-    crate::update::spawn_periodic(fe_command_tx.clone(), clients.clone());
+    crate::update::spawn_periodic(fe_command_tx.clone(), clients.clone(), leases.clone());
 
     let label = Arc::new(opts.label);
     let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
@@ -2026,7 +2026,7 @@ where
             }
             op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
             op::UPDATE_APPLY => {
-                crate::update::handle_update_apply(frame.id, &fe_command_tx).await
+                crate::update::handle_update_apply(frame.id, &fe_command_tx, &leases).await
             }
             op::VERSION_QUERY => {
                 handlers::handle_version_query(frame.id, &clients, &topology_store, &topo_changed_tx)

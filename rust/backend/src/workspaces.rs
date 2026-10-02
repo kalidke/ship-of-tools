@@ -1411,11 +1411,10 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
         format!("{body}\n{preserved}\n")
     };
 
-    let tmp = target.with_extension("toml.tmp");
-    std::fs::write(&tmp, final_text.as_bytes())
-        .with_context(|| format!("write {tmp:?}"))?;
-    std::fs::rename(&tmp, &target)
-        .with_context(|| format!("rename {tmp:?} -> {target:?}"))?;
+    // Durable (tmp, fsync, replace, directory sync): a shutdown's anchor
+    // reset must survive a power loss, as the registration delete does.
+    crate::durable::write(&target, final_text.as_bytes())
+        .with_context(|| format!("durable write {target:?}"))?;
     Ok(target)
 }
 

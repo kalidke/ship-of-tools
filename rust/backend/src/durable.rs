@@ -1,7 +1,9 @@
 // durable.rs — the one durable write and delete for daemon records a later
-// start acts on: `held.json` (lease.rs) and a row's `row-scopes`
-// (capsule_workspace.rs). A write is a tmp file, fsync, then the replace;
-// a delete is durable once its directory is synced.
+// start acts on: `held.json` (lease.rs), a row's `row-scopes`
+// (capsule_workspace.rs), a row's registration save (workspaces.rs) and its
+// delete (handlers.rs). A
+// write is a tmp file, fsync, then the replace; a delete is durable once
+// its directory is synced.
 
 use std::path::Path;
 
@@ -20,13 +22,18 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     replace_file(&tmp, path)
 }
 
-/// Deletes `path` if it exists, then syncs its directory.
+/// Deletes `path` if it exists, then syncs its directory, so `Ok` means the
+/// absence is durable even when an earlier try did the delete and failed
+/// its sync. A missing directory holds no file to bring back.
 pub(crate) fn remove(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         r => r?,
     }
-    sync_dir(path)
+    match sync_dir(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
 }
 
 /// The replace step. Unix renames, then syncs the directory so the rename
