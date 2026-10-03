@@ -169,7 +169,7 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name:
         role: "fe".to_string(),
         instance: Some("test-instance".to_string()),
         name: Some(name.to_string()),
-        os_user: None,
+        os_user: sot_log::os_account::own_account_id(),
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
@@ -386,7 +386,7 @@ async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
         role: "fe".to_string(),
         instance: None,
         name: Some("fe@test-host".to_string()),
-        os_user: None,
+        os_user: sot_log::os_account::own_account_id(),
     };
     let body = async {
         codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
@@ -460,34 +460,162 @@ async fn assert_closed(conn: &mut Conn) {
     assert!(read.is_err(), "a refused hello's connection must be closed, got a frame");
 }
 
-/// Decision 0031: a hello whose declared host already has a live connection
-/// running as another OS account is refused (`os_user_conflict`, naming both),
-/// the connection is closed, and the refused client never joins the roster.
-/// The same account, an older client (no field) and another host pass.
+/// A hello payload with `key` removed.
+fn without(mut hello: serde_json::Value, key: &str) -> serde_json::Value {
+    hello.as_object_mut().expect("hello is an object").remove(key);
+    hello
+}
+
+fn code(payload: &serde_json::Value) -> Option<&str> {
+    payload.get("code").and_then(|v| v.as_str())
+}
+
+/// The roster as `version.query` shows it, polled until `client_id` is gone (2 s).
+async fn wait_until_gone(conn: &mut Conn, mut id: u64, client_id: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let v = call(conn, id, op::VERSION_QUERY, serde_json::json!({})).await;
+        id += 1;
+        if client_row(&v, client_id).is_none() {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "{client_id} never left the roster");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Decision 0031, the detector: the second OS account to say hello for a host is refused
+/// (`os_user_conflict`) and closed, every live connection of that host is closed, and every later
+/// hello for it, either account, is refused. Another host is served. A refused client is never listed.
 #[tokio::test]
-async fn a_second_os_account_on_one_box_is_refused_closed_and_never_listed() {
+async fn a_second_account_closes_both_and_refuses_the_computer() {
     let env = Env::spawn("os-user");
     let body = async {
         let (mut a, pa) = raw_hello(&env.socket_path, account_hello("acct-a", "acct-box", Some("uid:900001"))).await;
         assert!(pa.get("error").is_none(), "A must be accepted: {pa}");
         let (mut b, pb) = raw_hello(&env.socket_path, account_hello("acct-b", "acct-box", Some("uid:900002"))).await;
-        assert_eq!(pb.get("code").and_then(|v| v.as_str()), Some("os_user_conflict"), "{pb}");
-        let msg = pb.get("error").and_then(|v| v.as_str()).unwrap_or("");
-        assert!(msg.contains("uid:900001") && msg.contains("uid:900002"), "{msg}");
+        assert_eq!(code(&pb), Some("os_user_conflict"), "{pb}");
         assert_closed(&mut b).await;
-        let mut held = Vec::new();
-        for (id, host, user) in [
-            ("acct-c", "acct-box", Some("uid:900001")),
-            ("acct-d", "acct-box", None),
-            ("acct-e", "other-box", Some("uid:900002")),
-        ] {
-            let (conn, p) = raw_hello(&env.socket_path, account_hello(id, host, user)).await;
-            assert!(p.get("error").is_none(), "{id} must be accepted: {p}");
-            held.push(conn);
+        assert_closed(&mut a).await;
+        let (mut c, pc) = raw_hello(&env.socket_path, account_hello("acct-c", "acct-box", Some("uid:900001"))).await;
+        assert_eq!(code(&pc), Some("os_user_conflict"), "{pc}");
+        assert_closed(&mut c).await;
+        let (mut d, pd) = raw_hello(&env.socket_path, account_hello("acct-d", "other-box", Some("uid:900002"))).await;
+        assert!(pd.get("error").is_none(), "another computer is served: {pd}");
+        let v = call(&mut d, 2, op::VERSION_QUERY, serde_json::json!({})).await;
+        for refused in ["acct-a", "acct-b", "acct-c"] {
+            assert!(client_row(&v, refused).is_none(), "{refused} must not be listed: {v}");
         }
-        let v = call(&mut a, 2, op::VERSION_QUERY, serde_json::json!({})).await;
-        assert!(client_row(&v, "acct-b").is_none(), "refused hello must not register: {v}");
-        assert!(client_row(&v, "acct-c").is_some(), "same account must register: {v}");
+        assert!(client_row(&v, "acct-d").is_some(), "{v}");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// An account that said hello and left still counts: alternating logins on one computer are caught.
+#[tokio::test]
+async fn alternating_accounts_on_one_computer_are_caught() {
+    let env = Env::spawn("alternating");
+    let body = async {
+        let (mut witness, pw) = raw_hello(&env.socket_path, account_hello("witness", "witness-box", Some("uid:900003"))).await;
+        assert!(pw.get("error").is_none(), "{pw}");
+        let (a, pa) = raw_hello(&env.socket_path, account_hello("alt-a", "alt-box", Some("uid:900001"))).await;
+        assert!(pa.get("error").is_none(), "{pa}");
+        drop(a);
+        wait_until_gone(&mut witness, 2, "alt-a").await;
+        let (mut b, pb) = raw_hello(&env.socket_path, account_hello("alt-b", "alt-box", Some("uid:900002"))).await;
+        assert_eq!(code(&pb), Some("os_user_conflict"), "{pb}");
+        assert_closed(&mut b).await;
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// Every hello declares its computer and its OS account.
+#[tokio::test]
+async fn a_hello_without_host_or_os_user_is_refused() {
+    let env = Env::spawn("identity-missing");
+    let body = async {
+        for (id, hello) in [
+            ("no-user", without(account_hello("no-user", "id-box", Some("uid:900001")), "os_user")),
+            ("no-host", without(account_hello("no-host", "id-box", Some("uid:900001")), "host")),
+        ] {
+            let (mut conn, p) = raw_hello(&env.socket_path, hello).await;
+            assert_eq!(code(&p), Some("identity_missing"), "{id}: {p}");
+            assert_closed(&mut conn).await;
+        }
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// No op is served before a hello: the connection gets the `unauthenticated` reply, then its end, and
+/// none of the mail another client sends meanwhile.
+#[tokio::test]
+async fn skipping_hello_gets_no_mail_and_is_closed() {
+    let env = Env::spawn("skip-hello");
+    let body = async {
+        let mut s = poll_until_connected(&env.socket_path).await;
+        fire(&mut s, 1, op::PING, serde_json::json!({})).await;
+        let (mut m, pm) = raw_hello(&env.socket_path, account_hello("mailer", "skip-box", Some("uid:900001"))).await;
+        assert!(pm.get("error").is_none(), "{pm}");
+        let mail = serde_json::json!({"from": "mailer", "to": "", "text": "secret", "id": "skip-1"});
+        let sent = call(&mut m, 2, op::AGENT_SEND, mail).await;
+        assert_eq!(sent.get("ok").and_then(|v| v.as_bool()), Some(true), "{sent}");
+        let mut seen = Vec::new();
+        let drained = tokio::time::timeout(Duration::from_secs(3), async {
+            while let Ok((frame, _blob)) = codec::read_frame(&mut s).await {
+                seen.push(frame);
+            }
+        })
+        .await;
+        let first = seen.first().expect("an unauthenticated reply");
+        assert_eq!(first.kind, Kind::Res, "{first:?}");
+        assert_eq!(code(&first.payload), Some("unauthenticated"), "{:?}", first.payload);
+        assert!(seen.iter().all(|f| f.op != op::AGENT_MESSAGE), "mail reached a connection that skipped hello: {seen:?}");
+        assert!(drained.is_ok(), "the connection that skipped hello must be closed");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// One hello per connection: a second closes it without a reply.
+#[tokio::test]
+async fn a_second_hello_closes_the_connection() {
+    let env = Env::spawn("second-hello");
+    let body = async {
+        let (mut conn, p) = raw_hello(&env.socket_path, account_hello("twice", "twice-box", Some("uid:900001"))).await;
+        assert!(p.get("error").is_none(), "{p}");
+        codec::write_frame(&mut conn, &Frame::req(2, op::HELLO, account_hello("twice", "twice-box", Some("uid:900001"))), None)
+            .await
+            .expect("write second hello");
+        let end = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match codec::read_frame(&mut conn).await {
+                    Ok((frame, _blob)) => assert!(!(frame.kind == Kind::Res && frame.id == 2), "a second hello got a reply: {frame:?}"),
+                    Err(_) => return,
+                }
+            }
+        })
+        .await;
+        assert!(end.is_ok(), "a second hello must close the connection");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// The refusal names no OS account, and the roster never reports one.
+#[tokio::test]
+async fn a_refusal_names_no_account() {
+    let env = Env::spawn("names-none");
+    let body = async {
+        let (_a, pa) = raw_hello(&env.socket_path, account_hello("acct-a", "acct-box", Some("uid:900001"))).await;
+        assert!(pa.get("error").is_none(), "{pa}");
+        let (mut b, pb) = raw_hello(&env.socket_path, account_hello("acct-b", "acct-box", Some("uid:900002"))).await;
+        assert_eq!(code(&pb), Some("os_user_conflict"), "{pb}");
+        let whole = pb.to_string();
+        assert!(!whole.contains("900001") && !whole.contains("900002"), "the refusal names an account: {whole}");
+        assert_closed(&mut b).await;
+        let (mut d, _) = raw_hello(&env.socket_path, account_hello("acct-d", "other-box", Some("uid:900003"))).await;
+        let v = call(&mut d, 2, op::VERSION_QUERY, serde_json::json!({})).await;
+        for row in v.get("clients").and_then(|c| c.as_array()).expect("clients") {
+            assert!(row.get("os_user").is_none(), "the roster reports an account: {row}");
+        }
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }

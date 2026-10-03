@@ -51,7 +51,7 @@ use crate::workspaces::{AgentMessage, AgentReceipt};
 use crate::workspaces::WorkspaceChanged;
 use crate::workspaces::{self, Workspace, Workspaces};
 use crate::Opts;
-use tokio::sync::{broadcast, mpsc, Semaphore};
+use tokio::sync::{broadcast, mpsc, Notify, Semaphore};
 use tokio::task::JoinSet;
 
 // Half-open connection reaper tunables (ADR 0027). A peer that dies without a
@@ -1093,6 +1093,12 @@ async fn run_local(
             accepted = listener.accept() => accepted.context("accept on sot socket")?,
             () = leases.gone() => break tokio::time::Instant::now(),
         };
+        // Decision 0031 D1: this daemon serves only its own OS account, judged by the kernel before a byte is
+        // read or written, for every connection kind (hello, proxy.connect, lane.connect, fe.lease).
+        if !peer_is_this_account(&stream) {
+            tracing::warn!(transport = "local", "refused a connection from another OS account (or an unreadable peer)");
+            continue;
+        }
         let peer_identity = crate::lease::accepted_peer(&stream);
         let le = leases.clone();
         let s = session.clone();
@@ -1154,6 +1160,46 @@ async fn read_owned<R: AsyncRead + Unpin>(
 ) -> (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>) {
     let res = codec::read_frame(&mut rx).await;
     (rx, res)
+}
+
+/// Decision 0031 D1: is the connecting process this daemon's own OS account? The kernel's answer at accept:
+/// Linux `SO_PEERCRED` euid, macOS `getpeereid` euid, each against `geteuid()`. An unreadable peer is foreign.
+/// On Windows the pipe's protected DACL (`session_pipe_security_descriptor`) already decided at open, so there
+/// is nothing to check here.
+fn peer_is_this_account(stream: &LocalStream) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use interprocess::local_socket::traits::StreamCommon as _;
+        let euid = stream.peer_creds().ok().and_then(|creds| creds.euid());
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        admit_peer(euid, unsafe { libc::geteuid() })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        let LocalStream::UdSocket(s) = stream;
+        let (mut euid, mut egid): (libc::uid_t, libc::gid_t) = (0, 0);
+        // SAFETY: the fd is the accepted socket, open for this call; both out-pointers are live locals.
+        let rc = unsafe { libc::getpeereid(s.inner().as_raw_fd(), &mut euid, &mut egid) };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        admit_peer((rc == 0).then_some(euid), unsafe { libc::geteuid() })
+    }
+    #[cfg(windows)]
+    {
+        let _ = stream;
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = stream;
+        false
+    }
+}
+
+/// The decision of [`peer_is_this_account`], pure: only a readable peer euid equal to this daemon's own.
+#[cfg(unix)]
+fn admit_peer(peer_euid: Option<u32>, own: u32) -> bool {
+    peer_euid == Some(own)
 }
 
 /// Generic over the AsyncRead/AsyncWrite halves (a relic of the two-transport
@@ -1352,15 +1398,14 @@ where
     let mut deadline_armed = false;
     let mut read_deadline = tokio::time::Instant::now();
 
-    // Per-connection auth state (ADR 0010 hardening). The token gate on `hello`
-    // is not sufficient on its own: nothing forces a client to send hello, and
-    // the dispatch loop below serves file.read / repl.eval / file.download /
-    // agent.send with no handshake — so a token-configured backend was still
-    // fully reachable by simply skipping hello. Starts `true` ONLY in open-config
-    // mode (no token configured); when a token IS configured it starts `false`
-    // and flips to `true` only on a hello whose token matches. Every non-hello
-    // op is gated on this flag.
-    let mut authenticated = expected_token.is_none();
+    // Per-connection hello state (ADR 0010 hardening, decision 0031 D4). Nothing is served before a hello:
+    // `hello_accepted` starts `false` and is set only by an accepted hello (no refusal, and the token, when one
+    // is configured, matching). Before it, any op but `hello` gets the `unauthenticated` reply and the
+    // connection is closed; every event forwarder below is gated on it too. `hello_seen` makes it one hello per
+    // connection: a second closes the connection with no reply.
+    let mut hello_accepted = false;
+    let mut hello_seen = false;
+    let mut kick: Option<Arc<Notify>> = None;
 
     // This connection's active workspace, made EXPLICIT via `workspace.activate`
     // (`op::WORKSPACE_ACTIVATE`) — the frontend's single "switch chrome" entry
@@ -1466,6 +1511,13 @@ where
         } else {
             tokio::select! {
                 biased;
+                // Decision 0031 D3: this connection's host turned out to be two OS accounts; close it without a byte.
+                () = async {
+                    match &kick {
+                        Some(k) => k.notified().await,
+                        None => std::future::pending().await,
+                    }
+                } => return Ok(()),
                 Some((frame, blob)) = out_rx.recv() => {
                     write_reply(&mut tx, frame, blob).await?;
                     continue;
@@ -1482,7 +1534,7 @@ where
                     }
                 }
                 change = recv_watcher(&mut watcher_rx) => {
-                    if authenticated {
+                    if hello_accepted {
                         write_preview_changed(
                             &mut tx,
                             change,
@@ -1495,45 +1547,45 @@ where
                     continue;
                 }
                 wsc = recv_ws_events(&mut ws_events_rx) => {
-                    // Auth gate (ADR 0010 hardening): never push evt frames to an
-                    // unauthenticated connection. Drain the channel, drop the frame.
-                    if authenticated {
+                    // Hello gate (ADR 0010 hardening): never push evt frames to a
+                    // connection with no accepted hello. Drain the channel, drop the frame.
+                    if hello_accepted {
                         write_workspace_changed(&mut tx, wsc, transport).await?;
                     }
                     continue;
                 }
                 tpc = recv_topo_changed(&mut topo_changed_rx) => {
-                    if authenticated {
+                    if hello_accepted {
                         write_topology_changed(&mut tx, tpc, transport).await?;
                     }
                     continue;
                 }
                 msg = recv_agent_msg(&mut agent_events_rx) => {
-                    if authenticated {
+                    if hello_accepted {
                         write_agent_message(&mut tx, msg, transport).await?;
                     }
                     continue;
                 }
                 rcp = recv_agent_receipt(&mut agent_receipt_rx) => {
-                    if authenticated {
+                    if hello_accepted {
                         write_agent_receipt(&mut tx, rcp, transport).await?;
                     }
                     continue;
                 }
                 fc = recv_fe_command(&mut fe_command_rx) => {
-                    if authenticated {
+                    if hello_accepted {
                         write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
                     }
                     continue;
                 }
                 rf = recv_repl_frame(&mut repl_frame_rx) => {
-                    if authenticated {
+                    if hello_accepted {
                         write_repl_frame(&mut tx, rf, transport).await?;
                     }
                     continue;
                 }
                 tick = recv_monitor(&mut monitor_rx) => {
-                    if authenticated && monitor_subscribed {
+                    if hello_accepted && monitor_subscribed {
                         write_monitor_tick(&mut tx, tick, transport).await?;
                     }
                     continue;
@@ -1578,19 +1630,23 @@ where
             continue;
         }
 
-        // Auth gate (ADR 0010 hardening). With a token configured, every op
-        // except `hello` requires a prior token-valid hello on THIS connection.
-        // Without this, the token is trivially bypassable: a client skips the
-        // handshake and calls file.read / repl.eval / file.download / agent.send
-        // directly, and the dispatch loop below serves them regardless.
-        if !authenticated && frame.op.as_str() != op::HELLO {
-            tracing::warn!(op = %frame.op, ?peer, "op rejected: unauthenticated (no token-valid hello)");
+        // One hello per connection (decision 0031 D4): a second closes it, unanswered.
+        if hello_seen && frame.op.as_str() == op::HELLO {
+            tracing::warn!(?peer, "second hello on one connection; closing");
+            return Ok(());
+        }
+
+        // Hello gate (ADR 0010 hardening, decision 0031 D4): every op except `hello` requires an accepted hello
+        // on THIS connection. Without this, a client skips the handshake and calls file.read / repl.eval /
+        // file.download / agent.send directly, and the dispatch loop below serves them regardless.
+        if !hello_accepted && frame.op.as_str() != op::HELLO {
+            tracing::warn!(op = %frame.op, ?peer, "op rejected: unauthenticated (no accepted hello)");
             let payload = serde_json::json!({
-                "error": "authentication required: send a token-valid hello first",
+                "error": "authentication required: send an accepted hello first",
                 "code": "unauthenticated",
             });
             write_frame_to(&mut tx, &Frame::res(frame.id, &frame.op, payload), None).await?;
-            continue;
+            return Ok(());
         }
 
         // Each arm evaluates to `Result<HandlerOutput>`; the containment block
@@ -1607,79 +1663,77 @@ where
         let dispatch_started = std::time::Instant::now();
         let dispatched: Result<handlers::HandlerOutput> = match frame.op.as_str() {
             op::HELLO => {
-                // Register this connection in the client roster the first
-                // time we learn its client_id (a reconnect re-sends hello
-                // on the same connection — keep the original guard). Done
-                // before `handle_hello` so `clients_connected` counts self.
-                // Decision 0031 and ADR 0030 §2: ONE refusal decision per hello, on every hello. The protocol by
-                // `protocol_refusal`; the OS account by `Clients::register`, under the roster lock, on a connection's first
-                // hello. A refused connection never enters the roster, gets the structured reply, and is closed below
-                // (`refused`). A malformed payload stays `handle_hello`'s own parse error.
-                let mut refusal = None;
-                if let Ok(req) = serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone()) {
-                    refusal = handlers::protocol_refusal(&req);
-                    if refusal.is_none() && client_guard.is_none() {
-                        let long_lived = matches!(req.role.as_str(), "fe" | "bridge");
-                        let (host, name) = (req.host.clone(), req.name.clone());
-                        match clients.register(
-                            req.client_id,
-                            transport,
-                            peer.clone(),
-                            req.app_version,
-                            req.protocol,
-                            req.role,
-                            req.host,
-                            req.instance,
-                            req.name,
-                            req.os_user,
-                        ) {
-                            Ok(guard) => {
-                                // Topology plan §F step 2: mark this connection
-                                // ELIGIBLE for the read-deadline reaper -- exactly
-                                // the two long-lived roles, `fe` and `bridge`
-                                // (`cli`/`agent` are one-shot and stay ungated).
-                                // This does NOT arm the deadline itself (manager
-                                // compatibility fix, post-review) — only this
-                                // connection's FIRST `ping` does that (`op::PING`
-                                // arm below), so a peer too old to send one keeps
-                                // today's behaviour exactly, never reaped by this
-                                // path.
-                                is_long_lived_role = long_lived;
-                                hello_host = host;
-                                hello_name = name;
-                                client_guard = Some(guard);
+                hello_seen = true;
+                // Decision 0031 and ADR 0030 §2: ONE refusal decision per hello. The protocol and the declared
+                // identity by `hello_refusal`; the OS account by `Clients::register`, under the roster lock. A
+                // refused connection never enters the roster, gets the structured reply, and is closed below
+                // (`refused`). A malformed payload is the handler-error frame, then close.
+                match serde_json::from_value::<sot_protocol::HelloReq>(frame.payload).context("hello payload") {
+                    Err(e) => {
+                        refused = true;
+                        Err(e)
+                    }
+                    Ok(req) => {
+                        let mut refusal = handlers::hello_refusal(&req);
+                        if refusal.is_none() {
+                            let long_lived = matches!(req.role.as_str(), "fe" | "bridge");
+                            match clients.register(
+                                req.client_id.clone(),
+                                transport,
+                                peer.clone(),
+                                req.app_version.clone(),
+                                req.protocol,
+                                req.role.clone(),
+                                req.host.clone(),
+                                req.instance.clone(),
+                                req.name.clone(),
+                                req.os_user.clone(),
+                            ) {
+                                Ok(guard) => {
+                                    // Topology plan §F step 2: mark this connection
+                                    // ELIGIBLE for the read-deadline reaper -- exactly
+                                    // the two long-lived roles, `fe` and `bridge`
+                                    // (`cli`/`agent` are one-shot and stay ungated).
+                                    // This does NOT arm the deadline itself (manager
+                                    // compatibility fix, post-review) — only this
+                                    // connection's FIRST `ping` does that (`op::PING`
+                                    // arm below), so a peer too old to send one keeps
+                                    // today's behaviour exactly, never reaped by this
+                                    // path.
+                                    is_long_lived_role = long_lived;
+                                    hello_host = req.host.clone();
+                                    hello_name = req.name.clone();
+                                    kick = Some(guard.kick());
+                                    client_guard = Some(guard);
+                                }
+                                Err(conflict) => refusal = Some(handlers::HelloRefusal::OsUserConflict(conflict)),
                             }
-                            Err(conflict) => refusal = Some(handlers::HelloRefusal::OsUserConflict(conflict)),
                         }
+                        refused = refusal.is_some();
+                        // Accepted only by a hello nothing refused whose token matches. Open-config mode has
+                        // `expected_token == None`, so the token half is true. Mirrors the check `handle_hello`
+                        // uses to shape its response frame.
+                        hello_accepted = refusal.is_none()
+                            && match expected_token.as_deref() {
+                                None => true,
+                                Some(expected) => handlers::constant_time_eq(
+                                    req.token.as_deref().unwrap_or_default().as_bytes(),
+                                    expected.as_bytes(),
+                                ),
+                            };
+                        handlers::handle_hello(
+                            frame.id,
+                            req,
+                            &session,
+                            refusal,
+                            expected_token.as_ref(),
+                            &files_mode,
+                            label.as_deref(),
+                            &clients,
+                        )
+                        .await
                     }
                 }
-                refused = refusal.is_some();
-                // Flip the per-connection auth flag based on THIS hello's token
-                // (recomputed on every hello so a reconnect re-auths). Open-config
-                // mode has `expected_token == None`, so this stays true. Mirrors
-                // the same check `handle_hello` uses to shape its response frame.
-                authenticated = match expected_token.as_deref() {
-                    None => true,
-                    Some(expected) => {
-                        let presented =
-                            serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
-                                .ok()
-                                .and_then(|r| r.token)
-                                .unwrap_or_default();
-                        handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes())
-                    }
-                };
-                handlers::handle_hello(
-                    frame.id,
-                    frame.payload,
-                    &session,
-                    refusal,
-                    expected_token.as_ref(),
-                    &files_mode,
-                    label.as_deref(),
-                    &clients,
-                )
-                .await
             }
             op::TREE_ROOT => {
                 handlers::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
@@ -2249,8 +2303,8 @@ where
         for (out_frame, out_blob) in out_frames {
             write_reply(&mut tx, out_frame, out_blob).await?;
         }
-        // A refused hello's reply is written: close (decision 0031). Returning drops this connection and, when a
-        // re-hello was refused on a registered connection, its roster guard.
+        // A refused hello's reply is written: close (decision 0031). Returning drops this connection and its
+        // roster guard.
         if refused {
             return Ok(());
         }
@@ -2788,6 +2842,18 @@ mod agent_relay_wire_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Decision 0031 D1: only a readable peer euid equal to this daemon's own is admitted. The accept loop's
+    /// kernel calls have no CI test (no second account in CI); the owner's paste A after install covers them.
+    #[cfg(unix)]
+    #[test]
+    fn admit_peer_table() {
+        use super::admit_peer;
+        assert!(admit_peer(Some(1000), 1000), "the same account");
+        assert!(!admit_peer(Some(0), 1000), "root is another account to a non-root daemon");
+        assert!(!admit_peer(Some(1001), 1000), "another account");
+        assert!(!admit_peer(None, 1000), "unreadable is foreign");
+        assert!(!admit_peer(Some(1000), 0), "a root daemon serves only root");
+    }
 
     /// Twin of `sot-log`'s own
     /// `pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags`

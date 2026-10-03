@@ -2147,6 +2147,10 @@ where
 
     // hello
     let hello_id = take_id(&mut next_id);
+    // Decision 0031 D2: every hello declares its OS account; an unreadable one fails this attempt.
+    let Some(os_user) = sot_log::os_account::own_account_id() else {
+        anyhow::bail!("this process's OS account is unreadable");
+    };
     let hello = HelloReq {
         client_id: session.memory.client_id.clone(),
         session_id: session.memory.session_id.clone(),
@@ -2165,7 +2169,7 @@ where
         role: crate::gpu::FrontendIdentity::ROLE.to_string(),
         instance: Some(crate::gpu::frontend_identity().instance.clone()),
         name: Some(crate::gpu::frontend_identity().name.clone()),
-        os_user: sot_log::os_account::own_account_id(),
+        os_user: Some(os_user),
     };
     codec::write_frame(
         &mut tx,

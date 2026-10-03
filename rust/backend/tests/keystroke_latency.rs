@@ -239,11 +239,11 @@ async fn k3b_ssh_cold_dial() {
             token: None,
             protocol: sot_protocol::PROTOCOL_VERSION,
             app_version: sot_protocol::app_version(),
-            host: None,
+            host: Some("test-host".to_string()),
             role: String::new(),
             instance: None,
             name: None,
-            os_user: None,
+            os_user: sot_log::os_account::own_account_id(),
         };
         Frame::req(1, op::HELLO, serde_json::to_value(&h).unwrap())
     };

@@ -2491,6 +2491,27 @@ sot_host() {
     printf '%s\n' "$raw" | tr '[:upper:]' '[:lower:]'
 }
 
+# _sot_os_user — this shell's OS account as the operating system issued it, for the hello's `os_user` (decision
+# 0031 D2; the same value `sot_log::os_account::own_account_id()` gives the Rust builders): `uid:<euid>` on Unix,
+# the process token's user SID on Windows (git-bash: `whoami /user` through cmd). Cached in `_SOT_OS_USER`. Empty
+# means unreadable: it fails, and no hello is sent. Never a name from the environment, and no sotd call (an older
+# installed sotd would break every send).
+_sot_os_user() {
+    if [ -z "${_SOT_OS_USER:-}" ]; then
+        if _sot_is_windows; then
+            _SOT_OS_USER="$(cmd //c "whoami /user /fo csv /nh" 2>/dev/null | tr -d '\r' | sed -n 's/^".*","\(S-[0-9-]*\)"$/\1/p')"
+        else
+            _SOT_OS_USER="uid:$(id -u 2>/dev/null)"
+            [ "$_SOT_OS_USER" = "uid:" ] && _SOT_OS_USER=""
+        fi
+    fi
+    if [ -z "$_SOT_OS_USER" ]; then
+        echo "_sot_os_user: this process's OS account is unreadable -- cannot declare an identity" >&2
+        return 1
+    fi
+    printf '%s\n' "$_SOT_OS_USER"
+}
+
 # sot_hello_frame — the ONE hello frame every comm script sends
 # before any other op (ADR 0046 decision 1: a connection declares
 # `{host, role, name}` once, and the daemon binds it — never recomputed
@@ -2510,9 +2531,11 @@ sot_host() {
 sot_hello_frame() {
     local role
     if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
-    local tok host
+    local tok host os_user
     tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
     host="$(sot_host)" || return 1
+    _sot_os_user >/dev/null || return 1
+    os_user="$_SOT_OS_USER"
     # JSON-escape every interpolated string (S19, Codex finding S19): an
     # unescaped quote or backslash in a declared host/name/token would
     # otherwise produce invalid JSON the daemon's own parser rejects.
@@ -2525,8 +2548,8 @@ sot_hello_frame() {
     # hand alongside every future `PROTOCOL_VERSION` change until this
     # reads `sotd --version`'s trailing `protocol <N>` instead (see that
     # function's doc comment).
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":2,"app_version":"comm","token":%s,"host":%s,"role":%s,"name":%s}}\n' \
-        "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":2,"app_version":"comm","token":%s,"host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
+        "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$os_user")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
 }
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
@@ -2571,7 +2594,7 @@ sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
     local tmp ncpid line="" deadline hello
-    hello="$(sot_hello_frame)"
+    hello="$(sot_hello_frame)" || return 1
     tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     case "$ENDPOINT" in
         unix:*)

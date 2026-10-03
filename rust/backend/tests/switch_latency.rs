@@ -259,7 +259,7 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 
 /// Proves the fix directly (switch-latency Phase 1): on ONE connection, fire
 /// a slow `concept.read` (id 2, delayed `SLOW_MS` by the test-only knob) and,
-/// immediately after — without waiting for its reply — a cheap `hello` (id
+/// immediately after — without waiting for its reply — a cheap `ping` (id
 /// 3). Off-loop dispatch means id 3's reply must be OBSERVED before id 2's;
 /// the pre-fix inline dispatch loop would have delayed id 3 behind id 2.
 #[tokio::test]
@@ -274,17 +274,17 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
         token: None,
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
-        host: None,
+        host: Some("test-host".to_string()),
         role: String::new(),
         instance: None,
         name: None,
-        os_user: None,
+        os_user: sot_log::os_account::own_account_id(),
     };
     let hello_payload = serde_json::to_value(&hello).unwrap();
 
     let body = async {
         // id 1: the real handshake — required before any other op is served.
-        codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, hello_payload.clone()), None)
+        codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, hello_payload), None)
             .await
             .expect("write hello");
         loop {
@@ -304,9 +304,9 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
 
         // id 3: the CHEAP request — sent immediately after, on the same
         // connection, without waiting for id 2's reply.
-        codec::write_frame(&mut conn, &Frame::req(3, op::HELLO, hello_payload), None)
+        codec::write_frame(&mut conn, &Frame::req(3, op::PING, serde_json::json!({})), None)
             .await
-            .expect("write cheap hello");
+            .expect("write cheap ping");
 
         // Read replies in wire order (skipping any evt fan-out, exactly as
         // a real client's steady-state loop does) until both {2, 3} have
@@ -327,7 +327,7 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
     assert_eq!(
         order,
         vec![3, 2],
-        "the cheap hello (id 3) must be OBSERVED before the slow concept.read (id 2) — \
+        "the cheap ping (id 3) must be OBSERVED before the slow concept.read (id 2) — \
          off-loop dispatch means a slow request no longer head-of-line-blocks a later \
          cheap one on the same connection"
     );
@@ -343,11 +343,11 @@ async fn do_hello(conn: &mut Conn) {
         token: None,
         protocol: sot_protocol::PROTOCOL_VERSION,
         app_version: sot_protocol::app_version(),
-        host: None,
+        host: Some("test-host".to_string()),
         role: String::new(),
         instance: None,
         name: None,
-        os_user: None,
+        os_user: sot_log::os_account::own_account_id(),
     };
     codec::write_frame(conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await

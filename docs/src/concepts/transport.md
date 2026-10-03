@@ -114,18 +114,31 @@ per-cause exit codes to learn.
 
 ## One OS account per box
 
-Every client's hello names the OS account it runs as: `uid:<n>` on Linux
-and macOS, the account's SID on Windows, read from the operating system,
-never from an environment variable. It is a guard and nothing else: never
-an address, never part of a handle, never written anywhere. A daemon
-refuses a hello whose declared box already has a live connection running
-as another OS account, answers `os_user_conflict` naming both, and closes
-the connection; a refused client never appears in the daemon's client
-list. This is what two OS accounts on one box see when they log in to
-the same hub account: the second one's window shows the refusal, instead
-of the two receiving each other's mail. Each OS account on a box needs its
-own hub account. A client older than this field sends none and is let
-through.
+The lock is the operating system. A daemon serves only its own OS account:
+the kernel reports who connects to its socket or pipe, and the daemon
+refuses anyone else before reading a byte (on Windows the pipe's access
+list does the same at open). Another computer reaches a daemon only
+through ssh, as that account.
+
+So anyone holding a key to your hub account is you, as far as the hub can
+tell, and can read everything in it, with or without Ship of Tools. Give
+each OS account its own hub account.
+
+The hello's account is a detector, not a lock. Every hello names its box
+and the OS account it runs as (`uid:<n>` on Linux and macOS, the account's
+SID on Windows, read from the operating system, never from an environment
+variable), and a hello missing either is refused (`identity_missing`).
+When a daemon sees one box say hello as two different accounts, live or
+long gone, it refuses that box, closes its live connections and keeps
+refusing it, whichever account asks, until the daemon restarts
+(`os_user_conflict`, naming the box and no account). This is what two OS
+accounts on one computer see when they log in to one hub account: neither
+window connects, instead of the two receiving each other's mail. The first
+account is served until a second one appears, and software modified to
+declare another account is not caught: this catches Ship of Tools as
+shipped. The record is kept in memory only and never written. A client
+older than the field is refused and must be updated. Nothing is served
+before a hello, and a connection says hello once.
 
 ## What this page does not yet cover
 

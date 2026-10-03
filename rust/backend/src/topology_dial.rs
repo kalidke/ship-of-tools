@@ -257,6 +257,10 @@ fn dial_and_call_tracked(
         }
     };
 
+    // Decision 0031 D2: every hello declares its OS account; an unreadable one fails this attempt.
+    let Some(os_user) = sot_log::os_account::own_account_id() else {
+        return Err(fold(&guard, format!("{endpoint}: this process's OS account is unreadable")));
+    };
     let hello = HelloReq {
         client_id: format!("sotd-topology-cli-{}", std::process::id()),
         session_id: None,
@@ -268,12 +272,17 @@ fn dial_and_call_tracked(
         role: "cli".to_string(),
         instance: None,
         name: Some(self_host.to_string()),
-        os_user: sot_log::os_account::own_account_id(),
+        os_user: Some(os_user),
     };
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))
         .map_err(|e| fold(&guard, format!("{endpoint}: hello: {e}")))?;
-    codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
+    let reply = codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
+    // A refused hello closes the connection; say why instead of failing the next op on the closed link.
+    if let Some(error) = reply.payload.get("error") {
+        let code = reply.payload.get("code").and_then(|c| c.as_str()).unwrap_or("");
+        return Err(fold(&guard, format!("{endpoint}: hello refused: {error} (code={code})")));
+    }
 
     const REQ_ID: u64 = 1;
     codec::write_frame_blocking(&mut w, &Frame::req(REQ_ID, req_op, payload))

@@ -6,9 +6,9 @@ or a route to the box. The route is: frontend → its own `ssh` child to the
 hub → the **hub**'s socket for that box → one `ssh` from the hub → `sotd
 stdio-bridge` on the box → that box's daemon. The hub is the only machine
 that ever ssh's in; ADR 0048 is the decision, this page is the procedure.
-Each OS account on a box enrols as its own account on the hub; two OS
-accounts that log in to one hub account are refused (see Reading a
-failure).
+Each OS account on a box enrols as its own account on the hub; a hub that
+sees two OS accounts say hello for one box refuses that box until its
+daemon restarts (see Reading a failure).
 
 Everything here is run by an operator, once per box. Nothing in it is
 automatic, and every step has a check that fails loudly — "it looked
@@ -60,7 +60,9 @@ Each step's check must pass before the next one is worth doing.
 
 3. **The bridge answers.** From the hub, pipe one hello frame through
    `ssh -o BatchMode=yes <host> sotd stdio-bridge` and get the
-   daemon's own reply, byte for byte, with nothing else on stdout. With the
+   daemon's own reply, byte for byte, with nothing else on stdout (a hello
+   without `host` and `os_user` gets the daemon's `identity_missing`
+   refusal, which proves the bridge just as well). With the
    daemon stopped, the same
    command must exit nonzero **at once**, one line on stderr, nothing on
    stdout — an honest failure, not a hang.
@@ -129,14 +131,30 @@ Each step's check must pass before the next one is worth doing.
    rows in Sessions mode, attaching to one gives a read-write pty, and
    typing at the box itself takes the pen back.
 
+## A second person on one computer
+
+Two OS accounts on one computer share nothing in Ship of Tools, not even
+the hub, so the second person enrols as if they were a new operator. They
+get their own OS account on the hub, and they run `sotd` there as a user
+service of that account (step 2, on the hub). On their own computer, as
+themselves, they make their own ssh key and put its public half only in
+that hub account's `~/.ssh/authorized_keys`. Their ssh config's entry for
+the hub names that account as its `User`. Any box they run a daemon on is
+enrolled from their hub account by the checklist above. If they have been
+using someone else's hub account, remove their key from it and restart
+that hub daemon: a hub that has seen two accounts say hello for one
+computer refuses it until it restarts.
+
 ## Reading a failure
 
 - **A window's status line reads `hello rejected: … (code=os_user_conflict)`.**
-  Another OS account on the same box already holds a connection to that
-  daemon through the same account on its machine. Give each OS account on
-  the box its own hub account (its own `User` for the hub in its ssh config,
-  and its own enrolment); a daemon never lets two accounts share one box
-  name, because they would receive each other's mail.
+  The daemon has seen this box say hello as two different OS accounts, so
+  it refuses the box until it restarts. Give each OS account its own hub
+  account (its own ssh `User` for the hub, and its own enrolment), remove the
+  other account's key from this hub account's `authorized_keys`, then
+  restart the daemon the message names.
+- **A window's status line reads `hello rejected: … (code=identity_missing)`.**
+  The client is older than the hello's account field. Update it.
 - **The socket file exists and the box is down.** Expected, and not a
   contradiction: systemd owns that socket, so it is present whether or not
   anything is behind it. The frontend renders the host unreachable and

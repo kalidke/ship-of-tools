@@ -149,25 +149,32 @@ fn protocol_gate(client_protocol: u32) -> ProtocolGate {
     }
 }
 
-/// Why a hello is refused. Decided once per hello in `server.rs`'s hello arm (the protocol by
-/// [`protocol_refusal`], the OS account by `Clients::register` under the roster lock) and rendered by
+/// Why a hello is refused. Decided once per hello in `server.rs`'s hello arm (the protocol and the declared
+/// identity by [`hello_refusal`], the OS account by `Clients::register` under the roster lock) and rendered by
 /// [`handle_hello`]. A refused connection is never in the roster and is closed after the reply (decision 0031).
 pub enum HelloRefusal {
     Protocol,
+    IdentityMissing,
     OsUserConflict(crate::clients::OsUserConflict),
 }
 
-/// The protocol half of the hello decision (ADR 0030 §2).
-pub fn protocol_refusal(req: &HelloReq) -> Option<HelloRefusal> {
-    match protocol_gate(req.protocol) {
-        ProtocolGate::Accept => None,
-        ProtocolGate::Reject => Some(HelloRefusal::Protocol),
+/// The protocol gate (ADR 0030 §2), then decision 0031's presence check: a hello declares both its `host`
+/// and its `os_user`, non-empty.
+pub fn hello_refusal(req: &HelloReq) -> Option<HelloRefusal> {
+    if let ProtocolGate::Reject = protocol_gate(req.protocol) {
+        return Some(HelloRefusal::Protocol);
+    }
+    let declared = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.is_empty());
+    if declared(&req.host) && declared(&req.os_user) {
+        None
+    } else {
+        Some(HelloRefusal::IdentityMissing)
     }
 }
 
 pub async fn handle_hello(
     req_id: u64,
-    payload_json: serde_json::Value,
+    req: HelloReq,
     session: &Session,
     refusal: Option<HelloRefusal>,
     expected_token: &Option<String>,
@@ -175,7 +182,6 @@ pub async fn handle_hello(
     label: Option<&str>,
     clients: &crate::clients::Clients,
 ) -> Result<HandlerOutput> {
-    let req: HelloReq = serde_json::from_value(payload_json).context("hello payload")?;
     let (session_id, revision) = session.snapshot().await;
 
     // App-level token gate — vestigial since 0.4.0 removed the daemon TCP
@@ -246,9 +252,30 @@ pub async fn handle_hello(
                 None,
             )]);
         }
+        Some(HelloRefusal::IdentityMissing) => {
+            tracing::warn!(client_id = %req.client_id, "hello refused: identity_missing");
+            let message = format!(
+                "this client did not declare its computer and OS account; update it to {}",
+                sot_protocol::app_version()
+            );
+            let payload = serde_json::json!({
+                "error": message,
+                "code": "identity_missing",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::HELLO, payload).with_rev(revision),
+                None,
+            )]);
+        }
         Some(HelloRefusal::OsUserConflict(c)) => {
-            tracing::warn!(client_id = %req.client_id, host = %c.host, held_by = %c.held_by, refused = %c.refused, "hello refused: os_user_conflict");
-            let message = format!("box {} already has a connection to this daemon running as another OS account ({}); this one runs as {}. Each OS account on a box needs its own account on this daemon's machine (see docs/ENROLLING-A-HOST.md).", c.host, c.held_by, c.refused);
+            tracing::warn!(client_id = %req.client_id, host = %c.host, os_user = ?req.os_user, "hello refused: os_user_conflict");
+            let message = format!(
+                "\"{host}\" has said hello to this daemon as two different OS accounts, so {me} refuses \"{host}\" until its daemon restarts. \
+                 Each OS account on a computer needs its own hub account: anyone holding a key to a hub account can read everything in it. \
+                 Fix that, then restart the daemon on {me}.",
+                host = c.host,
+                me = crate::workspaces::declared_host(),
+            );
             let payload = serde_json::json!({
                 "error": message,
                 "code": "os_user_conflict",
@@ -8287,6 +8314,58 @@ mod protocol_gate_tests {
         assert_eq!(protocol_gate(sot_protocol::PROTOCOL_VERSION - 1), ProtocolGate::Reject);
         assert_eq!(protocol_gate(0), ProtocolGate::Reject);
         assert_eq!(protocol_gate(99), ProtocolGate::Reject);
+    }
+}
+
+#[cfg(test)]
+mod hello_refusal_tests {
+    use super::{hello_refusal, HelloRefusal};
+    use sot_protocol::HelloReq;
+
+    fn hello(protocol: u32, host: Option<&str>, os_user: Option<&str>) -> HelloReq {
+        HelloReq {
+            client_id: "c".into(),
+            session_id: None,
+            last_seen_revision: 0,
+            token: None,
+            protocol,
+            app_version: "0.6.6".into(),
+            host: host.map(String::from),
+            role: "cli".into(),
+            instance: None,
+            name: None,
+            os_user: os_user.map(String::from),
+        }
+    }
+
+    /// Protocol first, then the declared identity: protocol x host x os_user.
+    #[test]
+    fn hello_refusal_table() {
+        let ok = sot_protocol::PROTOCOL_VERSION;
+        let old = ok - 1;
+        let table: [(u32, Option<&str>, Option<&str>, &str); 12] = [
+            (ok, Some("box"), Some("uid:1"), "accepted"),
+            (ok, Some("box"), None, "identity_missing"),
+            (ok, Some("box"), Some(""), "identity_missing"),
+            (ok, None, Some("uid:1"), "identity_missing"),
+            (ok, Some(""), Some("uid:1"), "identity_missing"),
+            (ok, None, None, "identity_missing"),
+            (old, Some("box"), Some("uid:1"), "protocol"),
+            (old, Some("box"), None, "protocol"),
+            (old, None, Some("uid:1"), "protocol"),
+            (old, None, None, "protocol"),
+            (0, Some("box"), Some("uid:1"), "protocol"),
+            (99, Some("box"), Some("uid:1"), "protocol"),
+        ];
+        for (protocol, host, user, want) in table {
+            let got = match hello_refusal(&hello(protocol, host, user)) {
+                None => "accepted",
+                Some(HelloRefusal::Protocol) => "protocol",
+                Some(HelloRefusal::IdentityMissing) => "identity_missing",
+                Some(HelloRefusal::OsUserConflict(_)) => "os_user_conflict",
+            };
+            assert_eq!(got, want, "protocol {protocol} host {host:?} os_user {user:?}");
+        }
     }
 }
 

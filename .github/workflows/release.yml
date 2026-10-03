@@ -267,12 +267,12 @@ jobs:
           for i in $(seq 1 30); do [ -S "$sock" ] && break; sleep 1; done
           [ -S "$sock" ] || { echo "socket not created: $sock"; exit 1; }
           python3 - "$sock" "$proto" <<'EOF'
-          import json, socket, sys
+          import json, os, socket, sys
           s = socket.socket(socket.AF_UNIX)
           s.settimeout(10)
           s.connect(sys.argv[1])
           proto = int(sys.argv[2])
-          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":proto,"app_version":"smoke"}}
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke","last_seen_revision":0,"protocol":proto,"app_version":"smoke","host":"release-smoke","os_user":f"uid:{os.geteuid()}"}}
           s.sendall((json.dumps(f)+"\n").encode())
           line = b""
           while not line.endswith(b"\n"):
@@ -381,13 +381,13 @@ jobs:
           done
           [ -S "$sock" ] || { echo "socket not created: $sock"; exit 1; }
           python3 - "$sock" "$proto" <<'EOF'
-          import json, socket, sys
+          import json, os, socket, sys
           sock = sys.argv[1]
           proto = int(sys.argv[2])
           s = socket.socket(socket.AF_UNIX)
           s.settimeout(10)
           s.connect(sock)
-          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke-macos","last_seen_revision":0,"protocol":proto,"app_version":"smoke"}}
+          f = {"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"smoke-macos","last_seen_revision":0,"protocol":proto,"app_version":"smoke","host":"release-smoke-macos","os_user":f"uid:{os.geteuid()}"}}
           s.sendall((json.dumps(f)+"\n").encode())
           line = b""
           while not line.endswith(b"\n"):

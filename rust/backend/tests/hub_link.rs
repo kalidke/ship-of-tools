@@ -102,7 +102,7 @@ async fn connect_and_hello(socket_path: &Path, name: &str) -> Conn {
         role: "cli".to_string(),
         instance: None,
         name: Some(name.to_string()),
-        os_user: None,
+        os_user: sot_log::os_account::own_account_id(),
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None).await.expect("write hello");
     loop {

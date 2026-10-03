@@ -34,6 +34,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tokio::sync::Notify;
+
 /// The "active frontend" window: a `last_person_input_at` stamp older than
 /// this no longer counts as "a person is here" for `snapshot_with_active`
 /// below. Five minutes — long enough that a person reading a preview
@@ -110,21 +112,25 @@ pub struct ClientInfo {
     /// from `Some(vec![])`, a box that HAS declared and has nothing to
     /// report right now. See `Clients::declare_sessions`.
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
-    /// The hello's `os_user` (decision 0031), held only for this connection's life so `register` can refuse a
-    /// second account on the same declared host. Never reported (not in `version.query`, not in any log line but
-    /// a refusal's), never written anywhere.
-    os_user: Option<String>,
+    /// Wakes this connection's task to close it (`ClientGuard::kick`): the host it declared turned out to
+    /// be two OS accounts (decision 0031).
+    kick: Arc<Notify>,
 }
 
-/// A hello refused because a live connection already declared the same host as another OS account (decision
-/// 0031): two accounts on one box that share this daemon's account would otherwise receive each other's mail.
+/// A hello refused because its declared host has said hello to this daemon as two different OS accounts
+/// (decision 0031): two accounts on one computer that share this daemon's account would otherwise receive each
+/// other's mail. Names the host only, never an account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OsUserConflict {
     pub host: String,
-    /// The account already connected for `host`.
-    pub held_by: String,
-    /// The account this hello declared.
-    pub refused: String,
+}
+
+/// The OS accounts one declared host has said hello as, for this daemon's lifetime: one, or several (decision
+/// 0031). `Several` is never left until the daemon restarts.
+#[derive(Debug, PartialEq, Eq)]
+enum HostAccounts {
+    One(String),
+    Several,
 }
 
 #[derive(Default)]
@@ -143,6 +149,9 @@ struct Inner {
     /// again on every daemon restart (accepted limit — see `uptime`,
     /// which is what makes that limit visible rather than silent).
     disconnected: HashMap<String, Instant>,
+    /// Decision 0031: declared host -> the OS account(s) that said hello for it, live or long gone. In memory
+    /// only, empty again on every daemon restart.
+    hosts: HashMap<String, HostAccounts>,
 }
 
 /// Shared, cheaply-cloneable handle to the connected-client roster.
@@ -179,7 +188,10 @@ impl Clients {
     /// the distinct `client_id`s currently attached. Refuses a second OS
     /// account on a declared host (decision 0031), atomically with the
     /// insert, so two accounts connecting at the same instant cannot both
-    /// pass.
+    /// pass: the host becomes `Several`, every live connection declaring it
+    /// is kicked, and every later register for it fails until restart. The
+    /// check applies when `host` and `os_user` are both non-empty; the hello
+    /// arm refuses any hello without them before it gets here.
     pub fn register(
         &self,
         client_id: impl Into<String>,
@@ -208,17 +220,25 @@ impl Clients {
             name,
             last_person_input_at: None,
             sessions: None,
-            os_user,
+            kick: Arc::new(Notify::new()),
         };
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
-            if let (Some(host), Some(user)) = (&info.host, info.os_user.as_deref().filter(|u| !u.is_empty())) {
-                let held = g.by_conn.values().find_map(|c| {
-                    let other = c.os_user.as_deref().filter(|u| !u.is_empty())?;
-                    (c.host.as_ref() == Some(host) && other != user).then_some(other)
-                });
-                if let Some(held_by) = held {
-                    return Err(OsUserConflict { host: host.clone(), held_by: held_by.to_string(), refused: user.to_string() });
+            let declared = info.host.as_deref().filter(|h| !h.is_empty()).zip(os_user.as_deref().filter(|u| !u.is_empty()));
+            if let Some((host, user)) = declared {
+                match g.hosts.get(host) {
+                    None => {
+                        g.hosts.insert(host.to_string(), HostAccounts::One(user.to_string()));
+                    }
+                    Some(HostAccounts::One(first)) if first == user => {}
+                    Some(HostAccounts::One(_)) => {
+                        g.hosts.insert(host.to_string(), HostAccounts::Several);
+                        for c in g.by_conn.values().filter(|c| c.host.as_deref() == Some(host)) {
+                            c.kick.notify_one();
+                        }
+                        return Err(OsUserConflict { host: host.to_string() });
+                    }
+                    Some(HostAccounts::Several) => return Err(OsUserConflict { host: host.to_string() }),
                 }
             }
             g.by_conn.insert(serial, info.clone());
@@ -239,6 +259,7 @@ impl Clients {
             inner: self.inner.clone(),
             serial,
             client_id: info.client_id,
+            kick: info.kick,
         })
     }
 
@@ -417,9 +438,16 @@ pub struct ClientGuard {
     inner: Arc<Mutex<Inner>>,
     serial: u64,
     client_id: String,
+    kick: Arc<Notify>,
 }
 
 impl ClientGuard {
+    /// Resolves when this connection must be closed (decision 0031: its declared host turned out to
+    /// be two OS accounts). A kick sent before the first await is kept.
+    pub fn kick(&self) -> Arc<Notify> {
+        self.kick.clone()
+    }
+
     /// This connection's per-connection serial — the key the `docs.open` site
     /// map uses (ADR 0029). Threaded into `handle_docs_open` so the returned URL
     /// carries it, and used by `Drop` below to reap the entry on disconnect.
@@ -783,8 +811,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn register_refuses_only_another_account_on_the_same_declared_host() {
+    /// Decision 0031's detector, per declared host: the state a hello finds, what `register` answers, the
+    /// state after, and which live guards were kicked.
+    #[tokio::test]
+    async fn host_account_table() {
         let clients = Clients::new();
         let reg = |host: Option<&str>, user: Option<&str>| {
             clients.register(
@@ -792,22 +822,44 @@ mod tests {
                 host.map(String::from), None, None, user.map(String::from),
             )
         };
-        let mut first = vec![reg(Some("box"), Some("uid:900001")).expect("first account")];
+        let kicked = |g: &ClientGuard| {
+            let k = g.kick();
+            async move { tokio::time::timeout(Duration::from_millis(10), k.notified()).await.is_ok() }
+        };
+        let state = |host: &str| match clients.inner.lock().unwrap().hosts.get(host) {
+            None => "absent".to_string(),
+            Some(HostAccounts::One(a)) => format!("One({a})"),
+            Some(HostAccounts::Several) => "Several".to_string(),
+        };
+        // Absent: the first account is served and remembered; fields that are missing or empty skip the check.
+        let a1 = reg(Some("X"), Some("a")).expect("absent -> served");
+        assert_eq!(state("X"), "One(a)");
+        let _none_user = reg(Some("Y"), None).expect("no os_user");
+        let _empty_user = reg(Some("Y"), Some("")).expect("empty os_user");
+        let _none_host = reg(None, Some("b")).expect("no host");
+        assert_eq!(state("Y"), "absent");
+        // One(a), live: the same account is served again, nothing is kicked.
+        let a2 = reg(Some("X"), Some("a")).expect("same account");
+        assert!(!kicked(&a1).await && !kicked(&a2).await);
+        // Another host's other account is its own host's first.
+        let y = reg(Some("Y"), Some("b")).expect("other host");
+        assert_eq!(state("Y"), "One(b)");
+        // One(a), another account: refused, Several, every live connection of X kicked, Y's left alone.
         let n = clients.count();
-        let err = reg(Some("box"), Some("uid:900002")).err().expect("another account is refused");
-        assert_eq!(
-            err,
-            OsUserConflict { host: "box".into(), held_by: "uid:900001".into(), refused: "uid:900002".into() }
-        );
+        assert_eq!(reg(Some("X"), Some("b")).err(), Some(OsUserConflict { host: "X".into() }));
+        assert_eq!(state("X"), "Several");
         assert_eq!(clients.count(), n, "a refused register leaves the roster alone");
-        let mut others = Vec::new();
-        first.push(reg(Some("box"), Some("uid:900001")).expect("same account"));
-        others.push(reg(Some("box"), None).expect("no account"));
-        others.push(reg(Some("box"), Some("")).expect("empty account"));
-        others.push(reg(Some("other"), Some("uid:900002")).expect("another host"));
-        others.push(reg(None, Some("uid:900002")).expect("no host"));
-        first.clear();
-        others.push(reg(Some("box"), Some("uid:900002")).expect("the first account is gone"));
+        assert!(kicked(&a1).await && kicked(&a2).await);
+        assert!(!kicked(&y).await);
+        // Several: every account is refused, either one.
+        for user in ["a", "b", "c"] {
+            assert_eq!(reg(Some("X"), Some(user)).err(), Some(OsUserConflict { host: "X".into() }), "{user}");
+        }
+        // One(a), gone: the account still counts after its connection is gone.
+        drop(y);
+        assert_eq!(state("Y"), "One(b)");
+        assert_eq!(reg(Some("Y"), Some("a")).err(), Some(OsUserConflict { host: "Y".into() }));
+        assert_eq!(state("Y"), "Several");
     }
 
     /// A directly-constructed `ClientInfo` for `Clients::resolve_active`'s
@@ -830,7 +882,7 @@ mod tests {
             name: Some(handle.to_string()),
             last_person_input_at,
             sessions: None,
-            os_user: None,
+            kick: Arc::new(Notify::new()),
         }
     }
 

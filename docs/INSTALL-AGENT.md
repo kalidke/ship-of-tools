@@ -427,8 +427,8 @@ proto_field=""
 [ -n "$proto" ] && proto_field="\"protocol\":$proto,"
 tmp="$(mktemp "${TMPDIR:-/tmp}/sot-hello.XXXXXX")"
 (
-  printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,%s"app_version":"agent-install"}}\n' \
-    "$proto_field" \
+  printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,%s"app_version":"agent-install","host":"install-check","os_user":"uid:%s"}}\n' \
+    "$proto_field" "$(id -u)" \
     | nc -U "$sock" > "$tmp"
 ) &
 pid=$!

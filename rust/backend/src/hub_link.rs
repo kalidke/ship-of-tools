@@ -153,6 +153,10 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
 {
+    // Decision 0031 D2: every hello declares its OS account; an unreadable one fails this attempt.
+    let Some(os_user) = sot_log::os_account::own_account_id() else {
+        return Err("this process's OS account is unreadable".to_string());
+    };
     let hello = HelloReq {
         client_id: format!("sotd-hub-link-{}", std::process::id()),
         session_id: None,
@@ -165,7 +169,7 @@ where
         role: "cli".to_string(),
         instance: None,
         name: Some(name.to_string()),
-        os_user: sot_log::os_account::own_account_id(),
+        os_user: Some(os_user),
     };
     let e = |what: &'static str| move |err: anyhow::Error| format!("{what}: {err}");
     let payload = serde_json::to_value(hello).map_err(|err| err.to_string())?;
