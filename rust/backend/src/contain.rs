@@ -133,18 +133,24 @@ mod tests {
     }
 
     /// Start `cmd` through a private signal, read the grandchild's pid from
-    /// its first stdout line, fire, and report whether that pid is gone.
+    /// its stdout (the first line that is a number: a grandchild that shares
+    /// the pipe, like `ping`, may print first), fire, and report whether that
+    /// pid is gone.
     async fn fire_takes_the_grandchild(mut cmd: tokio::process::Command) -> bool {
         let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
         cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
         let (mut child, _contained) = sig.spawn(&mut cmd).expect("spawn through the signal");
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let line = tokio::time::timeout(Duration::from_secs(30), lines.next_line())
-            .await
-            .expect("the grandchild's pid never arrived")
-            .expect("read")
-            .expect("stdout closed before a pid arrived");
-        let pid: u32 = line.trim().parse().unwrap_or_else(|_| panic!("not a pid: {line:?}"));
+        let pid: u32 = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let line = lines.next_line().await.expect("read").expect("stdout closed before a pid arrived");
+                if let Ok(pid) = line.trim().parse() {
+                    return pid;
+                }
+            }
+        })
+        .await
+        .expect("the grandchild's pid never arrived");
         sig.fire();
         exits_within(pid, 3000)
     }
