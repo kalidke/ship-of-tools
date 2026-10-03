@@ -1,5 +1,6 @@
 # sot-install-layout.ps1 -- shared "is this launch pinned to the installed
-# checkout" predicate + shortcut-target rule. Dot-sourced by launch-sot.ps1
+# checkout" predicate + shortcut-target rule, and the home of the launcher code
+# id (Get-SotLauncherCodeId), which launch-sot.ps1 uses on a converge. Dot-sourced by launch-sot.ps1
 # (which gates its self-update prelude on Test-SotPinnedCheckout) and
 # install-shortcut.ps1 (which uses Get-SotLauncherTarget to decide what the
 # shortcut/pin should point at). Same shape as sot-hosts.ps1: one
@@ -41,4 +42,22 @@ function Get-SotLauncherTarget {
     $pinned = Join-Path $Prefix 'repo\current\scripts\launch-sot.ps1'
     if (Test-Path -LiteralPath $pinned) { return $pinned }
     return (Join-Path $ClonePath 'scripts\launch-sot.ps1')
+}
+
+# The identity of the launcher code in a scripts directory: the SHA-256 of
+# launch-sot.ps1 and of the two files it dot-sources, joined with '-', or ''
+# when any of them cannot be read. launch-sot.ps1 logs its own at start (the
+# "supervisor start" line) and, on a converge, re-invokes the launcher when the
+# files on disk have another id (ADR 0017's 0.6.6 amendment). Read through
+# repo\current, a flip by sot-apply.ps1 shows here with the path unchanged.
+function Get-SotLauncherCodeId {
+    param([Parameter(Mandatory)][string]$ScriptsDir)
+    try {
+        $ids = foreach ($f in @('launch-sot.ps1', 'sot-hosts.ps1', 'sot-install-layout.ps1')) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $ScriptsDir $f) -ErrorAction Stop).Hash
+        }
+        return ($ids -join '-')
+    } catch {
+        return ''
+    }
 }
