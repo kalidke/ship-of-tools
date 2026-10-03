@@ -3879,7 +3879,7 @@ where
                 op::FILE_DOWNLOAD,
                 json!({ "error": format!("file.download payload: {e}"), "code": "bad_request" }),
             );
-            sot_protocol::write_frame(tx, &f, None).await?;
+            crate::server::write_frame_to(tx, &f, None).await?;
             return Ok(());
         }
     };
@@ -3894,7 +3894,7 @@ where
                 op::FILE_DOWNLOAD,
                 json!({ "error": format!("no such file: {}", req.path), "code": "io_error" }),
             );
-            sot_protocol::write_frame(tx, &f, None).await?;
+            crate::server::write_frame_to(tx, &f, None).await?;
             return Ok(());
         }
     };
@@ -3906,7 +3906,7 @@ where
                 op::FILE_DOWNLOAD,
                 json!({ "error": format!("open failed: {e}"), "code": "io_error" }),
             );
-            sot_protocol::write_frame(tx, &f, None).await?;
+            crate::server::write_frame_to(tx, &f, None).await?;
             return Ok(());
         }
     };
@@ -3930,7 +3930,7 @@ where
             },
         };
         let frame = Frame::res(req_id, op::FILE_DOWNLOAD, serde_json::to_value(&chunk)?);
-        sot_protocol::write_frame(tx, &frame, Some(&buf[..n])).await?;
+        crate::server::write_frame_to(tx, &frame, Some(&buf[..n])).await?;
         offset += n as u64;
         if eof {
             break;
