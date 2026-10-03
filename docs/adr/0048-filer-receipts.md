@@ -10,6 +10,15 @@ commits has none of it**, and the test is a grep: no `agent.receipt` under
 
 > *Note (2026-09-30, ADR 0049 B1): the clause "the filer's receipt survives as the hub route's single `filed` answer" is now true only for the leg to a box with its own disk, until B2. For a handle the hub's comm folder lists, the appending daemon answers `filed`/`FAILED` itself, and no per-session bridge files or claims anything.*
 
+> *Note (2026-10-03): checked against the code on the 0.6.6 fixes line. These named mechanisms no longer exist, and each sentence below that states one as current is marked "(no longer in the code; see the status note)":*
+>
+> - *The frontend as filer.* No frontend appends an inbound frame to `fe-inbox.jsonl` or sends `agent.filed`, so `receipt_for`, `files_for_from_rows`, `declares_files_for`, the filer thread, the `fe-inbox.lock` token, the read-back, the `cfg!(windows)` claim gate and the `fe_down` marker are gone. A box whose topology entry is `frontend = true` keeps its daemon's own link to the hub; that daemon files each broadcast frame whose `to` its comm folder lists, through `handlers::file_comm`, and answers `agent.filed` (`rust/backend/src/hub_link.rs:1`, the filing at `:194`, the claim at `:198`; `rust/backend/src/handlers.rs:5823`). On Windows the daemon's first start moves the old `fe-inbox.jsonl`'s unread lines into the per-handle inboxes (`rust/backend/src/hub_link.rs:222`).
+> - *The relay bridge.* `comm-listen.sh` is deleted (`src/comm.jl:246` lists it among the retired scripts an install removes), and with it the bridge's claim and its one-shot receipt connection; the daemon's hub link above replaced it. `sot_fe_inbox_path` and the shell readers of `fe-inbox.jsonl` are gone too.
+> - *Three verdicts.* The relay no longer prints `ERROR: unreachable, nothing filed`, `no such handle: h` or `NOT CONFIRMED: this daemon predates filer receipts`. A directed send asks the hub first with one `comm.file` request (`comm/core/scripts/comm-lib.sh:1229`); only a `not_here` answer takes the receipt leg (`comm/core/scripts/comm-relay.sh:204`), whose negatives are `FAILED -> @h: nobody filed it within 5s: …` when the roster is empty (`:309`) and `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` otherwise (`:322`).
+> - *The sender's poke.* A send types nothing; the daemon types the wake line into an idle row (`rust/backend/src/comm_wake.rs:427`).
+>
+> *Still in the code: the sender-minted frame `id` (`comm/core/scripts/comm-relay.sh:191`), `agent.filed` relayed as `agent.receipt` with `filer` taken from the hello `name` and `bad_filer` for a connection that declared none (`rust/backend/src/handlers.rs:5636`), the stateless daemon, `receivers_for` counting every `fe` connection (`rust/backend/src/clients.rs:234`), and both doors asking whether `.host` is non-empty (`comm/core/scripts/comm-send.sh:76` and `:98`, `comm/core/scripts/comm-relay.sh:367`).*
+
 ## Context
 
 `comm/PROTOCOL.md`'s own rule is that the append IS the delivery: a frame in a
@@ -80,10 +89,10 @@ nothing. This ADR is that ruling's discharge, not its reversal.
    relays a message: no pending table to leak, expire or lie from.
 
 5. **Who claims what.** A relay bridge IS its handle, so it claims after an
-   append that returned 0, and claims nothing when the append failed. A frontend
+   append that returned 0, and claims nothing when the append failed (no longer in the code; see the status note). A frontend
    appends every inbound frame into one inbox of its own regardless of `to`, so
    "I appended" is not "I filed for @h": it claims only for a handle one of its
-   OWN-host rows declares, and stays silent otherwise. Those rows are resolved
+   OWN-host rows declares, and stays silent otherwise (no longer in the code; see the status note). Those rows are resolved
    through the connection's DECLARED host, never by looking up the frontend's
    hostname in the workspace-list map — that map is keyed by the dial key, and a
    box whose own daemon is dialed under any other label would claim nothing,
@@ -94,7 +103,7 @@ nothing. This ADR is that ruling's discharge, not its reversal.
    beside it.
 
 6. **The append is never gated on the claim.** The frontend keeps appending
-   unconditionally. Gating the append on the declared set would make a box deaf
+   unconditionally (no longer in the code; see the status note). Gating the append on the declared set would make a box deaf
    the moment a row's `agent.join` is late: the claim may be conservative, the
    filing may not.
 
@@ -103,7 +112,7 @@ nothing. This ADR is that ruling's discharge, not its reversal.
    over the link the frame arrived on, so it cannot miss the hub by construction.
    The set builder (`files_for_from_rows`) and its own-host gate
    (`declares_files_for`) survive with their tests, read per inbound frame as
-   this frontend's local decision about what it may claim.
+   this frontend's local decision about what it may claim (no longer in the code; see the status note).
 
 8. **Both comm verbs route, and both doors ask the same question.**
    `comm-relay.sh send` already execs `comm-send.sh` on a registry hit;
@@ -127,7 +136,7 @@ nothing. This ADR is that ruling's discharge, not its reversal.
 
 The daemon fans every `agent.message` out to every open connection, and each
 attached frontend appends unconditionally into one `fe-inbox.jsonl` whose path
-has no per-frontend component. Two frontends on one box therefore file the same
+has no per-frontend component (no longer in the code; see the status note). Two frontends on one box therefore file the same
 frame twice, and the reader — a line-offset cursor with no dedupe — shows it
 twice and wakes the session twice. Items 9–14 close that.
 
@@ -135,7 +144,7 @@ twice and wakes the session twice. Items 9–14 close that.
    frontend takes an exclusive lock on the inbox's sidecar token file
    (decision 15), reads a bounded window back from its end, and appends only
    when no line in that window already carries the same `(id, to)` pair. The
-   lock is released immediately after. This is arbitration placed where it can
+   lock is released immediately after (no longer in the code; see the status note). This is arbitration placed where it can
    actually gate a write: locally, synchronously, with no peer involved.
 
    The key is `(id, to)` — decision 1's sender-minted opaque id, plus the
@@ -151,7 +160,7 @@ twice and wakes the session twice. Items 9–14 close that.
    collapse a retry — a lost message, which is worse than the duplicate it
    would prevent. A sender too old to mint an id keeps its current behaviour on
    a path that already reports `NOT CONFIRMED`, and decision 2a's `receipt_for`
-   already declines to claim for it.
+   already declines to claim for it (no longer in the code; see the status note).
 
    **Every failure fails open: append anyway.** Lock not granted within the
    deadline, lock error, window read error, unparsable window — all append. A
@@ -174,7 +183,7 @@ twice and wakes the session twice. Items 9–14 close that.
     carrying this id is in this box's inbox" — true when this call wrote the
     line, and equally true when this call read the line there under the lock and
     therefore skipped its own write. A frontend claims when that is true and
-    `receipt_for`'s own-host gate passes; it stays silent otherwise.
+    `receipt_for`'s own-host gate passes; it stays silent otherwise (no longer in the code; see the status note).
 
     This widens what decision 2's claim asserts, and the widening is deliberate.
     It read "I appended the frame carrying this id". It now reads: **"the frame
@@ -212,7 +221,7 @@ twice and wakes the session twice. Items 9–14 close that.
 
 13. **Anything typed on delivery is emitted only by the process that put the
     frame in the file.** The frontend types nothing on delivery today; the gated
-    poke is the sender's, on a route that never involves a frontend. When filing
+    poke is the sender's, on a route that never involves a frontend (no longer in the code; see the status note). When filing
     and poking do meet — ADR 0047's closing direction, the daemon filing for its
     own rows — the poke sits in the same branch as the file outcome, never
     beside it, exactly as decision 5 already requires of the claim. A frontend
@@ -226,7 +235,7 @@ twice and wakes the session twice. Items 9–14 close that.
     run on one dedicated filer thread per frontend process, fed by an unbounded
     FIFO channel, which performs the append and — once it knows the file outcome
     — sends the claim itself. The UI thread's whole cost per frame is the pure
-    claim computation and a non-blocking push.
+    claim computation and a non-blocking push (no longer in the code; see the status note).
 
     One thread and a FIFO channel means a frontend appends frames in the order
     the daemon sent them, which the line-offset reader needs: a pool or a thread
@@ -238,7 +247,7 @@ twice and wakes the session twice. Items 9–14 close that.
     honest, because no claim was sent for those frames.
 
     The lock is exact where the file is read: that platform's state dir is
-    machine-local storage. On a box with a network home the lock may be weaker,
+    machine-local storage (no longer in the code; see the status note). On a box with a network home the lock may be weaker,
     and there the file has no reader at all, so a missed exclusion costs nothing
     — which is why **a reader for `fe-inbox.jsonl` may not be introduced on such
     a platform without re-opening this question.**
@@ -246,7 +255,7 @@ twice and wakes the session twice. Items 9–14 close that.
 15. **The lock is a token file, never the data file.** The arbitration of
     decision 9 is taken on `fe-inbox.lock`, a zero-length sidecar beside
     `fe-inbox.jsonl` in the same state dir. The inbox itself is never locked by
-    anything.
+    anything (no longer in the code; see the status note).
 
     This is not a refinement; decision 9's stated failure direction was
     unreachable without it. `File::try_lock` is `flock` on unix and `LockFileEx`
@@ -272,7 +281,7 @@ twice and wakes the session twice. Items 9–14 close that.
     four readers to learn, a second cursor per handle, or a cross-file ordering
     and dedupe rule. What remains is an append that can fail only for a real IO
     reason, on which no claim is sent and the sender correctly reads
-    `NOT CONFIRMED`.
+    `NOT CONFIRMED` (no longer in the code; see the status note).
 
     **The file's other writer takes no token, and that is the rule rather than
     an exception to it.** The `fe_down` marker appends a line and reads nothing,
@@ -282,7 +291,7 @@ twice and wakes the session twice. Items 9–14 close that.
     was an accident of the same bug: a mandatory lock on the data file did not
     serialise that write, it refused it, and the marker was dropped with a
     visible drawer error that reported this defect instead of a real one. It now
-    lands, and the loud path remains for every real failure the marker names.
+    lands, and the loud path remains for every real failure the marker names (no longer in the code; see the status note).
 
     **The claim is verified, not assumed.** Decision 10 says a claim means "the
     frame carrying this id is in the inbox I file into". The code equated that
@@ -293,7 +302,7 @@ twice and wakes the session twice. Items 9–14 close that.
     is followed by a read-back through the same bounded window, with the same
     predicate the dedupe uses, and the claim goes out only if a well-formed
     record carrying this `(id, to)` is there. Decision 10 is now implemented as
-    written rather than approximated.
+    written rather than approximated (no longer in the code; see the status note).
 
     The read-back is bounded by what it can observe: it reads back through
     the handle it wrote on, so it sees a same-host sibling's interleave and
@@ -332,7 +341,7 @@ process on the box ever opens `fe-inbox.jsonl` — the platform test belongs to
 the readers, and `sot_fe_inbox_path` in `comm/core/scripts/comm-lib.sh` returns
 success with empty output there, so every shell reader routed through it
 resolves an empty path; the only Rust read is the `fe_down` baseline, which is
-itself Windows-only. A claim from such a box was therefore a false success: the
+itself Windows-only (no longer in the code; see the status note). A claim from such a box was therefore a false success: the
 sender was told `filed -> @h` for a message nothing would ever read.
 
 **The append is deliberately not gated; only the claim is.** An append promises
@@ -358,19 +367,19 @@ platform's reason instead of its own, leaving the id rule, the broadcast rule
 and the not-in-the-set rule vacuous on the two legs that run most often. The
 platform test is `cfg!(windows)`, not `#[cfg(windows)]`, for the same reason:
 both arms compile everywhere, so one test asserts the correct answer on each leg
-of the matrix.
+of the matrix (no longer in the code; see the status note).
 
 **Exactly one route class changes verdict, from a lie to the truth:** a target
 handle that is a row on a non-Windows frontend's own host, with no live relay
 bridge, addressed from a box that cannot name it in its own registry. Its
-verdict moves from `filed` to `NOT CONFIRMED`. **No class loses delivery.**
+verdict moves from `filed` to `NOT CONFIRMED` (no longer in the code; see the status note). **No class loses delivery.**
 Cross-host claims were already impossible — a frontend resolves only rows of a
 daemon that declared its own host — and where a bridge exists the bridge both
 appends to the per-handle inbox and claims. In the gated class nothing was
 arriving anyway.
 
 **The sender's two negative answers are different branches, and this one lands
-on the later of them.** `no such handle` is the empty-roster branch;
+on the later of them.** `no such handle` is the empty-roster branch (no longer in the code; see the status note);
 `NOT CONFIRMED: … nobody claimed it within 5s` is the branch where the roster
 was non-empty, the ack carried an id, and no receipt arrived. The gated class
 reaches the second because `receivers_for` in the backend counts any connection
@@ -391,10 +400,10 @@ Verdicts, in the order the first that applies wins:
 
 | what came back | verdict | exit |
 |---|---|---|
-| no ack, `ok != true`, or no `receivers` array | `ERROR: unreachable, nothing filed` | 1 |
+| no ack, `ok != true`, or no `receivers` array | `ERROR: unreachable, nothing filed` (no longer in the code; see the status note) | 1 |
 | `--all` | `relayed -> <all> (N receiver(s))` | 0 |
-| `receivers` empty | `no such handle: h` | 1 |
-| ack without an `id` | `NOT CONFIRMED: this daemon predates filer receipts` | 1 |
+| `receivers` empty | `no such handle: h` (no longer in the code; see the status note) | 1 |
+| ack without an `id` | `NOT CONFIRMED: this daemon predates filer receipts` (no longer in the code; see the status note) | 1 |
 | a receipt carrying this send's `id` | `filed -> @h (by <filer>, relay)` | 0 |
 | no receipt before EOF or the 5 s bound | `NOT CONFIRMED: sent for @h; nobody claimed it within 5s. Attached: …` | 1 |
 
@@ -419,7 +428,7 @@ because any connection in the `fe` role counts as a receiver for every directed
 send. A frontend too old to send `agent.filed` is one instance: it is
 indistinguishable from a slow one, so a send to a handle such a frontend hosts
 costs the full 5 s. The amendment "a receipt only where a reader exists" adds
-another, where no receipt is coming by design. The item-3 fix
+another, where no receipt is coming by design (no longer in the code; see the status note). The item-3 fix
 this supersedes failed instantly for the old-frontend case, but only because it matched the
 name-suffix guess; without that guess, and without a negative claim, nothing on
 the ack distinguishes an old frontend from a new one that is about to answer.
@@ -431,11 +440,11 @@ role cleared (no phantom second bridge in the roster, no long-lived-role read
 deadline on a one-frame connection) and reads the ack with `grep -qm1`: the
 daemon never closes a one-shot connection, so without that early exit every
 filed frame would cost the full 5 s inside the bridge's filing loop, and a burst
-would file at one message per five seconds.
+would file at one message per five seconds (no longer in the code; see the status note).
 
 **Mixed fleet.** No struct here uses `deny_unknown_fields`, and both new fields
 are omitted when absent, so: a new sender against an old hub gets `predates
-filer receipts` on the ack (no false success, no stall); an old sender against a
+filer receipts` (no longer in the code; see the status note) on the ack (no false success, no stall); an old sender against a
 new hub publishes no id, nothing claims, and it behaves exactly as its own
 version always did; a new hub with an older frontend as the filer appends the
 frame as today and the sender reports NOT CONFIRMED naming it, after the 5 s
@@ -474,7 +483,7 @@ filer because a daemon is not a standing client of another daemon: the
 topology dial is a one-shot blocking CLI call, not a subscription, and nothing
 in the backend holds an outbound connection over which an `agent.message`
 fan-out could reach it — so the target box's daemon never sees the frame at
-all. Moving the filing there is the change that would remove arbitration
+all (no longer in the code; see the status note). Moving the filing there is the change that would remove arbitration
 entirely rather than perform it, and ADR 0047's closing paragraph already names
 it as the next direction; it waits on that link. Nor does the amendment move
 filing into the per-handle inbox, which is the change that would delete the
