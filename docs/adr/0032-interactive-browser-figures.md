@@ -3,6 +3,8 @@
 **Status:** partly superseded by ADR 0035 — IMPLEMENTED + VALIDATED LIVE END-TO-END
 (2026-07-12, branch `feat/wglmakie-browser`).
 
+> *Note (0.6.6, decision 0031): the `SOT_WGL_PORT`/1241 port this record names is gone; `wglshow` binds an OS-assigned port and serves under a secret path (transport page, "Browser-facing ports").*
+
 > **Transport note (2026-08-10, updated 2026-09-29):** the launcher `-L 1241`
 > forward described here is the pre-ADR-0035 transport. Since v0.5.0 the WGL
 > page and its WebSocket ride the daemon proxy over the control connection;
