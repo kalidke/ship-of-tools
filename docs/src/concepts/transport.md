@@ -138,7 +138,10 @@ another account could read it. The frontend hands the browser only the
 address of a one-use loopback listener of its own. That listener serves
 this account alone, answers the browser's first request with a redirect
 to the page, and then closes. Logs and the status line show a page's host
-and port, never its path. An address you pass to `sot-fe open-url` is on
+and port, never its path, and a `BrowserView` displays only those. An
+address your own code takes out of one (`bv.url`) and returns or prints is
+your own output, shown like any other value on this account's own
+channels. An address you pass to `sot-fe open-url` is on
 that command's line: open a figure on one frontend with
 `wglshow(fig; open = "<fe>")`. A page your own code serves on a port it
 binds itself is a socket Ship of Tools never opened. Any account on that
