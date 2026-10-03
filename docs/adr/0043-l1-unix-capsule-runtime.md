@@ -892,6 +892,12 @@ rule D's claim and the contention re-probe; decision 34 is superseded into ADR
     > outlive a daemon restart, not the last window's close: when the last
     > window on this computer closes, the daemon ends every row (see ADR 0050).
 
+    > **Amended 2026-10-03 (0.6.6):** the leg job permits no breakaway. MSYS asks
+    > to break away on every spawn whose job allows it, so everything a row's
+    > git-bash started outlived the row. A daemon started inside a row is now
+    > contained by it and runs its supervisors degraded;
+    > `the_leg_job_refuses_a_breakaway` replaces the breakaway proof above.
+
 33. **One guard, one resume path; the daemon watches only what it spawned —
     REPLACES decision 26, rule D's claim and the contention re-probe.** A
     per-row guard (`Workspaces` replaces `starting: HashSet<String>` with a

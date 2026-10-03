@@ -17,6 +17,9 @@ window and the launchers only tell it what happened.
 - (d) Leases are fenced by generation.
 - (e) A start never resurrects what a close ended.
 - (f) The Windows stop is never cut short.
+- (g) On Windows no job the product makes permits breakaway, so everything started inside a row or a
+  daemon child ends with it, a daemon or window launched from inside a row included; only a process a broker starts,
+  or one started through an app-execution alias, runs outside it.
 
 When intents arrive in order on one lease, the latest wins.
 
@@ -177,8 +180,7 @@ connection is the only handle.
    `setsid`) survives, in each of these cases: its supervisor died before its end; it was
    started before 0.6.6; it runs on a host without a reachable user systemd manager,
    without cgroup v2 at `/sys/fs/cgroup`, or without `cgroup.kill` (Linux before 5.14).
-   macOS has no such container at all. On Windows, a descendant that breaks away from the
-   leg's job, which `JOB_OBJECT_LIMIT_BREAKAWAY_OK` permits, survives.
+   macOS has no such container at all. On Windows the leg's job permits no breakaway (ruling (g)).
 6. Closed: a row's remembered scopes are the durable file `row-scopes` in its state dir,
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.
 
