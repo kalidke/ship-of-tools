@@ -97,7 +97,7 @@ try {
         Check '3: a missing file gives an empty id' ((Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')) -ceq '') 'a partial scripts dir got an id'
     } catch { Check '3: section ran' $false $_.Exception.Message }
 
-    Write-Host "`n=== 4. Set-SotFolderTrust: written only when settings.toml does not exist ===" -ForegroundColor Cyan
+    Write-Host "`n=== 4. Set-SotFolderTrust: published only when settings.toml does not exist ===" -ForegroundColor Cyan
     try {
         # Ordered equality: same length, then every byte in order.
         function Test-SameBytes([byte[]]$A, [byte[]]$B) {
@@ -107,19 +107,20 @@ try {
         }
         $homeDir = 'C:\Users\someone'
         $cfgNew = Join-Path $root 'cfg-new'
-        Check '4: no file: it declares trust and returns true' ([bool](Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir)) 'returned false'
+        Check '4: no file: returns declared' ((Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir) -ceq 'declared') 'did not return declared'
         $f = Join-Path $cfgNew 'settings.toml'
         $bytes = [System.IO.File]::ReadAllBytes($f)
         $text = [System.Text.Encoding]::UTF8.GetString($bytes)
         Check '4: root_prefix is the home with / separators' ($text -match '(?m)^root_prefix = "C:/Users/someone"\r?$') $text
         Check '4: no BOM' (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'file starts with a BOM'
-        Check '4: a second call returns false' (-not (Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir)) 'returned true'
+        Check '4: no temp file left' (@(Get-ChildItem -LiteralPath $cfgNew -Filter '*.tmp').Count -eq 0) 'a .tmp file remains'
+        Check '4: a second call returns kept' ((Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir) -ceq 'kept') 'did not return kept'
         Check '4: a second call leaves the file byte-identical' (Test-SameBytes $bytes ([System.IO.File]::ReadAllBytes($f))) 'bytes changed'
         $utf8 = New-Object System.Text.UTF8Encoding($false)
         $cases = [ordered]@{
-            'UTF-8 without [trust]'                 = $utf8.GetBytes("[display]`nx = 1`n")
-            'UTF-16 with BOM'                       = ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes("[trust]`r`nroot_prefix = `"C:/x`"`r`n"))
-            '[trust] # comment and a commented key' = $utf8.GetBytes("[trust] # mine`n# root_prefix = `"C:/x`"`n")
+            'UTF-8 without [trust]'                    = $utf8.GetBytes("[display]`nx = 1`n")
+            'UTF-16 with BOM, no trust header'         = ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes("[display]`r`nx = 1`r`n"))
+            '[trust] # comment and a commented key'    = $utf8.GetBytes("[trust] # mine`n# root_prefix = `"C:/x`"`n")
         }
         $i = 0
         foreach ($name in $cases.Keys) {
@@ -129,10 +130,17 @@ try {
             $own = Join-Path $cfg 'settings.toml'
             [System.IO.File]::WriteAllBytes($own, [byte[]]$cases[$name])
             $before = [System.IO.File]::ReadAllBytes($own)
-            $r = Set-SotFolderTrust -ConfigDir $cfg -HomeDir $homeDir 6>$null
-            Check "4: existing file ($name): returns false" (-not $r) 'returned true'
+            $r = Set-SotFolderTrust -ConfigDir $cfg -HomeDir $homeDir
+            Check "4: existing file ($name): returns no-header" ($r -ceq 'no-header') "returned $r"
             Check "4: existing file ($name): byte-identical" (Test-SameBytes $before ([System.IO.File]::ReadAllBytes($own))) 'the owner''s file was changed'
         }
+        # The race: the destination appears after the temp file is closed, before the move.
+        $cfgRace = Join-Path $root 'cfg-race'
+        $raceFile = Join-Path $cfgRace 'settings.toml'
+        $r = Set-SotFolderTrust -ConfigDir $cfgRace -HomeDir $homeDir -BeforePublish { [System.IO.File]::WriteAllText($raceFile, 'owner') }
+        Check '4: race: returns kept' ($r -ceq 'kept') "returned $r"
+        Check '4: race: the owner''s file is untouched' (([System.IO.File]::ReadAllText($raceFile)) -ceq 'owner') 'the winner''s file was replaced'
+        Check '4: race: no temp file left' (@(Get-ChildItem -LiteralPath $cfgRace -Filter '*.tmp').Count -eq 0) 'a .tmp file remains'
     } catch { Check '4: section ran' $false $_.Exception.Message }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

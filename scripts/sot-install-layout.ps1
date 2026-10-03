@@ -65,32 +65,35 @@ function Get-SotLauncherCodeId {
 # Folder trust, the Windows twin of install.sh's [trust] step. The daemon
 # pre-answers the agent's folder-trust dialog for every session root under ONE
 # declared absolute prefix read from settings.toml; nothing else on Windows
-# writes that declaration. It writes ONLY when settings.toml does not exist, as
-# the whole file, and returns $true. An existing file, in any encoding or
-# shape, is the owner's: it is never edited and the function returns $false;
-# when that file has no [trust] line, one notice says what to add. The prefix
-# is the home folder with / as the separator, the spelling Claude Code keys its
-# own projects by. UTF-8 without BOM, creating the folder.
+# writes that declaration. One invariant: settings.toml is created only if no
+# file exists at the moment of publication, and an existing one is never
+# truncated, edited or replaced, in any encoding or shape. The block is written
+# to a unique temp file in the same folder, then published with the two-argument
+# File.Move, which refuses an existing destination, so a file that appears
+# meanwhile wins and no partial file is ever visible. Returns one of
+# 'declared' (published), 'kept' (a file has a line that is exactly [trust], or
+# it won the race) or 'no-header' (a file exists without such a line); the
+# caller logs. The prefix is the home folder with / as the separator, the
+# spelling Claude Code keys its own projects by. UTF-8 without BOM, creating
+# the folder. -BeforePublish is a test seam run between the temp file's close
+# and the move.
 function Set-SotFolderTrust {
     param(
         [Parameter(Mandatory)][string]$ConfigDir,
-        [Parameter(Mandatory)][string]$HomeDir
+        [Parameter(Mandatory)][string]$HomeDir,
+        [scriptblock]$BeforePublish
     )
     $file = Join-Path $ConfigDir 'settings.toml'
-    $prefix = $HomeDir.Replace('\', '/')
     if (Test-Path -LiteralPath $file) {
-        $declared = $false
         foreach ($line in ([System.IO.File]::ReadAllText($file) -split "`n")) {
-            if ($line.Trim() -ceq '[trust]') { $declared = $true }
+            if ($line.Trim() -ceq '[trust]') { return 'kept' }
         }
-        if (-not $declared) {
-            Write-Host "folder trust is not declared in $file; add [trust] and root_prefix = `"$prefix`" to let the daemon pre-answer the folder-trust dialog"
-        }
-        return $false
+        return 'no-header'
     }
     if (-not (Test-Path -LiteralPath $ConfigDir)) {
         New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
     }
+    $prefix = $HomeDir.Replace('\', '/')
     $block = "`n[trust]`n" +
         "# Every session root under this absolute prefix counts as already`n" +
         "# trusted, so an agent the daemon spawns there never stops at its`n" +
@@ -99,6 +102,18 @@ function Set-SotFolderTrust {
         "# are left untouched.`n" +
         "root_prefix = `"$prefix`"`n"
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($file, $block, $utf8)
-    return $true
+    $tmp = Join-Path $ConfigDir ("settings.toml.$PID." + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp')
+    try {
+        [System.IO.File]::WriteAllText($tmp, $block, $utf8)
+        if ($BeforePublish) { & $BeforePublish }
+        try {
+            [System.IO.File]::Move($tmp, $file)
+        } catch [System.IO.IOException] {
+            if (Test-Path -LiteralPath $file) { return 'kept' }
+            throw
+        }
+        return 'declared'
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
 }

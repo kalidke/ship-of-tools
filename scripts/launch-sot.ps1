@@ -455,8 +455,11 @@ function Set-SotJunction {
 function Initialize-InstallLayout {
     # Before the dev-box return below: a dev box's daemon spawns rows too.
     try {
-        if (Set-SotFolderTrust -ConfigDir (Join-Path $prefixDir 'config') -HomeDir $env:USERPROFILE) {
+        $trust = Set-SotFolderTrust -ConfigDir (Join-Path $prefixDir 'config') -HomeDir $env:USERPROFILE
+        if ($trust -ceq 'declared') {
             Write-SupLog 'install layout: folder trust declared for the home folder (settings.toml [trust] root_prefix)'
+        } elseif ($trust -ceq 'no-header') {
+            Write-SupLog "install layout: settings.toml has no [trust] header line, so this launcher declared no folder trust; to let spawned sessions skip the folder-trust prompt, add [trust] with root_prefix = `"$($env:USERPROFILE.Replace('\', '/'))`""
         }
     } catch {
         Write-SupLog "install layout: folder trust not declared - $($_.Exception.Message)"
