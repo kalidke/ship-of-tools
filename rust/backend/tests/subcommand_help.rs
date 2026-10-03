@@ -41,7 +41,7 @@ fn make_env(tmp: &Path) {
     }
 }
 
-fn sotd_help(tmp: &Path, args: &[&str]) -> (i32, String, String) {
+fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_sotd"))
         .args(args)
         .env_clear()
@@ -116,5 +116,21 @@ fn help_never_acts() {
             assert!(!tmp.join("DIALED").exists(), "{args:?}: dialed ssh or systemctl");
             assert_eq!(listing(tmp), before, "{args:?}: wrote files");
         }
+    }
+}
+
+/// A value that is not UTF-8 never stops a help or version query from answering.
+#[cfg(unix)]
+#[test]
+fn non_utf8_value_does_not_break_a_query() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let td = tempfile::tempdir().unwrap();
+    let tmp = td.path();
+    make_env(tmp);
+    let bad = OsStr::from_bytes(b"\xff");
+    for args in [vec![OsStr::new("--help"), OsStr::new("--project-root"), bad], vec![OsStr::new("--version"), bad]] {
+        let (code, stdout, stderr) = sotd_help(tmp, &args);
+        assert_eq!(code, 0, "{args:?}: exit; stdout={stdout:?} stderr={stderr:?}");
     }
 }

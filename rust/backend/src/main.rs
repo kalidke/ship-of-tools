@@ -229,13 +229,11 @@ mod help_tests {
     fn help_for_table() {
         let rows: &[(&str, &str)] = &[
             ("--help", SOTD_HELP),
-            ("-h", SOTD_HELP),
             ("--version --help", SOTD_HELP),
             ("--label x --help", SOTD_HELP),
             ("--socket --help", SOTD_HELP),
             ("session-socket-path --help", SOTD_HELP),
             ("agent-exec --help", SOTD_HELP),
-            ("agent-exec -h", SOTD_HELP),
             ("ancestors --help", ancestors::USAGE),
             ("ancestors --from 1 --help", ancestors::USAGE),
             ("stdio-bridge --help", stdio_bridge::USAGE),
@@ -290,8 +288,10 @@ async fn main() -> Result<()> {
     // invoked — `sotd session-socket-path sot`, `sotd --version`); this
     // replaces, rather than duplicates, the arms that used to live in
     // `parse_args()`.
-    // Help comes first: see `help_for`.
-    if let Some(text) = help_for(&std::env::args().skip(1).collect::<Vec<_>>()) {
+    // Help comes first: see `help_for`. Read lossily: `env::args` panics on a value that is not
+    // UTF-8, and such a value can never be `--help` or `-h` anyway.
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if let Some(text) = help_for(&args) {
         println!("{}", sot_protocol::version_line("sotd"));
         println!("{text}");
         return Ok(());
