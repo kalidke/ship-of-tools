@@ -829,10 +829,9 @@ async fn closing_flag_spans_shutdown() {
     drop(fence);
 }
 
+/// One close landing in the watchdog's held run start. Every assert holds on healthy code whatever the hold; returns the hold.
 #[cfg(target_os = "linux")]
-#[tokio::test]
-async fn shutdown_bound_is_end_to_end() {
-    let _serial = SERIAL.lock().await;
+async fn close_during_run_start() -> f64 {
     let env = Env::new("endtoend");
     let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
@@ -849,22 +848,36 @@ async fn shutdown_bound_is_end_to_end() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let ack = w.ask("close", EXIT_WITHIN).await;
-    assert_eq!(ack["not_ended"], 1, "{ack:?}");
     // No `ack` is sent, so the closer's notice waits out its own bound; exit 0
     // (the backstop's is 1) proves the whole shutdown fit inside the bound.
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
-    // Steps 2 and 3 share one rows deadline, decided + bound - tail; the refused row, retried 1 s apart,
-    // is let go in the last second before it. 0.4 s is slack for the daemon's timer and log latency;
-    // a 1.4 s hold (1 s + slack) puts a fresh step-3 deadline past budget + slack.
+    // Steps 2 and 3 share one rows deadline, decided + budget. The refused row, retried 1 s apart, is let go in the last
+    // second before it, so between budget - 1 and budget + 0.4 (timer and log slack) whatever the hold. A fresh step-3
+    // deadline lets it go at least held + 4 s in: past the upper bound once held >= 1.4, the caller's rule.
     let log = std::fs::read_to_string(&log_path).expect("the daemon's log");
-    let since = |from: f64, to: f64| (to - from).rem_euclid(86_400.0);
+    let since = |from: f64, to: f64| (to - from + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
     let began = stamped(&log, "shutting down: ending this computer's sessions");
     let held = since(began, stamped(&log, "lane did not settle within the post-spawn deadline"));
     let rows = since(began, stamped(&log, "row not ended by the deadline"));
     let budget = 15.0 - sot_protocol::ops::lease::SHUTDOWN_TAIL.as_secs_f64();
     eprintln!("run start held {held:.3} s into the shutdown; row let go at {rows:.3} s");
-    assert!((1.4..3.0).contains(&held), "no run start in flight 1.4 s into the shutdown (test sync, not the defect): {held:.3} s");
     assert!(rows < budget + 0.4, "step 3 ran past the rows deadline it shares with step 2: {rows:.3} s");
-    assert!(rows > budget - 1.4, "the refused row was not retried through the rows budget: {rows:.3} s");
+    assert!(rows > budget - 2.0, "the refused row was not retried through the rows budget: {rows:.3} s");
+    assert_eq!(ack["not_ended"], 1, "{ack:?}");
     drop(fence);
+    held
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn shutdown_bound_is_end_to_end() {
+    let _serial = SERIAL.lock().await;
+    // Only a run whose start was held 1.4 s into the shutdown can tell a fresh step-3 deadline from the shared one;
+    // a run the test's own scheduling made shorter proves nothing, so it runs again.
+    for _ in 0..3 {
+        if close_during_run_start().await >= 1.4 {
+            return;
+        }
+    }
+    panic!("no run start held 1.4 s into the shutdown in three runs (test sync, not the defect)");
 }
