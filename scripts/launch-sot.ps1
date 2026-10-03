@@ -1518,7 +1518,7 @@ function Open-SotLease([string]$PipePath) {
     try {
         $name = $PipePath -replace '^\\\\\.\\pipe\\', ''
         $created = [System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
-        $line = '{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $PID + '}}'
+        $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $PID + '}}'
         $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name, [System.IO.Pipes.PipeDirection]::InOut)
         $client.Connect($LeaseReplyWaitMs)
         $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($line + "`n")
@@ -1543,7 +1543,7 @@ function Open-SotLease([string]$PipePath) {
 function Close-SotLeases {
     foreach ($c in @($script:convergeLeases)) {
         try {
-            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":2,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
+            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
             $c.Write($bytes, 0, $bytes.Length)
             $c.Flush()
         } catch { }

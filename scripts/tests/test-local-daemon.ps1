@@ -414,7 +414,7 @@ public static class FakeSotd
                 if (line.Contains("\"op\":\"fe.lease\""))
                 {
                     byte[] b = new UTF8Encoding(false).GetBytes(
-                        "{\"v\":2,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
+                        "{\"v\":3,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
                     srv.Write(b, 0, b.Length);
                     srv.Flush();
                 }
@@ -697,14 +697,14 @@ public static class FakeSotd
                 $bootDec = ''
                 if ($regOut -match 'BootId\s+REG_DWORD\s+0x([0-9a-fA-F]+)') { $bootDec = [string][Convert]::ToUInt32($Matches[1], 16) }
                 $created11 = [System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
-                $golden = '{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":' + $created11 + ',"pid":' + $PID + '}}'
+                $golden = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":' + $created11 + ',"pid":' + $PID + '}}'
                 Start-Sleep -Milliseconds 300
                 $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
                 Check '11a: the first logged line is the golden lease line' (($lines11a.Count -ge 1) -and ($lines11a[0] -ceq $golden)) "got: $($lines11a[0]) want: $golden"
                 Close-SotLeases
                 Start-Sleep -Milliseconds 500
                 $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
-                $handover = '{"v":2,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+                $handover = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
                 Check '11a: the handover line follows' (($lines11a.Count -ge 2) -and ($lines11a[1] -ceq $handover)) "lines: $($lines11a -join ' | ')"
                 Check '11a: then eof' (($lines11a.Count -ge 3) -and ($lines11a[2] -ceq 'eof')) "lines: $($lines11a -join ' | ')"
                 Check '11a: the lease list is empty after Close-SotLeases' ($script:convergeLeases.Count -eq 0) "count $($script:convergeLeases.Count)"

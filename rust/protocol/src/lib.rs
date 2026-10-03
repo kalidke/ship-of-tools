@@ -65,7 +65,11 @@ pub use session_socket::{current_uid, local_daemon_label, runtime_sot_dir, sessi
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+/// The wire protocol a hello must speak; the daemon's gate refuses any other with
+/// `protocol_mismatch`. 3 (decision 0031): every client that declares the host and
+/// OS account it runs as. Every pre-0.6.6 client speaks 2 and so meets the gate.
+/// `comm-lib.sh`'s hello carries the same number by hand; a test below pins the two.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Product version embedded at build time (ADR 0030 §1, §8 decisions 31a
 /// and 31c). Exactly one form means "this is an official release build":
@@ -333,5 +337,26 @@ mod app_version_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod comm_hello_tests {
+    /// `comm-lib.sh` builds its hello by hand, so its `"protocol":N` cannot
+    /// follow `PROTOCOL_VERSION` on its own; this pins the two together.
+    #[test]
+    fn comm_lib_hello_speaks_this_protocol() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/core/scripts/comm-lib.sh");
+        let lib = std::fs::read_to_string(path).expect("read comm-lib.sh");
+        let hellos: Vec<&str> = lib.lines().filter(|l| l.contains(r#""op":"hello""#)).collect();
+        assert_eq!(hellos.len(), 1, "comm-lib.sh builds exactly one hello: {hellos:?}");
+        let n: String = hellos[0]
+            .split(r#""protocol":"#)
+            .nth(1)
+            .expect("the hello carries a protocol field")
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        assert_eq!(n, super::PROTOCOL_VERSION.to_string(), "comm-lib.sh's hello: {}", hellos[0]);
     }
 }
