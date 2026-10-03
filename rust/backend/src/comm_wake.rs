@@ -422,7 +422,7 @@ fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, wind
 /// [`PANEL_DOT`] or [`PANEL_RING`], there is no agents panel and it does. Otherwise every panel line starts with two
 /// spaces (a focused panel draws `❯ ` on the line under its cursor) and the one dotted line is `  ● main`. Claude
 /// Code's footer is not read: its wording changes with the version, the permission mode, the background tasks and
-/// the width (2.1.288 drops `(shift+tab to cycle)` after the first shift+tab), so it is no evidence of focus. With
+/// the width, so it is no evidence of focus. With
 /// agent view off, as the daemon runs every new capsule row, focus on the panel draws the panel cursor at once and
 /// moves the terminal cursor off the prompt (Claude Code 2.1.288, 2026-10-03). Known gap, fails open: with agent view
 /// on, 2.1.287's first ↓ moves focus to the panel and draws nothing (capture 05), and that frame reads free; there
@@ -994,8 +994,12 @@ mod tests {
                 assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
             }
         }
+    }
+
+    #[test]
+    fn cc288_rest_with_the_one_agent_footer_reads_free() {
         // DERIVED from the f6 rest capture, with the footer of the live M4 failure on rc9.12 (agent view on, 2.1.288).
-        let (mut l, cur) = cc288(rests[0], true);
+        let (mut l, cur) = cc288(include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
         l[19] = "  ⏵⏵ auto mode on (shift+tab to cycle) · /tasks to see subagents · ← 1 agent".to_string();
         for windows in [false, true] {
             assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
@@ -1420,20 +1424,16 @@ mod tests {
 
     #[test]
     fn cc288_the_ticking_panel_is_not_held() {
-        for (a, b) in [
-            (include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), include_str!("../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt")),
-        ] {
-            let (rest, _) = cc288(a, true);
-            let (later, _) = cc288(b, true);
-            assert_ne!(rest, later);
-            assert_eq!(held_rows(&rest, 15), held_rows(&later, 15));
-        }
+        let (rest, _) = cc288(include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
+        let (later, _) = cc288(include_str!("../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt"), true);
+        assert_ne!(rest, later);
+        assert_eq!(held_rows(&rest, 15), held_rows(&later, 15));
     }
 
     #[test]
     fn agent_view_focus_that_draws_nothing_reads_free() {
         // Capture 05 (2.1.287, agent view ON, the first ↓): focus left the input and nothing shows it. The named gap
-        // of `panel_refusal`; agent view stays on in rows open at install until /reauth.
+        // of `panel_refusal`.
         assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false), None);
         assert_eq!(typed_refusal(&probe(&rule80(), &format!("\u{276f}\u{a0}{WAKE_LINE}"), F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false, WAKE_LINE), None);
     }
