@@ -45,7 +45,8 @@ enum Conn {
 /// error path used to hang where it now reports (round-3 blocker), and a
 /// hang is strictly worse than a poor message.
 struct ChildGuard {
-    child: std::process::Child,
+    /// Shared with a [`Track`] so a cancel kills the child through this same handle.
+    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
     last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Set for a forwarded call that a caller may cut short; see [`Track`].
     track: Option<std::sync::Arc<Track>>,
@@ -54,27 +55,31 @@ struct ChildGuard {
 }
 
 /// How a forwarding caller reaches the ssh child a dial thread owns: the
-/// child's pid once it exists (0 before and after), and a flag that tells a
+/// child itself while its guard holds it unreaped, and a flag that tells a
 /// thread that has not spawned yet not to bother.
 struct Track {
     sig: &'static crate::shutdown::Signal,
-    pid: std::sync::atomic::AtomicU32,
+    /// The dial thread's child while its guard holds it unreaped; `None` before the spawn and from the moment the
+    /// guard starts reaping.
+    child: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::process::Child>>>>,
     cancelled: std::sync::atomic::AtomicBool,
 }
 
 impl Track {
+    fn new(sig: &'static crate::shutdown::Signal) -> Self {
+        Self { sig, child: std::sync::Mutex::new(None), cancelled: std::sync::atomic::AtomicBool::new(false) }
+    }
+
     /// Kill the child, if there is one yet; the dial thread's blocking read
     /// then fails and its `ChildGuard` reaps it.
     fn cancel(&self) {
         use std::sync::atomic::Ordering::SeqCst;
         self.cancelled.store(true, SeqCst);
-        #[cfg(unix)]
-        {
-            let pid = self.pid.load(SeqCst);
-            if pid != 0 {
-                // SAFETY: plain signal to the ssh child this forward started.
-                unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-            }
+        // Held across the kill: the guard takes the child out of this slot before it reaps, so a kill here only ever
+        // reaches a live, unreaped child — its own handle, never a pid another process may now hold.
+        let slot = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(child) = slot.as_ref() {
+            let _ = child.lock().unwrap_or_else(|p| p.into_inner()).kill();
         }
     }
 }
@@ -87,15 +92,26 @@ impl ChildGuard {
     fn stderr_hint(&self) -> Option<String> {
         self.last_stderr.lock().ok().and_then(|line| line.clone())
     }
+
+    /// Hand this guard's child to `track` and count it as live; true when the track was cancelled before this.
+    fn attach(&mut self, track: &std::sync::Arc<Track>) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self._live = Some(track.sig.guard());
+        self.track = Some(std::sync::Arc::clone(track));
+        *track.child.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::sync::Arc::clone(&self.child));
+        track.cancelled.load(SeqCst)
+    }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Unpublish first, so no cancel can reach the child once it is reaped.
         if let Some(track) = &self.track {
-            track.pid.store(0, std::sync::atomic::Ordering::SeqCst);
+            track.child.lock().unwrap_or_else(|p| p.into_inner()).take();
         }
+        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -148,7 +164,7 @@ impl Conn {
                         }
                     });
                 }
-                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child, last_stderr, track: None, _live: None })))
+                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr, track: None, _live: None })))
             }
         }
     }
@@ -218,11 +234,7 @@ fn dial_and_call_tracked(
 ) -> Result<serde_json::Value, String> {
     let (mut w, r, mut guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
     if let (Some(track), Some(g)) = (&track, guard.as_mut()) {
-        use std::sync::atomic::Ordering::SeqCst;
-        g._live = Some(track.sig.guard());
-        g.track = Some(std::sync::Arc::clone(track));
-        track.pid.store(g.child.id(), SeqCst);
-        if track.cancelled.load(SeqCst) {
+        if g.attach(track) {
             return Err(format!("{endpoint}: cancelled"));
         }
     }
@@ -290,11 +302,7 @@ pub fn forward_comm_file(
     let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
     let (tx, rx) = std::sync::mpsc::channel();
     let (e, h) = (endpoint.to_string(), self_host.to_string());
-    let track = std::sync::Arc::new(Track {
-        sig,
-        pid: std::sync::atomic::AtomicU32::new(0),
-        cancelled: std::sync::atomic::AtomicBool::new(false),
-    });
+    let track = std::sync::Arc::new(Track::new(sig));
     let dial_track = std::sync::Arc::clone(&track);
     std::thread::spawn(move || {
         let _ = tx.send(dial_and_call_tracked(&e, &h, sot_protocol::op::COMM_FILE, payload, Some(dial_track)));
@@ -543,6 +551,40 @@ mod tests {
             });
             assert!(gone, "the ssh child survived (shutdown={by_shutdown}) or is still counted");
         }
+    }
+
+    /// A cancel kills the tracked child through the guard's own handle on every platform, and the guard then reaps it
+    /// and releases the live count. Fails on the unchanged Windows cancel, which only set the flag.
+    #[test]
+    fn cancel_kills_the_tracked_child_through_its_own_handle() {
+        // Other tests swap PATH under this lock; the child below is found through PATH.
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let track = std::sync::Arc::new(Track::new(sig));
+        #[cfg(unix)]
+        let mut cmd = std::process::Command::new("sleep");
+        #[cfg(unix)]
+        cmd.arg("30");
+        #[cfg(windows)]
+        let mut cmd = std::process::Command::new("ping");
+        #[cfg(windows)]
+        cmd.args(["-n", "31", "127.0.0.1"]);
+        let child = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()).spawn().expect("a sleeper child");
+        let mut guard = ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)),
+            last_stderr: Default::default(), track: None, _live: None };
+        assert!(!guard.attach(&track), "a fresh track is not cancelled");
+        assert_eq!(sig.live(), 1);
+        track.cancel();
+        let exited = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            guard.child.lock().unwrap().try_wait().ok().flatten().is_some()
+        });
+        assert!(exited, "cancel left the tracked child running");
+        drop(guard);
+        assert_eq!(sig.live(), 0, "the reaped child is still counted");
+        assert!(track.child.lock().unwrap().is_none(), "the guard left its child published after reaping it");
+        track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
     }
 
     #[test]
