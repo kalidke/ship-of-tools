@@ -1,6 +1,6 @@
 # Why Ship of Tools exists, and the principles every change keeps
 
-Read this first, before any design page or code. It is short on purpose. Where today's code breaks a principle, the
+Read this first, before any design page or code (CLAUDE.md imports it, so every session has it). It is short on purpose. Where today's code breaks a principle, the
 line says so; that is a known gap to close, never a pattern to copy.
 
 ## Why it exists

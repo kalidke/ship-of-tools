@@ -1,5 +1,7 @@
 # Ship of Tools
 
+@PRINCIPLES.md
+
 An agentic Julia development environment: AI agents drive the interface, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
 
 `requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
@@ -167,8 +169,6 @@ The smallest useful working slice:
 
 When working in this repo:
 
-- **Read `docs/principles.md` first** (one page): why Ship of Tools exists and the principles every change
-  keeps. Every planner and lane brief loads it before the subsystem's design page and code.
 - **THE design principle, senior to any process — elegance: simple and
   elegant leads to performance and security. As simple as possible, but no
   simpler.** It applies at every design and iteration stage, not only the
