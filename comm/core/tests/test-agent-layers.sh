@@ -309,6 +309,8 @@ rreq 0 "nothing set, at the top"                          "" "" "" bash claude
 rreq 0 "self-x.txt names no row, inside ws-b's leg"       "" "$WORK/self/self-x.txt" "" bash claude "sot-capsule|run|/s/workspaces/ws-b/voyages/v1|v1"
 rreq 1 "two agents inside ws-a's leg"                     "has no comm identity" "$SA" "" bash codex bash claude "sot-capsule|run|/s/workspaces/ws-a/voyages/v1|v1"
 rreq 1 "two agents at the top with row ws-a"              "has no comm identity" "$SA" "" bash codex bash claude
+# Claude Code's agent view moves a conversation into its own background daemon, under systemd --user.
+rreq 2 "a conversation moved to Claude Code's background daemon" "$R_ROW_TEXT" "" ws-t-1 bash "claude bg-spare|--bg-spare|$WORK/a.claim.sock" "claude bg-pty-host" "/lib/systemd/systemd|--user"
 # The row id strips this host's own label first (a label may hold __; so may an id).
 WLEG='sot-capsule|run|/s/workspaces/%s/voyages/v1|v1'
 RHOST=dev__box rreq 0 "host dev__box, self file dev__box__ws-a.txt, ws-a's leg" "" "$WORK/self/dev__box__ws-a.txt" "" bash claude "$(printf "$WLEG" ws-a)"
