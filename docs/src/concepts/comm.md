@@ -55,8 +55,12 @@ started as its own row. The [Comm protocol](../ref/comm.md) states the rule and
 lists what the check does not see.
 
 A row started on this version runs its agent with Claude Code's agent view off,
-so its conversation stays in the row. A row already open when the version was
-installed keeps the old setting until the row is next started.
+so its conversation stays in the row. That switch reaches only rows started after
+the install. A row already open then is covered by the install step: add
+`"disableAgentView": true` to the user settings file of every Claude Code account
+an open row uses. Claude Code 2.1.287 and later read that file while running. A
+row on an older Claude Code, or one whose project settings set the key to false,
+keeps agent view until it is next started.
 
 ## The contract
 
