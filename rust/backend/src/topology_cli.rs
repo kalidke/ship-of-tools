@@ -400,7 +400,7 @@ fn refresh(
     me: &str,
     dir: &Path,
     enabled: &[String],
-    systemctl: &mut dyn FnMut(&[&str]) -> Result<(), String>,
+    systemctl: &mut dyn FnMut(&[&str]) -> Result<String, String>,
     say: &mut dyn FnMut(String),
 ) -> Result<(), String> {
     topology::require_hub(topo, me, "refresh")?;
@@ -422,12 +422,43 @@ fn refresh(
         }
     }
     for &h in &hosts {
+        let dd = dir.join(format!("{}.d", topology::relay_service_unit_file(h)));
+        let Ok(entries) = std::fs::read_dir(&dd) else { continue };
+        let mut late: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".conf") && n > topology::RELAY_COMMAND_DROPIN))
+            .map(|e| e.path())
+            .collect();
+        late.sort();
+        for path in late {
+            let mut retired = path.clone().into_os_string();
+            retired.push(".retired");
+            match std::fs::rename(&path, &retired) {
+                Ok(()) => say(format!("retired {}: it sorts after the hub's command drop-in, so it would override the relay command", path.display())),
+                Err(e) => failures.push(format!("retire {}: {e}", path.display())),
+            }
+        }
+    }
+    for &h in &hosts {
         let (socket, instances) = (topology::relay_unit(h), format!("sot-host-relay-{h}@*.service"));
         if let Err(e) = systemctl(&["--user", "reset-failed", &socket, &instances]) {
             failures.push(e);
         }
     }
     systemctl(&["--user", "daemon-reload"]).map_err(|e| format!("daemon-reload failed: {e}"))?;
+    let want = topology::relay_command_line();
+    for &h in &hosts {
+        let unit = format!("sot-host-relay-{h}@refresh-check.service");
+        match systemctl(&["--user", "show", "-p", "ExecStart", "--value", &unit]) {
+            Ok(out) if out.contains(&want) => {}
+            Ok(out) => failures.push(format!(
+                "relay command for {h} is overridden outside the hub's directory; systemd runs: {}; check `systemctl --user show -p DropInPaths sot-host-relay-{h}@.service`",
+                out.trim().chars().take(200).collect::<String>()
+            )),
+            Err(e) => failures.push(e),
+        }
+    }
     for &h in &hosts {
         if let Err(e) = systemctl(&["--user", "restart", &topology::relay_unit(h)]) {
             failures.push(e);
@@ -443,7 +474,7 @@ fn refresh(
 /// printed as it is done.
 fn refresh_cmd(topo: &Topology) -> Result<(), String> {
     let me = self_host()?;
-    refresh(topo, &me, &systemd_user_dir()?, &enabled_hosts(RELAY_TEMPLATE)?, &mut |a| run_systemctl(a), &mut |l| println!("{l}"))
+    refresh(topo, &me, &systemd_user_dir()?, &enabled_hosts(RELAY_TEMPLATE)?, &mut |a| systemctl_stdout(a), &mut |l| println!("{l}"))
 }
 
 /// The daemon's own call at start (main.rs). Gates, cheapest first: hosts.toml
@@ -470,7 +501,7 @@ pub fn refresh_at_start() {
         Ok(v) => v,
         Err(e) => return tracing::warn!(error = %e, "relay refresh skipped"),
     };
-    if let Err(e) = refresh(&topo, &me, &dir, &enabled, &mut |a| run_systemctl(a), &mut |l| tracing::warn!("{l}")) {
+    if let Err(e) = refresh(&topo, &me, &dir, &enabled, &mut |a| systemctl_stdout(a), &mut |l| tracing::warn!("{l}")) {
         tracing::warn!(error = %e, "relay refresh failed");
     }
 }
@@ -526,6 +557,11 @@ fn systemd_user_dir() -> Result<PathBuf, String> {
 }
 
 fn run_systemctl(args: &[&str]) -> Result<(), String> {
+    systemctl_stdout(args).map(|_| ())
+}
+
+/// `systemctl args`: its stdout on success.
+fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("systemctl")
         .args(args)
         .output()
@@ -533,7 +569,7 @@ fn run_systemctl(args: &[&str]) -> Result<(), String> {
     if !out.status.success() {
         return Err(format!("systemctl {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn dropin_path(unit: &str) -> Result<PathBuf, String> {
@@ -710,15 +746,17 @@ fn parse_edit(words: &[String]) -> Result<topology::TopologyEdit, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // apply's decision logic (topology::apply_plan, topology::require_hub,
-    // topology::tunnel_dropin) is pure and tested in sot-protocol, against
-    // a fixture, with no systemd involved. What's left here is flag
-    // parsing only — enabled_tunnel_hosts/run_systemctl/write_dropin need
-    // a real `systemctl --user` and `$HOME`, unverified by this suite.
 
     const STALE_SERVICE: &str = include_str!("../../protocol/src/testdata/relay-service-rc9.8.unit");
     const NO_MUX: &str = include_str!("../../protocol/src/testdata/relay-dropin-no-mux.conf");
     const OVERRIDE: &str = include_str!("../../protocol/src/testdata/relay-dropin-override.conf");
+
+    const SHOW: &str = "show -p ExecStart --value sot-host-relay-remote-a@refresh-check.service";
+
+    /// The stand-in answer to `show`: the generated command, as systemd prints it.
+    fn shown(a: &[&str]) -> String {
+        if a[1] == "show" { format!("{{ argv[]={} ; }}", topology::relay_command_line()) } else { String::new() }
+    }
 
     fn hub_topo() -> Topology {
         topology::parse("hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.remote-a]\ndaemon = true\n").unwrap()
@@ -746,7 +784,7 @@ mod tests {
         let mut said: Vec<String> = Vec::new();
         refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             calls.push(a[1..].join(" "));
-            Ok(())
+            Ok(shown(a))
         }, &mut |l| said.push(l))
         .unwrap();
         assert_eq!(
@@ -762,20 +800,20 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dd.join("override.conf")).unwrap(), OVERRIDE);
         assert_eq!(
             calls,
-            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", "restart sot-host-relay-remote-a.socket"]
+            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", SHOW, "restart sot-host-relay-remote-a.socket"]
         );
 
         calls.clear();
         said.clear();
         refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             calls.push(a[1..].join(" "));
-            Ok(())
+            Ok(shown(a))
         }, &mut |l| said.push(l))
         .unwrap();
         assert!(said.is_empty(), "{said:?}");
         assert_eq!(
             calls,
-            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", "restart sot-host-relay-remote-a.socket"]
+            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", SHOW, "restart sot-host-relay-remote-a.socket"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -788,19 +826,19 @@ mod tests {
         std::fs::write(dir.join("sot-host-relay-remote-a@.service"), STALE_SERVICE).unwrap();
         let enabled = vec!["remote-a".to_string()];
         let e = refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
-            if a[1] == "daemon-reload" { Err("Failed to reload daemon: Connection timed out".to_string()) } else { Ok(()) }
+            if a[1] == "daemon-reload" { Err("Failed to reload daemon: Connection timed out".to_string()) } else { Ok(shown(a)) }
         }, &mut |_| {})
         .unwrap_err();
         assert!(e.contains("daemon-reload"), "{e}");
         let mut calls: Vec<String> = Vec::new();
         refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             calls.push(a[1..].join(" "));
-            Ok(())
+            Ok(shown(a))
         }, &mut |_| {})
         .unwrap();
         assert_eq!(
             calls,
-            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", "restart sot-host-relay-remote-a.socket"],
+            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", SHOW, "restart sot-host-relay-remote-a.socket"],
             "the files already match after the failed run; the reload and the restart must still be redone"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -821,7 +859,7 @@ mod tests {
         let mut called = false;
         let e = refresh(&hub_topo(), "remote-a", &dir, &["remote-a".to_string()], &mut |_| {
             called = true;
-            Ok(())
+            Ok(String::new())
         }, &mut |_| {})
         .unwrap_err();
         assert!(e.contains("not the hub"), "{e}");

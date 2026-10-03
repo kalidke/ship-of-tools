@@ -627,8 +627,10 @@ const GENERATED_UNIT_HEADER: &str = "\
 # the running sotd generates (at each daemon start, and by `sotd topology
 # refresh`). Never edit it by hand. A per-host Environment= override belongs
 # in a drop-in of its own beside the service. The command is the hub's: it is
-# set last, by zz-sot-relay-command.conf, so an ExecStart= in any other
-# drop-in has no effect.
+# set last among this unit's own drop-ins, by zz-sot-relay-command.conf; any
+# .conf in that directory sorting after it is retired by refresh. A drop-in in
+# another systemd directory that overrides the command is reported by refresh,
+# not fixed.
 ";
 
 /// The hub's listener for `host` — the unit file [`relay_unit`] names.
@@ -701,14 +703,14 @@ Environment=SOT_RELAY_SOTD=sotd
     )
 }
 
-/// The name of [`relay_command_dropin`]'s file. systemd applies drop-ins by file-name byte order, so this must sort after every drop-in name sotd or its docs used (`local.conf`, `no-mux.conf`, `topology.conf`) and after `systemctl edit`'s `override.conf`. A later name, or the same name in a higher-priority directory, can only be an operator's deliberate override.
-const RELAY_COMMAND_DROPIN: &str = "zz-sot-relay-command.conf";
+/// The name of [`relay_command_dropin`]'s file. systemd applies drop-ins by file-name byte order, so this sorts after every drop-in name sotd or its docs used (`local.conf`, `no-mux.conf`, `topology.conf`) and after `systemctl edit`'s `override.conf`. `refresh` retires any `.conf` in the hub's own unit directory that sorts after it.
+pub const RELAY_COMMAND_DROPIN: &str = "zz-sot-relay-command.conf";
 
-/// The bridge's command, in a drop-in of its own: it is applied after the unit and after every other drop-in, so its empty `ExecStart=` clears whatever an earlier file set, however that file spells it. Nothing reads another drop-in.
+/// The bridge's command, in a drop-in of its own: it is applied after the unit and after the drop-ins of the hub's own unit directory that sort before it, so its empty `ExecStart=` clears whatever such a file set, however that file spells it. Nothing reads another drop-in.
 fn relay_command_dropin() -> String {
     format!(
         "{GENERATED_UNIT_HEADER}#
-# The bridge's command, set last: this file's name sorts after any other drop-in's.
+# The bridge's command, set last among this directory's drop-ins that sort before this file's name.
 # -T: no pty, so nothing rewrites the byte stream. BatchMode: never prompt —
 # an unreachable box must fail at once rather than hang. The ServerAlive pair
 # closes a wedged network in ~45s. The three Control options switch ssh
@@ -720,6 +722,13 @@ ExecStart=
 ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none -o ControlPersist=no ${{SOT_RELAY_TARGET}} ${{SOT_RELAY_SOTD}} stdio-bridge
 "
     )
+}
+
+/// The command text of the generated drop-in's last `ExecStart=` line: what `systemctl --user show -p ExecStart` must contain when nothing overrides the hub's command.
+pub fn relay_command_line() -> String {
+    let text = relay_command_dropin();
+    let line = text.lines().rev().find(|l| l.starts_with("ExecStart=")).unwrap_or("");
+    line["ExecStart=".len()..].to_string()
 }
 
 /// Every file the hub generates for `host`, as (path under `~/.config/systemd/user`, text): the listener, its per-connection service, and the service's command drop-in. `apply` writes them, `refresh` rewrites any whose text differs, and a disable removes them.
