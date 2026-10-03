@@ -18,7 +18,7 @@
 //! its own (native TCP backpressure).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 
 use anyhow::Result;
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
@@ -41,6 +41,21 @@ use tokio::net::TcpStream;
 /// port for the user's own browser adds no privilege over what either side
 /// can already do (same standing as `SOT_PROXY_EXTRA_PORTS`).
 static BROWSER_PORTS: RwLock<BTreeMap<String, BTreeSet<u16>>> = RwLock::new(BTreeMap::new());
+
+/// Ports refused since they last passed the allowlist. The refusal is logged once per streak (a tab left open on a
+/// dead page retries every second or two, forever), and a streak ends when the port is served again.
+static REFUSED_PORTS: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
+
+/// Record whether `port` passed the allowlist; true when this refusal starts a streak.
+fn refusal_starts_streak(port: u16, refused: bool) -> bool {
+    let mut set = REFUSED_PORTS.lock().unwrap_or_else(|p| p.into_inner());
+    if refused {
+        set.insert(port)
+    } else {
+        set.remove(&port);
+        false
+    }
+}
 
 /// Per-workspace cap on announced ports — a backstop against a runaway loop
 /// serving in a hot loop, not a real limit (a workspace realistically holds
@@ -187,7 +202,9 @@ where
     // can only reach the daemon's OWN loopback services, never arbitrary
     // internal hosts.
     if !allowed_proxy_ports().contains(&req.port) {
-        tracing::warn!(port = req.port, "proxy.connect rejected: port not in allowlist");
+        if refusal_starts_streak(req.port, true) {
+            tracing::warn!(port = req.port, "proxy.connect rejected: port not in allowlist (logged once until it is served again)");
+        }
         return reject(
             &mut tx,
             frame.id,
@@ -197,6 +214,7 @@ where
         )
         .await;
     }
+    refusal_starts_streak(req.port, false);
 
     // Dial the backend service. A short connect timeout keeps a wedged
     // target from parking the proxy task forever.
@@ -470,6 +488,57 @@ mod tests {
         };
         let (dres, _) = tokio::join!(daemon_fut, client_fut);
         dres.unwrap();
+    }
+
+    /// A log sink for one test: `tracing` writes here while the test's subscriber is the default.
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_port_is_logged_once_per_streak() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
+        let buf = LogBuf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
+        let _sub = tracing::subscriber::set_default(sub);
+        let warns = || {
+            let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+            text.lines()
+                .filter(|l| l.contains("WARN") && l.contains("port not in allowlist") && l.contains("port=65011"))
+                .count()
+        };
+        let connect = |want: &'static str| async move {
+            let (client, daemon) = tokio::io::duplex(4096);
+            let (dr, dw) = tokio::io::split(daemon);
+            let (mut cr, _cw) = tokio::io::split(client);
+            let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(65011), None);
+            let client_fut = async {
+                let res = read_res(&mut cr).await;
+                assert_eq!(res.get("code").and_then(|v| v.as_str()), Some(want));
+            };
+            let (dres, _) = tokio::join!(daemon_fut, client_fut);
+            dres.unwrap();
+        };
+        for _ in 0..3 {
+            connect("bad_port").await;
+        }
+        assert_eq!(warns(), 1, "three refusals of one port are one streak");
+        // Served again (allowlisted; the dial then fails, which is fine), then refused: a new streak.
+        std::env::set_var("SOT_PROXY_EXTRA_PORTS", "65011");
+        connect("dial_failed").await;
+        std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
+        connect("bad_port").await;
+        assert_eq!(warns(), 2, "a served port starts a new streak");
     }
 
     #[tokio::test]

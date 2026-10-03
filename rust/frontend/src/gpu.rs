@@ -5598,9 +5598,9 @@ struct State {
     /// runtime accept loop, each tagged with the ssh recipe + token to
     /// spawn a child through for that one port (`None` when no host has a
     /// runtime at all).
-    /// `proxy_ensured`: ports we've already bound OR found already-forwarded
-    /// (`AddrInUse` — a pre-upgrade `ssh -L` may still hold it; the two
-    /// coexist until it is reaped).
+    /// `proxy_ensured`: the ports this frontend has bound, each with the
+    /// `Arm` its listener shares; opening a page on one of them re-arms it,
+    /// since the daemon may have refused the port (`bad_port`) since.
     proxy_capable_hosts: std::collections::HashSet<HostKey>,
     proxy_listener_tx: Option<
         tokio::sync::mpsc::UnboundedSender<(
@@ -5608,9 +5608,10 @@ struct State {
             sot_protocol::ssh_bridge::SshRecipe,
             Option<String>,
             sot_protocol::ssh_bridge::LinkGate,
+            std::sync::Arc<crate::proxy_listen::Arm>,
         )>,
     >,
-    proxy_ensured: std::collections::HashSet<u16>,
+    proxy_ensured: std::collections::HashMap<u16, std::sync::Arc<crate::proxy_listen::Arm>>,
     /// REPL prompt mode. `false` = `julia>` (default), `true` = `pkg>`.
     /// User toggles via `]` at start of empty input (enter) /
     /// `Backspace` at start of empty input in pkg mode (leave). When
@@ -7151,7 +7152,7 @@ impl State {
             // here; `resumed()` spawns the listener manager.
             proxy_capable_hosts: std::collections::HashSet::new(),
             proxy_listener_tx: None,
-            proxy_ensured: std::collections::HashSet::new(),
+            proxy_ensured: std::collections::HashMap::new(),
             repl_pkg_mode: false,
             history_pos: None,
             history_saved: None,
@@ -8540,9 +8541,12 @@ impl State {
         let Some(port) = crate::proxy_listen::proxy_port_from_url(url) else {
             return true; // nothing to proxy, so nothing to arm
         };
-        if !self.proxy_ensured.insert(port) {
-            return true; // already bound, or already found forwarded (AddrInUse)
+        if let Some(arm) = self.proxy_ensured.get(&port) {
+            arm.reopen();
+            return true; // already bound by this frontend; dial again, the daemon may have refused it since
         }
+        let arm = std::sync::Arc::new(crate::proxy_listen::Arm::default());
+        self.proxy_ensured.insert(port, std::sync::Arc::clone(&arm));
         let bind = std::net::TcpListener::bind(("127.0.0.1", port));
         let permit_open = Self::proxy_open_permitted(&target, Some(&bind));
         match bind {
@@ -8552,7 +8556,7 @@ impl State {
                     self.proxy_ensured.remove(&port);
                     return false;
                 }
-                if tx.send((listener, recipe.clone(), token, gate)).is_err() {
+                if tx.send((listener, recipe.clone(), token, gate, arm)).is_err() {
                     tracing::warn!(port, "proxy: manager gone; not arming");
                     self.proxy_ensured.remove(&port);
                     return false;

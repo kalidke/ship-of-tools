@@ -73,7 +73,10 @@ connection, so these frames are byte-identical to what they always were.
 The cost is one ssh login per attached pane and one per proxied browser
 connection — an accepted cost, not a bug, so a page with several
 subresources served by the same remote daemon pays once per resource, not
-once per page.
+once per page. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
+connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A
+tab left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon
+logs a refused port once, until that port is served again.
 
 **The link gate.** While a host's link is down — its control transport's
 last attempt got no hello reply, or its session ended — the frontend starts
