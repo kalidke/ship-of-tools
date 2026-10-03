@@ -1,7 +1,7 @@
 # ADR 0002: Kernel launch and process supervision
 
 **Status:** current — accepted.
-**Shutdown superseded (0.6.6):** every child but a capsule supervisor starts through `Signal::spawn` or `spawn_std` (rust/backend/src/shutdown.rs; the platform calls are in rust/backend/src/contain.rs) in its own process group (Unix) or job (Windows). The tree is killed with SIGKILL to the group or with TerminateJobObject when its owner lets go or the daemon shuts down. There is no SIGTERM grace, no taskkill and no `kill_on_drop`.
+**Shutdown superseded (0.6.6):** every child but a capsule supervisor starts through `Signal::spawn` or `spawn_std` (rust/backend/src/shutdown.rs; the platform calls are in rust/backend/src/contain.rs) in its own process group (Unix) or job (Windows). The tree is killed with SIGKILL to the group or with TerminateJobObject when its owner lets go or the daemon shuts down. There is no SIGTERM grace and no taskkill.
 **Date:** 2026-05-07
 
 ## Context

@@ -490,11 +490,13 @@ async fn handover_countdown_survives_restart() {
         env.kill_daemon_bounded().await;
         drop(conn);
         // Restarted late enough that a deadline the restart moved would
-        // fall clearly after the recorded one.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        // fall at least 6 s after the recorded one.
+        tokio::time::sleep(Duration::from_secs(6)).await;
 
         env.spawn_sotd_with_env(&[("SOT_TEST_HANDOVER_BOUND_MS", &bound)]);
         assert_adopted(&env, &row, "a pending handover").await;
+        let kept = read_record(&env).and_then(|r| r["handover_until_ms"].as_u64());
+        assert_eq!(kept, Some(until), "the restart changed the handover's recorded deadline");
         if lease_in_time {
             let mut conn = granted_lease(&env).await;
             while now_ms() < until + 3000 {
@@ -509,7 +511,7 @@ async fn handover_countdown_survives_restart() {
             let at = now_ms();
             assert_eq!(status.code(), Some(0), "the handover's shutdown exit: {status:?}");
             assert!(at >= until, "the shutdown came before the recorded deadline");
-            assert!(at < until + 3000, "the restart moved the handover's deadline: shut down {} ms after it", at - until);
+            assert!(at < until + 4500, "the restart moved the handover's deadline: shut down {} ms after it", at - until);
             assert!(!row_toml(&env, &row.slug).exists(), "the shutdown left the row registered");
         }
     }

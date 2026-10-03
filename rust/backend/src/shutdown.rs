@@ -554,16 +554,22 @@ impl Contained {
     /// descendant that holds the child's pipes open is killed too.
     pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            // Seen unreaped, so the group number stays the leader's.
-            while !crate::contain::exited_pid(pid, false)? {
-                self.sigchld.recv().await;
+        {
+            if let Some(pid) = self.child.id() {
+                // Seen unreaped, so the group number stays the leader's.
+                while !crate::contain::exited_pid(pid, false)? {
+                    self.sigchld.recv().await;
+                }
             }
+            self.held.release();
+            self.child.wait().await
         }
         #[cfg(windows)]
-        self.child.wait().await?;
-        self.held.release();
-        self.child.wait().await
+        {
+            let status = self.child.wait().await?;
+            self.held.release();
+            Ok(status)
+        }
     }
 
     /// Kill the tree, then the child, and reap it.
@@ -869,19 +875,34 @@ mod tests {
     }
 
     /// A parent that started the daemon with `SIGCHLD` ignored must not make
-    /// the kernel reap contained leaders; the startup reset undoes it.
+    /// the kernel reap contained leaders; the startup reset undoes it. The
+    /// disposition is process-wide, so the scenario runs in a re-executed copy
+    /// of this test binary and no test in this process touches `SIGCHLD`.
     #[cfg(unix)]
     #[test]
     fn an_ignored_sigchld_is_reset_at_startup() {
-        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: a plain disposition change, restored below.
-        let before = unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
-        reset_child_signal();
-        let outcome = std::panic::catch_unwind(one_shot_takes_its_tree_after_it_exits);
-        // SAFETY: restores the disposition the test found.
-        unsafe { libc::signal(libc::SIGCHLD, before) };
-        if let Err(e) = outcome {
-            std::panic::resume_unwind(e);
+        let name = "shutdown::tests::ignored_sigchld_scenario";
+        let out = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+            .args(["--exact", name, "--test-threads=1", "--nocapture"])
+            .env("SOT_TEST_SIGCHLD_CHILD", "1")
+            .output()
+            .expect("re-execute the test binary");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "the child run failed:\n{text}");
+        assert!(text.contains(&format!("test {name} ... ok")), "the scenario did not run:\n{text}");
+    }
+
+    /// The re-executed half of `an_ignored_sigchld_is_reset_at_startup`; it
+    /// does nothing in an ordinary run.
+    #[cfg(unix)]
+    #[test]
+    fn ignored_sigchld_scenario() {
+        if std::env::var_os("SOT_TEST_SIGCHLD_CHILD").is_none() {
+            return;
         }
+        // SAFETY: a plain disposition change in a process of its own.
+        unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+        reset_child_signal();
+        one_shot_takes_its_tree_after_it_exits();
     }
 }
