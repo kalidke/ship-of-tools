@@ -157,7 +157,10 @@ impl Leases {
     }
 
     fn set(&self, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
-        let mut book = self.book.lock().unwrap();
+        Self::install(&mut self.book.lock().unwrap(), host, standing, holder);
+    }
+
+    fn install(book: &mut Book, host: &HostKey, standing: Standing, holder: Option<mpsc::UnboundedSender<HolderCmd>>) {
         // A handshake in flight when the window began to leave gives the
         // leave exactly one outcome: a grant leaves at once too, and its ack
         // joins the same wait (a failed send drops `tx`, which the wait
@@ -265,13 +268,15 @@ impl Leases {
                 let holder = spawn_holder(rx, tx);
                 let key = res.state_root.clone().unwrap_or_else(|| host.clone());
                 {
+                    // The count and the holder its ack goes through are published under one lock: a count drawn
+                    // and acked before its holder was installed would be acked to nobody and stay owed forever.
                     let mut book = self.book.lock().unwrap();
                     book.rt.get_or_insert_with(tokio::runtime::Handle::current);
                     if res.not_ended > 0 {
                         book.owed.insert(key, res.not_ended);
                     }
+                    Self::install(&mut book, host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 }
-                self.set(host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 tracing::info!(%host, not_ended = res.not_ended, "window lease: granted");
                 Ok(res.not_ended)
             }
