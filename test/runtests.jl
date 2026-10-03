@@ -532,7 +532,7 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
 
     @testset "_retired_watchers selects only the retired roots and their descendants" begin
         bin = "/home/u/.sot-comm/bin"
-        P(pid, ppid, argv...) = (pid = pid, ppid = ppid, argv = String[argv...])
+        P(pid, ppid, argv...) = (pid = pid, ppid = ppid, start = "s$pid", argv = String[argv...])
         procs = [
             P(10, 1, "bash", "$bin/comm-wake.sh", "h", "--deliver", "ping", "--owner", "1"),
             P(11, 10, "sleep", "1"),
@@ -547,8 +547,50 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             P(70, 1, "vim", "$bin/comm-wake.sh"),
             P(80, 1, "bash.exe", "$bin/codex-watch.sh", "h"),
         ]
-        @test sort(ShipTools._retired_watchers(procs, bin)) == [10, 11, 20, 21, 22, 80]
-        @test isempty(ShipTools._retired_watchers(procs[6:7], bin))
+        @test sort(ShipTools._retired_watchers(procs, bin; self = 999)) ==
+              [(10, "s10"), (11, "s11"), (20, "s20"), (21, "s21"), (22, "s22"), (80, "s80")]
+        @test isempty(ShipTools._retired_watchers(procs[6:7], bin; self = 999))
+
+        # The installer's own ancestry is never selected, nor anything reached
+        # only through it: root 90 is an ancestor of the installer (93).
+        anc = [
+            P(90, 1, "bash", "$bin/comm-wake.sh", "h"),
+            P(91, 90, "sh"),
+            P(92, 91, "julia"),
+            P(93, 92, "julia", "install"),
+            P(94, 90, "sleep", "1"),
+            P(95, 93, "sleep", "1"),
+        ]
+        @test isempty(ShipTools._retired_watchers(anc, bin; self = 93))
+        @test isempty(ShipTools._retired_watchers(anc, bin; self = 92))
+        # Not an ancestor: the same tree is selected whole.
+        @test sort([x for (x, _) in ShipTools._retired_watchers(anc, bin; self = 999)]) == [90, 91, 92, 93, 94, 95]
+        # A descendant chain passing through the installer stops at it.
+        thru = [
+            P(100, 1, "bash", "$bin/comm-wake.sh", "h"),
+            P(101, 100, "sleep", "1"),
+            P(102, 100, "julia", "install"),
+            P(103, 102, "sleep", "1"),
+        ]
+        @test isempty(ShipTools._retired_watchers(thru, bin; self = 102))
+        # Installer unrelated to the root: the root's own tree is still selected.
+        sep = [thru; P(200, 1, "julia", "install")]
+        @test sort([x for (x, _) in ShipTools._retired_watchers(sep, bin; self = 200)]) == [100, 101, 102, 103]
+    end
+
+    @testset "_winargv follows the MSVC quoting rules" begin
+        @test ShipTools._winargv("a  b\tc") == ["a", "b", "c"]
+        @test ShipTools._winargv("\"a b\" c") == ["a b", "c"]
+        @test ShipTools._winargv("\"a b\"c d") == ["a bc", "d"]
+        B(n) = "\\"^n
+        @test ShipTools._winargv("a" * B(1) * "b c") == ["a" * B(1) * "b", "c"]
+        @test ShipTools._winargv("a" * B(4) * "b") == ["a" * B(4) * "b"]
+        @test ShipTools._winargv(B(3) * "\"b c") == [B(1) * "\"b", "c"]
+        @test ShipTools._winargv(B(4) * "\"b c\"") == [B(2) * "b c"]
+        @test ShipTools._winargv(B(7) * "\"b") == [B(3) * "\"b"]
+        @test ShipTools._winargv("\"C:" * B(1) * "dir" * B(2) * "\"") == ["C:" * B(1) * "dir" * B(1)]
+        @test ShipTools._winargv("a \"\" b") == ["a", "", "b"]
+        @test isempty(ShipTools._winargv("   "))
     end
 
     @testset "_retired_windows selects only this user's retired scripts of this install" begin
@@ -556,7 +598,8 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         # only watcher roots are matched.
         bin = "/c/Users/u/.sot-comm/bin"
         me = "BOX\\u"
-        line(pid, owner, cmd) = "$pid\t$owner\t$cmd"
+        cr = "20260101120000.000000"
+        line(pid, owner, cmd) = "$pid\t$cr\t$owner\t$cmd"
         bash = "\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\""
         lines = [
             line(1, me, "$bash $bin/comm-wake.sh h --deliver ping --owner 9"),
@@ -568,13 +611,43 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
             line(6, me, "$bash -c \"sleep 600\" $bin/comm-wake.sh"),
             line(7, me, "$bash $bin/comm-wake.sh h"),
             line(8, "bad line without tabs", ""),
+            line(9, me, "vim.exe $bin/comm-wake.sh"),
+            line(10, me, "grep.exe $bin/comm-wake.sh"),
+            line(11, me, "\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\" \"/c/Users/Example User/.sot-comm/bin/comm-wake.sh\" h"),
+            line(12, me, "bash.exe \"$bin/comm-wake.sh\""),
         ]
-        @test ShipTools._retired_windows(lines, bin, me; self = 7) == [1]
-        @test ShipTools._retired_windows(lines, bin, "box\\U") == [1, 7]
+        @test ShipTools._retired_windows(lines, bin, me; self = 7) == [(1, cr), (12, cr)]
+        @test ShipTools._retired_windows(lines, bin, "box\\U") == [(1, cr), (7, cr), (12, cr)]
+        # the installer's ancestors come in as `anc` lines
+        @test ShipTools._retired_windows([lines; "anc\t1"; "anc\t12"], bin, me) == [(7, cr)]
+        # a path with a space matches whole
+        sp = "/c/Users/Example User/.sot-comm/bin"
+        @test ShipTools._retired_windows(lines, sp, me; self = 0) == [(11, cr)]
+        # an unreadable owner is warned about and never selected
+        @test_logs (:warn, r"could not read the owner") begin
+            @test ShipTools._retired_windows(["noowner\t13\t2"; lines[1:1]], bin, me) == [(1, cr)]
+        end
         @test ShipTools._gitbash_path("C:\\Users\\u\\.sot-comm\\bin") == "/c/Users/u/.sot-comm/bin"
     end
 
     if Sys.islinux()
+        procstart(pid) = (f = split(last(split(read("/proc/$pid/stat", String), ")")), ' '; keepempty = false); f[20])
+        @testset "the stopper signals only a (pid, start) pair that still matches" begin
+            p = run(pipeline(`sleep 600`; stdin = devnull, stdout = devnull, stderr = devnull); wait = false)
+            try
+                pid = getpid(p)
+                stop(ids) = read(ignorestatus(`bash -c $(ShipTools._STOP_IDS) sot-stop $ids`), String)
+                out = stop(["$pid:1"])
+                @test process_running(p)
+                @test strip(out) == "gone $pid"
+                out = stop(["$pid:$(procstart(pid))"])
+                @test strip(out) == "gone $pid"
+                @test timedwait(() -> process_exited(p), 5.0) == :ok
+            finally
+                process_running(p) && kill(p)
+            end
+        end
+
         @testset "update_comm stops the retired watchers, and only those" begin
             # Loop texts: BRIDGE_LOOP in comm-lib.sh at commit 26210916 (untethered)
             # and at ab171855^ (tethered, with the owner check).
@@ -595,9 +668,10 @@ done"""
                     bin = joinpath(home, ".sot-comm", "bin")
                     obin = joinpath(other, ".sot-comm", "bin")
                     mkpath(obin)
-                    started = Int[]
+                    started = Base.Process[]
+                    grand = String[]   # `pid:start` of the loops' sleep children
                     spawn(cmd) = (p = run(pipeline(cmd; stdin = devnull, stdout = devnull, stderr = devnull); wait = false);
-                                  push!(started, getpid(p)); getpid(p))
+                                  push!(started, p); getpid(p))
                     alive(pid) = isdir("/proc/$pid")
                     function childof(pid)
                         for d in readdir("/proc")
@@ -611,6 +685,7 @@ done"""
                         end
                         return 0
                     end
+                    grandchild!(pid) = (c = childof(pid); c != 0 && push!(grand, "$c:$(procstart(c))"); c)
                     try
                         withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
@@ -626,7 +701,7 @@ done"""
                             C2 = spawn(`bash -c "sleep 600" $(joinpath(bin, "comm-wake.sh"))`)
                             C3 = spawn(`bash $(joinpath(obin, "comm-wake.sh"))`)
                             sleep(3)
-                            Uc = childof(U); Tc = childof(T)
+                            Uc = grandchild!(U); Tc = grandchild!(T)
                             @test Uc != 0 && Tc != 0
                             ShipTools.update_comm(clis = [:claude])
                             gone = [W, U, T, Uc, Tc]
@@ -644,8 +719,15 @@ done"""
                             @test alive(C3)
                         end
                     finally
-                        for pid in started
-                            run(ignorestatus(`kill -KILL $pid`))
+                        for p in started
+                            process_running(p) && kill(p)
+                        end
+                        isempty(grand) || read(ignorestatus(`bash -c $(ShipTools._STOP_IDS) sot-stop $grand`), String)
+                        for p in started
+                            @test timedwait(() -> process_exited(p), 5.0) == :ok
+                        end
+                        for g in grand
+                            @test !alive(parse(Int, first(split(g, ':'))))
                         end
                     end
                 end

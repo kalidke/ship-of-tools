@@ -249,12 +249,12 @@ const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-w
                              "comm-postclear-reminder.sh", "comm-session-skill.sh"]
 
 # One bash script reads the process table, because MSYS processes are visible
-# only from inside MSYS; Linux runs the same reader. `$1` is the bin dir as
-# Julia sees it. Output, NUL-separated: the bin dir as bash spells it, then per
-# process of this user pid, ppid, argc and the argv.
+# only from inside MSYS; Linux runs the same reader. `$1` is the bin dir. Output,
+# NUL-separated: the bin dir, then per process of this user pid, ppid, start
+# time (field 22 of /proc/<pid>/stat, counted after the last `)` because the
+# comm field may hold spaces), argc and the argv.
 const _PROC_DUMP = raw"""
 bin=$1
-case "$(uname -o 2>/dev/null)" in Msys|Cygwin) bin=$(cygpath -u -- "$bin") || exit 3 ;; esac
 [ -r /proc/self/cmdline ] || exit 4
 printf '%s\0' "$bin"
 for d in /proc/[0-9]*; do
@@ -263,22 +263,63 @@ for d in /proc/[0-9]*; do
   [ "${#a[@]}" -gt 0 ] || continue
   pp=; while read -r k v _; do [ "$k" = PPid: ] && { pp=$v; break; }; done < "$d/status" 2>/dev/null
   [ -n "$pp" ] || continue
-  printf '%s\0%s\0%s\0' "${d#/proc/}" "$pp" "${#a[@]}"
+  read -r l < "$d/stat" 2>/dev/null || continue
+  f=(${l##*)})
+  [ -n "${f[19]-}" ] || continue
+  printf '%s\0%s\0%s\0%s\0' "${d#/proc/}" "$pp" "${f[19]}" "${#a[@]}"
   printf '%s\0' "${a[@]}"
 done
 """
 
-const _ProcRow = @NamedTuple{pid::Int, ppid::Int, argv::Vector{String}}
+# Signals `pid:start` pairs, each only while its start time is unchanged: a
+# process is named by (pid, start), never by pid alone, so a reused pid is never
+# signalled. TERM, up to 3 s of polling, then KILL; prints `gone <pid>` or
+# `left <pid>` per pair. A pair whose stat cannot be read (or is a zombie)
+# counts as gone. It never signals a group.
+const _STOP_IDS = raw"""
+st() { local l f; read -r l < "/proc/$1/stat" 2>/dev/null || return 1; f=(${l##*)}); [ "${f[0]}" != Z ] || return 1; printf '%s' "${f[19]}"; }
+same() { [ "$(st "${1%%:*}")" = "${1#*:}" ]; }
+for x; do same "$x" && kill -TERM "${x%%:*}" 2>/dev/null; done
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  any=; for x; do same "$x" && any=1; done
+  [ -n "$any" ] || break
+  sleep 0.2
+done
+for x; do same "$x" && kill -KILL "${x%%:*}" 2>/dev/null; done
+for x; do if same "$x"; then echo "left ${x%%:*}"; else echo "gone ${x%%:*}"; fi; done
+"""
+
+const _ProcRow = @NamedTuple{pid::Int, ppid::Int, start::String, argv::Vector{String}}
+
+# Runs `cmd` (wrap `ignorestatus` around the Cmd first) with stdin from devnull,
+# and returns `(exitcode, stdout)`, or a String if it was still running at the
+# deadline, when it is killed.
+function _read_with_deadline(cmd::Base.AbstractCmd, secs::Real)
+    p = open(pipeline(cmd; stdin = devnull, stderr = devnull), "r")
+    timedout = Ref(false)
+    t = Timer(secs) do _
+        if process_running(p)
+            timedout[] = true
+            kill(p)
+        end
+    end
+    try
+        out = read(p, String)
+        wait(p)
+        timedout[] && return "timed out after $(secs) s"
+        return (p.exitcode, out)
+    finally
+        close(t)
+    end
+end
 
 # `(binposix, procs)`, or a String saying why the table cannot be read.
 function _proc_table(bin::AbstractString)
     bash = Sys.which("bash")
     bash === nothing && return "no bash on PATH"
-    p = open(pipeline(ignorestatus(`$bash -c $_PROC_DUMP sot-proc-dump $bin`); stderr = devnull))
-    out = read(p, String)
-    wait(p)
-    code = p.exitcode
-    code == 3 && return "cygpath failed"
+    r = _read_with_deadline(ignorestatus(`$bash -c $_PROC_DUMP sot-proc-dump $bin`), 10)
+    r isa String && return r
+    code, out = r
     code == 4 && return "no /proc"
     code == 0 || return "process listing failed (exit $code)"
     f = split(out, '\0')
@@ -288,97 +329,193 @@ function _proc_table(bin::AbstractString)
     procs = _ProcRow[]
     i = 2
     while i <= length(f)
-        i + 2 <= length(f) || return bad
-        pid = tryparse(Int, f[i]); ppid = tryparse(Int, f[i+1]); argc = tryparse(Int, f[i+2])
+        i + 3 <= length(f) || return bad
+        pid = tryparse(Int, f[i]); ppid = tryparse(Int, f[i+1]); argc = tryparse(Int, f[i+3])
         (pid === nothing || ppid === nothing || argc === nothing || argc < 0) && return bad
-        i + 2 + argc <= length(f) || return bad
-        push!(procs, (pid = pid, ppid = ppid, argv = String.(f[i+3:i+2+argc])))
-        i += 3 + argc
+        i + 3 + argc <= length(f) || return bad
+        push!(procs, (pid = pid, ppid = ppid, start = String(f[i+2]), argv = String.(f[i+4:i+3+argc])))
+        i += 4 + argc
     end
     return (String(f[1]), procs)
 end
 
-# The pids to stop, roots first, then their descendants: pure over one snapshot.
-# A root is a bash running a retired script of this bin dir as its script
-# argument, or a `sot-bridge` loop re-running this bin dir's `comm-relay.sh`.
-function _retired_watchers(procs, binposix::AbstractString)
+# `(pid, start)` of the retired processes to stop, roots first, then their
+# descendants: pure over one snapshot. A root is a bash running a retired
+# script of this bin dir as its script argument, or a `sot-bridge` loop
+# re-running this bin dir's `comm-relay.sh`. `self` and its ancestors are never
+# returned, and the descendant walk never goes through one of them.
+function _retired_watchers(procs, binposix::AbstractString; self::Integer = getpid())
     retired = Set(binposix * "/" * n for n in COMM_DEPRECATED_BIN)
+    parent = Dict(p.pid => p.ppid for p in procs)
+    anc = Set{Int}([self])
+    q = self
+    while haskey(parent, q) && !(parent[q] in anc)
+        q = parent[q]
+        push!(anc, q)
+    end
     isroot(a) = length(a) >= 2 && basename(a[1]) in ("bash", "bash.exe") &&
                 (a[2] in retired ||
                  (length(a) >= 5 && a[2] == "-c" && a[4] == "sot-bridge" &&
                   a[5] == binposix * "/comm-relay.sh"))
-    pids = [p.pid for p in procs if isroot(p.argv)]
+    pids = [p.pid for p in procs if isroot(p.argv) && !(p.pid in anc)]
     seen = Set(pids)
     grew = true
     while grew
         grew = false
         for p in procs
-            p.pid in seen || p.ppid in seen || continue
-            p.pid in seen && continue
+            (p.pid in seen || p.pid in anc || !(p.ppid in seen)) && continue
             push!(seen, p.pid); push!(pids, p.pid); grew = true
         end
     end
-    return pids
+    start = Dict(p.pid => p.start for p in procs)
+    return [(x, start[x]) for x in pids]
 end
 
 # Windows: the bash-spelled (`/c/Users/...`) form of a Windows path.
 _gitbash_path(p::AbstractString) =
     replace(replace(p, '\\' => '/'), r"^([A-Za-z]):" => s -> "/" * lowercase(s[1]))
 
-# Windows, pure: `pid\towner\tcommandline` lines (as PowerShell prints them)
-# to the pids of this user's retired watchers. The script argument must be
-# exactly this install's bin folder plus a retired name.
-function _retired_windows(lines, binposix::AbstractString, me::AbstractString; self::Integer = 0)
-    retired = Set(binposix * "/" * n for n in COMM_DEPRECATED_BIN)
-    pids = Int[]
-    for l in lines
-        f = split(l, '\t'; limit = 3)
-        length(f) == 3 || continue
-        pid = tryparse(Int, f[1])
-        (pid === nothing || pid == self || lowercase(f[2]) != lowercase(me)) && continue
-        m = match(r"^(?:\"[^\"]*\"|\S+)\s+(\S+)", f[3])
-        m !== nothing && m.captures[1] in retired && push!(pids, pid)
-    end
-    return pids
-end
-
-# There were never bridge loops on Windows, so this half stops watcher roots only.
-function _stop_retired_windows(bin::AbstractString)
-    names = join((replace(n, "." => "\\.") for n in COMM_DEPRECATED_BIN), "|")
-    ps(script) = read(pipeline(`powershell.exe -NoProfile -NonInteractive -Command $script`; stderr = devnull), String)
-    list = ps("""
-        "me`t" + \$env:USERDOMAIN + '\\' + \$env:USERNAME
-        Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match '$names' } | ForEach-Object {
-            \$o = Invoke-CimMethod -InputObject \$_ -MethodName GetOwner
-            "\$(\$_.ProcessId)`t\$(\$o.Domain)\\\$(\$o.User)`t\$(\$_.CommandLine)" }
-        """)
-    lines = split(list, r"\r?\n"; keepempty = false)
-    isempty(lines) && (@warn "retired comm watchers not checked: no answer from powershell"; return)
-    startswith(lines[1], "me\t") || (@warn "retired comm watchers not checked: unreadable powershell answer"; return)
-    me = lines[1][4:end]
-    rest = lines[2:end]
-    pids = _retired_windows(rest, _gitbash_path(bin), me; self = getpid())
-    isempty(pids) && return
-    n = 0
-    for pid in pids
-        line = first(l for l in rest if startswith(l, "$pid\t"))
-        m = match(r"^(?:\"[^\"]*\"|\S+)\s+\S+\s+(\S+)", split(line, '\t'; limit = 3)[3])
-        arg = m === nothing ? "?" : m.captures[1]
-        try
-            ps("Stop-Process -Id $pid -Force -ErrorAction Stop")
-            n += 1
-            @info "stopped retired comm watcher" pid = pid script = arg
-        catch
-            @warn "could not stop retired comm watcher" pid = pid
+# Windows: a command line split by the standard MSVC rules.
+function _winargv(s::AbstractString)
+    args = String[]
+    cur = IOBuffer()
+    cs = collect(s)
+    n = length(cs)
+    inq = false
+    have = false
+    i = 1
+    while i <= n
+        c = cs[i]
+        if c == '\\'
+            j = i
+            while j <= n && cs[j] == '\\'
+                j += 1
+            end
+            k = j - i
+            have = true
+            if j <= n && cs[j] == '"'
+                write(cur, '\\'^(k ÷ 2))
+                isodd(k) ? write(cur, '"') : (inq = !inq)
+                i = j + 1
+            else
+                write(cur, '\\'^k)
+                i = j
+            end
+        elseif c == '"'
+            inq = !inq; have = true; i += 1
+        elseif isspace(c) && !inq
+            have && push!(args, String(take!(cur)))
+            have = false; i += 1
+        else
+            write(cur, c); have = true; i += 1
         end
     end
-    @info "stopped retired comm watchers" count = n
+    have && push!(args, String(take!(cur)))
+    return args
+end
+
+# Windows, pure: the PowerShell scan's lines to `(pid, creation)` of this
+# user's retired watchers. Lines are `me\t<owner>`, `anc\t<pid>` (the installer
+# and its ancestors, never selected), `noowner\t<pid>\t<code>` (warned, never
+# selected) and `<pid>\t<creation>\t<owner>\t<commandline>`. The program must be
+# a bash and the script argument exactly this install's bin folder plus a
+# retired name. Windows runs no bridge loops, so only watcher roots match.
+function _retired_windows(lines, binposix::AbstractString, me::AbstractString; self::Integer = 0)
+    retired = Set(binposix * "/" * n for n in COMM_DEPRECATED_BIN)
+    skip = Set{Int}([self])
+    for l in lines
+        f = split(l, '\t')
+        length(f) == 2 && f[1] == "anc" && (x = tryparse(Int, f[2]); x === nothing || push!(skip, x))
+    end
+    ids = Tuple{Int,String}[]
+    for l in lines
+        f = split(l, '\t'; limit = 4)
+        if length(f) == 3 && f[1] == "noowner"
+            @warn "could not read the owner of a candidate retired comm watcher; not touched" pid = f[2] code = f[3]
+            continue
+        end
+        length(f) == 4 || continue
+        pid = tryparse(Int, f[1])
+        (pid === nothing || pid in skip || lowercase(f[3]) != lowercase(me)) && continue
+        occursin(r"^\d{14}\.\d{6}$", f[2]) || continue
+        a = _winargv(f[4])
+        length(a) >= 2 && lowercase(basename(replace(a[1], '\\' => '/'))) in ("bash.exe", "bash") &&
+            a[2] in retired && push!(ids, (pid, String(f[2])))
+    end
+    return ids
+end
+
+const _WIN_SCAN = raw"""
+$ErrorActionPreference = 'Continue'
+& {
+"me`t" + $env:USERDOMAIN + '\' + $env:USERNAME
+$p = @SELF@
+for ($n = 0; $p -and $n -lt 64; $n++) {
+    "anc`t$p"
+    $x = Get-CimInstance Win32_Process -Filter "ProcessId=$p"
+    if (-not $x) { break }
+    $p = $x.ParentProcessId
+}
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '@NAMES@' } | ForEach-Object {
+    $o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner
+    if ($o.ReturnValue -ne 0) { "noowner`t$($_.ProcessId)`t$($o.ReturnValue)" }
+    else { "$($_.ProcessId)`t$($_.CreationDate.ToString('yyyyMMddHHmmss.ffffff'))`t$($o.Domain)\$($o.User)`t$($_.CommandLine)" }
+}
+} 2>&1
+"""
+
+const _WIN_STOP = raw"""
+function Creation($i) { $x = Get-CimInstance Win32_Process -Filter "ProcessId=$i"; if ($x) { $x.CreationDate.ToString('yyyyMMddHHmmss.ffffff') } }
+foreach ($a in '@PAIRS@'.Split(' ')) {
+    $i, $c = $a.Split(':')
+    if ((Creation $i) -eq $c) { Stop-Process -Id $i -Force -ErrorAction SilentlyContinue }
+    if ((Creation $i) -eq $c) { "left $i" } else { "gone $i" }
+}
+"""
+
+# Logs the outcome of a stop: `r` is `_read_with_deadline`'s answer for the
+# stopper, `ids` the pairs it was given, `script(pid)` names a pid for the warning.
+function _report_stopped(ids, r, script)
+    if r isa String
+        @warn "retired comm watchers not stopped: $r"
+        return
+    end
+    gone = Set{Int}()
+    for l in split(r[2], r"\r?\n"; keepempty = false)
+        m = match(r"^gone (\d+)$", l)
+        m === nothing || push!(gone, parse(Int, m.captures[1]))
+    end
+    left = [x for (x, _) in ids if !(x in gone)]
+    @info "stopped retired comm watchers" count = length(ids) - length(left)
+    for x in left
+        @warn "could not stop retired comm watcher" pid = x script = script(x)
+    end
+end
+
+function _stop_retired_windows(bin::AbstractString)
+    names = join((replace(n, "." => "\\.") for n in COMM_DEPRECATED_BIN), "|")
+    ps(script) = _read_with_deadline(ignorestatus(`powershell.exe -NoProfile -NonInteractive -Command $script`), 20)
+    r = ps(replace(_WIN_SCAN, "@SELF@" => string(getpid()), "@NAMES@" => names))
+    if r isa String
+        @warn "retired comm watchers not checked: $r"
+        return
+    end
+    lines = split(r[2], r"\r?\n"; keepempty = false)
+    if isempty(lines) || !startswith(lines[1], "me\t")
+        @warn "retired comm watchers not checked: unreadable powershell answer" output = first(r[2], 300)
+        return
+    end
+    ids = _retired_windows(lines[2:end], _gitbash_path(bin), lines[1][4:end]; self = getpid())
+    isempty(ids) && return
+    pairs = join(("$p:$c" for (p, c) in ids), " ")
+    _report_stopped(ids, ps(replace(_WIN_STOP, "@PAIRS@" => pairs)), _ -> "?")
     return
 end
 
 # Stops the pre-0.6.6 wake watchers and bridge loops (and their children) this
 # user still runs; it never throws, since a leftover it cannot stop is a
-# warning, not a failed install. Never signals a group.
+# warning, not a failed install. Never signals a group, and signals a process
+# only after re-checking that its start time is the one it was named by.
 function _stop_retired_watchers(bin::AbstractString)
     try
         Sys.iswindows() && return _stop_retired_windows(bin)
@@ -388,33 +525,12 @@ function _stop_retired_watchers(bin::AbstractString)
             return
         end
         binposix, procs = t
-        pids = _retired_watchers(procs, binposix)
-        isempty(pids) && return
+        ids = _retired_watchers(procs, binposix)
+        isempty(ids) && return
         argvof = Dict(p.pid => p.argv for p in procs)
-        sig(s, ps) = run(ignorestatus(pipeline(`bash -c 'sig=$1; shift; kill -s "$sig" -- "$@"' sot-stop $s $(string.(ps))`;
-                                               stdin = devnull, stdout = devnull, stderr = devnull)))
-        survivors(ps) = begin
-            t = _proc_table(bin)
-            t isa String && return ps
-            now = Dict(p.pid => p.argv for p in t[2])
-            [x for x in ps if get(now, x, nothing) == argvof[x]]
-        end
-        sig("TERM", pids)
-        left = pids
-        for _ in 1:6
-            sleep(0.5)
-            left = survivors(left)
-            isempty(left) && break
-        end
-        if !isempty(left)
-            sig("KILL", left)
-            sleep(0.5)
-            left = survivors(left)
-        end
-        @info "stopped retired comm watchers" count = length(pids) - length(left)
-        for x in left
-            @warn "could not stop retired comm watcher" pid = x script = get(argvof[x], 2, "?")
-        end
+        pairs = ["$p:$s" for (p, s) in ids]
+        r = _read_with_deadline(ignorestatus(`$(Sys.which("bash")) -c $_STOP_IDS sot-stop $pairs`), 10)
+        _report_stopped(ids, r, x -> get(argvof[x], 2, "?"))
     catch e
         @warn "retired comm watchers not checked" exception = (e, catch_backtrace())
     end
