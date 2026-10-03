@@ -60,7 +60,7 @@ pub fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> boo
 }
 
 /// The account the table names against this process's own: equal is mine, anything else is another's.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", windows, test))]
 fn verdict(found: &str, own: &str) -> PeerOwner {
     if found == own {
         PeerOwner::Mine
@@ -375,7 +375,106 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
+mod imp {
+    use super::{verdict, PeerOwner};
+    use std::io;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    /// The owner-pid TCP table for one address family, as 8-byte-aligned words: a `u32` row count, then the rows.
+    /// `af` is 2 (AF_INET) or 23 (AF_INET6), literal so no WinSock feature is needed.
+    fn table(af: u32) -> io::Result<Vec<u64>> {
+        let mut size = 0u32;
+        for _ in 0..4 {
+            let mut buf = vec![0u64; (size as usize).div_ceil(8).max(1)];
+            let rc = unsafe {
+                GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, af, TCP_TABLE_OWNER_PID_CONNECTIONS, 0)
+            };
+            if rc == 0 {
+                return Ok(buf);
+            }
+            if rc != ERROR_INSUFFICIENT_BUFFER {
+                return Err(io::Error::from_raw_os_error(rc as i32));
+            }
+        }
+        Err(io::Error::other("the TCP table kept growing"))
+    }
+
+    /// The rows of a table from [`table`]: the count the table states, bounded by the bytes the buffer holds.
+    fn rows<R: Copy>(buf: &[u64]) -> Vec<R> {
+        let bytes = buf.len() * 8;
+        let base = buf.as_ptr().cast::<u8>();
+        let stated = unsafe { std::ptr::read_unaligned(base.cast::<u32>()) } as usize;
+        let count = stated.min((bytes - 4) / std::mem::size_of::<R>());
+        (0..count)
+            .map(|i| unsafe { std::ptr::read_unaligned(base.add(4 + i * std::mem::size_of::<R>()).cast::<R>()) })
+            .collect()
+    }
+
+    fn v4(addr: u32, port: u32) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())), u16::from_be(port as u16))
+    }
+
+    fn v6(addr: [u8; 16], port: u32) -> SocketAddr {
+        SocketAddr::new(IpAddr::V6(Ipv6Addr::from(addr)), u16::from_be(port as u16))
+    }
+
+    fn mapped(a: SocketAddr) -> SocketAddr {
+        match a {
+            SocketAddr::V4(a) => SocketAddr::new(IpAddr::V6(a.ip().to_ipv6_mapped()), a.port()),
+            v6 => v6,
+        }
+    }
+
+    /// The pid owning the peer's end of the connection: the row whose local endpoint is `peer` and remote `listener`.
+    fn owning_pid(listener: SocketAddr, peer: SocketAddr) -> io::Result<Option<u32>> {
+        if let (SocketAddr::V4(_), SocketAddr::V4(_)) = (listener, peer) {
+            let found = rows::<MIB_TCPROW_OWNER_PID>(&table(2)?)
+                .into_iter()
+                .find(|r| v4(r.dwLocalAddr, r.dwLocalPort) == peer && v4(r.dwRemoteAddr, r.dwRemotePort) == listener);
+            if let Some(r) = found {
+                return Ok(Some(r.dwOwningPid));
+            }
+        }
+        let (listener, peer) = (mapped(listener), mapped(peer));
+        let found = rows::<MIB_TCP6ROW_OWNER_PID>(&table(23)?)
+            .into_iter()
+            .find(|r| v6(r.ucLocalAddr, r.dwLocalPort) == peer && v6(r.ucRemoteAddr, r.dwRemotePort) == listener);
+        Ok(found.map(|r| r.dwOwningPid))
+    }
+
+    /// The token user of process `pid` against this process's own. Another account's process usually cannot be opened,
+    /// which is a refusal like any other failure.
+    pub(super) fn pid_owner(pid: u32, own: &str) -> PeerOwner {
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            return PeerOwner::Unknown(format!("OpenProcess({pid}): {}", io::Error::last_os_error()));
+        }
+        let sid = crate::fsutil::sid_string_from_process(h);
+        unsafe {
+            CloseHandle(h);
+        }
+        match sid {
+            Ok(sid) => verdict(&sid, own),
+            Err(e) => PeerOwner::Unknown(format!("token of {pid}: {e}")),
+        }
+    }
+
+    pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
+        match owning_pid(local, peer) {
+            Ok(Some(pid)) => pid_owner(pid, own),
+            Ok(None) => PeerOwner::Unknown("no TCP table row for the peer (it may have closed)".into()),
+            Err(e) => PeerOwner::Unknown(format!("GetExtendedTcpTable: {e}")),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod imp {
     use super::PeerOwner;
     use std::net::SocketAddr;
@@ -441,6 +540,15 @@ mod tests {
         };
         assert_ne!(tcp_peer_owner(loopback(q), loopback(1)), PeerOwner::Mine);
         assert!(!admit("test", loopback(q), loopback(1)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_process_is_mine_and_the_system_process_is_not() {
+        let own = crate::os_account::own_account_id().unwrap();
+        assert_eq!(imp::pid_owner(std::process::id(), &own), PeerOwner::Mine);
+        // Pid 4 is the System process: its token is another account's, or it cannot be opened at all.
+        assert_ne!(imp::pid_owner(4, &own), PeerOwner::Mine);
     }
 
     #[cfg(target_os = "macos")]
