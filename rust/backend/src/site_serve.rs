@@ -346,22 +346,7 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     let port = listener.local_addr().context("static-site server local_addr")?.port();
     BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
-                            tracing::debug!(error = %e, "static-site conn ended");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "static-site accept failed");
-                }
-            }
-        }
-    });
+    crate::http_serve::spawn_accept_loop(listener, "docs", sot_log::peer_owner::admit, |s| handle_conn(s, ServeMode::Prefix));
     Ok(())
 }
 
@@ -416,22 +401,7 @@ pub async fn spawn_pool() {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(port);
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _peer)) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
-                                tracing::debug!(error = %e, port, "pool-site conn ended");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, port, "pool-site accept failed");
-                    }
-                }
-            }
-        });
+        crate::http_serve::spawn_accept_loop(listener, "docs-pool", sot_log::peer_owner::admit, move |s| handle_conn(s, ServeMode::Pool(port)));
     }
 }
 

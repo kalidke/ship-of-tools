@@ -96,7 +96,7 @@ pub fn spawn_proxy_manager(
                 }
             };
             tracing::info!(port, %recipe, "proxy: accepting browser connections for backend port");
-            tokio::spawn(serve_listener(listener, port, arm, move |browser| {
+            tokio::spawn(serve_listener(listener, port, arm, sot_log::peer_owner::admit, move |browser| {
                 let (r, g, t) = (recipe.clone(), gate.clone(), token.clone());
                 async move { pipe_one(browser, &r, &g, port, t.as_deref()).await }
             }));
@@ -107,21 +107,38 @@ pub fn spawn_proxy_manager(
 
 /// One listener's accept loop. Each browser connection runs `dial` unless the port is parked (`Arm`), in which case
 /// it is dropped here: no ssh login, no log line. The listener never closes, so the port stays this frontend's for
-/// its whole life, as it always has.
-async fn serve_listener<D, Fut>(listener: tokio::net::TcpListener, port: u16, arm: std::sync::Arc<Arm>, dial: D)
+/// its whole life, as it always has. `dial` must start no work before its future is polled: a connection `admit`
+/// refuses is dropped unpolled.
+async fn serve_listener<D, Fut>(
+    listener: tokio::net::TcpListener,
+    port: u16,
+    arm: std::sync::Arc<Arm>,
+    admit: sot_log::peer_owner::Admit,
+    dial: D,
+)
 where
     D: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = anyhow::Result<Answer>> + Send + 'static,
 {
     loop {
         match listener.accept().await {
-            Ok((browser, _peer)) => {
+            Ok((browser, peer)) => {
                 let Some(armed) = arm.dial() else {
                     continue; // parked: `browser` drops here, closing the connection at once
+                };
+                let local = match browser.local_addr() {
+                    Ok(a) => a,
+                    Err(_) => continue,
                 };
                 let done = dial(browser);
                 let arm = std::sync::Arc::clone(&arm);
                 tokio::spawn(async move {
+                    // Decision 0031: this port serves only this OS account. `done` has not run (`dial` returns a future that does
+                    // nothing until awaited), so dropping it closes another account's connection with no byte written, no ssh
+                    // login and no answer: a stranger can neither dial the daemon nor park the port.
+                    if !tokio::task::spawn_blocking(move || admit("page-proxy", local, peer)).await.unwrap_or(false) {
+                        return;
+                    }
                     match done.await {
                         Ok(Answer::Piped) => {}
                         Ok(Answer::NotServed) => {
@@ -347,7 +364,7 @@ mod tests {
                 }
             }
         };
-        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), dial));
+        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), sot_log::peer_owner::admit, dial));
         let browse = || async move {
             let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             let mut buf = [0u8; 1];
@@ -381,6 +398,45 @@ mod tests {
         assert_eq!(dials.load(SeqCst), 5, "a re-opened page dials again");
         assert!(arm.dial().is_some());
         assert!(!task.is_finished(), "the listener never closes");
+        task.abort();
+    }
+
+    /// Decision 0031: a connection another account owns is closed with no byte, no dial and no parking.
+    #[tokio::test]
+    async fn a_connection_another_account_owns_is_closed_without_a_dial() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let arm = Arc::new(super::Arm::default());
+        let polled = Arc::new(AtomicUsize::new(0));
+        let task = {
+            let polled = polled.clone();
+            tokio::spawn(super::serve_listener(listener, port, arm.clone(), |_, _, _| false, move |b| {
+                let polled = polled.clone();
+                async move {
+                    polled.fetch_add(1, SeqCst);
+                    drop(b);
+                    Ok(super::Answer::Piped)
+                }
+            }))
+        };
+        for _ in 0..5 {
+            let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let mut buf = [0u8; 1];
+            let n = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf))
+                .await
+                .expect("the refused connection must end")
+                .unwrap_or(0);
+            assert_eq!(n, 0);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(polled.load(SeqCst), 0, "a refused connection must never reach the dial");
+        assert!(arm.dial().is_some(), "a refused stranger must not park the port");
+        assert!(!task.is_finished());
         task.abort();
     }
 

@@ -130,6 +130,27 @@ of the two receiving each other's mail. Each OS account on a box needs its
 own hub account. A client older than this field sends none and is let
 through.
 
+## Browser-facing ports
+
+A browser can only speak TCP, so the pages a daemon serves (video,
+documentation and its pool) and the frontend's page proxy keep loopback
+ports. Every one of them checks which OS account owns each incoming
+connection before reading a byte, and closes any other account's
+connection without answering: on Linux from the kernel's TCP table, on
+Windows from the account of the process that owns the connection, on
+macOS by finding the connection among this account's own programs (a
+lookup that takes longer than 0.2 s refuses). The first refusal per
+account and port is logged as a warning. A connection the daemon makes
+itself, the proxy reaching a page for a remote frontend, is the daemon's
+own account and is served.
+
+Figures served with `wglshow` bind a port the operating system assigns
+and carry a secret in the page's address, so another account that finds
+the port gets nothing. Pluto notebooks carry Pluto's own secret. A page
+your own code serves on a port it binds itself is a socket Ship of Tools
+never opened: any account on that box can reach it, and nothing here can
+change that. Serve figures with `wglshow`.
+
 ## What this page does not yet cover
 
 Known limits of the link gate:
@@ -142,6 +163,5 @@ Known limits of the link gate:
   reported by their own status line, not the discard count.
 - A refused browser connection logs one warning per attempt.
 
-Later work in this same design (per-user isolation for the browser-facing
-ports, and the pipe/socket owner checks)
+Later work in this same design (the pipe/socket owner checks)
 lands in stages after this one and extends this page when it does.
