@@ -194,9 +194,7 @@ connection is the only handle.
   pre-existing row. This is a limit only because the start has no held-back state.
 - (d) `second_daemon_refuses_live` was not run on Windows.
 - (e) The macOS check has not run on every commit; boot identity on a Mac is unverified.
-- (f) Launchers: after the fix round the ensure logs under the install prefix, while
-  `scripts/restart-backend.sh` and the setup skill's two copies still name a shared
-  `/tmp/sotd.log`, which two users on one box share; the Windows log cap (keep 5 per
+- (f) Launchers: after the fix round the ensure logs under the install prefix; the Windows log cap (keep 5 per
   stream, 16 MB unheld total) applies across starts, and one running daemon's own log
   file grows within its run. `install.sh` writes the icons, the `.desktop` file and the
   `settings.toml` `[trust]` block straight onto their installed paths (the last by

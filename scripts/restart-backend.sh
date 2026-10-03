@@ -13,8 +13,11 @@
 #
 # It kills the running daemon by EXPLICIT pid (never `pkill -f`, which self-
 # matches this very shell) and relaunches the on-disk binary detached +
-# reparented (setsid), logging to /tmp/sotd.log. The daemon identity is the
-# per-user socket derived from `--label sot`, not a machine-wide TCP port.
+# reparented (setsid), logging to dev/output/sotd-restart.<host>.log in this
+# checkout (one writer per file: the home and so the checkout are shared between
+# hosts; the daemon also keeps its own private log under its state dir). The
+# daemon identity is the per-user socket derived from `--label sot`, not a
+# machine-wide TCP port.
 # It also reports whether the running daemon was actually STALE vs the binary,
 # so you can see if a restart was even needed.
 #
@@ -25,7 +28,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${SOT_PROJECT_ROOT:-$REPO}"
 BIN="$REPO/rust/target/release/sotd"
-LOG="${SOT_BACKEND_LOG:-/tmp/sotd.log}"
+LOG="${SOT_BACKEND_LOG:-$REPO/dev/output/sotd-restart.$(uname -n).log}"
 LABEL="${SOT_BACKEND_LABEL:-sot}"
 SOCKET="${SOT_SOCKET:-}"
 
@@ -109,6 +112,8 @@ fi
 
 # Relaunch detached + reparented (setsid -> own session, outlives this script;
 # nohup -> ignore SIGHUP). Parent dies -> daemon reparents to init (ppid 1).
+mkdir -p "$(dirname "$LOG")"
+( umask 077 && : >>"$LOG" )   # private to this user even if it is new
 setsid nohup "$BIN" --project-root "$ROOT" --label "$LABEL" >>"$LOG" 2>&1 &
 disown 2>/dev/null || true
 
