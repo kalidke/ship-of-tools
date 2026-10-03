@@ -1329,7 +1329,7 @@ fn stub_ssh_failing_supervisor_after_spare(dir: &Path, state: &Path) {
         "#!/bin/sh\n\
          if mkdir {s}/first 2>/dev/null; then\n\
          i=0\n\
-         while [ ! -f {s}/spare.pid ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done\n\
+         while [ ! -f {s}/spare.pid ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done\n\
          if [ -f {s}/spare.pid ]; then touch {s}/supervisor_saw_spare; fi\n\
          echo 'Permission denied (publickey).' >&2\n\
          exit 255\n\
@@ -1345,6 +1345,25 @@ fn stub_ssh_failing_supervisor_after_spare(dir: &Path, state: &Path) {
     std::fs::set_permissions(&path, perms).expect("chmod overlap stub ssh");
 }
 
+/// Sets `SOT_TEST_LANE_HANDSHAKE_MS` for the guard's lifetime and restores the
+/// previous value (or its absence) on drop.
+struct HandshakeGuard(Option<String>);
+impl HandshakeGuard {
+    fn set(ms: u64) -> Self {
+        let original = std::env::var("SOT_TEST_LANE_HANDSHAKE_MS").ok();
+        std::env::set_var("SOT_TEST_LANE_HANDSHAKE_MS", ms.to_string());
+        HandshakeGuard(original)
+    }
+}
+impl Drop for HandshakeGuard {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(v) => std::env::set_var("SOT_TEST_LANE_HANDSHAKE_MS", v),
+            None => std::env::remove_var("SOT_TEST_LANE_HANDSHAKE_MS"),
+        }
+    }
+}
+
 /// Dials the supervisor lane once through [`stub_ssh_failing_supervisor_after_spare`]
 /// and returns the state dir, the dial's error text and what must stay alive
 /// (the endpoint, whose own drop would reap a parked spare, and the stub's
@@ -1357,6 +1376,9 @@ fn failed_supervisor_dial() -> (tempfile::TempDir, String, (DaemonLaneEndpoint, 
     let guard = PathGuard::prepend(stub_dir.path());
     let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
     let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None);
+    // The stub waits for the spare's shell as long as 30 s; the handshake
+    // must outlast that so a loaded box still ends on the stub's own line.
+    let _handshake = HandshakeGuard::set(60_000);
     let err = match endpoint.connect_supervisor_unchallenged("row-does-not-matter-the-handshake-fails") {
         Ok(_) => panic!("the supervisor handshake must fail against the dying stub"),
         Err(e) => e.to_string(),

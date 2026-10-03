@@ -669,6 +669,17 @@ fn run_handshake(stream: &LaneStream, req: &Frame, deadline: Instant) -> Result<
     }
 }
 
+/// How long the lane handshake may run before it gives up: `CONNECT_BOUND`,
+/// or `SOT_TEST_LANE_HANDSHAKE_MS` milliseconds when that is set. A test seam
+/// in the `SOT_TEST_*` pattern, never set in production.
+fn lane_handshake_bound() -> Duration {
+    std::env::var("SOT_TEST_LANE_HANDSHAKE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(CONNECT_BOUND)
+}
+
 impl DaemonLaneEndpoint {
     pub fn new(dial: LaneDial, token: Option<String>) -> Self {
         Self { dial, token, spare: std::sync::Mutex::new(VoyageSpare::Unused) }
@@ -763,7 +774,7 @@ impl DaemonLaneEndpoint {
             }
         };
 
-        let handshake_deadline = Instant::now() + CONNECT_BOUND;
+        let handshake_deadline = Instant::now() + lane_handshake_bound();
         let outcome = run_handshake(&stream, &frame, handshake_deadline);
         // A dying ssh child's stdout closes as a clean `Ok(0)` EOF, not
         // an `io::Error` `BridgedClient::read` has anything to wrap — the
