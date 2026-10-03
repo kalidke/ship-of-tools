@@ -256,17 +256,37 @@ case_occupied_root_refused_derived_name() {
     assert_occupied_root_refused ""
 }
 
+# stub_windows_tools map|fail — what a Windows box has on PATH for a pipe:
+# endpoint: powershell.exe (carries stdin to the stub daemon's socket and its
+# replies back) and cygpath. `map` acts as cygpath -m for this test (/x ->
+# C:/mapped/x; a C:/ path comes back unchanged); `fail` exits 1. Call it AFTER
+# start_stub_daemon: powershell.exe bakes in the current $SOCK.
+stub_windows_tools() {
+    mkdir -p "$WORK/bin"
+    printf '#!/usr/bin/env bash\nexec nc -U "%s"\n' "$SOCK" > "$WORK/bin/powershell.exe"
+    case "$1" in
+        map) cat > "$WORK/bin/cygpath" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = "-m" ] && shift
+case "$1" in C:/*) printf '%s\n' "$1" ;; *) printf 'C:/mapped%s\n' "$1" ;; esac
+EOF
+            ;;
+        fail) printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/bin/cygpath" ;;
+    esac
+    chmod +x "$WORK/bin/powershell.exe" "$WORK/bin/cygpath"
+}
+wire_root() { jq -r 'select(.op=="workspace.create") | .payload.project_root' "$REQLOG"; }
+
 # A Windows box's daemon listens only on a named pipe: the request goes
 # through powershell.exe (stubbed here by a script that carries stdin to
-# the stub daemon's socket and its replies back).
+# the stub daemon's socket and its replies back). OS stays unset: the pipe:
+# endpoint alone makes the request carry cygpath -m's spelling.
 case_capsule_ready_over_pipe_endpoint() {
     local wsid="ws-pipe" slug="pipe1"
     start_stub_daemon "$wsid" "$slug" \
         "$(entry "$wsid" "$slug" capsule starting)" \
         "$(entry "$wsid" "$slug" capsule ready)"
-    mkdir -p "$WORK/bin"
-    printf '#!/usr/bin/env bash\nexec nc -U "%s"\n' "$SOCK" > "$WORK/bin/powershell.exe"
-    chmod +x "$WORK/bin/powershell.exe"
+    stub_windows_tools map
     SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
         SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-pipe
     stop_stub_daemon
@@ -274,30 +294,55 @@ case_capsule_ready_over_pipe_endpoint() {
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
     contains "$SPAWN_OUT" "Capsule row ready" || { echo "  stdout: $SPAWN_OUT"; return 1; }
     registry_has_row "spawn-pipe" || { echo "  registry row missing after success"; return 1; }
+    local got; got="$(wire_root)"; [ "$got" = "C:/mapped$(realpath "$REPO_PATH")" ] || { echo "  project_root on the wire: '$got'"; return 1; }
     return 0
 }
 
-# On a Windows host the daemon is a native process: the workspace.create
-# request must carry cygpath -m's spelling, not git-bash's /c/... form. OS is
-# what _sot_is_windows reads first; a stub cygpath maps the folder to C:/...
-case_windows_host_sends_native_project_root() {
+# The spelling is the daemon's, not the caller's: a Windows caller reaching a
+# non-pipe daemon sends the path as resolved here.
+case_windows_caller_nonpipe_daemon_keeps_root() {
     local wsid="ws-win" slug="win1"
     start_stub_daemon "$wsid" "$slug" \
         "$(entry "$wsid" "$slug" capsule starting)" \
         "$(entry "$wsid" "$slug" capsule ready)"
-    mkdir -p "$WORK/bin"
-    printf '#!/usr/bin/env bash\n[ "$1" = "-m" ] && shift\nprintf "C:/mapped%%s\\n" "$1"\n' > "$WORK/bin/cygpath"
-    chmod +x "$WORK/bin/cygpath"
+    stub_windows_tools map
     OS=Windows_NT SPAWN_PATH="$WORK/bin:$PATH" \
         SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-win
     stop_stub_daemon
 
     [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
-    local got; got="$(jq -r 'select(.op=="workspace.create") | .payload.project_root' "$REQLOG")"
-    case "$got" in
-        C:/mapped/*) return 0 ;;
-        *) echo "  project_root on the wire: '$got'"; return 1 ;;
-    esac
+    local got; got="$(wire_root)"
+    [ "$got" = "$(realpath "$REPO_PATH")" ] || { echo "  project_root on the wire: '$got'"; return 1; }
+}
+
+# A failed conversion refuses before the derived-name claim, the earliest
+# registry write: nothing claimed, nothing to roll back.
+case_pipe_conversion_failure_refuses_before_any_write() {
+    start_stub_daemon ws-cvt cvt1 "$(entry ws-cvt cvt1 capsule ready)"
+    stub_windows_tools fail
+    OS=Windows_NT SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
+        SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn ""
+    stop_stub_daemon
+    [ "$SPAWN_RC" -eq 1 ] || { echo "  exited $SPAWN_RC (want 1): $SPAWN_ERR"; return 1; }
+    contains "$SPAWN_ERR" "(cygpath -m failed); nothing was spawned." || { echo "  stderr: $SPAWN_ERR"; return 1; }
+    ! contains "$SPAWN_ERR" "roll" || { echo "  rollback verdict printed: $SPAWN_ERR"; return 1; }
+    [ ! -e "$SPAWN_HOME/registry.json" ] || jq -e '(.agents // {}) == {}' "$SPAWN_HOME/registry.json" >/dev/null \
+        || { echo "  a registry row was written"; return 1; }
+    ! grep -q '"op":"workspace.create"' "$REQLOG" || { echo "  workspace.create was sent"; return 1; }
+    return 0
+}
+
+# The daemon lists the C:/ form it was sent; the occupancy check compares in
+# that spelling, so the early refusal still fires.
+case_pipe_occupied_root_in_daemon_spelling_refused() {
+    PRE_CREATE_LIST="$(REPO_PATH="C:/mapped$(realpath "$REPO_PATH")" entry ws-occ repo capsule ready)"
+    start_stub_daemon ws-occ repo "$(entry ws-occ repo capsule ready)"
+    stub_windows_tools map
+    SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
+        SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn ""
+    stop_stub_daemon
+    PRE_CREATE_LIST=""
+    assert_occupied_root_refused ""
 }
 
 # --- run -----------------------------------------------------------------
@@ -314,10 +359,14 @@ check "occupied root, explicit --name: refused before any write or create" \
     case_occupied_root_refused_explicit_name
 check "occupied root, derived name: refused before any write or create" \
     case_occupied_root_refused_derived_name
-check "pipe: endpoint (Windows local daemon): spawn succeeds through powershell.exe" \
+check "pipe: endpoint (Windows local daemon): spawn succeeds and workspace.create carries cygpath -m's spelling" \
     case_capsule_ready_over_pipe_endpoint
-check "Windows host: workspace.create carries the native (cygpath -m) project_root" \
-    case_windows_host_sends_native_project_root
+check "Windows caller, non-pipe daemon: project_root goes unchanged (the daemon's spelling, not the caller's)" \
+    case_windows_caller_nonpipe_daemon_keeps_root
+check "pipe: endpoint, cygpath fails: refused before any registry write (nothing claimed, nothing rolled back)" \
+    case_pipe_conversion_failure_refuses_before_any_write
+check "pipe: endpoint, root listed in the daemon's C:/ spelling: refused before any write or create" \
+    case_pipe_occupied_root_in_daemon_spelling_refused
 
 echo ""
 echo "$PASS passed, $FAIL failed"

@@ -306,6 +306,15 @@ sot_send() {
 if ! ENDPOINT="$(resolve_endpoint)"; then
     echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or ssh:target[/host]." >&2; exit 1
 fi
+# project_root goes to the daemon in the daemon's own spelling (comm-lib.sh
+# sot_daemon_path: a pipe: daemon needs cygpath -m's C:/... form; every other
+# daemon reads the path as written). Converted HERE, before the first registry
+# write, so a failed conversion refuses with nothing written. The registry
+# row and the handle derivation keep CANON_ROOT.
+if ! SPAWN_WIRE_ROOT="$(sot_daemon_path "$CANON_ROOT")"; then
+    echo "ERROR: cannot give $CANON_ROOT in the spelling of the daemon at $ENDPOINT (cygpath -m failed); nothing was spawned." >&2
+    exit 1
+fi
 # The daemon's OWN declared host: `version.query` -> `.payload.daemon.host`
 # (`DaemonVersion.host`, sourced from `workspaces::declared_host()` — the
 # same resolution ADR 0046 binds a hello's `host` to). NEVER parsed out of
@@ -340,7 +349,8 @@ fi
 # handle behind. Fails closed, like the display-label check further down: a
 # list that does not answer refuses too. Compared by canonical path, the
 # daemon's own rule; a listed root that does not resolve here is compared as
-# written.
+# written. Both sides are compared in the daemon's spelling (sot_daemon_path): a
+# native Windows daemon lists the C:/... form it was sent.
 if ! OCC_LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" \
     || ! printf '%s' "$OCC_LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
     echo "ERROR: could not confirm that $CANON_ROOT has no workspace yet (workspace.list did not answer via $ENDPOINT); nothing was spawned." >&2
@@ -353,7 +363,8 @@ while [ "$occ_i" -lt "$OCC_N" ]; do
     OCC_ROOT="$(printf '%s' "$OCC_ROW" | sot_jq -r '.project_root // empty')"
     if [ -n "$OCC_ROOT" ]; then
         OCC_CANON="$(sot_canonical_path "$OCC_ROOT" 2>/dev/null)" || OCC_CANON="$OCC_ROOT"
-        if [ "$OCC_CANON" = "$CANON_ROOT" ]; then
+        OCC_WIRE="$(sot_daemon_path "$OCC_CANON")" || OCC_WIRE="$OCC_CANON"
+        if [ "$OCC_WIRE" = "$SPAWN_WIRE_ROOT" ]; then
             echo "ERROR: $CANON_ROOT already has a workspace: '$(printf '%s' "$OCC_ROW" | sot_jq -r '.label')' (slug '$(printf '%s' "$OCC_ROW" | sot_jq -r '.slug')', id $(printf '%s' "$OCC_ROW" | sot_jq -r '.workspace_id')); nothing was spawned." >&2
             echo "       One repo root holds one session. For a second session on this repo, make a worktree: $COMM_HOME/bin/comm-worktree-new.sh <short>" >&2
             exit 1
@@ -472,16 +483,6 @@ _row_left_running() {  # reason
 }
 
 
-# project_root goes to the daemon in ITS spelling. On a Windows host the
-# daemon is a native process: it rejects git-bash's /c/Users/... as
-# no_such_path, so the request carries `cygpath -m` (C:/Users/...). Only the request
-# converts; every comparison above keeps the MSYS form.
-SPAWN_WIRE_ROOT="$CANON_ROOT"
-if _sot_is_windows; then
-    SPAWN_WIRE_ROOT="$(cygpath -m "$CANON_ROOT" 2>/dev/null)" && [ -n "$SPAWN_WIRE_ROOT" ] \
-        || { echo "ERROR: cannot convert $CANON_ROOT to the daemon's path spelling (cygpath failed)." >&2; exit 1; }
-fi
-
 # Provisional registry row + inbox, so the agent is addressable FROM SPAWN TIME:
 # comm-send refuses unregistered handles, and without this the spawner had to
 # sit out the agent's whole boot before its first message. With the row + inbox
@@ -592,6 +593,8 @@ fi
 # session's own `getcwd` yields, and memory would land somewhere nothing
 # else reads. `sot_canonical_path` has already vouched for this value and
 # exited loudly if it could not.
+# SPAWN_WIRE_ROOT is that value in the daemon's own spelling, set where
+# the endpoint is resolved.
 SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
 SPAWN_PATH_FILE="$(sot_jq_rawfile "$SPAWN_WIRE_ROOT")" || exit 1
 # agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx

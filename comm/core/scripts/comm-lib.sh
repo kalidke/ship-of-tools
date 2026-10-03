@@ -2668,6 +2668,26 @@ sot_oneshot_request() {
     [ -n "$line" ] && printf '%s\n' "$line"
 }
 
+# sot_daemon_path PATH — PATH in the spelling of the daemon at ENDPOINT (the
+# caller's scope, as sot_oneshot_request reads it). A pipe: daemon is a native
+# Windows process: it reads git-bash's /c/Users/... as a folder on the current
+# drive and answers no_such_path, and MSYS converts paths only in a native
+# program's argv, never inside a JSON payload, so the path goes through
+# `cygpath -m` (C:/Users/...). Every other daemon reads the path as written.
+# Keyed on the endpoint, never on this shell: a Windows caller reaching a Unix
+# daemon over ssh: sends the path unchanged. Prints nothing and returns 1 when
+# the conversion fails.
+sot_daemon_path() {
+    local out
+    case "$ENDPOINT" in
+        pipe:*)
+            out="$(cygpath -m "$1" 2>/dev/null)" && [ -n "$out" ] || return 1
+            printf '%s\n' "$out"
+            ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
 # fmt_age SECONDS — compact relative age ("just now"/"2m ago"/"1h ago"/"3d
 # ago"). Moved here from comm-list.sh (session-listing brief) so the same
 # ageing rule serves every state-nav printer instead of two copies drifting:
