@@ -24,6 +24,27 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+/// A Pluto child's output line with the value of every `secret=` replaced, so no log line carries the access
+/// secret Pluto prints in its own addresses (its startup banner does). Decision 0031: no page secret in a log.
+fn redact_secrets(line: &str) -> std::borrow::Cow<'_, str> {
+    const KEY: &str = "secret=";
+    if !line.contains(KEY) {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let ends = |c: char| c.is_whitespace() || matches!(c, '&' | '#' | '"' | '\'' | '<' | '>' | ')');
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(i) = rest.find(KEY) {
+        let v = i + KEY.len();
+        out.push_str(&rest[..v]);
+        out.push_str("<redacted>");
+        let tail = &rest[v..];
+        rest = &tail[tail.find(ends).unwrap_or(tail.len())..];
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 #[derive(Clone)]
 pub struct Pluto {
     inner: Arc<PlutoInner>,
@@ -135,7 +156,7 @@ async fn spawn_supervisor(
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            tracing::debug!(target: "pluto.stderr", "{line}");
+            tracing::debug!(target: "pluto.stderr", "{}", redact_secrets(&line));
         }
     });
 
@@ -167,7 +188,7 @@ async fn spawn_supervisor(
                 if let Some(rest) = line.strip_prefix("READY ") {
                     break rest.trim().to_string();
                 } else {
-                    tracing::warn!(line = %line, "pluto sidecar pre-READY chatter");
+                    tracing::warn!(line = %redact_secrets(&line), "pluto sidecar pre-READY chatter");
                 }
             }
             Ok(Ok(None)) => {
@@ -270,10 +291,10 @@ async fn supervisor_task(
                             if let Some(reply) = pending.pop_front() {
                                 let _ = reply.send(Err(anyhow!("pluto: {err}")));
                             } else {
-                                tracing::warn!(%line, "pluto ERR without pending request");
+                                tracing::warn!(line = %redact_secrets(&line), "pluto ERR without pending request");
                             }
                         } else {
-                            tracing::debug!(target: "pluto.stdout", "{line}");
+                            tracing::debug!(target: "pluto.stdout", "{}", redact_secrets(&line));
                         }
                     }
                     Ok(None) => {
@@ -298,7 +319,7 @@ async fn supervisor_task(
 
 #[cfg(test)]
 mod port_parse_tests {
-    use super::{port_from_base_url, spawn_supervisor};
+    use super::{port_from_base_url, redact_secrets, spawn_supervisor};
     use std::time::Duration;
 
     #[test]
@@ -336,5 +357,21 @@ mod port_parse_tests {
             .expect("spawn task");
         assert!(result.is_err());
         assert_eq!(sig.live(), 0);
+    }
+
+    #[test]
+    fn pluto_secrets_never_reach_the_log() {
+        use std::borrow::Cow;
+        assert_eq!(
+            redact_secrets("Go to http://localhost:1234/?secret=Ab12Cd in your browser"),
+            "Go to http://localhost:1234/?secret=<redacted> in your browser"
+        );
+        assert_eq!(redact_secrets("edit?secret=XyZ&id=42"), "edit?secret=<redacted>&id=42");
+        assert_eq!(
+            redact_secrets("a?secret=one b?secret=two"),
+            "a?secret=<redacted> b?secret=<redacted>"
+        );
+        assert!(matches!(redact_secrets("no secret here"), Cow::Borrowed("no secret here")));
+        assert_eq!(redact_secrets("secret="), "secret=<redacted>");
     }
 }

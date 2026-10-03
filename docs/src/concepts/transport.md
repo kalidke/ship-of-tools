@@ -155,7 +155,9 @@ Known limits of the link gate:
 - A partly queued input cut at the 8 KiB take queue, and a queue cleared
   on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
   reported by their own status line, not the discard count.
-- A refused browser connection logs one warning per attempt.
+- A browser connection refused while the link is down logs one warning
+  per attempt; a connection refused because another OS account owns it
+  is logged once per account and port.
 
 Later work in this same design (the pipe/socket owner checks, and the
 daemon-side account guard)
