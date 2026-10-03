@@ -293,16 +293,14 @@ resolve_endpoint() {
 
 # Send a frame to the daemon, return the first response line matching op $2.
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Both
-# schemes delegate to sot_oneshot_request (comm-lib.sh), which already
-# carries a tested arm for each — a second, hand-rolled `nc`/`ssh` here
-# would be a second implementation of the identical one-shot round trip.
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Every
+# scheme (unix, ssh, pipe) is handled by sot_oneshot_request (comm-lib.sh),
+# which refuses any other, so there is no scheme list to keep here. A
+# second, hand-rolled `nc`/`ssh` here would be a second implementation of
+# the identical one-shot round trip.
 sot_send() {
     local frame="$1" op="$2"
-    case "$ENDPOINT" in
-        ssh:*|unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)            return 1 ;;
-    esac
+    sot_oneshot_request "$frame" "$op"
 }
 
 if ! ENDPOINT="$(resolve_endpoint)"; then

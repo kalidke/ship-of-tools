@@ -28,15 +28,12 @@ resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Both
-# schemes delegate to sot_oneshot_request (comm-lib.sh), which already
-# carries a tested arm for each.
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Every
+# scheme (unix, ssh, pipe) is handled by sot_oneshot_request (comm-lib.sh),
+# which refuses any other, so there is no scheme list to keep here.
 sot_send() {
     local frame="$1" op="$2"
-    case "$ENDPOINT" in
-        ssh:*|unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)            return 1 ;;
-    esac
+    sot_oneshot_request "$frame" "$op"
 }
 
 # 1) Read WHO's registry row, if any. Nothing is removed until the workspace

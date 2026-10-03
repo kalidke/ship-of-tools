@@ -148,9 +148,9 @@ run_spawn() {
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
     SPAWN_OUT="$(cd "$WORK" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
-        SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
+        ${SPAWN_PATH:+PATH="$SPAWN_PATH"} SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
-        timeout 30 "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "unix:$SOCK" "$@" 2>"$errfile")"
+        timeout 30 "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
     SPAWN_RC=$?
     SPAWN_ERR="$(cat "$errfile" 2>/dev/null || true)"
 }
@@ -256,6 +256,27 @@ case_occupied_root_refused_derived_name() {
     assert_occupied_root_refused ""
 }
 
+# A Windows box's daemon listens only on a named pipe: the request goes
+# through powershell.exe (stubbed here by a script that carries stdin to
+# the stub daemon's socket and its replies back).
+case_capsule_ready_over_pipe_endpoint() {
+    local wsid="ws-pipe" slug="pipe1"
+    start_stub_daemon "$wsid" "$slug" \
+        "$(entry "$wsid" "$slug" capsule starting)" \
+        "$(entry "$wsid" "$slug" capsule ready)"
+    mkdir -p "$WORK/bin"
+    printf '#!/usr/bin/env bash\nexec nc -U "%s"\n' "$SOCK" > "$WORK/bin/powershell.exe"
+    chmod +x "$WORK/bin/powershell.exe"
+    SPAWN_EP='pipe:\\.\pipe\sot-stub' SPAWN_PATH="$WORK/bin:$PATH" \
+        SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-pipe
+    stop_stub_daemon
+
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    contains "$SPAWN_OUT" "Capsule row ready" || { echo "  stdout: $SPAWN_OUT"; return 1; }
+    registry_has_row "spawn-pipe" || { echo "  registry row missing after success"; return 1; }
+    return 0
+}
+
 # --- run -----------------------------------------------------------------
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds" \
@@ -270,6 +291,8 @@ check "occupied root, explicit --name: refused before any write or create" \
     case_occupied_root_refused_explicit_name
 check "occupied root, derived name: refused before any write or create" \
     case_occupied_root_refused_derived_name
+check "pipe: endpoint (Windows local daemon): spawn succeeds through powershell.exe" \
+    case_capsule_ready_over_pipe_endpoint
 
 echo ""
 echo "$PASS passed, $FAIL failed"
