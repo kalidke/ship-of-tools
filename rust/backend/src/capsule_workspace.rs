@@ -1197,6 +1197,9 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     // any OS. Only this switch: telemetry and nonessential traffic stay
     // the user's own choice.
     env.push(("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "1".to_string()));
+    // A row's conversation never leaves its row (agent view moves it into Claude Code's own
+    // daemon, outside the capsule); an env var, not a settings key, as --settings is not passed to every row.
+    env.push(("CLAUDE_CODE_DISABLE_AGENT_VIEW".to_string(), "1".to_string()));
     // The `ccb` launcher's own PATH rule, promoted to the daemon: a leg
     // inherits the SERVICE's PATH, which has no `~/.local/bin` (CLAUDE.md's
     // documented gotcha — the same reason [`claude_argv`] full-paths
@@ -6362,6 +6365,25 @@ mod tests {
             assert!(!env
                 .iter()
                 .any(|(k, _)| k == "DISABLE_TELEMETRY" || k == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
+        }
+    }
+
+    #[test]
+    fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
+        // Agent view would move a row's conversation into Claude Code's own
+        // daemon, outside the capsule. Only that switch: background tasks
+        // and the bg exit handoff stay as they are.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_SELF_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        for agent_name in ["myrepo-myhost", ""] {
+            let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), agent_name);
+            let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
+            assert_eq!(hits.len(), 1, "exactly one agent-view switch for agent_name {agent_name:?}");
+            assert_eq!(hits[0].1, "1");
+            assert!(!env
+                .iter()
+                .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" || k == "CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF"));
         }
     }
 
