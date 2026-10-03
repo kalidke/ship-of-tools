@@ -1623,8 +1623,9 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
 /// Next reconnect wait after a failed attempt: double, up to a cap that
 /// depends on the dial. A local socket costs nothing to probe, so it keeps
 /// 5 s. Each ssh probe is a login on the hub plus one on the far host, so
-/// the cap is 30 s: a down remote host costs the hub at most two ssh logins
-/// a minute per frontend.
+/// the cap is 30 s: once the wait reaches it, a down remote host costs the hub
+/// at most two ssh logins a minute per frontend (about nine in the first minute,
+/// while the wait doubles).
 fn next_backoff_ms(current: u64, dial: &Dial) -> u64 {
     let cap = match dial {
         Dial::Pipe(_) => 5_000,

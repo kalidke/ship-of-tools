@@ -85,8 +85,9 @@ ends for any reason but a refusal of the hello itself. Every other ssh start
 site asks the gate first, and the one ungated spawn is the transport's probe,
 so a new start site cannot skip it. The transport's probe backs off by
 doubling from 200 ms, to a cap of 5 s on a local socket and 30 s on an ssh
-dial, so a down host costs the hub at most two logins a minute per frontend.
-F5 retries at once. A browser connection to a proxied page is refused while
+dial. Once the wait reaches its cap, a down host costs the hub at most two
+logins a minute per frontend; the first minute, while the wait doubles, costs
+about nine. F5 retries at once. A browser connection to a proxied page is refused while
 the gate is down.
 
 **Pause and resume.** An attach worker whose lane dial finds the link down
