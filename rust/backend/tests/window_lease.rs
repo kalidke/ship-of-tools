@@ -360,6 +360,15 @@ async fn create_row_at(conn: &mut Conn, next_id: &mut u64, label: &str, root: &P
     }
 }
 
+/// Seconds into the UTC day of `log`'s last `needle` line: a phase boundary on the daemon's clock.
+#[cfg(target_os = "linux")]
+fn stamped(log: &str, needle: &str) -> f64 {
+    let line = log.lines().rev().find(|l| l.contains(needle)).unwrap_or_else(|| panic!("no {needle:?} line:\n{log}"));
+    let t = line.find('T').expect("an RFC 3339 time");
+    let num = |s: &str| s.parse::<f64>().expect("a time field");
+    num(&line[t + 1..t + 3]) * 3600.0 + num(&line[t + 4..t + 6]) * 60.0 + num(line[t + 7..].split('Z').next().unwrap())
+}
+
 /// The "slow row": its supervisor killed by the pid this test read, then
 /// its fence held here, so no end of it can be proven.
 #[cfg(target_os = "linux")]
@@ -827,18 +836,35 @@ async fn shutdown_bound_is_end_to_end() {
     let env = Env::new("endtoend");
     let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (_id, state_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
+    let (_id, row_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
     drop(conn);
-    let fence = slow_row(&state_dir).await;
     let (mut w, _) = Window::open(&env.socket_path).await;
-    let t0 = Instant::now();
+    let fence = slow_row(&row_dir).await;
+    // The watchdog restarts the killed supervisor 1 s later, holding that run start through its 2 s
+    // settle; the new supervisor finds the fence held and logs it. The close lands inside that settle.
+    let log_path = state_dir(&env).join("sotd.log");
+    let until = Instant::now() + BOUND;
+    while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("authority fence already held") {
+        assert!(Instant::now() < until, "the watchdog never restarted the slow row: {}", daemon.said());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let ack = w.ask("close", EXIT_WITHIN).await;
     assert_eq!(ack["not_ended"], 1, "{ack:?}");
-    // No `ack` is sent: the closer's notice waits out its own bound.
-    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "1 is the backstop's code: {}", daemon.said());
-    let took = t0.elapsed();
-    assert!(took >= Duration::from_secs(5), "the not-ended row was not retried until the rows deadline: {took:?}");
-    assert!(took < Duration::from_secs(15), "the shutdown outran its bound: {took:?}");
-    assert!(!daemon.said().contains("shutdown still running after"), "the backstop fired: {}", daemon.said());
+    // No `ack` is sent, so the closer's notice waits out its own bound; exit 0
+    // (the backstop's is 1) proves the whole shutdown fit inside the bound.
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    // Steps 2 and 3 share one rows deadline, decided + bound - tail; the refused row, retried 1 s apart,
+    // is let go in the last second before it. 0.4 s is slack for the daemon's timer and log latency;
+    // a 1.4 s hold (1 s + slack) puts a fresh step-3 deadline past budget + slack.
+    let log = std::fs::read_to_string(&log_path).expect("the daemon's log");
+    let since = |from: f64, to: f64| (to - from).rem_euclid(86_400.0);
+    let began = stamped(&log, "shutting down: ending this computer's sessions");
+    let held = since(began, stamped(&log, "lane did not settle within the post-spawn deadline"));
+    let rows = since(began, stamped(&log, "row not ended by the deadline"));
+    let budget = 15.0 - sot_protocol::ops::lease::SHUTDOWN_TAIL.as_secs_f64();
+    eprintln!("run start held {held:.3} s into the shutdown; row let go at {rows:.3} s");
+    assert!((1.4..3.0).contains(&held), "no run start in flight 1.4 s into the shutdown (test sync, not the defect): {held:.3} s");
+    assert!(rows < budget + 0.4, "step 3 ran past the rows deadline it shares with step 2: {rows:.3} s");
+    assert!(rows > budget - 1.4, "the refused row was not retried through the rows budget: {rows:.3} s");
     drop(fence);
 }
