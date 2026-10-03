@@ -5,7 +5,7 @@
 //! the `plan` line set is documented on `topology::plan` and nowhere else.
 
 use sot_protocol::topology::{self, Topology};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const USAGE: &str = "\
 Usage: sotd topology <subcommand>
@@ -47,6 +47,13 @@ Usage: sotd topology <subcommand>
                         --yes runs systemctl for real. --dry-run is
                         accepted too, as the explicit spelling of the
                         default. Refuses on a non-hub box, naming the hub.
+  refresh               hub only: rewrite each enabled host's relay unit files
+                        when their text differs from this sotd's, retire any
+                        relay drop-in that sets ExecStart= (renamed
+                        <name>.conf.retired), clear failed relay instances,
+                        reload, and start the relay sockets. The hub's daemon
+                        does this at every start under systemd; the verb is
+                        for a --no-service hub and for hand recovery.
   set <edit>            send one edit to the hub daemon over this box's own
                         control dial (the dial itself is the authorisation —
                         no second credential). <edit> is one of:
@@ -88,6 +95,7 @@ pub fn run(args: &[String]) -> i32 {
         }),
         "sync" => report(sync(flag("--hub"))),
         "apply" => with_topology(|t| apply(t, !args.iter().any(|a| a == "--yes"))),
+        "refresh" => with_topology(|t| refresh_cmd(t)),
         "set" => report(set(&args[1..])),
         _ => {
             eprintln!("{USAGE}");
@@ -360,10 +368,166 @@ fn write_relay_units(host: &str) -> Result<(), String> {
     for (name, text) in
         [(topology::relay_unit(host), topology::relay_socket_unit(host)), (topology::relay_service_unit_file(host), topology::relay_service_unit(host))]
     {
-        let path = dir.join(&name);
-        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        write_atomic(&dir.join(&name), &text)?;
     }
     Ok(())
+}
+
+/// Temp file in the same directory, then rename: a reader (systemd) never
+/// sees half a unit file.
+fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
+    let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
+    let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    std::fs::write(&tmp, text).map_err(|e| io(&tmp, e))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(path, e)
+    })
+}
+
+/// What [`refresh`] changed.
+#[derive(Debug, Default)]
+pub struct Refreshed {
+    pub rewrote: Vec<PathBuf>,
+    pub retired: Vec<PathBuf>,
+}
+
+/// The hub keeps its generated relay units equal to this binary's text. For
+/// every host that is both a relay host and enabled: rewrite changed unit
+/// files, retire ExecStart drop-ins (`topology::relay_refresh` decides),
+/// `reset-failed` every host before any reload (accumulated failed
+/// instances are what wedges `daemon-reload`), reload once if anything
+/// changed, then restart a rewritten socket or start an untouched one (a
+/// no-op when active, a revival after `trigger-limit-hit`). Only the reload
+/// is fatal; other failures are collected and returned at the end, like
+/// `apply`.
+pub fn refresh(
+    topo: &Topology,
+    me: &str,
+    dir: &Path,
+    enabled: &[String],
+    systemctl: &mut dyn FnMut(&[&str]) -> Result<(), String>,
+) -> Result<Refreshed, String> {
+    topology::require_hub(topo, me, "refresh")?;
+    let hosts: Vec<&str> = topology::relay_hosts(topo).into_iter().filter(|h| enabled.iter().any(|e| e == h)).collect();
+    let mut done = Refreshed::default();
+    let mut failures: Vec<String> = Vec::new();
+    let mut socket_rewritten: Vec<&str> = Vec::new();
+    for &h in &hosts {
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+        let dropin_dir = dir.join(format!("{}.d", topology::relay_service_unit_file(h)));
+        let mut dropins: Vec<(String, String)> = std::fs::read_dir(&dropin_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                name.ends_with(".conf").then_some(())?;
+                Some((name, std::fs::read_to_string(e.path()).ok()?))
+            })
+            .collect();
+        dropins.sort();
+        let plan = topology::relay_refresh(
+            h,
+            read(&topology::relay_unit(h)).as_deref(),
+            read(&topology::relay_service_unit_file(h)).as_deref(),
+            &dropins,
+        );
+        for (name, text) in &plan.write {
+            let path = dir.join(name);
+            match write_atomic(&path, text) {
+                Ok(()) => {
+                    if *name == topology::relay_unit(h) {
+                        socket_rewritten.push(h);
+                    }
+                    done.rewrote.push(path);
+                }
+                Err(e) => failures.push(e),
+            }
+        }
+        for name in &plan.retire {
+            let from = dropin_dir.join(name);
+            let to = dropin_dir.join(format!("{name}.retired"));
+            match std::fs::rename(&from, &to) {
+                Ok(()) => done.retired.push(from),
+                Err(e) => failures.push(format!("{}: {e}", from.display())),
+            }
+        }
+    }
+    for &h in &hosts {
+        let (socket, instances) = (topology::relay_unit(h), format!("sot-host-relay-{h}@*.service"));
+        if let Err(e) = systemctl(&["--user", "reset-failed", &socket, &instances]) {
+            failures.push(e);
+        }
+    }
+    if !done.rewrote.is_empty() || !done.retired.is_empty() {
+        systemctl(&["--user", "daemon-reload"]).map_err(|e| format!("daemon-reload failed after changing relay units: {e}"))?;
+    }
+    for &h in &hosts {
+        let verb = if socket_rewritten.contains(&h) { "restart" } else { "start" };
+        if let Err(e) = systemctl(&["--user", verb, &topology::relay_unit(h)]) {
+            failures.push(e);
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!("{} relay refresh step(s) failed:\n  {}", failures.len(), failures.join("\n  ")));
+    }
+    Ok(done)
+}
+
+fn retired_note(path: &Path) -> String {
+    format!(
+        "retired {p} -> {p}.retired: it set ExecStart=, which only the generated relay unit sets; copy any Environment= line it still needs into a drop-in of its own",
+        p = path.display()
+    )
+}
+
+/// `sotd topology refresh`: [`refresh`] on the real directory, one line per
+/// action.
+fn refresh_cmd(topo: &Topology) -> Result<(), String> {
+    let me = self_host()?;
+    let done = refresh(topo, &me, &systemd_user_dir()?, &enabled_hosts(RELAY_TEMPLATE)?, &mut |a| run_systemctl(a))?;
+    for p in &done.rewrote {
+        println!("rewrote {}", p.display());
+    }
+    for p in &done.retired {
+        println!("{}", retired_note(p));
+    }
+    if done.rewrote.is_empty() && done.retired.is_empty() {
+        println!("up to date");
+    }
+    Ok(())
+}
+
+/// The daemon's own call at start (main.rs): the gates beyond systemd
+/// supervision are that hosts.toml loads and this box is the hub. Unmet
+/// gates return silently; the daemon never waits on this.
+#[cfg(target_os = "linux")]
+pub fn refresh_at_start() {
+    let Ok(Some((_, topo))) = topology::load() else { return };
+    let Ok(me) = self_host() else { return };
+    if me != topo.hub {
+        return;
+    }
+    let dir = match systemd_user_dir() {
+        Ok(d) => d,
+        Err(e) => return tracing::warn!(error = %e, "relay refresh skipped"),
+    };
+    let enabled = match enabled_hosts(RELAY_TEMPLATE) {
+        Ok(v) => v,
+        Err(e) => return tracing::warn!(error = %e, "relay refresh skipped"),
+    };
+    match refresh(&topo, &me, &dir, &enabled, &mut |a| run_systemctl(a)) {
+        Ok(done) => {
+            for p in &done.rewrote {
+                tracing::info!(path = %p.display(), "relay unit rewritten");
+            }
+            for p in &done.retired {
+                tracing::warn!("{}", retired_note(p));
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "relay refresh failed"),
+    }
 }
 
 /// Removes both generated files for a host. A missing one is not an
@@ -577,6 +741,82 @@ mod tests {
     // a fixture, with no systemd involved. What's left here is flag
     // parsing only — enabled_tunnel_hosts/run_systemctl/write_dropin need
     // a real `systemctl --user` and `$HOME`, unverified by this suite.
+
+    const STALE_SERVICE: &str = include_str!("../../protocol/src/testdata/relay-service-rc9.8.unit");
+    const NO_MUX: &str = include_str!("../../protocol/src/testdata/relay-dropin-no-mux.conf");
+    const OVERRIDE: &str = include_str!("../../protocol/src/testdata/relay-dropin-override.conf");
+
+    fn hub_topo() -> Topology {
+        topology::parse("hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.remote-a]\ndaemon = true\n").unwrap()
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sot-f3-refresh-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("sot-host-relay-remote-a@.service.d")).unwrap();
+        d
+    }
+
+    #[test]
+    fn refresh_writes_retires_and_reloads_in_order() {
+        let topo = hub_topo();
+        let dir = scratch("order");
+        let dd = dir.join("sot-host-relay-remote-a@.service.d");
+        std::fs::write(dir.join("sot-host-relay-remote-a.socket"), topology::relay_socket_unit("remote-a")).unwrap();
+        std::fs::write(dir.join("sot-host-relay-remote-a@.service"), STALE_SERVICE).unwrap();
+        std::fs::write(dd.join("no-mux.conf"), NO_MUX).unwrap();
+        std::fs::write(dd.join("override.conf"), OVERRIDE).unwrap();
+        let enabled = vec!["remote-a".to_string()];
+
+        let mut calls: Vec<String> = Vec::new();
+        let done = refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
+            calls.push(a[1..].join(" "));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(done.rewrote.len(), 1);
+        assert_eq!(std::fs::read_to_string(dir.join("sot-host-relay-remote-a@.service")).unwrap(), topology::relay_service_unit("remote-a"));
+        assert!(!dd.join("no-mux.conf").exists() && dd.join("no-mux.conf.retired").exists());
+        assert_eq!(std::fs::read_to_string(dd.join("override.conf")).unwrap(), OVERRIDE);
+        assert_eq!(
+            calls,
+            ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", "start sot-host-relay-remote-a.socket"]
+        );
+
+        calls.clear();
+        let again = refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
+            calls.push(a[1..].join(" "));
+            Ok(())
+        })
+        .unwrap();
+        assert!(again.rewrote.is_empty() && again.retired.is_empty());
+        assert_eq!(calls, ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "start sot-host-relay-remote-a.socket"]);
+
+        // a rewritten socket is restarted, not just started
+        std::fs::write(dir.join("sot-host-relay-remote-a.socket"), "stale\n").unwrap();
+        calls.clear();
+        refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
+            calls.push(a[1..].join(" "));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls[1..], ["daemon-reload", "restart sot-host-relay-remote-a.socket"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refresh_off_the_hub_touches_nothing() {
+        let dir = scratch("offhub");
+        let mut called = false;
+        let e = refresh(&hub_topo(), "remote-a", &dir, &["remote-a".to_string()], &mut |_| {
+            called = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(e.contains("not the hub"), "{e}");
+        assert!(!called && !dir.join("sot-host-relay-remote-a@.service").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn dry_run_is_default_yes_flips_it() {
