@@ -17,7 +17,7 @@ use sot_protocol::{
     FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
     HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
     PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, PtyCursor,
-    PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes, QuartoOpenReq, QuartoOpenRes,
+    PtyEnter, PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes, QuartoOpenReq, QuartoOpenRes,
     ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
     ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
     VideoOpenReq, VideoOpenRes,
@@ -4263,13 +4263,13 @@ pub async fn handle_pty_input(
                             CAPSULE_WRITE_QUIET_BUDGET,
                             CAPSULE_WRITE_PACING_BUDGET,
                         ) {
-                            Ok((_n, enter_sent)) => CapsuleOpOutcome::Ok(enter_sent),
+                            Ok((_n, enter)) => CapsuleOpOutcome::Ok(enter),
                             Err(e) => CapsuleOpOutcome::Headless(e),
                         }
                     } else {
                         let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
                         match crate::capsule_workspace::headless::type_into(&state_dir, &controller_id, &bytes, deadline) {
-                            Ok(_n) => CapsuleOpOutcome::Ok(false),
+                            Ok(_n) => CapsuleOpOutcome::Ok(PtyEnter::NotSent),
                             Err(e) => CapsuleOpOutcome::Headless(e),
                         }
                     }
@@ -4277,8 +4277,8 @@ pub async fn handle_pty_input(
                 .await
                 .context("spawn_blocking pty.input capsule")?;
                 match outcome {
-                    CapsuleOpOutcome::Ok(enter_sent) => {
-                        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: byte_len, enter_sent };
+                    CapsuleOpOutcome::Ok(enter) => {
+                        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: byte_len, enter };
                         Ok(vec![(
                             Frame::res(req_id, op::PTY_INPUT, serde_json::to_value(res)?),
                             None,

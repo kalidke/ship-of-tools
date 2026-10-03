@@ -1627,7 +1627,7 @@ sot_inbox_lines() {
 # sot_pty_input WORKSPACE_ID DATA_B64 — one `pty.input` request (enter:true)
 # to the daemon at ENDPOINT (caller's scope); prints the response line.
 # The daemon types the text into the row's capsule and appends Enter, and
-# reports `enter_sent`. This is the only live-delivery path: a message
+# reports `enter` (sent, not_sent or unknown). This is the only live-delivery path: a message
 # reaches a session by its workspace row or stays in the durable inbox.
 sot_pty_input() {
     local wsid="$1" data="$2" frame

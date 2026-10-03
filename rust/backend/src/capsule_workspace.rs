@@ -4478,6 +4478,7 @@ mod observer_tests {
 /// `mod runtime`'s own gate, and that gate is gone — so is this one.)
 pub mod headless {
     use std::path::Path;
+    use sot_protocol::PtyEnter;
     use std::time::{Duration, Instant};
 
     use sot_log::client::PlatformEndpoint;
@@ -4656,10 +4657,11 @@ pub mod headless {
     ///    `quiet_budget`, bounded overall at `pacing_budget`.
     /// 4. Writes Enter under the text's own grant (headless never
     ///    re-takes): a pen change in between is refused stale by the
-    ///    supervisor, so `enter_sent: false`. Once the text is recorded
-    ///    (step 2), this ALWAYS answers `Ok`: any Enter failure means
-    ///    `enter_sent: false`, never a hard `Err` (a retried caller could
-    ///    double the text).
+    ///    supervisor, so `enter: not_sent`. Once the text is recorded
+    ///    (step 2), this ALWAYS answers `Ok`: an Enter failure is never a
+    ///    hard `Err` (a retried caller could double the text); it is
+    ///    `not_sent` for the stale refusal and `unknown` for every other
+    ///    failure (see [`enter_outcome`]).
     /// 5. Never retries: the worker's auto-retake after a stale refusal
     ///    is disabled for headless transactions.
     ///
@@ -4668,9 +4670,10 @@ pub mod headless {
     /// either) — a real check needs attach-proto v3's pen-holder signal
     /// (`PenSnapshot`/`holder`), left to the Stage 2 resident-attach lanes.
     ///
-    /// Returns `(bytes_written, enter_sent)`: `enter_sent` says only that
-    /// the Enter byte was written and recorded, never that codex treated
-    /// it as a submitted turn.
+    /// Returns `(bytes_written, enter)`: `enter` is `sent` only when the
+    /// Enter byte was written and recorded, never a claim that codex
+    /// treated it as a submitted turn; `not_sent` when the supervisor
+    /// refused it; `unknown` otherwise.
     pub fn write_and_enter(
         state_dir: &Path,
         controller_id: &str,
@@ -4678,7 +4681,7 @@ pub mod headless {
         op_budget: Duration,
         quiet_budget: Duration,
         pacing_budget: Duration,
-    ) -> Result<(usize, bool), HeadlessError> {
+    ) -> Result<(usize, PtyEnter), HeadlessError> {
         if text.len() > TAKE_QUEUE_CAP {
             return Err(HeadlessError {
                 phase: "size",
@@ -4696,7 +4699,7 @@ pub mod headless {
             return Err(e);
         }
         let out = type_and_pace(&mut client, text, op_budget, quiet_budget, pacing_budget)
-            .map(|n| (n, send_enter(&mut client, op_budget).is_ok()));
+            .map(|n| (n, enter_outcome(send_enter(&mut client, op_budget))));
         client.shutdown(SHUTDOWN_WAIT);
         out
     }
@@ -4721,6 +4724,17 @@ pub mod headless {
         match enter {
             Ok(()) => WakeOutcome::Woke,
             Err(e) => unconfirmed("enter", e),
+        }
+    }
+
+    /// What the Enter write's result says to a `pty.input` caller: only the stale refusal (phase `"input"`, the
+    /// one outcome where nothing was written, see `send_and_wait_recorded`) is `NotSent`; every other failure may
+    /// have reached the agent.
+    pub(crate) fn enter_outcome(r: Result<(), HeadlessError>) -> PtyEnter {
+        match r {
+            Ok(()) => PtyEnter::Sent,
+            Err(e) if e.phase == "input" => PtyEnter::NotSent,
+            Err(_) => PtyEnter::Unknown,
         }
     }
 
@@ -4959,7 +4973,8 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::headless::{type_into, unconfirmed, wake_outcome, write_and_enter, HeadlessError, WakeOutcome};
+    use super::headless::{enter_outcome, type_into, unconfirmed, wake_outcome, write_and_enter, HeadlessError, WakeOutcome};
+    use sot_protocol::PtyEnter;
     use std::path::Path;
     use std::time::{Duration, Instant};
 
@@ -4972,6 +4987,17 @@ mod headless_size_gate_tests {
         let failed = || HeadlessError { phase: "record", detail: "input delivery unknown".to_string(), submitted: true };
         assert_eq!(wake_outcome(Ok(())), WakeOutcome::Woke);
         assert_eq!(wake_outcome(Err(failed())), WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".to_string() });
+    }
+
+    #[test]
+    fn enter_outcome_tells_unknown_from_not_sent() {
+        let stale = HeadlessError { phase: "input", detail: "stale".into(), submitted: true };
+        let unknown = HeadlessError { phase: "record", detail: "unknown".into(), submitted: true };
+        let take = HeadlessError { phase: "take", detail: "dead".into(), submitted: true };
+        assert_eq!(enter_outcome(Ok(())), PtyEnter::Sent);
+        assert_eq!(enter_outcome(Err(stale)), PtyEnter::NotSent);
+        assert_eq!(enter_outcome(Err(unknown)), PtyEnter::Unknown);
+        assert_eq!(enter_outcome(Err(take)), PtyEnter::Unknown);
     }
 
     #[test]

@@ -1240,20 +1240,33 @@ pub struct PtyInputReq {
     pub origin: Option<String>,
 }
 
+/// Whether a `pty.input` Enter reached the row. `Sent` only when the Enter byte was recorded; `NotSent` only when
+/// Enter was never attempted or the supervisor refused it, so nothing was written; every other outcome is `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PtyEnter {
+    Sent,
+    NotSent,
+    #[default]
+    Unknown,
+}
+
 /// `op::PTY_INPUT` response: `ok` is `true` iff the daemon delivered the
 /// bytes to the row's own input path (tmux `send-keys`, or a capsule's
 /// `InputRecorded`); `bytes` is the payload length delivered (the `enter`
 /// byte, if requested, is not counted — it rides the runtime's own
-/// separate mechanism, not the payload). `enter_sent` (additive) is
-/// `true` iff the Enter byte was written and recorded — never a claim
-/// the row treated it as a submitted turn.
+/// separate mechanism, not the payload). `enter` is `sent` iff the Enter
+/// byte was written and recorded (never a claim the row treated it as a
+/// submitted turn), `not_sent` iff Enter was not requested or the
+/// supervisor refused it, and `unknown` otherwise (a reply without the
+/// field reads as `unknown`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyInputRes {
     pub ok: bool,
     pub runtime: String,
     pub bytes: usize,
     #[serde(default)]
-    pub enter_sent: bool,
+    pub enter: PtyEnter,
 }
 
 /// `op::PTY_SCREEN` request: the row to read, by workspace_id (accepted as
@@ -3102,7 +3115,7 @@ mod repl_lifecycle_tests {
 
 #[cfg(test)]
 mod pty_input_screen_tests {
-    use super::{PtyCursor, PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes};
+    use super::{PtyCursor, PtyEnter, PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes};
 
     #[test]
     fn pty_write_req_wire_shape_is_untouched() {
@@ -3157,23 +3170,25 @@ mod pty_input_screen_tests {
 
     #[test]
     fn pty_input_res_round_trips() {
-        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5, enter_sent: false };
+        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5, enter: PtyEnter::NotSent };
         let json = serde_json::to_value(&res).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "ok": true, "runtime": "capsule", "bytes": 5, "enter_sent": false })
+            serde_json::json!({ "ok": true, "runtime": "capsule", "bytes": 5, "enter": "not_sent" })
         );
     }
 
     #[test]
-    fn pty_input_res_enter_sent_is_additive_and_defaults_false() {
-        let json = serde_json::json!({ "ok": true, "runtime": "tmux", "bytes": 5 });
+    fn pty_input_res_enter_round_trips_and_defaults_unknown() {
+        let json = serde_json::json!({ "ok": true, "runtime": "capsule", "bytes": 5 });
         let res: PtyInputRes = serde_json::from_value(json).expect("minimal PtyInputRes parses");
-        assert!(!res.enter_sent);
+        assert_eq!(res.enter, PtyEnter::Unknown);
 
-        let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5, enter_sent: true };
-        let json = serde_json::to_value(&res).unwrap();
-        assert_eq!(json["enter_sent"], serde_json::json!(true));
+        for (v, name) in [(PtyEnter::Sent, "sent"), (PtyEnter::NotSent, "not_sent"), (PtyEnter::Unknown, "unknown")] {
+            let res = PtyInputRes { ok: true, runtime: "capsule".into(), bytes: 5, enter: v };
+            let json = serde_json::to_value(&res).unwrap();
+            assert_eq!(json["enter"], serde_json::json!(name));
+        }
     }
 
     #[test]

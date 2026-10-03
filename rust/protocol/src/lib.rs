@@ -46,7 +46,7 @@ pub use ops::{
     MonitorSample, MonitorSubscribeReq,
     MonitorSubscribeRes, MonitorTickEvt, MonitorUnsubscribeReq, PingReq, PingRes, PlutoOpenReq, PlutoOpenRes,
     PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, ProcSample, ProxyConnectReq, ProxyConnectRes,
-    PtyCursor, PtyEvt, PtyInputReq, PtyInputRes, PtyOpenReq, PtyOpenRes, PtyResizeReq,
+    PtyCursor, PtyEnter, PtyEvt, PtyInputReq, PtyInputRes, PtyOpenReq, PtyOpenRes, PtyResizeReq,
     PtyScreenReq, PtyScreenRes, PtyScrollReq, PtyWriteReq, QuartoOpenReq, QuartoOpenRes,
     ReplErrorOut, ReplEvalReq, ReplEvalRes, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes,
     ReplFrame, ReplFrameEvt, ReplRunFileReq, ReplRunFileRes, ReplValueOut, StackFrame,
