@@ -3056,7 +3056,7 @@ mod runtime {
     const SPAWN_SETTLE_DEADLINE: Duration = Duration::from_secs(2);
 
     /// `SOT_TEST_SPAWN_SETTLE_MS` overrides [`SPAWN_SETTLE_DEADLINE`] for tests, read once per process (the
-    /// `shutdown::shutdown_bound` convention); unset in every real deployment. Every spawn path still shares it.
+    /// `shutdown::shutdown_bound` convention); only tests set it. Every spawn path still shares it.
     fn spawn_settle_deadline() -> Duration {
         static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
         let override_ms =
