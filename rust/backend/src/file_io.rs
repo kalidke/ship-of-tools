@@ -147,9 +147,16 @@ pub fn write_file(abs: &Path, content: &str, expected: Option<&str>) -> Result<W
 /// for system trash, `Some(destination)` for the fallback — the caller
 /// surfaces which path was taken (no quiet substitution).
 pub fn trash_file(abs: &Path, workspace_root: &Path) -> Result<Option<std::path::PathBuf>> {
-    match std::process::Command::new("gio").arg("trash").arg(abs).status() {
-        Ok(status) if status.success() => return Ok(None),
-        _ => {}
+    let mut cmd = std::process::Command::new("gio");
+    cmd.arg("trash").arg(abs);
+    if let Ok((mut child, held)) = crate::shutdown::process().spawn_std(&mut cmd) {
+        let exited = crate::contain::exited(&mut child, true).unwrap_or(false);
+        drop(held);
+        if let Ok(status) = child.wait() {
+            if exited && status.success() {
+                return Ok(None);
+            }
+        }
     }
     trash_file_fallback(abs, workspace_root).map(Some)
 }

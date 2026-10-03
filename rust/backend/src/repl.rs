@@ -26,7 +26,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 /// One streamed REPL frame relayed off the supervisor onto the per-backend
@@ -479,13 +479,13 @@ fn spawn_supervisor(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, contained) = crate::shutdown::process()
+    let mut contained = crate::shutdown::process()
         .spawn(&mut cmd)
         .with_context(|| format!("spawn {julia_bin} --project={}", repl_project.display()))?;
 
-    let stdin = child.stdin.take().context("repl child stdin missing")?;
-    let stdout = child.stdout.take().context("repl child stdout missing")?;
-    let stderr = child.stderr.take().context("repl child stderr missing")?;
+    let stdin = contained.stdin.take().context("repl child stdin missing")?;
+    let stdout = contained.stdout.take().context("repl child stdout missing")?;
+    let stderr = contained.stderr.take().context("repl child stderr missing")?;
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
 
@@ -497,7 +497,7 @@ fn spawn_supervisor(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     tokio::spawn(supervisor_task(
-        child, contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
     ));
     Ok(submit_tx)
 }
@@ -561,16 +561,16 @@ fn spawn_supervisor_with_project(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, contained) = crate::shutdown::process().spawn(&mut cmd).with_context(|| {
+    let mut contained = crate::shutdown::process().spawn(&mut cmd).with_context(|| {
         format!(
             "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={load_path})",
             user_project.display()
         )
     })?;
 
-    let stdin = child.stdin.take().context("repl child stdin missing")?;
-    let stdout = child.stdout.take().context("repl child stdout missing")?;
-    let stderr = child.stderr.take().context("repl child stderr missing")?;
+    let stdin = contained.stdin.take().context("repl child stdin missing")?;
+    let stdout = contained.stdout.take().context("repl child stdout missing")?;
+    let stderr = contained.stderr.take().context("repl child stderr missing")?;
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
 
@@ -580,7 +580,7 @@ fn spawn_supervisor_with_project(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     tokio::spawn(supervisor_task(
-        child, contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
     ));
     Ok(submit_tx)
 }
@@ -611,8 +611,7 @@ fn spawn_stderr_tail(
 
 #[allow(clippy::too_many_arguments)]
 async fn supervisor_task(
-    mut child: Child,
-    _contained: crate::shutdown::Contained,
+    mut contained: crate::shutdown::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
@@ -647,7 +646,7 @@ async fn supervisor_task(
             sub = submit_rx.recv() => {
                 let Some(sub) = sub else {
                     drop(stdin);
-                    let _ = child.wait().await;
+                    let _ = contained.wait().await;
                     // Intentional teardown (sender dropped — restart or
                     // shutdown). Gen-guarded: when a restart has already
                     // opened the next generation this is a no-op, so the
@@ -768,11 +767,11 @@ async fn supervisor_task(
             // submit channel whose sender still reports open. Every later
             // submit then queued into a channel nobody would ever read — a
             // wait with no child behind it and no respawn, which is the one
-            // outcome a submit must never produce. `Child::wait` is cancel
+            // outcome a submit must never produce. `Contained::wait` is cancel
             // safe, so re-creating it each loop iteration is free, and this
             // branch is polled LAST (`biased`), so stdout the child already
             // wrote is still routed before we notice it is gone.
-            status = child.wait() => {
+            status = contained.wait() => {
                 match status {
                     Ok(s) => tracing::warn!(status = ?s, "repl child exited"),
                     Err(e) => tracing::warn!(error = %e, "repl child wait failed"),
@@ -830,8 +829,7 @@ async fn supervisor_task(
             frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
         });
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ = contained.kill().await;
 }
 
 /// Route one stdout line off the REPL child. A `repl.frame` evt is fanned out

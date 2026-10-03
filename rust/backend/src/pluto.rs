@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Clone)]
@@ -121,13 +121,13 @@ async fn spawn_supervisor(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Counted and contained from spawn; the supervisor task takes it over once READY.
-    let (mut child, contained) = sig
+    let mut contained = sig
         .spawn(&mut cmd)
         .with_context(|| format!("spawn {julia_bin} --project={}", project_dir.display()))?;
 
-    let stdin = child.stdin.take().context("pluto child stdin missing")?;
-    let stdout = child.stdout.take().context("pluto child stdout missing")?;
-    let stderr = child.stderr.take().context("pluto child stderr missing")?;
+    let stdin = contained.stdin.take().context("pluto child stdin missing")?;
+    let stdout = contained.stdout.take().context("pluto child stdout missing")?;
+    let stderr = contained.stderr.take().context("pluto child stderr missing")?;
 
     // Stderr drain — pure logging.
     tokio::spawn(async move {
@@ -147,7 +147,7 @@ async fn spawn_supervisor(
     let base_url: String = loop {
         let now = tokio::time::Instant::now();
         if now >= ready_deadline {
-            let _ = child.kill().await;
+            let _ = contained.kill().await;
             return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
         }
         let remaining = ready_deadline - now;
@@ -168,15 +168,15 @@ async fn spawn_supervisor(
                 }
             }
             Ok(Ok(None)) => {
-                let _ = child.kill().await;
+                let _ = contained.kill().await;
                 return Err(anyhow!("pluto sidecar stdout closed before READY"));
             }
             Ok(Err(e)) => {
-                let _ = child.kill().await;
+                let _ = contained.kill().await;
                 return Err(anyhow!("pluto sidecar stdout error: {e}"));
             }
             Err(_) => {
-                let _ = child.kill().await;
+                let _ = contained.kill().await;
                 return Err(anyhow!("pluto sidecar did not emit READY within 180s"));
             }
         }
@@ -193,7 +193,7 @@ async fn spawn_supervisor(
     }
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(64);
-    tokio::spawn(supervisor_task(child, contained, stdin, stdout_lines, submit_rx, sig));
+    tokio::spawn(supervisor_task(contained, stdin, stdout_lines, submit_rx, sig));
     Ok(submit_tx)
 }
 
@@ -217,8 +217,7 @@ fn port_from_base_url(url: &str) -> Option<u16> {
 }
 
 async fn supervisor_task(
-    mut child: Child,
-    _contained: crate::shutdown::Contained,
+    mut contained: crate::shutdown::Contained,
     mut stdin: ChildStdin,
     mut stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     mut submit_rx: mpsc::Receiver<Submission>,
@@ -239,7 +238,7 @@ async fn supervisor_task(
             sub = submit_rx.recv() => {
                 let Some(sub) = sub else {
                     drop(stdin);
-                    let _ = child.wait().await;
+                    let _ = contained.wait().await;
                     return;
                 };
                 let line = format!("OPEN {}\n", sub.abs_path);
@@ -288,8 +287,7 @@ async fn supervisor_task(
     for reply in pending.drain(..) {
         let _ = reply.send(Err(anyhow!("pluto sidecar terminated")));
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ = contained.kill().await;
 }
 
 #[cfg(test)]

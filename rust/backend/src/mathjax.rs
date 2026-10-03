@@ -23,7 +23,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Clone)]
@@ -138,19 +138,19 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, contained) = crate::shutdown::process()
+    let mut contained = crate::shutdown::process()
         .spawn(&mut cmd)
         .with_context(|| format!("spawn {node_bin} {}", script_path.display()))?;
 
-    let stdin = child
+    let stdin = contained
         .stdin
         .take()
         .context("mathjax child stdin missing")?;
-    let stdout = child
+    let stdout = contained
         .stdout
         .take()
         .context("mathjax child stdout missing")?;
-    let stderr = child
+    let stderr = contained
         .stderr
         .take()
         .context("mathjax child stderr missing")?;
@@ -165,13 +165,12 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
         }
     });
 
-    tokio::spawn(supervisor_task(child, contained, stdin, stdout, submit_rx));
+    tokio::spawn(supervisor_task(contained, stdin, stdout, submit_rx));
     Ok(submit_tx)
 }
 
 async fn supervisor_task(
-    mut child: Child,
-    _contained: crate::shutdown::Contained,
+    mut contained: crate::shutdown::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
@@ -193,7 +192,7 @@ async fn supervisor_task(
                 let Some(sub) = sub else {
                     // No more callers — close stdin, await child, exit.
                     drop(stdin);
-                    let _ = child.wait().await;
+                    let _ = contained.wait().await;
                     return;
                 };
                 let id = next_id;
@@ -242,8 +241,7 @@ async fn supervisor_task(
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow!("mathjax sidecar terminated")));
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ = contained.kill().await;
 }
 
 fn route_response(

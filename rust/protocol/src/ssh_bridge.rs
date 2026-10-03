@@ -107,17 +107,19 @@ fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
     ("ssh", args)
 }
 
+/// The ssh command for `recipe`: its argv and three piped stdio.
+fn command(recipe: &SshRecipe) -> std::process::Command {
+    let (program, args) = argv(recipe);
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd
+}
+
 /// Spawn the child for a synchronous caller — the lane client, which
 /// implements `sot_log::client::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
 fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
-    let (program, args) = argv(recipe);
-    std::process::Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+    command(recipe).spawn()
 }
 
 /// Spawn the child for an async/tokio caller — the frontend's control
@@ -126,14 +128,7 @@ fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
 /// orphaned `ssh` running past its client — the async twin of
 /// `BridgedClient`'s own explicit `Drop` on the sync side.
 fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
-    let (program, args) = argv(recipe);
-    tokio::process::Command::new(program)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+    tokio::process::Command::from(command(recipe)).kill_on_drop(true).spawn()
 }
 
 /// Why a gated spawn did not start a child.
@@ -191,6 +186,15 @@ impl LinkGate {
         spawn_async(recipe).map_err(SpawnError::Io)
     }
 
+    /// The gated command, not yet started, for a caller that contains the
+    /// child it starts (the daemon, which kills the child's whole tree).
+    pub fn command(&self, recipe: &SshRecipe) -> Result<std::process::Command, SpawnError> {
+        if !self.is_up() {
+            return Err(SpawnError::LinkDown);
+        }
+        Ok(command(recipe))
+    }
+
     /// The one ungated spawn: the transport's own reconnect probe, which
     /// is what discovers that a link is back.
     pub fn probe(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
@@ -233,6 +237,7 @@ mod tests {
         gate.set_up(false);
         assert!(matches!(gate.spawn_sync(&recipe), Err(SpawnError::LinkDown)));
         assert!(matches!(gate.spawn_async(&recipe), Err(SpawnError::LinkDown)));
+        assert!(matches!(gate.command(&recipe), Err(SpawnError::LinkDown)));
         assert!(matches!(gate.clone().spawn_sync(&recipe), Err(SpawnError::LinkDown)), "clones share one flag");
     }
 
