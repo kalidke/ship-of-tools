@@ -3,9 +3,9 @@
 // the window can say, on leaving, what should happen to the computer's
 // sessions. This file is the lease's whole client side; `transport.rs` calls
 // `before_data_connection` before each local data connection, and `gpu.rs`
-// reads `notice()` and (later) leaves through it.
+// reads `notice()` and `owed()`, acks through `notice_seen`, and leaves through it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -78,9 +78,6 @@ type PendingAck = (HostKey, oneshot::Receiver<LeaveOutcome>);
 struct Slot {
     standing: Standing,
     holder: Option<mpsc::UnboundedSender<HolderCmd>>,
-    /// The state root this label's last grant named (the daemon's issued
-    /// identity); kept when a later handshake on the label fails.
-    daemon: Option<String>,
 }
 
 /// The slots and the leave, under one lock, so a lease that a handshake
@@ -98,6 +95,9 @@ struct Book {
     /// The runtime the holders run on, for a forced exit's wait
     /// (`deliver_queued`).
     rt: Option<tokio::runtime::Handle>,
+    /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
+    /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
+    owed: BTreeMap<HostKey, u32>,
 }
 
 /// A lease handshake in flight. Its drop, after its `set`, counts it down; the last one closes a leave's late-grant channel.
@@ -126,11 +126,11 @@ impl Leases {
     pub fn new(exempt: bool, pipe_hosts: Vec<HostKey>) -> Arc<Self> {
         let slots = pipe_hosts
             .into_iter()
-            .map(|h| (h, Slot { standing: Standing::Pending, holder: None, daemon: None }))
+            .map(|h| (h, Slot { standing: Standing::Pending, holder: None }))
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, rt: None }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, rt: None, owed: BTreeMap::new() }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -174,11 +174,7 @@ impl Leases {
             }
             let _ = late.send((host.clone(), rx));
         }
-        let daemon = match &standing {
-            Standing::Granted { state_root: Some(r) } => Some(r.clone()),
-            _ => book.slots.get(host).and_then(|s| s.daemon.clone()),
-        };
-        book.slots.insert(host.clone(), Slot { standing, holder, daemon });
+        book.slots.insert(host.clone(), Slot { standing, holder });
     }
 
     /// Claim the daemon on a dedicated connection before a data connection is
@@ -267,7 +263,14 @@ impl Leases {
         match res.outcome {
             LeaseOutcome::Granted => {
                 let holder = spawn_holder(rx, tx);
-                self.book.lock().unwrap().rt.get_or_insert_with(tokio::runtime::Handle::current);
+                let key = res.state_root.clone().unwrap_or_else(|| host.clone());
+                {
+                    let mut book = self.book.lock().unwrap();
+                    book.rt.get_or_insert_with(tokio::runtime::Handle::current);
+                    if res.not_ended > 0 {
+                        book.owed.insert(key, res.not_ended);
+                    }
+                }
                 self.set(host, Standing::Granted { state_root: res.state_root }, Some(holder));
                 tracing::info!(%host, not_ended = res.not_ended, "window lease: granted");
                 Ok(res.not_ended)
@@ -311,20 +314,24 @@ impl Leases {
             .collect()
     }
 
-    /// The key a not-ended count is shown and acked under: the state root
-    /// this label's grant named (one daemon holds one state root), else the
-    /// label itself, since without an issued identity there is nothing to merge.
-    pub fn daemon_key(&self, host: &HostKey) -> HostKey {
-        let book = self.book.lock().unwrap();
-        book.slots.get(host).and_then(|s| s.daemon.clone()).unwrap_or_else(|| host.clone())
+    /// The not-ended counts owed, one per daemon, keyed as each grant named it.
+    pub fn owed(&self) -> Vec<(HostKey, u32)> {
+        self.book.lock().unwrap().owed.iter().map(|(k, n)| (k.clone(), *n)).collect()
     }
 
-    /// Tell the daemon the not-ended line for `key` (a label or a daemon key)
-    /// has been shown.
+    /// Tell the daemon behind `key` (a label, or the state root a grant named) that its
+    /// count `n` was shown. It stops being owed only if it is still `n`; a newer one shows in its turn.
     pub fn notice_seen(&self, key: &HostKey, n: u32) {
-        let book = self.book.lock().unwrap();
+        let mut book = self.book.lock().unwrap();
+        if book.owed.get(key) == Some(&n) {
+            book.owed.remove(key);
+        }
         for (host, slot) in book.slots.iter() {
-            if host == key || slot.daemon.as_deref() == Some(key.as_str()) {
+            let root = match &slot.standing {
+                Standing::Granted { state_root } => state_root.as_ref(),
+                _ => None,
+            };
+            if host == key || root == Some(key) {
                 if let Some(h) = &slot.holder {
                     let _ = h.send(HolderCmd::NoticeSeen(n));
                 }
@@ -1215,27 +1222,18 @@ mod tests {
         }
         let (l1, p1) = bind("twolabels1");
         let (l2, p2) = bind("twolabels2");
+        let (l3, p3) = bind("twolabels3");
         let (log1, conns1) = daemon(l1, "r", 3);
         let (_log2, _conns2) = daemon(l2, "s", 4);
+        let (_log3, _conns3) = daemon(l3, "t", 0);
         let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
         let leases = Leases::new(false, vec![a.clone(), b.clone(), c.clone()]);
         assert_eq!(leases.before_data_connection(&a, &p1, None).await.unwrap(), 3);
         assert_eq!(leases.before_data_connection(&b, &p1, None).await.unwrap(), 3);
         assert_eq!(leases.before_data_connection(&c, &p2, None).await.unwrap(), 4);
-        assert_eq!(leases.daemon_key(&a), leases.daemon_key(&b), "two labels of one daemon must share its key");
-        assert_ne!(leases.daemon_key(&a), leases.daemon_key(&c));
-        // The real producer, then the GPU's own aggregation: the newest per key, summed.
-        let mut queued: Vec<(HostKey, u32)> = Vec::new();
-        for (h, n) in [(&a, 3), (&b, 3), (&c, 4)] {
-            match crate::transport::not_ended_evt(&leases, h, n) {
-                crate::transport::IncomingEvt::NotEnded { daemon, count } => queued.push((daemon, count)),
-                _ => unreachable!(),
-            }
-        }
-        let sum = |q: &[(HostKey, u32)]| crate::gpu::acks_for_frame(q, true).iter().map(|(_, n)| n).sum::<u32>();
-        assert_eq!(sum(&queued), 7);
-        // End a's holder, then fail a re-handshake: the identity stays.
-        let key = leases.daemon_key(&a);
+        let rs = vec![("r".to_string(), 3), ("s".to_string(), 4)];
+        assert_eq!(leases.owed(), rs, "a count is owed per label, not per granting daemon");
+        // a re-leases a replacement daemon (nothing not ended) before any frame drew the counts.
         conns1.lock().unwrap()[0].abort();
         for _ in 0..40 {
             if !leases.held(&a) {
@@ -1244,26 +1242,23 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(!leases.held(&a));
-        assert!(leases.before_data_connection(&a, Path::new("/nonexistent/sot-lease-dead.sock"), None).await.is_err());
-        assert_eq!(leases.daemon_key(&a), key, "a failed re-handshake lost the daemon's identity");
-        leases.notice_seen(&leases.daemon_key(&b), 3);
+        assert_eq!(leases.before_data_connection(&a, &p3, None).await.unwrap(), 0);
+        assert_eq!(leases.owed(), rs, "a re-lease moved or dropped a count another daemon granted");
+        leases.notice_seen(&"s".to_string(), 9);
+        assert_eq!(leases.owed(), rs, "an ack of another count cleared the owed one");
+        leases.notice_seen(&"r".to_string(), 3);
         for _ in 0..40 {
             if log1.lock().unwrap().iter().any(|o| o == op::FE_NOTICE_SEEN) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(log1.lock().unwrap().iter().any(|o| o == op::FE_NOTICE_SEEN), "{:?}", log1.lock().unwrap());
-        // a reconnects to another daemon (root s) before the drain: the old counts stay under root r.
-        let mut two = Vec::new();
-        for h in [&a, &b] {
-            if let crate::transport::IncomingEvt::NotEnded { daemon, count } = crate::transport::not_ended_evt(&leases, h, 3) {
-                two.push((daemon, count));
-            }
-        }
-        assert_eq!(leases.before_data_connection(&a, &p2, None).await.unwrap(), 4);
-        assert_eq!(leases.daemon_key(&a), leases.daemon_key(&c), "a now names the other daemon");
-        assert_eq!(sum(&two), 3, "a reconnect before the drain moved counts onto the new daemon");
+        assert!(
+            log1.lock().unwrap().iter().any(|o| o == op::FE_NOTICE_SEEN),
+            "the ack did not reach the daemon that granted the count: {:?}",
+            log1.lock().unwrap()
+        );
+        assert_eq!(leases.owed(), vec![("s".to_string(), 4)], "a shown count is still owed");
     }
 
     #[tokio::test]

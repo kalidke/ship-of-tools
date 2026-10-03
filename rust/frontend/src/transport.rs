@@ -137,10 +137,6 @@ pub enum IncomingEvt {
     Disconnected {
         reason: String,
     },
-    /// A grant reported sessions an earlier close could not end; `daemon` is
-    /// the key of the grant that reported them (`Leases::daemon_key`), fixed
-    /// when the grant is made, not looked up when the event is drained.
-    NotEnded { daemon: HostKey, count: u32 },
     /// The backend refused the handshake because the FE↔BE wire-contract
     /// protocol versions differ (ADR 0030 §2). Unlike a transient
     /// `Disconnected`, this is a hard, self-diagnosing skew: the chrome shows a
@@ -1703,13 +1699,6 @@ pub fn spawn(
     });
 }
 
-/// The event a grant's not-ended count becomes, carrying the key of the daemon
-/// that granted it: called right after the handshake, before any later
-/// reconnect of `host` can name another daemon.
-pub(crate) fn not_ended_evt(leases: &crate::lease::Leases, host: &HostKey, count: u32) -> IncomingEvt {
-    IncomingEvt::NotEnded { daemon: leases.daemon_key(host), count }
-}
-
 /// Dial whichever transport `config.dial` names. Once a connection is
 /// established we hand off to `run_protocol`; any error from there is
 /// *not* retried via the other transport — that's a runtime disconnect,
@@ -1733,8 +1722,8 @@ async fn connect_and_run(
             let not_ended = leases
                 .before_data_connection(&host, pipe_path, config.token.as_deref())
                 .await?;
+            // The grant recorded the count (`Leases::owed`); the next frame shows it.
             if not_ended > 0 {
-                let _ = evt_tx.send((host.clone(), not_ended_evt(leases, &host, not_ended)));
                 window.request_redraw();
             }
             let stream = connect_pipe(pipe_path).await?;
