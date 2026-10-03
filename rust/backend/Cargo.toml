@@ -61,7 +61,7 @@ uuid = { workspace = true }
 # `Win32_System_Diagnostics_ToolHelp` + `Win32_System_Threading`: ancestors.rs's
 # process snapshot and per-process creation times; `Wdk_System_Threading`: its
 # command-line query.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Wdk_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Wdk_System_Threading"] }
 
 [[bin]]
 name = "sotd"

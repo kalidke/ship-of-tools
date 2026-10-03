@@ -1,6 +1,7 @@
 # ADR 0002: Kernel launch and process supervision
 
 **Status:** current — accepted.
+**Shutdown superseded (0.6.6):** every long-lived child starts through `shutdown::Signal::spawn` (rust/backend/src/contain.rs) in its own process group (Unix) or job (Windows). The tree is killed with SIGKILL to the group or with TerminateJobObject when its owner lets go or the daemon shuts down. There is no SIGTERM grace, no taskkill and no `kill_on_drop`.
 **Date:** 2026-05-07
 
 ## Context

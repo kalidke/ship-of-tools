@@ -133,12 +133,13 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
             script_path.display()
         ));
     }
-    let mut child: Child = Command::new(node_bin)
-        .arg(script_path)
+    let mut cmd = Command::new(node_bin);
+    cmd.arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let (mut child, contained) = crate::shutdown::process()
+        .spawn(&mut cmd)
         .with_context(|| format!("spawn {node_bin} {}", script_path.display()))?;
 
     let stdin = child
@@ -164,17 +165,17 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
         }
     });
 
-    tokio::spawn(supervisor_task(child, stdin, stdout, submit_rx));
+    tokio::spawn(supervisor_task(child, contained, stdin, stdout, submit_rx));
     Ok(submit_tx)
 }
 
 async fn supervisor_task(
     mut child: Child,
+    _contained: crate::shutdown::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
 ) {
-    let _child_guard = crate::shutdown::ChildGuard::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<RenderedSvg>>> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = BufReader::new(stdout).lines();
@@ -182,10 +183,9 @@ async fn supervisor_task(
     loop {
         tokio::select! {
             biased;
-            // The daemon is shutting down: nothing kills this child at
-            // `process::exit`, so it is killed here.
+            // The daemon is shutting down: the signal has already killed the
+            // child's tree.
             _ = crate::shutdown::fired() => {
-                let _ = child.kill().await;
                 break;
             }
             // Drain incoming submissions, write to child stdin.

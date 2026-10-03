@@ -45,6 +45,7 @@ mod repl;
 mod server;
 mod session;
 mod session_state;
+mod contain;
 mod shutdown;
 mod site_serve;
 mod startup;
