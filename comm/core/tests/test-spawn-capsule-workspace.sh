@@ -277,6 +277,29 @@ case_capsule_ready_over_pipe_endpoint() {
     return 0
 }
 
+# On a Windows host the daemon is a native process: the workspace.create
+# request must carry cygpath -m's spelling, not git-bash's /c/... form. OS is
+# what _sot_is_windows reads first; a stub cygpath maps the folder to C:/...
+case_windows_host_sends_native_project_root() {
+    local wsid="ws-win" slug="win1"
+    start_stub_daemon "$wsid" "$slug" \
+        "$(entry "$wsid" "$slug" capsule starting)" \
+        "$(entry "$wsid" "$slug" capsule ready)"
+    mkdir -p "$WORK/bin"
+    printf '#!/usr/bin/env bash\n[ "$1" = "-m" ] && shift\nprintf "C:/mapped%%s\\n" "$1"\n' > "$WORK/bin/cygpath"
+    chmod +x "$WORK/bin/cygpath"
+    OS=Windows_NT SPAWN_PATH="$WORK/bin:$PATH" \
+        SOT_COMM_SPAWN_CAPSULE_WAIT=10 run_spawn spawn-win
+    stop_stub_daemon
+
+    [ "$SPAWN_RC" -eq 0 ] || { echo "  exited $SPAWN_RC: $SPAWN_ERR"; return 1; }
+    local got; got="$(jq -r 'select(.op=="workspace.create") | .payload.project_root' "$REQLOG")"
+    case "$got" in
+        C:/mapped/*) return 0 ;;
+        *) echo "  project_root on the wire: '$got'"; return 1 ;;
+    esac
+}
+
 # --- run -----------------------------------------------------------------
 
 check "capsule row reaches phase 'ready' on the second poll: succeeds" \
@@ -293,6 +316,8 @@ check "occupied root, derived name: refused before any write or create" \
     case_occupied_root_refused_derived_name
 check "pipe: endpoint (Windows local daemon): spawn succeeds through powershell.exe" \
     case_capsule_ready_over_pipe_endpoint
+check "Windows host: workspace.create carries the native (cygpath -m) project_root" \
+    case_windows_host_sends_native_project_root
 
 echo ""
 echo "$PASS passed, $FAIL failed"

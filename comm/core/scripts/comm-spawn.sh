@@ -306,16 +306,6 @@ sot_send() {
 if ! ENDPOINT="$(resolve_endpoint)"; then
     echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or ssh:target[/host]." >&2; exit 1
 fi
-# `nc` is needed only for a unix: daemon (sot_oneshot_request's unix: arm) —
-# an ssh: endpoint needs nothing but ssh itself (C10), so a pure frontend
-# box with no local daemon and no nc installed can still reach a remote
-# hub this way.
-case "$ENDPOINT" in
-    unix:*)
-        command -v nc >/dev/null 2>&1 || { echo "ERROR: nc not found — needed to reach a unix: daemon." >&2; exit 1; }
-        ;;
-esac
-
 # The daemon's OWN declared host: `version.query` -> `.payload.daemon.host`
 # (`DaemonVersion.host`, sourced from `workspaces::declared_host()` — the
 # same resolution ADR 0046 binds a hello's `host` to). NEVER parsed out of
@@ -482,6 +472,16 @@ _row_left_running() {  # reason
 }
 
 
+# project_root goes to the daemon in ITS spelling. On a Windows host the
+# daemon is a native process: it rejects git-bash's /c/Users/... as
+# no_such_path, so the request carries `cygpath -m` (C:/Users/...). Only the request
+# converts; every comparison above keeps the MSYS form.
+SPAWN_WIRE_ROOT="$CANON_ROOT"
+if _sot_is_windows; then
+    SPAWN_WIRE_ROOT="$(cygpath -m "$CANON_ROOT" 2>/dev/null)" && [ -n "$SPAWN_WIRE_ROOT" ] \
+        || { echo "ERROR: cannot convert $CANON_ROOT to the daemon's path spelling (cygpath failed)." >&2; exit 1; }
+fi
+
 # Provisional registry row + inbox, so the agent is addressable FROM SPAWN TIME:
 # comm-send refuses unregistered handles, and without this the spawner had to
 # sit out the agent's whole boot before its first message. With the row + inbox
@@ -593,7 +593,7 @@ fi
 # else reads. `sot_canonical_path` has already vouched for this value and
 # exited loudly if it could not.
 SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
-SPAWN_PATH_FILE="$(sot_jq_rawfile "$CANON_ROOT")" || exit 1
+SPAWN_PATH_FILE="$(sot_jq_rawfile "$SPAWN_WIRE_ROOT")" || exit 1
 # agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx
 # by it; autostart_claude stays true as the legacy fallback an older daemon
 # derives the kind from.

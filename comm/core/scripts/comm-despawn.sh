@@ -71,12 +71,6 @@ _unresolved() {  # why
 
 # 2) destroy the workspace
 if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or ssh:target[/host]" >&2; exit 1; fi
-# nc is needed only for a unix: daemon (sot_oneshot_request's unix: arm) --
-# an ssh: endpoint needs nothing but ssh itself (C10).
-case "$ENDPOINT" in
-    unix:*) command -v nc >/dev/null 2>&1 || { echo "nc not found; cannot reach daemon to destroy workspace" >&2; exit 1; } ;;
-esac
-
 if ! LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" \
     || ! printf '%s' "$LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
     _unresolved "workspace.list returned no workspace list"
