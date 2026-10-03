@@ -30,7 +30,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `directory.list`, `nav.toggle_hidden`, `preview.get`, `preview.set_scale`, `image.crop`, `concept.read`,
 `concept.write`, `concept.list`, `file.read`, `file.write`, `file.delete`, `file.download`, `file.upload`,
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
-`rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
+`rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
 `is_servable_video`.
 

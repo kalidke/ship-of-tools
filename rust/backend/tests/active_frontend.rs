@@ -397,3 +397,78 @@ async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
+
+/// A 64 MiB sparse file, larger than any socket or pipe buffer, so a download of it blocks on a
+/// reader that stops reading.
+fn big_sparse_file() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("big.bin");
+    std::fs::File::create(&path).and_then(|f| f.set_len(64 << 20)).expect("sparse file");
+    (dir, path)
+}
+
+/// Read up to request `id`'s first reply (skipping broadcast evts, as `call` does) and assert it
+/// is a download chunk that is not the last.
+async fn first_chunk_is_not_the_last(conn: &mut Conn, id: u64) {
+    let body = async {
+        loop {
+            let (frame, _blob) = codec::read_frame(conn).await.expect("read first chunk");
+            if frame.kind == Kind::Res && frame.id == id {
+                return frame.payload;
+            }
+        }
+    };
+    let chunk = tokio::time::timeout(Duration::from_secs(5), body).await.expect("no first chunk within 5 s");
+    assert_eq!(chunk.get("eof").and_then(|v| v.as_bool()), Some(false), "{chunk}");
+}
+
+/// Read `conn` until a read errors, within 5 s; no frame may carry `eof: true`.
+async fn drain_until_closed_without_eof(conn: &mut Conn) {
+    let body = async {
+        loop {
+            match codec::read_frame(conn).await {
+                Ok((frame, _blob)) => assert_ne!(
+                    frame.payload.get("eof").and_then(|v| v.as_bool()),
+                    Some(true),
+                    "the stalled reader got the whole file"
+                ),
+                Err(_) => return,
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), body)
+        .await
+        .expect("the stalled reader was still open 5 s after it left the roster");
+}
+
+/// ADR 0027's reaper covers downloads: a reader that stops reading mid-`file.download` is
+/// dropped by the per-connection write deadline, so it does not hold its connection task, its
+/// roster entry or its socket forever.
+#[tokio::test]
+async fn a_stalled_download_is_closed_by_the_write_deadline() {
+    let env = Env::spawn("stalled");
+    let (_dir, file) = big_sparse_file();
+    let body = async {
+        let (mut witness, mut id) = connect_and_hello(&env.socket_path, "witness", "fe@host-witness").await;
+        let (mut a, a_id) = connect_and_hello(&env.socket_path, "stall-a", "fe@host-stall").await;
+        codec::write_frame(&mut a, &Frame::req(a_id, op::FILE_DOWNLOAD, serde_json::json!({ "path": file })), None)
+            .await
+            .expect("write file.download");
+        first_chunk_is_not_the_last(&mut a, a_id).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(40);
+        loop {
+            let v = call(&mut witness, id, op::VERSION_QUERY, serde_json::json!({})).await;
+            id += 1;
+            if client_row(&v, "stall-a").is_none() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a stalled download was never closed by the write deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        drain_until_closed_without_eof(&mut a).await;
+    };
+    tokio::time::timeout(Duration::from_secs(60), body).await.expect("exchange did not finish within 60 s");
+}
