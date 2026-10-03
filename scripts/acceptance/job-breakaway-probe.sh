@@ -4,7 +4,7 @@
 # KILL_ON_JOB_CLOSE|BREAKAWAY_OK, K = sealed. Chains: jd julia detach; jgd julia run() then detach (the kernel's case);
 # jbash julia -> MSYS bash -> ping; bash MSYS bash -> ping; p6 bash -> PATH julia -> detach (the incident).
 #   --pid N  prints job membership of N and its live ancestors, with query rights only.
-set -u
+set -u -o pipefail
 case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo "SKIP: needs git-bash on native Windows"; exit 0 ;; esac
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT; Tm=$(cygpath -m "$T"); B=$(cygpath -m "$(command -v bash)")
 J=$(julia --startup-file=no -e 'print(replace(joinpath(Sys.BINDIR, Base.julia_exename()), "\\" => "/"))' 2>/dev/null | tr -d '\r')
@@ -16,6 +16,7 @@ echo 'ping -n "$1" 127.0.0.1 >/dev/null 2>&1 &' > "$T/bash.sh"
 echo 'julia -e "p=run(detach(\`ping -n $1 127.0.0.1\`);wait=false);println(getpid(p))" >/dev/null' > "$T/p6.sh"
 cat > "$T/probe.ps1" <<'PS'
 param([string]$Mode, [int]$Pid0, [string]$T, [string]$Bash, [string]$Julia)
+$ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class W {
@@ -50,7 +51,7 @@ public static class W {
 }
 '@
 $me = [W]::OpenProcess(0x1000, $false, $PID); "controller in_any_job=$([W]::In($me, [IntPtr]::Zero))"
-if ($Mode -eq '--pid') { $p = $Pid0
+if ($Mode -eq 'pid') { $p = $Pid0
   for ($k = 0; $k -lt 12 -and $p; $k++) { $w = Get-CimInstance Win32_Process -Filter "ProcessId=$p"
     if (-not $w) { "pid=$p gone"; break }
     $h = [W]::OpenProcess(0x1000, $false, $p); "pid=$p name=$($w.Name) in_any_job=$([W]::In($h, [IntPtr]::Zero))"
@@ -67,10 +68,15 @@ try {
     $ping = Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" | Where-Object { $_.CommandLine -match "-n $n 127" } | Select-Object -First 1 }
   if (-not $ping) { [void][W]::TerminateJobObject($job, 1); [void][W]::CloseHandle($job); $res["$c/$($fl[0])"] = 'none'; "$c $($fl[0]) flags=$flags ping=none"; continue }
   $h = [W]::OpenProcess(0x101001, $false, [int]$ping.ProcessId); $in = [W]::In($h, $job); $any = [W]::In($h, [IntPtr]::Zero)
+  if ($c -eq 'p6') { $q = [int]$ping.ParentProcessId
+    for ($k = 0; $k -lt 5 -and $q; $k++) { $w = Get-CimInstance Win32_Process -Filter "ProcessId=$q"; if (-not $w) { "  chain: pid=$q gone"; break }
+      $qh = [W]::OpenProcess(0x1000, $false, $q); "  chain: pid=$q name=$($w.Name) in_job=$([W]::In($qh, $job)) any_job=$([W]::In($qh, [IntPtr]::Zero))"
+      [void][W]::CloseHandle($qh); $q = [int]$w.ParentProcessId } }
   [void][W]::TerminateJobObject($job, 1); [void][W]::CloseHandle($job)
   $end = if ([W]::WaitForSingleObject($h, 3000) -eq 0) { 'died' } else { [void][W]::TerminateProcess($h, 1); 'SURVIVED' }
   [void][W]::CloseHandle($h); $res["$c/$($fl[0])"] = "$in/$end"
   "$c $($fl[0]) flags=$flags ping=$($ping.ProcessId) in_job=$in any_job=$any after_end=$end" } }
+} catch { "PROBE-ERROR: $($_.Exception.Message)"; exit 2
 } finally {
  Get-CimInstance Win32_Process -Filter "Name='PING.EXE'" | Where-Object { $_.CommandLine -match "-n (\d+) 127" -and [int]$Matches[1] -ge $base -and [int]$Matches[1] -lt $base + 10 } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
@@ -81,4 +87,5 @@ $yn = { param($b) if ($b) { 'YES' } else { 'NO' } }
 $bad = @($res.Keys | Where-Object { $_ -like '*/K' -and $res[$_] -ne 'True/died' })
 "SEALED job keeps every chain:                  " + $(if ($bad.Count -eq 0) { 'YES' } else { 'NO: ' + ($bad -join ' ') })
 PS
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$T/probe.ps1")" "${1:-run}" "${2:-0}" "$Tm" "$B" "$J" | tr -d '\r'
+M="${1:-run}"; [ "$M" = --pid ] && M=pid
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$T/probe.ps1")" -Mode "$M" -Pid0 "${2:-0}" -T "$Tm" -Bash "$B" -Julia "$J" | tr -d '\r'
