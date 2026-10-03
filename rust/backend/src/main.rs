@@ -161,6 +161,119 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
     Some(Arc::new(Mutex::new(file)))
 }
 
+/// `sotd --help`'s text; also the fallback for every command without a usage of its own.
+const SOTD_HELP: &str = r#"Usage: sotd [OPTIONS]
+
+  --socket <path>        listen on this unix socket / named pipe
+                          (default: $SOT_SOCKET, else derived from --label)
+  --project-root <path>  filesystem root the Files-mode tree exposes
+                          (default: $SOT_PROJECT_ROOT, else the cwd)
+  --label <name>         human-friendly backend label (Sessions mode
+                          matches the running daemon to it)
+  --adopt-legacy-registry  allow the Windows one-time legacy registry
+                          adoption (installed launchers only)
+
+Pure queries (no startup side effects, answered before any of the above):
+  --version, -V           print the version line and exit
+  --help, -h              print usage and exit; every subcommand accepts it
+                          (and then does nothing else)
+  session-socket-path [label]
+                          print the per-session socket path and exit
+                          (no label: this box's own daemon)
+  agent-exec <kind> [flags…] (Unix only)
+                          resolve and exec the named agent's launch
+                          recipe in place (ADR 0046 decision 4); only
+                          "claude" has a recipe today
+  ancestors [--from <pid>] (Windows only)
+                          print the ancestors of <pid> (default: this
+                          process), parent first: pid, exe, command line
+  topology <plan|status|relay-endpoint|sync|apply>
+                          what this box derives from hosts.toml
+                          (`sotd topology` alone prints the details)
+  status [--json]        declared + LIVE: fans out to every reachable
+                          daemon (topology plan §E; `sotd topology status`
+                          stays the offline, declared-only view)"#;
+
+/// The usage to print when `--help`/`-h` is among `sotd`'s OWN arguments, else `None`.
+/// `sotd`'s own arguments are all of `args` (argv without argv[0]) except for `agent-exec`,
+/// where only the kind position counts: the words after it belong to the agent (`ccb --help`).
+/// A help request must never write, dial or exec, so `main` asks this before anything else runs.
+/// A `--help`/`-h` among those arguments is a help request even where it would be an option's
+/// value (`--socket --help`): such a value is not supported. The parsers share no option table,
+/// and a wrong guess only prints help, so there is one rule and no second option list.
+fn help_for(args: &[String]) -> Option<&'static str> {
+    let first = args.first()?;
+    let owned = if first == "agent-exec" { &args[1..args.len().min(2)] } else { args };
+    if !owned.iter().any(|a| a == "--help" || a == "-h") {
+        return None;
+    }
+    Some(match first.as_str() {
+        "topology" => topology_cli::USAGE,
+        "status" => status_cli::USAGE,
+        "stdio-bridge" => stdio_bridge::USAGE,
+        "ancestors" => ancestors::USAGE,
+        _ => SOTD_HELP,
+    })
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+
+    fn v(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn help_for_table() {
+        let rows: &[(&str, &str)] = &[
+            ("--help", SOTD_HELP),
+            ("--version --help", SOTD_HELP),
+            ("--label x --help", SOTD_HELP),
+            ("--socket --help", SOTD_HELP),
+            ("session-socket-path --help", SOTD_HELP),
+            ("agent-exec --help", SOTD_HELP),
+            ("ancestors --help", ancestors::USAGE),
+            ("ancestors --from 1 --help", ancestors::USAGE),
+            ("stdio-bridge --help", stdio_bridge::USAGE),
+            ("stdio-bridge --host a --help", stdio_bridge::USAGE),
+            ("status --help", status_cli::USAGE),
+            ("topology --help", topology_cli::USAGE),
+            ("topology plan --help", topology_cli::USAGE),
+            ("topology status --help", topology_cli::USAGE),
+            ("topology relay-endpoint --help", topology_cli::USAGE),
+            ("topology relay-sockets --help", topology_cli::USAGE),
+            ("topology sync --help", topology_cli::USAGE),
+            ("topology apply --help", topology_cli::USAGE),
+            ("topology apply --yes --help", topology_cli::USAGE),
+            ("topology apply --help --yes", topology_cli::USAGE),
+            ("topology set --help", topology_cli::USAGE),
+            ("topology set add --help", topology_cli::USAGE),
+            ("topology set add h --help", topology_cli::USAGE),
+            ("topology set remove --help", topology_cli::USAGE),
+        ];
+        for (argv, want) in rows {
+            for flag in ["--help", "-h"] {
+                let mut args = v(argv);
+                for a in args.iter_mut().filter(|a| *a == "--help") {
+                    *a = flag.to_string();
+                }
+                assert_eq!(help_for(&args), Some(*want), "{args:?}");
+            }
+        }
+        for argv in [
+            "agent-exec claude --help",
+            "agent-exec claude -h",
+            "topology plan",
+            "status --json",
+            "session-socket-path sot",
+            "",
+        ] {
+            assert_eq!(help_for(&v(argv)), None, "{argv:?}");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Pure query subcommands (security review): checked against raw argv
@@ -174,6 +287,14 @@ async fn main() -> Result<()> {
     // invoked — `sotd session-socket-path sot`, `sotd --version`); this
     // replaces, rather than duplicates, the arms that used to live in
     // `parse_args()`.
+    // Help comes first: see `help_for`. Read lossily: `env::args` panics on a value that is not
+    // UTF-8, and such a value can never be `--help` or `-h` anyway.
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if let Some(text) = help_for(&args) {
+        println!("{}", sot_protocol::version_line("sotd"));
+        println!("{text}");
+        return Ok(());
+    }
     if let Some(first) = std::env::args().nth(1) {
         match first.as_str() {
             "session-socket-path" => {
@@ -261,49 +382,7 @@ async fn main() -> Result<()> {
                 println!("{}", sot_protocol::version_line("sotd"));
                 return Ok(());
             }
-            // ADR 0030 §8 decision 31d: `sotd --help` used to fall all the
-            // way through to `parse_args()`'s `other => bail!` (a confusing
-            // "unrecognised argument: --help" for exactly the flag someone
-            // reaches for to get UNconfused) -- folded into this same
-            // early pure-query arm as `--version`, mirroring the
-            // frontend's own `sot --help` (`cli.rs`).
-            "--help" | "-h" => {
-                println!("{}", sot_protocol::version_line("sotd"));
-                println!(
-                    r#"
-Usage: sotd [OPTIONS]
-
-  --socket <path>        listen on this unix socket / named pipe
-                          (default: $SOT_SOCKET, else derived from --label)
-  --project-root <path>  filesystem root the Files-mode tree exposes
-                          (default: $SOT_PROJECT_ROOT, else the cwd)
-  --label <name>         human-friendly backend label (Sessions mode
-                          matches the running daemon to it)
-  --adopt-legacy-registry  allow the Windows one-time legacy registry
-                          adoption (installed launchers only)
-
-Pure queries (no startup side effects, answered before any of the above):
-  --version, -V           print the version line and exit
-  --help, -h              print this usage and exit
-  session-socket-path [label]
-                          print the per-session socket path and exit
-                          (no label: this box's own daemon)
-  agent-exec <kind> [flags…] (Unix only)
-                          resolve and exec the named agent's launch
-                          recipe in place (ADR 0046 decision 4); only
-                          "claude" has a recipe today
-  ancestors [--from <pid>] (Windows only)
-                          print the ancestors of <pid> (default: this
-                          process), parent first: pid, exe, command line
-  topology <plan|status|relay-endpoint|sync|apply>
-                          what this box derives from hosts.toml
-                          (`sotd topology` alone prints the details)
-  status [--json]        declared + LIVE: fans out to every reachable
-                          daemon (topology plan §E; `sotd topology status`
-                          stays the offline, declared-only view)"#
-                );
-                return Ok(());
-            }
+            // `--help`/`-h` is answered above by `help_for`, before this match.
             _ => {}
         }
     }

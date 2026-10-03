@@ -45,6 +45,8 @@ use std::sync::Arc;
 
 use sot_log::transport::TransportError;
 
+/// The usage line, printed on a bad argument and for `--help`.
+pub(crate) const USAGE: &str = "Usage: sotd stdio-bridge [--host <host>]";
 /// The one failure code. It says "this did not work" and nothing more —
 /// the stderr line says which thing.
 const EXIT_FAILED: i32 = 1;
@@ -91,7 +93,7 @@ pub fn run(args: &[String]) -> i32 {
         // never carried over the wire.
         [flag, host] if flag == "--host" => sot_protocol::topology::relay_socket_path(host),
         _ => {
-            eprintln!("Usage: sotd stdio-bridge [--host <host>]");
+            eprintln!("{USAGE}");
             return EXIT_FAILED;
         }
     };
