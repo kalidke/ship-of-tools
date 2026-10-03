@@ -42,15 +42,14 @@ Usage: sotd topology <subcommand>
                         tunnels) and sot-host-relay-<host>.socket with its
                         per-connection sot-host-relay-<host>@.service (the
                         hub's own socket per dialable host, unit text and
-                        all: apply WRITES that pair, it is not shipped).
+                        all: apply WRITES those files, they are not shipped).
                         Default is a DRY RUN (prints what it would do);
                         --yes runs systemctl for real. --dry-run is
                         accepted too, as the explicit spelling of the
                         default. Refuses on a non-hub box, naming the hub.
   refresh               hub only: rewrite each enabled host's relay unit files
-                        when their text differs from this sotd's, retire any
-                        relay drop-in that sets ExecStart= (renamed
-                        <name>.conf.retired), clear failed relay instances,
+                        and the drop-in that sets their command, when their
+                        text differs from this sotd's; clear failed relay instances,
                         reload, and restart every enabled relay socket, every
                         run, so a step that failed is redone at the next. The
                         hub's daemon does this at each start as sotd.service's
@@ -231,8 +230,7 @@ fn refuse_if_not_listed(fetched: &Topology, me: &str) -> Result<(), String> {
 /// `sot-relay-tunnel@<host>` for the comm relay's reverse tunnels, and
 /// `sot-host-relay-<host>.socket` (plus the per-connection
 /// `sot-host-relay-<host>@.service`) for the hub's own socket per dialable
-/// host — a pair apply WRITES from `topology::relay_socket_unit` /
-/// `relay_service_unit`, since its text is per host.
+/// host — files apply WRITES from `topology::relay_files`, since their text is per host.
 /// Refuses off the hub (`topology::require_hub`). `dry_run` prints every
 /// action without touching systemd or the filesystem — the default (ADR
 /// 0028 units forward a live relay port; this box silently flipping which
@@ -359,27 +357,24 @@ fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> 
         .collect())
 }
 
-/// Writes the hub's listener and its per-connection bridge for one host
-/// (`topology::relay_socket_unit` / `relay_service_unit`), overwriting
-/// whatever was there: these two files are apply's, and the header in
-/// each says so. An override survives in a drop-in beside them, which
-/// apply never writes except for its own `topology.conf`.
+/// Writes every file `topology::relay_files` names for one host, overwriting
+/// whatever was there: they are apply's, and the header in each says so.
 fn write_relay_units(host: &str) -> Result<(), String> {
     let dir = systemd_user_dir()?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for (name, text) in
-        [(topology::relay_unit(host), topology::relay_socket_unit(host)), (topology::relay_service_unit_file(host), topology::relay_service_unit(host))]
-    {
-        write_atomic(&dir.join(&name), &text)?;
+    for (name, text) in topology::relay_files(host) {
+        write_atomic(&dir.join(name), &text)?;
     }
     Ok(())
 }
 
 /// Temp file in the same directory, then rename: a reader (systemd) never
-/// sees half a unit file.
+/// sees half a unit file. Creates the directory first (a drop-in's `.d/`).
 fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
     let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d).map_err(|e| io(d, e))?;
+    }
+    let tmp = PathBuf::from(format!("{}.tmp.{}", path.display(), std::process::id()));
     std::fs::write(&tmp, text).map_err(|e| io(&tmp, e))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -388,15 +383,16 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
 }
 
 /// The hub keeps its generated relay units equal to this binary's text. For
-/// every host that is both a relay host and enabled: rewrite changed unit
-/// files, retire ExecStart drop-ins (`topology::relay_refresh` decides),
+/// every host that is both a relay host and enabled: rewrite each of
+/// `topology::relay_files` whose text differs (the command drop-in comes last,
+/// so no other drop-in is read),
 /// `reset-failed` every host before any reload (accumulated failed
 /// instances are what wedges `daemon-reload`), then always reload and
 /// restart every enabled relay socket: the files on disk are no record of
 /// what systemd applied, so a run after a failed reload or restart redoes it,
 /// and a socket restart leaves running bridges alone and revives one stopped
 /// by `trigger-limit-hit`. `say` hears each
-/// rewrite and retirement the moment it is done, so a later failure cannot
+/// rewrite the moment it is done, so a later failure cannot
 /// hide a change already on disk. Only the reload is fatal; other failures are collected and returned at the end, like
 /// `apply`.
 fn refresh(
@@ -414,38 +410,14 @@ fn refresh(
     }
     let mut failures: Vec<String> = Vec::new();
     for &h in &hosts {
-        let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
-        let dropin_dir = dir.join(format!("{}.d", topology::relay_service_unit_file(h)));
-        let mut dropins: Vec<(String, String)> = std::fs::read_dir(&dropin_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name().into_string().ok()?;
-                name.ends_with(".conf").then_some(())?;
-                Some((name, std::fs::read_to_string(e.path()).ok()?))
-            })
-            .collect();
-        dropins.sort();
-        let plan = topology::relay_refresh(
-            h,
-            read(&topology::relay_unit(h)).as_deref(),
-            read(&topology::relay_service_unit_file(h)).as_deref(),
-            &dropins,
-        );
-        for (name, text) in &plan.write {
-            let path = dir.join(name);
-            match write_atomic(&path, text) {
+        for (name, text) in topology::relay_files(h) {
+            let path = dir.join(&name);
+            if std::fs::read_to_string(&path).is_ok_and(|now| now == text) {
+                continue;
+            }
+            match write_atomic(&path, &text) {
                 Ok(()) => say(format!("rewrote {}", path.display())),
                 Err(e) => failures.push(e),
-            }
-        }
-        for name in &plan.retire {
-            let from = dropin_dir.join(name);
-            let to = dropin_dir.join(format!("{name}.retired"));
-            match std::fs::rename(&from, &to) {
-                Ok(()) => say(retired_note(&from)),
-                Err(e) => failures.push(format!("{}: {e}", from.display())),
             }
         }
     }
@@ -465,13 +437,6 @@ fn refresh(
         return Err(format!("{} relay refresh step(s) failed:\n  {}", failures.len(), failures.join("\n  ")));
     }
     Ok(())
-}
-
-fn retired_note(path: &Path) -> String {
-    format!(
-        "retired {p} -> {p}.retired: it set ExecStart=, which only the generated relay unit sets; copy any Environment= line it still needs into a drop-in of its own",
-        p = path.display()
-    )
 }
 
 /// `sotd topology refresh`: [`refresh`] on the real directory, each action
@@ -537,13 +502,15 @@ fn supervised_by_systemd() -> Result<bool, String> {
     Ok(is_main_pid(&String::from_utf8_lossy(&out.stdout), std::process::id()))
 }
 
-/// Removes both generated files for a host. A missing one is not an
-/// error — the disable that precedes this is the operation that mattered.
+/// Removes every generated file for a host, then the service's `.d/` if that
+/// left it empty (a hand-made drop-in keeps it). A missing file is not an error
+/// — the disable that precedes this is the operation that mattered.
 fn remove_relay_units(host: &str) -> Result<(), String> {
     let dir = systemd_user_dir()?;
-    for name in [topology::relay_unit(host), topology::relay_service_unit_file(host)] {
+    for (name, _) in topology::relay_files(host) {
         let _ = std::fs::remove_file(dir.join(name));
     }
+    let _ = std::fs::remove_dir(dir.join(format!("{}.d", topology::relay_service_unit_file(host))));
     Ok(())
 }
 
@@ -765,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_writes_retires_and_reloads_in_order() {
+    fn refresh_writes_and_reloads_in_order() {
         let topo = hub_topo();
         let dir = scratch("order");
         let dd = dir.join("sot-host-relay-remote-a@.service.d");
@@ -782,9 +749,16 @@ mod tests {
             Ok(())
         }, &mut |l| said.push(l))
         .unwrap();
-        assert_eq!(said, [format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service").display()), retired_note(&dd.join("no-mux.conf"))]);
+        assert_eq!(
+            said,
+            [
+                format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service").display()),
+                format!("rewrote {}", dd.join("zz-sot-relay-command.conf").display())
+            ]
+        );
         assert_eq!(std::fs::read_to_string(dir.join("sot-host-relay-remote-a@.service")).unwrap(), topology::relay_service_unit("remote-a"));
-        assert!(!dd.join("no-mux.conf").exists() && dd.join("no-mux.conf.retired").exists());
+        assert_eq!(std::fs::read_to_string(dd.join("no-mux.conf")).unwrap(), NO_MUX);
+        assert_eq!(std::fs::read_dir(&dd).unwrap().count(), 3);
         assert_eq!(std::fs::read_to_string(dd.join("override.conf")).unwrap(), OVERRIDE);
         assert_eq!(
             calls,
