@@ -150,6 +150,10 @@ spawn_row() {
     R_WS=""; R_NAME=""; R_SLUG=""
     mkdir -p "$ROWS_DIR/$base"
     R_DIR="$(cd "$ROWS_DIR/$base" && pwd -P)"
+    # DT_AGENT_VIEW_OFF=1: the row starts with Claude Code's agent view off, as a row on the fixed version does.
+    if [ "${DT_AGENT_VIEW_OFF:-}" = 1 ]; then
+        mkdir -p "$R_DIR/.claude" && printf '{\n  "disableAgentView": true\n}\n' > "$R_DIR/.claude/settings.local.json"
+    fi
     args=("$R_DIR")
     [ -n "$name" ] && args+=(--name "$name")
     [ -n "$task" ] && args+=(--task "$task")
@@ -422,6 +426,7 @@ m4_check() {
         emit FAIL M4 "sub-agent no longer running when row A went idle ($(($(date +%s) - t0))s after start); nothing sent"
         return
     fi
+    dump_screen "$A_WS" "M4 at the send"
     wake_check M4 "$A_WS" "$A_NAME" "reply ok4 to @$DRIVER" "sub-agent still running at the send (started $(($(date +%s) - t0))s before): "
 }
 item_M5() {
