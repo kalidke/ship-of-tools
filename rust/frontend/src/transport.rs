@@ -2165,6 +2165,7 @@ where
         role: crate::gpu::FrontendIdentity::ROLE.to_string(),
         instance: Some(crate::gpu::frontend_identity().instance.clone()),
         name: Some(crate::gpu::frontend_identity().name.clone()),
+        os_user: sot_log::os_account::own_account_id(),
     };
     codec::write_frame(
         &mut tx,
@@ -4879,6 +4880,7 @@ mod tests {
                     role: String::new(),
                     instance: None,
                     name: None,
+                    os_user: None,
                 })
                 .unwrap(),
             ),

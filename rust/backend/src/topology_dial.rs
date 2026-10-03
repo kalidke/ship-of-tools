@@ -268,6 +268,7 @@ fn dial_and_call_tracked(
         role: "cli".to_string(),
         instance: None,
         name: Some(self_host.to_string()),
+        os_user: sot_log::os_account::own_account_id(),
     };
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))

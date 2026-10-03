@@ -278,6 +278,7 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
         role: String::new(),
         instance: None,
         name: None,
+        os_user: None,
     };
     let hello_payload = serde_json::to_value(&hello).unwrap();
 
@@ -346,6 +347,7 @@ async fn do_hello(conn: &mut Conn) {
         role: String::new(),
         instance: None,
         name: None,
+        os_user: None,
     };
     codec::write_frame(conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await

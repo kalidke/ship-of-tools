@@ -342,6 +342,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
         role: "fe".to_string(),
         instance: None,
         name: Some("bridge-it".to_string()),
+        os_user: None,
     };
     // The wire's own framing, written by hand: one JSON envelope and one
     // `\n` (`codec::write_frame`), so nothing async is needed to prove a

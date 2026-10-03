@@ -110,6 +110,21 @@ pub struct ClientInfo {
     /// from `Some(vec![])`, a box that HAS declared and has nothing to
     /// report right now. See `Clients::declare_sessions`.
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
+    /// The hello's `os_user` (decision 0031), held only for this connection's life so `register` can refuse a
+    /// second account on the same declared host. Never reported (not in `version.query`, not in any log line but
+    /// a refusal's), never written anywhere.
+    os_user: Option<String>,
+}
+
+/// A hello refused because a live connection already declared the same host as another OS account (decision
+/// 0031): two accounts on one box that share this daemon's account would otherwise receive each other's mail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsUserConflict {
+    pub host: String,
+    /// The account already connected for `host`.
+    pub held_by: String,
+    /// The account this hello declared.
+    pub refused: String,
 }
 
 #[derive(Default)]
@@ -161,7 +176,10 @@ impl Clients {
 
     /// Register a connection. Returns a guard that deregisters on drop —
     /// hold it for the connection's lifetime. Logs the new live count and
-    /// the distinct `client_id`s currently attached.
+    /// the distinct `client_id`s currently attached. Refuses a second OS
+    /// account on a declared host (decision 0031), atomically with the
+    /// insert, so two accounts connecting at the same instant cannot both
+    /// pass.
     pub fn register(
         &self,
         client_id: impl Into<String>,
@@ -173,7 +191,8 @@ impl Clients {
         host: Option<String>,
         instance: Option<String>,
         name: Option<String>,
-    ) -> ClientGuard {
+        os_user: Option<String>,
+    ) -> Result<ClientGuard, OsUserConflict> {
         let serial = self.next_serial.fetch_add(1, Ordering::Relaxed);
         let info = ClientInfo {
             serial,
@@ -189,9 +208,19 @@ impl Clients {
             name,
             last_person_input_at: None,
             sessions: None,
+            os_user,
         };
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
+            if let (Some(host), Some(user)) = (&info.host, info.os_user.as_deref().filter(|u| !u.is_empty())) {
+                let held = g.by_conn.values().find_map(|c| {
+                    let other = c.os_user.as_deref().filter(|u| !u.is_empty())?;
+                    (c.host.as_ref() == Some(host) && other != user).then_some(other)
+                });
+                if let Some(held_by) = held {
+                    return Err(OsUserConflict { host: host.clone(), held_by: held_by.to_string(), refused: user.to_string() });
+                }
+            }
             g.by_conn.insert(serial, info.clone());
             (g.by_conn.len(), distinct_client_ids(&g.by_conn))
         };
@@ -206,11 +235,11 @@ impl Clients {
             distinct_clients = %roster,
             "frontend connected"
         );
-        ClientGuard {
+        Ok(ClientGuard {
             inner: self.inner.clone(),
             serial,
             client_id: info.client_id,
-        }
+        })
     }
 
     /// Number of live connections (not distinct clients — a reconnecting
@@ -471,10 +500,10 @@ mod tests {
         let clients = Clients::new();
         assert_eq!(clients.count(), 0);
 
-        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1, String::new(), None, None, None);
+        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1, String::new(), None, None, None, None).expect("no account conflict");
         assert_eq!(clients.count(), 1);
 
-        let g2 = clients.register("client-b", "local", None, "0.6.0", 1, String::new(), None, None, None);
+        let g2 = clients.register("client-b", "local", None, "0.6.0", 1, String::new(), None, None, None, None).expect("no account conflict");
         assert_eq!(clients.count(), 2);
         assert_eq!(clients.snapshot_with_active().clients.len(), 2);
 
@@ -487,8 +516,8 @@ mod tests {
     #[test]
     fn same_client_id_two_connections_are_distinct() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None);
-        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None);
+        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None, None).expect("no account conflict");
+        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None, None).expect("no account conflict");
         // Two live connections, one distinct client.
         assert_eq!(clients.count(), 2);
         assert_eq!(distinct_client_ids(&clients.inner.lock().unwrap().by_conn), "client-a");
@@ -503,7 +532,7 @@ mod tests {
         // Decision 31b: this is exactly what `version.query`'s `clients[]`
         // roster reads — sourced from registration, not a new probe.
         let clients = Clients::new();
-        let g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, String::new(), None, None, None);
+        let g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, String::new(), None, None, None, None).expect("no account conflict");
         let snap = clients.snapshot_with_active();
         assert_eq!(snap.clients.len(), 1);
         assert_eq!(snap.clients[0].app_version, "0.6.0-dev+abc1234");
@@ -514,8 +543,8 @@ mod tests {
     #[test]
     fn touch_person_input_stamps_only_the_named_serial() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
+        let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()), None).expect("no account conflict");
 
         assert!(clients
             .snapshot_with_active()
@@ -534,7 +563,7 @@ mod tests {
     #[test]
     fn touch_person_input_on_a_departed_serial_is_a_harmless_noop() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         let serial = g.serial();
         drop(g);
         // Must not panic on a serial that no longer has an entry.
@@ -554,7 +583,7 @@ mod tests {
     #[test]
     fn declare_sessions_lands_on_its_serial_and_dies_with_the_connection() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         assert!(
             clients.snapshot_with_active().clients[0].sessions.is_none(),
             "never-declared reads as None before the first fe.sessions"
@@ -574,7 +603,7 @@ mod tests {
     #[test]
     fn declare_sessions_on_a_departed_serial_is_a_harmless_noop() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         let serial = g.serial();
         drop(g);
         // Must not panic on a serial that no longer has an entry.
@@ -590,7 +619,7 @@ mod tests {
         // one row on a box with several must drop only that handle from
         // the NEXT declaration, leaving the others' state untouched.
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(
             g.serial(),
             vec![
@@ -627,7 +656,7 @@ mod tests {
         // the sessions leave with the connection, but the BOX is retained
         // as one "not connected since" entry — never silently absent.
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(g.serial(), vec![declared_session("agent@host-a", "working")]);
         drop(g);
 
@@ -643,7 +672,7 @@ mod tests {
         // must not manufacture a "not connected" line for a box that
         // never claimed to have sessions in the first place.
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         drop(g);
 
         assert_eq!(
@@ -659,12 +688,12 @@ mod tests {
         // a FRESH connection under the same name clears the entry the
         // PREVIOUS connection's drop left behind.
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(g1.serial(), vec![declared_session("agent@host-a", "working")]);
         drop(g1);
         assert_eq!(clients.disconnected_since(Instant::now()).len(), 1, "disconnected after the first drop");
 
-        let g2 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g2 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(g2.serial(), vec![declared_session("agent@host-a", "working")]);
         assert_eq!(
             clients.disconnected_since(Instant::now()),
@@ -676,7 +705,7 @@ mod tests {
     #[test]
     fn a_second_declaration_replaces_the_first_rather_than_accumulating() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(g.serial(), vec![declared_session("agent-1@host-a", "working")]);
         clients.declare_sessions(g.serial(), vec![declared_session("agent-2@host-a", "idle")]);
 
@@ -690,7 +719,7 @@ mod tests {
     fn active_frontend_requires_both_a_handle_and_a_fresh_stamp() {
         let clients = Clients::new();
         // No handle at all: never active, even though it's touched.
-        let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, String::new(), None, None, None);
+        let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, String::new(), None, None, None, None).expect("no account conflict");
         clients.touch_person_input(no_handle.serial());
         assert_eq!(
             clients.snapshot_with_active().active(),
@@ -699,7 +728,7 @@ mod tests {
         );
 
         // A handle but never touched: not active either.
-        let untouched = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let untouched = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()), None).expect("no account conflict");
         let _ = &untouched;
         assert_eq!(clients.snapshot_with_active().active(), None);
     }
@@ -719,7 +748,8 @@ mod tests {
             None,
             None,
             Some("not-really-a-frontend".into()),
-        );
+            None,
+        ).expect("no account conflict");
         clients.touch_person_input(g.serial());
         assert_eq!(
             clients.snapshot_with_active().active(),
@@ -743,13 +773,41 @@ mod tests {
             None,
             None,
             Some("test-host-agent".into()),
-        );
+            None,
+        ).expect("no account conflict");
         clients.touch_person_input(g.serial());
         assert_eq!(
             clients.snapshot_with_active().active(),
             None,
             "a declared `name` on a non-fe role is never active"
         );
+    }
+
+    #[test]
+    fn register_refuses_only_another_account_on_the_same_declared_host() {
+        let clients = Clients::new();
+        let reg = |host: Option<&str>, user: Option<&str>| {
+            clients.register(
+                "client", "local", None, "0.6.0", 1, "fe".to_string(),
+                host.map(String::from), None, None, user.map(String::from),
+            )
+        };
+        let mut first = vec![reg(Some("box"), Some("uid:900001")).expect("first account")];
+        let n = clients.count();
+        let err = reg(Some("box"), Some("uid:900002")).err().expect("another account is refused");
+        assert_eq!(
+            err,
+            OsUserConflict { host: "box".into(), held_by: "uid:900001".into(), refused: "uid:900002".into() }
+        );
+        assert_eq!(clients.count(), n, "a refused register leaves the roster alone");
+        let mut others = Vec::new();
+        first.push(reg(Some("box"), Some("uid:900001")).expect("same account"));
+        others.push(reg(Some("box"), None).expect("no account"));
+        others.push(reg(Some("box"), Some("")).expect("empty account"));
+        others.push(reg(Some("other"), Some("uid:900002")).expect("another host"));
+        others.push(reg(None, Some("uid:900002")).expect("no host"));
+        first.clear();
+        others.push(reg(Some("box"), Some("uid:900002")).expect("the first account is gone"));
     }
 
     /// A directly-constructed `ClientInfo` for `Clients::resolve_active`'s
@@ -772,6 +830,7 @@ mod tests {
             name: Some(handle.to_string()),
             last_person_input_at,
             sessions: None,
+            os_user: None,
         }
     }
 
@@ -831,8 +890,8 @@ mod tests {
         // — `is_active_serial` must be true for that one and false for the
         // other, never both (2026-09-08 review, finding 5).
         let clients = Clients::new();
-        let a = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
-        let b = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
+        let a = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()), None).expect("no account conflict");
+        let b = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()), None).expect("no account conflict");
         clients.touch_person_input(a.serial());
 
         let snap = clients.snapshot_with_active();
@@ -847,9 +906,9 @@ mod tests {
         // per the module doc — an "fe" row always counts), and the
         // requester itself ("cli", never its own receiver).
         let clients = Clients::new();
-        let bridge = clients.register("client-x", "local", None, "0.6.0", 1, "bridge".to_string(), None, None, Some("X".into()));
-        let fe = clients.register("client-fe", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@h".into()));
-        let me = clients.register("client-me", "local", None, "0.6.0", 1, "cli".to_string(), None, None, Some("self".into()));
+        let bridge = clients.register("client-x", "local", None, "0.6.0", 1, "bridge".to_string(), None, None, Some("X".into()), None).expect("no account conflict");
+        let fe = clients.register("client-fe", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@h".into()), None).expect("no account conflict");
+        let me = clients.register("client-me", "local", None, "0.6.0", 1, "cli".to_string(), None, None, Some("self".into()), None).expect("no account conflict");
         let _ = (&bridge, &fe);
 
         let mut to_x = clients.receivers_for("X", me.serial());

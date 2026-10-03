@@ -165,6 +165,7 @@ where
         role: "cli".to_string(),
         instance: None,
         name: Some(name.to_string()),
+        os_user: sot_log::os_account::own_account_id(),
     };
     let e = |what: &'static str| move |err: anyhow::Error| format!("{what}: {err}");
     let payload = serde_json::to_value(hello).map_err(|err| err.to_string())?;

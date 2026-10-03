@@ -93,6 +93,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
         role: "fe".to_string(),
         instance: None,
         name: Some(format!("fe@{TEST_STATE_HOST}")),
+        os_user: None,
     };
     // `call` writes the request then skips any evt broadcast (a
     // comm-registry poll included) that legitimately arrives before the

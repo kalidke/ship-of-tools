@@ -115,6 +115,21 @@ speaking the protocol; its last stderr line is the diagnosis, surfaced in
 the pane's own status text or, for a proxied page, a log line — no
 per-cause exit codes to learn.
 
+## One OS account per box
+
+Every client's hello names the OS account it runs as: `uid:<n>` on Linux
+and macOS, the account's SID on Windows, read from the operating system,
+never from an environment variable. It is a guard and nothing else: never
+an address, never part of a handle, never written anywhere. A daemon
+refuses a hello whose declared box already has a live connection running
+as another OS account, answers `os_user_conflict` naming both, and closes
+the connection; a refused client never appears in the daemon's client
+list. This is what two OS accounts on one box see when they log in to
+the same hub account: the second one's window shows the refusal, instead
+of the two receiving each other's mail. Each OS account on a box needs its
+own hub account. A client older than this field sends none and is let
+through.
+
 ## What this page does not yet cover
 
 Known limits of the link gate:
@@ -128,5 +143,5 @@ Known limits of the link gate:
 - A refused browser connection logs one warning per attempt.
 
 Later work in this same design (per-user isolation for the browser-facing
-ports, the pipe/socket owner checks, and the daemon-side account guard)
+ports, and the pipe/socket owner checks)
 lands in stages after this one and extends this page when it does.
