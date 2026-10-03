@@ -447,16 +447,13 @@ fn refresh(
         }
     }
     systemctl(&["--user", "daemon-reload"]).map_err(|e| format!("daemon-reload failed: {e}"))?;
-    // systemd prints each command as `{ path=… ; argv[]=<the command as written> ; … }` (systemd 249, measured):
-    // the argv field must be exactly the generated line, so a longer command that merely contains it is caught.
-    let want = format!("argv[]={} ;", topology::relay_command_line());
     for &h in &hosts {
         let unit = format!("sot-host-relay-{h}@refresh-check.service");
-        match systemctl(&["--user", "show", "-p", "ExecStart", "--value", &unit]) {
-            Ok(out) if out.contains(&want) => {}
+        match systemctl(&["--user", "show", "-p", "ExecStart", "-p", "LoadState", &unit]) {
+            Ok(out) if runs_generated_command(&out) => {}
             Ok(out) => failures.push(format!(
-                "relay command for {h} is overridden outside the hub's directory; systemd runs: {}; check `systemctl --user show -p DropInPaths sot-host-relay-{h}@.service`",
-                out.trim().chars().take(200).collect::<String>()
+                "relay command for {h} is overridden outside the hub's directory, or the unit does not load; systemd reports: {}; check `systemctl --user show -p DropInPaths {unit}`",
+                out.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(300).collect::<String>()
             )),
             Err(e) => failures.push(e),
         }
@@ -470,6 +467,16 @@ fn refresh(
         return Err(format!("{} relay refresh step(s) failed:\n  {}", failures.len(), failures.join("\n  ")));
     }
     Ok(())
+}
+
+/// Whether `systemctl show -p ExecStart -p LoadState` says systemd will run exactly the hub's command: one
+/// `ExecStart=` record, its argv field the generated line, and the unit loaded. systemd 249 (measured on a scratch
+/// unit) prints each command as `ExecStart={ path=… ; argv[]=<as written, variables unexpanded> ; … }` on a line of
+/// its own, and a second command that a drop-in appends leaves a second record and `LoadState=bad-setting`.
+fn runs_generated_command(show: &str) -> bool {
+    let want = format!("argv[]={} ;", topology::relay_command_line());
+    let execs: Vec<&str> = show.lines().filter(|l| l.starts_with("ExecStart=")).collect();
+    execs.len() == 1 && execs[0].contains(&want) && show.lines().any(|l| l.trim_end() == "LoadState=loaded")
 }
 
 /// `sotd topology refresh`: [`refresh`] on the real directory, each action
@@ -753,11 +760,11 @@ mod tests {
     const NO_MUX: &str = include_str!("../../protocol/src/testdata/relay-dropin-no-mux.conf");
     const OVERRIDE: &str = include_str!("../../protocol/src/testdata/relay-dropin-override.conf");
 
-    const SHOW: &str = "show -p ExecStart --value sot-host-relay-remote-a@refresh-check.service";
+    const SHOW: &str = "show -p ExecStart -p LoadState sot-host-relay-remote-a@refresh-check.service";
 
     /// The stand-in answer to `show`: the generated command, as systemd prints it.
     fn shown(a: &[&str]) -> String {
-        if a[1] == "show" { format!("{{ argv[]={} ; }}", topology::relay_command_line()) } else { String::new() }
+        if a[1] == "show" { format!("ExecStart={{ argv[]={} ; }}\nLoadState=loaded\n", topology::relay_command_line()) } else { String::new() }
     }
 
     fn hub_topo() -> Topology {
@@ -769,6 +776,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("sot-host-relay-remote-a@.service.d")).unwrap();
         d
+    }
+
+    #[test]
+    fn runs_generated_command_needs_one_record_that_is_ours_and_a_loaded_unit() {
+        let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; ignore_errors=no ; pid=0 }}", topology::relay_command_line());
+        let old = "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; ignore_errors=no ; pid=0 }";
+        let longer = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} --label local ; ignore_errors=no ; pid=0 }}", topology::relay_command_line());
+        assert!(runs_generated_command(&format!("{ours}\nLoadState=loaded\n")));
+        for bad in [
+            format!("{old}\nLoadState=loaded\n"),
+            format!("{ours}\n{old}\nLoadState=bad-setting\n"),
+            format!("{old}\n{ours}\nLoadState=bad-setting\n"),
+            format!("{ours}\nLoadState=bad-setting\n"),
+            format!("{ours}\nLoadState=masked\n"),
+            format!("{longer}\nLoadState=loaded\n"),
+            format!("{ours}\n"),
+            "LoadState=loaded\n".to_string(),
+        ] {
+            assert!(!runs_generated_command(&bad), "{bad}");
+        }
     }
 
     #[test]

@@ -6,9 +6,9 @@ const STALE_SERVICE: &str = include_str!("../../protocol/src/testdata/relay-serv
 
 const OVERRIDE: &str = include_str!("../../protocol/src/testdata/relay-dropin-override.conf");
 
-/// list-unit-files answers in systemd 249's line format; daemon-reload fails while `reload-fails` exists; `show -p ExecStart`
-/// answers with the generated command (file `show-ok`), or an old `--label` command while `show-overridden` exists.
-const FAKE_SYSTEMCTL: &str = "#!/bin/sh\nd=${0%/*}\necho \"$*\" >> \"$d/calls\"\ncase \"$*\" in\n  *show*ExecStart*) if [ -e \"$d/show-overridden\" ]; then echo '{ argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; }'; else read -r l < \"$d/show-ok\"; echo \"$l\"; fi ;;\n  *list-unit-files*) echo 'sot-host-relay-remote-a.socket enabled enabled' ;;\n  *daemon-reload*) if [ -e \"$d/reload-fails\" ]; then echo 'Failed to reload daemon: Connection timed out' >&2; exit 1; fi ;;\nesac\nexit 0\n";
+/// list-unit-files answers in systemd 249's line format; daemon-reload fails while `reload-fails` exists; `show -p ExecStart
+/// -p LoadState` prints the file `show-out` when a test wrote one, else `show-ok` (the healthy answer).
+const FAKE_SYSTEMCTL: &str = "#!/bin/sh\nd=${0%/*}\necho \"$*\" >> \"$d/calls\"\ncase \"$*\" in\n  *show*ExecStart*) f=\"$d/show-ok\"; [ -e \"$d/show-out\" ] && f=\"$d/show-out\"; while IFS= read -r l; do echo \"$l\"; done < \"$f\" ;;\n  *list-unit-files*) echo 'sot-host-relay-remote-a.socket enabled enabled' ;;\n  *daemon-reload*) if [ -e \"$d/reload-fails\" ]; then echo 'Failed to reload daemon: Connection timed out' >&2; exit 1; fi ;;\nesac\nexit 0\n";
 
 fn units(t: &TempDir) -> PathBuf {
     t.path().join("config/systemd/user")
@@ -26,7 +26,7 @@ fn hub() -> TempDir {
         std::fs::create_dir_all(d).unwrap();
     }
     std::fs::write(&ctl, FAKE_SYSTEMCTL).unwrap();
-    std::fs::write(t.path().join("bin/show-ok"), format!("{{ argv[]={} ; }}\n", sot_protocol::topology::relay_command_line())).unwrap();
+    std::fs::write(t.path().join("bin/show-ok"), format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}\nLoadState=loaded\n", sot_protocol::topology::relay_command_line())).unwrap();
     std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(t.path().join("hosts.toml"), "hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.remote-a]\ndaemon = true\n").unwrap();
     t
@@ -156,7 +156,20 @@ fn refresh_retires_a_dropin_that_sorts_after_the_command() {
 #[test]
 fn refresh_reports_a_command_overridden_elsewhere() {
     let t = hub();
-    std::fs::write(t.path().join("bin/show-overridden"), "").unwrap();
+    std::fs::write(t.path().join("bin/show-out"), "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; }\nLoadState=loaded\n").unwrap();
+    let (code, _so, se) = refresh(&t);
+    assert!(code == Some(2) && se.contains("is overridden outside the hub's directory"), "code={code:?}\nstderr={se}");
+}
+
+/// A drop-in elsewhere that appends a second command (no `ExecStart=` reset) keeps the hub's record but leaves the
+/// unit unloadable: systemd prints both records and `LoadState=bad-setting`. Refresh must fail, not pass on the
+/// matching record.
+#[test]
+fn refresh_reports_a_second_command_appended_elsewhere() {
+    let t = hub();
+    let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}", sot_protocol::topology::relay_command_line());
+    let old = "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; }";
+    std::fs::write(t.path().join("bin/show-out"), format!("{ours}\n{old}\nLoadState=bad-setting\n")).unwrap();
     let (code, _so, se) = refresh(&t);
     assert!(code == Some(2) && se.contains("is overridden outside the hub's directory"), "code={code:?}\nstderr={se}");
 }

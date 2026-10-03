@@ -719,16 +719,18 @@ fn relay_command_dropin() -> String {
 # bridge on one Windows host.
 [Service]
 ExecStart=
-ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none -o ControlPersist=no ${{SOT_RELAY_TARGET}} ${{SOT_RELAY_SOTD}} stdio-bridge
+ExecStart={RELAY_COMMAND_LINE}
 "
     )
 }
 
-/// The command text of the generated drop-in's last `ExecStart=` line: what `systemctl --user show -p ExecStart` must contain when nothing overrides the hub's command.
-pub fn relay_command_line() -> String {
-    let text = relay_command_dropin();
-    let line = text.lines().rev().find(|l| l.starts_with("ExecStart=")).unwrap_or("");
-    line["ExecStart=".len()..].to_string()
+/// The bridge's command line, written once: the command drop-in renders it, and `refresh` checks that systemd's
+/// one `ExecStart` record for the service is exactly it.
+const RELAY_COMMAND_LINE: &str = "/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none -o ControlPersist=no ${SOT_RELAY_TARGET} ${SOT_RELAY_SOTD} stdio-bridge";
+
+/// [`RELAY_COMMAND_LINE`], for the checks outside this module.
+pub fn relay_command_line() -> &'static str {
+    RELAY_COMMAND_LINE
 }
 
 /// Every file the hub generates for `host`, as (path under `~/.config/systemd/user`, text): the listener, its per-connection service, and the service's command drop-in. `apply` writes them, `refresh` rewrites any whose text differs, and a disable removes them.
