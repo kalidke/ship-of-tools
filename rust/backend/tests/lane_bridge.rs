@@ -284,7 +284,7 @@ impl Drop for Relay {
 }
 
 fn daemon_lane_endpoint(relay: &Relay) -> DaemonLaneEndpoint {
-    DaemonLaneEndpoint { dial: LaneDial::Tcp(relay.addr), token: None }
+    DaemonLaneEndpoint::new(LaneDial::Tcp(relay.addr), None)
 }
 
 // -----------------------------------------------------------------------
@@ -398,7 +398,7 @@ async fn an_old_daemon_is_a_terminal_no_bridge() {
 
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
-        DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None },
+        DaemonLaneEndpoint::new(LaneDial::Tcp(addr), None),
         "row-old-daemon".to_string(),
         80,
         24,
@@ -1224,7 +1224,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
     let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None);
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         endpoint,
@@ -1281,7 +1281,7 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
     let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None);
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
     // `sot-log/src/fe_client_io.rs`) — the dial itself runs on the worker

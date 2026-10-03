@@ -70,8 +70,10 @@ recipe the control connection already resolved for that host — never a
 second, independent guess at how to reach it. Nothing about the wire
 changes: the daemon accepts `lane.connect` and `proxy.connect` on any
 connection, so these frames are byte-identical to what they always were.
-The cost is one ssh login per attached pane and one per proxied browser
-connection — an accepted cost, not a bug, so a page with several
+The cost is two ssh logins per attached pane (its supervisor lane and its
+voyage lane) and one per proxied browser connection — an accepted cost, not
+a bug. A pane's first attach starts both logins together, so the user waits
+for about one; every later dial is one login, as before. A page with several
 subresources served by the same remote daemon pays once per resource, not
 once per page. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
 connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A

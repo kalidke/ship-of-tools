@@ -84,7 +84,10 @@ pub enum LaneDial {
     Tcp(SocketAddr),
     Local(PathBuf),
     /// The recipe and its host's link gate: a down gate makes the dial
-    /// fail with `TransportError::LinkDown` and start no ssh.
+    /// fail with `TransportError::LinkDown` and start no ssh. A first
+    /// attach starts its voyage login together with its supervisor login
+    /// so the two overlap; a re-dial after that is one login per dial, as
+    /// before.
     Ssh(crate::ssh_bridge::SshRecipe, crate::ssh_bridge::LinkGate),
 }
 
@@ -104,6 +107,15 @@ pub enum LaneDial {
 pub struct DaemonLaneEndpoint {
     pub dial: LaneDial,
     pub token: Option<String>,
+    spare: std::sync::Mutex<VoyageSpare>,
+}
+
+/// The endpoint's first voyage dial finds an ssh login that started with
+/// its supervisor dial; no other dial ever starts one.
+enum VoyageSpare {
+    Unused,
+    Parked(BridgedClient),
+    Spent,
 }
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
@@ -302,6 +314,14 @@ impl BridgedClient {
         };
 
         Ok(Self { child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
+    }
+
+    /// Whether the child has exited; an unreadable child counts as exited.
+    fn exited(&self) -> bool {
+        match self.child.lock() {
+            Ok(mut child) => !matches!(child.try_wait(), Ok(None)),
+            Err(_) => true,
+        }
     }
 
     /// A short bounded poll for the child's last stderr line (this is the
@@ -640,6 +660,33 @@ fn run_handshake(stream: &LaneStream, req: &Frame, deadline: Instant) -> Result<
 }
 
 impl DaemonLaneEndpoint {
+    pub fn new(dial: LaneDial, token: Option<String>) -> Self {
+        Self { dial, token, spare: std::sync::Mutex::new(VoyageSpare::Unused) }
+    }
+
+    /// Parks the login a supervisor dial starts for the voyage dial to
+    /// find. Only the `Unused` state spawns; a spawn that fails leaves it
+    /// `Unused`.
+    fn start_spare(&self, spawn: impl FnOnce() -> Result<BridgedClient, TransportError>) {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*state, VoyageSpare::Unused) {
+            if let Ok(client) = spawn() {
+                *state = VoyageSpare::Parked(client);
+            }
+        }
+    }
+
+    /// The voyage dial's side: whatever the state was, it is `Spent`
+    /// afterwards. A spare whose child already exited is dropped (killed
+    /// and reaped) rather than returned.
+    fn take_spare(&self) -> Option<BridgedClient> {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        match std::mem::replace(&mut *state, VoyageSpare::Spent) {
+            VoyageSpare::Parked(client) if !client.exited() => Some(client),
+            _ => None,
+        }
+    }
+
     /// The blocking dial: connect (2 s bound, each transport's own
     /// hardened connector — see [`LaneStream`]'s own doc), write the
     /// `lane.connect` request and read ONE reply under a SEPARATE 2 s
@@ -692,7 +739,16 @@ impl DaemonLaneEndpoint {
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {
-                let client = BridgedClient::spawn(recipe, gate)?;
+                let client = if kind == "voyage" {
+                    match self.take_spare() {
+                        Some(spare) if gate.is_up() => spare,
+                        _ => BridgedClient::spawn(recipe, gate)?,
+                    }
+                } else {
+                    let client = BridgedClient::spawn(recipe, gate)?;
+                    self.start_spare(|| BridgedClient::spawn(recipe, gate));
+                    client
+                };
                 LaneStream::Bridged(client)
             }
         };
@@ -763,7 +819,7 @@ mod tests {
             let (conn, _) = listener.accept().unwrap();
             respond(conn);
         });
-        let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
+        let endpoint = DaemonLaneEndpoint::new(LaneDial::Tcp(addr), None);
         let result = endpoint.dial("row-1", "supervisor", None).map(|c| (c.peer.pid, c.peer.created));
         handle.join().unwrap();
         result
@@ -834,7 +890,7 @@ mod tests {
         let gate = crate::ssh_bridge::LinkGate::default();
         gate.set_up(false);
         let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-        let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, gate), token: None };
+        let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate), None);
         let t0 = Instant::now();
         let result = endpoint.dial("row", "supervisor", None);
         assert!(matches!(result, Err(TransportError::LinkDown)), "got {:?}", result.err());
@@ -906,7 +962,7 @@ mod tests {
             let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
             drop(conn);
         });
-        let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
+        let endpoint = DaemonLaneEndpoint::new(LaneDial::Tcp(addr), None);
         let started = Instant::now();
         // `.map(|_| ())`: `DaemonLaneClient` carries no `Debug` impl (a
         // live socket/pipe handle has no useful one), so the success
@@ -952,7 +1008,7 @@ mod tests {
             // completed -- see this test's own doc.
             let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
         });
-        let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
+        let endpoint = DaemonLaneEndpoint::new(LaneDial::Tcp(addr), None);
         let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
 
         let client = std::sync::Arc::new(client);
@@ -1005,7 +1061,7 @@ mod tests {
             let _ = conn.write_all(b"irrelevant");
         });
 
-        let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
+        let endpoint = DaemonLaneEndpoint::new(LaneDial::Tcp(addr), None);
         let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
 
         struct FixedExchange;
@@ -1049,6 +1105,52 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("`more.com` must be on PATH for this test")
+    }
+
+    fn parked_endpoint() -> DaemonLaneEndpoint {
+        DaemonLaneEndpoint::new(LaneDial::Tcp("127.0.0.1:1".parse().unwrap()), None)
+    }
+
+    #[test]
+    fn a_first_voyage_dial_takes_the_spare_the_supervisor_dial_started() {
+        let ep = parked_endpoint();
+        ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(_)));
+        assert!(ep.take_spare().is_some());
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
+        ep.start_spare(|| panic!("a spent endpoint must start no spare"));
+        assert!(ep.take_spare().is_none());
+    }
+
+    #[test]
+    fn a_second_supervisor_dial_starts_no_second_spare() {
+        let ep = parked_endpoint();
+        let mut calls = 0;
+        for _ in 0..2 {
+            ep.start_spare(|| {
+                calls += 1;
+                BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable)
+            });
+        }
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn a_dead_spare_is_dropped_not_used() {
+        let ep = parked_endpoint();
+        ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
+        if let VoyageSpare::Parked(c) = &*ep.spare.lock().unwrap() {
+            c.cancel();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !c.exited() {
+                assert!(Instant::now() < deadline, "stub child never exited");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        } else {
+            panic!("spare not parked");
+        }
+        assert!(ep.take_spare().is_none());
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
     }
 
     /// `BridgedClient::cancel()`'s own contract: the kill it issues must

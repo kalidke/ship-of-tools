@@ -10715,7 +10715,7 @@ impl State {
             self.pane_hold = None;
             return false;
         };
-        let endpoint = sot_protocol::lane_client::DaemonLaneEndpoint { dial, token };
+        let endpoint = sot_protocol::lane_client::DaemonLaneEndpoint::new(dial, token);
         // Invariant: the record names the frontend that typed —
         // `fe_instance_component`'s own doc.
         let controller_id = format!("{}#{}", self_comm_handle(), frontend_identity().instance);
