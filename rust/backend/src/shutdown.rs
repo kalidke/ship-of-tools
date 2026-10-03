@@ -574,6 +574,19 @@ impl Contained {
     }
 }
 
+/// Put `SIGCHLD` back to its default disposition. An inherited `SIG_IGN`
+/// makes the kernel reap every child at its exit, so a contained leader
+/// would not stay a zombie holding its pid, and the pid is its group's
+/// number: the invariant is that a contained leader stays a zombie until its
+/// tree is killed. Called first thing in the daemon's `main`.
+#[cfg(unix)]
+pub(crate) fn reset_child_signal() {
+    // SAFETY: setting a disposition to SIG_DFL runs no handler code.
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+    }
+}
+
 /// The daemon's one signal; every production owner is given this.
 pub(crate) fn process() -> &'static Signal {
     static SIGNAL: OnceLock<Signal> = OnceLock::new();
@@ -829,8 +842,7 @@ mod tests {
     /// its own and the tree is still held, until the caller lets go of the
     /// `Held`; only then is it reaped.
     #[cfg(unix)]
-    #[test]
-    fn a_one_shot_takes_its_tree_after_it_exits() {
+    fn one_shot_takes_its_tree_after_it_exits() {
         use std::io::BufRead;
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
         let mut cmd = std::process::Command::new("sh");
@@ -847,5 +859,29 @@ mod tests {
         drop(held);
         child.wait().expect("wait");
         assert!(gone(descendant), "the one-shot's descendant survived");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_takes_its_tree_after_it_exits() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        one_shot_takes_its_tree_after_it_exits();
+    }
+
+    /// A parent that started the daemon with `SIGCHLD` ignored must not make
+    /// the kernel reap contained leaders; the startup reset undoes it.
+    #[cfg(unix)]
+    #[test]
+    fn an_ignored_sigchld_is_reset_at_startup() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: a plain disposition change, restored below.
+        let before = unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
+        reset_child_signal();
+        let outcome = std::panic::catch_unwind(one_shot_takes_its_tree_after_it_exits);
+        // SAFETY: restores the disposition the test found.
+        unsafe { libc::signal(libc::SIGCHLD, before) };
+        if let Err(e) = outcome {
+            std::panic::resume_unwind(e);
+        }
     }
 }

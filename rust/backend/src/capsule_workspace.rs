@@ -2264,14 +2264,15 @@ mod runtime {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
-        let mut child = command.spawn()?;
+        // Contained like every process the daemon starts: the tree dies with the probe, and the leader is reaped only after that.
+        let (mut child, held) = crate::shutdown::process().spawn_std(&mut command)?;
         let deadline = Instant::now() + USER_SCOPE_PROBE_BOUND;
-        let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break s;
+        loop {
+            if crate::contain::exited(&mut child, false)? {
+                break;
             }
             if Instant::now() >= deadline {
-                let _ = child.kill();
+                drop(held);
                 let _ = child.wait();
                 return Err(std::io::Error::new(
                     ErrorKind::TimedOut,
@@ -2279,7 +2280,9 @@ mod runtime {
                 ));
             }
             std::thread::sleep(Duration::from_millis(20));
-        };
+        }
+        drop(held);
+        let status = child.wait()?;
         if status.success() {
             return Ok(());
         }

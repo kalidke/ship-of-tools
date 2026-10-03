@@ -81,14 +81,12 @@ impl std::fmt::Display for SshRecipe {
 pub const PATH_PRELUDE: &str = r#"export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH""#;
 
 /// `ssh`'s own option set — the options the hub's own relay unit runs
-/// (`crate::topology`'s `ExecStart`), minus that unit's own
-/// `ControlMaster`/`ControlPath`/`ControlPersist` trio, plus
-/// `ConnectTimeout=10`, the bridge's own bound on a dead hub: a per-process
-/// frontend/lane/proxy spawn shares no control socket with any other
-/// process today (isolation-plan.md §3 C3's own literal recipe; no
-/// `ControlPath` location for a Rust-spawned child is specified anywhere
-/// in that plan or its amendment).
-const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"];
+/// (`crate::topology`'s `ExecStart`), minus that unit's multiplexing
+/// (`ControlMaster=auto`, `ControlPersist=600`): a persistent master is
+/// forked away from the bridge and outlives the contained process tree the
+/// daemon kills at shutdown, so the bridge turns multiplexing off outright.
+/// Plus `ConnectTimeout=10`, the bridge's own bound on a dead hub.
+const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"];
 
 /// `recipe` → `ssh`'s own program name and argv, built with no shell on
 /// this end: `target` is its own argv element (never folded into the
@@ -242,6 +240,15 @@ mod tests {
     }
 
     #[test]
+    fn the_bridge_never_multiplexes() {
+        let (_, args) = argv(&SshRecipe::new("hub", None).unwrap());
+        for pair in [["ControlMaster=no"], ["ControlPath=none"], ["ControlPersist=no"]] {
+            let at = args.iter().position(|a| a == pair[0]).unwrap_or_else(|| panic!("{} missing from {args:?}", pair[0]));
+            assert_eq!(args[at - 1], "-o");
+        }
+    }
+
+    #[test]
     fn recipe_rejects_a_leading_dash_in_either_half() {
         assert!(SshRecipe::new("-oProxyCommand=x", None).is_err());
         assert!(SshRecipe::new("hub", Some("-oProxyCommand=x")).is_err());
@@ -262,7 +269,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10", "hub",
+                "-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no", "hub",
                 "export PATH=\"$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; sotd stdio-bridge",
             ]
         );

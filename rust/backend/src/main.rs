@@ -277,6 +277,8 @@ mod help_tests {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    #[cfg(unix)]
+    shutdown::reset_child_signal();
     // Pure query subcommands (security review): checked against raw argv
     // BEFORE any startup side effect (umask, private log file/state dir
     // creation, tracing init) below. Previously pure path/version queries were

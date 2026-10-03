@@ -10683,6 +10683,7 @@ mod quarto_shutdown_tests {
     /// next takes the number. The launcher here exits at once; a descendant
     /// in its own session keeps the render's pipes open, so the render is
     /// still running when the registry is read.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn quarto_never_holds_a_freed_group_number() {
         let dir = tempfile::tempdir().unwrap();
