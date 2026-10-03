@@ -76,7 +76,8 @@ subresources served by the same remote daemon pays once per resource, not
 once per page. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
 connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A
 tab left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon
-logs a refused port once, until that port is served again.
+logs a refused port once, until that port is served again. While the host's link is down, a browser connection
+closes at once with no log line; the status line says the link is down.
 
 **The link gate.** While a host's link is down — its control transport's
 last attempt got no hello reply, or its session ended — the frontend starts
@@ -125,7 +126,6 @@ Known limits of the link gate:
 - A partly queued input cut at the 8 KiB take queue, and a queue cleared
   on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
   reported by their own status line, not the discard count.
-- A refused browser connection logs one warning per attempt.
 
 Later work in this same design (per-user isolation for the browser-facing
 ports, the pipe/socket owner checks, and the daemon-side account guard)
