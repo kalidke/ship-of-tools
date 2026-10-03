@@ -209,6 +209,12 @@ wake_fresh() {
         END { exit !(k > d) }'
 }
 
+# More than one [sot-comm] notice below the last turn-done line: two typers raced on one mail (an old watcher
+# beside the daemon), and their lines land glued with the Enter lost.
+wake_doubled() {
+    printf '%s\n' "$1" | LC_ALL=C awk '/✻ .* done / { n = 0 } { n += gsub(/\[sot-comm\]/, "&") } END { exit !(n > 1) }'
+}
+
 # --- processes ----------------------------------------------------------------
 # procs ERE — pid<TAB>cwd<TAB>argv0<TAB>command line for every process whose
 # command line matches. Linux: this user's, cwd from /proc. Windows: cwd is
@@ -305,7 +311,7 @@ wake_check() {
     t0="$(now_ms)"
     while [ $(($(now_ms) - t0)) -lt 10000 ]; do
         s="$(screen "$ws")"
-        if wake_fresh "$s"; then tw="$(since "$t0")"; break; fi
+        if wake_fresh "$s"; then tw="$(since "$t0")"; sleep 2; s="$(screen "$ws")"; break; fi
         sleep 0.5
     done
     if ! wait_from "$base" "$h" 120; then
@@ -318,7 +324,12 @@ wake_check() {
         emit FAIL "$id" "${pre}no wake line within 10s of filed; reply after $(since "$t0")s"
         return
     fi
-    emit PASS "$id" "${pre}wake ${tw}s after filed, reply after $(since "$t0")s"
+    if wake_doubled "$s"; then
+        dump_screen "$ws" "$id doubled wake"
+        emit FAIL "$id" "${pre}more than one [sot-comm] notice for one mail (two typers); reply after $(since "$t0")s"
+        return
+    fi
+    emit PASS "$id" "${pre}one wake line ${tw}s after filed, submitted with no Enter by hand, reply after $(since "$t0")s"
 }
 
 # background_refused ID WS DIR — /background typed into an idle row is refused:
