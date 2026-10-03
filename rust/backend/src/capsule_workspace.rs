@@ -3058,10 +3058,20 @@ mod runtime {
     /// this whole wait) is released.
     const SPAWN_SETTLE_DEADLINE: Duration = Duration::from_secs(2);
 
-    /// Waits under the caller's guard for a spawn to settle, polling until [`SPAWN_SETTLE_DEADLINE`] (timeout WARNS). BLOCKING.
+    /// `SOT_TEST_SPAWN_SETTLE_MS` overrides [`SPAWN_SETTLE_DEADLINE`] for tests, read once per process (the
+    /// `shutdown::shutdown_bound` convention); only tests set it. Every spawn path still shares it.
+    fn spawn_settle_deadline() -> Duration {
+        static OVERRIDE_MS: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+        let override_ms =
+            *OVERRIDE_MS.get_or_init(|| std::env::var("SOT_TEST_SPAWN_SETTLE_MS").ok().and_then(|s| s.parse().ok()));
+        override_ms.map(Duration::from_millis).unwrap_or(SPAWN_SETTLE_DEADLINE)
+    }
+
+    /// Waits under the caller's guard for a spawn to settle, polling until [`spawn_settle_deadline`] (timeout WARNS). BLOCKING.
     fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::workspaces::Observation) {
+        let settle = spawn_settle_deadline();
         let starting_phase = super::phase_str(sot_log::wire::SupervisorPhase::Starting);
-        let deadline = Instant::now() + SPAWN_SETTLE_DEADLINE;
+        let deadline = Instant::now() + settle;
         loop {
             let (phase, observation) = probe(state_dir);
             if phase != UNREACHABLE_PHASE && phase != starting_phase {
@@ -3069,7 +3079,7 @@ mod runtime {
             }
             if Instant::now() >= deadline {
                 tracing::warn!(
-                    workspace_id = %workspace_id, phase, deadline = ?SPAWN_SETTLE_DEADLINE,
+                    workspace_id = %workspace_id, phase, deadline = ?settle,
                     "capsule workspace: lane did not settle within the post-spawn deadline"
                 );
                 return (phase, observation);

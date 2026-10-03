@@ -188,13 +188,8 @@ connection is the only handle.
 
 ## Known limits (0.6.6)
 
-- (a) Six lease and shutdown tests are not built: `malformed_lease_line_does_not_depart`,
-  `lease_end_while_data_conn_busy`, `non_lease_fe_never_decides`,
-  `fast_reopen_never_reaches_dying_daemon`, `closing_flag_spans_shutdown`,
-  `shutdown_bound_is_end_to_end`.
 - (c) The create gate keeps the id, and the rollback of a failed create can remove a
   pre-existing row. This is a limit only because the start has no held-back state.
-- (d) `second_daemon_refuses_live` was not run on Windows.
 - (e) The macOS check has not run on every commit; boot identity on a Mac is unverified.
 - (f) Launchers: after the fix round the ensure logs under the install prefix; the Windows log cap (keep 5 per
   stream, 16 MB unheld total) applies across starts, and one running daemon's own log
