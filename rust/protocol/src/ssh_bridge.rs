@@ -80,9 +80,8 @@ impl std::fmt::Display for SshRecipe {
 /// identical string on its own side).
 pub const PATH_PRELUDE: &str = r#"export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH""#;
 
-/// `ssh`'s own option set — the options the hub's own relay unit runs
-/// (`crate::topology`'s `ExecStart`) plus `ConnectTimeout=10`, the bridge's
-/// own bound on a dead hub.
+/// `ssh`'s own option set: the relay unit's `-T`, `BatchMode` and `ServerAlive` options
+/// (`crate::topology`'s `ExecStart`) plus `ConnectTimeout=10`, the bridge's own bound on a dead hub.
 const SSH_OPTS: &[&str] = &["-T", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=10"];
 
 /// `recipe` → `ssh`'s own program name and argv, built with no shell on

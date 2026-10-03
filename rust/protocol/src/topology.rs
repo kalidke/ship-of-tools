@@ -696,8 +696,11 @@ Environment=SOT_RELAY_TARGET={host}
 Environment=SOT_RELAY_SOTD=sotd
 # -T: no pty, so nothing rewrites the byte stream. BatchMode: never prompt —
 # an unreachable box must fail at once rather than hang. The ServerAlive pair
-# closes a wedged network in ~45s.
-ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 ${{SOT_RELAY_TARGET}} ${{SOT_RELAY_SOTD}} stdio-bridge
+# closes a wedged network in ~45s. The three Control options switch ssh
+# connection sharing off even where ~/.ssh/config turns it on for this host
+# (a command-line option wins over the config file): sharing hung every
+# bridge on one Windows host.
+ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ControlMaster=no -o ControlPath=none -o ControlPersist=no ${{SOT_RELAY_TARGET}} ${{SOT_RELAY_SOTD}} stdio-bridge
 ",
         socket = relay_unit(host),
     )
@@ -706,7 +709,7 @@ ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAl
 /// What the hub's refresh does for one host's relay units: the files whose
 /// on-disk text differs from this binary's generator (or is missing), as
 /// `(file name, text)`, and the drop-ins to retire.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug)]
 pub struct RelayRefresh {
     pub write: Vec<(String, String)>,
     pub retire: Vec<String>,
@@ -1108,9 +1111,7 @@ frontend = true
         assert!(svc.contains("Environment=SOT_RELAY_TARGET=remote-a\n"), "{svc}");
         assert!(!svc.contains("SOT_RELAY_LABEL"), "{svc}");
         assert!(svc.contains("stdio-bridge\n"), "{svc}");
-        for gone in ["ControlMaster", "ControlPath", "ControlPersist", "KillMode"] {
-            assert!(!svc.contains(gone), "{gone} is deleted from the generated unit:\n{svc}");
-        }
+        assert!(!svc.contains("KillMode"), "{svc}");
         assert!(svc.contains("\nStandardInput=socket\n") && svc.contains("\nStandardOutput=socket\n"), "{svc}");
     }
 
@@ -1119,7 +1120,33 @@ frontend = true
         let svc = relay_service_unit("remote-a");
         let (unit, service, collect) = (svc.find("\n[Unit]\n"), svc.find("\n[Service]\n"), svc.find("\nCollectMode=inactive-or-failed\n"));
         assert!(unit < collect && collect < service, "CollectMode belongs in [Unit], systemd ignores it in [Service]:\n{svc}");
-        assert!(!svc.contains("ControlMaster"), "{svc}");
+    }
+
+    /// The generated ssh line, run through real `ssh -G` against the block an
+    /// older ENROLLING-A-HOST.md told operators to put in the hub's
+    /// ~/.ssh/config: sharing must read off however the config sets it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn relay_ssh_turns_multiplexing_off_over_an_ssh_config_that_turns_it_on() {
+        const OLD_ADVICE: &str = "Host remote-a\n    ControlMaster auto\n    ControlPath ~/.ssh/cm-%C\n    ControlPersist 10m\n";
+        let svc = relay_service_unit("remote-a");
+        let exec = svc.lines().find_map(|l| l.strip_prefix("ExecStart=/usr/bin/ssh ")).expect("ExecStart runs /usr/bin/ssh");
+        let opts: Vec<&str> = exec.split_whitespace().take_while(|t| *t != "${SOT_RELAY_TARGET}").collect();
+        let dir = std::env::temp_dir().join(format!("sot-f3-sshg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config");
+        std::fs::write(&cfg, OLD_ADVICE).unwrap();
+        let out = std::process::Command::new("ssh")
+            .arg("-F").arg(&cfg).arg("-G").args(&opts).arg("remote-a")
+            .output()
+            .expect("the OpenSSH client `ssh` must be on PATH for this test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let eff = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "ssh -G failed: {}", String::from_utf8_lossy(&out.stderr));
+        let has = |want: &str| eff.lines().any(|l| l == want);
+        assert!(has("controlmaster false"), "opts {opts:?}\n{eff}");
+        assert!(has("controlpersist no"), "opts {opts:?}\n{eff}");
+        assert!(!eff.lines().any(|l| l.starts_with("controlpath ")), "opts {opts:?}\n{eff}");
     }
 
     const STALE_SERVICE: &str = include_str!("testdata/relay-service-rc9.8.unit");

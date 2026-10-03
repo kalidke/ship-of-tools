@@ -437,13 +437,12 @@ Pure queries (no startup side effects, answered before any of the above):
         }
     }
 
-    // The hub keeps its generated relay units equal to this binary's text. Only
-    // a systemd-supervised daemon touches systemd, and the daemon never waits
-    // on the refresh, so a wedged user manager cannot keep it down.
+    // The hub keeps its generated relay units equal to this binary's text.
+    // refresh_at_start acts only in sotd.service's main process, never in a
+    // hand-started daemon, and the daemon never waits on it, so a wedged
+    // user manager cannot keep it down.
     #[cfg(target_os = "linux")]
-    if std::env::var_os("INVOCATION_ID").is_some() {
-        let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(topology_cli::refresh_at_start);
-    }
+    let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(topology_cli::refresh_at_start);
 
     server::run(opts).await
 }
