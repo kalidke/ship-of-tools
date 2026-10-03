@@ -649,14 +649,6 @@ enum NavPrompt {
     },
 }
 
-/// A key the Ctrl+Q prompt reacts to.
-#[derive(Clone, Copy)]
-enum QuitKey {
-    Tab,
-    Enter,
-    Other,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum QuitPromptStep {
     Stay { keep: bool },
@@ -665,31 +657,19 @@ enum QuitPromptStep {
     Ignore,
 }
 
-/// The Ctrl+Q prompt's key table: Tab flips the answer, Enter confirms it,
-/// any other key cancels.
-fn quit_prompt_key(keep: bool, key: QuitKey) -> QuitPromptStep {
-    match key {
-        QuitKey::Tab => QuitPromptStep::Stay { keep: !keep },
-        QuitKey::Enter => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
-        QuitKey::Other => QuitPromptStep::Cancel,
-    }
-}
-
-/// The Ctrl+Q prompt's reading of a key. It owns the keyboard while open,
-/// so every key reaches it before any global binding: Tab switches, Enter
-/// confirms, any other key cancels and is consumed, and repeats do nothing.
-fn prompt_takes_key(keep: bool, tab: bool, action: Option<Action>, repeat: bool) -> QuitPromptStep {
+/// The Ctrl+Q prompt's key table, fixed by key identity and never by a
+/// configurable binding: Tab flips the answer, Enter confirms it, any other
+/// key cancels, and a repeat does nothing. The prompt owns the keyboard while
+/// open, so every key reaches it before any global binding.
+fn quit_prompt_step(keep: bool, key: &Key, repeat: bool) -> QuitPromptStep {
     if repeat {
         return QuitPromptStep::Ignore;
     }
-    let key = if tab {
-        QuitKey::Tab
-    } else if action == Some(Action::Confirm) {
-        QuitKey::Enter
-    } else {
-        QuitKey::Other
-    };
-    quit_prompt_key(keep, key)
+    match key {
+        Key::Named(NamedKey::Tab) => QuitPromptStep::Stay { keep: !keep },
+        Key::Named(NamedKey::Enter) => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
+        _ => QuitPromptStep::Cancel,
+    }
 }
 
 /// A focus change away from the navigation pane dismisses the Ctrl+Q prompt
@@ -5840,6 +5820,16 @@ fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
     lines
 }
 
+/// The style of the rows pinned under the nav list: a prompt that holds the
+/// keyboard is drawn as an attention row, the status text stays green.
+fn pinned_style(prompt_open: bool) -> Style {
+    if prompt_open {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::LightGreen)
+    }
+}
+
 /// The nav pane's pinned rows, drawn under the scrolled list so no scroll
 /// hides them: the lease notice, then `line` (the not-ended count or
 /// `closing…`), then the open prompt, each wrapped at `width` cells. A pane
@@ -5851,16 +5841,6 @@ fn status_spans(status: &str, width: usize) -> Vec<RtLine<'static>> {
 /// pane narrower than the choice it is dropped, never cut. `line` may be two
 /// lines, kept or dropped together. Returns the height left to the
 /// list, the rows, and whether `line` was drawn whole.
-/// The style of the rows pinned under the nav list: a prompt that holds the
-/// keyboard is drawn as an attention row, the status text stays green.
-fn pinned_style(prompt_open: bool) -> Style {
-    if prompt_open {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::LightGreen)
-    }
-}
-
 fn nav_pinned_rows(
     prompt: Option<(&str, &str)>,
     notice: Option<&str>,
@@ -20914,14 +20894,13 @@ impl ApplicationHandler for App {
                 let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
                     Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
                 // The Ctrl+Q prompt owns the keyboard while it is open: it
-                // reads every key before any global binding (`prompt_takes_key`).
-                // Tab switches, Enter confirms, any other key cancels and is
-                // consumed; repeats do nothing.
+                // reads every key before any global binding
+                // (`quit_prompt_step`). Tab switches, Enter confirms, any
+                // other key cancels and is consumed; repeats do nothing.
                 if let Some(NavPrompt::ConfirmQuit { keep }) = &state.nav_prompt {
-                    let tab = matches!(event.logical_key, Key::Named(NamedKey::Tab));
-                    let step = prompt_takes_key(*keep, tab, action, event.repeat);
+                    let step = quit_prompt_step(*keep, &event.logical_key, event.repeat);
                     if step != QuitPromptStep::Ignore {
-                        tracing::info!(?event.logical_key, ?step, "quit prompt: key");
+                        tracing::info!(?step, "quit prompt: key");
                     }
                     match step {
                         QuitPromptStep::Stay { keep } => {
@@ -24622,18 +24601,6 @@ mod tests {
     }
 
     #[test]
-    fn quit_prompt_never_swallows_a_key() {
-        for keep in [false, true] {
-            for action in [None, Some(Action::Quit), Some(Action::ToggleTerminalDrawer), Some(Action::FontScaleUp), Some(Action::Cancel)] {
-                assert_eq!(prompt_takes_key(keep, false, action, false), QuitPromptStep::Cancel, "keep={keep} action={action:?}");
-            }
-            for tab in [false, true] {
-                assert_eq!(prompt_takes_key(keep, tab, Some(Action::Confirm), true), QuitPromptStep::Ignore);
-            }
-        }
-    }
-
-    #[test]
     fn pinned_rows_are_attention_while_a_prompt_is_open() {
         let open = pinned_style(true);
         assert_eq!(open.fg, Some(Color::Yellow));
@@ -24644,25 +24611,22 @@ mod tests {
     }
 
     #[test]
-    fn quit_prompt_key_table() {
-        use QuitKey::*;
+    fn quit_prompt_step_table() {
         use QuitPromptStep::*;
-        assert_eq!(quit_prompt_key(false, Tab), Stay { keep: true });
-        assert_eq!(quit_prompt_key(true, Tab), Stay { keep: false });
-        assert_eq!(quit_prompt_key(false, Enter), Leave(LeaveIntent::Close));
-        assert_eq!(quit_prompt_key(true, Enter), Leave(LeaveIntent::Keep));
-        assert_eq!(quit_prompt_key(false, Other), Cancel);
-        assert_eq!(quit_prompt_key(true, Other), Cancel);
-        // The prompt sees every key before global dispatch: Ctrl+T (the
-        // terminal drawer) and Ctrl+= (font size) do nothing while it is open.
-        assert_eq!(prompt_takes_key(false, false, Some(Action::ToggleTerminalDrawer), false), Cancel);
-        assert_eq!(prompt_takes_key(true, false, Some(Action::FontScaleUp), false), Cancel);
-        assert_eq!(prompt_takes_key(false, false, None, false), Cancel);
-        assert_eq!(prompt_takes_key(false, true, None, false), Stay { keep: true });
-        assert_eq!(prompt_takes_key(true, false, Some(Action::Confirm), false), Leave(LeaveIntent::Keep));
-        assert_eq!(prompt_takes_key(false, false, Some(Action::Cancel), false), Cancel);
-        assert_eq!(prompt_takes_key(false, false, Some(Action::Confirm), true), Ignore);
-        assert_eq!(prompt_takes_key(false, true, None, true), Ignore);
+        let tab = Key::Named(NamedKey::Tab);
+        let enter = Key::Named(NamedKey::Enter);
+        assert_eq!(quit_prompt_step(false, &tab, false), Stay { keep: true });
+        assert_eq!(quit_prompt_step(true, &tab, false), Stay { keep: false });
+        assert_eq!(quit_prompt_step(false, &enter, false), Leave(LeaveIntent::Close));
+        assert_eq!(quit_prompt_step(true, &enter, false), Leave(LeaveIntent::Keep));
+        for keep in [false, true] {
+            for other in [Key::Character("q".into()), Key::Named(NamedKey::Escape), Key::Named(NamedKey::F12)] {
+                assert_eq!(quit_prompt_step(keep, &other, false), Cancel, "keep={keep} {other:?}");
+            }
+            for held in [&tab, &enter, &Key::Character("q".into())] {
+                assert_eq!(quit_prompt_step(keep, held, true), Ignore, "keep={keep} {held:?}");
+            }
+        }
         let (_, no) = quit_prompt_line(false);
         assert!(no.contains("[No]") && no.contains("Yes") && !no.contains("[Yes]"));
         let (_, yes) = quit_prompt_line(true);

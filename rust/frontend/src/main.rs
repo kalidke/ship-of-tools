@@ -93,6 +93,14 @@ fn main() -> Result<()> {
         "cli parsed"
     );
 
+    // Every quit goes through the Ctrl+Q prompt: on macOS the default menu's
+    // Cmd+Q would exit the loop before any key event, so it is not built.
+    #[cfg(target_os = "macos")]
+    let event_loop = {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        EventLoop::builder().with_default_menu(false).build()?
+    };
+    #[cfg(not(target_os = "macos"))]
     let event_loop = EventLoop::new()?;
     // Capture mode keeps redrawing until the trigger frame so the transport
     // task has time to deliver hello/tree/preview events; interactive mode
