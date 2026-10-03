@@ -372,16 +372,17 @@ socket. Write `$REPO/scripts/launch-sot-local.sh`:
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SOCK="${SOT_SOCKET:-/tmp/sot-$USER.sock}"
+LOG="$REPO/dev/output/sotd-local.$(uname -n).log"; mkdir -p "$REPO/dev/output"
 rm -f "$SOCK"
 "$REPO/rust/target/release/sotd" --socket "$SOCK" --project-root "$REPO" \
-    >/tmp/sotd.log 2>&1 &
+    >"$LOG" 2>&1 &
 BE=$!; trap 'kill $BE 2>/dev/null' EXIT
 for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep 0.1; done   # wait for socket
-[ -S "$SOCK" ] || { echo "backend never opened $SOCK — see /tmp/sotd.log"; exit 1; }
+[ -S "$SOCK" ] || { echo "backend never opened $SOCK — see $LOG"; exit 1; }
 exec "$REPO/rust/target/release/sot" --socket "$SOCK"
 ```
 `chmod +x`. Run it; confirm Files mode renders and the REPL drawer (Ctrl+J) gets a
-live Julia. If the FE errors on the socket, check `/tmp/sotd.log` (kernel
+live Julia. If the FE errors on the socket, check `dev/output/sotd-local.<host>.log` in the checkout (kernel
 env not built? → §6).
 
 ### Linux / macOS — frontend client → remote backend (SSH)

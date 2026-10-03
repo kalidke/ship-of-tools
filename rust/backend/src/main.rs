@@ -90,8 +90,7 @@ fn apply_umask() {
 fn apply_umask() {}
 
 /// Writer for `tracing_subscriber::fmt`: mirrors every log line to BOTH
-/// stdout (unchanged — existing launchers that redirect it, e.g.
-/// `scripts/install.sh`'s `>/tmp/sotd.log`, keep working exactly as before)
+/// stdout (unchanged — a launcher that redirects it keeps working)
 /// AND a private file under `paths::state_dir()` (security review: sotd now
 /// owns a real, `0600` copy of its own log regardless of how it's launched,
 /// rather than depending entirely on the launcher's redirect target). The
