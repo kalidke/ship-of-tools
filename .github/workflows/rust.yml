@@ -229,6 +229,8 @@ jobs:
           # second. Timed against a stub, hermetic, about two seconds.
           bash test-heartbeat-ctx-wait.sh
           bash test-sot-fe-version.sh
+          # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
+          bash test-sot-fe-reauth.sh
           # A session may declare its handle only into the row its own
           # identity names. Until this suite ran here, the one thing that
           # proves it was a suite nobody ran but by hand -- and the defect it

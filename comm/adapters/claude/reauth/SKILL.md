@@ -14,7 +14,7 @@ handle, so its comm identity is unchanged — only which login it spends.
 One command, after the pre-flight below:
 
 ```bash
-sot-fe reauth "$SOT_WORKSPACE_ID" <account>
+sot-fe reauth <account>
 ```
 
 It answers `ok reauth_accepted` and *then* the leg is killed — the accept is
