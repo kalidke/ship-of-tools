@@ -79,7 +79,8 @@ end
 # (a BrowserView inside a tuple, an array or a Dict included) that reaches logs and `sot-fe` output. Its display shows
 # the origin only, without any userinfo; the address itself is `bv.url`.
 function Base.show(io::IO, bv::BrowserView)
-    m = match(r"^([A-Za-z][A-Za-z0-9+.-]*://)(?:[^/?#@]*@)?([^/?#]*)", bv.url)
+    # Greedy to the authority's LAST `@`: a userinfo may itself hold a raw `@`.
+    m = match(r"^([A-Za-z][A-Za-z0-9+.-]*://)(?:[^/?#]*@)?([^/?#@]*)", bv.url)
     print(io, "BrowserView(", m === nothing ? "" : m[1] * m[2], "/…, open = ", bv.open)
     bv.fe === nothing || print(io, ", fe = ", repr(bv.fe))
     print(io, ")")
