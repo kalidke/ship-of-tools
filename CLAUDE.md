@@ -167,6 +167,8 @@ The smallest useful working slice:
 
 When working in this repo:
 
+- **Read `docs/principles.md` first** (one page): why Ship of Tools exists and the principles every change
+  keeps. Every planner and lane brief loads it before the subsystem's design page and code.
 - **THE design principle, senior to any process — elegance: simple and
   elegant leads to performance and security. As simple as possible, but no
   simpler.** It applies at every design and iteration stage, not only the
