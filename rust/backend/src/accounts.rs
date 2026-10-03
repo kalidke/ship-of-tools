@@ -538,7 +538,7 @@ pub fn ensure_folder_trusted(
 /// its own keys read `C:/Users/...` (forward slashes), while a root may
 /// arrive with `\`; spelled differently, the entry would never be found
 /// and the dialog would still appear. Elsewhere the root is the key as is.
-pub(crate) fn claude_project_key(root: &str, windows: bool) -> String {
+fn claude_project_key(root: &str, windows: bool) -> String {
     if windows {
         root.replace('\\', "/")
     } else {
@@ -911,7 +911,7 @@ mod tests {
     fn recorded_trust(file: &Path, root: &Path) -> Option<bool> {
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
         v.get("projects")?
-            .get(root.to_string_lossy().as_ref())?
+            .get(claude_project_key(&root.to_string_lossy(), cfg!(windows)).as_str())?
             .get("hasTrustDialogAccepted")?
             .as_bool()
     }

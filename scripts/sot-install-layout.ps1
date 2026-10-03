@@ -65,30 +65,32 @@ function Get-SotLauncherCodeId {
 # Folder trust, the Windows twin of install.sh's [trust] step. The daemon
 # pre-answers the agent's folder-trust dialog for every session root under ONE
 # declared absolute prefix read from settings.toml; nothing else on Windows
-# writes that declaration. Written once: an existing [trust] table (matched the
-# way install.sh and the daemon's parser do -- trimmed line, brackets stripped,
-# name trimmed) is the owner's own answer and is never rewritten. The prefix is
-# the home folder with / as the separator, the spelling Claude Code keys its
-# own projects by. UTF-8 without BOM, appended, creating folder and file.
+# writes that declaration. It writes ONLY when settings.toml does not exist, as
+# the whole file, and returns $true. An existing file, in any encoding or
+# shape, is the owner's: it is never edited and the function returns $false;
+# when that file has no [trust] line, one notice says what to add. The prefix
+# is the home folder with / as the separator, the spelling Claude Code keys its
+# own projects by. UTF-8 without BOM, creating the folder.
 function Set-SotFolderTrust {
     param(
         [Parameter(Mandatory)][string]$ConfigDir,
         [Parameter(Mandatory)][string]$HomeDir
     )
     $file = Join-Path $ConfigDir 'settings.toml'
-    $existing = ''
+    $prefix = $HomeDir.Replace('\', '/')
     if (Test-Path -LiteralPath $file) {
-        $existing = [System.IO.File]::ReadAllText($file)
-        foreach ($line in ($existing -split "`n")) {
-            $t = $line.Trim()
-            if ($t.StartsWith('[') -and $t.EndsWith(']') -and $t.Trim('[', ']').Trim() -ceq 'trust') {
-                return $false
-            }
+        $declared = $false
+        foreach ($line in ([System.IO.File]::ReadAllText($file) -split "`n")) {
+            if ($line.Trim() -ceq '[trust]') { $declared = $true }
         }
-    } elseif (-not (Test-Path -LiteralPath $ConfigDir)) {
+        if (-not $declared) {
+            Write-Host "folder trust is not declared in $file; add [trust] and root_prefix = `"$prefix`" to let the daemon pre-answer the folder-trust dialog"
+        }
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $ConfigDir)) {
         New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
     }
-    $prefix = $HomeDir.Replace('\', '/')
     $block = "`n[trust]`n" +
         "# Every session root under this absolute prefix counts as already`n" +
         "# trusted, so an agent the daemon spawns there never stops at its`n" +
@@ -97,6 +99,6 @@ function Set-SotFolderTrust {
         "# are left untouched.`n" +
         "root_prefix = `"$prefix`"`n"
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($file, $existing + $block, $utf8)
+    [System.IO.File]::WriteAllText($file, $block, $utf8)
     return $true
 }

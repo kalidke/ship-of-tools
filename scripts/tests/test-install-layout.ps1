@@ -97,37 +97,42 @@ try {
         Check '3: a missing file gives an empty id' ((Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')) -ceq '') 'a partial scripts dir got an id'
     } catch { Check '3: section ran' $false $_.Exception.Message }
 
-    Write-Host "`n=== 4. Set-SotFolderTrust: the [trust] declaration ===" -ForegroundColor Cyan
+    Write-Host "`n=== 4. Set-SotFolderTrust: written only when settings.toml does not exist ===" -ForegroundColor Cyan
     try {
+        # Ordered equality: same length, then every byte in order.
+        function Test-SameBytes([byte[]]$A, [byte[]]$B) {
+            if ($A.Length -ne $B.Length) { return $false }
+            for ($k = 0; $k -lt $A.Length; $k++) { if ($A[$k] -ne $B[$k]) { return $false } }
+            return $true
+        }
         $homeDir = 'C:\Users\someone'
         $cfgNew = Join-Path $root 'cfg-new'
-        Check '4: no file: it declares trust' (Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir) 'returned false'
+        Check '4: no file: it declares trust and returns true' ([bool](Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir)) 'returned false'
         $f = Join-Path $cfgNew 'settings.toml'
         $bytes = [System.IO.File]::ReadAllBytes($f)
         $text = [System.Text.Encoding]::UTF8.GetString($bytes)
         Check '4: root_prefix is the home with / separators' ($text -match '(?m)^root_prefix = "C:/Users/someone"\r?$') $text
         Check '4: no BOM' (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) 'file starts with a BOM'
-        $once = [System.IO.File]::ReadAllBytes($f)
         Check '4: a second call returns false' (-not (Set-SotFolderTrust -ConfigDir $cfgNew -HomeDir $homeDir)) 'returned true'
-        Check '4: a second call leaves the file byte-identical' ((@(Compare-Object $once ([System.IO.File]::ReadAllBytes($f))).Count) -eq 0) 'bytes changed'
+        Check '4: a second call leaves the file byte-identical' (Test-SameBytes $bytes ([System.IO.File]::ReadAllBytes($f))) 'bytes changed'
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $cases = [ordered]@{
+            'UTF-8 without [trust]'                 = $utf8.GetBytes("[display]`nx = 1`n")
+            'UTF-16 with BOM'                       = ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes("[trust]`r`nroot_prefix = `"C:/x`"`r`n"))
+            '[trust] # comment and a commented key' = $utf8.GetBytes("[trust] # mine`n# root_prefix = `"C:/x`"`n")
+        }
         $i = 0
-        foreach ($body in @("[display]`n# root_prefix = `"x`"`n[trust]`n# root_prefix = `"C:/x`"`n", "[ trust ]`n")) {
+        foreach ($name in $cases.Keys) {
             $i++
             $cfg = Join-Path $root "cfg-own$i"
             New-Item -ItemType Directory -Force -Path $cfg | Out-Null
             $own = Join-Path $cfg 'settings.toml'
-            [System.IO.File]::WriteAllText($own, $body, (New-Object System.Text.UTF8Encoding($false)))
+            [System.IO.File]::WriteAllBytes($own, [byte[]]$cases[$name])
             $before = [System.IO.File]::ReadAllBytes($own)
-            [void](Set-SotFolderTrust -ConfigDir $cfg -HomeDir $homeDir)
-            Check "4: an existing [trust] table (case $i) is left byte-identical" `
-                ((@(Compare-Object $before ([System.IO.File]::ReadAllBytes($own))).Count) -eq 0) 'the owner''s file was rewritten'
+            $r = Set-SotFolderTrust -ConfigDir $cfg -HomeDir $homeDir 6>$null
+            Check "4: existing file ($name): returns false" (-not $r) 'returned true'
+            Check "4: existing file ($name): byte-identical" (Test-SameBytes $before ([System.IO.File]::ReadAllBytes($own))) 'the owner''s file was changed'
         }
-        $cfgOther = Join-Path $root 'cfg-other'
-        New-Item -ItemType Directory -Force -Path $cfgOther | Out-Null
-        [System.IO.File]::WriteAllText((Join-Path $cfgOther 'settings.toml'), "[display]`nx = 1`n", (New-Object System.Text.UTF8Encoding($false)))
-        [void](Set-SotFolderTrust -ConfigDir $cfgOther -HomeDir $homeDir)
-        $kept = [System.IO.File]::ReadAllText((Join-Path $cfgOther 'settings.toml'))
-        Check '4: a file without [trust] keeps its content and gains the table' ($kept.StartsWith("[display]`nx = 1`n") -and $kept -match '\[trust\]') $kept
     } catch { Check '4: section ran' $false $_.Exception.Message }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

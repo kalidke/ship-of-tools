@@ -206,9 +206,7 @@ mod linux_only {
 
     #[cfg(test)]
     mod tests {
-    use super::*;
-
-    
+        use super::*;
 
         #[test]
         fn volatile_fs_name_matches_the_constants_only() {
