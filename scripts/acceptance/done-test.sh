@@ -20,6 +20,8 @@
 set -uo pipefail
 
 BIN="$HOME/.sot-comm/bin"
+# DT_SPAWN_BIN: where comm-spawn.sh/comm-despawn.sh come from (a checkout's comm/core/scripts for a test run).
+SPAWN_BIN="${DT_SPAWN_BIN:-$BIN}"
 SOTFE="$BIN/sot-fe"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 ROWS_DIR="$ROOT/dev/output/done-test-rows"
@@ -128,8 +130,8 @@ cleanup() {
     for ws in ${SPAWNED[@]+"${SPAWNED[@]}"}; do
         case " ${GONE[*]-} ${KEEP[*]-} " in *" $ws "*) continue ;; esac
         log "despawn $ws (exit)"
-        "$BIN/comm-despawn.sh" "$ws" >> "$LOG" 2>&1 \
-            || echo "done-test: could not despawn $ws; remove it with $BIN/comm-despawn.sh $ws" >&2
+        "$SPAWN_BIN/comm-despawn.sh" "$ws" >> "$LOG" 2>&1 \
+            || echo "done-test: could not despawn $ws; remove it with $SPAWN_BIN/comm-despawn.sh $ws" >&2
     done
 }
 trap cleanup EXIT
@@ -137,7 +139,7 @@ trap 'exit 130' INT TERM
 
 despawn() {
     log "despawn $1"
-    "$BIN/comm-despawn.sh" "$1" >> "$LOG" 2>&1 && GONE+=("$1")
+    "$SPAWN_BIN/comm-despawn.sh" "$1" >> "$LOG" 2>&1 && GONE+=("$1")
 }
 
 # spawn_row BASE NAME TASK — a throwaway row in $ROWS_DIR/BASE; an empty NAME
@@ -151,7 +153,7 @@ spawn_row() {
     args=("$R_DIR")
     [ -n "$name" ] && args+=(--name "$name")
     [ -n "$task" ] && args+=(--task "$task")
-    out="$("$BIN/comm-spawn.sh" "${args[@]}" 2>&1)"; rc=$?
+    out="$("$SPAWN_BIN/comm-spawn.sh" "${args[@]}" 2>&1)"; rc=$?
     log "spawn $base rc=$rc"
     printf '%s\n' "$out" >> "$LOG"
     R_WS="$(printf '%s\n' "$out" | grep -o 'id=ws-[A-Za-z0-9_.-]*' | head -n1 | cut -d= -f2)"
@@ -165,15 +167,24 @@ screen() { "$SOTFE" screen "$1" --timeout 3 2>/dev/null; }
 dump_screen() { { printf -- '--- screen %s (%s)\n' "$1" "$2"; screen "$1"; } >> "$LOG" 2>&1; }
 type_into() {
     log "type $1: $2"
+    TYPED_MARK="${2:0:30}"
     printf '%s' "$2" | "$SOTFE" type "$1" --stdin --enter --origin "$DRIVER" >> "$LOG" 2>&1
 }
 
-# A row is idle when a turn-done line is on screen and the input line is empty.
+# A row is idle when no turn is in progress, a turn-done line or a footer agent line ("◯ <name>", a turn that ended
+# with a background sub-agent running prints no done line) is on screen, and the input line holds nothing typed.
+# After such a turn Claude Code shows a ghost suggestion after the prompt; the screen text carries no attribute that
+# tells it from typed input, so text after the last prompt is accepted only when a done or footer agent line sits below
+# the last line this script typed (TYPED_MARK, its first 30 characters; unset or scrolled away counts as no constraint).
+TYPED_MARK=""
 is_idle() {
-    local last
-    printf '%s\n' "$1" | LC_ALL=C grep -qE '✻ .* done ' || return 1
-    last="$(printf '%s\n' "$1" | LC_ALL=C grep '^❯' | tail -n1 | LC_ALL=C sed 's/\xc2\xa0/ /g; s/[[:space:]]*$//')"
-    [ "$last" = "❯" ]
+    printf '%s\n' "$1" | LC_ALL=C grep -qE '…[[:space:]]*\([0-9]+(m [0-9]+)?s' && return 1
+    printf '%s\n' "$1" | LC_ALL=C awk -v m="$TYPED_MARK" '
+        { sub(/\xc2\xa0/, " ") }
+        m != "" && index($0, m) { k = NR }
+        /✻ .* done |^ *◯ / { if (NR > k) d = NR }
+        /^❯/ { p = NR; t = $0; sub(/^❯[ \t]*/, "", t); sub(/[ \t]+$/, "", t); txt = t }
+        END { exit !(d && (txt == "" || p > k)) }'
 }
 # wait_idle WS SECS — sets LAST_SCREEN.
 wait_idle() {
@@ -398,7 +409,7 @@ m4_check() {
     ensure_a
     [ -z "$A_ERR" ] || { emit FAIL M4 "row A unavailable: $A_ERR"; return; }
     if ! wait_idle "$A_WS" 180; then emit FAIL M4 "row A was not idle within 180s"; return; fi
-    type_into "$A_WS" 'Start one background sub-agent (Agent tool, run_in_background) that runs `sleep 120` in Bash, then end your turn.'
+    type_into "$A_WS" 'Start one background sub-agent (Agent tool, run_in_background) that runs `timeout 120 tail -f /dev/null` in Bash (a 120 s wait; a plain sleep is blocked), then end your turn.'
     t0="$(date +%s)"
     sleep 5
     if ! wait_idle "$A_WS" 100; then
@@ -406,7 +417,12 @@ m4_check() {
         emit FAIL M4 "row A did not end its turn within 105s of starting the sub-agent"
         return
     fi
-    wake_check M4 "$A_WS" "$A_NAME" "reply ok4 to @$DRIVER" "sub-agent started $(($(date +%s) - t0))s before the send: "
+    if ! printf '%s\n' "$LAST_SCREEN" | LC_ALL=C grep -qE '^ *◯ '; then
+        dump_screen "$A_WS" "M4 sub-agent gone"
+        emit FAIL M4 "sub-agent no longer running when row A went idle ($(($(date +%s) - t0))s after start); nothing sent"
+        return
+    fi
+    wake_check M4 "$A_WS" "$A_NAME" "reply ok4 to @$DRIVER" "sub-agent still running at the send (started $(($(date +%s) - t0))s before): "
 }
 item_M5() {
     local base tmp rc probe
