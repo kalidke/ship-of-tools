@@ -722,17 +722,6 @@ fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
     }
 }
 
-/// A second close exits at once with `code` (0), and the leave in progress
-/// takes that code: winit still runs `about_to_wait` while it shuts down, and
-/// its poll exits with the leave's own code, so no restart code outlives a
-/// close.
-fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
-    if let Some(l) = leaving {
-        l.exit_code = code;
-    }
-    code
-}
-
 /// The slot maximization gives the whole area, if any. While a leave has a
 /// line to show, none: the nav pane draws that line (`nav_pinned_rows`).
 fn maximize_slot(maximized: bool, focus: PaneFocus, leave_line: bool) -> Option<crate::settings::Slot> {
@@ -16310,23 +16299,17 @@ impl State {
     /// while leaving exits at once (an X during a Keep closes instead). `leave` tells each held lease's daemon
     /// what to do with this computer's sessions and the window exits once
     /// the acks are in (`about_to_wait`).
-    fn request_quit(&mut self, event_loop: &ActiveEventLoop, reason: ExitReason) {
+    fn request_quit(&mut self, reason: ExitReason) {
         match exit_intent(reason, self.leaving.as_ref().map(|l| l.intent)) {
             ExitStep::Ask => {
                 tracing::info!("quit prompt: open");
                 self.nav_prompt = Some(NavPrompt::ConfirmQuit { keep: false });
                 self.window.request_redraw();
             }
-            ExitStep::Now { code } => {
-                // A leave already queued (a Close after a Keep) is written
-                // before the runtime and its streams go.
-                self.leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
-                let code = close_now(self.leaving.as_mut(), code);
-                self.finish_exit(event_loop, code);
-            }
+            ExitStep::Now { code } => self.finish_exit(code),
             ExitStep::Ignore => {}
-            ExitStep::Supersede => self.leave(event_loop, LeaveIntent::Close, 0),
-            ExitStep::Leave { intent, code } => self.leave(event_loop, intent, code),
+            ExitStep::Supersede => self.leave(LeaveIntent::Close, 0),
+            ExitStep::Leave { intent, code } => self.leave(intent, code),
         }
     }
 
@@ -16334,7 +16317,7 @@ impl State {
     /// to leave, the exit itself happens in `about_to_wait` once the acks are
     /// in; with none, at once. The window never ends the drawer's session
     /// itself: the daemon's Close ends it, and a Keep keeps it.
-    fn leave(&mut self, event_loop: &ActiveEventLoop, intent: LeaveIntent, code: i32) {
+    fn leave(&mut self, intent: LeaveIntent, code: i32) {
         self.nav_prompt = None;
         self.leaving = self.leases.leave_all(intent, code, std::time::Instant::now());
         tracing::info!(?intent, code, acks = self.leaving.is_some(), "window leaving");
@@ -16342,17 +16325,21 @@ impl State {
         if self.leaving.is_some() {
             self.window.request_redraw();
         } else {
-            self.finish_exit(event_loop, code);
+            self.finish_exit(code);
         }
     }
 
-    fn finish_exit(&mut self, event_loop: &ActiveEventLoop, code: i32) {
+    /// Every user exit ends here: the queued leaves are written first (an X
+    /// during a Keep delivers its Close before EOF), then the process ends at
+    /// once, since no message is pumped after `run_app` returns.
+    fn finish_exit(&self, code: i32) -> ! {
+        tracing::info!(code, "window exiting");
+        self.leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
         if code != 0 {
             #[cfg(windows)]
             allow_next_foreground();
-            std::process::exit(code);
         }
-        event_loop.exit();
+        std::process::exit(code);
     }
 
     fn redraw(&mut self) -> Result<()> {
@@ -20559,7 +20546,7 @@ impl ApplicationHandler for App {
                 exit_intent(ExitReason::Relaunch(relaunch_code as i32), state.leaving.as_ref().map(|l| l.intent)),
                 ExitStep::Leave { .. }
             ) {
-                state.leave(event_loop, LeaveIntent::Handover, relaunch_code as i32);
+                state.leave(LeaveIntent::Handover, relaunch_code as i32);
             }
         }
         // FE control commands (ADR 0019): drain whatever the watcher enqueued
@@ -20567,7 +20554,7 @@ impl ApplicationHandler for App {
         // Cheap no-op when the queue is empty.
         state.drain_fe_commands();
         match event {
-            WindowEvent::CloseRequested => state.request_quit(event_loop, ExitReason::WindowClose),
+            WindowEvent::CloseRequested => state.request_quit(ExitReason::WindowClose),
             WindowEvent::Resized(size) => {
                 state.resize(size);
                 state.persist_resume_state();
@@ -20908,7 +20895,7 @@ impl ApplicationHandler for App {
                             state.window.request_redraw();
                         }
                         QuitPromptStep::Cancel => state.cancel_nav_prompt(),
-                        QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0),
+                        QuitPromptStep::Leave(i) => state.leave(i, 0),
                         QuitPromptStep::Ignore => {}
                     }
                     return;
@@ -21525,7 +21512,7 @@ impl ApplicationHandler for App {
                         if !event.repeat
                             && action == Some(Action::Quit)
                         {
-                            state.request_quit(event_loop, ExitReason::QuitKey);
+                            state.request_quit(ExitReason::QuitKey);
                             return;
                         }
                         // Ctrl+C: copy the cursored row's file path to the
@@ -23084,8 +23071,7 @@ impl ApplicationHandler for App {
                 }
                 Some(crate::lease::LeaveStep::Exit) | None => {
                     let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
-                    state.finish_exit(event_loop, code);
-                    return;
+                    state.finish_exit(code);
                 }
             }
         }
@@ -24566,7 +24552,7 @@ mod tests {
         // the drawer's session from the window (the daemon's Close ends it,
         // a Keep keeps it).
         let src = include_str!("gpu.rs").replace("\r\n", "\n");
-        let start = src.find(&["fn leave(&mut self, event_loop: &ActiveEventLoop, ", "intent"].concat()).unwrap();
+        let start = src.find(&["fn leave(&mut self, ", "intent"].concat()).unwrap();
         let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
         for banned in ["attach_term", "request_quit", "return"] {
             assert!(!body.contains(banned), "`leave` contains `{banned}`");
@@ -24654,21 +24640,16 @@ mod tests {
     }
 
     #[test]
-    fn second_close_during_handover_exits_zero_on_every_path() {
-        use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
-        let t0 = std::time::Instant::now();
-        let (ack, rx) = tokio::sync::oneshot::channel();
-        let mut leaving = Some(Leaving::new(LeaveIntent::Handover, 75, vec![("h".to_string(), rx)], t0));
-        // The second close, as `request_quit` applies it.
-        let ExitStep::Now { code } = exit_intent(ExitReason::WindowClose, leaving.as_ref().map(|l| l.intent)) else {
-            panic!("a second close exits at once");
-        };
-        assert_eq!(close_now(leaving.as_mut(), code), 0);
-        // The handover's ack is then ready, and winit still runs
-        // `about_to_wait`: its poll exits with the leave's code.
-        ack.send(LeaveOutcome::Replied(0)).unwrap();
-        assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
-        assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
+    fn every_exit_ends_the_process_at_once() {
+        let src = include_str!("gpu.rs").replace("\r\n", "\n");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests {").unwrap()];
+        let start = src.find("fn finish_exit(").unwrap();
+        let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
+        assert!(!body.contains("event_loop"), "`finish_exit` uses `event_loop`:\n{body}");
+        assert!(body.starts_with("fn finish_exit(&self, code: i32) -> ! {"), "{body}");
+        let write = body.find("deliver_queued(crate::lease::LEAVE_WRITE_WAIT)").expect("writes the queued leaves");
+        assert!(body.find("std::process::exit(code);").is_some_and(|exit| write < exit), "{body}");
+        assert_eq!(src.matches("deliver_queued(").count(), 1, "only `finish_exit` writes the queued leaves");
     }
 
     #[test]
