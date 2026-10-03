@@ -500,6 +500,19 @@ fn auto_memory_settings(home: &Path, cwd: &Path, child_config_dir: Option<&Path>
     }
 }
 
+/// The string comparison of the resolved cwd with the spelled one. On Windows
+/// `canonicalize` yields `C:\...` while a root off the wire may read `C:/...`;
+/// both name the same folder and sanitise to the same project directory, so
+/// the separators are mapped to one form on BOTH sides. Nothing else is
+/// loosened: a trailing slash or a different drive-letter case still differs.
+fn same_cwd_spelling(resolved: &str, cwd: &str, windows: bool) -> bool {
+    if windows {
+        resolved.replace('\\', "/") == cwd.replace('\\', "/")
+    } else {
+        resolved == cwd
+    }
+}
+
 /// [`auto_memory_settings`]'s whole decision, with the reason for a decline
 /// instead of a bare `None`. Callers want "flag or no flag", which is why the
 /// `Option` is the public shape and this is separate: the reason is a
@@ -539,7 +552,7 @@ fn auto_memory_reason(
     // too: `canonicalize` is idempotent on verbatim input, so a `\\?\` root
     // PASSED while the plain spelling the child actually receives was refused.
     match std::fs::canonicalize(cwd).map(crate::paths::simplify_verbatim) {
-        Ok(resolved) if resolved.to_str() == Some(cwd) => {}
+        Ok(resolved) if resolved.to_str().is_some_and(|r| same_cwd_spelling(r, cwd, cfg!(windows))) => {}
         _ => return Err("the cwd is not the canonical spelling the session would derive"),
     }
     if !cwd.is_ascii() {
@@ -5065,6 +5078,15 @@ mod headless_size_gate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_cwd_spelling_maps_separators_only_on_windows() {
+        assert!(same_cwd_spelling(r"C:\a\b", "C:/a/b", true));
+        assert!(same_cwd_spelling("C:/a/b", r"C:\a\b", true));
+        assert!(!same_cwd_spelling(r"C:\a\b", "C:/a/b", false));
+        assert!(!same_cwd_spelling(r"C:\a\b", "C:/a/b/", true));
+        assert!(!same_cwd_spelling(r"C:\a\b", "c:/a/b", true));
+    }
 
     /// `source` without its `#[cfg(test)]` modules and its comment lines.
     /// A module ends at the first `}` line at its own indentation; counting

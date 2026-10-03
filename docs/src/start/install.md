@@ -307,7 +307,10 @@ ships `sot-<ver>-windows-x86_64.zip`. Extract `sot.exe` into
 and wire the shortcut with `scripts\install-shortcut.ps1`, which points the
 desktop shortcut (and any taskbar pin) at `scripts\launch-sot.ps1`. Do not
 point a shortcut at bare `sot.exe`, which skips the launcher's update and
-relaunch handling. The step-by-step walkthrough is
+relaunch handling. The launcher also declares the home folder as the trusted
+folder prefix in `%LOCALAPPDATA%\sot\config\settings.toml` (a `[trust]` table,
+written once and never rewritten), so a session the daemon starts there does not
+stop at the agent's folder-trust dialog. The step-by-step walkthrough is
 [INSTALL-AGENT.md §2b](https://github.com/kalidke/ship-of-tools/blob/main/docs/INSTALL-AGENT.md)
 (written for a coding agent, equally followable by hand).
 

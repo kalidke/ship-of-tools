@@ -518,7 +518,7 @@ pub fn ensure_folder_trusted(
         .as_object_mut()
         .ok_or_else(|| at(&"\"projects\" is not a JSON object"))?;
     let entry = projects
-        .entry(root.to_string_lossy().into_owned())
+        .entry(claude_project_key(&root.to_string_lossy(), cfg!(windows)))
         .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
         .as_object_mut()
         .ok_or_else(|| at(&"this project's own entry is not a JSON object"))?;
@@ -532,6 +532,18 @@ pub fn ensure_folder_trusted(
     let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| at(&e))?;
     publish_trust_file(&path, &bytes).map_err(|e| at(&e))?;
     Ok(true)
+}
+
+/// The key Claude Code files a project under in `.claude.json`. On Windows
+/// its own keys read `C:/Users/...` (forward slashes), while a root may
+/// arrive with `\`; spelled differently, the entry would never be found
+/// and the dialog would still appear. Elsewhere the root is the key as is.
+fn claude_project_key(root: &str, windows: bool) -> String {
+    if windows {
+        root.replace('\\', "/")
+    } else {
+        root.to_string()
+    }
 }
 
 /// Publish [`ensure_folder_trusted`]'s bytes: temp file in the SAME
@@ -565,6 +577,30 @@ fn publish_trust_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_project_key_maps_backslashes_only_on_windows() {
+        assert_eq!(claude_project_key(r"C:\Users\u\repo", true), "C:/Users/u/repo");
+        assert_eq!(claude_project_key(r"C:\Users\u\repo", false), r"C:\Users\u\repo");
+        assert_eq!(claude_project_key("C:/Users/u/repo", true), "C:/Users/u/repo");
+        assert_eq!(claude_project_key("C:/Users/u/repo", false), "C:/Users/u/repo");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_backslash_root_is_recorded_under_the_slash_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let parent = declared_parent(home);
+        let root = parent.join("some-repo");
+        touch_dir(&root);
+        assert_eq!(ensure_folder_trusted(home, "", &root, Some(&parent)), Ok(true));
+        let text = std::fs::read_to_string(claude_trust_file(home, "")).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let key = claude_project_key(&root.to_string_lossy(), true);
+        assert!(!key.contains('\\'));
+        assert_eq!(doc["projects"][&key][TRUST_ACCEPTED_KEY], serde_json::Value::Bool(true));
+    }
 
     fn touch_dir(path: &Path) {
         std::fs::create_dir_all(path).unwrap();
@@ -875,7 +911,7 @@ mod tests {
     fn recorded_trust(file: &Path, root: &Path) -> Option<bool> {
         let v: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
         v.get("projects")?
-            .get(root.to_string_lossy().as_ref())?
+            .get(claude_project_key(&root.to_string_lossy(), cfg!(windows)).as_str())?
             .get("hasTrustDialogAccepted")?
             .as_bool()
     }
