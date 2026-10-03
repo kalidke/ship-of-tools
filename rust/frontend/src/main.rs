@@ -166,6 +166,60 @@ fn main() -> Result<()> {
     };
 
     let mut app = gpu::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
-    event_loop.run_app(&mut app)?;
+    let ran = event_loop.run_app(&mut app);
+    shutdown_transport(app.take_runtime());
+    ran?;
     Ok(())
+}
+
+/// How long the exit waits for the transport runtime's blocking work (child
+/// stdio reads, pipe connects). The runtime's own drop waits without bound,
+/// and a window that stays up un-pumped meanwhile is reported as Not
+/// Responding; `shutdown_timeout` still drops every task, so the ssh children
+/// (`kill_on_drop`) end with it.
+const RUNTIME_SHUTDOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+fn shutdown_transport(rt: Option<tokio::runtime::Runtime>) {
+    if let Some(rt) = rt {
+        rt.shutdown_timeout(RUNTIME_SHUTDOWN_WAIT);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn transport_shutdown_is_bounded_and_kills_children() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        // Blocking work that never finishes, as a child-stdio read does.
+        rt.spawn(async { let _ = tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_secs(60))).await; });
+        let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+        rt.spawn(async move {
+            let mut child = tokio::process::Command::new("sleep").arg("60").kill_on_drop(true).spawn().unwrap();
+            pid_tx.send(child.id().unwrap()).unwrap();
+            let _ = child.wait().await;
+        });
+        let pid = pid_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let t = Instant::now();
+        std::thread::spawn(move || {
+            shutdown_transport(Some(rt));
+            let _ = done_tx.send(());
+        });
+        done_rx.recv_timeout(Duration::from_secs(2)).expect("the runtime shutdown waited past its bound");
+        assert!(t.elapsed() < Duration::from_secs(2));
+        let gone = |pid: u32| match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(s) => s.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')),
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !gone(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(gone(pid), "the kill_on_drop child outlived the runtime");
+    }
 }

@@ -726,6 +726,25 @@ fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
 /// takes that code: winit still runs `about_to_wait` while it shuts down, and
 /// its poll exits with the leave's own code, so no restart code outlives a
 /// close.
+/// How long after the exit decision the process ends whatever the window's own
+/// teardown (the drawer's ConPTY close, wgpu) is doing; on Windows a window
+/// that stays up un-pumped is reported as Not Responding.
+const EXIT_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The exit decision's backstop: after `bound`, `end(code)`. It runs on its
+/// own thread, so nothing the UI thread waits on can hold it.
+fn start_exit_backstop(bound: std::time::Duration, code: i32, end: fn(i32)) {
+    std::thread::spawn(move || {
+        std::thread::sleep(bound);
+        tracing::error!("exit still running after {bound:?}: ending the process");
+        end(code);
+    });
+}
+
+fn exit_backstop(code: i32) {
+    start_exit_backstop(EXIT_BACKSTOP, code, |c| std::process::exit(c));
+}
+
 fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
     if let Some(l) = leaving {
         l.exit_code = code;
@@ -3688,6 +3707,12 @@ pub struct App {
 }
 
 impl App {
+    /// The transport runtime, for `main` to shut down with a bound once the
+    /// event loop returns.
+    pub fn take_runtime(&mut self) -> Option<tokio::runtime::Runtime> {
+        self.rt.take()
+    }
+
     pub fn new(
         evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
         rt: Option<tokio::runtime::Runtime>,
@@ -16318,10 +16343,11 @@ impl State {
                 self.window.request_redraw();
             }
             ExitStep::Now { code } => {
+                let code = close_now(self.leaving.as_mut(), code);
+                exit_backstop(code);
                 // A leave already queued (a Close after a Keep) is written
                 // before the runtime and its streams go.
                 self.leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
-                let code = close_now(self.leaving.as_mut(), code);
                 self.finish_exit(event_loop, code);
             }
             ExitStep::Ignore => {}
@@ -16352,6 +16378,7 @@ impl State {
             allow_next_foreground();
             std::process::exit(code);
         }
+        exit_backstop(code);
         event_loop.exit();
     }
 
@@ -20853,6 +20880,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
+                        exit_backstop(0);
                         event_loop.exit();
                     }
                 }
@@ -24631,6 +24659,28 @@ mod tests {
         assert!(no.contains("[No]") && no.contains("Yes") && !no.contains("[Yes]"));
         let (_, yes) = quit_prompt_line(true);
         assert!(yes.contains("[Yes]") && !yes.contains("[No]"));
+    }
+
+    #[test]
+    fn exit_backstop_ends_a_stuck_teardown() {
+        static ENDED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+        start_exit_backstop(std::time::Duration::from_millis(200), 7, |c| {
+            ENDED.store(c, std::sync::atomic::Ordering::SeqCst)
+        });
+        // The teardown the backstop covers: the UI thread stuck past the bound.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert_eq!(ENDED.load(std::sync::atomic::Ordering::SeqCst), 7, "the backstop never fired");
+    }
+
+    #[test]
+    fn every_exit_start_arms_the_backstop() {
+        let src = include_str!("gpu.rs");
+        let body = |name: &str| {
+            let at = src.find(name).expect(name);
+            &src[at..at + 900]
+        };
+        assert!(body("fn finish_exit(").contains("exit_backstop(code)"));
+        assert!(body("ExitStep::Now { code } => {").contains("exit_backstop(code)"));
     }
 
     #[test]

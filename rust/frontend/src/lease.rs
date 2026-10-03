@@ -92,9 +92,6 @@ struct Book {
     /// wait (`set`); open while one is in flight, so the leave is not done
     /// until it closes.
     late: Option<mpsc::UnboundedSender<PendingAck>>,
-    /// The runtime the holders run on, for a forced exit's wait
-    /// (`deliver_queued`).
-    rt: Option<tokio::runtime::Handle>,
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
     owed: BTreeMap<HostKey, u32>,
@@ -130,7 +127,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, rt: None, owed: BTreeMap::new() }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new() }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -271,7 +268,6 @@ impl Leases {
                     // The count and the holder its ack goes through are published under one lock: a count drawn
                     // and acked before its holder was installed would be acked to nobody and stay owed forever.
                     let mut book = self.book.lock().unwrap();
-                    book.rt.get_or_insert_with(tokio::runtime::Handle::current);
                     if res.not_ended > 0 {
                         book.owed.insert(key, res.not_ended);
                     }
@@ -378,28 +374,51 @@ impl Leases {
 
     /// A forced exit's last step: block until every holder has written each
     /// leave already queued to it (the write, not the reply), at most `bound`
-    /// in all, so the stream's EOF never overtakes a queued Close.
+    /// in all, so the stream's EOF never overtakes a queued Close. The bound
+    /// is the OS clock's: the runtime's one worker also does synchronous
+    /// writes, so its timer may not run, and the calling thread never waits
+    /// on it.
     pub fn deliver_queued(&self, bound: Duration) {
-        let rt = self.book.lock().unwrap().rt.clone();
-        if let Some(rt) = rt {
-            rt.block_on(self.written(bound));
+        let deadline = std::time::Instant::now() + bound;
+        let waits = self.queue_waits();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let count = waits.len();
+        for (_, rx) in waits {
+            let done_tx = done_tx.clone();
+            std::thread::spawn(move || {
+                let _ = rx.blocking_recv();
+                let _ = done_tx.send(());
+            });
+        }
+        drop(done_tx);
+        for _ in 0..count {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if done_rx.recv_timeout(left).is_err() {
+                tracing::warn!("window lease: exiting before every queued leave was written");
+                break;
+            }
         }
     }
 
-    /// `deliver_queued`'s wait. The hosts still unwritten at the bound are
-    /// named in one warn line, and the exit goes on.
+    /// One `Written` ask per holder; each answers once the leaves queued before
+    /// it are written.
+    fn queue_waits(&self) -> Vec<(HostKey, oneshot::Receiver<()>)> {
+        let book = self.book.lock().unwrap();
+        book.slots
+            .iter()
+            .filter_map(|(host, slot)| {
+                let (tx, rx) = oneshot::channel();
+                slot.holder.as_ref()?.send(HolderCmd::Written(tx)).ok()?;
+                Some((host.clone(), rx))
+            })
+            .collect()
+    }
+
+    /// The same wait on the caller's runtime. The hosts still unwritten at the
+    /// bound are named in one warn line, and the exit goes on.
+    #[cfg(test)]
     async fn written(&self, bound: Duration) {
-        let waits: Vec<(HostKey, oneshot::Receiver<()>)> = {
-            let book = self.book.lock().unwrap();
-            book.slots
-                .iter()
-                .filter_map(|(host, slot)| {
-                    let (tx, rx) = oneshot::channel();
-                    slot.holder.as_ref()?.send(HolderCmd::Written(tx)).ok()?;
-                    Some((host.clone(), rx))
-                })
-                .collect()
-        };
+        let waits = self.queue_waits();
         let deadline = tokio::time::Instant::now() + bound;
         let mut unwritten = Vec::new();
         for (host, rx) in waits {
@@ -1404,6 +1423,31 @@ mod tests {
             seen.len() == 3 && is_leave(&seen[0], "keep") && is_leave(&seen[1], "close"),
             "the queued close reaches the daemon before eof: {seen:?}"
         );
+    }
+
+    #[test]
+    fn deliver_queued_is_bounded_by_the_os_clock() {
+        // The runtime's one worker is held in a blocking call (as by a
+        // synchronous state-file write) and the holder never answers, so only
+        // a clock outside the runtime can end the wait.
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let host = "local".to_string();
+        let leases = Leases::new(false, vec![host.clone()]);
+        let (cmd_tx, _cmd_rx) = mpsc::unbounded_channel();
+        leases.set(&host, Standing::Granted { state_root: None }, Some(cmd_tx));
+        let busy = rt.spawn(async { std::thread::sleep(Duration::from_secs(6)) });
+        std::thread::sleep(Duration::from_millis(100));
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let l = leases.clone();
+        std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            l.deliver_queued(LEAVE_WRITE_WAIT);
+            let _ = done_tx.send(t.elapsed());
+        });
+        let took = done_rx.recv_timeout(Duration::from_secs(4)).expect("deliver_queued hung past its bound");
+        assert!(took < Duration::from_millis(1500), "took {took:?}");
+        busy.abort();
+        rt.shutdown_timeout(Duration::from_millis(100));
     }
 
     #[tokio::test]
