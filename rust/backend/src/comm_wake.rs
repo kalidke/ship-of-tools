@@ -47,14 +47,18 @@
 //! Nothing but spaces may follow the NBSP, and the free test reads the cursor's row with dim cells blank
 //! (`headless::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
 //! while a typed draft is not dim and reads not free wherever its cursor sits. The input must reach the main
-//! agent: no agents panel below the box, or the leader view's panel ([`panel_refusal`]); any other layout
-//! refuses. A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
+//! agent: no agents panel below the box, or a panel with no panel cursor and its one dot on main
+//! ([`panel_refusal`]); Claude Code's footer is not read. A pane too narrow for the wake line on the prompt's one
+//! row refuses ([`fits`]). A row with unread mail that the wake refuses for [`REFUSED_FOR`] gets one log line per run of
 //! refusals, naming its handle, the reason and the line above the prompt. Known limits: a suggestion drawn by colour rather than dim reads as a draft, and so does every
 //! suggestion on Windows until a screen read shows SGR 2 survives ConPTY; a statusline that draws `●` or `◯`
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
-//! or a focus off the input that drew no panel would read free (every captured view draws the panel).
+//! or a focus off the input that drew no panel would read free (every captured view draws the panel); with agent view on, a
+//! focus on the panel that draws nothing reads free ([`panel_refusal`]).
 //! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]);
-//! otherwise the line stays typed and the row is refused. That gate withholds Enter after a stray key between the
+//! otherwise no Enter goes, the
+//! attempt counts as the wake (the line is not typed again before new mail or [`REPEAT_AFTER`]), and a warning names
+//! it. That gate withholds Enter after a stray key between the
 //! final read and the typing; the line itself has then gone, without Enter, wherever that key put focus (the
 //! panel or a draft). Nothing guards the window between the gate's read and the Enter: a key pressed, or a dialog
 //! or permission prompt drawn, in it receives the Enter. A later wake refuses for whatever the screen then
@@ -67,7 +71,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::capsule_workspace::headless::{wake_if_free, WakeOutcome};
+use crate::capsule_workspace::headless::{wake_if_free, HeadlessError, WakeOutcome};
 use crate::workspaces::Workspaces;
 
 pub const TICK: Duration = Duration::from_secs(2);
@@ -325,7 +329,7 @@ const PANEL_RING: char = '\u{25ef}';
 /// the glyph; (b) the cursor just after the glyph, or one more; (c) the line directly between the input box's
 /// two borders (a rule, optionally labelled); (d) after the glyph U+00A0, the main prompt's own mark (menus and
 /// dialog inputs draw an ASCII space), then nothing but spaces, or, where the NBSP is not required
-/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]).
+/// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]); (f) the wake line fits on the prompt row ([`fits`]).
 /// The wake reads the cursor's row with dim cells blank (`headless::free_test_lines`), so Claude Code's dim
 /// suggestion or placeholder reads empty and a typed draft reads not free wherever its cursor sits. One frame
 /// cannot tell a working row, whose input box is live too; the hold in `wake_if_free` does.
@@ -333,8 +337,24 @@ fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows
     match input_refused(lines, cursor, agent, windows, Expect::Empty) {
         // Any refusal while the box holds the wake's own line: an earlier wake typed it and did not send it.
         Some(_) if typed_refusal(lines, cursor, agent, windows, WAKE_LINE).is_none() => Some("wake text left unsent"),
+        None if !fits(lines, cursor, WAKE_LINE) => Some("pane too narrow for the wake line"),
         other => other,
     }
+}
+
+/// Whether `text`, typed after the glyph and its NBSP, leaves two columns before the end of the box's lower rule,
+/// which Claude Code draws the pane's full width: one for the cursor after the text, one spare, as the column at
+/// which Claude Code wraps its input has not been measured. The gate before Enter reads the prompt's one row, so a
+/// line that would wrap is never typed. Asked only once [`input_refused`] has passed, so the cursor's row lies
+/// between two borders.
+fn fits(lines: &[String], cursor: Option<(u16, u16)>, text: &str) -> bool {
+    let Some((row, _)) = cursor else {
+        return false;
+    };
+    let row = row as usize;
+    let width = lines[row + 1].trim_end_matches(' ').chars().count();
+    let glyph = lines[row].chars().take_while(|c| *c == ' ').count();
+    glyph + 2 + text.chars().count() + 2 <= width
 }
 
 /// What the input box is expected to hold: nothing (the free test), or exactly the typed wake line (the gate
@@ -399,14 +419,17 @@ fn input_refused(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, wind
 }
 
 /// Whether the input reaches the main agent, read from the rows below the box. If no line there carries
-/// [`PANEL_DOT`] or [`PANEL_RING`], there is no agents panel and it does. Otherwise only the leader view as
-/// captured (Claude Code 2.1.287, 2026-10-02) counts: every panel line starts with two spaces (the line under
-/// panel focus starts `❯ `), the one dotted line is `  ● main`, and a line ends with the footer hint
-/// `← for agents`, which goes once a key moves focus off the input (the first ↓, before any panel cursor
-/// shows). Any other layout refuses.
+/// [`PANEL_DOT`] or [`PANEL_RING`], there is no agents panel and it does. Otherwise every panel line starts with two
+/// spaces (a focused panel draws `❯ ` on the line under its cursor) and the one dotted line is `  ● main`. Claude
+/// Code's footer is not read: its wording changes with the version, the permission mode, the background tasks and
+/// the width (2.1.288 drops `(shift+tab to cycle)` after the first shift+tab), so it is no evidence of focus. With
+/// agent view off, as the daemon runs every new capsule row, focus on the panel draws the panel cursor at once and
+/// moves the terminal cursor off the prompt (Claude Code 2.1.288, 2026-10-03). Known gap, fails open: with agent view
+/// on, 2.1.287's first ↓ moves focus to the panel and draws nothing (capture 05), and that frame reads free; there
+/// the line types into the prompt and, if it shows, Enter opens the selected footer item rather than sending it
+/// (Claude Code docs, keybindings, "Footer actions"), so the line is left unsent.
 fn panel_refusal(below: &[String]) -> Option<&'static str> {
-    let below: Vec<&str> = below.iter().map(|l| l.trim_end_matches(' ')).collect();
-    let panel: Vec<&str> = below.iter().copied().filter(|l| l.contains(PANEL_DOT) || l.contains(PANEL_RING)).collect();
+    let panel: Vec<&str> = below.iter().map(|l| l.trim_end_matches(' ')).filter(|l| l.contains(PANEL_DOT) || l.contains(PANEL_RING)).collect();
     if panel.is_empty() {
         return None;
     }
@@ -416,9 +439,6 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
     let dotted: Vec<&str> = panel.iter().copied().filter(|l| l.contains(PANEL_DOT)).collect();
     if dotted != ["  \u{25cf} main"] {
         return Some("the panel's dot is not on main");
-    }
-    if !below.iter().any(|l| l.ends_with("\u{2190} for agents")) {
-        return Some("agents panel without the input's footer hint");
     }
     None
 }
@@ -482,18 +502,23 @@ enum Step {
     Refused(Refusal),
 }
 
-/// Why the wake did not type into a row with mail: a [`refused_on`] reason, `stop hook running` or `moved during
-/// the hold`, and the line above the cursor's row (the box's top border, when there is a box).
+/// Why the wake did not type into a row with mail: a [`refused_on`] reason, `stop hook running`, `moved during the
+/// hold` or `text not confirmed`, and the line above the cursor's row (the box's top border, when there is a box).
 #[derive(Debug)]
 struct Refusal {
     reason: &'static str,
     border: String,
+    /// An unconfirmed text write's phase and error text. Warned at once, once per streak: a write that keeps failing
+    /// is tried again every tick.
+    detail: Option<String>,
 }
 
 /// A row with mail that the wake keeps refusing: when the run of refusals began, and whether its one line is out.
 struct Streak {
     since: Instant,
     logged: bool,
+    /// Whether this streak's unconfirmed-write warning is out.
+    warned: bool,
 }
 
 /// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak.
@@ -508,7 +533,11 @@ fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Stre
             woken.insert(handle, w);
         }
         Step::Refused(r) => {
-            let s = streaks.entry(handle.clone()).or_insert(Streak { since: now, logged: false });
+            let s = streaks.entry(handle.clone()).or_insert(Streak { since: now, logged: false, warned: false });
+            if let (Some(detail), false) = (&r.detail, s.warned) {
+                s.warned = true;
+                tracing::warn!(handle = %handle, border = ?r.border, "comm wake: {} ({detail})", r.reason);
+            }
             if !s.logged && now.duration_since(s.since) >= REFUSED_FOR {
                 s.logged = true;
                 tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, "comm wake: a row with unread mail keeps refusing the wake");
@@ -542,43 +571,32 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         *seen.borrow_mut() = (reason, border);
         reason.is_none()
     };
-    match wake_if_free(
-        state_dir,
-        CONTROLLER_ID,
-        WAKE_LINE,
-        &free,
-        agent,
-        STILL_FOR,
-        OP_BUDGET,
-        QUIET_BUDGET,
-        PACING_BUDGET,
-    ) {
-        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: s.total, at: Instant::now() }),
-        Ok(WakeOutcome::NotFree) => {
-            let (reason, border) = seen.take();
-            Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border })
-        }
+    let out = wake_if_free(state_dir, CONTROLLER_ID, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET, QUIET_BUDGET, PACING_BUDGET);
+    step_of(handle, out, seen.take(), s.total, Instant::now())
+}
+
+/// What one wake attempt means for the row. A line that was typed counts as the wake whether or not Enter followed or
+/// was confirmed (ADR 0049: one line per batch): typing it again would repeat it wherever focus went, or send it twice.
+/// A text write that failed or whose delivery is unknown is a refusal, decided by the next tick's screen read and
+/// warned once per streak ([`settle`]). An attach or checkpoint failure is no row this tick.
+fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<&'static str>, String), total: u64, now: Instant) -> Step {
+    let (reason, border) = seen;
+    match out {
+        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now }),
+        Ok(WakeOutcome::NotFree) => Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border, detail: None }),
         Ok(WakeOutcome::TypedNoEnter { reason, border }) => {
             tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
-            Step::Refused(Refusal { reason: "typed text not in main's input box", border })
+            Step::Woke(Woken { line: total, at: now })
         }
-        Ok(WakeOutcome::Unconfirmed { step, detail }) => {
-            let (_, border) = seen.take();
-            tracing::warn!(handle, border = ?border, "comm wake: {step} not confirmed ({detail})");
-            Step::Refused(Refusal { reason: unconfirmed_reason(step), border })
+        Ok(WakeOutcome::Unconfirmed { step: "enter", detail }) => {
+            tracing::warn!(handle, border = ?border, "comm wake: enter not confirmed ({detail}); the line was typed, so it is not typed again");
+            Step::Woke(Woken { line: total, at: now })
         }
+        Ok(WakeOutcome::Unconfirmed { detail, .. }) => Step::Refused(Refusal { reason: "text not confirmed", border, detail: Some(detail) }),
         Err(e) => {
             tracing::debug!(handle, phase = e.phase, detail = %e.detail, "comm wake: row not typeable this tick");
             Step::Skip
         }
-    }
-}
-
-/// The refusal reason for an unconfirmed wake step (`"text"` or `"enter"`).
-fn unconfirmed_reason(step: &str) -> &'static str {
-    match step {
-        "text" => "text not confirmed",
-        _ => "enter not confirmed",
     }
 }
 
@@ -602,7 +620,7 @@ mod tests {
     const R: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
 
     fn boxed(line: &str) -> Vec<String> {
-        vec![R.to_string(), line.to_string(), R.to_string()]
+        vec![rule80(), line.to_string(), rule80()]
     }
 
     #[test]
@@ -613,12 +631,6 @@ mod tests {
         let end = 2 + WAKE_LINE.chars().count() as u16;
         assert_eq!(refused_on(&boxed(&held), Some((1, end)), "claude", false), Some("wake text left unsent"));
         assert_eq!(refused_on(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", false), Some("input not empty"));
-    }
-
-    #[test]
-    fn unconfirmed_steps_have_their_own_reasons() {
-        assert_eq!(unconfirmed_reason("text"), "text not confirmed");
-        assert_eq!(unconfirmed_reason("enter"), "enter not confirmed");
     }
 
     fn bfree(line: &str, col: u16, windows: bool) -> bool {
@@ -948,6 +960,58 @@ mod tests {
         text.lines().filter(|l| !l.starts_with("cols=")).map(String::from).collect()
     }
 
+    /// REAL: Claude Code 2.1.288, agent view off, one background sub-agent, 80x24 (2026-10-03), scrubbed. The screen
+    /// reader that took them trims U+00A0 (`str::trim_end`); the wake's reader keeps the prompt's, so with `nbsp` a row
+    /// that is the bare `❯` gets it back. The trailer gives the cursor.
+    fn cc288(text: &str, nbsp: bool) -> (Vec<String>, (u16, u16)) {
+        let mut lines = Vec::new();
+        let mut cursor = None;
+        for l in text.lines() {
+            if let Some(rest) = l.strip_prefix("cols=") {
+                let at = rest.split_whitespace().find_map(|w| w.strip_prefix("cursor=")).expect("cursor= in the trailer");
+                let (r, c) = at.split_once(',').expect("row,col");
+                cursor = Some((r.parse().unwrap(), c.parse().unwrap()));
+            } else if nbsp && l == "\u{276f}" {
+                lines.push("\u{276f}\u{a0}".to_string());
+            } else {
+                lines.push(l.to_string());
+            }
+        }
+        (lines, cursor.expect("a trailer"))
+    }
+
+    #[test]
+    fn cc288_agent_view_off_rest_reads_free() {
+        let rests = [
+            include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"),
+            include_str!("../tests/fixtures/comm_wake/cc288-avoff-4-esc.txt"),
+            include_str!("../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt"),
+        ];
+        for text in rests {
+            let (l, cur) = cc288(text, true);
+            assert_eq!((l.len(), cur), (24, (15, 2)));
+            for windows in [false, true] {
+                assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
+            }
+        }
+        // DERIVED from the f6 rest capture, with the footer of the live M4 failure on rc9.12 (agent view on, 2.1.288).
+        let (mut l, cur) = cc288(rests[0], true);
+        l[19] = "  ⏵⏵ auto mode on (shift+tab to cycle) · /tasks to see subagents · ← 1 agent".to_string();
+        for windows in [false, true] {
+            assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
+        }
+    }
+
+    #[test]
+    fn a_pane_too_narrow_for_the_wake_line_is_refused() {
+        let b = |w: usize| vec!["\u{2500}".repeat(w), "\u{276f}\u{a0}".to_string(), "\u{2500}".repeat(w)];
+        let need = 2 + WAKE_LINE.chars().count() + 2;
+        for windows in [false, true] {
+            assert_eq!(refused_on(&b(need - 1), Some((1, 2)), "claude", windows), Some("pane too narrow for the wake line"));
+            assert_eq!(refused_on(&b(need), Some((1, 2)), "claude", windows), None);
+        }
+    }
+
     #[test]
     fn the_agent_footer_is_not_watched() {
         let a = footer_frame(include_str!("../tests/fixtures/comm_wake/footer-frame-a.txt"));
@@ -1176,10 +1240,10 @@ mod tests {
         f
     }
 
-    /// The stuck-wake record's shape: a 4x20 screen, the prompt between two rules, the cursor at column 3 (1-based).
+    /// The stuck-wake record's shape: a 4x80 screen, the prompt between two rules, the cursor at column 3 (1-based).
     fn parsed(prompt: &str) -> vt100_ctt::Parser {
-        let rule = "\u{2500}".repeat(20);
-        let mut p = vt100_ctt::Parser::new(4, 20, 0);
+        let rule = "\u{2500}".repeat(80);
+        let mut p = vt100_ctt::Parser::new(4, 80, 0);
         p.process(format!("{rule}\r\n{prompt}\r\n{rule}\x1b[2;3H").as_bytes());
         p
     }
@@ -1207,7 +1271,6 @@ mod tests {
         assert!(typed_refusal(&boxed(&line), Some((1, 44)), "claude", false, L).is_none());
         // A focused panel under the box.
         assert!(!typed(&rule80(), &line, F_SELECT, [P_MAIN, "❯ ◯ general-purpose"], at(2), false));
-        assert!(!typed(&rule80(), &line, F_DOWN, [P_MAIN, P_SUB], at(2), false));
         // The cursor on a panel row, off the box.
         assert!(!typed(&rule80(), &line, F_LEADER, [P_MAIN, P_SUB], Some((22, 0)), false));
         // The box empty, the line plus more, other text, no NBSP.
@@ -1258,8 +1321,6 @@ mod tests {
         for (footer, panel) in [(F_SELECT, ["❯ ● main", P_SUB]), (F_VIEW, [P_MAIN, on_sub])] {
             assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", footer, panel), Some(AT), "claude", false), Some("agents panel focused or unrecognised"));
         }
-        // Capture 05, the first ↓: no panel cursor yet, but the footer hint is gone.
-        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false), Some("agents panel without the input's footer hint"));
     }
 
     #[test]
@@ -1314,7 +1375,7 @@ mod tests {
         let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
         let text = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
         let count = || text().matches("keeps refusing the wake").count();
-        let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string() });
+        let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string(), detail: None });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
@@ -1340,6 +1401,94 @@ mod tests {
             at(REFUSED_FOR * 10, refused());
             at(REFUSED_FOR * 11, refused());
             assert_eq!(count(), 3);
+        });
+    }
+
+    #[test]
+    fn cc288_agent_view_off_panel_focus_is_refused() {
+        for text in [
+            include_str!("../tests/fixtures/comm_wake/cc288-avoff-2-down1.txt"),
+            include_str!("../tests/fixtures/comm_wake/cc288-avoff-3-down2.txt"),
+        ] {
+            let (l, cur) = cc288(text, true);
+            assert_eq!(cur, (23, 0));
+            assert_eq!(refused_on(&l, Some(cur), "claude", false), Some("not in an input box"));
+            // The cursor put back on the prompt: the panel cursor alone refuses.
+            assert_eq!(refused_on(&l, Some((15, 2)), "claude", false), Some("agents panel focused or unrecognised"));
+        }
+    }
+
+    #[test]
+    fn cc288_the_ticking_panel_is_not_held() {
+        for (a, b) in [
+            (include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), include_str!("../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt")),
+        ] {
+            let (rest, _) = cc288(a, true);
+            let (later, _) = cc288(b, true);
+            assert_ne!(rest, later);
+            assert_eq!(held_rows(&rest, 15), held_rows(&later, 15));
+        }
+    }
+
+    #[test]
+    fn agent_view_focus_that_draws_nothing_reads_free() {
+        // Capture 05 (2.1.287, agent view ON, the first ↓): focus left the input and nothing shows it. The named gap
+        // of `panel_refusal`; agent view stays on in rows open at install until /reauth.
+        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false), None);
+        assert_eq!(typed_refusal(&probe(&rule80(), &format!("\u{276f}\u{a0}{WAKE_LINE}"), F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false, WAKE_LINE), None);
+    }
+
+    #[test]
+    fn an_attach_failure_skips_the_row() {
+        let out: Result<WakeOutcome, HeadlessError> = Err(HeadlessError { phase: "attach", detail: "no supervisor".into(), submitted: false });
+        assert!(matches!(step_of("h", out, (None, String::new()), 1, Instant::now()), Step::Skip));
+    }
+
+    #[test]
+    fn a_typed_line_counts_as_the_wake_and_a_failed_write_is_tried_again() {
+        let now = Instant::now();
+        let seen = || (None, "b".to_string());
+        let typed_no_enter = WakeOutcome::TypedNoEnter { reason: "typed text not in main's input box", border: String::new() };
+        assert!(matches!(step_of("h", Ok(typed_no_enter), seen(), 7, now), Step::Woke(Woken { line: 7, .. })));
+        let enter = WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".into() };
+        assert!(matches!(step_of("h", Ok(enter), seen(), 7, now), Step::Woke(Woken { line: 7, .. })));
+        let text = WakeOutcome::Unconfirmed { step: "text", detail: "record: input delivery unknown".into() };
+        match step_of("h", Ok(text), seen(), 7, now) {
+            Step::Refused(r) => {
+                assert_eq!(r.reason, "text not confirmed");
+                assert_eq!(r.detail.as_deref(), Some("record: input delivery unknown"));
+            }
+            _ => panic!("a failed text write is a refusal"),
+        }
+    }
+
+    #[test]
+    fn a_wake_line_with_more_or_less_is_a_draft() {
+        for text in [format!("{WAKE_LINE} and more"), WAKE_LINE[..WAKE_LINE.len() - 5].to_string()] {
+            let held = format!("\u{276f}\u{a0}{text}");
+            assert_eq!(refused_on(&boxed(&held), Some((1, 2)), "claude", false), Some("input not empty"));
+            assert!(typed_refusal(&boxed(&held), Some((1, 2)), "claude", false, WAKE_LINE).is_some());
+        }
+    }
+
+    #[test]
+    fn an_unconfirmed_write_warns_once_per_streak() {
+        let buf = LogBuf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
+        let count = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap().matches("text not confirmed (record: input delivery unknown)").count();
+        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some("record: input delivery unknown".to_string()) });
+        let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
+        let t0 = Instant::now();
+        let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + Duration::from_secs(secs));
+        tracing::subscriber::with_default(sub, || {
+            for secs in [0, 2, 4] {
+                at(secs, u());
+            }
+            assert_eq!(count(), 1);
+            at(6, Step::Woke(Woken { line: 1, at: t0 }));
+            at(8, u());
+            assert_eq!(count(), 2);
         });
     }
 }
