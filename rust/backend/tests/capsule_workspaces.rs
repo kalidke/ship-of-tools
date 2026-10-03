@@ -931,7 +931,7 @@ async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean(
 /// that reason (see `write_and_enter`'s own doc). Sets a custom PS1
 /// mimicking that status line, confirms it is visible, then sends a
 /// SECOND pty.input against that same non-blank screen and asserts it
-/// still delivers (`enter_sent: true`) and actually runs.
+/// still delivers (`enter: sent`) and actually runs.
 /// Unix only: the status line is set through `PS1` in a POSIX shell; the
 /// Windows capsule shell is cmd.exe, which has no such prompt variable.
 #[cfg(unix)]
@@ -1015,7 +1015,7 @@ async fn capsule_pty_input_lands_despite_a_nonblank_status_line_on_screen() {
     assert!(input_res.payload.get("error").is_none(), "pty.input failed: {:?}", input_res.payload);
     assert_eq!(input_res.payload["ok"], true);
     assert_eq!(
-        input_res.payload["enter_sent"], true,
+        input_res.payload["enter"], "sent",
         "Enter must be sent even though the bottom row was non-blank before this write: {:?}",
         input_res.payload
     );
@@ -1043,14 +1043,14 @@ async fn capsule_pty_input_lands_despite_a_nonblank_status_line_on_screen() {
 }
 
 /// Round-5 (Opus review) ruling 1's core: once the text lands,
-/// `write_and_enter` answers `Ok` with `enter_sent: false` when the take
+/// `write_and_enter` answers `Ok` with `enter: not_sent` when the take
 /// epoch changes before the Enter write, never an `Err` -- a stolen pen
 /// must never look like "not delivered, retype me." A SECOND, real
 /// headless `FeAttachClient` (a different controller, pre-checkpointed so
 /// its own send fires near-instantly) steals the pen while the daemon's
 /// own write is still in its post-text pacing wait.
 #[tokio::test]
-async fn capsule_pty_input_enter_sent_false_on_a_pen_steal_between_text_and_enter() {
+async fn capsule_pty_input_enter_not_sent_on_a_pen_steal_between_text_and_enter() {
     let _serial = SERIAL.lock().await;
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd[.exe] — build it first");
 
@@ -1141,8 +1141,8 @@ async fn capsule_pty_input_enter_sent_false_on_a_pen_steal_between_text_and_ente
     );
     assert_eq!(input_res.payload["ok"], true);
     assert_eq!(
-        input_res.payload["enter_sent"], false,
-        "a pen steal between the text write and the Enter write must report enter_sent:false: {:?}",
+        input_res.payload["enter"], "not_sent",
+        "a pen steal between the text write and the Enter write must report enter:not_sent: {:?}",
         input_res.payload
     );
 

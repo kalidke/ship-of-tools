@@ -218,7 +218,7 @@ spawn_in() {
 
 # --- stub daemon (nc -klU + FIFO, the test-spawn-capsule-workspace.sh
 # harness) --- answers hello, workspace.create (WSID/SLUG), workspace.list
-# (that one row, phase ready) and pty.input (ok, enter_sent); logs every
+# (that one row, phase ready) and pty.input (ok, enter sent); logs every
 # request to STUB_REQLOG. Started per case, stopped by the case; a real
 # sotd is never reached.
 STUB_SOCK=""; STUB_REQLOG=""; STUB_NC_PID=""; STUB_WATCHER_PID=""; STUBN=0
@@ -235,7 +235,7 @@ start_stub_daemon() {  # WSID SLUG ROOT [HANDLE]
         '{v:1,id:1,kind:"res",op:"workspace.create",payload:{workspace_id:$id,slug:$slug,label:$slug,project_root:$root}}')"
     list="$(jq -nc --arg id "$wsid" --arg slug "$slug" --arg root "$root" --arg h "$handle" \
         '{v:1,id:1,kind:"res",op:"workspace.list",payload:{workspaces:[{workspace_id:$id,slug:$slug,label:$slug,project_root:$root,kernel_running:false,is_default:false,autostart_claude:true,agent:"claude",agent_name:"",agent_handle:$h,task:"",agent_state:"",agent_summary:"",agent_status_at:"",repl_state:"idle",runtime:"capsule",phase:"ready"}]}}')"
-    ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter_sent":true}}'
+    ptyin='{"v":1,"id":1,"kind":"res","op":"pty.input","payload":{"ok":true,"bytes":1,"runtime":"capsule","enter":"sent"}}'
     exec 3<>"$fifo"
     nc -klU "$STUB_SOCK" < "$fifo" >> "$STUB_REQLOG" &
     STUB_NC_PID=$!

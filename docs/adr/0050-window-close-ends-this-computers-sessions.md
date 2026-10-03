@@ -209,8 +209,7 @@ connection is the only handle.
   no test for a wake line plus extra text, or for a partial wake line; on a narrow
   terminal the wake line wraps, and the refusal keeps its general reason but loses the
   name; an unconfirmed text step does not stop the next 2 s tick from retrying, and a
-  persistent write failure warns on every attempt; `pty.input`'s `enter_sent: false`
-  lumps unknown with not sent.
+  persistent write failure warns on every attempt.
 - (h) A failed closing-record write: the shutdown still ends the rows, and a kill during it
   may resume them.
 - (i) A child blocked on a write may survive the shutdown uncounted.
