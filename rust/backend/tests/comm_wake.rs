@@ -386,16 +386,33 @@ async fn one_batch_gives_one_line() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// Two rows declaring one handle: a wake aimed by a guess would type into
-/// someone else's session, so neither is woken (`comm_wake::run`).
+/// Two rows joining one handle in turn: the handle moves to the newer row
+/// (0031 B5), so the older row's declared handle is cleared and the wake
+/// reaches the newer row alone instead of skipping both.
 #[tokio::test]
-async fn two_rows_on_one_handle_are_not_woken() {
+async fn a_newer_join_moves_the_handle_and_only_the_newer_row_is_woken() {
     let _serial = SERIAL.lock().await;
     let mut row = start("cw2", None, false).await;
-    add_row(&mut row, "wake-row-2", HANDLE, "second").await;
+    let older = row.ws.clone();
+    let newer = add_row(&mut row, "wake-row-2", HANDLE, "second").await;
+    let id = row.next_id;
+    row.next_id += 1;
+    let payload = call(&mut row.conn, id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    assert_eq!(find_row(&payload, &older).expect("older row")["agent_handle"], "", "the older row kept the handle");
+    assert_eq!(find_row(&payload, &newer).expect("newer row")["agent_handle"], HANDLE);
     append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "neither row was woken");
     tokio::time::sleep(THREE_TICKS).await;
-    assert_eq!(pings(&row.log), 0, "a row on a shared handle was woken");
+    assert_eq!(pings(&row.log), 1, "the wake did not reach exactly one row");
+    assert!(!row.screen_has("you have mail").await, "the older row was typed into");
+    let newer_id = newer.clone();
+    let id = row.next_id;
+    row.next_id += 1;
+    let res = call(&mut row.conn, id, op::PTY_SCREEN, serde_json::json!({ "workspace_id": newer_id })).await;
+    assert!(
+        res.payload["lines"].as_array().expect("lines").iter().any(|l| l.as_str().unwrap_or_default().contains("you have mail")),
+        "the newer row was not the one woken"
+    );
     row.env.kill_daemon_bounded().await;
 }
 

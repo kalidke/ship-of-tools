@@ -1009,12 +1009,43 @@ impl Workspaces {
     /// write lands on an orphaned `Arc` nobody can `resolve()` to anymore,
     /// never a resurrection.
     pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<Arc<Workspace>> {
-        let ws = {
+        self.move_agent_handle(workspace_id, handle).map(|(ws, _)| ws)
+    }
+
+    /// [`set_agent_handle`](Self::set_agent_handle) under the invariant that
+    /// no two rows hold one handle (0031 B5): a newer declaration MOVES the
+    /// handle, clearing it from every other row, which are returned (the
+    /// caller persists them) and logged in one line each. The wake skips a
+    /// handle held twice, so leaving the older row's copy deafens both.
+    pub fn move_agent_handle(
+        &self,
+        workspace_id: &str,
+        handle: &str,
+    ) -> Option<(Arc<Workspace>, Vec<Arc<Workspace>>)> {
+        let (ws, others) = {
             let g = self.inner.read().expect("workspaces lock");
-            g.by_id.get(workspace_id)?.clone()
+            let ws = g.by_id.get(workspace_id)?.clone();
+            let others: Vec<Arc<Workspace>> =
+                g.by_id.values().filter(|o| o.workspace_id != workspace_id).cloned().collect();
+            (ws, others)
         };
+        let mut moved = Vec::new();
+        for o in others {
+            let mut cell = o.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
+            if !handle.is_empty() && *cell == handle {
+                cell.clear();
+                drop(cell);
+                tracing::info!(
+                    old_workspace_id = %o.workspace_id,
+                    new_workspace_id = %workspace_id,
+                    handle = %handle,
+                    "agent.join: handle moved to the newer row"
+                );
+                moved.push(o);
+            }
+        }
         *ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
-        Some(ws)
+        Some((ws, moved))
     }
 
     /// Record which account this row's agent runs as (ADR 0046 decision
@@ -2284,6 +2315,32 @@ mod tests {
             Arc::ptr_eq(&row, &joined),
             "set_agent_handle must mutate the SAME Arc, never hand back a replacement"
         );
+    }
+
+    #[test]
+    fn a_newer_join_of_a_handle_moves_it_off_the_older_row() {
+        let reg = Workspaces::new();
+        let mk = |label: &str| {
+            reg.insert(Workspace::from_label(
+                label,
+                PathBuf::from(format!("/home/u/{label}")),
+                false,
+                "claude".into(),
+                String::new(),
+                String::new(),
+            ))
+        };
+        let older = mk("moveprobe-a");
+        let newer = mk("moveprobe-b");
+        let other = mk("moveprobe-c");
+        reg.set_agent_handle(&other.workspace_id, "someone-else").unwrap();
+        let (_, moved) = reg.move_agent_handle(&older.workspace_id, "shared").unwrap();
+        assert!(moved.is_empty());
+        let (joined, moved) = reg.move_agent_handle(&newer.workspace_id, "shared").unwrap();
+        assert_eq!(joined.agent_handle(), "shared");
+        assert_eq!(moved.len(), 1);
+        assert_eq!(older.agent_handle(), "", "the older row kept the handle");
+        assert_eq!(other.agent_handle(), "someone-else", "an unrelated row was touched");
     }
 
     #[test]

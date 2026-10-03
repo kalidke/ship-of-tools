@@ -5736,7 +5736,7 @@ pub async fn handle_agent_join(
     // finished removing the row in the interim. `set_agent_handle` does
     // its own fresh lookup, so this one call is both the re-check and
     // the mutation.
-    let Some(ws) = workspaces.set_agent_handle(&req.workspace_id, &req.handle) else {
+    let Some((ws, moved)) = workspaces.move_agent_handle(&req.workspace_id, &req.handle) else {
         return Ok(vec![(
             Frame::res(
                 req_id,
@@ -5773,6 +5773,18 @@ pub async fn handle_agent_join(
             ),
             None,
         )]);
+    }
+    // The older rows lost the handle (0031 B5); their tomls follow, or a
+    // restart would hand it back to both.
+    for old in &moved {
+        if let Err(e) = crate::workspaces::save(old) {
+            tracing::warn!(error = %e, workspace_id = %old.workspace_id, "agent.join: toml persist of the row that lost the handle failed");
+        }
+        let _ = ws_events_tx.send(WorkspaceChanged {
+            action: "agent_handle_moved".into(),
+            slug: old.slug.clone(),
+            workspace_id: old.workspace_id.clone(),
+        });
     }
     tracing::info!(workspace_id = %req.workspace_id, handle = %req.handle, "agent.join");
     let _ = ws_events_tx.send(WorkspaceChanged {
@@ -5831,7 +5843,7 @@ pub(crate) async fn file_comm(
         let row_holds = || {
             rows.iter().any(|ws| {
                 matches!(ws.phase(), Phase::Starting | Phase::Ready)
-                    && comm_handle_for_workspace(ws) == req.to
+                    && comm_handle_among(ws, &rows) == req.to
             })
         };
         let home = crate::paths::sot_comm_home();
@@ -7470,6 +7482,23 @@ fn comm_handle_for_workspace(ws: &Workspace) -> String {
     }
 }
 
+/// [`comm_handle_for_workspace`], except that a handle it reaches by the
+/// self-file or `agent_name` FALLBACK is not claimed while another row
+/// declares it (0031 B5): the row that lost a handle to a newer join still
+/// has the old self-file, and would otherwise resolve to the newer row's
+/// registry entry.
+fn comm_handle_among(ws: &Workspace, rows: &[std::sync::Arc<Workspace>]) -> String {
+    let declared = ws.agent_handle();
+    if !declared.is_empty() {
+        return declared;
+    }
+    let h = comm_handle_for_workspace(ws);
+    if !h.is_empty() && rows.iter().any(|o| o.workspace_id != ws.workspace_id && o.agent_handle() == h) {
+        return String::new();
+    }
+    h
+}
+
 /// Take the sot-comm registry lock (`<comm_home>/.registry.lock`, a file
 /// naming its holder: `comm_registry_lock`, the same lock as `comm-lib.sh`'s
 /// `with_lock`), run `f` with the registry and tmp-file paths, and release
@@ -7770,12 +7799,13 @@ pub async fn handle_workspace_list(
     // copy).
     let ws_list = workspaces.list();
     // Pure memory: kept current by the row's lifecycle observer, no lane query.
+    let all_rows = ws_list.clone();
     let mut entries: Vec<WorkspaceListEntry> = ws_list
         .into_iter()
         .map(|ws| {
             // Which registry row is this workspace's — one rule, shared with
             // `clear_comm_unread` (`comm_handle_for_workspace`).
-            let handle = comm_handle_for_workspace(&ws);
+            let handle = comm_handle_among(&ws, &all_rows);
             // The registry `state` IS the badge — no pane scrape, no merge, no
             // precedence to arbitrate. A prior version of this comment described
             // a registry-vs-pane precedence merge that no longer exists here; it
@@ -7900,7 +7930,14 @@ pub async fn handle_workspace_activate(
     if req.read {
         if let Some(ws) = resolved_ws.clone() {
             let host = crate::workspaces::declared_host();
-            let _ = tokio::task::spawn_blocking(move || clear_comm_unread(&ws, &host)).await;
+            let rows = workspaces.list();
+            let _ = tokio::task::spawn_blocking(move || {
+                // A row that lost its handle to a newer join clears nothing.
+                if !comm_handle_among(&ws, &rows).is_empty() {
+                    clear_comm_unread(&ws, &host)
+                }
+            })
+            .await;
         }
     }
     tracing::info!(
