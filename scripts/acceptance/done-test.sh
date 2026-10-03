@@ -29,7 +29,7 @@ NONCE="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
 WAKE_TEXT='[sot-comm] you have mail'
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; *) WIN=0 ;; esac
 
-ITEMS="M1 M2 M3 M4 M5 M6 M7 M8 C1 C2 C3"
+ITEMS="M1 M2 M3 M4 M5 M6 M7 M8 AV1 C1 C2 C3 C4"
 
 list_items() {
     cat <<'EOF'
@@ -41,11 +41,13 @@ M5  second agent refused: a `claude -p` under the driver cannot send as the driv
 M6  background service refused: /background in row B is refused, session id kept, nothing moved out
 M7  cross-machine mail: --peer @h replies with a nonce within 15 min (SKIP without --peer)
 M8  left arrow inert: ← on an empty prompt in row B moves nothing (key delivery checked first)
+AV1 every open Claude Code process on this box runs with agent view off (Linux: settings + version per process; Windows: MANUAL list)
 C1  close leaves nothing behind: despawn A, then /exit in B, start no background service
 C2  MANUAL: the Ctrl-Q dialog
 C3  MANUAL: the window (hull)
+C4  MANUAL: the window (hull) with badged names: no name passes its ship's stern (live grab on Windows; SKIP elsewhere)
 I1  (snapshot/compare) an install or converge keeps every row and its phase
-I2  (snapshot/compare) a row open across the install: /reauth default keeps its session id, then /background is refused as in M6
+I2  (snapshot/compare) a row open across the install keeps its conversation id, and /background is refused in it as in M6
 I3  (snapshot/compare) ← on an empty prompt in that row moves nothing, as in M8
 EOF
 }
@@ -408,41 +410,6 @@ left_arrow_inert() {
     stop_moved "$dir"
 }
 
-# restart_in_place ID WS DIR — /reauth default restarts a row open across the
-# install in place: a leg resumes the same conversation id, the footer id is
-# unchanged. On success runs the /background and ← checks on the restarted row.
-restart_in_place() {
-    local id="$1" ws="$2" dir="$3" id0 t0 leg=no last=""
-    if ! wait_idle "$ws" 180; then
-        dump_screen "$ws" "$id not idle"
-        emit FAIL "$id" "row was not idle within 180s"
-        return 1
-    fi
-    id0="$(footer_id "$LAST_SCREEN")"
-    if [ -z "$id0" ]; then
-        dump_screen "$ws" "$id no session id"
-        emit FAIL "$id" "no session id on screen"
-        return 1
-    fi
-    type_into "$ws" "/reauth default"
-    t0="$(date +%s)"
-    while [ $(($(date +%s) - t0)) -lt 300 ]; do
-        sleep 3
-        claude_procs | grep -qE -- "--resume $id0[0-9a-f-]*" && leg=yes || continue
-        wait_idle "$ws" 5 || continue
-        last="$(footer_id "$LAST_SCREEN")"
-        if [ "$last" = "$id0" ]; then
-            log "$id restart in place: session [$id0] kept"
-            background_refused "$id" "$ws" "$dir"
-            left_arrow_inert I3 "$ws" "$dir"
-            return 0
-        fi
-    done
-    dump_screen "$ws" "$id restart"
-    emit FAIL "$id" "restart in place: resumed leg seen: $leg, session [$id0] -> [${last:-?}]"
-    return 1
-}
-
 # --- run ------------------------------------------------------------------------
 ONLY=""; PEER=""
 selected() { [ -z "$ONLY" ] || case ",$ONLY," in *",$1,"*) ;; *) return 1 ;; esac; }
@@ -603,6 +570,79 @@ item_C1() {
 item_C2() { emit MANUAL C2 "Ctrl-Q dialog"; }
 item_C3() { emit MANUAL C3 "the window (hull)"; }
 
+# AV1: every Claude Code process of this user has agent view off. A process is
+# fine with CLAUDE_CODE_DISABLE_AGENT_VIEW=1 in its environment, or with
+# "disableAgentView": true in its config dir's settings.json, no project
+# settings saying false, and a version (2.1.287+) that reads settings live.
+AV_ERE='"disableAgentView"[[:space:]]*:[[:space:]]*true'
+item_AV1() {
+    local pid env cdir cwd exe ver bad="" n=0 skipped=0 why list="" f
+    if [ "$WIN" = 1 ]; then
+        for f in "$USERPROFILE/.claude/settings.json" "$HOME"/.claude-auth/*/settings.json; do
+            [ -f "$f" ] || continue
+            if grep -qE "$AV_ERE" "$f"; then list="$list $f key=yes;"; else list="$list $f key=no;"; fi
+        done
+        emit MANUAL AV1 "check that the user settings file of every Claude Code account on this box has \"disableAgentView\": true:$list"
+        return
+    fi
+    for pid in $(claude_procs | pids_of); do
+        env="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null)"
+        if [ -z "$env" ]; then skipped=$((skipped + 1)); continue; fi
+        n=$((n + 1))
+        printf '%s\n' "$env" | grep -qx 'CLAUDE_CODE_DISABLE_AGENT_VIEW=1' && continue
+        cdir="$(printf '%s\n' "$env" | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -n1)"
+        cdir="${cdir:-$HOME/.claude}"
+        cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)"
+        exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+        ver="$(printf '%s\n' "$exe" | sed -n 's|.*/versions/\([^/]*\).*|\1|p')"
+        why=""
+        if ! grep -qE "$AV_ERE" "$cdir/settings.json" 2>/dev/null; then
+            why="no key in settings"
+        elif grep -hE '"disableAgentView"[[:space:]]*:[[:space:]]*false' "$cwd/.claude/settings.json" "$cwd/.claude/settings.local.json" >/dev/null 2>&1; then
+            why="project settings set false"
+        elif [ -z "$ver" ] || [ "$(printf '%s\n%s\n' 2.1.287 "$ver" | sort -V | head -n1)" != 2.1.287 ]; then
+            why="Claude Code ${ver:-?} reads settings only at start: restart the session"
+        fi
+        [ -n "$why" ] && bad="${bad:+$bad; }pid $pid cwd $cwd version $ver config $cdir: $why"
+    done
+    log "AV1: $n process(es) checked, $skipped skipped (environment unreadable)"
+    if [ -z "$bad" ]; then emit PASS AV1 "$n Claude Code processes, all with agent view off"; else emit FAIL AV1 "$bad"; fi
+}
+# C4: precondition: the driver's own row is the frontend's active session, so this box's ship is centred, and the
+# frontend window is visible and not covered. PASS when the three ● names lead this box's ship, no session name
+# glyph touches or passes the | stern of any ship in the crop, the gap from this ship's last name to its stern is
+# the same as on a ship with no badges (two character cells), and the long name ends in …. Otherwise FAIL; a gap
+# narrower than an unbadged ship's means the badge is not in the measured label: report it as its own defect.
+item_C4() {
+    local i slug dir d ps1 o W H slugs=() dirs=()
+    if [ "$WIN" != 1 ]; then emit SKIP C4 "no live window grab off Windows"; return; fi
+    for i in 1 2 3 l; do
+        if [ "$i" = l ]; then
+            spawn_row "dthb$i-$NONCE" "dt-hull-badge-longest-name-$NONCE" "" || { emit FAIL C4 "could not spawn the hull rows (see log)"; return; }
+        else
+            spawn_row "dthb$i-$NONCE" "" "" || { emit FAIL C4 "could not spawn the hull rows (see log)"; return; }
+        fi
+        slugs+=("$R_SLUG"); dirs+=("$R_DIR")
+    done
+    for i in 0 1 2; do
+        slug="${slugs[$i]}"; dir="${dirs[$i]}"
+        printf 'hull badge\n' > "$dir/hull.md"
+        "$SOTFE" preview "$slug" hull.md >> "$LOG" 2>&1
+    done
+    sleep 3
+    d="${OUT%.*}-C4-LIVE"; mkdir -p "$d"
+    ps1="$(cygpath -w "$ROOT/.claude/skills/selfie/scripts/selfie.ps1")"
+    o="$(powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ps1" -OutDir "$(cygpath -w "$d")" | tr -d '\r')"
+    read -r W H <<< "$(printf '%s\n' "$o" | sed -n 's/^saved .* \([0-9]*\)x\([0-9]*\) rect=.*/\1 \2/p')"
+    case "$o" in *"no FE window"*) W="" ;; esac
+    if [ -z "$W" ]; then
+        emit FAIL C4 "no live frontend window to grab (sot.exe minimized or not running)"; return
+    fi
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ps1" -OutDir "$(cygpath -w "$d")" \
+        -Crop "0,$((H - H/5)),$W,$((H/5)),hull-strip-LIVE.png" >> "$LOG" 2>&1
+    emit MANUAL C4 "LIVE window grab (selfie.ps1, not a render), sotd $SOTD_VERSION: $d/hull-strip-LIVE.png (full: $d/selfie.png); this box's ship carries three ● names; no name may touch or pass its ship's stern |"
+}
+
 cmd_run() {
     local it
     while [ $# -gt 0 ]; do
@@ -630,7 +670,7 @@ cmd_run() {
 
 # --- snapshot / compare -----------------------------------------------------------
 cmd_snapshot() {
-    local file="${1:-}" rows
+    local file="${1:-}" rows sid
     [ -n "$file" ] || usage
     LOG="$file.log"; : >> "$LOG"
     load_driver; load_version
@@ -640,18 +680,21 @@ cmd_snapshot() {
         exit 1
     fi
     wait_idle "$R_WS" 180 || log "row P not idle within 180s"
+    sid="$(footer_id "$LAST_SCREEN")"
+    [ -n "$sid" ] || log "row P: no session id on screen"
     {
         echo "# done-test snapshot $(date -u +%Y-%m-%dT%H:%M:%SZ) sotd $SOTD_VERSION"
         echo "ws $R_WS"
         echo "slug $R_SLUG"
         echo "dir $R_DIR"
+        echo "sid $sid"
         printf '%s\n' "$rows"
     } > "$file"
     KEEP+=("$R_WS")
     echo "snapshot $file: $(printf '%s\n' "$rows" | grep -c .) rows, row P kept open as $R_WS (@$R_NAME)"
 }
 cmd_compare() {
-    local file="${1:-}" pws pslug pdir before after
+    local file="${1:-}" pws pslug pdir psid now before after
     [ -n "$file" ] && [ -f "$file" ] || usage
     LOG="$file.log"; : >> "$LOG"
     load_driver; load_version
@@ -668,8 +711,17 @@ cmd_compare() {
     if [ -z "$pws" ] || [ -z "$pdir" ]; then
         emit FAIL I2 "the snapshot file names no row P"
     else
-        restart_in_place I2 "$pws" "$pdir" || emit FAIL I3 "skipped: the restart failed"
+        psid="$(sed -n 's/^sid //p' "$file")"
+        if [ -z "$psid" ]; then
+            emit FAIL I2 "the snapshot recorded no session id for row P"
+        else
+            background_refused I2 "$pws" "$pdir"
+            now="$(footer_id "$(screen "$pws")")"
+            [ "$now" = "$psid" ] || emit FAIL I2 "row P's conversation changed across the install: [$psid] -> [$now]"
+        fi
+        left_arrow_inert I3 "$pws" "$pdir"
     fi
+    item_AV1
     summary
     [ "$NFAIL" = 0 ]
 }
