@@ -5035,9 +5035,6 @@ struct State {
     /// lease; the attach-only drawer needs a lease that carries it (ADR 0050).
     #[cfg(windows)]
     own_state_root: Option<String>,
-    /// Not-ended counts not yet reported to the daemon, newest last; acked
-    /// right after a presented frame draws them (`acks_for_frame`).
-    notice_acks: Vec<(crate::dial::HostKey, u32)>,
     /// The not-ended line a lease grant reported once a frame showed it, and
     /// when it stops showing.
     not_ended_shown: Option<(String, std::time::Instant)>,
@@ -5895,22 +5892,6 @@ fn nav_pinned_rows(
     let drawn = !line.is_empty();
     let rows = [notice, line, prompt].concat();
     (pane_height - rows.len(), rows, drawn)
-}
-
-/// The `fe.notice_seen` acks a presented frame owes: none unless it drew the
-/// not-ended line, else each daemon's newest pending count. The daemon clears
-/// only on an equal count, so an older one is dropped, not sent.
-fn acks_for_frame(pending: &[(crate::dial::HostKey, u32)], drawn: bool) -> Vec<(crate::dial::HostKey, u32)> {
-    let mut out: Vec<(crate::dial::HostKey, u32)> = Vec::new();
-    if drawn {
-        for (host, n) in pending {
-            match out.iter_mut().find(|(h, _)| h == host) {
-                Some(slot) => slot.1 = *n,
-                None => out.push((host.clone(), *n)),
-            }
-        }
-    }
-    out
 }
 
 /// Letterbox an image of `(iw, ih)` into `outer`, preserving aspect ratio.
@@ -7015,7 +6996,6 @@ impl State {
             leases,
             #[cfg(windows)]
             own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::state_dir::state_dir_hash(&d)),
-            notice_acks: Vec::new(),
             not_ended_shown: None,
             leaving: None,
             host_resolved_dial: HashMap::new(),
@@ -13602,12 +13582,6 @@ impl State {
                         }
                     } // if event_host == self.active_host
                 }
-                crate::transport::IncomingEvt::NotEnded { count } => {
-                    if count > 0 {
-                        self.notice_acks.push((event_host.clone(), count));
-                        self.window.request_redraw();
-                    }
-                }
                 crate::transport::IncomingEvt::Disconnected { reason } => {
                     if event_host == self.active_host {
                         self.status = format!("disconnected · {reason}");
@@ -16605,11 +16579,10 @@ impl State {
             Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
             None => None,
         };
-        // The not-ended line the pending acks owe; it shows until a
-        // presented frame has drawn it, then holds as `not_ended_shown`.
-        let owed_line = crate::lease::not_ended_line(
-            acks_for_frame(&self.notice_acks, true).iter().map(|(_, n)| n).sum(),
-        );
+        // The counts owed, read once: this frame draws their sum, and the frame that
+        // presents it whole acks exactly these; then the line holds as `not_ended_shown`.
+        let owed = self.leases.owed();
+        let owed_line = crate::lease::not_ended_line(owed.iter().map(|(_, n)| n).sum());
         let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| owed_line.clone()).or_else(|| {
             let now = std::time::Instant::now();
             self.not_ended_shown.as_ref().filter(|(_, until)| now < *until).map(|(l, _)| l.clone())
@@ -19835,12 +19808,10 @@ impl State {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
-        let acks = acks_for_frame(&self.notice_acks, owed_drawn);
-        if !acks.is_empty() {
-            for (h, n) in &acks {
-                self.leases.notice_seen(h, *n);
+        if owed_drawn {
+            for (k, n) in &owed {
+                self.leases.notice_seen(k, *n);
             }
-            self.notice_acks.clear();
             if self.leaving.is_none() {
                 self.not_ended_shown = owed_line.map(|l| (l, std::time::Instant::now() + NOTIFY_STICKY));
             }
@@ -25837,23 +25808,6 @@ mod tests {
     }
 
     #[test]
-    fn notice_ack_table() {
-        let (a, b) = ("a".to_string(), "b".to_string());
-        // Hidden by a prompt: no ack, and the count stays pending.
-        assert_eq!(acks_for_frame(&[(a.clone(), 2)], false), vec![]);
-        // Drawn: its ack.
-        assert_eq!(acks_for_frame(&[(a.clone(), 2)], true), vec![(a.clone(), 2)]);
-        // Two pending from one daemon, the newer drawn: the newer's ack only.
-        assert_eq!(acks_for_frame(&[(a.clone(), 2), (a.clone(), 3)], true), vec![(a.clone(), 3)]);
-        // Two daemons: one ack each, its own count.
-        assert_eq!(
-            acks_for_frame(&[(a.clone(), 2), (b.clone(), 1), (a.clone(), 4)], true),
-            vec![(a.clone(), 4), (b.clone(), 1)]
-        );
-        assert_eq!(acks_for_frame(&[], true), vec![]);
-    }
-
-    #[test]
     fn quit_prompt_visible_when_scrolled() {
         // The pinned rows never read the list or its scroll: however long
         // the list and however far it is scrolled, they sit under it.
@@ -25879,7 +25833,6 @@ mod tests {
         let prompt = Some((text.as_str(), choice.as_str()));
         let notice = "closing will not end sessions: there is no backend on this computer";
         let ended = "2 sessions could not be ended and are still running";
-        let owed = [("h".to_string(), 2)];
         let own = nav_pinned_rows(prompt, None, None, 30, 20).1;
         let flat = own.join(" ");
         // A height that fits all of them: every line whole, and the count is acked.
@@ -25887,17 +25840,16 @@ mod tests {
         assert_eq!(rows.join(" "), format!("{notice} {ended} {flat}"));
         assert_eq!(list_h + rows.len(), 20);
         assert!(whole);
-        assert_eq!(acks_for_frame(&owed, whole), owed.to_vec());
         // Height 1: the choice, whole, and no ack.
         let (list_h, rows, whole) = nav_pinned_rows(prompt, None, Some(ended), 30, 1);
         assert_eq!(list_h, 0);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].contains("[No]  Yes"), "{rows:?}");
-        assert_eq!(acks_for_frame(&owed, whole), vec![]);
+        assert!(!whole);
         let (ktext, kchoice) = quit_prompt_line(true);
         let (_, rows, whole) = nav_pinned_rows(Some((&ktext, &kchoice)), None, Some(ended), 30, 1);
         assert!(rows.len() == 1 && rows[0].contains("No  [Yes]"), "{rows:?}");
-        assert_eq!(acks_for_frame(&owed, whole), vec![]);
+        assert!(!whole);
         // Room for the prompt and the count only: the notice goes, whole.
         let h = own.len() + wrap_status(ended, 30, 30).len();
         let (_, rows, whole) = nav_pinned_rows(prompt, Some(notice), Some(ended), 30, h);

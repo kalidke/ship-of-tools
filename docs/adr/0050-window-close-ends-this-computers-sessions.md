@@ -141,8 +141,10 @@ read by every end, a startup Cleanup included.
 - The window never leases from a harness run (`--ephemeral`, `--capture`) or over an SSH
   endpoint. Before each data connection to a local endpoint with no live lease, it leases;
   `Granted` makes a holder task own the stream for the process's life; `Foreign`,
-  `Undetermined` or an unsupported reply proceeds without it; `Closing`, a timeout or an
-  io error is a failed connect. With no granted lease it shows a persistent notice naming
+  `Undetermined` or an unsupported reply proceeds without it; `Closing`, an io error, or a request not sent within `LEASE_REPLY_WAIT` is a
+  failed connect. Once the request is sent the window waits for the reply as long as the connection lasts, since
+  dropping it would read as this window closing (ruling a). A not-ended count is shown once per daemon, keyed by
+  the state root its grant names. With no granted lease it shows a persistent notice naming
   the cause.
 - X, an OS close or Ctrl+Q then No sends `Close` and waits for the ack, up to 125 s; an X
   during a Keep's ack wait sends `Close` after the keep. Ctrl+Q then Yes sends `Keep`.

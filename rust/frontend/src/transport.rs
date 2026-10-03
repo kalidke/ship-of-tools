@@ -137,8 +137,6 @@ pub enum IncomingEvt {
     Disconnected {
         reason: String,
     },
-    /// A grant reported sessions an earlier close could not end.
-    NotEnded { count: u32 },
     /// The backend refused the handshake because the FE↔BE wire-contract
     /// protocol versions differ (ADR 0030 §2). Unlike a transient
     /// `Disconnected`, this is a hard, self-diagnosing skew: the chrome shows a
@@ -1739,8 +1737,8 @@ async fn connect_and_run(
             let not_ended = leases
                 .before_data_connection(&host, pipe_path, config.token.as_deref())
                 .await?;
+            // The grant recorded the count (`Leases::owed`); the next frame shows it.
             if not_ended > 0 {
-                let _ = evt_tx.send((host.clone(), IncomingEvt::NotEnded { count: not_ended }));
                 window.request_redraw();
             }
             let stream = connect_pipe(pipe_path).await?;
