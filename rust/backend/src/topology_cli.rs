@@ -387,13 +387,6 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     })
 }
 
-/// What [`refresh`] changed.
-#[derive(Debug, Default)]
-pub struct Refreshed {
-    pub rewrote: Vec<PathBuf>,
-    pub retired: Vec<PathBuf>,
-}
-
 /// The hub keeps its generated relay units equal to this binary's text. For
 /// every host that is both a relay host and enabled: rewrite changed unit
 /// files, retire ExecStart drop-ins (`topology::relay_refresh` decides),
@@ -402,22 +395,23 @@ pub struct Refreshed {
 /// restart every enabled relay socket: the files on disk are no record of
 /// what systemd applied, so a run after a failed reload or restart redoes it,
 /// and a socket restart leaves running bridges alone and revives one stopped
-/// by `trigger-limit-hit`. Only the reload
-/// is fatal; other failures are collected and returned at the end, like
+/// by `trigger-limit-hit`. `say` hears each
+/// rewrite and retirement the moment it is done, so a later failure cannot
+/// hide a change already on disk. Only the reload is fatal; other failures are collected and returned at the end, like
 /// `apply`.
-pub fn refresh(
+fn refresh(
     topo: &Topology,
     me: &str,
     dir: &Path,
     enabled: &[String],
     systemctl: &mut dyn FnMut(&[&str]) -> Result<(), String>,
-) -> Result<Refreshed, String> {
+    say: &mut dyn FnMut(String),
+) -> Result<(), String> {
     topology::require_hub(topo, me, "refresh")?;
     let hosts: Vec<&str> = topology::relay_hosts(topo).into_iter().filter(|h| enabled.iter().any(|e| e == h)).collect();
     if hosts.is_empty() {
-        return Ok(Refreshed::default());
+        return Ok(());
     }
-    let mut done = Refreshed::default();
     let mut failures: Vec<String> = Vec::new();
     for &h in &hosts {
         let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
@@ -442,7 +436,7 @@ pub fn refresh(
         for (name, text) in &plan.write {
             let path = dir.join(name);
             match write_atomic(&path, text) {
-                Ok(()) => done.rewrote.push(path),
+                Ok(()) => say(format!("rewrote {}", path.display())),
                 Err(e) => failures.push(e),
             }
         }
@@ -450,7 +444,7 @@ pub fn refresh(
             let from = dropin_dir.join(name);
             let to = dropin_dir.join(format!("{name}.retired"));
             match std::fs::rename(&from, &to) {
-                Ok(()) => done.retired.push(from),
+                Ok(()) => say(retired_note(&from)),
                 Err(e) => failures.push(format!("{}: {e}", from.display())),
             }
         }
@@ -470,7 +464,7 @@ pub fn refresh(
     if !failures.is_empty() {
         return Err(format!("{} relay refresh step(s) failed:\n  {}", failures.len(), failures.join("\n  ")));
     }
-    Ok(done)
+    Ok(())
 }
 
 fn retired_note(path: &Path) -> String {
@@ -480,33 +474,11 @@ fn retired_note(path: &Path) -> String {
     )
 }
 
-/// Said after any rewrite: the generated bridge's one cross-version
-/// requirement, and where the operator sees which hosts meet it.
-const BRIDGE_NEEDS: &str = "the relay unit runs `sotd stdio-bridge` with no argument on the far host, which needs sotd 0.6.6-rc9.9 or later there (0.6.6-rc1 to rc9.8 require --label); `sotd status` on the hub shows each host's build, and an older host reads unreachable";
-
-/// The lines a refresh reports, the same for the CLI and the start log.
-fn notes(done: &Refreshed) -> Vec<String> {
-    let mut out: Vec<String> = done.rewrote.iter().map(|p| format!("rewrote {}", p.display())).collect();
-    if !done.rewrote.is_empty() {
-        out.push(BRIDGE_NEEDS.to_string());
-    }
-    out.extend(done.retired.iter().map(|p| retired_note(p)));
-    out
-}
-
-/// `sotd topology refresh`: [`refresh`] on the real directory, one line per
-/// action.
+/// `sotd topology refresh`: [`refresh`] on the real directory, each action
+/// printed as it is done.
 fn refresh_cmd(topo: &Topology) -> Result<(), String> {
     let me = self_host()?;
-    let done = refresh(topo, &me, &systemd_user_dir()?, &enabled_hosts(RELAY_TEMPLATE)?, &mut |a| run_systemctl(a))?;
-    let lines = notes(&done);
-    if lines.is_empty() {
-        println!("up to date");
-    }
-    for l in lines {
-        println!("{l}");
-    }
-    Ok(())
+    refresh(topo, &me, &systemd_user_dir()?, &enabled_hosts(RELAY_TEMPLATE)?, &mut |a| run_systemctl(a), &mut |l| println!("{l}"))
 }
 
 /// The daemon's own call at start (main.rs). Gates, cheapest first: hosts.toml
@@ -533,13 +505,8 @@ pub fn refresh_at_start() {
         Ok(v) => v,
         Err(e) => return tracing::warn!(error = %e, "relay refresh skipped"),
     };
-    match refresh(&topo, &me, &dir, &enabled, &mut |a| run_systemctl(a)) {
-        Ok(done) => {
-            for l in notes(&done) {
-                tracing::warn!("{l}");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "relay refresh failed"),
+    if let Err(e) = refresh(&topo, &me, &dir, &enabled, &mut |a| run_systemctl(a), &mut |l| tracing::warn!("{l}")) {
+        tracing::warn!(error = %e, "relay refresh failed");
     }
 }
 
@@ -809,12 +776,13 @@ mod tests {
         let enabled = vec!["remote-a".to_string()];
 
         let mut calls: Vec<String> = Vec::new();
-        let done = refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
+        let mut said: Vec<String> = Vec::new();
+        refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             calls.push(a[1..].join(" "));
             Ok(())
-        })
+        }, &mut |l| said.push(l))
         .unwrap();
-        assert_eq!(done.rewrote.len(), 1);
+        assert_eq!(said, [format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service").display()), retired_note(&dd.join("no-mux.conf"))]);
         assert_eq!(std::fs::read_to_string(dir.join("sot-host-relay-remote-a@.service")).unwrap(), topology::relay_service_unit("remote-a"));
         assert!(!dd.join("no-mux.conf").exists() && dd.join("no-mux.conf.retired").exists());
         assert_eq!(std::fs::read_to_string(dd.join("override.conf")).unwrap(), OVERRIDE);
@@ -824,12 +792,13 @@ mod tests {
         );
 
         calls.clear();
-        let again = refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
+        said.clear();
+        refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             calls.push(a[1..].join(" "));
             Ok(())
-        })
+        }, &mut |l| said.push(l))
         .unwrap();
-        assert!(again.rewrote.is_empty() && again.retired.is_empty());
+        assert!(said.is_empty(), "{said:?}");
         assert_eq!(
             calls,
             ["reset-failed sot-host-relay-remote-a.socket sot-host-relay-remote-a@*.service", "daemon-reload", "restart sot-host-relay-remote-a.socket"]
@@ -846,14 +815,14 @@ mod tests {
         let enabled = vec!["remote-a".to_string()];
         let e = refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             if a[1] == "daemon-reload" { Err("Failed to reload daemon: Connection timed out".to_string()) } else { Ok(()) }
-        })
+        }, &mut |_| {})
         .unwrap_err();
         assert!(e.contains("daemon-reload"), "{e}");
         let mut calls: Vec<String> = Vec::new();
         refresh(&topo, "hub-box", &dir, &enabled, &mut |a| {
             calls.push(a[1..].join(" "));
             Ok(())
-        })
+        }, &mut |_| {})
         .unwrap();
         assert_eq!(
             calls,
@@ -873,22 +842,13 @@ mod tests {
     }
 
     #[test]
-    fn refresh_notes_say_what_a_rewritten_relay_needs_on_the_far_host() {
-        let svc = PathBuf::from("/u/sot-host-relay-remote-a@.service");
-        let n = notes(&Refreshed { rewrote: vec![svc.clone()], retired: vec![] });
-        assert_eq!(n[0], format!("rewrote {}", svc.display()));
-        assert!(n.iter().any(|l| l.contains("0.6.6-rc9.9") && l.contains("sotd status")), "{n:?}");
-        assert!(notes(&Refreshed::default()).is_empty());
-    }
-
-    #[test]
     fn refresh_off_the_hub_touches_nothing() {
         let dir = scratch("offhub");
         let mut called = false;
         let e = refresh(&hub_topo(), "remote-a", &dir, &["remote-a".to_string()], &mut |_| {
             called = true;
             Ok(())
-        })
+        }, &mut |_| {})
         .unwrap_err();
         assert!(e.contains("not the hub"), "{e}");
         assert!(!called && !dir.join("sot-host-relay-remote-a@.service").exists());

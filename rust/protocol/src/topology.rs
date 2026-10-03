@@ -735,10 +735,19 @@ pub fn relay_refresh(host: &str, socket_now: Option<&str>, service_now: Option<&
     RelayRefresh { write, retire }
 }
 
-/// True when any line of a drop-in starts (after leading whitespace) with
-/// `ExecStart=`; `ExecStartPre=` and the like do not match.
-pub fn overrides_exec_start(text: &str) -> bool {
-    text.lines().any(|l| l.trim_start().starts_with("ExecStart="))
+/// True when systemd reads the drop-in as setting `ExecStart` (its rule,
+/// `systemd-analyze verify`, systemd 249): in a `[Service]` section, the text
+/// before a line's first `=`, trimmed, is exactly `ExecStart`. `ExecStart = /x`
+/// counts.
+fn overrides_exec_start(text: &str) -> bool {
+    let mut section = "";
+    text.lines().map(str::trim).any(|l| {
+        if l.starts_with('[') {
+            section = l;
+            return false;
+        }
+        section == "[Service]" && l.split_once('=').is_some_and(|(k, _)| k.trim_end() == "ExecStart")
+    })
 }
 
 /// Hosts the hub serves a socket for: every [`dialable_hosts`] entry but
@@ -1171,10 +1180,30 @@ frontend = true
         assert_eq!(missing.write.len(), 2);
     }
 
+    /// Each case measured with systemd-analyze verify, systemd 249.
     #[test]
-    fn exec_start_override_is_only_an_exec_start_line() {
-        assert!(overrides_exec_start("[Service]\nExecStart=\n  ExecStart=/bin/x\n"));
-        assert!(!overrides_exec_start("[Service]\nExecStartPre=/bin/x\n# ExecStart=/bin/x\nEnvironment=A=ExecStart=\n"));
+    fn exec_start_override_follows_systemds_key_rule() {
+        let spaced = NO_MUX.replace("ExecStart=", "ExecStart = ");
+        for case in [
+            "[Service]\nExecStart=\nExecStart=/bin/x\n",
+            "[Service]\n  ExecStart=/bin/x\n",
+            "[Service]\nExecStart = /bin/x\n",
+            "[Service]\n\tExecStart\t=\t/bin/x\n",
+            spaced.as_str(),
+        ] {
+            assert!(overrides_exec_start(case), "{case:?}");
+        }
+        for case in [
+            "[Service]\nExecStartPre=/bin/x\nEnvironment=A=ExecStart=\n",
+            "[Service]\n# ExecStart=/bin/x\n;ExecStart=/bin/x\n",
+            "[Unit]\nExecStart=/bin/x\n",
+            "ExecStart=/bin/x\n",
+            "[ Service ]\nExecStart=/bin/x\n",
+            "[Service]\nexecstart=/bin/x\n",
+            OVERRIDE,
+        ] {
+            assert!(!overrides_exec_start(case), "{case:?}");
+        }
     }
 
     #[test]

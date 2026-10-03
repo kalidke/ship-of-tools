@@ -118,8 +118,7 @@ Each step's check must pass before the next one is worth doing.
   'sot-host-relay-<host>@*'` has ssh's own line: a refused key, an unknown
   host key, or `sotd: command not found` (step 1's check, and the
   `SOT_RELAY_SOTD` override). `Usage: sotd stdio-bridge --label <label>` there means that host runs 0.6.6-rc1 to rc9.8, whose bridge
-  needs an argument the hub no longer passes: upgrade the host. `sotd status` on the hub shows each host's
-  build.
+  needs an argument the hub no longer passes: upgrade the host.
 - **A `.retired` file sits in `sot-host-relay-<host>@.service.d/`.** The hub
   renamed a drop-in that set `ExecStart=`, because the generated unit owns the
   whole command line and a copy of it freezes whatever the command was on the
