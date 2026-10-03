@@ -405,3 +405,53 @@ fn exit_code_high_bit_status_round_trips_unsigned() {
     spawn.pty.close_pty();
     reader_thread.join().unwrap();
 }
+
+/// Test: MSYS asks to break away on every spawn whose job allows it, so a
+/// job that allowed breakaway let everything a row's git-bash started
+/// outlive the row (ADR 0050 ruling (g)). A git-bash in a leg starts a
+/// ping in the background and writes the ping's Windows pid to a file;
+/// terminating the job must end the ping. Needs Git for Windows.
+#[test]
+#[ignore = "needs Git for Windows bash"]
+fn an_msys_grandchild_dies_with_the_leg_windows() {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+    use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
+
+    let pf = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_string());
+    let bash = std::path::Path::new(&pf).join(r"Git\usr\bin\bash.exe");
+    assert!(bash.exists(), "Git for Windows bash not found");
+    let dir = std::env::temp_dir().join(format!("sot-msys-gc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pidfile = dir.join("ping.pid");
+
+    let script = r#"ping -n 600 127.0.0.1 >/dev/null & cat /proc/$!/winpid > "$(cygpath -u "$1")"; exec sleep 600"#;
+    let argv = vec![
+        bash.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        script.to_string(),
+        "_".to_string(),
+        pidfile.to_string_lossy().into_owned(),
+    ];
+    let spawn = ConptySpawn::spawn(&argv, 80, 25).unwrap();
+    let (_rx, _reader_thread) = spawn_reader_thread(spawn.reader);
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let pid: u32 = loop {
+        if let Ok(text) = std::fs::read_to_string(&pidfile) {
+            if let Ok(pid) = text.trim().parse() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "the ping pid never appeared");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    assert!(!h.is_null(), "OpenProcess({pid}): {}", std::io::Error::last_os_error());
+
+    spawn.job.terminate().unwrap();
+    let r = unsafe { WaitForSingleObject(h, 3000) };
+    unsafe { CloseHandle(h) };
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(r, WAIT_OBJECT_0, "the MSYS grandchild survived the leg job's end");
+}

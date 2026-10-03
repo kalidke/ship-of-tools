@@ -3179,22 +3179,19 @@ fn release_and_read_reply(helper: &mut std::process::Child) -> String {
     line.trim().to_string()
 }
 
-/// ADR 0043 decision 32, test 2: the leg job (`AnonymousJob::create`,
-/// now `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK`)
-/// really does let a breakaway child leave it — the mechanism
-/// `capsule_workspace.rs`'s own Windows `spawn_detached` depends on.
-/// The helper is assigned to the job, released, and asked to spawn a
-/// breakaway child; that child must NOT be `IsProcessInJob` the job
-/// it was spawned from inside.
+/// ADR 0043 decision 32 as amended 2026-10-03: the leg job
+/// (`AnonymousJob::create`, `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` alone)
+/// refuses a breakaway. The helper is assigned to the job, released, and
+/// asked to spawn a breakaway child; `CreateProcess` must fail with
+/// `ERROR_ACCESS_DENIED` (5) — MSYS asks to break away on every spawn whose
+/// job allows it, so a job that allowed it let a row's git-bash children
+/// outlive the row.
 #[test]
 #[cfg(windows)]
-fn a_breakaway_child_leaves_the_leg_job() {
+fn the_leg_job_refuses_a_breakaway() {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, IsProcessInJob};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-    };
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 
     let job = sot_log::conpty::AnonymousJob::create().expect("create leg job");
     let mut helper = spawn_gated_breakaway_helper();
@@ -3202,24 +3199,10 @@ fn a_breakaway_child_leaves_the_leg_job() {
     assert!(ok != 0, "AssignProcessToJobObject: {}", std::io::Error::last_os_error());
 
     let reply = release_and_read_reply(&mut helper);
-    let pid: u32 = reply
-        .strip_prefix("pid=")
-        .unwrap_or_else(|| panic!("expected pid=<n>, got {reply:?}"))
-        .parse()
-        .expect("pid parses");
-
-    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE;
-    let child = unsafe { OpenProcess(access, 0, pid) };
-    assert!(!child.is_null(), "OpenProcess({pid}): {}", std::io::Error::last_os_error());
-    let mut in_job: i32 = 0;
-    let ok = unsafe { IsProcessInJob(child, job.raw(), &mut in_job) };
-    assert!(ok != 0, "IsProcessInJob: {}", std::io::Error::last_os_error());
-    assert_eq!(in_job, 0, "expected the breakaway child NOT to be in the leg job it broke away from");
-
-    unsafe {
-        TerminateProcess(child, 1);
-        CloseHandle(child);
+    if let Some(pid) = reply.strip_prefix("pid=") {
+        let _ = std::process::Command::new("taskkill").args(["/F", "/PID", pid]).status();
     }
     let _ = helper.wait();
+    assert_eq!(reply, "err=5", "the leg job let a child break away");
 }
 

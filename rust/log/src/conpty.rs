@@ -36,7 +36,7 @@ use windows_sys::Win32::System::JobObjects::{
     CreateJobObjectW, IsProcessInJob, JobObjectBasicAccountingInformation,
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -224,10 +224,11 @@ pub struct SpawnDetail {
 }
 
 /// The anonymous containment job (ADR 0041): `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`
-/// | `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, never named — everything that does
-/// not explicitly ask to leave dies with the run; the daemon's own
-/// supervisor spawn is the one thing that asks, via `CREATE_BREAKAWAY_FROM_JOB`
-/// (ADR 0043 decision 32). The job handle IS the lease — sole handle, kept
+/// alone, never named. It permits no breakaway: everything started inside
+/// dies with the run (ADR 0050 ruling (g)). The daemon's supervisor spawn
+/// asks to leave the daemon's own job; when the daemon was started inside a
+/// row it is denied and runs degraded (ADR 0043 decision 32). The job
+/// handle IS the lease — sole handle, kept
 /// alive for as long as containment is wanted; the kernel kills every
 /// in-job process when the LAST handle closes, however this process dies
 /// (a hard crash included, since handle closure on process exit is a
@@ -257,8 +258,7 @@ impl AnonymousJob {
         // bit pattern is a well-defined value everywhere in the struct;
         // only `LimitFlags` needs a real value.
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
-        info.BasicLimitInformation.LimitFlags =
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let ok = unsafe {
             SetInformationJobObject(
                 owned.as_raw_handle() as HANDLE,
