@@ -88,4 +88,4 @@ $bad = @($res.Keys | Where-Object { $_ -like '*/K' -and $res[$_] -ne 'True/died'
 "SEALED job keeps every chain:                  " + $(if ($bad.Count -eq 0) { 'YES' } else { 'NO: ' + ($bad -join ' ') })
 PS
 M="${1:-run}"; [ "$M" = --pid ] && M=pid
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$T/probe.ps1")" -Mode "$M" -Pid0 "${2:-0}" -T "$Tm" -Bash "$B" -Julia "$J" | tr -d '\r'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$T/probe.ps1")" -Mode "$M" -Pid0 "${2:-0}" -T "$Tm" -Bash "${B:-none}" -Julia "${J:-none}" | tr -d '\r'
