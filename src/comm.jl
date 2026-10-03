@@ -242,10 +242,184 @@ end
 # boxes that already have the record. No running loop re-execs a name on this
 # list: the old relay/listen loops re-exec `comm-relay.sh bridge`, which is
 # still shipped and so never pruned; `codex-watch.sh` execs `comm-wake.sh` once
-# at its start, and no script here re-execs its own name.
+# at its start, and no script here re-execs its own name. Running copies of
+# these names, and the `sot-bridge` loops, are stopped by `_stop_retired_watchers`.
 const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-watch.sh",
                              "codex-watch.sh", "comm-postcompact-reminder.sh",
                              "comm-postclear-reminder.sh", "comm-session-skill.sh"]
+
+# One bash script reads the process table, because MSYS processes are visible
+# only from inside MSYS; Linux runs the same reader. `$1` is the bin dir as
+# Julia sees it. Output, NUL-separated: the bin dir as bash spells it, then per
+# process of this user pid, ppid, argc and the argv.
+const _PROC_DUMP = raw"""
+bin=$1
+case "$(uname -o 2>/dev/null)" in Msys|Cygwin) bin=$(cygpath -u -- "$bin") || exit 3 ;; esac
+[ -r /proc/self/cmdline ] || exit 4
+printf '%s\0' "$bin"
+for d in /proc/[0-9]*; do
+  [ -O "$d" ] || continue
+  mapfile -d '' -t a < "$d/cmdline" 2>/dev/null || continue
+  [ "${#a[@]}" -gt 0 ] || continue
+  pp=; while read -r k v _; do [ "$k" = PPid: ] && { pp=$v; break; }; done < "$d/status" 2>/dev/null
+  [ -n "$pp" ] || continue
+  printf '%s\0%s\0%s\0' "${d#/proc/}" "$pp" "${#a[@]}"
+  printf '%s\0' "${a[@]}"
+done
+"""
+
+const _ProcRow = @NamedTuple{pid::Int, ppid::Int, argv::Vector{String}}
+
+# `(binposix, procs)`, or a String saying why the table cannot be read.
+function _proc_table(bin::AbstractString)
+    bash = Sys.which("bash")
+    bash === nothing && return "no bash on PATH"
+    p = open(pipeline(ignorestatus(`$bash -c $_PROC_DUMP sot-proc-dump $bin`); stderr = devnull))
+    out = read(p, String)
+    wait(p)
+    code = p.exitcode
+    code == 3 && return "cygpath failed"
+    code == 4 && return "no /proc"
+    code == 0 || return "process listing failed (exit $code)"
+    f = split(out, '\0')
+    isempty(f) || isempty(last(f)) && pop!(f)
+    bad = "unreadable process listing"
+    isempty(f) && return bad
+    procs = _ProcRow[]
+    i = 2
+    while i <= length(f)
+        i + 2 <= length(f) || return bad
+        pid = tryparse(Int, f[i]); ppid = tryparse(Int, f[i+1]); argc = tryparse(Int, f[i+2])
+        (pid === nothing || ppid === nothing || argc === nothing || argc < 0) && return bad
+        i + 2 + argc <= length(f) || return bad
+        push!(procs, (pid = pid, ppid = ppid, argv = String.(f[i+3:i+2+argc])))
+        i += 3 + argc
+    end
+    return (String(f[1]), procs)
+end
+
+# The pids to stop, roots first, then their descendants: pure over one snapshot.
+# A root is a bash running a retired script of this bin dir as its script
+# argument, or a `sot-bridge` loop re-running this bin dir's `comm-relay.sh`.
+function _retired_watchers(procs, binposix::AbstractString)
+    retired = Set(binposix * "/" * n for n in COMM_DEPRECATED_BIN)
+    isroot(a) = length(a) >= 2 && basename(a[1]) in ("bash", "bash.exe") &&
+                (a[2] in retired ||
+                 (length(a) >= 5 && a[2] == "-c" && a[4] == "sot-bridge" &&
+                  a[5] == binposix * "/comm-relay.sh"))
+    pids = [p.pid for p in procs if isroot(p.argv)]
+    seen = Set(pids)
+    grew = true
+    while grew
+        grew = false
+        for p in procs
+            p.pid in seen || p.ppid in seen || continue
+            p.pid in seen && continue
+            push!(seen, p.pid); push!(pids, p.pid); grew = true
+        end
+    end
+    return pids
+end
+
+# Windows: the bash-spelled (`/c/Users/...`) form of a Windows path.
+_gitbash_path(p::AbstractString) =
+    replace(replace(p, '\\' => '/'), r"^([A-Za-z]):" => s -> "/" * lowercase(s[1]))
+
+# Windows, pure: `pid\towner\tcommandline` lines (as PowerShell prints them)
+# to the pids of this user's retired watchers. The script argument must be
+# exactly this install's bin folder plus a retired name.
+function _retired_windows(lines, binposix::AbstractString, me::AbstractString; self::Integer = 0)
+    retired = Set(binposix * "/" * n for n in COMM_DEPRECATED_BIN)
+    pids = Int[]
+    for l in lines
+        f = split(l, '\t'; limit = 3)
+        length(f) == 3 || continue
+        pid = tryparse(Int, f[1])
+        (pid === nothing || pid == self || lowercase(f[2]) != lowercase(me)) && continue
+        m = match(r"^(?:\"[^\"]*\"|\S+)\s+(\S+)", f[3])
+        m !== nothing && m.captures[1] in retired && push!(pids, pid)
+    end
+    return pids
+end
+
+# There were never bridge loops on Windows, so this half stops watcher roots only.
+function _stop_retired_windows(bin::AbstractString)
+    names = join((replace(n, "." => "\\.") for n in COMM_DEPRECATED_BIN), "|")
+    ps(script) = read(pipeline(`powershell.exe -NoProfile -NonInteractive -Command $script`; stderr = devnull), String)
+    list = ps("""
+        "me`t" + \$env:USERDOMAIN + '\\' + \$env:USERNAME
+        Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match '$names' } | ForEach-Object {
+            \$o = Invoke-CimMethod -InputObject \$_ -MethodName GetOwner
+            "\$(\$_.ProcessId)`t\$(\$o.Domain)\\\$(\$o.User)`t\$(\$_.CommandLine)" }
+        """)
+    lines = split(list, r"\r?\n"; keepempty = false)
+    isempty(lines) && (@warn "retired comm watchers not checked: no answer from powershell"; return)
+    startswith(lines[1], "me\t") || (@warn "retired comm watchers not checked: unreadable powershell answer"; return)
+    me = lines[1][4:end]
+    rest = lines[2:end]
+    pids = _retired_windows(rest, _gitbash_path(bin), me; self = getpid())
+    isempty(pids) && return
+    n = 0
+    for pid in pids
+        line = first(l for l in rest if startswith(l, "$pid\t"))
+        m = match(r"^(?:\"[^\"]*\"|\S+)\s+\S+\s+(\S+)", split(line, '\t'; limit = 3)[3])
+        arg = m === nothing ? "?" : m.captures[1]
+        try
+            ps("Stop-Process -Id $pid -Force -ErrorAction Stop")
+            n += 1
+            @info "stopped retired comm watcher" pid = pid script = arg
+        catch
+            @warn "could not stop retired comm watcher" pid = pid
+        end
+    end
+    @info "stopped retired comm watchers" count = n
+    return
+end
+
+# Stops the pre-0.6.6 wake watchers and bridge loops (and their children) this
+# user still runs; it never throws, since a leftover it cannot stop is a
+# warning, not a failed install. Never signals a group.
+function _stop_retired_watchers(bin::AbstractString)
+    try
+        Sys.iswindows() && return _stop_retired_windows(bin)
+        t = _proc_table(bin)
+        if t isa String
+            @warn "retired comm watchers not checked: $t"
+            return
+        end
+        binposix, procs = t
+        pids = _retired_watchers(procs, binposix)
+        isempty(pids) && return
+        argvof = Dict(p.pid => p.argv for p in procs)
+        sig(s, ps) = run(ignorestatus(pipeline(`bash -c 'sig=$1; shift; kill -s "$sig" -- "$@"' sot-stop $s $(string.(ps))`;
+                                               stdin = devnull, stdout = devnull, stderr = devnull)))
+        survivors(ps) = begin
+            t = _proc_table(bin)
+            t isa String && return ps
+            now = Dict(p.pid => p.argv for p in t[2])
+            [x for x in ps if get(now, x, nothing) == argvof[x]]
+        end
+        sig("TERM", pids)
+        left = pids
+        for _ in 1:6
+            sleep(0.5)
+            left = survivors(left)
+            isempty(left) && break
+        end
+        if !isempty(left)
+            sig("KILL", left)
+            sleep(0.5)
+            left = survivors(left)
+        end
+        @info "stopped retired comm watchers" count = length(pids) - length(left)
+        for x in left
+            @warn "could not stop retired comm watcher" pid = x script = get(argvof[x], 2, "?")
+        end
+    catch e
+        @warn "retired comm watchers not checked" exception = (e, catch_backtrace())
+    end
+    return
+end
 
 # The names the last successful install shipped into `<bin>`, one per line.
 const COMM_MANIFEST = ".sot-comm-installed"
@@ -639,6 +813,7 @@ function install_comm(; clis = [:claude, :codex])
     shipped = _comm_bin_shipped()
     _prune_comm_bin(bin, shipped, prev_manifest)
     _write_comm_manifest(bin, shipped)
+    _stop_retired_watchers(bin)
 
     # Published LAST, only once every copy above has actually succeeded —
     # invariant "the scripts on this box came from commit X" (dirty-

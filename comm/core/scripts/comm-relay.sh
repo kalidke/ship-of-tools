@@ -25,7 +25,7 @@ set -euo pipefail
 # `bridge` is a RETIRED verb: loops started by earlier versions still re-run it
 # every 2 s from their own loop text. Say so once, then sleep silently — a loop
 # tied to a dead session ends by its own tether check, an untied one idles until
-# a reboot. No product code kills anything. It runs before anything is sourced,
+# the next install on this box stops it. It runs before anything is sourced,
 # so the retired verb costs nothing and nothing can exit before its one line;
 # a number of seconds, not `infinity`, which macOS's sleep refuses.
 if [ "${1:-}" = bridge ]; then

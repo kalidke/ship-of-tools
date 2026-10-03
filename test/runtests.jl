@@ -530,6 +530,129 @@ const COMM_DIR = normpath(joinpath(@__DIR__, "..", "comm"))
         end
     end
 
+    @testset "_retired_watchers selects only the retired roots and their descendants" begin
+        bin = "/home/u/.sot-comm/bin"
+        P(pid, ppid, argv...) = (pid = pid, ppid = ppid, argv = String[argv...])
+        procs = [
+            P(10, 1, "bash", "$bin/comm-wake.sh", "h", "--deliver", "ping", "--owner", "1"),
+            P(11, 10, "sleep", "1"),
+            P(20, 1, "bash", "-c", "loop", "sot-bridge", "$bin/comm-relay.sh", "h"),
+            P(21, 20, "bash", "$bin/comm-relay.sh", "bridge", "--name", "h"),
+            P(22, 21, "sleep", "2147483647"),
+            P(30, 1, "bash", "-c", "loop", "not-sot-bridge", "$bin/comm-relay.sh", "h"),
+            P(31, 30, "sleep", "600"),
+            P(40, 1, "bash", "-c", "sleep 600", "$bin/comm-wake.sh"),
+            P(50, 1, "bash", "/home/other/.sot-comm/bin/comm-wake.sh", "h"),
+            P(60, 1, "bash", "$bin/comm-send.sh", "@h", "x"),
+            P(70, 1, "vim", "$bin/comm-wake.sh"),
+            P(80, 1, "bash.exe", "$bin/codex-watch.sh", "h"),
+        ]
+        @test sort(ShipTools._retired_watchers(procs, bin)) == [10, 11, 20, 21, 22, 80]
+        @test isempty(ShipTools._retired_watchers(procs[6:7], bin))
+    end
+
+    @testset "_retired_windows selects only this user's retired scripts of this install" begin
+        # Windows runs no bridge loops (the bridge never existed there), so
+        # only watcher roots are matched.
+        bin = "/c/Users/u/.sot-comm/bin"
+        me = "BOX\\u"
+        line(pid, owner, cmd) = "$pid\t$owner\t$cmd"
+        bash = "\"C:\\Program Files\\Git\\usr\\bin\\bash.exe\""
+        lines = [
+            line(1, me, "$bash $bin/comm-wake.sh h --deliver ping --owner 9"),
+            line(2, "BOX\\other", "$bash $bin/comm-wake.sh h --deliver ping --owner 9"),
+            line(3, me, "$bash /c/Users/v/.sot-comm/bin/comm-wake.sh h"),
+            line(4, me, "$bash $bin/comm-send.sh @h x"),
+            # the scanner itself: its -Command text names the pattern and the path
+            line(5, me, "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match 'comm-wake\\.sh|bus\\.sh' } $bin/comm-wake.sh"),
+            line(6, me, "$bash -c \"sleep 600\" $bin/comm-wake.sh"),
+            line(7, me, "$bash $bin/comm-wake.sh h"),
+            line(8, "bad line without tabs", ""),
+        ]
+        @test ShipTools._retired_windows(lines, bin, me; self = 7) == [1]
+        @test ShipTools._retired_windows(lines, bin, "box\\U") == [1, 7]
+        @test ShipTools._gitbash_path("C:\\Users\\u\\.sot-comm\\bin") == "/c/Users/u/.sot-comm/bin"
+    end
+
+    if Sys.islinux()
+        @testset "update_comm stops the retired watchers, and only those" begin
+            # Loop texts: BRIDGE_LOOP in comm-lib.sh at commit 26210916 (untethered)
+            # and at ab171855^ (tethered, with the owner check).
+            untethered = raw"""while :; do "$1" bridge --name "$2"; sleep 2; done"""
+            tethered = raw"""while :; do
+    "$1" bridge --name "$2" & _c=$!
+    while kill -0 "$_c" 2>/dev/null; do
+        if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
+            kill "$_c" 2>/dev/null; [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0
+        fi
+        sleep 2
+    done
+    if [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then [ -z "${4:-}" ] || rm -f -- "${4:?}" 2>/dev/null; exit 0; fi
+    sleep 2
+done"""
+            mktempdir() do home
+                mktempdir() do other
+                    bin = joinpath(home, ".sot-comm", "bin")
+                    obin = joinpath(other, ".sot-comm", "bin")
+                    mkpath(obin)
+                    started = Int[]
+                    spawn(cmd) = (p = run(pipeline(cmd; stdin = devnull, stdout = devnull, stderr = devnull); wait = false);
+                                  push!(started, getpid(p)); getpid(p))
+                    alive(pid) = isdir("/proc/$pid")
+                    function childof(pid)
+                        for d in readdir("/proc")
+                            all(isdigit, d) || continue
+                            try
+                                st = read("/proc/$d/status", String)
+                                parse(Int, match(r"PPid:\s*(\d+)", st).captures[1]) == pid || continue
+                                occursin("2147483647", read("/proc/$d/cmdline", String)) && return parse(Int, d)
+                            catch
+                            end
+                        end
+                        return 0
+                    end
+                    try
+                        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                            ShipTools.update_comm(clis = [:claude])
+                            write(joinpath(bin, "comm-wake.sh"), "while :; do sleep 1; done\n")
+                            write(joinpath(obin, "comm-wake.sh"), "while :; do sleep 1; done\n")
+                            relay = joinpath(bin, "comm-relay.sh")
+                            W = spawn(`bash $(joinpath(bin, "comm-wake.sh")) h --deliver ping --owner 1`)
+                            U = spawn(`bash -c $untethered sot-bridge $relay h`)
+                            owner = spawn(`sleep 600`)
+                            T = spawn(`bash -c $tethered sot-bridge $relay h $owner ""`)
+                            C1 = spawn(`bash -c "sleep 600" not-sot-bridge $relay h`)
+                            C2 = spawn(`bash -c "sleep 600" $(joinpath(bin, "comm-wake.sh"))`)
+                            C3 = spawn(`bash $(joinpath(obin, "comm-wake.sh"))`)
+                            sleep(3)
+                            Uc = childof(U); Tc = childof(T)
+                            @test Uc != 0 && Tc != 0
+                            ShipTools.update_comm(clis = [:claude])
+                            gone = [W, U, T, Uc, Tc]
+                            for _ in 1:50
+                                any(alive, gone) || break
+                                sleep(0.1)
+                            end
+                            @test !alive(W)
+                            @test !alive(U)
+                            @test !alive(T)
+                            @test !alive(Uc)
+                            @test !alive(Tc)
+                            @test alive(C1)
+                            @test alive(C2)
+                            @test alive(C3)
+                        end
+                    finally
+                        for pid in started
+                            run(ignorestatus(`kill -KILL $pid`))
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     @testset "install prunes the comm scripts the release no longer ships" begin
         srcbin = joinpath(dirname(@__DIR__), "comm", "core", "scripts")
         manifest = ".sot-comm-installed"

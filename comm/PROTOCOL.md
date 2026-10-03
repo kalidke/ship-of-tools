@@ -550,9 +550,9 @@ with the tools present.
 ## Upgrading to 0.6.6
 
 Once 0.6.6 is installed, bridge loops started by earlier versions stop working:
-`comm-relay.sh bridge` is retired. A loop tied to a session ends with that
-session, and an untied one sleeps idle until the next reboot. No action is
-needed. The install also removes the comm scripts a release no longer ships
+`comm-relay.sh bridge` is retired. The install stops every retired watcher
+the installing user runs on the box it runs on: the per-session wake (`comm-wake.sh`) and the bridge loops
+(`sot-bridge`), with their children. A box that shares the home keeps its own until that box installs. The install also removes the comm scripts a release no longer ships
 (`comm-listen.sh`, `bus.sh`, and any later retirement), by exact name, from
 the list it recorded in `bin/.sot-comm-installed`. A commit that retires a
 bin script first checks every shipped version for a running loop that
