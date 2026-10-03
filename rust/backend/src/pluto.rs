@@ -9,7 +9,9 @@
 // HTTP listener is bound, then services `OPEN <abspath>` requests on
 // stdin, replying with `URL <url>` or `ERR <msg>` per line on stdout. The
 // `URL` already carries `?secret=...` — Julia holds `session.secret` and
-// builds the full URL itself, so this supervisor never needs to see it.
+// builds the full URL itself. This supervisor relays that URL in the
+// `pluto.open` reply and nowhere else: every child line it logs, and every
+// child `ERR` it relays, passes through `redact_secrets` (decision 0031).
 //
 // Same lazy-respawn shape as mathjax.rs: on child death the
 // supervisor drops the submission channel; the next caller respawns.
@@ -289,7 +291,7 @@ async fn supervisor_task(
                             }
                         } else if let Some(err) = line.strip_prefix("ERR ") {
                             if let Some(reply) = pending.pop_front() {
-                                let _ = reply.send(Err(anyhow!("pluto: {err}")));
+                                let _ = reply.send(Err(anyhow!("pluto: {}", redact_secrets(err))));
                             } else {
                                 tracing::warn!(line = %redact_secrets(&line), "pluto ERR without pending request");
                             }

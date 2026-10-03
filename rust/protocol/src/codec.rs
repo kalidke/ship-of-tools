@@ -67,6 +67,14 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// A frame that does not parse, described by where and how it failed and its length, never by its bytes: an
+/// envelope can carry a page's secret (a `pluto.open` reply cut off by a dying link), and this error reaches the
+/// frontend's log and status line (decision 0031). serde's own message can quote input, so only its category and
+/// position are kept.
+fn parse_failed(e: &serde_json::Error, len: usize) -> anyhow::Error {
+    anyhow!("frame parse failed: {:?} error at line {} column {} | len={len}", e.classify(), e.line(), e.column())
+}
+
 pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
     let mut line = Vec::with_capacity(256);
     let n = r
@@ -89,17 +97,7 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Op
     let frame: Frame = match serde_json::from_slice(&line) {
         Ok(f) => f,
         Err(e) => {
-            // Diagnostic: include the head of the bytes we choked on so
-            // codec desyncs (the classic "blob shadowed envelope" failure)
-            // are debuggable from the log instead of by guessing. Cap the
-            // preview so a 1 MiB envelope doesn't blow up tracing.
-            let preview_len = line.len().min(160);
-            let preview = String::from_utf8_lossy(&line[..preview_len]);
-            return Err(anyhow!(
-                "frame parse failed: {e} | len={} head={:?}",
-                line.len(),
-                preview
-            ));
+            return Err(parse_failed(&e, line.len()));
         }
     };
 
@@ -204,13 +202,7 @@ pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
     let frame: Frame = match serde_json::from_slice(&line) {
         Ok(f) => f,
         Err(e) => {
-            let preview_len = line.len().min(160);
-            let preview = String::from_utf8_lossy(&line[..preview_len]);
-            return Err(anyhow!(
-                "frame parse failed: {e} | len={} head={:?}",
-                line.len(),
-                preview
-            ));
+            return Err(parse_failed(&e, line.len()));
         }
     };
     Ok(frame)
@@ -368,5 +360,17 @@ mod tests {
         let mut r = tokio::io::BufReader::new(std::io::Cursor::new(wire));
         let (parsed, _) = read_frame(&mut r).await.unwrap();
         assert_eq!(parsed.rev, Some(42));
+    }
+
+    /// Decision 0031: a frame cut off mid-envelope (an ssh link dying during a `pluto.open` reply) must not put
+    /// the page's secret into the parse error, which reaches the frontend's log and status line.
+    #[tokio::test]
+    async fn a_truncated_frame_error_carries_no_frame_bytes() {
+        let cut: &[u8] = br#"{"v":2,"id":1,"kind":"res","op":"pluto.open","rev":1,"payload":{"url":"http://127.0.0.1:1234/edit?secret=Ab12Cd34"#;
+        let mut r = tokio::io::BufReader::new(std::io::Cursor::new(cut.to_vec()));
+        let e = read_frame(&mut r).await.unwrap_err().to_string();
+        assert!(!e.contains("Ab12Cd34") && !e.contains("pluto.open"), "{e}");
+        let e = super::read_frame_blocking(&mut std::io::Cursor::new(cut.to_vec())).unwrap_err().to_string();
+        assert!(!e.contains("Ab12Cd34") && !e.contains("pluto.open"), "{e}");
     }
 }
