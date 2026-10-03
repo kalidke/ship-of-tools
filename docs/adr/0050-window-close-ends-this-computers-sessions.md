@@ -151,8 +151,10 @@ read by every end, a startup Cleanup included.
   `fe.notice_seen`.
 - Launchers start the daemon and wait for its socket up to `LAUNCH_WAIT`, never killing a
   daemon that is alive and has not bound yet. The stop script waits up to
-  `DAEMON_LOCK_WAIT` for a closing daemon to exit by itself. On Windows, a converge holds
-  a lease itself across the rebuild and sends a `Handover` after the new window is up.
+  `DAEMON_LOCK_WAIT` for a closing daemon to exit by itself. On Windows, the supervisor holds
+  a lease of its own from every relaunch (exit 75 or 76) until the next window is spawned,
+  then sends a `Handover`; a converge that finds the launcher code on disk changed re-invokes
+  it in the same process, which keeps those leases and hands them over (ADR 0017).
 
 ## What was deleted
 

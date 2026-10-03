@@ -67,6 +67,35 @@ try {
     $pinnedTarget = Get-SotLauncherTarget -Prefix $prefix -ClonePath $clone
     Check 'repo\current\scripts\launch-sot.ps1 present: that is the target' `
         ($pinnedTarget -eq $pinnedLauncherFile) "got '$pinnedTarget'"
+
+    Write-Host "`n=== 3. Get-SotLauncherCodeId: the launcher code on disk, seen through repo\current ===" -ForegroundColor Cyan
+    try {
+        function New-ScriptsDir([string]$Dir, [string]$HostsText) {
+            New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+            Set-Content -LiteralPath (Join-Path $Dir 'launch-sot.ps1') -Value '# launcher stand-in' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $Dir 'sot-hosts.ps1') -Value $HostsText -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $Dir 'sot-install-layout.ps1') -Value '# layout stand-in' -Encoding ascii
+        }
+        $tagA = Join-Path $root 'tags\A'
+        $tagB = Join-Path $root 'tags\B'
+        New-ScriptsDir (Join-Path $tagA 'scripts') '# hosts A'
+        New-ScriptsDir (Join-Path $tagB 'scripts') '# hosts B'
+        $idA = Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagA 'scripts')
+        $idB = Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')
+        Check '3: the id is three SHA-256 hashes joined by -' ($idA -cmatch '^[0-9A-F]{64}-[0-9A-F]{64}-[0-9A-F]{64}$') "got '$idA'"
+        Check '3: the same files give the same id' ($idA -ceq (Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagA 'scripts'))) 'the id changed between two reads'
+        Check '3: a change to a dot-sourced file changes the id' ($idA -cne $idB) 'tags A and B share an id'
+        $cur = Join-Path $root 'current'
+        $curScripts = Join-Path $cur 'scripts'
+        New-Item -ItemType Junction -Path $cur -Target $tagA | Out-Null
+        Check '3: through the junction, the id is its target''s' ((Get-SotLauncherCodeId -ScriptsDir $curScripts) -ceq $idA) 'the junction id differs from tag A'
+        cmd /c rmdir "$cur" | Out-Null
+        New-Item -ItemType Junction -Path $cur -Target $tagB | Out-Null
+        Check '3: after the junction flips, the same path string gives the new id' ((Get-SotLauncherCodeId -ScriptsDir $curScripts) -ceq $idB) 'the flip did not show through the unchanged path'
+        cmd /c rmdir "$cur" | Out-Null
+        Remove-Item -LiteralPath (Join-Path $tagB 'scripts\sot-hosts.ps1') -Force
+        Check '3: a missing file gives an empty id' ((Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')) -ceq '') 'a partial scripts dir got an id'
+    } catch { Check '3: section ran' $false $_.Exception.Message }
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }

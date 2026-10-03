@@ -669,7 +669,7 @@ public static class FakeSotd
         }
         $LeaseReplyWaitMs = 5000
         $HandoverBoundSeconds = 60
-        $script:convergeLeases = @()
+        $global:SotLeases = @()
         $script:supLines = @()
         function Write-SupLog { param([string]$Message) $script:supLines += $Message }
         $haveFns = (Get-Command Open-SotLease -ErrorAction SilentlyContinue) -and (Get-Command Close-SotLeases -ErrorAction SilentlyContinue) -and (Get-Command Get-SotBootId -ErrorAction SilentlyContinue)
@@ -691,7 +691,7 @@ public static class FakeSotd
                 $script:supLines = @()
                 $streams = @(Open-SotLease (Get-PipePath $pipe11a))
                 Check '11a: one stream comes back' ($streams.Count -eq 1) "got $($streams.Count)"
-                $script:convergeLeases = $streams
+                $global:SotLeases = $streams
                 Check '11a: logged the grant' (($script:supLines -join ' ') -match 'lease granted') "log: $($script:supLines -join ' | ')"
                 $regOut = (& reg query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' /v BootId) -join ' '
                 $bootDec = ''
@@ -707,7 +707,7 @@ public static class FakeSotd
                 $handover = '{"v":2,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
                 Check '11a: the handover line follows' (($lines11a.Count -ge 2) -and ($lines11a[1] -ceq $handover)) "lines: $($lines11a -join ' | ')"
                 Check '11a: then eof' (($lines11a.Count -ge 3) -and ($lines11a[2] -ceq 'eof')) "lines: $($lines11a -join ' | ')"
-                Check '11a: the lease list is empty after Close-SotLeases' ($script:convergeLeases.Count -eq 0) "count $($script:convergeLeases.Count)"
+                Check '11a: the lease list is empty after Close-SotLeases' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"
             } finally {
                 if ($fake11a -and -not $fake11a.HasExited) { Stop-Process -Id $fake11a.Id -Force -ErrorAction SilentlyContinue }
                 Clear-FakeEnv
@@ -968,6 +968,117 @@ try {
         }
     }
 } catch { Check '15: section ran' $false $_.Exception.Message }
+try {
+    Write-Host "`n=== 16. ConvergeRunsCodeOnDisk: a converge re-invokes a changed launcher in this process, which hands over its caller's leases ===" -ForegroundColor Cyan
+    $loop16 = @($launchAst.FindAll({ param($n)
+        ($n -is [System.Management.Automation.Language.DoWhileStatementAst]) -and $n.Condition.Extent.Text -eq '$relaunchNext' }, $true))
+    $conv16 = @()
+    if ($loop16.Count -eq 1) {
+        $conv16 = @(Find-Ifs $loop16[0] '$convergeRequested' | Where-Object { @(Find-Calls $_ 'Invoke-PendingApply').Count -gt 0 })
+    }
+    Check '16a: one converge block' ($conv16.Count -eq 1) "found $($conv16.Count)"
+    if ($conv16.Count -eq 1) {
+        $c16 = $conv16[0]
+        $amp16 = @($c16.FindAll({ param($n)
+            ($n -is [System.Management.Automation.Language.CommandAst]) -and
+            $n.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Ampersand -and
+            $n.CommandElements[0].Extent.Text -eq '$PSCommandPath' }, $true))
+        $id16 = @(Find-Calls $c16 'Get-SotLauncherCodeId')
+        $pre16 = @(Find-Calls $c16 'Invoke-SelfUpdatePrelude')
+        $fr16 = @(Find-Calls $c16 'Invoke-FreshnessPass')
+        Check '16a: the converge re-invokes $PSCommandPath once' ($amp16.Count -eq 1) "found $($amp16.Count)"
+        Check '16a: the converge reads the code id on disk once' ($id16.Count -eq 1) "found $($id16.Count)"
+        if ($amp16.Count -eq 1 -and $id16.Count -eq 1 -and $pre16.Count -eq 1 -and $fr16.Count -eq 1) {
+            Check '16b: the code id is read after the prelude' ($pre16[0].Extent.StartOffset -lt $id16[0].Extent.StartOffset) 'order is wrong'
+            Check '16b: the re-invoke precedes the freshness pass' ($amp16[0].Extent.StartOffset -lt $fr16[0].Extent.StartOffset) 'order is wrong'
+            $guard16 = $false
+            $p16 = $amp16[0].Parent
+            while ($p16 -and -not [object]::ReferenceEquals($p16, $c16)) {
+                if (($p16 -is [System.Management.Automation.Language.IfStatementAst]) -and ($p16.Clauses[0].Item1.Extent.Text -match '\$script:launcherCodeId')) { $guard16 = $true }
+                $p16 = $p16.Parent
+            }
+            Check '16b: the re-invoke is guarded by the code id this process parsed' $guard16 'no enclosing if compares with $script:launcherCodeId'
+            $exit16 = @($amp16[0].Parent.Parent.FindAll({ param($n) $n -is [System.Management.Automation.Language.ExitStatementAst] }, $false) |
+                Where-Object { $_.Extent.StartOffset -gt $amp16[0].Extent.StartOffset })
+            Check '16b: an exit follows the re-invoke' ($exit16.Count -ge 1) 'no exit after the re-invoke'
+        }
+        $io16 = @($c16.FindAll({ param($n)
+            ($n -is [System.Management.Automation.Language.InvokeMemberExpressionAst]) -and
+            (@('ParseFile', 'ReadAllText') -contains $n.Member.Extent.Text) }, $true))
+        $tried16 = @($io16 | Where-Object {
+            $q = $_.Parent; $t = $false
+            while ($q -and -not [object]::ReferenceEquals($q, $c16)) {
+                if (($q -is [System.Management.Automation.Language.TryStatementAst]) -and $q.CatchClauses.Count -ge 1) { $t = $true }
+                $q = $q.Parent
+            }
+            $t })
+        Check '16f: the refusal checks run inside a try that catches' (($io16.Count -ge 2) -and ($tried16.Count -eq $io16.Count)) "file reads $($io16.Count), inside a try $($tried16.Count)"
+    }
+    if ($loop16.Count -eq 1) {
+        $first16 = $loop16[0].Body.Statements[0]
+        $ls16 = @(Find-Calls $first16 'Open-SotLease')
+        $gated16 = @($ls16 | Where-Object {
+            $q = $_.Parent; $g = $false
+            while ($q -and -not [object]::ReferenceEquals($q, $first16)) {
+                if (($q -is [System.Management.Automation.Language.IfStatementAst]) -and ($q.Clauses[0].Item1.Extent.Text -match 'convergeRequested')) { $g = $true }
+                $q = $q.Parent
+            }
+            $g })
+        Check '16c: the respawn block leases whatever the exit code' (($ls16.Count -eq 1) -and ($gated16.Count -eq 0)) "leases $($ls16.Count), gated on convergeRequested $($gated16.Count)"
+    }
+    $old16 = @($launchAst.FindAll({ param($n) ($n -is [System.Management.Automation.Language.VariableExpressionAst]) -and $n.Extent.Text -eq '$script:convergeLeases' }, $true))
+    Check '16d: no script-scoped lease list remains' ($old16.Count -eq 0) "found $($old16.Count) uses of `$script:convergeLeases"
+    $sets16 = @($launchAst.FindAll({ param($n)
+        ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) -and
+        $n.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and
+        $n.Left.Extent.Text -eq '$global:SotLeases' }, $true))
+    $bad16 = @($sets16 | Where-Object {
+        $q = $_.Parent; $ok = $false
+        while ($q) {
+            if (($q -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $q.Name -eq 'Close-SotLeases') { $ok = $true }
+            if (($q -is [System.Management.Automation.Language.IfStatementAst]) -and ($q.Clauses[0].Item1.Extent.Text -match '\$null -eq \$global:SotLeases')) { $ok = $true }
+            $q = $q.Parent
+        }
+        -not $ok })
+    Check '16d: $global:SotLeases is set only when unset, or by Close-SotLeases' (($sets16.Count -ge 2) -and ($bad16.Count -eq 0)) "assignments $($sets16.Count), unguarded $($bad16.Count): $(@($bad16 | ForEach-Object { $_.Extent.Text }) -join ' | ')"
+    if ($compiled) {
+        foreach ($fname in @('Get-SotBootId', 'Open-SotLease')) {
+            $fn = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
+            if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
+        }
+        $closeFn16 = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Close-SotLeases' }, $true)
+        $LeaseReplyWaitMs = 5000
+        $HandoverBoundSeconds = 60
+        function Write-SupLog { param([string]$Message) }
+        $pipe16 = New-TestPipeName
+        $log16 = Join-Path $root 'lease16.log'
+        Clear-FakeEnv
+        $env:FAKE_SOTD_LOG = $log16
+        $fake16 = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe16)) -WindowStyle Hidden -PassThru
+        try {
+            Check '16e: the fake pipe is up' (Wait-Pipe $pipe16) 'pipe never answered'
+            $global:SotLeases = @()
+            $global:SotLeases += @(Open-SotLease (Get-PipePath $pipe16))
+            Check '16e: the caller holds one lease' ($global:SotLeases.Count -eq 1) "count $($global:SotLeases.Count)"
+            # The re-invoked launcher, reduced to what this test is about: its
+            # own Close-SotLeases, run from another script in this process.
+            $inner16 = Join-Path $root 'inner16.ps1'
+            Set-Content -LiteralPath $inner16 -Encoding ascii -Value ("function Write-SupLog { param([string]`$Message) }`r`n" + $closeFn16.Extent.Text + "`r`nClose-SotLeases`r`n")
+            & $inner16
+            Start-Sleep -Milliseconds 500
+            $lines16 = @(Get-Content -LiteralPath $log16 -ErrorAction SilentlyContinue)
+            $handover16 = '{"v":2,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
+            Check '16e: the re-invoked copy hands over the caller''s lease' (($lines16.Count -ge 2) -and ($lines16[1] -ceq $handover16)) "lines: $($lines16 -join ' | ')"
+            Check '16e: and then closes it (eof)' (($lines16.Count -ge 3) -and ($lines16[2] -ceq 'eof')) "lines: $($lines16 -join ' | ')"
+            Check '16e: the caller''s list is empty afterwards' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"
+        } finally {
+            foreach ($s16 in @($global:SotLeases)) { try { $s16.Dispose() } catch { } }
+            $global:SotLeases = $null
+            if ($fake16 -and -not $fake16.HasExited) { Stop-Process -Id $fake16.Id -Force -ErrorAction SilentlyContinue }
+            Clear-FakeEnv
+        }
+    }
+} catch { Check '16: section ran' $false $_.Exception.Message }
 } finally {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still

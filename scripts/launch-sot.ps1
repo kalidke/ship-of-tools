@@ -64,6 +64,11 @@ $ErrorActionPreference = 'Stop'
 # script's. Capture the script's copy before any function can shadow it.
 $script:LaunchBoundParameters = $PSBoundParameters
 
+# How many launcher copies this process has run: each in-process re-invoke
+# (the prelude's, the post-apply handover's, a converge's) nests one. The
+# "supervisor start" line logs it with the working set (ADR 0017, 0.6.6).
+$global:SotLauncherDepth = 1 + [int]$global:SotLauncherDepth
+
 # AUTHORING GOTCHA (Windows PowerShell 5.1): this file has no BOM, so the 5.1
 # parser decodes it as ANSI/cp1252. A UTF-8 non-ASCII char (em-dash, curly
 # quote, etc.) is harmless inside a "#" comment (runs to end-of-line) but inside
@@ -81,9 +86,15 @@ $prefixDir = Join-Path $env:LOCALAPPDATA 'sot'
 # with shutdown-sot.ps1 -- see that file's own header.
 . (Join-Path $PSScriptRoot 'sot-hosts.ps1')
 
-# Test-SotPinnedCheckout / Get-SotLauncherTarget -- shared with
-# install-shortcut.ps1; see that file's header.
+# Test-SotPinnedCheckout / Get-SotLauncherTarget / Get-SotLauncherCodeId --
+# shared with install-shortcut.ps1 and the tests; see that file's header.
 . (Join-Path $PSScriptRoot 'sot-install-layout.ps1')
+
+# The launcher code this process parsed: launch-sot.ps1 and the two files
+# dot-sourced above, read before anything below can change them on disk. The
+# "supervisor start" line logs it; a converge compares it with the files on
+# disk and re-invokes the launcher when they differ (the do/while loop).
+$script:launcherCodeId = Get-SotLauncherCodeId -ScriptsDir $PSScriptRoot
 
 # Computed ONCE, before any self-update/freshness/layout decision below.
 # See docs/adr/0030-versioning-release-and-auto-update.md's 2026-09-17
@@ -249,12 +260,10 @@ function Stop-Splash {
 # exit-76 CONVERGE respawn (docs/adr/0017-frontend-self-relaunch.md's 76
 # amendment; see the do/while loop and relaunch-sot.ps1 -Converge) can re-run
 # the identical pull + classification -- one code path, no copy. -AllowReexec
-# is passed ONLY by the very first, top-level call below: hot-swapping this
-# process's already-parsed AST via `& $PSCommandPath` is safe only before any
-# supervisor state (tunnels, a live FE) exists. A converge mid-loop that
-# finds the launcher itself changed on disk logs it and defers the swap to
-# the next full process start rather than tearing down live tunnels to
-# re-exec in place.
+# is passed ONLY by the very first, top-level call below, which re-invokes the
+# pulled launcher at once. A converge calls this without it: the converge
+# block in the do/while loop decides by code id (Get-SotLauncherCodeId), once
+# its apply has run too, and re-invokes the launcher there.
 #
 # $script:launchNotices collects every line worth surfacing in the frontend's
 # one-line startup notice (a refused pull, a failed comm install, a pinned
@@ -312,9 +321,6 @@ function Invoke-SelfUpdatePrelude {
                         $reexecParams = $script:LaunchBoundParameters
                         & $PSCommandPath @reexecParams
                         exit $LASTEXITCODE
-                    } else {
-                        Write-SupLog 'self-update: launcher changed on disk - takes effect on the next full process start (a converge mid-loop does not hot-swap the running supervisor)'
-                        $script:launchNotices.Add('launcher updated; quit and relaunch from the shortcut') | Out-Null
                     }
                 }
             } else {
@@ -1159,11 +1165,9 @@ function Invoke-FreshnessPass {
         $justApplied = $script:sotJustApplied
         $script:sotJustApplied = $false
         if ($justApplied -or $commMissing) {
-            # The converge path (Invoke-PendingApply -> Invoke-SelfUpdatePrelude
-            # -> Invoke-FreshnessPass, in the do/while loop further down) has
-            # no process re-exec -- unlike the fresh-launch migration/
-            # post-apply handover above, which re-execs into the new tag and
-            # so runs Initialize-InstallLayout fresh -- so a tag that just
+            # A converge whose apply left the launcher code unchanged does
+            # not re-invoke the launcher (the converge block in the do/while
+            # loop re-invokes only on a code id change), so a tag that just
             # landed here via sot-apply.ps1 can still be uninstantiated: the
             # Windows updater's prepare step never runs Pkg.instantiate()
             # (rust/frontend/src/selfupdate.rs's PrepareSpec always sets
@@ -1487,16 +1491,25 @@ if (-not $localDaemonReady) {
 # timestamp, and the frontend's watcher (rust/frontend/src/gpu.rs) reads
 # that back to pick 76 over 75. Any other exit code = real quit. See
 # docs/adr/0017-frontend-self-relaunch.md's 76 amendment.
+# A converge that finds the launcher code on disk changed re-invokes the
+# launcher in this process instead of finishing the pass (ADR 0017, 0.6.6).
 #
 # SOT_REPO_DIR lets the frontend find the local repo (Terminal cwd for
 # `claude --continue`, and the build dir for the relaunch helper).
 $RelaunchExitCode = 75
 $ConvergeExitCode = 76
-# The converge holds a lease on the local daemon across its window-less stretch
-# (contract 1.8): LEASE_REPLY_WAIT and HANDOVER_BOUND in rust/protocol/src/ops.rs.
+# The supervisor holds a lease on the local daemon across every window-less
+# stretch of a relaunch (contract 1.8): LEASE_REPLY_WAIT and HANDOVER_BOUND in
+# rust/protocol/src/ops.rs.
 $LeaseReplyWaitMs = 5000
 $HandoverBoundSeconds = 60
-$script:convergeLeases = @()
+# Every lease this supervisor PROCESS holds, as open pipe streams. Global, not
+# script, scope: the daemon knows a lease by process (pid and creation time),
+# and a converge that re-invokes the launcher runs the new copy in this same
+# process, which must hand over the leases its caller opened. The contract
+# every launcher version keeps (ADR 0017, 0.6.6): append with +=, never reset;
+# only Close-SotLeases empties it, after closing each stream.
+if ($null -eq $global:SotLeases) { $global:SotLeases = @() }
 
 # The Windows boot identity: the registry BootId as an unsigned decimal string,
 # "" when it cannot be read. A failed read never fails the lease.
@@ -1529,19 +1542,19 @@ function Open-SotLease([string]$PipePath) {
         if (-not $task.Wait($LeaseReplyWaitMs)) { throw 'no reply' }
         $why = (ConvertFrom-Json $task.Result).payload.outcome
         if ($why -eq 'granted') {
-            Write-SupLog 'converge: lease granted'
+            Write-SupLog 'relaunch: lease granted'
             return $client
         }
     } catch {
         $why = $_.Exception.Message
     }
     if ($client) { try { $client.Dispose() } catch { } }
-    Write-SupLog "WARNING: converge: lease not granted ($why) - this computer's sessions end if no window holds the backend within $HandoverBoundSeconds s"
+    Write-SupLog "WARNING: relaunch: lease not granted ($why) - this computer's sessions end if no window holds the backend within $HandoverBoundSeconds s"
 }
 
-# Hand the leases over to the frontend that is about to start: say so, then drop them.
+# Hand every lease this process holds over to the frontend just spawned: say so, then drop them.
 function Close-SotLeases {
-    foreach ($c in @($script:convergeLeases)) {
+    foreach ($c in @($global:SotLeases)) {
         try {
             $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":2,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
             $c.Write($bytes, 0, $bytes.Length)
@@ -1549,7 +1562,7 @@ function Close-SotLeases {
         } catch { }
         try { $c.Dispose() } catch { }
     }
-    $script:convergeLeases = @()
+    $global:SotLeases = @()
 }
 $stagedDir = Join-Path $env:LOCALAPPDATA 'sot\bin'
 New-Item -ItemType Directory -Force -Path $stagedDir | Out-Null
@@ -1624,7 +1637,7 @@ $relaunchNext = [bool]$Relaunched
 # and happen while the user is already in the app, so they get no splash
 # — dismiss it exactly once, when the first FE window is up.
 $splashDismissed = $false
-Write-SupLog "supervisor start (relaunched=$Relaunched)"
+Write-SupLog "supervisor start (relaunched=$Relaunched) depth=$global:SotLauncherDepth ws=$([int]([System.Diagnostics.Process]::GetCurrentProcess().WorkingSet64 / 1MB))MB code=$(if ($script:launcherCodeId) { $script:launcherCodeId } else { 'unknown' })"
 # A supervisor rolls back AT MOST ONCE, matching the Unix supervisor's $ROLLED
 # in scripts/install.sh. What it actually guards is narrow: a Remove-Item that
 # failed to clear the marker, and a converge that applies again after a
@@ -1635,14 +1648,14 @@ $rolledBackOnce = $false
 try {
     do {
         # Every respawn (exit 75, exit 76 and the crash-loop rollback) ensures the
-        # local daemon first: no frontend is spawned without one. Nothing to do for
+        # local daemon first and leases it until the new window is up: no frontend is spawned without one. Nothing to do for
         # a remote host's own connection (C3): the OLD frontend process owned every
         # ssh child it spawned, so the NEW one spawns its own set from the same
         # --dial list and the remote backend and session survive regardless.
         if ($relaunchNext) {
             $localDaemonReady = Invoke-LocalDaemonEnsure
             $localSocket = if ($localDaemonReady) { Get-SotLocalPipePath } else { $null }
-            if ($convergeRequested -and $localSocket) { $script:convergeLeases += @(Open-SotLease $localSocket) }
+            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket) }
         }
         # Stage the binary for this launch, priority order:
         #   1. dev source build (the classic path — takes precedence, and a
@@ -1750,7 +1763,7 @@ try {
         # (frontend closed, never reopened). Touching .Handle pins it.
         $null = $frontend.Handle
         Write-SupLog "frontend spawned pid=$($frontend.Id) args=[$($frontendArgs -join ' ')]"
-        if ($script:convergeLeases.Count -gt 0) { Close-SotLeases }
+        if ($global:SotLeases.Count -gt 0) { Close-SotLeases }
 
         # Hold the splash until the FE window is actually up (not merely the
         # process spawned), then dismiss it — avoids a blink of nothing between
@@ -1826,7 +1839,7 @@ try {
         # matching what a first launch with that switch would do.
         if ($convergeRequested) {
             Write-SupLog 'converge (exit 76): re-running self-update prelude + freshness pass'
-            if ($localSocket) { $script:convergeLeases = @(Open-SotLease $localSocket) }
+            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket) }
             # Visible progress for the whole window-less stretch: the splash
             # renders each step below and exits itself on the DONE write after
             # the respawn, exactly as on the first launch.
@@ -1851,6 +1864,56 @@ try {
                 Invoke-PendingApply
             }
             Invoke-SelfUpdatePrelude
+            # The launcher code on disk is no longer the code this process
+            # parsed: the apply above flipped repo\current, or the prelude's
+            # pull changed the launcher or a file it dot-sources. Run the
+            # launcher that is on disk, in this process, as the fresh path's
+            # post-apply handover does: it keeps this process's leases in
+            # $global:SotLeases and hands them over once its window is up, and
+            # this pass exits when it returns. A copy that does not parse, that
+            # predates the lease list, or that cannot be read is never invoked:
+            # this pass carries on with the code it has. Every check is caught:
+            # a throw here would end this process while it holds the leases,
+            # and their end reads as a close.
+            $onDiskCodeId = Get-SotLauncherCodeId -ScriptsDir $PSScriptRoot
+            if (-not $onDiskCodeId) {
+                Write-SupLog 'WARNING: converge: a launcher file on disk cannot be read - this pass carries on with the code it has'
+                $script:launchNotices.Add('a launcher file on disk cannot be read; see supervisor.log before quitting') | Out-Null
+            }
+            if ($onDiskCodeId -and ($onDiskCodeId -ne $script:launcherCodeId)) {
+                $refusal = ''
+                $notice = ''
+                try {
+                    foreach ($f in @('launch-sot.ps1', 'sot-hosts.ps1', 'sot-install-layout.ps1')) {
+                        $errs = $null
+                        [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $f), [ref]$null, [ref]$errs)
+                        if ($errs -and -not $refusal) {
+                            $refusal = "${f} does not parse (line $($errs[0].Extent.StartLineNumber): $($errs[0].Message))"
+                            $notice = 'the installed launcher does not parse, so starting again would fail: keep this window open and report it (see supervisor.log)'
+                        }
+                    }
+                    if (-not $refusal -and -not ([System.IO.File]::ReadAllText($PSCommandPath).Contains('$global:SotLeases'))) {
+                        $refusal = 'it predates the process lease list'
+                        $notice = 'the launcher on disk is older than the running one; quit and start again from the Start menu'
+                    }
+                } catch {
+                    $refusal = "it cannot be read ($($_.Exception.Message))"
+                    $notice = 'a launcher file on disk cannot be read; see supervisor.log before quitting'
+                }
+                if ($refusal) {
+                    Write-SupLog "WARNING: converge: not re-invoking the launcher on disk ($onDiskCodeId): $refusal - this pass carries on with the code it has"
+                    $script:launchNotices.Add($notice) | Out-Null
+                } else {
+                    Write-SupLog "converge: launcher code changed on disk ($onDiskCodeId) - re-invoking $PSCommandPath in this process"
+                    Stop-Splash   # the re-invoked launcher spawns its own
+                    $env:SOT_LAUNCH_REEXEC = '1'
+                    $reexecParams = @{}
+                    foreach ($k in $script:LaunchBoundParameters.Keys) { $reexecParams[$k] = $script:LaunchBoundParameters[$k] }
+                    $reexecParams['Relaunched'] = $true
+                    & $PSCommandPath @reexecParams
+                    exit $LASTEXITCODE
+                }
+            }
             Invoke-FreshnessPass
             Update-SotTopologyPlan
             # The re-read plan is only half of it: the default remote's own
