@@ -1077,18 +1077,6 @@ fn strip_frontmatter(s: &str) -> String {
     split_frontmatter(s).1
 }
 
-/// Split a concept-file source into `(header, body)` where `header` is
-/// the YAML frontmatter (including both `---` delimiters and the
-/// trailing newline) or `None` when there is no frontmatter. The
-/// concatenation `header.unwrap_or_default() + body` reproduces a
-/// frontmatter-free file exactly and a frontmatter-bearing file
-/// modulo a possibly-missing trailing newline after the closing
-/// `---` (always preserved here when present in the input).
-///
-/// Edit mode uses this so the editable buffer is the body only —
-/// frontmatter (target, target_kind, synced_against, authored_by,
-/// references) renders as a read-only header above the edit area and
-/// concatenation on save preserves it byte-perfect.
 /// Write `html_bytes` to a unique temp file and hand it off to the OS
 /// default browser via `crate::browser_open::spawn_opener`. We don't delete the temp
 /// file (the OS cleans temp on its own schedule; a fresh path per call
@@ -1105,6 +1093,18 @@ fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
     crate::browser_open::spawn_opener(&path_str)
 }
 
+/// Split a concept-file source into `(header, body)` where `header` is
+/// the YAML frontmatter (including both `---` delimiters and the
+/// trailing newline) or `None` when there is no frontmatter. The
+/// concatenation `header.unwrap_or_default() + body` reproduces a
+/// frontmatter-free file exactly and a frontmatter-bearing file
+/// modulo a possibly-missing trailing newline after the closing
+/// `---` (always preserved here when present in the input).
+///
+/// Edit mode uses this so the editable buffer is the body only —
+/// frontmatter (target, target_kind, synced_against, authored_by,
+/// references) renders as a read-only header above the edit area and
+/// concatenation on save preserves it byte-perfect.
 fn split_frontmatter(s: &str) -> (Option<String>, String) {
     let mut lines = s.split('\n');
     let Some(first) = lines.next() else {

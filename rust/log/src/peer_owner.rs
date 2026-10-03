@@ -152,6 +152,9 @@ mod pcblist_n {
 
     // <sys/socketvar.h>, <netinet/in_pcb.h>, <netinet/tcp_fsm.h>.
     const XSO_SOCKET: u32 = 0x001;
+    const XSO_RCVBUF: u32 = 0x002;
+    const XSO_SNDBUF: u32 = 0x004;
+    const XSO_STATS: u32 = 0x008;
     const XSO_INPCB: u32 = 0x010;
     const XSO_TCPCB: u32 = 0x020;
     const INP_IPV4: u8 = 0x1;
@@ -296,11 +299,32 @@ mod pcblist_n {
         Ok(unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) })
     }
 
+    /// The lengths of the two records whose contents are never read (xsockbuf_n, xsockstat_n): only their length
+    /// and kind are checked, so they need no transcription.
+    const XSOCKBUF_N_LEN: usize = 32;
+    const XSOCKSTAT_N_LEN: usize = 136;
+
+    /// The next record at `*off`: its length must be `len` and its kind one of `kinds`. Returns where it starts and
+    /// moves `*off` past it, padding included.
+    fn expect(buf: &[u8], off: &mut usize, len: usize, kinds: &[u32]) -> Result<usize, String> {
+        let start = *off;
+        let got = u32_at(buf, start).ok_or("pcblist_n: truncated")? as usize;
+        let kind = u32_at(buf, start + 4).ok_or("pcblist_n: truncated")?;
+        if got != len {
+            return Err(format!("pcblist_n: a record of {got} bytes where {len} is expected"));
+        }
+        if !kinds.contains(&kind) {
+            return Err(format!("pcblist_n: a record of kind {kind:#x} where {kinds:x?} is expected"));
+        }
+        *off = start.checked_add(len.next_multiple_of(8)).filter(|&n| n <= buf.len()).ok_or("pcblist_n: truncated")?;
+        Ok(start)
+    }
+
     /// One connection's records.
     struct Pcb {
         inp: XinpcbN,
-        so: Option<XsocketN>,
-        tcp: Option<XtcpcbN>,
+        so: XsocketN,
+        tcp: XtcpcbN,
     }
 
     /// An endpoint as `inp_vflag` says it is stored; a v4-mapped IPv6 address reads as IPv4.
@@ -319,16 +343,13 @@ mod pcblist_n {
     /// by a kernel socket. `so_uid` is that socket's creator; the handle is a hash of the socket, zero exactly when
     /// there is none (a connection whose socket is gone, a user-space-stack flow), and those records say uid 0, so
     /// without the handle they would pass as root's.
-    fn creator(pcb: Pcb, peer: (IpAddr, u16), listener: (IpAddr, u16)) -> Result<Option<u32>, String> {
-        let (Some(so), Some(tcp)) = (pcb.so, pcb.tcp) else {
-            return Err("pcblist_n: a connection without its socket or TCP record".into());
-        };
-        let inp = pcb.inp;
+    fn creator(pcb: Pcb, peer: (IpAddr, u16), listener: (IpAddr, u16)) -> Option<u32> {
+        let Pcb { inp, so, tcp } = pcb;
         let live = endpoint(inp.inp_vflag, inp.inp_dependladdr, inp.inp_lport) == Some(peer)
             && endpoint(inp.inp_vflag, inp.inp_dependfaddr, inp.inp_fport) == Some(listener)
             && { tcp.t_state } == TCPS_ESTABLISHED
             && { so.xso_so } != 0;
-        Ok(live.then_some(so.so_uid))
+        live.then_some(so.so_uid)
     }
 
     /// Whose account created the peer's end of the connection `listener` accepted from `peer`, in the table `buf`.
@@ -346,7 +367,7 @@ mod pcblist_n {
         let gen = size_of::<XinpGen>();
         record::<XinpGen>(buf, 0, u32_at(buf, 0).ok_or("pcblist_n: empty")? as usize)?;
         let mut off = gen;
-        let (mut pcb, mut found): (Option<Pcb>, Option<u32>) = (None, None);
+        let mut found: Option<u32> = None;
         loop {
             let len = u32_at(buf, off).ok_or("pcblist_n: truncated")? as usize;
             if len == gen {
@@ -354,34 +375,21 @@ mod pcblist_n {
                 if off + gen != buf.len() {
                     return Err("pcblist_n: bytes after the closing record".into());
                 }
-                if let Some(p) = pcb.take() {
-                    found = found.or(creator(p, peer, listener)?);
-                }
                 return Ok(found);
             }
-            if len < 8 {
-                return Err(format!("pcblist_n: a {len}-byte record"));
-            }
-            let kind = u32_at(buf, off + 4).ok_or("pcblist_n: truncated")?;
-            let next = off.checked_add(len.next_multiple_of(8)).filter(|&n| n <= buf.len()).ok_or("pcblist_n: truncated")?;
-            match kind {
-                XSO_INPCB => {
-                    if let Some(p) = pcb.take() {
-                        found = found.or(creator(p, peer, listener)?);
-                    }
-                    pcb = Some(Pcb { inp: record(buf, off, len)?, so: None, tcp: None });
-                }
-                XSO_SOCKET => {
-                    let p = pcb.as_mut().filter(|p| p.so.is_none()).ok_or("pcblist_n: a socket record out of place")?;
-                    p.so = Some(record(buf, off, len)?);
-                }
-                XSO_TCPCB => {
-                    let p = pcb.as_mut().filter(|p| p.tcp.is_none()).ok_or("pcblist_n: a TCP record out of place")?;
-                    p.tcp = Some(record(buf, off, len)?);
-                }
-                _ => {}
-            }
-            off = next;
+            // A connection is exactly six records, in this order; a socketless one has kind 0 on its buffers.
+            let at = expect(buf, &mut off, size_of::<XinpcbN>(), &[XSO_INPCB])?;
+            let inp = record(buf, at, size_of::<XinpcbN>())?;
+            let at = expect(buf, &mut off, size_of::<XsocketN>(), &[XSO_SOCKET])?;
+            let so: XsocketN = record(buf, at, size_of::<XsocketN>())?;
+            let (rcv, snd): (&[u32], &[u32]) =
+                if { so.xso_so } == 0 { (&[XSO_RCVBUF, 0], &[XSO_SNDBUF, 0]) } else { (&[XSO_RCVBUF], &[XSO_SNDBUF]) };
+            expect(buf, &mut off, XSOCKBUF_N_LEN, rcv)?;
+            expect(buf, &mut off, XSOCKBUF_N_LEN, snd)?;
+            expect(buf, &mut off, XSOCKSTAT_N_LEN, &[XSO_STATS])?;
+            let at = expect(buf, &mut off, size_of::<XtcpcbN>(), &[XSO_TCPCB])?;
+            let tcp = record(buf, at, size_of::<XtcpcbN>())?;
+            found = found.or(creator(Pcb { inp, so, tcp }, peer, listener));
         }
     }
 
@@ -407,8 +415,8 @@ mod pcblist_n {
             buf.resize(buf.len().next_multiple_of(8), 0);
         }
 
-        /// A record this code only skips: its length, its kind, zeros.
-        fn skipped(buf: &mut Vec<u8>, len: u32, kind: u32) {
+        /// A record of any length and kind: zeros after the two.
+        fn raw(buf: &mut Vec<u8>, len: u32, kind: u32) {
             buf.extend_from_slice(&len.to_ne_bytes());
             buf.extend_from_slice(&kind.to_ne_bytes());
             buf.resize(buf.len() + (len as usize - 8).next_multiple_of(8), 0);
@@ -469,9 +477,11 @@ mod pcblist_n {
         fn conn(buf: &mut Vec<u8>, local: SocketAddr, foreign: SocketAddr, state: i32, sock: Sock) {
             put(buf, inp(local, foreign));
             put(buf, so(sock));
-            skipped(buf, 32, 0x002);
-            skipped(buf, 32, 0x004);
-            skipped(buf, 136, 0x008);
+            // The kernel leaves a socketless connection's buffer records without a kind.
+            let (r, s) = if matches!(sock, Sock::Absent) { (0, 0) } else { (XSO_RCVBUF, XSO_SNDBUF) };
+            raw(buf, 32, r);
+            raw(buf, 32, s);
+            raw(buf, 136, XSO_STATS);
             put(buf, tcp(state));
         }
 
@@ -574,6 +584,48 @@ mod pcblist_n {
             put(&mut early, so(Sock::Kernel(501)));
             early.extend_from_slice(&good[24..]);
             assert!(matches!(owner(&early, peer, listener, ME), PeerOwner::Unknown(_)));
+        }
+
+        #[test]
+        fn an_unexpected_record_or_sequence_refuses() {
+            let (listener, peer) = (lo(8080), lo(50000));
+            let good = table(&[(peer, listener, TCPS_ESTABLISHED, Sock::Kernel(501))]);
+            assert_eq!(owner(&good, peer, listener, ME), PeerOwner::Mine);
+            let unknown = |t: &[u8]| matches!(owner(t, peer, listener, ME), PeerOwner::Unknown(_));
+            // Byte offsets in `good`: header 24, inpcb 104, socket 104, rcvbuf 32, sndbuf 32, stats 136, tcp 208.
+            let (rcv, closing) = (232, good.len() - 24);
+            let mut extra = Vec::new();
+            raw(&mut extra, 8, 0x400);
+            // (a) an unknown record before the closing header.
+            let mut a = good[..closing].to_vec();
+            a.extend_from_slice(&extra);
+            a.extend_from_slice(&good[closing..]);
+            assert!(unknown(&a), "a");
+            // (b) the same between the socket and receive-buffer records.
+            let mut b = good[..rcv].to_vec();
+            b.extend_from_slice(&extra);
+            b.extend_from_slice(&good[rcv..]);
+            assert!(unknown(&b), "b");
+            // (c) a connection without its buffer and stat records.
+            let mut c = good[..rcv].to_vec();
+            c.extend_from_slice(&good[rcv + 32 + 32 + 136..]);
+            assert!(unknown(&c), "c");
+            // (d) a receive-buffer record of 40 bytes.
+            let mut d = good[..rcv].to_vec();
+            raw(&mut d, 40, XSO_RCVBUF);
+            d.extend_from_slice(&good[rcv + 32..]);
+            assert!(unknown(&d), "d");
+            // (e) a kernel socket whose buffer records have no kind.
+            let mut e = good.clone();
+            e[rcv + 4..rcv + 8].copy_from_slice(&0u32.to_ne_bytes());
+            e[rcv + 36..rcv + 40].copy_from_slice(&0u32.to_ne_bytes());
+            assert!(unknown(&e), "e");
+            // (f) a socketless connection, then the peer's own: real tables hold such rows.
+            let f = table(&[
+                (lo(1), lo(2), TCPS_ESTABLISHED, Sock::Absent),
+                (peer, listener, TCPS_ESTABLISHED, Sock::Kernel(501)),
+            ]);
+            assert_eq!(owner(&f, peer, listener, ME), PeerOwner::Mine);
         }
     }
 }
