@@ -485,10 +485,10 @@ async fn wait_until_gone(conn: &mut Conn, mut id: u64, client_id: &str) {
 }
 
 /// Decision 0031, the detector: the second OS account to say hello for a host is refused
-/// (`os_user_conflict`) and closed, every live connection of that host is closed, and every later
-/// hello for it, either account, is refused. Another host is served. A refused client is never listed.
+/// (`os_user_conflict`) and closed; the first account's live connection keeps working; every later
+/// hello for that host, either account, is refused. Another host is served. A refused client is never listed.
 #[tokio::test]
-async fn a_second_account_closes_both_and_refuses_the_computer() {
+async fn a_second_account_is_refused_and_the_first_keeps_its_connection() {
     let env = Env::spawn("os-user");
     let body = async {
         let (mut a, pa) = raw_hello(&env.socket_path, account_hello("acct-a", "acct-box", Some("uid:900001"))).await;
@@ -496,17 +496,21 @@ async fn a_second_account_closes_both_and_refuses_the_computer() {
         let (mut b, pb) = raw_hello(&env.socket_path, account_hello("acct-b", "acct-box", Some("uid:900002"))).await;
         assert_eq!(code(&pb), Some("os_user_conflict"), "{pb}");
         assert_closed(&mut b).await;
-        assert_closed(&mut a).await;
+        let va = call(&mut a, 2, op::VERSION_QUERY, serde_json::json!({})).await;
+        assert!(client_row(&va, "acct-a").is_some(), "A keeps its connection: {va}");
+        assert!(client_row(&va, "acct-b").is_none(), "B must not be listed: {va}");
         let (mut c, pc) = raw_hello(&env.socket_path, account_hello("acct-c", "acct-box", Some("uid:900001"))).await;
         assert_eq!(code(&pc), Some("os_user_conflict"), "{pc}");
         assert_closed(&mut c).await;
         let (mut d, pd) = raw_hello(&env.socket_path, account_hello("acct-d", "other-box", Some("uid:900002"))).await;
         assert!(pd.get("error").is_none(), "another computer is served: {pd}");
         let v = call(&mut d, 2, op::VERSION_QUERY, serde_json::json!({})).await;
-        for refused in ["acct-a", "acct-b", "acct-c"] {
+        for listed in ["acct-a", "acct-d"] {
+            assert!(client_row(&v, listed).is_some(), "{listed} must be listed: {v}");
+        }
+        for refused in ["acct-b", "acct-c"] {
             assert!(client_row(&v, refused).is_none(), "{refused} must not be listed: {v}");
         }
-        assert!(client_row(&v, "acct-d").is_some(), "{v}");
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }

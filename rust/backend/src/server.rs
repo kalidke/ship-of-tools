@@ -51,7 +51,7 @@ use crate::workspaces::{AgentMessage, AgentReceipt};
 use crate::workspaces::WorkspaceChanged;
 use crate::workspaces::{self, Workspace, Workspaces};
 use crate::Opts;
-use tokio::sync::{broadcast, mpsc, Notify, Semaphore};
+use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinSet;
 
 // Half-open connection reaper tunables (ADR 0027). A peer that dies without a
@@ -1405,7 +1405,6 @@ where
     // connection: a second closes the connection with no reply.
     let mut hello_accepted = false;
     let mut hello_seen = false;
-    let mut kick: Option<Arc<Notify>> = None;
 
     // This connection's active workspace, made EXPLICIT via `workspace.activate`
     // (`op::WORKSPACE_ACTIVATE`) — the frontend's single "switch chrome" entry
@@ -1511,13 +1510,6 @@ where
         } else {
             tokio::select! {
                 biased;
-                // Decision 0031 D3: this connection's host turned out to be two OS accounts; close it without a byte.
-                () = async {
-                    match &kick {
-                        Some(k) => k.notified().await,
-                        None => std::future::pending().await,
-                    }
-                } => return Ok(()),
                 Some((frame, blob)) = out_rx.recv() => {
                     write_reply(&mut tx, frame, blob).await?;
                     continue;
@@ -1703,7 +1695,6 @@ where
                                     is_long_lived_role = long_lived;
                                     hello_host = req.host.clone();
                                     hello_name = req.name.clone();
-                                    kick = Some(guard.kick());
                                     client_guard = Some(guard);
                                 }
                                 Err(conflict) => refusal = Some(handlers::HelloRefusal::OsUserConflict(conflict)),

@@ -60,9 +60,9 @@ Each step's check must pass before the next one is worth doing.
 
 3. **The bridge answers.** From the hub, pipe one hello frame through
    `ssh -o BatchMode=yes <host> sotd stdio-bridge` and get the
-   daemon's own reply, byte for byte, with nothing else on stdout (a hello
-   without `host` and `os_user` gets the daemon's `identity_missing`
-   refusal, which proves the bridge just as well). With the
+   daemon's own reply, byte for byte, with nothing else on stdout (a refused
+   hello, such as `protocol_mismatch` or `identity_missing`, proves the
+   bridge just as well). With the
    daemon stopped, the same
    command must exit nonzero **at once**, one line on stderr, nothing on
    stdout — an honest failure, not a hang.
@@ -154,7 +154,8 @@ computer refuses it until it restarts.
   other account's key from this hub account's `authorized_keys`, then
   restart the daemon the message names.
 - **A window's status line reads `hello rejected: … (code=identity_missing)`.**
-  The client is older than the hello's account field. Update it.
+  The client named no box or no OS account. A client older than 0.6.6 gets
+  `protocol_mismatch` instead, and its window says to update; update it.
 - **The socket file exists and the box is down.** Expected, and not a
   contradiction: systemd owns that socket, so it is present whether or not
   anything is behind it. The frontend renders the host unreachable and

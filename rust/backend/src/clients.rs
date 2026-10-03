@@ -34,8 +34,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::Notify;
-
 /// The "active frontend" window: a `last_person_input_at` stamp older than
 /// this no longer counts as "a person is here" for `snapshot_with_active`
 /// below. Five minutes — long enough that a person reading a preview
@@ -112,9 +110,6 @@ pub struct ClientInfo {
     /// from `Some(vec![])`, a box that HAS declared and has nothing to
     /// report right now. See `Clients::declare_sessions`.
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
-    /// Wakes this connection's task to close it (`ClientGuard::kick`): the host it declared turned out to
-    /// be two OS accounts (decision 0031).
-    kick: Arc<Notify>,
 }
 
 /// A hello refused because its declared host has said hello to this daemon as two different OS accounts
@@ -188,8 +183,9 @@ impl Clients {
     /// the distinct `client_id`s currently attached. Refuses a second OS
     /// account on a declared host (decision 0031), atomically with the
     /// insert, so two accounts connecting at the same instant cannot both
-    /// pass: the host becomes `Several`, every live connection declaring it
-    /// is kicked, and every later register for it fails until restart. The
+    /// pass: the host becomes `Several` and every later register for it
+    /// fails until restart; connections already registered for it are left alone
+    /// (the first account keeps its live connection until its next hello). The
     /// check applies when `host` and `os_user` are both non-empty; the hello
     /// arm refuses any hello without them before it gets here.
     pub fn register(
@@ -220,7 +216,6 @@ impl Clients {
             name,
             last_person_input_at: None,
             sessions: None,
-            kick: Arc::new(Notify::new()),
         };
         let (count, roster) = {
             let mut g = self.inner.lock().unwrap();
@@ -233,9 +228,6 @@ impl Clients {
                     Some(HostAccounts::One(first)) if first == user => {}
                     Some(HostAccounts::One(_)) => {
                         g.hosts.insert(host.to_string(), HostAccounts::Several);
-                        for c in g.by_conn.values().filter(|c| c.host.as_deref() == Some(host)) {
-                            c.kick.notify_one();
-                        }
                         return Err(OsUserConflict { host: host.to_string() });
                     }
                     Some(HostAccounts::Several) => return Err(OsUserConflict { host: host.to_string() }),
@@ -259,7 +251,6 @@ impl Clients {
             inner: self.inner.clone(),
             serial,
             client_id: info.client_id,
-            kick: info.kick,
         })
     }
 
@@ -438,16 +429,9 @@ pub struct ClientGuard {
     inner: Arc<Mutex<Inner>>,
     serial: u64,
     client_id: String,
-    kick: Arc<Notify>,
 }
 
 impl ClientGuard {
-    /// Resolves when this connection must be closed (decision 0031: its declared host turned out to
-    /// be two OS accounts). A kick sent before the first await is kept.
-    pub fn kick(&self) -> Arc<Notify> {
-        self.kick.clone()
-    }
-
     /// This connection's per-connection serial — the key the `docs.open` site
     /// map uses (ADR 0029). Threaded into `handle_docs_open` so the returned URL
     /// carries it, and used by `Drop` below to reap the entry on disconnect.
@@ -812,7 +796,7 @@ mod tests {
     }
 
     /// Decision 0031's detector, per declared host: the state a hello finds, what `register` answers, the
-    /// state after, and which live guards were kicked.
+    /// state after, and that live guards stay registered.
     #[tokio::test]
     async fn host_account_table() {
         let clients = Clients::new();
@@ -822,10 +806,7 @@ mod tests {
                 host.map(String::from), None, None, user.map(String::from),
             )
         };
-        let kicked = |g: &ClientGuard| {
-            let k = g.kick();
-            async move { tokio::time::timeout(Duration::from_millis(10), k.notified()).await.is_ok() }
-        };
+        let registered = |g: &ClientGuard| clients.inner.lock().unwrap().by_conn.contains_key(&g.serial());
         let state = |host: &str| match clients.inner.lock().unwrap().hosts.get(host) {
             None => "absent".to_string(),
             Some(HostAccounts::One(a)) => format!("One({a})"),
@@ -838,19 +819,18 @@ mod tests {
         let _empty_user = reg(Some("Y"), Some("")).expect("empty os_user");
         let _none_host = reg(None, Some("b")).expect("no host");
         assert_eq!(state("Y"), "absent");
-        // One(a), live: the same account is served again, nothing is kicked.
+        // One(a), live: the same account is served again.
         let a2 = reg(Some("X"), Some("a")).expect("same account");
-        assert!(!kicked(&a1).await && !kicked(&a2).await);
+        assert!(registered(&a1) && registered(&a2));
         // Another host's other account is its own host's first.
         let y = reg(Some("Y"), Some("b")).expect("other host");
         assert_eq!(state("Y"), "One(b)");
-        // One(a), another account: refused, Several, every live connection of X kicked, Y's left alone.
+        // One(a), another account: refused, Several, the live connections stay registered.
         let n = clients.count();
         assert_eq!(reg(Some("X"), Some("b")).err(), Some(OsUserConflict { host: "X".into() }));
         assert_eq!(state("X"), "Several");
         assert_eq!(clients.count(), n, "a refused register leaves the roster alone");
-        assert!(kicked(&a1).await && kicked(&a2).await);
-        assert!(!kicked(&y).await);
+        assert!(registered(&a1) && registered(&a2) && registered(&y));
         // Several: every account is refused, either one.
         for user in ["a", "b", "c"] {
             assert_eq!(reg(Some("X"), Some(user)).err(), Some(OsUserConflict { host: "X".into() }), "{user}");
@@ -882,7 +862,6 @@ mod tests {
             name: Some(handle.to_string()),
             last_person_input_at,
             sessions: None,
-            kick: Arc::new(Notify::new()),
         }
     }
 

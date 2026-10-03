@@ -127,18 +127,25 @@ each OS account its own hub account.
 The hello's account is a detector, not a lock. Every hello names its box
 and the OS account it runs as (`uid:<n>` on Linux and macOS, the account's
 SID on Windows, read from the operating system, never from an environment
-variable), and a hello missing either is refused (`identity_missing`).
-When a daemon sees one box say hello as two different accounts, live or
-long gone, it refuses that box, closes its live connections and keeps
-refusing it, whichever account asks, until the daemon restarts
-(`os_user_conflict`, naming the box and no account). This is what two OS
-accounts on one computer see when they log in to one hub account: neither
-window connects, instead of the two receiving each other's mail. The first
-account is served until a second one appears, and software modified to
-declare another account is not caught: this catches Ship of Tools as
-shipped. The record is kept in memory only and never written. A client
-older than the field is refused and must be updated. Nothing is served
-before a hello, and a connection says hello once.
+variable), and a hello missing either is refused (`identity_missing`). A
+client older than this field speaks wire protocol 2 and meets the version
+gate (`protocol_mismatch`), so its window says to update. When a daemon sees
+one box say hello as two different accounts, live or long gone, it refuses
+that hello and every later hello for that box, whichever account asks, until
+the daemon restarts (`os_user_conflict`, naming the box and no account).
+Connections already open are left alone: the first account keeps its live
+connection until its next hello. This is what two OS accounts on one
+computer see when they log in to one hub account: the second window does not
+connect, and neither connects again, instead of the two receiving each
+other's mail. The record is kept in memory only and never written. Nothing
+is served before a hello, and a connection says hello once.
+
+Where the boundary is. On one computer it is the kernel: it reports who
+connects, and the daemon refuses any account but its own. A connection from
+another computer arrives over ssh as the hub account, so there the boundary
+is the ssh login, and the hello's account only catches an honest mistake:
+Ship of Tools as shipped, run by two people who share one hub account.
+Software modified to declare another account is not caught.
 
 ## What this page does not yet cover
 
