@@ -28,15 +28,12 @@ resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Both
-# schemes delegate to sot_oneshot_request (comm-lib.sh), which already
-# carries a tested arm for each.
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Every
+# scheme (unix, ssh, pipe) is handled by sot_oneshot_request (comm-lib.sh),
+# which refuses any other, so there is no scheme list to keep here.
 sot_send() {
     local frame="$1" op="$2"
-    case "$ENDPOINT" in
-        ssh:*|unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)            return 1 ;;
-    esac
+    sot_oneshot_request "$frame" "$op"
 }
 
 # 1) Read WHO's registry row, if any. Nothing is removed until the workspace
@@ -74,12 +71,6 @@ _unresolved() {  # why
 
 # 2) destroy the workspace
 if ! ENDPOINT="$(resolve_endpoint)"; then echo "ERROR: no sotd daemon found; set --endpoint unix:/path or ssh:target[/host]" >&2; exit 1; fi
-# nc is needed only for a unix: daemon (sot_oneshot_request's unix: arm) --
-# an ssh: endpoint needs nothing but ssh itself (C10).
-case "$ENDPOINT" in
-    unix:*) command -v nc >/dev/null 2>&1 || { echo "nc not found; cannot reach daemon to destroy workspace" >&2; exit 1; } ;;
-esac
-
 if ! LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" \
     || ! printf '%s' "$LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
     _unresolved "workspace.list returned no workspace list"

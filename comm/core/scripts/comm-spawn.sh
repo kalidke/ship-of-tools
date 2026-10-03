@@ -293,31 +293,28 @@ resolve_endpoint() {
 
 # Send a frame to the daemon, return the first response line matching op $2.
 # App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Both
-# schemes delegate to sot_oneshot_request (comm-lib.sh), which already
-# carries a tested arm for each — a second, hand-rolled `nc`/`ssh` here
-# would be a second implementation of the identical one-shot round trip.
+# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Every
+# scheme (unix, ssh, pipe) is handled by sot_oneshot_request (comm-lib.sh),
+# which refuses any other, so there is no scheme list to keep here. A
+# second, hand-rolled `nc`/`ssh` here would be a second implementation of
+# the identical one-shot round trip.
 sot_send() {
     local frame="$1" op="$2"
-    case "$ENDPOINT" in
-        ssh:*|unix:*) sot_oneshot_request "$frame" "$op" ;;
-        *)            return 1 ;;
-    esac
+    sot_oneshot_request "$frame" "$op"
 }
 
 if ! ENDPOINT="$(resolve_endpoint)"; then
     echo "ERROR: could not find the sotd daemon. Set --endpoint unix:/path or ssh:target[/host]." >&2; exit 1
 fi
-# `nc` is needed only for a unix: daemon (sot_oneshot_request's unix: arm) —
-# an ssh: endpoint needs nothing but ssh itself (C10), so a pure frontend
-# box with no local daemon and no nc installed can still reach a remote
-# hub this way.
-case "$ENDPOINT" in
-    unix:*)
-        command -v nc >/dev/null 2>&1 || { echo "ERROR: nc not found — needed to reach a unix: daemon." >&2; exit 1; }
-        ;;
-esac
-
+# project_root goes to the daemon in the daemon's own spelling (comm-lib.sh
+# sot_daemon_path: a pipe: daemon needs cygpath -m's C:/... form; every other
+# daemon reads the path as written). Converted HERE, before the first registry
+# write, so a failed conversion refuses with nothing written. The registry
+# row and the handle derivation keep CANON_ROOT.
+if ! SPAWN_WIRE_ROOT="$(sot_daemon_path "$CANON_ROOT")"; then
+    echo "ERROR: cannot give $CANON_ROOT in the spelling of the daemon at $ENDPOINT (cygpath -m failed); nothing was spawned." >&2
+    exit 1
+fi
 # The daemon's OWN declared host: `version.query` -> `.payload.daemon.host`
 # (`DaemonVersion.host`, sourced from `workspaces::declared_host()` — the
 # same resolution ADR 0046 binds a hello's `host` to). NEVER parsed out of
@@ -352,7 +349,8 @@ fi
 # handle behind. Fails closed, like the display-label check further down: a
 # list that does not answer refuses too. Compared by canonical path, the
 # daemon's own rule; a listed root that does not resolve here is compared as
-# written.
+# written. Both sides are compared in the daemon's spelling (sot_daemon_path): a
+# native Windows daemon lists the C:/... form it was sent.
 if ! OCC_LIST="$(sot_send '{"v":1,"id":1,"kind":"req","op":"workspace.list","payload":{}}' workspace.list)" \
     || ! printf '%s' "$OCC_LIST" | jq -e '.payload.workspaces' >/dev/null 2>&1; then
     echo "ERROR: could not confirm that $CANON_ROOT has no workspace yet (workspace.list did not answer via $ENDPOINT); nothing was spawned." >&2
@@ -365,7 +363,8 @@ while [ "$occ_i" -lt "$OCC_N" ]; do
     OCC_ROOT="$(printf '%s' "$OCC_ROW" | sot_jq -r '.project_root // empty')"
     if [ -n "$OCC_ROOT" ]; then
         OCC_CANON="$(sot_canonical_path "$OCC_ROOT" 2>/dev/null)" || OCC_CANON="$OCC_ROOT"
-        if [ "$OCC_CANON" = "$CANON_ROOT" ]; then
+        OCC_WIRE="$(sot_daemon_path "$OCC_CANON")" || OCC_WIRE="$OCC_CANON"
+        if [ "$OCC_WIRE" = "$SPAWN_WIRE_ROOT" ]; then
             echo "ERROR: $CANON_ROOT already has a workspace: '$(printf '%s' "$OCC_ROW" | sot_jq -r '.label')' (slug '$(printf '%s' "$OCC_ROW" | sot_jq -r '.slug')', id $(printf '%s' "$OCC_ROW" | sot_jq -r '.workspace_id')); nothing was spawned." >&2
             echo "       One repo root holds one session. For a second session on this repo, make a worktree: $COMM_HOME/bin/comm-worktree-new.sh <short>" >&2
             exit 1
@@ -594,8 +593,10 @@ fi
 # session's own `getcwd` yields, and memory would land somewhere nothing
 # else reads. `sot_canonical_path` has already vouched for this value and
 # exited loudly if it could not.
+# SPAWN_WIRE_ROOT is that value in the daemon's own spelling, set where
+# the endpoint is resolved.
 SPAWN_LABEL_FILE="$(sot_jq_rawfile "$LABEL")" || exit 1
-SPAWN_PATH_FILE="$(sot_jq_rawfile "$CANON_ROOT")" || exit 1
+SPAWN_PATH_FILE="$(sot_jq_rawfile "$SPAWN_WIRE_ROOT")" || exit 1
 # agent: explicit kind (ADR 0031) — the daemon's capsule launcher picks ccb/ccx
 # by it; autostart_claude stays true as the legacy fallback an older daemon
 # derives the kind from.
