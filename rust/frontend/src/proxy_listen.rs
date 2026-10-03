@@ -57,12 +57,15 @@ impl Arm {
 }
 
 /// How the daemon answered one browser connection's `proxy.connect`; every other end is an `Err`.
-#[derive(Debug)] // the tests' `unwrap_err` needs it
+#[derive(Debug)]
 enum Answer {
     /// `{ok: true}`: the connection was piped until either side closed.
     Piped,
     /// The typed `bad_port` refusal: the daemon does not serve this port, so its listener parks it (`Arm`).
     NotServed,
+    /// The host's link is down: no ssh child was spawned and the browser connection closes at once. The frontend's
+    /// status line already says the link is down, so this writes no log line (ADR 0045 decision 4).
+    LinkDown,
 }
 
 /// Spawn the proxy manager on the transport runtime. It receives bound
@@ -123,7 +126,7 @@ where
                 let arm = std::sync::Arc::clone(&arm);
                 tokio::spawn(async move {
                     match done.await {
-                        Ok(Answer::Piped) => {}
+                        Ok(Answer::Piped | Answer::LinkDown) => {}
                         Ok(Answer::NotServed) => {
                             if arm.refused(armed) {
                                 tracing::warn!(port, "proxy: the daemon does not serve this port (bad_port); parked: browser connections to it close here until the page is opened again");
@@ -163,7 +166,7 @@ async fn pipe_one(
 ) -> anyhow::Result<Answer> {
     let mut child = match gate.spawn_async(recipe) {
         Ok(child) => child,
-        Err(SpawnError::LinkDown) => return Err(SpawnError::LinkDown.into()),
+        Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),
         Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
     };
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
@@ -277,7 +280,7 @@ pub fn proxy_port_from_url(url: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     /// ADR 0045 decision 4: with the host's link down a browser connection
-    /// closes at once with `LinkDown` and no ssh child is spawned.
+    /// closes at once with `Answer::LinkDown` and no ssh child is spawned.
     #[tokio::test]
     async fn a_down_gate_closes_every_browser_connection_without_a_spawn() {
         use tokio::io::AsyncReadExt;
@@ -290,11 +293,8 @@ mod tests {
             let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
             let (browser, _) = listener.accept().await.unwrap();
             let t0 = std::time::Instant::now();
-            let err = super::pipe_one(browser, &recipe, &gate, addr.port(), None).await.unwrap_err();
-            assert!(
-                matches!(err.downcast_ref::<sot_protocol::ssh_bridge::SpawnError>(), Some(sot_protocol::ssh_bridge::SpawnError::LinkDown)),
-                "got {err:#}"
-            );
+            let answer = super::pipe_one(browser, &recipe, &gate, addr.port(), None).await;
+            assert!(matches!(answer, Ok(super::Answer::LinkDown)), "got {answer:?}");
             let mut buf = [0u8; 1];
             let n = tokio::time::timeout(std::time::Duration::from_millis(200), client.read(&mut buf))
                 .await
@@ -303,6 +303,75 @@ mod tests {
             assert_eq!(n, 0);
             assert!(t0.elapsed() < std::time::Duration::from_millis(200));
         }
+    }
+
+    /// A down link never parks the port and writes no warning: every connection made while it is down still
+    /// reaches `dial`, and the frontend log stays quiet. A seventh connection whose dial fails is the control: that
+    /// warning must appear, so the capture is proven to see the listener's warnings.
+    #[tokio::test]
+    async fn a_down_link_never_parks_the_port() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        #[derive(Clone)]
+        struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Buf(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = log.clone();
+        // #[tokio::test] runs every task on this thread, so a thread default sees the listener's spawned tasks.
+        let _log = tracing::subscriber::set_default(
+            tracing_subscriber::fmt().with_ansi(false).with_max_level(tracing::Level::WARN).with_writer(move || writer.clone()).finish(),
+        );
+        let warns = || String::from_utf8_lossy(&log.0.lock().unwrap()).matches("WARN").count();
+        let dials = Arc::new(AtomicUsize::new(0));
+        let arm = Arc::new(super::Arm::default());
+        let dial = {
+            let dials = dials.clone();
+            move |_browser: tokio::net::TcpStream| {
+                let dials = dials.clone();
+                async move {
+                    if dials.fetch_add(1, SeqCst) == 6 {
+                        return Err(anyhow::anyhow!("control: the ssh child died"));
+                    }
+                    Ok(super::Answer::LinkDown)
+                }
+            }
+        };
+        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), dial));
+        for _ in 0..6 {
+            let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let mut buf = [0u8; 1];
+            let n = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf))
+                .await
+                .expect("the browser connection must end")
+                .unwrap_or(0);
+            assert_eq!(n, 0);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(dials.load(SeqCst), 6, "a link-down answer must not park the port");
+        assert_eq!(warns(), 0, "a link-down retry wrote a warning");
+        let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut buf = [0u8; 1];
+        let _ = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf)).await;
+        for _ in 0..100 {
+            if warns() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(warns(), 1, "the control's failed dial must warn once");
+        task.abort();
     }
 
     /// A port the daemon refuses with `bad_port` is parked: the listener stays bound, makes no further dial, and
