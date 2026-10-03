@@ -83,8 +83,11 @@ gate is one flag per host. Only the transport writes it: up when any hello
 reply arrives (a refusal proves the link too), down as soon as its session
 ends for any reason but a refusal of the hello itself. Every other ssh start
 site asks the gate first, and the one ungated spawn is the transport's probe,
-so a new start site cannot skip it. A browser connection to a proxied page is
-refused while the gate is down.
+so a new start site cannot skip it. The transport's probe backs off by
+doubling from 200 ms, to a cap of 5 s on a local socket and 30 s on an ssh
+dial, so a down host costs the hub at most two logins a minute per frontend.
+F5 retries at once. A browser connection to a proxied page is refused while
+the gate is down.
 
 **Pause and resume.** An attach worker whose lane dial finds the link down
 stops dialing, shows "host offline, waiting for the link", and checks every

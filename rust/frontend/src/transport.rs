@@ -1620,6 +1620,19 @@ pub fn outgoing_channel() -> (UnboundedSender<OutgoingReq>, UnboundedReceiver<Ou
     tmpsc::unbounded_channel()
 }
 
+/// Next reconnect wait after a failed attempt: double, up to a cap that
+/// depends on the dial. A local socket costs nothing to probe, so it keeps
+/// 5 s. Each ssh probe is a login on the hub plus one on the far host, so
+/// the cap is 30 s: a down remote host costs the hub at most two ssh logins
+/// a minute per frontend.
+fn next_backoff_ms(current: u64, dial: &Dial) -> u64 {
+    let cap = match dial {
+        Dial::Pipe(_) => 5_000,
+        Dial::Ssh(_) => 30_000,
+    };
+    current.saturating_mul(2).min(cap)
+}
+
 /// Spawn the transport task on `rt`. Returns once spawned; the task runs
 /// until the connection drops or the runtime shuts down. The task asks the
 /// window to redraw whenever a new IncomingEvt is published so the GPU
@@ -1636,7 +1649,9 @@ pub fn spawn(
     leases: Arc<crate::lease::Leases>,
 ) {
     rt.spawn(async move {
-        // Reconnect loop with exponential backoff capped at 5s. The
+        // Reconnect loop with exponential backoff, capped at 5s on a local
+        // socket and 30s on an ssh dial (each ssh probe is a login on the
+        // hub and another on the far host). The
         // out_rx channel survives across attempts; any OutgoingReq the
         // user queued while disconnected gets sent once the next
         // connection is up. Per ADR 0010 the backend's session-id +
@@ -1654,7 +1669,6 @@ pub fn spawn(
         let mut out_rx = out_rx;
         let mut backoff_ms: u64 = 200;
         const BACKOFF_FLOOR_MS: u64 = 200;
-        const BACKOFF_CAP_MS: u64 = 5_000;
         loop {
             match connect_and_run(
                 host.clone(),
@@ -1694,7 +1708,7 @@ pub fn spawn(
                             continue;
                         }
                     }
-                    backoff_ms = (backoff_ms.saturating_mul(2)).min(BACKOFF_CAP_MS);
+                    backoff_ms = next_backoff_ms(backoff_ms, &config.dial);
                 }
             }
         }
@@ -4506,6 +4520,24 @@ pub(crate) fn protocol_mismatch_message(payload: &serde_json::Value, err_msg: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
+        let count = |dial: &Dial| {
+            let (mut t, mut b, mut n) = (0u64, 200u64, 0u32);
+            while t < 3_600_000 {
+                n += 1;
+                t += b;
+                b = next_backoff_ms(b, dial);
+            }
+            n
+        };
+        let ssh = Dial::Ssh(sot_protocol::ssh_bridge::SshRecipe::new("hub", Some("gamma")).unwrap());
+        let n = count(&ssh);
+        assert!(n <= 130, "{n} logins per hour on the hub for one down host");
+        let n = count(&Dial::Pipe(std::path::PathBuf::from("/x")));
+        assert!(n >= 700, "a local socket keeps its 5 s cap, got {n} probes per hour");
+    }
 
     // --- ADR 0045 decision 4: the link gate. ---
 
