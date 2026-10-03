@@ -278,15 +278,14 @@ async fn k3b_ssh_cold_dial() {
 
     let (_rt, remote) = private_bridge_remote(&env);
 
-    let hello = || hello_frame("k3b");
+    let hello = hello_frame("k3b");
     // The private daemon's session id; the local run's reply must carry the same one.
-    let private_sid = call(&mut conn, next_id, op::HELLO, hello().payload).await.payload["session_id"].clone();
+    let private_sid = call(&mut conn, next_id, op::HELLO, hello.payload.clone()).await.payload["session_id"].clone();
     assert!(private_sid.is_string(), "private daemon hello carries no session_id");
-    let dial = |cmd: Command| bridge_hello_dial(cmd, &hello());
 
     let mut local = Command::new("sh");
     local.arg("-c").arg(&remote);
-    let local_reply = dial(local);
+    let local_reply = bridge_hello_dial(local, &hello);
     if let Some((_, f)) = &local_reply {
         assert_eq!(f.payload["session_id"], private_sid, "the local run reached a daemon other than the private one");
     }
@@ -300,7 +299,7 @@ async fn k3b_ssh_cold_dial() {
         if local_ok.is_some() && ssh_ok {
             let mut c = Command::new("ssh");
             c.args(["-T", "-o", "BatchMode=yes", "localhost", &remote]);
-            let (t, f) = dial(c).expect("ssh bridge dial");
+            let (t, f) = bridge_hello_dial(c, &hello).expect("ssh bridge dial");
             assert_eq!(f.payload["session_id"], private_sid, "an ssh dial reached a daemon other than the private one");
             times.push(t);
         } else {

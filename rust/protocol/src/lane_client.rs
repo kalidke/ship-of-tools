@@ -487,6 +487,16 @@ impl Endpoint for DaemonLaneEndpoint {
         self.dial(lane, "supervisor", None)
     }
 
+    /// `Parked` becomes `Unused` (dropping the child kills and reaps it),
+    /// so the next supervisor attempt overlaps its logins again; `Spent`
+    /// stays `Spent`.
+    fn drop_spare(&self) {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*state, VoyageSpare::Parked(_)) {
+            *state = VoyageSpare::Unused;
+        }
+    }
+
     /// Steps 4-5 ONLY, over the already-piped connection — the SAME
     /// `exchange_identity` every platform endpoint's own `challenge()`
     /// runs, bound here against the daemon's own report (`conn.peer`)
@@ -766,6 +776,9 @@ impl DaemonLaneEndpoint {
         // prefer the child's last stderr line over whatever codec text
         // resulted, matching `write_all`/`read`'s existing rule.
         if outcome.is_err() {
+            if kind != "voyage" {
+                self.drop_spare();
+            }
             if let LaneStream::Bridged(bridged) = &stream {
                 if let Some(line) = bridged.poll_last_stderr() {
                     return Err(TransportError::Unreachable(std::io::Error::other(line)));
@@ -1150,6 +1163,19 @@ mod tests {
             panic!("spare not parked");
         }
         assert!(ep.take_spare().is_none());
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
+    }
+
+    #[test]
+    fn drop_spare_unparks_a_parked_spare_and_leaves_a_spent_one_spent() {
+        let ep = parked_endpoint();
+        ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
+        ep.drop_spare();
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Unused));
+        ep.start_spare(|| BridgedClient::wrap(spawn_stub_child()).map_err(TransportError::Unreachable));
+        assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Parked(_)), "an Unused endpoint overlaps its next logins again");
+        assert!(ep.take_spare().is_some());
+        ep.drop_spare();
         assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Spent));
     }
 

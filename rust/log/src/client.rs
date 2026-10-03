@@ -165,6 +165,11 @@ pub trait Endpoint {
     fn link_up(&self) -> bool {
         true
     }
+    /// A supervisor attempt, or the supervisor connection it made, ended
+    /// without a voyage dial following it. An endpoint that started
+    /// anything on the supervisor dial's behalf (an ssh lane's spare
+    /// login) drops it here; local endpoints started nothing.
+    fn drop_spare(&self) {}
 }
 
 /// L1-unix LU3b: the endpoint a process speaks on the platform it runs

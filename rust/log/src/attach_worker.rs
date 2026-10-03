@@ -316,7 +316,11 @@ fn connect_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str) -> Result<(E::Cli
     let conn = endpoint.connect_supervisor_unchallenged(h).map_err(classify_transport)?;
     let mut exchange = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID);
     let deadline = Instant::now() + HELLO_BUDGET;
-    match endpoint.challenge(&conn, &mut exchange, deadline) {
+    let outcome = endpoint.challenge(&conn, &mut exchange, deadline);
+    if !matches!(outcome, ChallengeOutcome::Proven(_)) {
+        endpoint.drop_spare();
+    }
+    match outcome {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // The shared challenge machinery folds "SID mismatch" (Windows) /
         // "not same-uid" (Linux) and "a well-formed WRONG reply" into the
@@ -584,7 +588,10 @@ fn converge_on_ready<E: Endpoint>(
     loop {
         let (sv, _leg, phase) = match supervisor_status::<E>(&conn, &mut sup_reader) {
             Ok(v) => v,
-            Err(_) => return ReadyOutcome::LaneDown,
+            Err(_) => {
+                endpoint.drop_spare();
+                return ReadyOutcome::LaneDown;
+            }
         };
         // Finding 2: an answered Status, whatever its phase, proves the
         // supervisor lane is not the thing that is unresponsive right
@@ -3927,5 +3934,81 @@ mod tests {
     #[test]
     fn keys_typed_while_a_re_attach_handshake_is_held_are_never_delivered_into_a_restarted_voyage() {
         keys_typed_during_a_held_handshake_are_not_delivered(true);
+    }
+
+    // -----------------------------------------------------------------
+    // An abandoned supervisor attempt drops the endpoint's spare.
+    // -----------------------------------------------------------------
+
+    /// A supervisor connection that is already dead: every read and write
+    /// answers `LinkDown`.
+    struct DeadClient;
+    impl Client for DeadClient {
+        fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+            Err(crate::transport::TransportError::LinkDown)
+        }
+        fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+            Err(crate::transport::TransportError::LinkDown)
+        }
+        fn cancel(&self) {}
+    }
+
+    /// Counts [`Endpoint::drop_spare`] calls; its supervisor dial answers
+    /// with a [`DeadClient`] and its challenge never proves the peer.
+    struct SpareCountingEndpoint {
+        spare_drops: AtomicUsize,
+    }
+    impl Endpoint for SpareCountingEndpoint {
+        type Client = DeadClient;
+        type Process = TestProcess;
+
+        fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            unreachable!("an abandoned supervisor attempt never reaches a voyage dial")
+        }
+        fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+            Ok(DeadClient)
+        }
+        fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+            ChallengeOutcome::Undetermined
+        }
+        fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
+            unreachable!("an abandoned supervisor attempt never authenticates")
+        }
+        fn drop_spare(&self) {
+            self.spare_drops.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn a_supervisor_link_down_drops_the_spare() {
+        let ep = SpareCountingEndpoint { spare_drops: AtomicUsize::new(0) };
+        let (_msg_tx, cmd_rx) = mpsc::channel::<WorkerMsg>();
+        let mut reconnect = ReconnectState::new();
+        let mut held = Held { quit: None, resize: None, discarded: Arc::new(AtomicUsize::new(0)) };
+        let mut quit = QuitDispatcher::new();
+        let mut outstanding = OutstandingSlot::new();
+        let outcome = converge_on_ready::<SpareCountingEndpoint>(
+            &ep,
+            DeadClient,
+            FrameReader::new(),
+            "sot-capsule-row-spare",
+            &cmd_rx,
+            &mut reconnect,
+            &mut held,
+            &mut quit,
+            &mut outstanding,
+            None,
+            &AtomicBool::new(true),
+            &|_e| {},
+        );
+        assert!(matches!(outcome, ReadyOutcome::LaneDown), "a dead supervisor connection must end the episode as LaneDown");
+        assert_eq!(ep.spare_drops.load(Ordering::Acquire), 1, "the supervisor connection ended before any voyage dial; the spare must be dropped");
+    }
+
+    #[test]
+    fn an_unproven_supervisor_hello_drops_the_spare() {
+        let ep = SpareCountingEndpoint { spare_drops: AtomicUsize::new(0) };
+        assert!(connect_supervisor_lane::<SpareCountingEndpoint>(&ep, "sot-capsule-row-spare").is_err());
+        assert_eq!(ep.spare_drops.load(Ordering::Acquire), 1, "a supervisor attempt whose hello failed must drop the spare");
     }
 }

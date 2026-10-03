@@ -1316,3 +1316,72 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// A stub `ssh` for the first-attach overlap: the first login (the
+/// supervisor's) waits until the second (the spare's) has recorded its pid,
+/// notes whether it saw it, then dies with one stderr line so the handshake
+/// fails; the second login records its pid and idles. The waiting is what
+/// makes the ordering deterministic: a spare started only after the
+/// supervisor handshake would never be seen.
+fn stub_ssh_failing_supervisor_after_spare(dir: &Path, state: &Path) {
+    let s = state.display();
+    let script = format!(
+        "#!/bin/sh\n\
+         if mkdir {s}/first 2>/dev/null; then\n\
+         i=0\n\
+         while [ ! -f {s}/spare.pid ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done\n\
+         if [ -f {s}/spare.pid ]; then touch {s}/supervisor_saw_spare; fi\n\
+         echo 'Permission denied (publickey).' >&2\n\
+         exit 255\n\
+         fi\n\
+         echo $$ > {s}/spare.tmp\n\
+         mv {s}/spare.tmp {s}/spare.pid\n\
+         exec sleep 60\n"
+    );
+    let path = dir.join("ssh");
+    std::fs::write(&path, script).expect("write overlap stub ssh");
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&path, perms).expect("chmod overlap stub ssh");
+}
+
+/// Dials the supervisor lane once through [`stub_ssh_failing_supervisor_after_spare`]
+/// and returns the state dir, the dial's error text and what must stay alive
+/// (the endpoint, whose own drop would reap a parked spare, and the stub's
+/// place on `PATH`).
+fn failed_supervisor_dial() -> (tempfile::TempDir, String, (DaemonLaneEndpoint, tempfile::TempDir, PathGuard)) {
+    use sot_log::client::Endpoint;
+    let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-overlap-").tempdir().expect("tempdir");
+    let state = tempfile::Builder::new().prefix("sot-stub-ssh-state-").tempdir().expect("tempdir");
+    stub_ssh_failing_supervisor_after_spare(stub_dir.path(), state.path());
+    let guard = PathGuard::prepend(stub_dir.path());
+    let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None);
+    let err = match endpoint.connect_supervisor_unchallenged("row-does-not-matter-the-handshake-fails") {
+        Ok(_) => panic!("the supervisor handshake must fail against the dying stub"),
+        Err(e) => e.to_string(),
+    };
+    (state, err, (endpoint, stub_dir, guard))
+}
+
+#[tokio::test]
+async fn the_spare_login_starts_before_the_supervisor_handshake_completes() {
+    let _serial = SERIAL.lock().await;
+    let (state, err, _keep) = failed_supervisor_dial();
+    assert!(err.contains("Permission denied"), "the dial must fail on the stub's own line, got: {err}");
+    assert!(
+        state.path().join("supervisor_saw_spare").exists(),
+        "the supervisor login finished its handshake without ever seeing the spare login start"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_supervisor_handshake_drops_the_spare() {
+    let _serial = SERIAL.lock().await;
+    let (state, _err, _keep) = failed_supervisor_dial();
+    let pid = std::fs::read_to_string(state.path().join("spare.pid")).expect("no spare login was started").trim().to_string();
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "the spare login (pid {pid}) is still alive or unreaped after the supervisor handshake failed"
+    );
+}
