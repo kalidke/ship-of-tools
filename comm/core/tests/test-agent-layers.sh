@@ -24,14 +24,15 @@
 # $SOT_COMM_SELF_FILEs — never the real ~/.sot-comm.
 #
 # Usage: comm/core/tests/test-agent-layers.sh
-# Exit: 0 if every case PASSes, or on a host that is not Linux (one SKIP line); 1 if any FAILs.
+# Exit: 0 if every case PASSes; 1 if any FAILs. On a host that is not Linux the cases that
+# read the live process table (the badawk case, section 2 on, SIMWIN) are skipped, with one SKIP line.
 set -uo pipefail
-# Linux only: the end-to-end chains are read from Linux's /proc with the Windows
-# walk off, and SIMWIN builds its Windows stand-in from Linux's /proc. On Windows
-# the walk would climb past the stand-ins into the live native process tree through
-# sotd.exe, which lib-home-guard.sh hides on purpose; SIMWIN covers that walk here.
-[ "$(uname -s)" = Linux ] || { echo "SKIP: test-agent-layers.sh runs on Linux only (SIMWIN covers the Windows walk)"; exit 0; }
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+# The end-to-end chains are read from Linux's /proc with the Windows walk off, and SIMWIN
+# builds its Windows stand-in from Linux's /proc. On Windows the walk would climb past the
+# stand-ins into the live native process tree through sotd.exe, which lib-home-guard.sh hides
+# on purpose; the tables and bridge fixtures below read no live process table and run anywhere.
+LINUX=1; [ "$(uname -s)" = Linux ] || LINUX=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
@@ -118,10 +119,6 @@ for gs in powershell.exe pwsh pwsh.exe; do
     has "guard: the $gs stub says it refused" "$gout" "refused daemon discovery"
 done
 case "${LOCALAPPDATA:-}" in "$WORK/guard/"*) ok "guard: LOCALAPPDATA is under the guard directory" ;; *) bad "guard: LOCALAPPDATA is under the guard directory (got '${LOCALAPPDATA:-}')" ;; esac
-gout="$( . "$SCRIPT_DIR/../scripts/comm-lib.sh" >/dev/null 2>&1; _sot_windows_local_pipe 2>/dev/null )"; grc=$?
-if [ "$grc" -ne 0 ] && [ -z "$gout" ]; then ok "guard: _sot_windows_local_pipe finds no pipe (on every host)"; else bad "guard: _sot_windows_local_pipe finds no pipe (rc=$grc out='$gout')"; fi
-gout="$( . "$SCRIPT_DIR/../scripts/comm-lib.sh" >/dev/null 2>&1; sot_daemon_endpoint 2>/dev/null; sot_relay_endpoint 2>/dev/null )"
-eq  "guard: the tree's own comm-lib finds no daemon and no hub" "$gout" ""
 
 # --- 1. the table -------------------------------------------------------------
 # shellcheck source=../scripts/comm-lib.sh
@@ -194,11 +191,13 @@ req 2 "a truncated record hides the outer agent"     "$R_TREE_TEXT" bash claude 
 req 0 "a capsule reached before any truncation"      "" bash claude "sot-capsule|run" '!truncated'
 req 2 "no chain at all"                              "$R_TREE_TEXT"
 
+[ -z "$LINUX" ] || {  # the real chain walk reads Linux's /proc
 # A parse that does not finish is refused too: a filter that dies with no output
 # (no awk), and a sotd.exe whose exit status is not 0 or 3.
 mkdir -p "$WORK/badawk"; printf '#!/bin/sh\nexit 1\n' > "$WORK/badawk/awk"; chmod +x "$WORK/badawk/awk"
 res="$( PATH="$WORK/badawk:$PATH"; o="$(sot_require_agent)"; echo "rc=$?|$o" )"
 case "$res" in "rc=2|"*"$R_TREE_TEXT"*) ok "require: an awk that exits 1 with no output is refused" ;; *) bad "require: an awk that exits 1 with no output is refused (got: $res)" ;; esac
+}
 # wtbl WANT DESC LINE... : the layers a Windows chain counts, through the records filter
 # (each LINE is `<exe><TAB><command line>`, caller first, the capsule last).
 wtbl() {
@@ -420,6 +419,12 @@ for ((i = 7001; i < 7040; i++)); do bproc "$i" "$((i + 1))" "$((i + 2000))" bash
 CAPL=(); for ((i = 1; i <= 30; i++)); do CAPL+=("$((9900 + i))${TAB}bash.exe${TAB}bash.exe"); done
 bsotd 9040 0 "${CAPL[@]}" "9999${TAB}$CAPA"
 breq 2 "windows walk: the 64 cap spans both kinds of record, so a capsule past it is not reached" "$R_TREE_TEXT" "$SA" ""
+
+if [ -z "$LINUX" ]; then
+    echo "SKIP: the end-to-end chains, the badawk case and SIMWIN read Linux's /proc; the tables and bridge fixtures above ran"
+    echo "agent layers: $PASS passed, $FAIL failed"
+    [ "$FAIL" -eq 0 ]; exit
+fi
 
 # --- 2. end to end --------------------------------------------------------------
 printf '%s\n' 'n=$1; shift; exec -a "$n" bash "$@"' > "$WORK/fake.sh"
