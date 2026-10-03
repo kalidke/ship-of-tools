@@ -1,0 +1,25 @@
+  ⎿    filed -> @peer (working, stamped 14s ago -- reply expe
+     cted at its turn boundary)
+  ⎿  Allowed by auto mode classifier
+
+● SITREP-WAITING: a background sub-agent is holding a five-minute wait
+
+  @peer asked this session to start one background sub-agent and
+  then end its turn. That sub-agent is now running a command that blocks for 300
+  seconds and should exit with status 124 when the timeout fires. I told
+  @peer it had started, and the message was delivered. Nothing
+  else was done, and nothing is needed from you.
+
+✻ Waiting for 1 background agent to finish
+
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5 [00000000] ·think:xhigh | v2.1.288 | demo:main | 1 uncommitt…
+  Session: 60k (in:60k out:2k) | $0.00
+  ↑/↓ to select
+
+❯ ● main
+  ◯ implementer-medium  Run 300s tail test command        17s · ↓ 21.3k tokens
+
+cols=80 rows=24 cursor=23,0 runtime=capsule
