@@ -118,6 +118,8 @@ pub mod probe_unix;
 // Darwin has none. `pub`, matching its two siblings: self-gated (see the
 // module's own `#![cfg(target_os = "macos")]`).
 pub mod probe_macos;
+// Decision 0031: whose OS account is on the far end of an accepted loopback TCP connection.
+pub mod peer_owner;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
