@@ -92,6 +92,7 @@ fn help_never_acts() {
         &["topology", "relay-endpoint", "--help"],
         &["topology", "relay-sockets", "--help"],
         &["topology", "sync", "--help"],
+        &["topology", "refresh", "--help"],
         &["topology", "apply", "--help"],
         &["topology", "apply", "--yes", "--help"],
         &["topology", "apply", "--help", "--yes"],
