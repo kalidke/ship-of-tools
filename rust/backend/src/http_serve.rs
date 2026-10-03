@@ -1,7 +1,7 @@
 // http_serve.rs — a tiny loopback HTTP/1.1 static file server with byte-range
 // support, used to stream video files to the OS browser's native HTML5 <video>
 // player (ADR 0018, revised). The frontend's `o` key asks the backend for a
-// `video.open` URL; the backend returns `http://127.0.0.1:<port><abs-path>`,
+// `video.open` URL; the backend returns `http://127.0.0.1:<port>/<token>`,
 // which reaches a remote frontend through the daemon's page proxy (ADR 0035).
 //
 // Why hand-rolled rather than axum/tower-http: the backend otherwise has no

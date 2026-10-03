@@ -67,12 +67,16 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// A frame that does not parse, described by where and how it failed and its length, never by its bytes: an
-/// envelope can carry a page's secret (a `pluto.open` reply cut off by a dying link), and this error reaches the
-/// frontend's log and status line (decision 0031). serde's own message can quote input, so only its category and
-/// position are kept.
+/// What may be said of a line that does not parse as JSON: serde's error category and position and the line's
+/// length, never its bytes. A line can carry a page's secret (a `pluto.open` reply cut off by a dying link, a REPL
+/// announcement cut off after a `wglshow` URL), and these descriptions reach logs and the frontend's status line
+/// (decision 0031). serde's own message can quote input, so only its category and position are kept.
+pub fn unparsed(e: &serde_json::Error, len: usize) -> String {
+    format!("{:?} error at line {} column {} | len={len}", e.classify(), e.line(), e.column())
+}
+
 fn parse_failed(e: &serde_json::Error, len: usize) -> anyhow::Error {
-    anyhow!("frame parse failed: {:?} error at line {} column {} | len={len}", e.classify(), e.line(), e.column())
+    anyhow!("frame parse failed: {}", unparsed(e, len))
 }
 
 pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {

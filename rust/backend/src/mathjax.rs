@@ -254,7 +254,7 @@ fn route_response(
     let resp = match parsed {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, line, "mathjax response parse failed");
+            tracing::warn!(error = %sot_protocol::codec::unparsed(&e, line.len()), "mathjax response parse failed");
             return;
         }
     };

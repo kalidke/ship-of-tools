@@ -526,7 +526,7 @@ fn route_response(line: &str, pending: &mut HashMap<u64, oneshot::Sender<Result<
     let resp = match parsed {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, line, "kernel response parse failed");
+            tracing::warn!(error = %sot_protocol::codec::unparsed(&e, line.len()), "kernel response parse failed");
             return;
         }
     };

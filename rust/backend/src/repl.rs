@@ -854,7 +854,7 @@ fn route_line(
     let env: WireEnvelope = match serde_json::from_str(line) {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, line, "repl line parse failed");
+            tracing::warn!(error = %sot_protocol::codec::unparsed(&e, line.len()), "repl line parse failed");
             return;
         }
     };
@@ -876,7 +876,8 @@ fn route_line(
         let eval_id = match env.payload.get("eval_id").and_then(Value::as_u64) {
             Some(id) => id,
             None => {
-                tracing::warn!(line, "repl.frame evt missing eval_id; dropping");
+                // Its length only: the frame may carry a page's secret (decision 0031).
+                tracing::warn!(len = line.len(), "repl.frame evt missing eval_id; dropping");
                 return;
             }
         };
@@ -995,6 +996,44 @@ mod interrupt_guard_tests {
             frame_rx.try_recv().is_err(),
             "sentinel is not a repl.frame; nothing goes on the bus"
         );
+    }
+
+    /// Decision 0031: a REPL line that does not parse, or a frame with no eval id, is logged by its length and
+    /// where it failed, never by its bytes: an announcement interrupted after a `wglshow` URL leaves the page's
+    /// secret in the next line the reader sees.
+    #[test]
+    fn a_line_that_does_not_parse_is_logged_without_its_bytes() {
+        #[derive(Clone, Default)]
+        struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for LogBuf {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(b);
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = LogBuf::default();
+        let sink = buf.clone();
+        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
+        let _sub = tracing::subscriber::set_default(sub);
+        let (frame_tx, _frame_rx) = broadcast::channel(8);
+        let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
+        let mut streaming = std::collections::HashSet::new();
+        let mut collectors = HashMap::new();
+        let mut collector_ids = HashMap::new();
+        for line in [
+            // A browser frame cut off after the secret, with the next envelope appended.
+            r#"{"v":1,"id":0,"kind":"evt","op":"repl.frame","payload":{"eval_id":3,"frame":{"kind":"browser","url":"http://127.0.0.1:41234/0123456789abcdef0123456789abcdef{"v":1,"id":0,"kind":"evt","op":"repl.frame","payload":{}}"#,
+            // A well-formed frame with no eval id.
+            r#"{"v":1,"id":0,"kind":"evt","op":"repl.frame","payload":{"frame":{"kind":"browser","url":"http://127.0.0.1:41234/0123456789abcdef0123456789abcdef"}}}"#,
+        ] {
+            route_line(line, &mut pending, &mut streaming, &mut collectors, &mut collector_ids, &frame_tx, &None);
+        }
+        let logged = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(logged.lines().filter(|l| l.contains("WARN")).count(), 2, "{logged}");
+        assert!(!logged.contains("0123456789abcdef"), "{logged}");
     }
 }
 
