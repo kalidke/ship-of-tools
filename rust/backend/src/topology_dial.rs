@@ -557,6 +557,8 @@ mod tests {
     /// and releases the live count. Fails on the unchanged Windows cancel, which only set the flag.
     #[test]
     fn cancel_kills_the_tracked_child_through_its_own_handle() {
+        // Other tests swap PATH under this lock; the child below is found through PATH.
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
         let track = std::sync::Arc::new(Track::new(sig));
         #[cfg(unix)]
