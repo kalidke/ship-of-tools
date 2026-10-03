@@ -29,7 +29,7 @@ NONCE="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
 WAKE_TEXT='[sot-comm] you have mail'
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; *) WIN=0 ;; esac
 
-ITEMS="M1 M2 M3 M4 M5 M6 M7 C1 C2 C3"
+ITEMS="M1 M2 M3 M4 M5 M6 M7 M8 C1 C2 C3"
 
 list_items() {
     cat <<'EOF'
@@ -40,11 +40,13 @@ M4  background sub-agent: as M2, while A has a background sub-agent running (+ M
 M5  second agent refused: a `claude -p` under the driver cannot send as the driver
 M6  background service refused: /background in row B is refused, session id kept, nothing moved out
 M7  cross-machine mail: --peer @h replies with a nonce within 15 min (SKIP without --peer)
+M8  left arrow inert: ← on an empty prompt in row B moves nothing (key delivery checked first)
 C1  close leaves nothing behind: despawn A, then /exit in B, start no background service
 C2  MANUAL: the Ctrl-Q dialog
 C3  MANUAL: the window (hull)
 I1  (snapshot/compare) an install or converge keeps every row and its phase
-I2  (snapshot/compare) /background in a row open across the install is refused as in M6
+I2  (snapshot/compare) a row open across the install: /reauth default keeps its session id, then /background is refused as in M6
+I3  (snapshot/compare) ← on an empty prompt in that row moves nothing, as in M8
 EOF
 }
 
@@ -365,6 +367,82 @@ background_refused() {
     stop_moved "$dir"
 }
 
+# left_arrow_inert ID WS DIR — ← on an empty prompt does not move the row's
+# conversation into the background service (one keypress does when agent view
+# is on). First proves a ← is delivered as a key at all: ab, ←, X reads aXb.
+left_arrow_inert() {
+    local id="$1" ws="$2" dir="$3" id0 s moved n k
+    if ! wait_idle "$ws" 180; then
+        dump_screen "$ws" "$id not idle"
+        emit FAIL "$id" "row was not idle within 180s"
+        return
+    fi
+    id0="$(footer_id "$LAST_SCREEN")"
+    for k in 'ab' '\033[D' 'X'; do
+        printf "$k" | "$SOTFE" type "$ws" --stdin --origin "$DRIVER" >> "$LOG" 2>&1
+        sleep 1
+    done
+    sleep 1
+    if ! screen "$ws" | sed 's/\xc2\xa0/ /g' | grep -qE '^(❯|>) aXb'; then
+        dump_screen "$ws" "$id key delivery"
+        emit FAIL "$id" "left arrow not delivered as a key"
+        return
+    fi
+    printf '\177\177\177' | "$SOTFE" type "$ws" --stdin --origin "$DRIVER" >> "$LOG" 2>&1
+    sleep 1
+    for k in 1 2; do
+        printf '\033[D' | "$SOTFE" type "$ws" --stdin --origin "$DRIVER" >> "$LOG" 2>&1
+        sleep 1
+    done
+    sleep 5
+    s="$(screen "$ws")"
+    moved="$(bg_procs | at_dir "$dir")"
+    n="$(printf '%s' "$moved" | grep -c .)"
+    if ! printf '%s\n' "$s" | grep -qE 'moved to the background|Press ← again' \
+        && [ "$(footer_id "$s")" = "$id0" ] && [ "$n" = 0 ]; then
+        emit PASS "$id" "← on an empty prompt moved nothing, session [$id0] kept"
+        return
+    fi
+    dump_screen "$ws" "$id after left arrow"
+    emit FAIL "$id" "background text shown: $(printf '%s\n' "$s" | grep -qE 'moved to the background|Press ← again' && echo yes || echo no), session [${id0:-?}] -> [$(footer_id "$s")], $n background-service process(es) at the row folder"
+    stop_moved "$dir"
+}
+
+# restart_in_place ID WS DIR — /reauth default restarts a row open across the
+# install in place: a leg resumes the same conversation id, the footer id is
+# unchanged. On success runs the /background and ← checks on the restarted row.
+restart_in_place() {
+    local id="$1" ws="$2" dir="$3" id0 t0 leg=no last=""
+    if ! wait_idle "$ws" 180; then
+        dump_screen "$ws" "$id not idle"
+        emit FAIL "$id" "row was not idle within 180s"
+        return 1
+    fi
+    id0="$(footer_id "$LAST_SCREEN")"
+    if [ -z "$id0" ]; then
+        dump_screen "$ws" "$id no session id"
+        emit FAIL "$id" "no session id on screen"
+        return 1
+    fi
+    type_into "$ws" "/reauth default"
+    t0="$(date +%s)"
+    while [ $(($(date +%s) - t0)) -lt 300 ]; do
+        sleep 3
+        claude_procs | grep -qE -- "--resume $id0[0-9a-f-]*" && leg=yes || continue
+        wait_idle "$ws" 5 || continue
+        last="$(footer_id "$LAST_SCREEN")"
+        if [ "$last" = "$id0" ]; then
+            log "$id restart in place: session [$id0] kept"
+            background_refused "$id" "$ws" "$dir"
+            left_arrow_inert I3 "$ws" "$dir"
+            return 0
+        fi
+    done
+    dump_screen "$ws" "$id restart"
+    emit FAIL "$id" "restart in place: resumed leg seen: $leg, session [$id0] -> [${last:-?}]"
+    return 1
+}
+
 # --- run ------------------------------------------------------------------------
 ONLY=""; PEER=""
 selected() { [ -z "$ONLY" ] || case ",$ONLY," in *",$1,"*) ;; *) return 1 ;; esac; }
@@ -481,6 +559,11 @@ item_M7() {
         emit FAIL M7 "no line with the nonce from @$PEER within 15 min"
     fi
 }
+item_M8() {
+    ensure_b
+    [ -z "$B_ERR" ] || { emit FAIL M8 "row B unavailable: $B_ERR"; return; }
+    left_arrow_inert M8 "$B_WS" "$B_DIR"
+}
 item_C1() {
     local base gone="" t0 left newbg detail="" ok=1
     ensure_a; ensure_b
@@ -585,7 +668,7 @@ cmd_compare() {
     if [ -z "$pws" ] || [ -z "$pdir" ]; then
         emit FAIL I2 "the snapshot file names no row P"
     else
-        background_refused I2 "$pws" "$pdir"
+        restart_in_place I2 "$pws" "$pdir" || emit FAIL I3 "skipped: the restart failed"
     fi
     summary
     [ "$NFAIL" = 0 ]
