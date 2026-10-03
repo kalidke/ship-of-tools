@@ -54,8 +54,9 @@ cannot read in full is refused too. An agent that needs its own handle is
 started as its own row. The [Comm protocol](../ref/comm.md) states the rule and
 lists what the check does not see.
 
-A row's agent runs with Claude Code's agent view off, so its conversation never leaves the
-row; a session hosted by Claude Code's background daemon has no identity.
+A row started on this version runs its agent with Claude Code's agent view off,
+so its conversation stays in the row. A row already open when the version was
+installed keeps the old setting until the row is next started.
 
 ## The contract
 
