@@ -77,7 +77,10 @@ new_session_root = "/home/me/dev"
 # Roots outside it are left untouched — that dialog is answered by hand, once
 # per folder, exactly as before. `install.sh` writes this line for the box it
 # runs on -- the home folder -- and never rewrites a line that is already
-# there, so narrowing it here survives the next install. The repo itself ships
+# there, so narrowing it here survives the next install. On Windows the
+# launcher (`launch-sot.ps1`) writes the same declaration, with the home folder
+# spelled with `/`, at its first launch and never rewrites an existing table.
+# The repo itself ships
 # no default, because no path committed here would be true on anybody's
 # machine.
 #

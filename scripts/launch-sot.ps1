@@ -453,6 +453,14 @@ function Set-SotJunction {
 # construction) -- see docs/adr/0030-versioning-release-and-auto-update.md's
 # 2026-09-17 amendment.
 function Initialize-InstallLayout {
+    # Before the dev-box return below: a dev box's daemon spawns rows too.
+    try {
+        if (Set-SotFolderTrust -ConfigDir (Join-Path $prefixDir 'config') -HomeDir $env:USERPROFILE) {
+            Write-SupLog 'install layout: folder trust declared for the home folder (settings.toml [trust] root_prefix)'
+        }
+    } catch {
+        Write-SupLog "install layout: folder trust not declared - $($_.Exception.Message)"
+    }
     $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'
     if (-not (Test-Path -LiteralPath $stagedSotd)) {
         # A pure dev box: its daemon runs out of rust\target\release, where
