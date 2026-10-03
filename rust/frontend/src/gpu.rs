@@ -1410,6 +1410,21 @@ fn strip_truncate(label: &str) -> String {
     }
 }
 
+/// The text the strip draws for one session, and so the text every width the
+/// strip reserves for it is measured from: the badge-floor sigil (ADR 0025 §1)
+/// when a nav.preview result is waiting, then the label, truncated as ONE
+/// string so a badged name is never wider than `STRIP_MAX_LABEL`. The hull,
+/// the cursor walk, the centring target and the drawn line all read this one
+/// string; a badge added anywhere else grows the name past the hull reserved
+/// for it (the name hung over the stern).
+fn strip_label(label: &str, pending: bool) -> String {
+    if pending {
+        strip_truncate(&format!("●{label}"))
+    } else {
+        strip_truncate(label)
+    }
+}
+
 /// One entry in the bottom session strip's layout: a session badge (its
 /// `WsKey`, carried for symmetry with `workspace_slugs` even though today's
 /// only consumer just needs the slot), or a `Bow` — the head of one HOST
@@ -1972,7 +1987,8 @@ fn session_strip_target(
 ///
 /// `pendings[i]` (parallel to `labels`, `false` past its end) is the badge
 /// floor (ADR 0025 §1) flag: a workspace with a pending nav.preview result
-/// waiting. When set, the name gets a leading `●` sigil and bright white + bold
+/// waiting. Its `●` sigil is already in `labels[i]` (`strip_label`, so the
+/// hull measured it too); here the flag only sets bright white + bold
 /// (overriding the tone/contrast colour) so it reads as "a result is
 /// waiting here", distinct from the work-state colours. Non-disruptive — it
 /// only changes how the name renders, never the view.
@@ -1997,23 +2013,7 @@ fn session_strip_lines(
     divider_offsets: &[f32],
 ) -> Vec<crate::text::Line> {
     let gap = STRIP_GAP_CELLS * cell_w;
-    // Badge floor (ADR 0025 §1): prefix a `●` sigil to a name whose
-    // workspace has a pending nav.preview result, BEFORE the width math so
-    // the layout (and the divider-offset lookup below, keyed by the same
-    // index) accounts for the extra glyph and names don't overlap. The
-    // bright-white accent is applied to the colour further down.
-    let padded: Vec<String> = labels
-        .iter()
-        .enumerate()
-        .map(|(i, lab)| {
-            if pendings.get(i).copied().unwrap_or(false) {
-                format!("●{lab}")
-            } else {
-                lab.clone()
-            }
-        })
-        .collect();
-    let widths: Vec<f32> = padded
+    let widths: Vec<f32> = labels
         .iter()
         .map(|l| l.chars().count() as f32 * cell_w)
         .collect();
@@ -2021,7 +2021,7 @@ fn session_strip_lines(
     // `divider_offsets` (see the doc above) folds the `Bow`s back in.
     let positions = strip_cursor_positions(&widths, |_| gap);
     let mut out = Vec::new();
-    for (i, lab) in padded.iter().enumerate() {
+    for (i, lab) in labels.iter().enumerate() {
         let w = widths[i];
         let cursor = positions[i] + divider_offsets.get(i).copied().unwrap_or(0.0);
         let left = strip_screen_left(cursor, scroll_px, win_w);
@@ -18160,15 +18160,28 @@ impl State {
             // host, so every parallel vector below keys off the full
             // `(host, slug)` pair, not the bare slug — two hosts can share
             // a slug, and the strip must not conflate their state.
+            // Per-name badge-floor pending flag (ADR 0025 §1): true when that
+            // workspace has a pending nav.preview result waiting, keyed by the
+            // same (host, slug) WsKey pair pending_nav uses (ADR 0042 L2a codex
+            // review, item E). Read BEFORE the labels because the badge is part
+            // of the label (`strip_label`): every width below, the hull's
+            // included, is measured from the text that is drawn.
+            let pendings: Vec<bool> = self
+                .workspace_slugs
+                .iter()
+                .map(|(h, s)| self.pending_nav.contains_key(&(h.clone(), s.clone())))
+                .collect();
             let labels: Vec<String> = self
                 .workspace_slugs
                 .iter()
-                .map(|(h, s)| {
-                    strip_truncate(
+                .zip(&pendings)
+                .map(|((h, s), &pending)| {
+                    strip_label(
                         self.workspace_labels
                             .get(&(h.clone(), s.clone()))
                             .map(String::as_str)
                             .unwrap_or(s.as_str()),
+                        pending,
                     )
                 })
                 .collect();
@@ -18253,15 +18266,6 @@ impl State {
                 .workspace_slugs
                 .iter()
                 .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
-                .collect();
-            // Per-name badge-floor pending flag, parallel to `labels` (ADR
-            // 0025 §1): true when that workspace has a pending nav.preview
-            // result waiting, keyed by the same (host, slug) WsKey pair
-            // pending_nav uses (ADR 0042 L2a codex review, item E).
-            let pendings: Vec<bool> = self
-                .workspace_slugs
-                .iter()
-                .map(|(h, s)| self.pending_nav.contains_key(&(h.clone(), s.clone())))
                 .collect();
             let strip_lines = session_strip_lines(
                 &labels,
@@ -28154,13 +28158,18 @@ mod tests {
         // whatever work-state colour it would otherwise carry — so it reads as
         // "result waiting here", distinct from working/idle/blocked. The view is
         // untouched; only the rendering changes.
-        let labels = vec!["aa".to_string(), "bb".to_string()];
-        let cell_w = 10.0;
-        let win_w = 800.0;
-        let scroll = session_strip_target(&labels, 0, cell_w, &[]);
         // bb is "working" (green) but ALSO pending — pending must win.
         let tones = vec![None, Some((AgentTone::Working, false))];
         let pendings = vec![false, true];
+        // The sigil is part of the label (`strip_label`), as the draw site builds it.
+        let labels: Vec<String> = ["aa", "bb"]
+            .iter()
+            .zip(&pendings)
+            .map(|(l, &p)| strip_label(l, p))
+            .collect();
+        let cell_w = 10.0;
+        let win_w = 800.0;
+        let scroll = session_strip_target(&labels, 0, cell_w, &[]);
         let lines = session_strip_lines(
             &labels,
             0,
@@ -28190,6 +28199,103 @@ mod tests {
         );
         assert!(lines[1].bold, "pending name is bold so it stands out");
         assert!(!lines[1].dim);
+    }
+
+    /// The owner's report: the badge "makes them longer text and the last
+    /// session name hangs outside the ship hull". The hull is measured from
+    /// `labels`, so the names must be drawn from the very same text, or every
+    /// badge pushes every later name a cell past the slot its hull reserved.
+    /// Three badged sessions lead the first ship (badged rows sort first,
+    /// `activity_rank`) with the longest name last; a second ship follows, so
+    /// drift into the next ship is caught too.
+    #[test]
+    fn a_badged_name_stays_inside_its_hull() {
+        let cell_w = 10.0;
+        let win_w = 4000.0;
+        let logo_w = 20.0;
+        let bar_w = 3.0;
+        let slugs: Vec<WsKey> = (0..5)
+            .map(|i| {
+                let host = if i < 4 { "alpha" } else { "beta" };
+                (host.to_string(), format!("ws-{i}"))
+            })
+            .collect();
+        let raw = ["aa", "bb", "cc", "the-longest-session-name-of-them-all", "dd"];
+        let pendings = vec![true, true, true, false, false];
+        // Exactly as the draw site builds them.
+        let labels: Vec<String> = raw
+            .iter()
+            .zip(&pendings)
+            .map(|(l, &p)| strip_label(l, p))
+            .collect();
+        let items = strip_items(&slugs, |h| h.clone());
+        let label_widths: Vec<f32> = labels
+            .iter()
+            .map(|l| l.chars().count() as f32 * cell_w)
+            .collect();
+        let item_widths = strip_item_widths(&items, &label_widths, logo_w);
+        let item_positions =
+            strip_cursor_positions(&item_widths, |i| strip_gap_before(&items[i], cell_w));
+        let offsets = strip_divider_offsets(&items, &item_widths, &label_widths, cell_w);
+        let scroll = session_strip_target(&labels, 0, cell_w, &offsets);
+        let lines = session_strip_lines(
+            &labels, 0, scroll, win_w, cell_w, 100.0, &[], false, &[], &pendings, &offsets,
+        );
+        let marks = ship_marks(
+            &items,
+            &item_positions,
+            &item_widths,
+            &"alpha".to_string(),
+            |_| true,
+            logo_w,
+            cell_w,
+            bar_w,
+            scroll,
+            win_w,
+        );
+        let sterns: Vec<&StripMark> = marks
+            .iter()
+            .filter(|m| m.kind == StripMarkKind::Stern)
+            .collect();
+        assert_eq!(lines.len(), 5, "every name is on-screen");
+        assert_eq!(sterns.len(), 2, "both ships are on-screen: {marks:?}");
+        for (i, line) in lines.iter().enumerate() {
+            let ship = if i < 4 { 0 } else { 1 };
+            let right = line.x + line.text.chars().count() as f32 * cell_w;
+            assert!(
+                right <= sterns[ship].left,
+                "name {i} {:?} ends at {right}, past ship {ship}'s stern at {}",
+                line.text,
+                sterns[ship].left
+            );
+        }
+        // Each ship's last name keeps the clearance an unbadged ship has: the
+        // badge costs the hull a cell, never the stern its gap.
+        for (ship, last) in [(0usize, 3usize), (1, 4)] {
+            let right = lines[last].x + lines[last].text.chars().count() as f32 * cell_w;
+            let stern_r = sterns[ship].left + sterns[ship].w;
+            assert!(
+                (stern_r - right - STRIP_STERN_CLEAR_CELLS * cell_w).abs() < 1e-3,
+                "ship {ship}: {} px from its last name to its stern, want {}",
+                stern_r - right,
+                STRIP_STERN_CLEAR_CELLS * cell_w
+            );
+        }
+    }
+
+    #[test]
+    fn strip_label_puts_the_badge_inside_the_label_cap() {
+        assert_eq!(strip_label("aa", false), "aa");
+        assert_eq!(strip_label("aa", true), "●aa");
+        let long = "x".repeat(STRIP_MAX_LABEL);
+        assert_eq!(strip_label(&long, false), long, "an unbadged name at the cap is untouched");
+        let badged = strip_label(&long, true);
+        assert_eq!(
+            badged.chars().count(),
+            STRIP_MAX_LABEL,
+            "a badged name is never wider than the cap: {badged:?}"
+        );
+        assert!(badged.starts_with('●') && badged.ends_with('…'), "{badged:?}");
     }
 
     #[test]
