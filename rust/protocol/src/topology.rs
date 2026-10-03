@@ -709,7 +709,6 @@ ExecStart=/usr/bin/ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAl
 /// What the hub's refresh does for one host's relay units: the files whose
 /// on-disk text differs from this binary's generator (or is missing), as
 /// `(file name, text)`, and the drop-ins to retire.
-#[derive(Debug)]
 pub struct RelayRefresh {
     pub write: Vec<(String, String)>,
     pub retire: Vec<String>,
@@ -735,19 +734,34 @@ pub fn relay_refresh(host: &str, socket_now: Option<&str>, service_now: Option<&
     RelayRefresh { write, retire }
 }
 
-/// True when systemd reads the drop-in as setting `ExecStart` (its rule,
-/// `systemd-analyze verify`, systemd 249): in a `[Service]` section, the text
-/// before a line's first `=`, trimmed, is exactly `ExecStart`. `ExecStart = /x`
-/// counts.
+/// True when systemd reads the drop-in as setting `ExecStart` (its rules,
+/// checked with `systemd-analyze verify`, systemd 249): a leading UTF-8 BOM is
+/// dropped; a comment line is skipped, even inside a continued line; a line
+/// ending in `\` continues on the next; then in a `[Service]` section, the
+/// text before the line's first `=`, trimmed, is exactly `ExecStart`.
+/// `ExecStart = /x` and `ExecStart\` + `=/x` both count.
 fn overrides_exec_start(text: &str) -> bool {
-    let mut section = "";
-    text.lines().map(str::trim).any(|l| {
-        if l.starts_with('[') {
-            section = l;
-            return false;
+    let mut section = String::new();
+    let mut line = String::new();
+    for raw in text.strip_prefix('\u{feff}').unwrap_or(text).lines().map(str::trim) {
+        if raw.starts_with('#') || raw.starts_with(';') {
+            continue;
         }
-        section == "[Service]" && l.split_once('=').is_some_and(|(k, _)| k.trim_end() == "ExecStart")
-    })
+        if let Some(head) = raw.strip_suffix('\\') {
+            line.push_str(head);
+            line.push(' ');
+            continue;
+        }
+        line.push_str(raw);
+        let l = std::mem::take(&mut line);
+        let l = l.trim();
+        if l.starts_with('[') {
+            section = l.to_string();
+        } else if section == "[Service]" && l.split_once('=').is_some_and(|(k, _)| k.trim_end() == "ExecStart") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Hosts the hub serves a socket for: every [`dialable_hosts`] entry but
@@ -1189,6 +1203,11 @@ frontend = true
             "[Service]\n  ExecStart=/bin/x\n",
             "[Service]\nExecStart = /bin/x\n",
             "[Service]\n\tExecStart\t=\t/bin/x\n",
+            "[Service]\nExecStart\\\n=\nExecStart\\\n=/bin/x\n",
+            "[Service]\nExecStart\\\n# c\n=/bin/x\n",
+            "[Service]\nExecStart\\\n; c\n=/bin/x\n",
+            "\u{feff}[Service]\nExecStart=/bin/x\n",
+            "[Service]\n# a comment \\\nExecStart=/bin/x\n",
             spaced.as_str(),
         ] {
             assert!(overrides_exec_start(case), "{case:?}");

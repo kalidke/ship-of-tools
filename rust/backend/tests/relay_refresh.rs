@@ -9,7 +9,7 @@ const NO_MUX: &str = include_str!("../../protocol/src/testdata/relay-dropin-no-m
 const OVERRIDE: &str = include_str!("../../protocol/src/testdata/relay-dropin-override.conf");
 
 /// list-unit-files answers in systemd 249's line format; daemon-reload fails while `reload-fails` exists.
-const FAKE_SYSTEMCTL: &str = "#!/bin/sh\nd=$(dirname \"$0\")\necho \"$*\" >> \"$d/calls\"\ncase \"$*\" in\n  *list-unit-files*) echo 'sot-host-relay-remote-a.socket enabled enabled' ;;\n  *daemon-reload*) if [ -e \"$d/reload-fails\" ]; then echo 'Failed to reload daemon: Connection timed out' >&2; exit 1; fi ;;\nesac\nexit 0\n";
+const FAKE_SYSTEMCTL: &str = "#!/bin/sh\nd=${0%/*}\necho \"$*\" >> \"$d/calls\"\ncase \"$*\" in\n  *list-unit-files*) echo 'sot-host-relay-remote-a.socket enabled enabled' ;;\n  *daemon-reload*) if [ -e \"$d/reload-fails\" ]; then echo 'Failed to reload daemon: Connection timed out' >&2; exit 1; fi ;;\nesac\nexit 0\n";
 
 fn units(t: &TempDir) -> PathBuf {
     t.path().join("config/systemd/user")
@@ -35,17 +35,16 @@ fn hub() -> TempDir {
 /// Exit code, stdout, stderr of `sotd topology refresh` with every path inside `t`.
 fn refresh(t: &TempDir) -> (Option<i32>, String, String) {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_sotd"));
-    for (k, _) in std::env::vars_os().filter(|(k, _)| k.to_string_lossy().starts_with("SOT_")) {
-        cmd.env_remove(k);
-    }
-    let path = format!("{}:{}", t.path().join("bin").display(), std::env::var("PATH").unwrap_or_default());
+    // A cleared environment and a PATH of the scratch bin alone: no route reaches the real systemctl or the
+    // user's service manager, even where the scratch stub cannot run (a noexec temp mount fails the test instead).
     let out = cmd
+        .env_clear()
         .args(["topology", "refresh"])
         .env("HOME", t.path())
         .env("XDG_CONFIG_HOME", t.path().join("config"))
         .env("SOT_HOSTS", t.path().join("hosts.toml"))
         .env("SOT_SELF_HOST", "hub-box")
-        .env("PATH", path)
+        .env("PATH", t.path().join("bin"))
         .output()
         .unwrap();
     (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
