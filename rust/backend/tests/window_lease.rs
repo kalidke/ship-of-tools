@@ -829,18 +829,19 @@ async fn closing_flag_spans_shutdown() {
     drop(fence);
 }
 
-/// One close landing in the watchdog's held run start. Every assert holds on healthy code whatever the hold; returns the hold.
 #[cfg(target_os = "linux")]
-async fn close_during_run_start() -> f64 {
+#[tokio::test]
+async fn shutdown_bound_is_end_to_end() {
+    let _serial = SERIAL.lock().await;
     let env = Env::new("endtoend");
-    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
+    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"), ("SOT_TEST_SPAWN_SETTLE_MS", "5000")]).await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let (_id, row_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
     drop(conn);
     let (mut w, _) = Window::open(&env.socket_path).await;
-    let fence = slow_row(&row_dir).await;
-    // The watchdog restarts the killed supervisor 1 s later, holding that run start through its 2 s
-    // settle; the new supervisor finds the fence held and logs it. The close lands inside that settle.
+    let _fence = slow_row(&row_dir).await;
+    // The watchdog restarts the killed supervisor 1 s later and holds that run start through its settle, 5 s here;
+    // the new supervisor finds the fence held and logs it. The close lands about 0.3 s into the settle.
     let log_path = state_dir(&env).join("sotd.log");
     let until = Instant::now() + BOUND;
     while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("authority fence already held") {
@@ -851,33 +852,18 @@ async fn close_during_run_start() -> f64 {
     // No `ack` is sent, so the closer's notice waits out its own bound; exit 0
     // (the backstop's is 1) proves the whole shutdown fit inside the bound.
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
-    // Steps 2 and 3 share one rows deadline, decided + budget. The refused row, retried 1 s apart, is let go in the last
-    // second before it, so between budget - 1 and budget + 0.4 (timer and log slack) whatever the hold. A fresh step-3
-    // deadline lets it go at least held + 4 s in: past the upper bound once held >= 1.4, the caller's rule.
+    // Steps 2 and 3 share one rows deadline, decided + budget (9 s), which the hold ends before. The refused row, retried
+    // 1 s apart, is let go between budget - 1 and budget + 0.4 (timer and log slack). A fresh step-3 deadline lets it go
+    // at least held + budget - 1 in: past the upper bound only if held >= 1.4, which the last assert requires.
     let log = std::fs::read_to_string(&log_path).expect("the daemon's log");
     let since = |from: f64, to: f64| (to - from + 43_200.0).rem_euclid(86_400.0) - 43_200.0;
     let began = stamped(&log, "shutting down: ending this computer's sessions");
     let held = since(began, stamped(&log, "lane did not settle within the post-spawn deadline"));
     let rows = since(began, stamped(&log, "row not ended by the deadline"));
-    let budget = 15.0 - sot_protocol::ops::lease::SHUTDOWN_TAIL.as_secs_f64();
+    let budget = 19.0 - sot_protocol::ops::lease::SHUTDOWN_TAIL.as_secs_f64();
     eprintln!("run start held {held:.3} s into the shutdown; row let go at {rows:.3} s");
     assert!(rows < budget + 0.4, "step 3 ran past the rows deadline it shares with step 2: {rows:.3} s");
     assert!(rows > budget - 2.0, "the refused row was not retried through the rows budget: {rows:.3} s");
     assert_eq!(ack["not_ended"], 1, "{ack:?}");
-    drop(fence);
-    held
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn shutdown_bound_is_end_to_end() {
-    let _serial = SERIAL.lock().await;
-    // Only a run whose start was held 1.4 s into the shutdown can tell a fresh step-3 deadline from the shared one;
-    // a run the test's own scheduling made shorter proves nothing, so it runs again.
-    for _ in 0..3 {
-        if close_during_run_start().await >= 1.4 {
-            return;
-        }
-    }
-    panic!("no run start held 1.4 s into the shutdown in three runs (test sync, not the defect)");
+    assert!(held >= 1.4, "the close landed {held:.3} s before the settle ended; under 1.4 s no fresh step-3 deadline can show (test sync, not the defect)");
 }
