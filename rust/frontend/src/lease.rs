@@ -1224,16 +1224,16 @@ mod tests {
         assert_eq!(leases.before_data_connection(&c, &p2, None).await.unwrap(), 4);
         assert_eq!(leases.daemon_key(&a), leases.daemon_key(&b), "two labels of one daemon must share its key");
         assert_ne!(leases.daemon_key(&a), leases.daemon_key(&c));
-        // What gpu.rs does with the queued counts: the newest per key, summed.
-        let queued = [(leases.daemon_key(&a), 3), (leases.daemon_key(&b), 3), (leases.daemon_key(&c), 4)];
-        let mut newest: Vec<(HostKey, u32)> = Vec::new();
-        for (k, n) in queued {
-            match newest.iter_mut().find(|(h, _)| *h == k) {
-                Some(slot) => slot.1 = n,
-                None => newest.push((k, n)),
+        // The real producer, then the GPU's own aggregation: the newest per key, summed.
+        let mut queued: Vec<(HostKey, u32)> = Vec::new();
+        for (h, n) in [(&a, 3), (&b, 3), (&c, 4)] {
+            match crate::transport::not_ended_evt(&leases, h, n) {
+                crate::transport::IncomingEvt::NotEnded { daemon, count } => queued.push((daemon, count)),
+                _ => unreachable!(),
             }
         }
-        assert_eq!(newest.iter().map(|(_, n)| n).sum::<u32>(), 7);
+        let sum = |q: &[(HostKey, u32)]| crate::gpu::acks_for_frame(q, true).iter().map(|(_, n)| n).sum::<u32>();
+        assert_eq!(sum(&queued), 7);
         // End a's holder, then fail a re-handshake: the identity stays.
         let key = leases.daemon_key(&a);
         conns1.lock().unwrap()[0].abort();
@@ -1254,6 +1254,16 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(log1.lock().unwrap().iter().any(|o| o == op::FE_NOTICE_SEEN), "{:?}", log1.lock().unwrap());
+        // a reconnects to another daemon (root s) before the drain: the old counts stay under root r.
+        let mut two = Vec::new();
+        for h in [&a, &b] {
+            if let crate::transport::IncomingEvt::NotEnded { daemon, count } = crate::transport::not_ended_evt(&leases, h, 3) {
+                two.push((daemon, count));
+            }
+        }
+        assert_eq!(leases.before_data_connection(&a, &p2, None).await.unwrap(), 4);
+        assert_eq!(leases.daemon_key(&a), leases.daemon_key(&c), "a now names the other daemon");
+        assert_eq!(sum(&two), 3, "a reconnect before the drain moved counts onto the new daemon");
     }
 
     #[tokio::test]

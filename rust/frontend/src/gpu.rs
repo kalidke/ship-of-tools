@@ -5900,7 +5900,7 @@ fn nav_pinned_rows(
 /// The `fe.notice_seen` acks a presented frame owes: none unless it drew the
 /// not-ended line, else each daemon's newest pending count. The daemon clears
 /// only on an equal count, so an older one is dropped, not sent.
-fn acks_for_frame(pending: &[(crate::dial::HostKey, u32)], drawn: bool) -> Vec<(crate::dial::HostKey, u32)> {
+pub(crate) fn acks_for_frame(pending: &[(crate::dial::HostKey, u32)], drawn: bool) -> Vec<(crate::dial::HostKey, u32)> {
     let mut out: Vec<(crate::dial::HostKey, u32)> = Vec::new();
     if drawn {
         for (host, n) in pending {
@@ -13599,9 +13599,9 @@ impl State {
                         }
                     } // if event_host == self.active_host
                 }
-                crate::transport::IncomingEvt::NotEnded { count } => {
+                crate::transport::IncomingEvt::NotEnded { daemon, count } => {
                     if count > 0 {
-                        self.notice_acks.push((self.leases.daemon_key(&event_host), count));
+                        self.notice_acks.push((daemon, count));
                         self.window.request_redraw();
                     }
                 }
