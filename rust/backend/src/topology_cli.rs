@@ -7,7 +7,7 @@
 use sot_protocol::topology::{self, Topology};
 use std::path::PathBuf;
 
-const USAGE: &str = "\
+pub(crate) const USAGE: &str = "\
 Usage: sotd topology <subcommand>
 
   plan [--self <host>]  this box's derived facts, one per line: self, hub,

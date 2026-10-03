@@ -36,7 +36,7 @@ use sot_protocol::topology::{self, HostDecl, Topology};
 /// probe runs concurrently (`gather`'s `JoinSet`), not in series.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
-const USAGE: &str = "\
+pub(crate) const USAGE: &str = "\
 Usage: sotd status [--json]
 
   One command for the whole system (topology plan §E): the declared list
@@ -391,10 +391,6 @@ async fn gather(topo: &Topology, self_host: &str) -> BTreeMap<String, Probe> {
 /// `sotd status [--json]` — entry point. Async (unlike `topology_cli::run`)
 /// because `gather` needs the daemon's own tokio runtime for concurrency.
 pub async fn run(args: &[String]) -> i32 {
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{USAGE}");
-        return 0;
-    }
     let json = args.iter().any(|a| a == "--json");
     let me = match sot_log::state_dir::host_name() {
         Ok(h) => h,

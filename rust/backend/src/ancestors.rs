@@ -22,6 +22,8 @@
 // lines is cut short: it ends with the line `!truncated` and exit 3, and the
 // caller must not take what it has read for the whole chain.
 
+/// The usage line, printed on a bad argument and for `--help`.
+pub(crate) const USAGE: &str = "usage: sotd ancestors [--from <pid>]";
 /// The most lines a walk prints.
 const MAX_LINES: usize = 64;
 
@@ -77,7 +79,7 @@ fn parse_from(args: &[String]) -> Result<Option<u32>, String> {
             .parse()
             .map(Some)
             .map_err(|_| format!("--from takes a process id, not {pid:?}")),
-        _ => Err("usage: sotd ancestors [--from <pid>]".to_string()),
+        _ => Err(USAGE.to_string()),
     }
 }
 
