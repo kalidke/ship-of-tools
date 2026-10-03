@@ -5,8 +5,8 @@
 //!   the peer's own row carries its uid.
 //! - Windows: the owner-pid TCP table (`GetExtendedTcpTable`, IPv4 then IPv6 with v4-mapped addresses), then that
 //!   process's token user SID.
-//! - macOS: no table carries an owner, so this account's own processes are searched for the peer's socket
-//!   (libproc) within `MACOS_BUDGET`; not found, or over budget, is a refusal.
+//! - macOS: the kernel's TCP table (sysctl `net.inet.tcp.pcblist_n`, the one netstat reads); the peer's own
+//!   connection carries the uid that created its socket, as on Linux.
 //! Every failure refuses: only [`PeerOwner::Mine`] is served.
 
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ pub enum PeerOwner {
     Mine,
     /// It belongs to another account (`uid:<n>` or a SID), for the log line.
     Other(String),
-    /// The lookup could not decide (no row, a closed peer, an API error, macOS over budget): refused.
+    /// The lookup could not decide (no row, a closed peer, an API error, a table layout this build does not know): refused.
     Unknown(String),
 }
 
@@ -60,7 +60,7 @@ pub fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> boo
 }
 
 /// The account the table names against this process's own: equal is mine, anything else is another's.
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows, test))]
 fn verdict(found: &str, own: &str) -> PeerOwner {
     if found == own {
         PeerOwner::Mine
@@ -140,258 +140,479 @@ mod imp {
     }
 }
 
-#[cfg(target_os = "macos")]
-mod imp {
-    use super::PeerOwner;
-    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-    use std::time::{Duration, Instant};
+/// The macOS TCP table, `net.inet.tcp.pcblist_n`, read as XNU writes it (`get_pcblist_n`, bsd/netinet/in_pcblist.c):
+/// an `xinpgen`, then per connection an `xinpcb_n`, `xsocket_n`, two `xsockbuf_n`, an `xsockstat_n` and an
+/// `xtcpcb_n`, each starting with its u32 length and u32 kind and padded to 8 bytes, then a closing `xinpgen`.
+/// Compiled for tests on every platform, so the walk is tested where the tests run.
+#[cfg(any(target_os = "macos", test))]
+mod pcblist_n {
+    use super::{verdict, PeerOwner};
+    use std::mem::{offset_of, size_of};
+    use std::net::{IpAddr, SocketAddr};
 
-    /// A lookup that takes longer than this refuses the connection (decision 0031: on macOS, if the owner scan
-    /// costs too much, refuse rather than serve unchecked).
-    pub(super) const MACOS_BUDGET: Duration = Duration::from_millis(200);
-    // <sys/proc_info.h> values the libc crate does not carry.
-    const PROC_UID_ONLY: u32 = 4;
-    const PROC_PIDFDSOCKETINFO: libc::c_int = 3;
-    const SOCKINFO_TCP: i32 = 2;
-    const INI_IPV4: u8 = 0x1;
+    // <sys/socketvar.h>, <netinet/in_pcb.h>, <netinet/tcp_fsm.h>.
+    const XSO_SOCKET: u32 = 0x001;
+    const XSO_INPCB: u32 = 0x010;
+    const XSO_TCPCB: u32 = 0x020;
+    const INP_IPV4: u8 = 0x1;
+    const INP_IPV6: u8 = 0x2;
+    const TCPS_ESTABLISHED: i32 = 4;
 
-    // Layouts transcribed from <sys/proc_info.h>. The assertions below pin the arithmetic; `socket_info` also checks
-    // the kernel's byte count, so a layout this macOS does not have is refused, never misread.
+    /// A transcribed record: integer fields only and no implicit padding, so every byte pattern is a value and
+    /// every byte of a value is initialized.
+    unsafe trait Plain: Copy {}
+
+    // Transcribed from XNU (identical from xnu-8792, macOS 13, through xnu-12377, macOS 26) under its
+    // `#pragma pack(4)`: each field up to the last one read here, C's implicit padding spelled out, the rest
+    // one byte array. A kernel whose record differs in length is refused, never misread.
+
+    /// struct xinpgen.
     #[allow(dead_code)]
-    #[repr(C)]
-    struct ProcFileInfo {
-        fi_openflags: u32,
-        fi_status: u32,
-        fi_offset: i64,
-        fi_type: i32,
-        fi_guardflags: u32,
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy)]
+    struct XinpGen {
+        xig_len: u32,
+        xig_count: u32,
+        xig_gen: u64,
+        xig_sogen: u64,
     }
+
+    /// struct xinpcb_n. Ports are in network byte order; an address is an in6_addr, or an in_addr_4in6 whose
+    /// last four bytes are the IPv4 address (`inp_vflag` says which).
     #[allow(dead_code)]
-    #[repr(C)]
-    struct VinfoStat {
-        vst_dev: u32,
-        vst_mode: u16,
-        vst_nlink: u16,
-        vst_ino: u64,
-        vst_uid: u32,
-        vst_gid: u32,
-        vst_times: [i64; 8],
-        vst_size: i64,
-        vst_blocks: i64,
-        vst_blksize: i32,
-        vst_flags: u32,
-        vst_gen: u32,
-        vst_rdev: u32,
-        vst_qspare: [i64; 2],
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy)]
+    struct XinpcbN {
+        xi_len: u32,
+        xi_kind: u32,
+        xi_inpp: u64,
+        inp_fport: u16,
+        inp_lport: u16,
+        inp_ppcb: u64,
+        inp_gencnt: u64,
+        inp_flags: i32,
+        inp_flow: u32,
+        inp_vflag: u8,
+        inp_ip_ttl: u8,
+        inp_ip_p: u8,
+        _pad0: u8,
+        inp_dependfaddr: [u8; 16],
+        inp_dependladdr: [u8; 16],
+        /// inp_depend4, inp_depend6, inp_flowhash, inp_flags2.
+        _rest: [u8; 24],
     }
+
+    /// struct xsocket_n.
     #[allow(dead_code)]
-    #[repr(C)]
-    struct SockbufInfo {
-        sbi_cc: u32,
-        sbi_hiwat: u32,
-        sbi_mbcnt: u32,
-        sbi_mbmax: u32,
-        sbi_lowat: u32,
-        sbi_flags: i16,
-        sbi_timeo: i16,
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy)]
+    struct XsocketN {
+        xso_len: u32,
+        xso_kind: u32,
+        xso_so: u64,
+        so_type: i16,
+        _pad0: [u8; 2],
+        so_options: u32,
+        so_linger: i16,
+        so_state: i16,
+        so_pcb: u64,
+        xso_protocol: i32,
+        xso_family: i32,
+        so_qlen: i16,
+        so_incqlen: i16,
+        so_qlimit: i16,
+        so_timeo: i16,
+        so_error: u16,
+        _pad1: [u8; 2],
+        so_pgid: i32,
+        so_oobmark: u32,
+        so_uid: u32,
+        /// so_last_pid through xso_filter_flags.
+        _rest: [u8; 36],
     }
+
+    /// struct xtcpcb_n.
     #[allow(dead_code)]
-    #[repr(C)]
-    struct In4In6Addr {
-        i46a_pad32: [u32; 3],
-        i46a_addr4: [u8; 4],
+    #[repr(C, packed(4))]
+    #[derive(Clone, Copy)]
+    struct XtcpcbN {
+        xt_len: u32,
+        xt_kind: u32,
+        t_segq: u64,
+        t_dupacks: i32,
+        t_timer: [i32; 4],
+        t_state: i32,
+        /// t_flags through snd_ssthresh_prev.
+        _rest: [u8; 164],
     }
-    #[allow(dead_code)]
-    #[repr(C)]
-    struct InSockInfoV6 {
-        in6_hlim: u8,
-        in6_cksum: i32,
-        in6_ifindex: u16,
-        in6_hops: i16,
-    }
-    #[allow(dead_code)]
-    #[repr(C)]
-    struct InSockInfo {
-        insi_fport: i32,
-        insi_lport: i32,
-        insi_gencnt: u64,
-        insi_flags: u32,
-        insi_flow: u32,
-        insi_vflag: u8,
-        insi_ip_ttl: u8,
-        rfu_1: u32,
-        insi_faddr: In4In6Addr,
-        insi_laddr: In4In6Addr,
-        insi_v4_tos: u8,
-        insi_v6: InSockInfoV6,
-    }
-    #[allow(dead_code)]
-    #[repr(C)]
-    struct TcpSockInfo {
-        tcpsi_ini: InSockInfo,
-        tcpsi_state: i32,
-        tcpsi_timer: [i32; 4],
-        tcpsi_mss: i32,
-        tcpsi_flags: u32,
-        rfu_1: u32,
-        tcpsi_tp: u64,
-    }
-    /// `socket_info.soi_proto`: a union whose largest member (`un_sockinfo`) is 528 bytes; only the TCP arm is read.
-    #[allow(dead_code)]
-    #[repr(C)]
-    struct SoiProto {
-        pri_tcp: TcpSockInfo,
-        _rest: [u8; 528 - 120],
-    }
-    #[allow(dead_code)]
-    #[repr(C)]
-    struct SocketInfo {
-        soi_stat: VinfoStat,
-        soi_so: u64,
-        soi_pcb: u64,
-        soi_type: i32,
-        soi_protocol: i32,
-        soi_family: i32,
-        soi_options: i16,
-        soi_linger: i16,
-        soi_state: i16,
-        soi_qlen: i16,
-        soi_incqlen: i16,
-        soi_qlimit: i16,
-        soi_timeo: i16,
-        soi_error: u16,
-        soi_oobmark: u32,
-        soi_rcv: SockbufInfo,
-        soi_snd: SockbufInfo,
-        soi_kind: i32,
-        rfu_1: u32,
-        soi_proto: SoiProto,
-    }
-    #[allow(dead_code)]
-    #[repr(C)]
-    struct SocketFdInfo {
-        pfi: ProcFileInfo,
-        psi: SocketInfo,
-    }
+
+    // SAFETY: integer fields only; the assertions below pin each one with no gap left for implicit padding.
+    unsafe impl Plain for XinpGen {}
+    unsafe impl Plain for XinpcbN {}
+    unsafe impl Plain for XsocketN {}
+    unsafe impl Plain for XtcpcbN {}
 
     const _: () = {
-        use std::mem::{offset_of, size_of};
-        assert!(size_of::<ProcFileInfo>() == 24);
-        assert!(size_of::<VinfoStat>() == 136);
-        assert!(size_of::<InSockInfo>() == 80);
-        assert!(offset_of!(InSockInfo, insi_faddr) == 32);
-        assert!(offset_of!(InSockInfo, insi_laddr) == 48);
-        assert!(size_of::<TcpSockInfo>() == 120);
-        assert!(offset_of!(SocketInfo, soi_kind) == 232);
-        assert!(offset_of!(SocketInfo, soi_proto) == 240);
-        assert!(size_of::<SocketFdInfo>() == 792);
+        assert!(size_of::<XinpGen>() == 24);
+        assert!(offset_of!(XinpGen, xig_sogen) == 16);
+        assert!(size_of::<XinpcbN>() == 104);
+        assert!(offset_of!(XinpcbN, inp_fport) == 16);
+        assert!(offset_of!(XinpcbN, inp_lport) == 18);
+        assert!(offset_of!(XinpcbN, inp_ppcb) == 20);
+        assert!(offset_of!(XinpcbN, inp_gencnt) == 28);
+        assert!(offset_of!(XinpcbN, inp_vflag) == 44);
+        assert!(offset_of!(XinpcbN, inp_dependfaddr) == 48);
+        assert!(offset_of!(XinpcbN, inp_dependladdr) == 64);
+        assert!(offset_of!(XinpcbN, _rest) == 80);
+        assert!(size_of::<XsocketN>() == 104);
+        assert!(offset_of!(XsocketN, xso_so) == 8);
+        assert!(offset_of!(XsocketN, so_options) == 20);
+        assert!(offset_of!(XsocketN, so_pcb) == 28);
+        assert!(offset_of!(XsocketN, xso_protocol) == 36);
+        assert!(offset_of!(XsocketN, xso_family) == 40);
+        assert!(offset_of!(XsocketN, so_pgid) == 56);
+        assert!(offset_of!(XsocketN, so_uid) == 64);
+        assert!(offset_of!(XsocketN, _rest) == 68);
+        assert!(size_of::<XtcpcbN>() == 204);
+        assert!(offset_of!(XtcpcbN, t_timer) == 20);
+        assert!(offset_of!(XtcpcbN, t_state) == 36);
+        assert!(offset_of!(XtcpcbN, _rest) == 40);
     };
 
-    /// This uid's process ids.
-    fn pids() -> Vec<i32> {
-        let uid = unsafe { libc::geteuid() };
-        let bytes = unsafe { libc::proc_listpids(PROC_UID_ONLY, uid, std::ptr::null_mut(), 0) };
-        if bytes <= 0 {
-            return Vec::new();
+    fn u32_at(buf: &[u8], off: usize) -> Option<u32> {
+        Some(u32::from_ne_bytes(buf.get(off..off.checked_add(4)?)?.try_into().ok()?))
+    }
+
+    /// The record of type `T` at `off`, whose length field said `len`: any other length is a layout this code
+    /// does not know.
+    fn record<T: Plain>(buf: &[u8], off: usize, len: usize) -> Result<T, String> {
+        let size = size_of::<T>();
+        if len != size {
+            return Err(format!("pcblist_n: a {} is {len} bytes on this macOS, {size} here", std::any::type_name::<T>()));
         }
-        let mut buf = vec![0i32; bytes as usize / 4 + 32];
-        let ret = unsafe {
-            libc::proc_listpids(PROC_UID_ONLY, uid, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
+        let bytes = buf.get(off..off + size).ok_or("pcblist_n: truncated")?;
+        // SAFETY: `bytes` holds `size_of::<T>()` bytes and `T: Plain` makes any bytes a valid `T`; the read is
+        // unaligned by design.
+        Ok(unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast::<T>()) })
+    }
+
+    /// One connection's records.
+    struct Pcb {
+        inp: XinpcbN,
+        so: Option<XsocketN>,
+        tcp: Option<XtcpcbN>,
+    }
+
+    /// An endpoint as `inp_vflag` says it is stored; a v4-mapped IPv6 address reads as IPv4.
+    fn endpoint(vflag: u8, addr: [u8; 16], port: u16) -> Option<(IpAddr, u16)> {
+        let ip = if vflag & INP_IPV4 != 0 {
+            IpAddr::from([addr[12], addr[13], addr[14], addr[15]])
+        } else if vflag & INP_IPV6 != 0 {
+            IpAddr::from(addr)
+        } else {
+            return None;
         };
-        if ret <= 0 {
-            return Vec::new();
-        }
-        buf.truncate(ret as usize / 4);
-        buf.retain(|&p| p != 0);
-        buf
+        Some((ip.to_canonical(), u16::from_be(port)))
     }
 
-    /// The socket file descriptors of `pid`.
-    fn socket_fds(pid: i32) -> Vec<i32> {
-        let size = std::mem::size_of::<libc::proc_fdinfo>();
-        let bytes = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
-        if bytes <= 0 {
-            return Vec::new();
-        }
-        let mut fds: Vec<libc::proc_fdinfo> = Vec::new();
-        fds.resize_with(bytes as usize / size + 16, || libc::proc_fdinfo { proc_fd: 0, proc_fdtype: 0 });
-        let ret = unsafe {
-            libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, fds.as_mut_ptr().cast(), (fds.len() * size) as libc::c_int)
+    /// The creator's uid if `pcb` is the peer's own end (local `peer`, foreign `listener`), established, and backed
+    /// by a kernel socket. `so_uid` is that socket's creator; the handle is a hash of the socket, zero exactly when
+    /// there is none (a connection whose socket is gone, a user-space-stack flow), and those records say uid 0, so
+    /// without the handle they would pass as root's.
+    fn creator(pcb: Pcb, peer: (IpAddr, u16), listener: (IpAddr, u16)) -> Result<Option<u32>, String> {
+        let (Some(so), Some(tcp)) = (pcb.so, pcb.tcp) else {
+            return Err("pcblist_n: a connection without its socket or TCP record".into());
         };
-        if ret <= 0 {
-            return Vec::new();
+        let inp = pcb.inp;
+        let live = endpoint(inp.inp_vflag, inp.inp_dependladdr, inp.inp_lport) == Some(peer)
+            && endpoint(inp.inp_vflag, inp.inp_dependfaddr, inp.inp_fport) == Some(listener)
+            && { tcp.t_state } == TCPS_ESTABLISHED
+            && { so.xso_so } != 0;
+        Ok(live.then_some(so.so_uid))
+    }
+
+    /// Whose account created the peer's end of the connection `listener` accepted from `peer`, in the table `buf`.
+    /// The first live match decides, as on Linux; a table that does not parse to its last byte decides nothing.
+    pub(super) fn owner(buf: &[u8], peer: SocketAddr, listener: SocketAddr, own: &str) -> PeerOwner {
+        match uid_of_pcb(buf, peer, listener) {
+            Ok(Some(uid)) => verdict(&format!("uid:{uid}"), own),
+            Ok(None) => PeerOwner::Unknown("no live TCP connection from the peer (it may have closed)".into()),
+            Err(e) => PeerOwner::Unknown(e),
         }
-        fds.truncate(ret as usize / size);
-        fds.iter()
-            .filter(|f| f.proc_fdtype == libc::PROX_FDTYPE_SOCKET as u32)
-            .map(|f| f.proc_fd)
-            .collect()
     }
 
-    /// `Ok(None)`: the fd or process went away. `Err`: the kernel's layout is not the one transcribed here.
-    fn socket_info(pid: i32, fd: i32) -> Result<Option<SocketFdInfo>, String> {
-        let size = std::mem::size_of::<SocketFdInfo>();
-        // SAFETY: every field is an integer or an array of integers, so all-zero is a valid value.
-        let mut info: SocketFdInfo = unsafe { std::mem::zeroed() };
-        let ret = unsafe {
-            libc::proc_pidfdinfo(pid, fd, PROC_PIDFDSOCKETINFO, (&mut info as *mut SocketFdInfo).cast(), size as libc::c_int)
-        };
-        if ret <= 0 {
-            return Ok(None);
-        }
-        if ret as usize != size {
-            return Err(format!("socket_fdinfo is {ret} bytes on this macOS, {size} here"));
-        }
-        Ok(Some(info))
-    }
-
-    /// Whether `info` is a TCP socket held at `held` and connected to `other`.
-    fn holds(info: &SocketFdInfo, held: SocketAddrV4, other: SocketAddrV4) -> bool {
-        if info.psi.soi_kind != SOCKINFO_TCP {
-            return false;
-        }
-        let ini = &info.psi.soi_proto.pri_tcp.tcpsi_ini;
-        ini.insi_vflag & INI_IPV4 != 0
-            && Ipv4Addr::from(ini.insi_laddr.i46a_addr4) == *held.ip()
-            && u16::from_be(ini.insi_lport as u16) == held.port()
-            && Ipv4Addr::from(ini.insi_faddr.i46a_addr4) == *other.ip()
-            && u16::from_be(ini.insi_fport as u16) == other.port()
-    }
-
-    /// The refusal once `deadline` has passed, so every step and the success check one expression.
-    fn over(deadline: Instant) -> Option<PeerOwner> {
-        (Instant::now() > deadline)
-            .then(|| PeerOwner::Unknown(format!("over the {} ms macOS lookup budget", MACOS_BUDGET.as_millis())))
-    }
-
-    pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, _own: &str) -> PeerOwner {
-        lookup_until(local, peer, Instant::now() + MACOS_BUDGET)
-    }
-
-    /// The scan is restricted to this uid's processes, so finding the peer's socket there is the ownership proof;
-    /// past `deadline` nothing is proven, however the scan stands.
-    pub(super) fn lookup_until(local: SocketAddr, peer: SocketAddr, deadline: Instant) -> PeerOwner {
-        let (SocketAddr::V4(local), SocketAddr::V4(peer)) = (local, peer) else {
-            return PeerOwner::Unknown("IPv6 peer: no macOS lookup".into());
-        };
-        for pid in pids() {
-            if let Some(late) = over(deadline) {
-                return late;
-            }
-            for fd in socket_fds(pid) {
-                if let Some(late) = over(deadline) {
-                    return late;
+    fn uid_of_pcb(buf: &[u8], peer: SocketAddr, listener: SocketAddr) -> Result<Option<u32>, String> {
+        let (peer, listener) = ((peer.ip().to_canonical(), peer.port()), (listener.ip().to_canonical(), listener.port()));
+        let gen = size_of::<XinpGen>();
+        record::<XinpGen>(buf, 0, u32_at(buf, 0).ok_or("pcblist_n: empty")? as usize)?;
+        let mut off = gen;
+        let (mut pcb, mut found): (Option<Pcb>, Option<u32>) = (None, None);
+        loop {
+            let len = u32_at(buf, off).ok_or("pcblist_n: truncated")? as usize;
+            if len == gen {
+                // The closing xinpgen, which must end the table.
+                if off + gen != buf.len() {
+                    return Err("pcblist_n: bytes after the closing record".into());
                 }
-                match socket_info(pid, fd) {
-                    Ok(Some(info)) if holds(&info, peer, local) => {
-                        return over(deadline).unwrap_or(PeerOwner::Mine);
+                if let Some(p) = pcb.take() {
+                    found = found.or(creator(p, peer, listener)?);
+                }
+                return Ok(found);
+            }
+            if len < 8 {
+                return Err(format!("pcblist_n: a {len}-byte record"));
+            }
+            let kind = u32_at(buf, off + 4).ok_or("pcblist_n: truncated")?;
+            let next = off.checked_add(len.next_multiple_of(8)).filter(|&n| n <= buf.len()).ok_or("pcblist_n: truncated")?;
+            match kind {
+                XSO_INPCB => {
+                    if let Some(p) = pcb.take() {
+                        found = found.or(creator(p, peer, listener)?);
                     }
-                    Ok(_) => {}
-                    Err(e) => return PeerOwner::Unknown(e),
+                    pcb = Some(Pcb { inp: record(buf, off, len)?, so: None, tcp: None });
                 }
+                XSO_SOCKET => {
+                    let p = pcb.as_mut().filter(|p| p.so.is_none()).ok_or("pcblist_n: a socket record out of place")?;
+                    p.so = Some(record(buf, off, len)?);
+                }
+                XSO_TCPCB => {
+                    let p = pcb.as_mut().filter(|p| p.tcp.is_none()).ok_or("pcblist_n: a TCP record out of place")?;
+                    p.tcp = Some(record(buf, off, len)?);
+                }
+                _ => {}
+            }
+            off = next;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The socket record a connection carries in the table.
+        #[derive(Clone, Copy)]
+        enum Sock {
+            /// A kernel socket, with its creator's uid.
+            Kernel(u32),
+            /// No socket: the kernel leaves all but the length and kind zero.
+            Absent,
+            /// A user-space-stack flow, as `nstat_userland_to_xsocket_n` writes it: TCP, nothing else.
+            Userland,
+        }
+
+        fn put<T: Plain>(buf: &mut Vec<u8>, t: T) {
+            // SAFETY: `T: Plain` has no padding, so all its bytes are initialized.
+            let bytes = unsafe { std::slice::from_raw_parts((&t as *const T).cast::<u8>(), size_of::<T>()) };
+            buf.extend_from_slice(bytes);
+            buf.resize(buf.len().next_multiple_of(8), 0);
+        }
+
+        /// A record this code only skips: its length, its kind, zeros.
+        fn skipped(buf: &mut Vec<u8>, len: u32, kind: u32) {
+            buf.extend_from_slice(&len.to_ne_bytes());
+            buf.extend_from_slice(&kind.to_ne_bytes());
+            buf.resize(buf.len() + (len as usize - 8).next_multiple_of(8), 0);
+        }
+
+        fn gen(buf: &mut Vec<u8>) {
+            put(buf, XinpGen { xig_len: 24, xig_count: 0, xig_gen: 0, xig_sogen: 0 });
+        }
+
+        fn inp(local: SocketAddr, foreign: SocketAddr) -> XinpcbN {
+            // SAFETY: Plain; all-zero is a value.
+            let mut x: XinpcbN = unsafe { std::mem::zeroed() };
+            x.xi_len = 104;
+            x.xi_kind = XSO_INPCB;
+            x.inp_lport = local.port().to_be();
+            x.inp_fport = foreign.port().to_be();
+            let bytes = |a: SocketAddr| match a.ip() {
+                IpAddr::V4(v4) => {
+                    let mut b = [0u8; 16];
+                    b[12..].copy_from_slice(&v4.octets());
+                    b
+                }
+                IpAddr::V6(v6) => v6.octets(),
+            };
+            x.inp_vflag = if local.is_ipv4() { INP_IPV4 } else { INP_IPV6 };
+            x.inp_dependladdr = bytes(local);
+            x.inp_dependfaddr = bytes(foreign);
+            x
+        }
+
+        fn so(sock: Sock) -> XsocketN {
+            // SAFETY: Plain; all-zero is a value.
+            let mut x: XsocketN = unsafe { std::mem::zeroed() };
+            x.xso_len = 104;
+            x.xso_kind = XSO_SOCKET;
+            match sock {
+                Sock::Kernel(uid) => {
+                    x.xso_so = 0x5eed_0000_0000_0001;
+                    x.xso_protocol = 6;
+                    x.so_uid = uid;
+                }
+                Sock::Absent => {}
+                Sock::Userland => x.xso_protocol = 6,
+            }
+            x
+        }
+
+        fn tcp(state: i32) -> XtcpcbN {
+            // SAFETY: Plain; all-zero is a value.
+            let mut x: XtcpcbN = unsafe { std::mem::zeroed() };
+            x.xt_len = 204;
+            x.xt_kind = XSO_TCPCB;
+            x.t_state = state;
+            x
+        }
+
+        /// One connection's six records, in the kernel's order.
+        fn conn(buf: &mut Vec<u8>, local: SocketAddr, foreign: SocketAddr, state: i32, sock: Sock) {
+            put(buf, inp(local, foreign));
+            put(buf, so(sock));
+            skipped(buf, 32, 0x002);
+            skipped(buf, 32, 0x004);
+            skipped(buf, 136, 0x008);
+            put(buf, tcp(state));
+        }
+
+        /// A table: header, `conns`, closing header.
+        fn table(conns: &[(SocketAddr, SocketAddr, i32, Sock)]) -> Vec<u8> {
+            let mut buf = Vec::new();
+            gen(&mut buf);
+            for &(l, f, s, k) in conns {
+                conn(&mut buf, l, f, s, k);
+            }
+            gen(&mut buf);
+            buf
+        }
+
+        fn lo(port: u16) -> SocketAddr {
+            SocketAddr::from(([127, 0, 0, 1], port))
+        }
+
+        const ME: &str = "uid:501";
+        const TIME_WAIT: i32 = 10;
+
+        #[test]
+        fn the_peers_own_established_connection_names_its_creator() {
+            let (listener, peer) = (lo(8080), lo(50000));
+            // The accepted end (local = listener) always carries the listener's uid; only the peer's end decides.
+            let mine = table(&[
+                (listener, peer, TCPS_ESTABLISHED, Sock::Kernel(501)),
+                (peer, listener, TCPS_ESTABLISHED, Sock::Kernel(501)),
+            ]);
+            assert_eq!(owner(&mine, peer, listener, ME), PeerOwner::Mine);
+            let theirs = table(&[
+                (listener, peer, TCPS_ESTABLISHED, Sock::Kernel(501)),
+                (peer, listener, TCPS_ESTABLISHED, Sock::Kernel(502)),
+            ]);
+            assert_eq!(owner(&theirs, peer, listener, ME), PeerOwner::Other("uid:502".into()));
+            // A client on an IPv6 socket connecting to ::ffff:127.0.0.1 is stored as IPv4; the accepted address
+            // may come mapped.
+            let mapped = SocketAddr::from((std::net::Ipv4Addr::new(127, 0, 0, 1).to_ipv6_mapped(), 50000));
+            assert_eq!(owner(&mine, mapped, listener, ME), PeerOwner::Mine);
+            // IPv6 loopback.
+            let (l6, p6) = ("[::1]:8080".parse().unwrap(), "[::1]:50000".parse().unwrap());
+            assert_eq!(owner(&table(&[(p6, l6, TCPS_ESTABLISHED, Sock::Kernel(501))]), p6, l6, ME), PeerOwner::Mine);
+            // No connection from the peer.
+            assert!(matches!(owner(&mine, lo(50001), listener, ME), PeerOwner::Unknown(_)));
+        }
+
+        #[test]
+        fn a_closing_socketless_or_user_space_connection_names_no_owner() {
+            let (listener, peer) = (lo(8080), lo(50000));
+            for (state, sock, own) in [
+                (TIME_WAIT, Sock::Kernel(501), ME),
+                (TCPS_ESTABLISHED, Sock::Absent, "uid:0"),
+                (TCPS_ESTABLISHED, Sock::Userland, "uid:0"),
+            ] {
+                let t = table(&[(peer, listener, state, sock)]);
+                assert!(matches!(owner(&t, peer, listener, own), PeerOwner::Unknown(_)), "state {state}");
             }
         }
-        PeerOwner::Unknown("no socket of this account holds the peer's address".into())
+
+        #[test]
+        fn a_record_of_another_length_refuses() {
+            let (listener, peer) = (lo(8080), lo(50000));
+            let good = table(&[(peer, listener, TCPS_ESTABLISHED, Sock::Kernel(501))]);
+            assert_eq!(owner(&good, peer, listener, ME), PeerOwner::Mine);
+            // The socket record (at 24 + 104) one u32 longer, as a kernel that grew xsocket_n would write it.
+            let mut longer = good[..128].to_vec();
+            let mut s = good[128..232].to_vec();
+            s[..4].copy_from_slice(&108u32.to_ne_bytes());
+            s.extend_from_slice(&[0; 4]);
+            longer.extend_from_slice(&s);
+            longer.resize(longer.len().next_multiple_of(8), 0);
+            longer.extend_from_slice(&good[232..]);
+            assert!(matches!(owner(&longer, peer, listener, ME), PeerOwner::Unknown(e) if e.contains("108")));
+            // A header of another length.
+            let mut head = good.clone();
+            head[..4].copy_from_slice(&32u32.to_ne_bytes());
+            assert!(matches!(owner(&head, peer, listener, ME), PeerOwner::Unknown(_)));
+        }
+
+        #[test]
+        fn a_truncated_or_disordered_table_refuses() {
+            let (listener, peer) = (lo(8080), lo(50000));
+            let good = table(&[(peer, listener, TCPS_ESTABLISHED, Sock::Kernel(501))]);
+            for cut in [0, 4, 24, 100, good.len() - 30, good.len() - 24, good.len() - 1] {
+                assert!(matches!(owner(&good[..cut], peer, listener, ME), PeerOwner::Unknown(_)), "cut {cut}");
+            }
+            let mut extra = good.clone();
+            extra.extend_from_slice(&[0; 8]);
+            assert!(matches!(owner(&extra, peer, listener, ME), PeerOwner::Unknown(_)));
+            // A connection with no socket record.
+            let mut missing = Vec::new();
+            gen(&mut missing);
+            put(&mut missing, inp(peer, listener));
+            put(&mut missing, tcp(TCPS_ESTABLISHED));
+            gen(&mut missing);
+            assert!(matches!(owner(&missing, peer, listener, ME), PeerOwner::Unknown(_)));
+            // A socket record before any connection record.
+            let mut early = Vec::new();
+            gen(&mut early);
+            put(&mut early, so(Sock::Kernel(501)));
+            early.extend_from_slice(&good[24..]);
+            assert!(matches!(owner(&early, peer, listener, ME), PeerOwner::Unknown(_)));
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod imp {
+    use super::{pcblist_n, PeerOwner};
+    use std::net::SocketAddr;
+
+    /// `net.inet.tcp.pcblist_n`, the TCP table netstat reads; any account may read it.
+    fn table() -> Result<Vec<u8>, String> {
+        let name = c"net.inet.tcp.pcblist_n";
+        // The size the kernel names allows for an eighth more connections; a table that outgrows even that between
+        // the two calls fails with ENOMEM and is asked for again.
+        for _ in 0..3 {
+            let mut len: libc::size_t = 0;
+            // SAFETY: a null buffer asks only for the size, which the kernel writes to `len`.
+            if unsafe { libc::sysctlbyname(name.as_ptr(), std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) } != 0 {
+                return Err(format!("net.inet.tcp.pcblist_n: {}", std::io::Error::last_os_error()));
+            }
+            let mut buf = vec![0u8; len];
+            // SAFETY: `buf` has `len` writable bytes; the kernel writes at most that many and stores the count in `len`.
+            if unsafe { libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) } == 0 {
+                buf.truncate(len);
+                return Ok(buf);
+            }
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ENOMEM) {
+                return Err(format!("net.inet.tcp.pcblist_n: {e}"));
+            }
+        }
+        Err("net.inet.tcp.pcblist_n kept growing past its size".into())
+    }
+
+    pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
+        match table() {
+            Ok(buf) => pcblist_n::owner(&buf, peer, local, own),
+            Err(e) => PeerOwner::Unknown(e),
+        }
     }
 }
 
@@ -619,30 +840,5 @@ mod tests {
         assert_eq!(imp::owner_of(me, &own, || Ok(Some(me))), PeerOwner::Mine);
         assert_ne!(imp::owner_of(me, &own, || Ok(None)), PeerOwner::Mine);
         assert_ne!(imp::owner_of(me, &own, || Ok(Some(4))), PeerOwner::Mine);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_lookup_past_its_deadline_refuses_even_its_own_connection() {
-        let (accepted, _client) = accepted_pair();
-        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
-        assert_ne!(imp::lookup_until(local, peer, std::time::Instant::now()), PeerOwner::Mine);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_macos_lookup_fits_its_budget() {
-        let (accepted, _client) = accepted_pair();
-        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
-        let mut times: Vec<std::time::Duration> = (0..20)
-            .map(|_| {
-                let t0 = std::time::Instant::now();
-                assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine);
-                t0.elapsed()
-            })
-            .collect();
-        times.sort();
-        let (median, max) = (times[times.len() / 2], times[times.len() - 1]);
-        assert!(median < std::time::Duration::from_millis(50), "median {median:?}, maximum {max:?}");
     }
 }

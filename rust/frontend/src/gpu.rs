@@ -1089,15 +1089,8 @@ fn strip_frontmatter(s: &str) -> String {
 /// frontmatter (target, target_kind, synced_against, authored_by,
 /// references) renders as a read-only header above the edit area and
 /// concatenation on save preserves it byte-perfect.
-/// Hand `url`, an address with NO secret in it (a local file, the public manual), to the OS opener. A served page
-/// goes through `crate::browser_open::open_page`, never here: this argument lands on command lines other accounts
-/// can read.
-fn open_url_in_browser(url: &str) -> std::io::Result<()> {
-    crate::browser_open::spawn_opener(url)
-}
-
 /// Write `html_bytes` to a unique temp file and hand it off to the OS
-/// default browser via `open_url_in_browser`. We don't delete the temp
+/// default browser via `crate::browser_open::spawn_opener`. We don't delete the temp
 /// file (the OS cleans temp on its own schedule; a fresh path per call
 /// also prevents the browser from showing a stale cached version).
 fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
@@ -1109,7 +1102,7 @@ fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
     path.push(format!("sot-preview-{now}.html"));
     std::fs::write(&path, html_bytes)?;
     let path_str = path.to_string_lossy().to_string();
-    open_url_in_browser(&path_str)
+    crate::browser_open::spawn_opener(&path_str)
 }
 
 fn split_frontmatter(s: &str) -> (Option<String>, String) {
@@ -20961,7 +20954,7 @@ impl ApplicationHandler for App {
                         Key::Named(NamedKey::Backspace) => { state.help.query.pop(); state.help.selected = 0; }
                         _ if action == Some(Action::HelpManual) && !event.repeat => {
                             if let Some(a) = state.help.selected_action(&state.bindings) {
-                                if let Err(e) = open_url_in_browser(help::manual_url(a)) {
+                                if let Err(e) = crate::browser_open::spawn_opener(help::manual_url(a)) {
                                     state.status = format!("Open help manual failed: {e}");
                                 }
                             }
