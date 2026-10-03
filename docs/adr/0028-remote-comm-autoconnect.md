@@ -3,6 +3,8 @@
 **Status:** partly superseded by ADR 0046 — the tunnels stand; the pane-keyed self-file machinery this ADR describes went with the comm scripts' tmux modes in v0.6.0. Originally: Accepted (implemented + verified end-to-end; codex + win-fe reviewed the plan and converged, 2026-06-27)
 **Date:** 2026-06-27
 
+> *Note (2026-10-03): checked against the code on the 0.6.6 fixes line. `comm-listen.sh` and the inbox Monitor named in the consequences no longer exist (the two notes after them say so). A directed send is one `comm.file` request answered by the daemon that appends (`comm/core/scripts/comm-lib.sh:1229`), and the daemon types the wake line into an idle row (`rust/backend/src/comm_wake.rs:427`). The sentence that states them as current is marked "(no longer in the code; see the status note)".*
+
 ## Context
 
 The sot-comm relay daemon `sotd` runs on **myhost** bound to `127.0.0.1:18743`
@@ -75,7 +77,7 @@ and keep setting `SOT_RELAY_ENDPOINT` inline in git-bash.
 
 - A `ccb`/`ccbe` session on any Linux server now auto-joins the **live** relay
   with zero per-session config: `/sot-session-start` runs `comm-listen.sh`
-  (bridge dials the tunnel) + arms its inbox Monitor, and instant wake works.
+  (bridge dials the tunnel) + arms its inbox Monitor, and instant wake works (no longer in the code; see the status note).
 - An **idle** remote with no live session holds **zero** `sotd` connections: the
   `ssh -R` tunnel is just an idle SSH process on myhost until a session actually
   dials through it (`sotd` opens a connection on demand). The three always-on

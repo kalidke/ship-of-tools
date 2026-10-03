@@ -5,6 +5,8 @@ capsules on the Windows frontend machines, so the frontend's Terminal-drawer
 session survives frontend restarts. Implements the ADR 0037 ladder's P3.
 **Date:** 2026-08-25
 
+> *Note (2026-10-03): checked against the code on the 0.6.6 fixes line. The frontend no longer writes `fe-inbox.jsonl`, so it is not the inbox writer, it writes no `fe_down` marker, and no inbox Monitor exists. A box whose topology entry is `frontend = true` keeps its daemon's own link to the hub, so mail for a session there is filed with the frontend window open or closed (`rust/backend/src/hub_link.rs:3`); on Windows the daemon's first start moves the old file's unread lines into the per-handle inboxes (`rust/backend/src/hub_link.rs:222`), and the daemon types the wake line into an idle row (`rust/backend/src/comm_wake.rs:427`). The sentences that state the old path as current are marked "(no longer in the code; see the status note)".*
+
 > How this was designed: a three-track research spike (Windows store
 > primitives, Job Objects and the successor problem, the frontend's real
 > process tree) followed by adversarial review rounds with mandatory
@@ -24,12 +26,12 @@ NOTHING; an optional `initial_command` (which replaces the
 `resume_command` setting) fires only when a genuinely new capsule spawns
 the shell, independent of `--relaunched`. Explicitly NOT in P3: the
 relaunch mechanism itself (ADR 0017 §1–§3 stays); the fe-inbox
-down-window (the FE process remains the inbox writer — relay traffic
+down-window (the FE process remains the inbox writer (no longer in the code; see the status note) — relay traffic
 while no FE is attached is still dropped; stated, not fixed — BUT its
 DETECTION is preserved: the retired ritual's session-start catch-up was
 the only mechanism that ever noticed a miss, so on every attach the FE
 writes an `fe_down {from, to}` marker line into fe-inbox.jsonl; the
-surviving drawer session's inbox Monitor wakes on it and can catch up.
+surviving drawer session's inbox Monitor wakes on it and can catch up (no longer in the code; see the status note).
 The feature must not make the failure quieter); the Claude SDK
 adapter on Windows (the drawer is recorded as a RAW TERMINAL voyage);
 named jobs / a `winjob-fence-v1` feature / probe-successors; ReFS (local

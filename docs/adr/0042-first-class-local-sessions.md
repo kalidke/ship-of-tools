@@ -10,6 +10,8 @@ hosts in one selector, separated by the wheel icon, with the local machine
 being just another host and local sessions being ordinary sessions.
 **Date:** 2026-09-02
 
+> *Note (2026-10-03): checked against the code on the 0.6.6 fixes line. The Windows receive path named below, the frontend's `fe-inbox.jsonl` and the inbox Monitor, no longer exists: the frontend files nothing, its box's daemon files mail for its rows over its own link to the hub (`rust/backend/src/hub_link.rs:1`), and the daemon types the wake line into an idle row (`rust/backend/src/comm_wake.rs:427`). Those sentences, and the 2026-09-30 note that kept the `fe-inbox.jsonl` half, are marked "(no longer in the code; see the status note)".*
+
 ## The decision in one paragraph
 
 "Local is just another host" is taken literally: the frontend machine runs
@@ -86,7 +88,7 @@ new is added to the daemon, the protocol, or the workspace toml:
    does not are setting the handle and the relay endpoint by hand, and both
    are now carried by the env the daemon pins (2, 3). The generic skill's
    existing Windows branch (receive = the frontend's `fe-inbox.jsonl` +
-   the inbox Monitor; `comm-listen.sh` is a no-op there) becomes
+   the inbox Monitor; `comm-listen.sh` is a no-op there) (no longer in the code; see the status note) becomes
    self-contained by inlining the two steps it currently points at in the
    FE skill; nothing else changes in it. *(Amended 2026-09-12: the capsule
    launch line is `claude --permission-mode auto --continue
@@ -139,7 +141,7 @@ new is added to the daemon, the protocol, or the workspace toml:
    `comm-leave`s (never two holders of `win-fe-<host>`; a pinned name is
    never disambiguated) → the owner creates the local row (`+ create new`,
    root = the box's checkout, agent `claude`, agent name `win-fe-<host>`)
-   → the capsule joins, arms its inbox Monitor, and a directed round trip
+   → the capsule joins, arms its inbox Monitor (no longer in the code; see the status note), and a directed round trip
    proves receive → then, and only then, the machine-local `settings.toml`
    gets `resume_command = ""`. Doing it in the other order leaves the box
    driverless after its next relaunch (the ryzen5 driver's objection on
@@ -161,7 +163,7 @@ new is added to the daemon, the protocol, or the workspace toml:
    never run a relay-bridge loop (it pins `comm-relay.sh` open and blocks
    `update_comm`); the generic skill's Windows branch already skips it.
 
-> *Note (2026-09-30, ADR 0049 B1): the parenthesis's `comm-listen.sh` half describes a script that no longer exists; the `fe-inbox.jsonl` half stands until B2.*
+> *Note (2026-09-30, ADR 0049 B1): the parenthesis's `comm-listen.sh` half describes a script that no longer exists; the `fe-inbox.jsonl` half stands until B2 (no longer in the code; see the status note).*
 
 Deleted by this amendment once the boxes have cut over: the FE-specific
 bootstrap skill, the resume ritual's default and template line, and the

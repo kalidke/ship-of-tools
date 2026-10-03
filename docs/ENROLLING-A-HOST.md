@@ -5,7 +5,7 @@ attach to one, and type — without that frontend having an account, a key,
 or a route to the box. The route is: frontend → its own `ssh` child to the
 hub → the **hub**'s socket for that box → one `ssh` from the hub → `sotd
 stdio-bridge` on the box → that box's daemon. The hub is the only machine
-that ever ssh's in; ADR 0048 is the decision, this page is the procedure.
+that ever ssh's in.
 
 Everything here is run by an operator, once per box. Nothing in it is
 automatic, and every step has a check that fails loudly — "it looked

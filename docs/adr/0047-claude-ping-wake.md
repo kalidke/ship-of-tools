@@ -7,6 +7,8 @@ deleted. Originally: accepted;
 implemented in the comm scripts (deploys via `update_comm`, no release
 needed).
 
+> *Note (2026-10-03): checked against the code on the 0.6.6 fixes line. Besides the scripts named above, the `MONITOR:` line, the watcher marker with `sot_watcher_pid_for`, `sot_fe_inbox_path` and the frontend's filing into `fe-inbox.jsonl` no longer exist. The daemon's wake check is `rust/backend/src/comm_wake.rs:427`; mail for a frontend box is filed by its daemon's own link to the hub (`rust/backend/src/hub_link.rs:1`). Sentences below that state the watcher, the Monitor flow or the frontend's filing as current are marked "(no longer in the code; see the status note)".*
+
 ## Context
 
 A Claude session in a capsule row is woken today by a harness Monitor
@@ -50,7 +52,7 @@ to `--deliver full` (Codex's behaviour, unchanged). Claude sessions get
   arm by hand — there's no Monitor tool call to make. Outside a capsule row,
   or for Codex (which starts its own `--deliver full` watcher from its own
   skill), the existing `MONITOR:` line and Monitor-arming flow are
-  unchanged.
+  unchanged (no longer in the code; see the status note).
 
 ## Consequences
 
@@ -59,7 +61,7 @@ longer, and costs nothing to stay that way — no more 30-minute re-arm turns.
 The cost moves to the wake path: a message can sit typed-but-unread for up
 to 10 minutes if the session never polls, and a screen stuck on an open
 dialog delays (never drops) the wake until it clears. Sessions outside a
-capsule row keep paying the Monitor's re-arm cost, unchanged.
+capsule row keep paying the Monitor's re-arm cost, unchanged (no longer in the code; see the status note).
 
 ## Revision — 2026-09-26: the ping is a poke, not the delivery
 
@@ -119,15 +121,15 @@ the bridge pokes inline and the daemon files for its own rows.
 ## Revision — 2026-09-28: the watcher reads BOTH inboxes, so Windows needs no Monitor
 
 A frontend box runs no relay bridge: its frontend files every inbound frame
-into its own `fe-inbox.jsonl` (shared by every handle on the box), while a send
+into its own `fe-inbox.jsonl` (shared by every handle on the box) (no longer in the code; see the status note), while a send
 from a session on the SAME box still lands in `inbox/<handle>.jsonl`. This
 watcher read only the second file, so on such a box it could never see the mail
 that arrives from anywhere else — and a session there stayed on the harness
 Monitor, which already read both. `comm-wake.sh` now polls each source with its
 own in-memory cursor and its own admission rule (`.to` equal to our handle for
 the shared file, any directed frame for the per-handle one), exactly the pair
-`comm-watch.sh` applies. `sot_fe_inbox_path` remains the one place the platform
-branch lives, so off Windows there is a single source and nothing changes.
+`comm-watch.sh` applies (no longer in the code; see the status note). `sot_fe_inbox_path` remains the one place the platform
+branch lives, so off Windows there is a single source and nothing changes (no longer in the code; see the status note).
 
 The DECISION stays one per cycle, not one per source: the ping says only that
 mail exists, so a frame in each inbox in the same two seconds is one typed
@@ -155,7 +157,7 @@ mechanism. The watcher used to exit after five unanswered `workspace.list` or
 before it would spawn one at all — so a daemon quiet for one second printed
 `MONITOR:`, and since nothing re-arms a watcher, that session stayed on the
 Monitor for the rest of its life. The watcher now slows its poll to 30s after
-five silences and keeps waiting, and the bootstrap arms it without probing.
+five silences and keeps waiting, and the bootstrap arms it without probing (no longer in the code; see the status note).
 The immortal-watcher reason for that exit is gone: `_comm_wake_owner_alive`
 ends the process with the agent it serves. A row that is GONE
 (`unknown_workspace`) still ends the watcher — that is a different fact from a
@@ -219,28 +221,28 @@ The invariant, because three separate doors were each found violating it: a
 capsule row running a Claude session ends its bootstrap with a live
 `comm-wake` ping watcher, or with a loud `WAKE FAILED` line and the `MONITOR:`
 command. Nothing in between, and no state in which the row claims a wake path
-it does not have.
+it does not have (no longer in the code; see the status note).
 
 The doors are the survived claim, the start guard (its marker branch and its
 process scan) and the spawn's own check, and all four now ask the same narrow
 question: is there a live `comm-wake.sh` for this handle. Narrow, because the
-marker is SHARED — a harness Monitor and `codex-watch.sh` write it too. A
+marker is SHARED — a harness Monitor and `codex-watch.sh` write it too (no longer in the code; see the status note). A
 surviving MONITOR used to satisfy every one of those tests, which announced
 "no Monitor needed" over a row whose only wake path was a Monitor nobody
 re-arms: deaf within half an hour. A Monitor running beside a ping watcher
 costs a doubled notice; refusing to start one costs the session, so in doubt
 the answer is to start. The Monitor is never reaped on that path — it is a
-live wake path, not an orphan.
+live wake path, not an orphan (no longer in the code; see the status note).
 
 The broad test stays where the marker's other consumers need it
 (`sot_watcher_pid_for`): a Monitor's marker must read as live there, or the
-wipe hook would judge a healthy Monitor stale and remove it.
+wipe hook would judge a healthy Monitor stale and remove it (no longer in the code; see the status note).
 
 Spawning is not arming, either. The bootstrap used to claim WAKE on the line
 after `nohup`, so a watcher that died at startup — a `set -u` slip, a box with
 no `jq` — was announced as armed. It now waits up to one second, exiting as
 soon as a live ping watcher for the handle exists (its own child, or the one
-that made the child refuse), and prints the loud failure otherwise.
+that made the child refuse), and prints the loud failure otherwise (no longer in the code; see the status note).
 
 ### One watcher per handle, enforced against the process table
 
