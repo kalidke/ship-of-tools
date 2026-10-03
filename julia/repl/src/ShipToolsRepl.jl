@@ -26,7 +26,6 @@ module ShipToolsRepl
 using Base64
 using Pkg
 using Random
-using Sockets
 
 export serve, browserview, BrowserView, wglshow
 
@@ -56,26 +55,38 @@ struct BrowserView
     """
     Whether front-ends should auto-open the URL. `false` = serve-only: the
     browser frame still flows (so the daemon's ADR-0035 proxy allowlist
-    learns the port) but NO frontend opens a tab — the caller then targets
-    exactly one FE with `sot-fe open-url <url> --fe <handle>`. The escape
-    from the multi-FE broadcast-open, where two live clients race one
-    shared Figure layout (`resize_to = :parent`).
+    learns the port) but NO frontend opens a tab, unless `fe` names one.
+    `open = "<name>"` to `wglshow`/`browserview` opens it on exactly the
+    frontend `sot-fe --fe <name>` names. The escape from the multi-FE
+    broadcast-open, where two live clients race one shared Figure layout
+    (`resize_to = :parent`).
     """
     open::Bool
+    """
+    The one frontend that opens the page although `open` is false: its address
+    `fe@<name>`. Set by `open = "<name>"`.
+    """
+    fe::Union{Nothing,String}
 end
-BrowserView(url::AbstractString) = BrowserView(String(url), true)
+BrowserView(url::AbstractString) = BrowserView(String(url), true, nothing)
+BrowserView(url::AbstractString, open::Bool) = BrowserView(String(url), open, nothing)
+function BrowserView(url::AbstractString, fe::AbstractString)
+    isempty(fe) && throw(ArgumentError("open: name a frontend (what `sot-fe --fe` takes), or pass true/false"))
+    return BrowserView(String(url), false, startswith(fe, "fe@") ? String(fe) : "fe@" * fe)
+end
 
 """
     browserview(url; open = true) -> BrowserView
 
 Convenience constructor. `return browserview(server_url)` at the end of an eval
 to open `url` in the frontend's browser; `open = false` serves without opening
-anywhere (see [`BrowserView`](@ref)).
+anywhere (see [`BrowserView`](@ref)), and `open = "<name>"` opens it only on the
+frontend `sot-fe --fe <name>` names.
 """
-browserview(url::AbstractString; open::Bool = true) = BrowserView(String(url), open)
+browserview(url::AbstractString; open::Union{Bool,AbstractString} = true) = BrowserView(url, open)
 
-# Tracks the Bonito server started by `wglshow` so a repeat call frees the port
-# instead of hitting EADDRINUSE. `Any` — ShipToolsRepl never loads Bonito.
+# The one Bonito server `wglshow` binds per REPL child (see `page_server`); a re-serve replaces its app, never its
+# listener. `Any`: ShipToolsRepl never loads Bonito.
 const WGL_SERVER = Ref{Any}(nothing)
 
 # WGLMakie's General-registry UUID, used to look it up in Base.loaded_modules
@@ -207,34 +218,33 @@ function wgl_warn_if_widgets(fig)
     flush(stderr)
 end
 
-# Decision 0031, the page helper: every page this REPL child serves carries a secret in its address, 128 random
-# bits minted once per child, so another OS account on this box that finds the port gets a 404, and a re-serve in
-# this child keeps its URL.
+# Decision 0031, the page helper: one server per REPL child, bound once on a port the OS assigns and kept for the
+# child's life, so its listener never closes while its secret is valid. A secret lives exactly as long as its
+# server: it is minted when the server is bound, and a server that closes takes it along, so whoever binds a
+# closed port learns only a dead one.
 const PAGE_SECRET = Ref{String}("")
-function page_secret()
-    isempty(PAGE_SECRET[]) && (PAGE_SECRET[] = bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
-    return PAGE_SECRET[]
+
+# A Bonito server on `host`:`port` (0: the OS picks). Bonito moves a taken port to the next one with a warning; a
+# pinned port that is taken throws instead. `proxy_url` is this server's own loopback origin, so its asset and
+# websocket addresses use 127.0.0.1 (a remote frontend's page proxy binds 127.0.0.1 only).
+function page_server(Bonito, host::String, port::Int)
+    server = Base.invokelatest(Bonito.Server, host, port)
+    if port != 0 && server.port != port
+        try Base.invokelatest(close, server) catch end
+        error("wglshow: port $port is taken")
+    end
+    server.proxy_url = "http://$host:$(server.port)"
+    return server
 end
 
-# The port of the last page this child served, tried first so a re-serve keeps its URL.
-const PAGE_PORT = Ref{Union{Int,Nothing}}(nothing)
-
-# A loopback port for the next serve: `previous` again while it is free, else one the OS assigns. Never a
-# preferred or configured port (decision 0031). The probe-close-rebind window is benign: losing it fails Bonito's
-# own bind loudly.
-function page_port(previous::Union{Int,Nothing})
-    if previous !== nothing
-        try
-            srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", previous))
-            close(srv)
-            return previous
-        catch
-        end
+# The page's route: Bonito's own rendering of `app`, answered with `Referrer-Policy: no-referrer` so no request the
+# page makes names its secret path.
+function no_referrer_page(Bonito, app)
+    return function (context)
+        response = Base.invokelatest(Bonito.HTTPServer.apply_handler, app, context)
+        Base.invokelatest(Bonito.HTTP.setheader, response, "Referrer-Policy" => "no-referrer")
+        return response
     end
-    srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", 0))
-    _, p = Sockets.getsockname(srv)
-    close(srv)
-    return Int(p)
 end
 
 """
@@ -243,12 +253,10 @@ end
 Serve an interactive WGLMakie figure over Bonito on a loopback port and return a
 [`BrowserView`](@ref), so the frontend auto-opens it in the browser (ADR 0032).
 
-`open = false` serves WITHOUT opening a browser anywhere: the frame still flows
-(the daemon's proxy allowlist learns the port) and the collected output prints
-the URL plus the targeted follow-up (`sot-fe open-url <url> --fe <handle>`), so
-a session can put the figure on exactly ONE frontend. Use it when multiple
-frontends are attached — two live browser clients on one served figure race the
-shared layout (`resize_to = :parent`), corrupting axis placement and hitboxes.
+`open = true` opens the figure on every attached frontend. `open = false` opens it nowhere; the frame still
+flows, so the daemon's proxy allowlist learns the port. `open = "<name>"` (the name `sot-fe --fe` takes) opens
+it only on that frontend. Use that when several frontends are attached: two live browser clients on one figure
+race its shared layout (`resize_to = :parent`). A frontend that predates `open = "<name>"` opens nothing.
 Call it as the last expression of an eval:
 
     using WGLMakie
@@ -260,14 +268,14 @@ Call it as the last expression of an eval:
 call time by PkgId from `Base.loaded_modules` — WGLMakie just needs to be
 *loaded* in this REPL's world (directly via `using WGLMakie`, or transitively
 through a package that depends on it; Bonito then comes in as WGLMakie's own
-dependency). The server binds `127.0.0.1` on a port the OS assigns (the
-previous serve's port again while it is free, so a re-serve keeps its URL) and
-mounts the figure at a secret path minted once per REPL process (decision
-0031): `/` answers 404, so another account on the box that finds the port gets
-nothing. A remote frontend reaches it through
-the per-URL ADR-0035 proxy. It lives as long as the REPL; a repeat `wglshow`
-replaces it. Pass `port` to pin a port verbatim (a taken pinned port errors
-loudly); the secret path applies either way.
+dependency). The figure is served by one Bonito server per REPL process, bound on `127.0.0.1` at a port the OS assigns and
+kept for the REPL's life, at a secret path minted with that server (decision 0031). `/` answers 404, so another
+account on the box that finds the port gets nothing, and the page is sent with `Referrer-Policy: no-referrer`.
+A repeat `wglshow` shows the new figure at the same address without closing the listener. Tabs still showing
+an earlier figure keep it until they close. The frontend opens the page through a one-use local redirect, so the
+address is never on a command line. A remote frontend reaches it through the per-URL ADR-0035 proxy. Pass
+`port` (1-65535) to pin a port. If it differs from the live server's port, a new server binds there with a new
+secret and the old one closes. A taken pinned port throws and leaves the live page as it was.
 
 The figure fills the browser window and grows with it as the window is resized
 (`resize_to=:parent` mounted in a viewport-filling container).
@@ -284,28 +292,26 @@ call (e.g. to pin a port).
 
 Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
 """
-function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
+function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,AbstractString} = true)
     WGL = get(Base.loaded_modules, WGLMAKIE_PKGID, nothing)
     WGL === nothing && error("wglshow: WGLMakie is not loaded in this REPL — load it directly (`using WGLMakie`) or through a package that depends on it")
     # Bonito arrives as WGLMakie's dependency; require it by UUID (already loaded,
     # so this just returns the module) rather than assume the user `using`d it.
     Bonito = Base.require(Base.PkgId(
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
+    port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
     host = "127.0.0.1"
-    # Close the previous server BEFORE picking the port, so a repeat wglshow in
-    # this child finds its own old port free and reuses it (stable URL across
-    # re-serves) instead of needlessly taking a fresh port.
-    prev = WGL_SERVER[]
-    if prev !== nothing
-        WGL_SERVER[] = nothing
-        try
-            Base.invokelatest(close, prev)
-        catch
-        end
+    server = WGL_SERVER[]
+    if server === nothing || (port !== nothing && port != server.port)
+        # Bind the new server first: a taken pinned port throws here and leaves the live page as it was.
+        fresh = page_server(Bonito, host, port === nothing ? 0 : Int(port))
+        old = WGL_SERVER[]
+        PAGE_SECRET[] = bytes2hex(rand(Random.RandomDevice(), UInt8, 16))
+        WGL_SERVER[] = fresh
+        old === nothing || try Base.invokelatest(close, old) catch end
+        server = fresh
     end
-    # An explicit `port` is honoured verbatim (a taken port errors loudly); otherwise `page_port`.
-    port = port === nothing ? page_port(PAGE_PORT[]) : Int(port)
-    external = "http://$host:$port"
+    external = "http://$host:$(server.port)"
     # Warn (never silently) if the figure carries interactive Makie widgets —
     # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).
     wgl_warn_if_widgets(fig)
@@ -321,7 +327,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
     # activate!'s set_screen_config! resets per call, so setting it here wins.
     Base.invokelatest(WGL.activate!; resize_to = :parent, use_html_widgets = false)
     Base.invokelatest(Bonito.configure_server!;
-        listen_url = host, listen_port = port, proxy_url = external)
+        listen_url = host, listen_port = server.port, proxy_url = external)
     # Mount the figure in a viewport-filling container so a resize_to=:parent
     # figure grows with the browser window instead of Bonito's content-sized
     # default (which pinned it to ~1/3 width — ImagingSystemDesign finding, 2026-07-13).
@@ -337,24 +343,13 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
         Bonito.DOM.div(
             Bonito.DOM.script(WGL_ERROR_OVERLAY_JS),
             Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0")))
-    # Decision 0031: the figure lives at a secret path; `/` answers 404.
-    path = "/" * page_secret()
-    server = Base.invokelatest(Bonito.Server, host, port; proxy_url = external)
-    Base.invokelatest(Bonito.route!, server, path => app)
-    WGL_SERVER[] = server
-    PAGE_PORT[] = port
-    url = Base.invokelatest(Bonito.online_url, server, path)
-    # Announce AT SERVE TIME (browser frame now), not only via the last-value
-    # path — a wrapper that swallows this return value would otherwise make
-    # the serve invisible (port never allowlisted, FE never opens the page).
-    # With `open = false` the frame still flows (allowlist intact) but no
-    # frontend opens a tab; print the targeted-open recipe so the caller has
-    # the URL and the follow-up command in the collected output.
-    if !open
-        println("wglshow: serving (no auto-open) at $url — open on ONE frontend with:")
-        println("  sot-fe open-url '$url' --fe <fe-handle>")
-    end
-    return announce_browserview(BrowserView(url, open))
+    # Decision 0031: the figure lives at the server's secret path; `/` answers 404. `route!` replaces the previous
+    # figure in place, so the listener and the URL outlive every re-serve.
+    path = "/" * PAGE_SECRET[]
+    Base.invokelatest(Bonito.route!, server, path => no_referrer_page(Bonito, app))
+    # Announce at serve time, not only via the last value: a wrapper that swallows the return value would
+    # otherwise leave the port unallowlisted and the page unopened.
+    return announce_browserview(BrowserView(external * path, open))
 end
 
 # Serializes envelope writes to `io_out`. With streaming (ADR 0009 phase-2)
@@ -702,8 +697,13 @@ const ANNOUNCED_BROWSER_URLS = Set{String}()
 # `wglshow(fig; open=false)` followed by returning `browserview(url)` in the
 # same eval must still emit the open=true frame (one no-open announce for the
 # allowlist, then one deliberate open), and vice versa. Identical-policy
-# repeats still dedupe to one frame.
-browser_announce_key(bv::BrowserView) = string(bv.url, '|', bv.open)
+# repeats still dedupe to one frame. The key includes the target.
+browser_announce_key(bv::BrowserView) = string(bv.url, '|', bv.open, '|', something(bv.fe, ""))
+
+# The `browser` frame for `bv`; `fe` is present only when the frame names its one frontend.
+browser_frame(bv::BrowserView) = bv.fe === nothing ?
+    Dict(:kind => "browser", :url => bv.url, :open => bv.open) :
+    Dict(:kind => "browser", :url => bv.url, :open => bv.open, :fe => bv.fe)
 
 """
     announce_browserview(bv::BrowserView) -> bv
@@ -717,7 +717,7 @@ function announce_browserview(bv::BrowserView)
     em === nothing && return bv
     browser_announce_key(bv) in ANNOUNCED_BROWSER_URLS && return bv
     try
-        em(Dict(:kind => "browser", :url => bv.url, :open => bv.open))
+        em(browser_frame(bv))
         push!(ANNOUNCED_BROWSER_URLS, browser_announce_key(bv))
     catch
         # Emission is best-effort: a failed announce must not break the serve
@@ -849,7 +849,7 @@ function value_frames_for(result)
         # `browserview(url)` as the last expression) was never announced and
         # still emits here.
         browser_announce_key(result) in ANNOUNCED_BROWSER_URLS && return out
-        push!(out, Dict(:kind => "browser", :url => result.url, :open => result.open))
+        push!(out, browser_frame(result))
         return out
     end
     img_mimes = (MIME"image/png"(), MIME"image/svg+xml"())

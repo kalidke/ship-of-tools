@@ -18,7 +18,7 @@
 //! honest without blocking the render thread: the GPU thread binds a
 //! `std::net::TcpListener` SYNCHRONOUSLY (a bind is sub-millisecond, no
 //! `block_on`, so the port is already listening the instant
-//! `open_url_in_browser` runs) and hands the bound listener — tagged with the
+//! `browser_open::open_page` runs) and hands the bound listener — tagged with the
 //! ssh recipe and token it resolved for that page's host — to the transport
 //! runtime here, which owns the async accept loop + the per-connection pipe.
 

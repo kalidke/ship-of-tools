@@ -118,7 +118,7 @@ backend wraps each frame as a `repl.frame` event on the main protocol stream.
 | `stderr` | `{text}` — streamed incrementally |
 | `value` | `{mime, text}` — the last expression's value rendered as text |
 | `image` | `{mime, data_base64, bytes}` — e.g. `image/png` |
-| `browser` | `{url, open}` — a loopback URL for a live browser-served artifact (`wglshow(fig)`, a `BrowserView`); `open` says whether the frontend should auto-open a tab |
+| `browser` | `{url, open, fe}` — a loopback URL for a live browser-served artifact (`wglshow(fig)`, a `BrowserView`); `open` says whether every frontend opens a tab; `fe`, when present, names the one frontend that opens it |
 | `error` | `{message, stacktrace: [{file, line, fn}, …]}` |
 | `done` | `{eval_id, elapsed_ms}` — always the last frame for an evaluation |
 
@@ -156,13 +156,14 @@ wglshow(surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(sqrt(x^2 + y^2));
 
 `wglshow` serves the figure over Bonito on a loopback port the OS assigns, at an
 address with a secret in it (another account on the box that finds the port gets
-nothing), and returns a `BrowserView` — which makes
-the frontend open the figure in your OS browser, no URL to copy. On a remote
-backend the page and its WebSocket ride the daemon proxy over the control
-connection (ADR 0035) — no dedicated forward — so pan/zoom/rotate work
-whether the backend is local or remote. The server lives as long as the
-REPL, and calling `wglshow` again replaces it at the same address while
-its port is free.
+nothing), and returns a `BrowserView`, which makes the
+frontend open the figure in your OS browser with no URL to copy. The frontend hands the browser a one-use local
+address that redirects to the figure, so the secret is never on a command line. On a remote backend the page and
+its WebSocket ride the daemon proxy over the control connection (ADR 0035), with no dedicated forward, so
+pan/zoom/rotate work whether the backend is local or remote. One server per REPL lives as long as the REPL;
+calling `wglshow` again shows the new figure at the same address. With several frontends attached,
+`wglshow(fig; open = "<fe>")` opens it only on the frontend `sot-fe --fe <fe>` names, and `open = false` opens
+it nowhere.
 
 WGLMakie and Bonito are resolved from *your own* project env at call time
 (`using WGLMakie` first) — Ship of Tools ships no plotting dependency of its own,

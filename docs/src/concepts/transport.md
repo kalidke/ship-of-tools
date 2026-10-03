@@ -131,10 +131,20 @@ own account and is served.
 
 Figures served with `wglshow` bind a port the operating system assigns
 and carry a secret in the page's address, so another account that finds
-the port gets nothing. Pluto notebooks carry Pluto's own secret. A page
-your own code serves on a port it binds itself is a socket Ship of Tools
-never opened: any account on that box can reach it, and nothing here can
-change that. Serve figures with `wglshow`.
+the port gets nothing. One server per REPL keeps its port and its secret
+for the REPL's life, so the secret is never valid on a port it has let go.
+The page is sent with `Referrer-Policy: no-referrer`. Pluto notebooks
+carry Pluto's own secret. No page address goes on a command line, where
+another account could read it. The frontend hands the browser only the
+address of a one-use loopback listener of its own. That listener serves
+this account alone, answers the browser's first request with a redirect
+to the page, and then closes. Logs and the status line show a page's host
+and port, never its path. An address you pass to `sot-fe open-url` is on
+that command's line: open a figure on one frontend with
+`wglshow(fig; open = "<fe>")`. A page your own code serves on a port it
+binds itself is a socket Ship of Tools never opened. Any account on that
+box can reach it, and nothing here can change that. Serve figures with
+`wglshow`.
 
 ## What this page does not yet cover
 

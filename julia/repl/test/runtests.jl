@@ -43,8 +43,8 @@ const DR = ShipToolsRepl
         @test frames[1][:url] == url
         # browserview() is the exported constructor and round-trips identically.
         @test DR.value_frames_for(DR.browserview(url)) == frames
-        # Auto-open is on by default; `open = false` (serve-only, targeted
-        # open via `sot-fe open-url --fe`) rides the frame so front-ends can
+        # Auto-open is on by default; `open = false` (serve-only, or opened on one named
+        # frontend with `open = "<name>"`) rides the frame so front-ends can
         # skip the broadcast browser-open.
         @test frames[1][:open] === true
         no_open = DR.value_frames_for(DR.browserview(url; open = false))
@@ -274,22 +274,18 @@ const DR = ShipToolsRepl
         empty!(DR.ANNOUNCED_BROWSER_URLS)
     end
 
-    @testset "page helper: a secret per REPL child and an OS-assigned port (decision 0031)" begin
-        s = ShipToolsRepl.page_secret()
-        @test occursin(r"^[0-9a-f]{32}$", s)
-        @test ShipToolsRepl.page_secret() == s
-        p = ShipToolsRepl.page_port(nothing)
-        @test p in 1:65535
-        @test ShipToolsRepl.page_port(p) == p
-        # A holder on `p` (standing in for another account's or workspace's server): the helper must move on.
-        holder = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", p))
-        try
-            q = ShipToolsRepl.page_port(p)
-            @test q != p
-            @test q in 1:65535
-        finally
-            close(holder)
-        end
+    @testset "browser frame: opened on one named frontend (decision 0031)" begin
+        url = "http://127.0.0.1:1/0123456789abcdef0123456789abcdef"
+        f = DR.value_frames_for(DR.browserview(url; open = "laptop"))
+        @test length(f) == 1
+        @test f[1][:open] === false
+        @test f[1][:fe] == "fe@laptop"
+        @test DR.value_frames_for(DR.browserview(url; open = "fe@laptop")) == f
+        @test !haskey(DR.value_frames_for(DR.browserview(url))[1], :fe)
+        @test !haskey(DR.value_frames_for(DR.browserview(url; open = false))[1], :fe)
+        @test DR.browser_announce_key(DR.browserview(url; open = "a")) !=
+              DR.browser_announce_key(DR.browserview(url; open = "b"))
+        @test_throws ArgumentError DR.browserview(url; open = "")
     end
 
     @testset "serve: ready sentinel is the first stdout envelope (ADR 0009 update)" begin

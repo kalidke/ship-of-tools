@@ -1089,35 +1089,11 @@ fn strip_frontmatter(s: &str) -> String {
 /// frontmatter (target, target_kind, synced_against, authored_by,
 /// references) renders as a read-only header above the edit area and
 /// concatenation on save preserves it byte-perfect.
-/// Hand `url` (any browser-openable address — `http://…`, `file:///…`, or
-/// a local filesystem path) off to the OS default handler. Fire-and-
-/// forget — we don't wait for the browser to exit.
+/// Hand `url`, an address with NO secret in it (a local file, the public manual), to the OS opener. A served page
+/// goes through `crate::browser_open::open_page`, never here: this argument lands on command lines other accounts
+/// can read.
 fn open_url_in_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // Avoid `cmd /c start`: shell metacharacters in URLs, especially
-        // `&secret=...` on Pluto links, are otherwise parsed by cmd.exe.
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn()
-            .map(|_| ())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())?;
-    }
-    tracing::info!(%url, "opened in browser");
-    Ok(())
+    crate::browser_open::spawn_opener(url)
 }
 
 /// Write `html_bytes` to a unique temp file and hand it off to the OS
@@ -8791,14 +8767,15 @@ impl State {
             }
             FeCommand::OpenUrl { url } => {
                 // Scheme already allowlisted (http/https) at route time.
-                tracing::info!(%url, "fe-command: open_url");
+                let origin = crate::browser_open::origin_of(&url);
+                tracing::info!(page = %origin, "fe-command: open_url");
                 // The URL is loopback on the daemon that sent this command; a
                 // command-file / internal dispatch names no host and gets the
                 // default — the only proxied one anyway.
                 let host = from_host.cloned().unwrap_or_else(|| self.default_host());
                 if self.ensure_proxy_for_url(&host, &url) {
-                    match open_url_in_browser(&url) {
-                        Ok(()) => self.status = format!("opened in browser · {url}"),
+                    match crate::browser_open::open_page(&url) {
+                        Ok(()) => self.status = format!("opened in browser · {origin}"),
                         Err(e) => self.status = format!("open_url failed · {e}"),
                     }
                 }
@@ -14861,29 +14838,25 @@ impl State {
                         // browser-open (reusing the pluto/video/docs path) and skip the
                         // repl-log append entirely. The URL resolves directly on a
                         // local FE and via the launcher's `-L` tunnel on a remote one.
-                        if let ReplFrame::Browser { url, open } = &frame {
+                        if let ReplFrame::Browser { url, open, fe } = &frame {
                             let url = url.clone();
-                            // `open: false` (`wglshow(fig; open=false)`) — the eval
-                            // is serving for a TARGETED open: some session will
-                            // follow up with `sot-fe open-url <url> --fe <handle>`
-                            // for exactly one FE. Every FE must stay hands-off
-                            // here (auto-opening on all FEs is the multi-client
-                            // layout race the flag exists to avoid); surface the
-                            // URL in the status line so a human at any FE can
-                            // still open it deliberately.
-                            if !open {
-                                tracing::info!(%url, "wgl: browser frame served no-open");
-                                self.status = format!("interactive figure served · {url}");
+                            let origin = crate::browser_open::origin_of(&url);
+                            // `open: false` serves without opening; `fe` names the one
+                            // frontend that opens it anyway (`wglshow(fig; open = "<fe>")`),
+                            // matched exactly as a directed fe.command is.
+                            if !crate::browser_open::opens_here(*open, fe.as_deref(), &self_comm_handle()) {
+                                tracing::info!(page = %origin, "wgl: browser frame served, not opened here");
+                                self.status = "interactive figure served, not opened here".to_string();
                                 self.window.request_redraw();
                                 continue;
                             }
                             if self.ensure_proxy_for_url(&event_host, &url) {
-                                match open_url_in_browser(&url) {
+                                match crate::browser_open::open_page(&url) {
                                     Ok(()) => {
-                                        self.status = format!("opened interactive figure · {url}")
+                                        self.status = format!("opened interactive figure · {origin}")
                                     }
                                     Err(e) => {
-                                        tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
+                                        tracing::warn!(error = %e, page = %origin, "wgl: browser open failed");
                                         self.status =
                                             format!("interactive figure · browser-open failed · {e}");
                                     }
@@ -15628,12 +15601,13 @@ impl State {
                 crate::transport::IncomingEvt::PlutoOpened { result } => match result {
                     Ok(url) => {
                         if self.ensure_proxy_for_url(&event_host, &url) {
-                            if let Err(e) = open_url_in_browser(&url) {
-                                tracing::warn!(error = %e, %url,
-                                        "pluto: open_url_in_browser failed");
+                            let origin = crate::browser_open::origin_of(&url);
+                            if let Err(e) = crate::browser_open::open_page(&url) {
+                                tracing::warn!(error = %e, page = %origin,
+                                        "pluto: browser open failed");
                                 self.status = format!("pluto.open browser-launch failed · {e}");
                             } else {
-                                self.status = format!("pluto · opened {url}");
+                                self.status = format!("pluto · opened {origin}");
                             }
                         }
                         self.window.request_redraw();
@@ -15647,12 +15621,13 @@ impl State {
                 crate::transport::IncomingEvt::DocsOpened { result } => match result {
                     Ok(url) => {
                         if self.ensure_proxy_for_url(&event_host, &url) {
-                            if let Err(e) = open_url_in_browser(&url) {
-                                tracing::warn!(error = %e, %url,
-                                        "docs: open_url_in_browser failed");
+                            let origin = crate::browser_open::origin_of(&url);
+                            if let Err(e) = crate::browser_open::open_page(&url) {
+                                tracing::warn!(error = %e, page = %origin,
+                                        "docs: browser open failed");
                                 self.status = format!("docs.open browser-launch failed · {e}");
                             } else {
-                                self.status = format!("docs · opened {url}");
+                                self.status = format!("docs · opened {origin}");
                             }
                         }
                         self.window.request_redraw();
@@ -15666,9 +15641,10 @@ impl State {
                 crate::transport::IncomingEvt::VideoOpened { result } => match result {
                     Ok(url) => {
                         if self.ensure_proxy_for_url(&event_host, &url) {
-                            if let Err(e) = open_url_in_browser(&url) {
-                                tracing::warn!(error = %e, %url,
-                                        "video: open_url_in_browser failed");
+                            let origin = crate::browser_open::origin_of(&url);
+                            if let Err(e) = crate::browser_open::open_page(&url) {
+                                tracing::warn!(error = %e, page = %origin,
+                                        "video: browser open failed");
                                 self.status = format!("video.open browser-launch failed · {e}");
                             } else {
                                 self.status = "video · opened in browser".to_string();
@@ -20222,7 +20198,8 @@ fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) ->
             // launch arbitrary local handlers (file:, javascript:, custom
             // protocol hijacks). Browsers own http/https; nothing else.
             if !(url.starts_with("https://") || url.starts_with("http://")) {
-                tracing::warn!(%url, "fe-command open_url: non-http(s) scheme refused");
+                let origin = crate::browser_open::origin_of(&url);
+                tracing::warn!(scheme = %origin, "fe-command open_url: non-http(s) scheme refused");
                 return None;
             }
             Some(FeCommand::OpenUrl { url })
@@ -23396,7 +23373,7 @@ fn build_repl_lines(
                     // is defensive — if one ever lands here, render a compact
                     // caption rather than dropping it silently.
                     out.push(RtLine::from(vec![Span::styled(
-                        format!("↗ interactive figure · {url}"),
+                        format!("↗ interactive figure · {}", crate::browser_open::origin_of(url)),
                         Style::default().fg(Color::LightBlue),
                     )]));
                 }

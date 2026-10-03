@@ -264,7 +264,7 @@ async fn supervisor_task(
                             if let Some(reply) = pending.pop_front() {
                                 let _ = reply.send(Ok(url.trim().to_string()));
                             } else {
-                                tracing::warn!(%line, "pluto URL without pending request");
+                                tracing::warn!("pluto: a URL line with no pending request; dropped");
                             }
                         } else if let Some(err) = line.strip_prefix("ERR ") {
                             if let Some(reply) = pending.pop_front() {
