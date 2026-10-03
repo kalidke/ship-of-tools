@@ -243,6 +243,7 @@ async fn k3b_ssh_cold_dial() {
             role: String::new(),
             instance: None,
             name: None,
+            os_user: None,
         };
         Frame::req(1, op::HELLO, serde_json::to_value(&h).unwrap())
     };

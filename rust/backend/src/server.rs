@@ -1603,6 +1603,7 @@ where
         // every later frame on this connection. Logged at info above
         // SLOW_REQUEST_MS so the culprit op is identified, never inferred
         // from a neighbouring log line.
+        let mut refused = false;
         let dispatch_started = std::time::Instant::now();
         let dispatched: Result<handlers::HandlerOutput> = match frame.op.as_str() {
             op::HELLO => {
@@ -1610,44 +1611,49 @@ where
                 // time we learn its client_id (a reconnect re-sends hello
                 // on the same connection — keep the original guard). Done
                 // before `handle_hello` so `clients_connected` counts self.
-                if client_guard.is_none() {
-                    if let Ok(req) =
-                        serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
-                    {
-                        // Topology plan §F step 2: mark this connection
-                        // ELIGIBLE for the read-deadline reaper -- exactly
-                        // the two long-lived roles, `fe` and `bridge`
-                        // (`cli`/`agent` are one-shot and stay ungated).
-                        // This does NOT arm the deadline itself (manager
-                        // compatibility fix, post-review) — only this
-                        // connection's FIRST `ping` does that (`op::PING`
-                        // arm below), so a peer too old to send one keeps
-                        // today's behaviour exactly, never reaped by this
-                        // path.
-                        // A peer on another protocol is about to be
-                        // refused by `handle_hello`'s gate: never enter
-                        // the roster (it would be counted as a directed
-                        // command's audience and listed by `version.query`
-                        // while its hello stands refused). It gets the
-                        // structured mismatch reply and nothing else.
-                        if req.protocol == sot_protocol::PROTOCOL_VERSION {
-                            is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
-                            hello_host = req.host.clone();
-                            hello_name = req.name.clone();
-                            client_guard = Some(clients.register(
-                                req.client_id,
-                                transport,
-                                peer.clone(),
-                                req.app_version,
-                                req.protocol,
-                                req.role,
-                                req.host,
-                                req.instance,
-                                req.name,
-                            ));
+                // Decision 0031 and ADR 0030 §2: ONE refusal decision per hello, on every hello. The protocol by
+                // `protocol_refusal`; the OS account by `Clients::register`, under the roster lock, on a connection's first
+                // hello. A refused connection never enters the roster, gets the structured reply, and is closed below
+                // (`refused`). A malformed payload stays `handle_hello`'s own parse error.
+                let mut refusal = None;
+                if let Ok(req) = serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone()) {
+                    refusal = handlers::protocol_refusal(&req);
+                    if refusal.is_none() && client_guard.is_none() {
+                        let long_lived = matches!(req.role.as_str(), "fe" | "bridge");
+                        let (host, name) = (req.host.clone(), req.name.clone());
+                        match clients.register(
+                            req.client_id,
+                            transport,
+                            peer.clone(),
+                            req.app_version,
+                            req.protocol,
+                            req.role,
+                            req.host,
+                            req.instance,
+                            req.name,
+                            req.os_user,
+                        ) {
+                            Ok(guard) => {
+                                // Topology plan §F step 2: mark this connection
+                                // ELIGIBLE for the read-deadline reaper -- exactly
+                                // the two long-lived roles, `fe` and `bridge`
+                                // (`cli`/`agent` are one-shot and stay ungated).
+                                // This does NOT arm the deadline itself (manager
+                                // compatibility fix, post-review) — only this
+                                // connection's FIRST `ping` does that (`op::PING`
+                                // arm below), so a peer too old to send one keeps
+                                // today's behaviour exactly, never reaped by this
+                                // path.
+                                is_long_lived_role = long_lived;
+                                hello_host = host;
+                                hello_name = name;
+                                client_guard = Some(guard);
+                            }
+                            Err(conflict) => refusal = Some(handlers::HelloRefusal::OsUserConflict(conflict)),
                         }
                     }
                 }
+                refused = refusal.is_some();
                 // Flip the per-connection auth flag based on THIS hello's token
                 // (recomputed on every hello so a reconnect re-auths). Open-config
                 // mode has `expected_token == None`, so this stays true. Mirrors
@@ -1667,6 +1673,7 @@ where
                     frame.id,
                     frame.payload,
                     &session,
+                    refusal,
                     expected_token.as_ref(),
                     &files_mode,
                     label.as_deref(),
@@ -2241,6 +2248,11 @@ where
 
         for (out_frame, out_blob) in out_frames {
             write_reply(&mut tx, out_frame, out_blob).await?;
+        }
+        // A refused hello's reply is written: close (decision 0031). Returning drops this connection and, when a
+        // re-hello was refused on a registered connection, its roster guard.
+        if refused {
+            return Ok(());
         }
     }
 }

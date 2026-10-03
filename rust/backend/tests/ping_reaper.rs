@@ -188,6 +188,7 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, role:
         role: role.to_string(),
         instance: Some("test-instance".to_string()),
         name: Some(format!("{role}@{client_id}")),
+        os_user: None,
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await

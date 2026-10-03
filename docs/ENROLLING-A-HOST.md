@@ -6,6 +6,9 @@ or a route to the box. The route is: frontend → its own `ssh` child to the
 hub → the **hub**'s socket for that box → one `ssh` from the hub → `sotd
 stdio-bridge` on the box → that box's daemon. The hub is the only machine
 that ever ssh's in; ADR 0048 is the decision, this page is the procedure.
+Each OS account on a box enrols as its own account on the hub; two OS
+accounts that log in to one hub account are refused (see Reading a
+failure).
 
 Everything here is run by an operator, once per box. Nothing in it is
 automatic, and every step has a check that fails loudly — "it looked
@@ -128,6 +131,12 @@ Each step's check must pass before the next one is worth doing.
 
 ## Reading a failure
 
+- **A window's status line reads `hello rejected: … (code=os_user_conflict)`.**
+  Another OS account on the same box already holds a connection to that
+  daemon through the same account on its machine. Give each OS account on
+  the box its own hub account (its own `User` for the hub in its ssh config,
+  and its own enrolment); a daemon never lets two accounts share one box
+  name, because they would receive each other's mail.
 - **The socket file exists and the box is down.** Expected, and not a
   contradiction: systemd owns that socket, so it is present whether or not
   anything is behind it. The frontend renders the host unreachable and

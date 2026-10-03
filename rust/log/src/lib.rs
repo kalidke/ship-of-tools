@@ -187,6 +187,8 @@ pub mod journal;
 // see that module's own doc; nothing here is ported). `pub`, matching
 // `challenge_win`/`probe_win`: `tests/supervisor.rs` needs to reach it.
 pub mod lease;
+// Decision 0031: this process's OS account, as issued by the OS (hello's account guard).
+pub mod os_account;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.

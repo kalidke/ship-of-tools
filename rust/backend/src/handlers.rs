@@ -149,10 +149,27 @@ fn protocol_gate(client_protocol: u32) -> ProtocolGate {
     }
 }
 
+/// Why a hello is refused. Decided once per hello in `server.rs`'s hello arm (the protocol by
+/// [`protocol_refusal`], the OS account by `Clients::register` under the roster lock) and rendered by
+/// [`handle_hello`]. A refused connection is never in the roster and is closed after the reply (decision 0031).
+pub enum HelloRefusal {
+    Protocol,
+    OsUserConflict(crate::clients::OsUserConflict),
+}
+
+/// The protocol half of the hello decision (ADR 0030 §2).
+pub fn protocol_refusal(req: &HelloReq) -> Option<HelloRefusal> {
+    match protocol_gate(req.protocol) {
+        ProtocolGate::Accept => None,
+        ProtocolGate::Reject => Some(HelloRefusal::Protocol),
+    }
+}
+
 pub async fn handle_hello(
     req_id: u64,
     payload_json: serde_json::Value,
     session: &Session,
+    refusal: Option<HelloRefusal>,
     expected_token: &Option<String>,
     files_mode: &FilesMode,
     label: Option<&str>,
@@ -189,13 +206,14 @@ pub async fn handle_hello(
         }
     }
 
-    // Protocol version gate (ADR 0030 §2). Mirrors the token-mismatch shape
+    // Refusal rendering (ADR 0030 §2, decision 0031): the decision is made in
+    // `server.rs`; this renders it. The protocol arm mirrors the token-mismatch shape
     // above: a structured `{error, code}` envelope that does NOT deserialize
     // as `HelloRes`, so the frontend surfaces a clear "update needed" screen
     // instead of failing on a later op with a cryptic frame-parse error.
-    match protocol_gate(req.protocol) {
-        ProtocolGate::Accept => {}
-        ProtocolGate::Reject => {
+    match refusal {
+        None => {}
+        Some(HelloRefusal::Protocol) => {
             let frontend_version = if req.app_version.is_empty() {
                 "<pre-versioning>".to_string()
             } else {
@@ -222,6 +240,19 @@ pub async fn handle_hello(
                 "frontend_protocol": req.protocol,
                 "backend_version": sot_protocol::app_version(),
                 "frontend_version": req.app_version,
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::HELLO, payload).with_rev(revision),
+                None,
+            )]);
+        }
+        Some(HelloRefusal::OsUserConflict(c)) => {
+            tracing::warn!(client_id = %req.client_id, host = %c.host, held_by = %c.held_by, refused = %c.refused, "hello refused: os_user_conflict");
+            let message = format!("box {} already has a connection to this daemon running as another OS account ({}); this one runs as {}. Each OS account on a box needs its own account on this daemon's machine (see docs/ENROLLING-A-HOST.md).", c.host, c.held_by, c.refused);
+            let payload = serde_json::json!({
+                "error": message,
+                "code": "os_user_conflict",
+                "host": c.host,
             });
             return Ok(vec![(
                 Frame::res(req_id, op::HELLO, payload).with_rev(revision),
@@ -6970,7 +7001,7 @@ mod fe_sessions_tests {
     #[tokio::test]
     async fn a_named_connection_declares_and_is_stored() {
         let clients = Clients::new();
-        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
             .await
             .expect("handler ok");
@@ -6985,7 +7016,7 @@ mod fe_sessions_tests {
     #[tokio::test]
     async fn an_unnamed_connection_is_refused_not_stored() {
         let clients = Clients::new();
-        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, None);
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, None, None).expect("no account conflict");
         let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
             .await
             .expect("handler ok");
@@ -7006,7 +7037,7 @@ mod fe_sessions_tests {
     #[tokio::test]
     async fn an_attached_box_with_a_stale_disconnected_entry_lists_sessions_never_not_connected() {
         let clients = Clients::new();
-        let g1 = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g1 = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(
             g1.serial(),
             vec![sot_protocol::DeclaredSession {
@@ -7019,7 +7050,7 @@ mod fe_sessions_tests {
 
         // A second process on the SAME box, also declared, then gone —
         // this is what leaves the stale `disconnected` entry behind.
-        let g2 = clients.register("c-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g2 = clients.register("c-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.declare_sessions(
             g2.serial(),
             vec![sot_protocol::DeclaredSession {
@@ -7094,8 +7125,8 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_counts_the_exclusive_connection_not_the_shared_handle() {
         let clients = Clients::new();
-        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -7125,8 +7156,8 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_with_an_active_client_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()), None).expect("no account conflict");
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -7164,8 +7195,8 @@ mod fe_command_send_tests {
     async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
         let clients = Clients::new();
         // Registered but never touched by a person -> no active frontend.
-        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
+        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()), None).expect("no account conflict");
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
@@ -7195,7 +7226,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_is_never_overridden_by_active_resolution() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -7219,7 +7250,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_that_is_attached_delivers_to_it() {
         let clients = Clients::new();
-        let _target = clients.register("c-target", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
+        let _target = clients.register("c-target", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()), None).expect("no account conflict");
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
@@ -7241,7 +7272,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_no_active_frontend_publishes_nothing() {
         let clients = Clients::new();
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
@@ -7260,7 +7291,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_an_active_frontend_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()), None).expect("no account conflict");
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);

@@ -548,6 +548,13 @@ pub struct HelloReq {
     /// field for every role. `None` for a role that declares nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The OS account this client runs as (`sot_log::os_account::own_account_id()`: `uid:<n>` on Unix, the token
+    /// user's SID on Windows). A guard and nothing else (decision 0031): a daemon refuses a hello whose declared
+    /// `host` already has a live connection running as another account, so two OS accounts sharing one hub account
+    /// are refused instead of receiving each other's mail. Never an address, never part of a handle, never written
+    /// anywhere. `None` from a client older than this field, which the guard lets through.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2703,6 +2710,7 @@ mod hello_version_tests {
             role: String::new(),
             instance: None,
             name: None,
+            os_user: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: HelloReq = serde_json::from_str(&json).unwrap();
@@ -2739,6 +2747,7 @@ mod hello_version_tests {
             role: String::new(),
             instance: None,
             name: Some("fe@host-a".into()),
+            os_user: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("fe_handle"));
@@ -2760,6 +2769,7 @@ mod hello_version_tests {
             role: "agent".into(),
             instance: Some("i1".into()),
             name: Some("test-host-agent".into()),
+            os_user: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"name\":\"test-host-agent\""));
@@ -2768,6 +2778,17 @@ mod hello_version_tests {
         assert_eq!(back.host.as_deref(), Some("test-host"));
         assert_eq!(back.role, "agent");
         assert_eq!(back.instance.as_deref(), Some("i1"));
+    }
+
+    #[test]
+    fn hello_os_user_is_absent_when_none_and_read_when_present() {
+        let mut req: HelloReq = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
+        assert_eq!(req.os_user, None);
+        assert!(!serde_json::to_string(&req).unwrap().contains("os_user"));
+        let with: HelloReq = serde_json::from_str(r#"{"client_id":"c","os_user":"uid:7"}"#).unwrap();
+        assert_eq!(with.os_user.as_deref(), Some("uid:7"));
+        req.os_user = Some("uid:7".into());
+        assert!(serde_json::to_string(&req).unwrap().contains(r#""os_user":"uid:7""#));
     }
 
     #[test]

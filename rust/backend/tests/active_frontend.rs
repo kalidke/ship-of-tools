@@ -169,6 +169,7 @@ async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name:
         role: "fe".to_string(),
         instance: Some("test-instance".to_string()),
         name: Some(name.to_string()),
+        os_user: None,
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
@@ -385,6 +386,7 @@ async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
         role: "fe".to_string(),
         instance: None,
         name: Some("fe@test-host".to_string()),
+        os_user: None,
     };
     let body = async {
         codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
@@ -411,6 +413,96 @@ async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
         let (mut conn2, id) = connect_and_hello(&env.socket_path, "new-frontend", "fe@test-host").await;
         let v = call(&mut conn2, id, op::VERSION_QUERY, serde_json::json!({})).await;
         assert!(client_row(&v, "old-frontend").is_none(), "refused hello must not register: {v}");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// A raw hello (a JSON payload, never the `HelloReq` struct) on a fresh
+/// connection; returns the connection and the hello's `res` payload.
+async fn raw_hello(socket_path: &std::path::Path, payload: serde_json::Value) -> (Conn, serde_json::Value) {
+    let mut conn = poll_until_connected(socket_path).await;
+    codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, payload), None).await.expect("write hello");
+    let body = async {
+        loop {
+            let (frame, _blob) = codec::read_frame(&mut conn).await.expect("read hello reply");
+            if frame.kind == Kind::Res && frame.id == 1 {
+                return frame.payload;
+            }
+        }
+    };
+    let payload = tokio::time::timeout(BOUND, body)
+        .await
+        .unwrap_or_else(|_| panic!("no reply to hello within {BOUND:?}"));
+    (conn, payload)
+}
+
+/// A raw `fe` hello for `client_id` declaring `host`, with `os_user` when given.
+fn account_hello(client_id: &str, host: &str, os_user: Option<&str>) -> serde_json::Value {
+    let mut h = serde_json::json!({
+        "client_id": client_id,
+        "protocol": sot_protocol::PROTOCOL_VERSION,
+        "app_version": sot_protocol::app_version(),
+        "role": "fe",
+        "host": host,
+        "name": format!("fe@{client_id}"),
+    });
+    if let Some(u) = os_user {
+        h["os_user"] = serde_json::json!(u);
+    }
+    h
+}
+
+/// The daemon closed `conn`: a read returns an error within 2 s.
+async fn assert_closed(conn: &mut Conn) {
+    let read = tokio::time::timeout(Duration::from_secs(2), codec::read_frame(conn))
+        .await
+        .expect("a refused hello's connection must be closed, but it stayed open");
+    assert!(read.is_err(), "a refused hello's connection must be closed, got a frame");
+}
+
+/// Decision 0031: a hello whose declared host already has a live connection
+/// running as another OS account is refused (`os_user_conflict`, naming both),
+/// the connection is closed, and the refused client never joins the roster.
+/// The same account, an older client (no field) and another host pass.
+#[tokio::test]
+async fn a_second_os_account_on_one_box_is_refused_closed_and_never_listed() {
+    let env = Env::spawn("os-user");
+    let body = async {
+        let (mut a, pa) = raw_hello(&env.socket_path, account_hello("acct-a", "acct-box", Some("uid:900001"))).await;
+        assert!(pa.get("error").is_none(), "A must be accepted: {pa}");
+        let (mut b, pb) = raw_hello(&env.socket_path, account_hello("acct-b", "acct-box", Some("uid:900002"))).await;
+        assert_eq!(pb.get("code").and_then(|v| v.as_str()), Some("os_user_conflict"), "{pb}");
+        let msg = pb.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        assert!(msg.contains("uid:900001") && msg.contains("uid:900002"), "{msg}");
+        assert_closed(&mut b).await;
+        let mut held = Vec::new();
+        for (id, host, user) in [
+            ("acct-c", "acct-box", Some("uid:900001")),
+            ("acct-d", "acct-box", None),
+            ("acct-e", "other-box", Some("uid:900002")),
+        ] {
+            let (conn, p) = raw_hello(&env.socket_path, account_hello(id, host, user)).await;
+            assert!(p.get("error").is_none(), "{id} must be accepted: {p}");
+            held.push(conn);
+        }
+        let v = call(&mut a, 2, op::VERSION_QUERY, serde_json::json!({})).await;
+        assert!(client_row(&v, "acct-b").is_none(), "refused hello must not register: {v}");
+        assert!(client_row(&v, "acct-c").is_some(), "same account must register: {v}");
+    };
+    tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
+}
+
+/// Decision 0031: every refused hello closes its connection, not only an
+/// account conflict.
+#[tokio::test]
+async fn a_refused_hello_closes_the_connection() {
+    let env = Env::spawn("refused-close");
+    let body = async {
+        let mut hello = account_hello("old-fe", "test-host", None);
+        hello["protocol"] = serde_json::json!(sot_protocol::PROTOCOL_VERSION - 1);
+        let (mut conn, p) = raw_hello(&env.socket_path, hello).await;
+        assert_eq!(p.get("code").and_then(|v| v.as_str()), Some("protocol_mismatch"), "{p}");
+        assert_closed(&mut conn).await;
     };
     tokio::time::timeout(BOUND, body).await.expect("exchange did not finish within BOUND");
 }
