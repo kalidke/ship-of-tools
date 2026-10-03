@@ -447,7 +447,9 @@ fn refresh(
         }
     }
     systemctl(&["--user", "daemon-reload"]).map_err(|e| format!("daemon-reload failed: {e}"))?;
-    let want = topology::relay_command_line();
+    // systemd prints each command as `{ path=… ; argv[]=<the command as written> ; … }` (systemd 249, measured):
+    // the argv field must be exactly the generated line, so a longer command that merely contains it is caught.
+    let want = format!("argv[]={} ;", topology::relay_command_line());
     for &h in &hosts {
         let unit = format!("sot-host-relay-{h}@refresh-check.service");
         match systemctl(&["--user", "show", "-p", "ExecStart", "--value", &unit]) {
