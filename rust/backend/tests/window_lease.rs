@@ -156,8 +156,8 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Not a test of its own: the window the tests below spawn
 /// (`SOT_TEST_LEASE_CHILD=<socket>`), a no-op otherwise. It leases with
 /// its own identity and prints the answer, then obeys stdin lines
-/// (`close`, `keep`, `handover`, `half`, `garbage`, `ack <n>`), printing
-/// each answer, and holds the lease until stdin closes.
+/// (`close`, `keep`, `handover`, `half`, `garbage`, `ack <n>`, `raw <line>`,
+/// `overcap`), printing each answer, and holds the lease until stdin closes.
 #[tokio::test]
 async fn lease_holder_child() {
     let Ok(socket) = std::env::var("SOT_TEST_LEASE_CHILD") else { return };
@@ -183,19 +183,25 @@ async fn lease_holder_child() {
     let mut id = 2;
     while let Some(cmd) = lines.recv().await {
         let words: Vec<&str> = cmd.split_whitespace().collect();
-        let bytes = match words.as_slice() {
-            [intent @ ("close" | "keep" | "handover")] => {
-                let f = Frame::req(id, op::FE_LEAVING, serde_json::json!({ "intent": intent }));
-                format!("{}\n", serde_json::to_string(&f).unwrap())
+        let bytes = if let Some(text) = cmd.strip_prefix("raw ") {
+            format!("{text}\n")
+        } else if cmd == "overcap" {
+            format!("{}\n", "x".repeat(70_000))
+        } else {
+            match words.as_slice() {
+                [intent @ ("close" | "keep" | "handover")] => {
+                    let f = Frame::req(id, op::FE_LEAVING, serde_json::json!({ "intent": intent }));
+                    format!("{}\n", serde_json::to_string(&f).unwrap())
+                }
+                ["ack", n] => {
+                    let n: u32 = n.parse().expect("ack <n>");
+                    let f = Frame::req(id, op::FE_NOTICE_SEEN, serde_json::json!({ "not_ended": n }));
+                    format!("{}\n", serde_json::to_string(&f).unwrap())
+                }
+                ["garbage"] => "garbage\n".to_string(),
+                ["half"] => "{\"v\":2,\"id\":".to_string(),
+                other => panic!("unknown command {other:?}"),
             }
-            ["ack", n] => {
-                let n: u32 = n.parse().expect("ack <n>");
-                let f = Frame::req(id, op::FE_NOTICE_SEEN, serde_json::json!({ "not_ended": n }));
-                format!("{}\n", serde_json::to_string(&f).unwrap())
-            }
-            ["garbage"] => "garbage\n".to_string(),
-            ["half"] => "{\"v\":2,\"id\":".to_string(),
-            other => panic!("unknown command {other:?}"),
         };
         id += 1;
         tx.write_all(bytes.as_bytes()).await.expect("write to the lease");
@@ -326,9 +332,14 @@ fn row_toml(env: &Env, slug: &str) -> PathBuf {
 
 /// A capsule row (no agent) created and waited to `ready`; its state dir.
 async fn create_row(env: &Env, conn: &mut Conn, next_id: &mut u64, label: &str) -> (String, PathBuf) {
+    create_row_at(conn, next_id, label, &env.workspace_project_root).await
+}
+
+/// `create_row` on `root`: a second row needs a project root of its own.
+async fn create_row_at(conn: &mut Conn, next_id: &mut u64, label: &str, root: &Path) -> (String, PathBuf) {
     let req = serde_json::json!({
         "label": label,
-        "project_root": env.workspace_project_root.to_string_lossy(),
+        "project_root": root.to_string_lossy(),
         "runtime": "capsule",
     });
     let res = call(conn, *next_id, op::WORKSPACE_CREATE, req).await;
@@ -480,8 +491,6 @@ async fn lane_connection_close_does_not_shut_down() {
     let (conn, _) = connect_and_hello(&env.socket_path).await;
     drop(conn);
     drop(try_connect(&env.socket_path).await.expect("redial"));
-    let ack = w.ask("garbage", BOUND).await;
-    assert!(ack.get("error").is_some(), "a malformed lease line is answered with an error: {ack:?}");
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(daemon.still_up(), "a non-lease connection's end shut the daemon down: {}", daemon.said());
     w.eof().await;
@@ -670,4 +679,166 @@ async fn keep_then_eof_stays_up() {
     let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
     let row = find_row(&payload, &id).expect("the kept row is still registered");
     assert_eq!(row["phase"], "ready", "the kept row is not running: {row:?}");
+}
+
+#[tokio::test]
+async fn malformed_lease_line_does_not_depart() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("malformed");
+    let mut daemon = Daemon::start(&env, &[]).await;
+    let (mut w, lease) = Window::open(&env.socket_path).await;
+    assert_eq!(lease["outcome"], "granted", "{lease:?}");
+    for cmd in [
+        "garbage",
+        r#"raw {"v":2,"id":7,"kind":"res","op":"fe.leaving","payload":{"intent":"close"}}"#,
+        r#"raw {"v":2,"id":8,"kind":"req","op":"fe.nonsense","payload":{}}"#,
+        r#"raw {"v":2,"id":9,"kind":"req","op":"fe.leaving","payload":{"intent":"later"}}"#,
+        r#"raw {"v":2,"id":10,"kind":"req","op":"fe.notice_seen","payload":{"not_ended":"one"}}"#,
+        "overcap",
+    ] {
+        let r = w.ask(cmd, BOUND).await;
+        assert!(r.get("error").is_some(), "{cmd}: a malformed lease line is answered with an error: {r:?}");
+    }
+    // The window is the only lease, so a departure would have been a shutdown.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(daemon.still_up(), "a malformed lease line departed the lease: {}", daemon.said());
+    w.eof().await;
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease was no longer held: {}", daemon.said());
+}
+
+#[tokio::test]
+async fn lease_end_while_data_conn_busy() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("busy");
+    let mut daemon = Daemon::start(&env, &[]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    create_row(&env, &mut conn, &mut next_id, "busy-row").await;
+    let (mut w, lease) = Window::open(&env.socket_path).await;
+    assert_eq!(lease["outcome"], "granted", "{lease:?}");
+    // The data connection's handler is now mid-read of a frame.
+    conn.write_all(b"{\"v\":2,\"id\":").await.expect("write the half frame");
+    conn.flush().await.expect("flush the half frame");
+    w.eof().await;
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease's end did not decide: {}", daemon.said());
+    assert!(!row_toml(&env, "busy-row").exists(), "the row outlived the close");
+    let read = tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut conn)).await;
+    assert!(read.is_ok(), "the busy data connection was left open by the daemon's exit");
+}
+
+#[tokio::test]
+async fn non_lease_fe_never_decides() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("nonlease");
+    let mut daemon = Daemon::start(&env, &[]).await;
+    let me = sot_log::challenge::self_identity().expect("this process's identity");
+
+    async fn refused(env: &Env, me: &sot_log::challenge::ProcessIdentity) {
+        let mut c = tokio::io::BufReader::new(try_connect(&env.socket_path).await.expect("connect"));
+        let req = FeLeaseReq { boot: me.boot.clone(), pid: me.pid + 1, created: me.created, token: None };
+        let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
+        codec::write_frame(&mut c, &f, None).await.expect("write fe.lease");
+        let (reply, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut c))
+            .await
+            .expect("the refusal did not arrive")
+            .expect("read the refusal");
+        assert_eq!(reply.payload["outcome"], "foreign", "{:?}", reply.payload);
+    }
+
+    refused(&env, &me).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(daemon.still_up(), "a refused lease's end shut the daemon down: {}", daemon.said());
+    let (mut w, lease) = Window::open(&env.socket_path).await;
+    assert_eq!(lease["outcome"], "granted", "{lease:?}");
+    refused(&env, &me).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(daemon.still_up(), "a refused lease's end departed the granted window: {}", daemon.said());
+    w.eof().await;
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the lease was no longer held: {}", daemon.said());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn fast_reopen_never_reaches_dying_daemon() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("reopen");
+    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_id, state_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
+    drop(conn);
+    let fence = slow_row(&state_dir).await;
+    // Accepted before the shutdown begins, and silent until after.
+    let mut c = tokio::io::BufReader::new(try_connect(&env.socket_path).await.expect("connect"));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let (mut w, _) = Window::open(&env.socket_path).await;
+    w.send("close").await;
+    // The slow row holds the shutdown in step 3.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(try_connect(&env.socket_path).await.is_none(), "the dying daemon still accepted a connection");
+    let me = sot_log::challenge::self_identity().expect("this process's identity");
+    let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
+    let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
+    codec::write_frame(&mut c, &f, None).await.expect("write fe.lease");
+    let reply = tokio::time::timeout(BOUND, codec::read_frame(&mut c))
+        .await
+        .expect("no answer to the late lease")
+        .unwrap_or_else(|e| {
+            panic!("the earlier connection was not accepted before the shutdown began (test sync), not the defect: {e}")
+        });
+    assert_eq!(reply.0.payload["outcome"], "closing", "{:?}", reply.0.payload);
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    drop(fence);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn closing_flag_spans_shutdown() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("closing");
+    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_id, slow_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
+    let quick_root = env._tmp.path().join("quick-root");
+    std::fs::create_dir_all(&quick_root).expect("create the quick row's root");
+    create_row_at(&mut conn, &mut next_id, "quick", &quick_root).await;
+    drop(conn);
+    let fence = slow_row(&slow_dir).await;
+    let (mut w, _) = Window::open(&env.socket_path).await;
+    w.send("close").await;
+    // The quick row ended while the slow one still holds step 3, so the
+    // final record (step 5) cannot have been written.
+    let deadline = Instant::now() + EXIT_WITHIN;
+    while row_toml(&env, "quick").exists() {
+        assert!(Instant::now() < deadline, "the quick row was never ended: {}", daemon.said());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let rec = held_record(&env).expect("the record exists while the shutdown runs");
+    assert_eq!(rec["closing"], true, "the record does not say closing mid-shutdown: {rec:?}");
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    let rec = held_record(&env).expect("the final record");
+    assert_eq!(rec["closing"], false, "{rec:?}");
+    assert_eq!(rec["not_ended"], 1, "{rec:?}");
+    drop(fence);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn shutdown_bound_is_end_to_end() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("endtoend");
+    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_id, state_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
+    drop(conn);
+    let fence = slow_row(&state_dir).await;
+    let (mut w, _) = Window::open(&env.socket_path).await;
+    let t0 = Instant::now();
+    let ack = w.ask("close", EXIT_WITHIN).await;
+    assert_eq!(ack["not_ended"], 1, "{ack:?}");
+    // No `ack` is sent: the closer's notice waits out its own bound.
+    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "1 is the backstop's code: {}", daemon.said());
+    let took = t0.elapsed();
+    assert!(took >= Duration::from_secs(5), "the not-ended row was not retried until the rows deadline: {took:?}");
+    assert!(took < Duration::from_secs(15), "the shutdown outran its bound: {took:?}");
+    assert!(!daemon.said().contains("shutdown still running after"), "the backstop fired: {}", daemon.said());
+    drop(fence);
 }

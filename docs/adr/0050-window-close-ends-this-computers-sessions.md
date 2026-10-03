@@ -182,17 +182,12 @@ connection is the only handle.
 
 ## Known limits (0.6.6)
 
-- (a) Six lease and shutdown tests are not built: `malformed_lease_line_does_not_depart`,
-  `lease_end_while_data_conn_busy`, `non_lease_fe_never_decides`,
-  `fast_reopen_never_reaches_dying_daemon`, `closing_flag_spans_shutdown`,
-  `shutdown_bound_is_end_to_end`.
 - (b) Six start tests are not built: `unremovable_registration_is_never_resumed`,
   `cleanup_interrupted_by_kill_never_resumes`, `not_ended_after_bound_is_counted`,
   `restart_with_live_unrelated_pid_still_cleans_up`, `not_ended_survives_unacked_lease`,
   `converge_lease_survives_daemon_restart`.
 - (c) The create gate keeps the id, and the rollback of a failed create can remove a
   pre-existing row. This is a limit only because the start has no held-back state.
-- (d) `second_daemon_refuses_live` was not run on Windows.
 - (e) The macOS check has not run on every commit; boot identity on a Mac is unverified.
 - (f) Launchers: after the fix round the ensure logs under the install prefix, while
   `scripts/restart-backend.sh` and the setup skill's two copies still name a shared
