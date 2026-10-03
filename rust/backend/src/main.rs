@@ -199,6 +199,9 @@ Pure queries (no startup side effects, answered before any of the above):
 /// `sotd`'s own arguments are all of `args` (argv without argv[0]) except for `agent-exec`,
 /// where only the kind position counts: the words after it belong to the agent (`ccb --help`).
 /// A help request must never write, dial or exec, so `main` asks this before anything else runs.
+/// A `--help`/`-h` among those arguments is a help request even where it would be an option's
+/// value (`--socket --help`): such a value is not supported. The parsers share no option table,
+/// and a wrong guess only prints help, so there is one rule and no second option list.
 fn help_for(args: &[String]) -> Option<&'static str> {
     let first = args.first()?;
     let owned = if first == "agent-exec" { &args[1..args.len().min(2)] } else { args };
@@ -229,6 +232,7 @@ mod help_tests {
             ("-h", SOTD_HELP),
             ("--version --help", SOTD_HELP),
             ("--label x --help", SOTD_HELP),
+            ("--socket --help", SOTD_HELP),
             ("session-socket-path --help", SOTD_HELP),
             ("agent-exec --help", SOTD_HELP),
             ("agent-exec -h", SOTD_HELP),

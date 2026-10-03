@@ -3,6 +3,7 @@
 //! environment, a private home/config/state/runtime tree, and fake `ssh`/`systemctl` that
 //! leave a marker if anything dials.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,7 +22,6 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
 fn listing(tmp: &Path) -> Vec<PathBuf> {
     let mut v = Vec::new();
     files_under(tmp, &mut v);
-    v.retain(|p| p.file_name().map_or(true, |n| n != "DIALED"));
     v.sort();
     v
 }
@@ -31,10 +31,12 @@ fn make_env(tmp: &Path) {
         std::fs::create_dir_all(tmp.join(d)).unwrap();
     }
     std::fs::create_dir_all(tmp.join("run")).unwrap();
+    #[cfg(unix)]
     std::fs::set_permissions(tmp.join("run"), std::fs::Permissions::from_mode(0o700)).unwrap();
     for tool in ["ssh", "systemctl"] {
         let p = tmp.join("fakebin").join(tool);
         std::fs::write(&p, format!("#!/bin/sh\ntouch {}/DIALED\nexit 1\n", tmp.display())).unwrap();
+        #[cfg(unix)]
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
@@ -99,7 +101,6 @@ fn help_never_acts() {
         &["topology", "set", "remove", "--help"],
         &["--label", "x", "--help"],
         &["--help"],
-        &["-h"],
     ];
     let before = listing(tmp);
     for row in rows {
