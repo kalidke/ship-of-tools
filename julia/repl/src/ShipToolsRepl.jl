@@ -25,6 +25,7 @@ module ShipToolsRepl
 
 using Base64
 using Pkg
+using Random
 using Sockets
 
 export serve, browserview, BrowserView, wglshow
@@ -41,10 +42,10 @@ interactive WGLMakie/Bonito figure, a served dashboard, …). Return one as the
 last expression of an eval — or call [`browserview`](@ref) — and the REPL emits
 a `browser` frame instead of a static `value`/`image`, which the frontend hands
 to the OS browser-open (ADR 0032). `url` must be loopback-shaped
-(`http://127.0.0.1:<port>/…`) so it resolves through the launcher's `-L` tunnel
-on a remote frontend; the WGLMakie/Bonito port is `SOT_WGL_PORT` (default 1241,
-forwarded by the launcher alongside pluto/video/docs — 1237–1240 are the docs
-pool, so WGL sits at 1241).
+(`http://127.0.0.1:<port>/…`) so a remote frontend reaches it through the
+daemon's page proxy (ADR 0035). A `BrowserView` of a server your own code
+started carries no protection of its own; [`wglshow`](@ref) serves with a
+secret in the address.
 
 `BrowserView` deliberately carries no plotting dependency: the Bonito server
 that produces `url` lives in the *user's* project env (whichever WGLMakie they
@@ -206,28 +207,34 @@ function wgl_warn_if_widgets(fig)
     flush(stderr)
 end
 
-# Preferred-then-ephemeral port pick for the wglshow Bonito server (mirrors
-# the daemon content servers' 2026-07-23 shared-host collision fix): try the
-# preferred port; when it's taken (another user's server on a shared host, or
-# ANOTHER WORKSPACE's REPL child of this same user — every child prefers the
-# same SOT_WGL_PORT), fall back to an OS-assigned ephemeral port. The daemon
-# learns the actual port from the BrowserView frame this serve emits (it
-# allowlists it for the ADR-0035 proxy), and the FE arms its proxy listener
-# per-URL — so an ephemeral port reaches the browser with no other change.
-# The probe-close-rebind window is a benign TOCTOU: losing it just fails
-# Bonito's own bind loudly.
-function wgl_pick_port(preferred::Int)
-    try
-        srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", preferred))
-        close(srv)
-        return preferred
-    catch
-        srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", 0))
-        _, p = Sockets.getsockname(srv)
-        close(srv)
-        @warn "wglshow: preferred WGL port taken — using an ephemeral port (multi-user host, or a second workspace serving?)" preferred port = Int(p)
-        return Int(p)
+# Decision 0031, the page helper: every page this REPL child serves carries a secret in its address, 128 random
+# bits minted once per child, so another OS account on this box that finds the port gets a 404, and a re-serve in
+# this child keeps its URL.
+const PAGE_SECRET = Ref{String}("")
+function page_secret()
+    isempty(PAGE_SECRET[]) && (PAGE_SECRET[] = bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
+    return PAGE_SECRET[]
+end
+
+# The port of the last page this child served, tried first so a re-serve keeps its URL.
+const PAGE_PORT = Ref{Union{Int,Nothing}}(nothing)
+
+# A loopback port for the next serve: `previous` again while it is free, else one the OS assigns. Never a
+# preferred or configured port (decision 0031). The probe-close-rebind window is benign: losing it fails Bonito's
+# own bind loudly.
+function page_port(previous::Union{Int,Nothing})
+    if previous !== nothing
+        try
+            srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", previous))
+            close(srv)
+            return previous
+        catch
+        end
     end
+    srv = Sockets.listen(Sockets.InetAddr(ip"127.0.0.1", 0))
+    _, p = Sockets.getsockname(srv)
+    close(srv)
+    return Int(p)
 end
 
 """
@@ -253,12 +260,14 @@ Call it as the last expression of an eval:
 call time by PkgId from `Base.loaded_modules` — WGLMakie just needs to be
 *loaded* in this REPL's world (directly via `using WGLMakie`, or transitively
 through a package that depends on it; Bonito then comes in as WGLMakie's own
-dependency). The server binds `127.0.0.1` on the preferred port
-(`SOT_WGL_PORT`, default 1241) and falls back to an OS-assigned ephemeral port
-when it's taken — the browser reaches either through the frontend's per-URL
-ADR-0035 proxy (or a launcher `-L` forward for the preferred port). It lives as
-long as the REPL; a repeat `wglshow` replaces it. Pass `port` explicitly to pin
-a port verbatim (no fallback — a taken pinned port errors loudly).
+dependency). The server binds `127.0.0.1` on a port the OS assigns (the
+previous serve's port again while it is free, so a re-serve keeps its URL) and
+mounts the figure at a secret path minted once per REPL process (decision
+0031): `/` answers 404, so another account on the box that finds the port gets
+nothing. A remote frontend reaches it through
+the per-URL ADR-0035 proxy. It lives as long as the REPL; a repeat `wglshow`
+replaces it. Pass `port` to pin a port verbatim (a taken pinned port errors
+loudly); the secret path applies either way.
 
 The figure fills the browser window and grows with it as the window is resized
 (`resize_to=:parent` mounted in a viewport-filling container).
@@ -285,7 +294,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
     host = "127.0.0.1"
     # Close the previous server BEFORE picking the port, so a repeat wglshow in
     # this child finds its own old port free and reuses it (stable URL across
-    # re-serves) instead of needlessly falling back to a fresh ephemeral port.
+    # re-serves) instead of needlessly taking a fresh port.
     prev = WGL_SERVER[]
     if prev !== nothing
         WGL_SERVER[] = nothing
@@ -294,11 +303,8 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
         catch
         end
     end
-    # Explicit `port` is honored verbatim (a taken port errors loudly — the
-    # caller asked for exactly that one); the default probes SOT_WGL_PORT
-    # (1241) and falls back to an ephemeral port when it's taken.
-    port = port === nothing ?
-        wgl_pick_port(parse(Int, get(ENV, "SOT_WGL_PORT", "1241"))) : Int(port)
+    # An explicit `port` is honoured verbatim (a taken port errors loudly); otherwise `page_port`.
+    port = port === nothing ? page_port(PAGE_PORT[]) : Int(port)
     external = "http://$host:$port"
     # Warn (never silently) if the figure carries interactive Makie widgets —
     # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).
@@ -331,9 +337,13 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Bool = true)
         Bonito.DOM.div(
             Bonito.DOM.script(WGL_ERROR_OVERLAY_JS),
             Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0")))
-    server = Base.invokelatest(Bonito.Server, app, host, port; proxy_url = external)
+    # Decision 0031: the figure lives at a secret path; `/` answers 404.
+    path = "/" * page_secret()
+    server = Base.invokelatest(Bonito.Server, host, port; proxy_url = external)
+    Base.invokelatest(Bonito.route!, server, path => app)
     WGL_SERVER[] = server
-    url = Base.invokelatest(Bonito.online_url, server, "/")
+    PAGE_PORT[] = port
+    url = Base.invokelatest(Bonito.online_url, server, path)
     # Announce AT SERVE TIME (browser frame now), not only via the last-value
     # path — a wrapper that swallows this return value would otherwise make
     # the serve invisible (port never allowlisted, FE never opens the page).
