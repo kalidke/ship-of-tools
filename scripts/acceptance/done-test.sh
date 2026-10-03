@@ -29,7 +29,7 @@ NONCE="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"
 WAKE_TEXT='[sot-comm] you have mail'
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; *) WIN=0 ;; esac
 
-ITEMS="M1 M2 M3 M4 M5 M6 M7 M8 AV1 C1 C2 C3 C4"
+ITEMS="M1 M2 M3 M4 M4P M5 M6 M7 M8 AV1 D1-1 D2-1 f3b-probe-rate T5-layers PX1 FW1 RA1 ST1 TL1 W1 S1 C1 C2 C3 C4"
 
 list_items() {
     cat <<'EOF'
@@ -37,11 +37,23 @@ M1  own send and poll: spawned row A replies ok to the driver within 120 s
 M2  idle row woken: mail to idle row A shows the wake line within 10 s, reply within 120 s
 M3  renamed row woken: as M2, for row B whose --name differs from its folder name
 M4  background sub-agent: as M2, while A has a background sub-agent running (+ MANUAL: agent view refused)
+M4P agents panel focus: no wake while one ↓ holds focus on row A's agents panel, then a wake within 10 s of Esc
 M5  second agent refused: a `claude -p` under the driver cannot send as the driver
 M6  background service refused: /background in row B is refused, session id kept, nothing moved out
 M7  cross-machine mail: --peer @h replies with a nonce within 15 min (SKIP without --peer)
 M8  left arrow inert: ← on an empty prompt in row B moves nothing (key delivery checked first)
 AV1 every open Claude Code process on this box runs with agent view off (Linux: settings + version per process; Windows: MANUAL list)
+D1-1 pty.input reports enter as sent/not_sent/unknown
+D2-1 sotd <subcommand> --help prints usage and changes nothing
+f3b-probe-rate a down ssh host costs the hub at most 40 sshd logins per source address in 10 minutes (hub only; SKIP elsewhere)
+T5-layers the agent-layers suite passes with every SOT_ variable unset (Windows: it skips itself)
+PX1 a refused proxy port is logged once: five proxy.connect for port 9 give five bad_port replies and at most one daemon line
+FW1 a cancelled forward's ssh child dies: the topology_dial cancel test passes on this box's own build
+RA1 reauth names no other row: a second argument, or no SOT_WORKSPACE_ID, is refused and sends nothing
+ST1 unreadable record cleans up: the installed sotd, started on a scratch state root whose held.json is unreadable, deletes it and stays up
+TL1 no launcher or installed setup skill names the shared /tmp/sotd.log
+W1  the Windows supervisor runs the installed launcher code (SKIP off Windows and on a source checkout)
+S1  spawn in this shell's own spelling: a second spawn on the same folder is refused before any registry write
 C1  close leaves nothing behind: despawn A, then /exit in B, start no background service
 C2  MANUAL: the Ctrl-Q dialog
 C3  MANUAL: the window (hull)
@@ -137,6 +149,7 @@ cleanup() {
         "$SPAWN_BIN/comm-despawn.sh" "$ws" >> "$LOG" 2>&1 \
             || echo "done-test: could not despawn $ws; remove it with $SPAWN_BIN/comm-despawn.sh $ws" >&2
     done
+    st1_cleanup
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -173,6 +186,15 @@ spawn_row() {
 
 screen() { "$SOTFE" screen "$1" --timeout 3 2>/dev/null; }
 dump_screen() { { printf -- '--- screen %s (%s)\n' "$1" "$2"; screen "$1"; } >> "$LOG" 2>&1; }
+# refusal_note HANDLE: the daemon's last two wake log lines for HANDLE, for a FAIL's detail. SOTD_LOG names the
+# daemon's log where it is not at the default path (a unit drop-in that moves the state root, or Windows). The
+# detail names the file it read, so a dead default log is visible.
+refusal_note() {
+    local f="${SOTD_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/sot/sotd.log}" l
+    [ -f "$f" ] || { printf ' (daemon log not found at %s; set SOTD_LOG)' "$f"; return; }
+    l="$(LC_ALL=C grep -F 'comm wake' "$f" | LC_ALL=C grep -F -- "$1" | tail -n 2 | tr '\n' ' ')"
+    printf ' (daemon log %s: %s)' "$f" "${l:-no wake line for this handle}"
+}
 type_into() {
     log "type $1: $2"
     TYPED_MARK="${2:0:30}"
@@ -320,12 +342,12 @@ wake_check() {
     done
     if ! wait_from "$base" "$h" 120; then
         dump_screen "$ws" "$id no reply"
-        emit FAIL "$id" "${pre}wake ${tw:-not seen in 10}s, no reply from @$h within 120s"
+        emit FAIL "$id" "${pre}wake ${tw:-not seen in 10}s, no reply from @$h within 120s$(refusal_note "$h")"
         return
     fi
     if [ -z "$tw" ]; then
         dump_screen "$ws" "$id no wake line"
-        emit FAIL "$id" "${pre}no wake line within 10s of filed; reply after $(since "$t0")s"
+        emit FAIL "$id" "${pre}no wake line within 10s of filed; reply after $(since "$t0")s$(refusal_note "$h")"
         return
     fi
     if wake_doubled "$s"; then
@@ -485,6 +507,49 @@ m4_check() {
     dump_screen "$A_WS" "M4 at the send"
     wake_check M4 "$A_WS" "$A_NAME" "reply ok4 to @$DRIVER" "sub-agent still running at the send (started $(($(date +%s) - t0))s before): "
 }
+# M4P: rows typed with the wake line at the prompt glyph (box or transcript; ❯, or > on Windows), NBSP read as a space.
+wake_rows() { printf '%s\n' "$1" | LC_ALL=C awk -v w="$WAKE_TEXT" '{ sub(/\xc2\xa0/, " ") } /^(❯|>) / && index($0, w) { n++ } END { print n + 0 }'; }
+key_into() { printf "$2" | "$SOTFE" type "$1" --stdin --origin "$DRIVER" >> "$LOG" 2>&1; }
+# Always its own sub-agent (300 s): one reused from M4 could end inside the 20 s window and read as "focus moved".
+# On the Windows box the first FAIL ("did not draw the panel cursor") is itself the ConPTY result: report it.
+item_M4P() {
+    local s n0 base out t0 tw=""
+    ensure_a
+    [ -z "$A_ERR" ] || { emit FAIL M4P "row A unavailable: $A_ERR"; return; }
+    if ! wait_idle "$A_WS" 180; then emit FAIL M4P "row A was not idle within 180s"; return; fi
+    type_into "$A_WS" 'Start one background sub-agent (Agent tool, run_in_background) that runs `timeout 300 tail -f /dev/null` in Bash (a 300 s wait; a plain sleep is blocked), then end your turn.'
+    sleep 5
+    if ! wait_idle "$A_WS" 100 || ! printf '%s\n' "$LAST_SCREEN" | LC_ALL=C grep -qE '^ *◯ '; then
+        dump_screen "$A_WS" "M4P no sub-agent"; emit FAIL M4P "no background sub-agent running on row A"; return
+    fi
+    key_into "$A_WS" '\033[B'; sleep 1
+    s="$(screen "$A_WS")"
+    if ! printf '%s\n' "$s" | LC_ALL=C grep -qE '^(❯|>) ● main'; then
+        dump_screen "$A_WS" "M4P no panel cursor"; key_into "$A_WS" '\033'
+        emit FAIL M4P "one down-arrow did not draw the panel cursor on main (the wake's premise with agent view off)"; return
+    fi
+    n0="$(wake_rows "$s")"; base="$(inbox_count)"
+    out="$("$BIN/comm-send.sh" "@$A_NAME" "reply ok4p to @$DRIVER" 2>&1)"; log "send @$A_NAME: $out"
+    case "$out" in *'filed ->'*|*'(+inbox)'*) ;; *) key_into "$A_WS" '\033'; emit FAIL M4P "send was not filed: $(printf '%s' "$out" | tr '\n' ' ')"; return ;; esac
+    t0="$(now_ms)"
+    while [ $(($(now_ms) - t0)) -lt 10000 ]; do
+        s="$(screen "$A_WS")"
+        if [ "$(wake_rows "$s")" -gt "$n0" ] || ! printf '%s\n' "$s" | LC_ALL=C grep -qE '^(❯|>) ● main'; then
+            dump_screen "$A_WS" "M4P typed with panel focus"; key_into "$A_WS" '\033'
+            emit FAIL M4P "with focus on the agents panel the wake typed or focus moved $(since "$t0")s after filed$(refusal_note "$A_NAME")"; return
+        fi
+        sleep 0.5
+    done
+    key_into "$A_WS" '\033'; t0="$(now_ms)"
+    while [ $(($(now_ms) - t0)) -lt 10000 ]; do
+        s="$(screen "$A_WS")"
+        if [ "$(wake_rows "$s")" -gt "$n0" ]; then tw="$(since "$t0")"; break; fi
+        sleep 0.5
+    done
+    [ -n "$tw" ] || { dump_screen "$A_WS" "M4P no wake after Esc"; emit FAIL M4P "no wake line within 10s of Esc$(refusal_note "$A_NAME")"; return; }
+    if ! wait_from "$base" "$A_NAME" 120; then emit FAIL M4P "wake ${tw}s after Esc, no reply from @$A_NAME within 120s$(refusal_note "$A_NAME")"; return; fi
+    emit PASS M4P "no wake for 10s with the panel focused; wake ${tw}s after Esc, reply after $(since "$t0")s"
+}
 item_M5() {
     local base tmp rc probe
     base="$(inbox_count)"
@@ -643,6 +708,247 @@ item_C4() {
     emit MANUAL C4 "LIVE window grab (selfie.ps1, not a render), sotd $SOTD_VERSION: $d/hull-strip-LIVE.png (full: $d/selfie.png); this box's ship carries three ● names; no name may touch or pass its ship's stern |"
 }
 
+# D1-1: pty.input reports the Enter as `enter=sent`; the old line printed `enter_sent=`.
+item_D1_1() {
+    local out
+    spawn_row d1 "" "" || { emit FAIL D1-1 "could not spawn a throwaway row"; return; }
+    wait_idle "$R_WS" 120 >/dev/null 2>&1
+    out="$(printf 'reply with the single word OK' | "$SOTFE" type "$R_WS" --stdin --enter --origin "$DRIVER" 2>&1)"
+    log "D1-1 $out"
+    case "$out" in *" enter=sent"*) emit PASS D1-1 "$out" ;; *) emit FAIL D1-1 "$out" ;; esac
+    despawn "$R_WS"
+}
+
+# D2-1: eight `sotd <subcommand> --help` print usage (second line, after the version line), exit 0 and leave
+# hosts.toml alone. Only invocations whose unfixed behaviour is harmless, so an old binary cannot damage anything.
+item_D2_1() {
+    local sotd="${SOTD:-sotd}" cfg h0 h1 bad=0 args out rc
+    command -v "$sotd" >/dev/null 2>&1 || { emit FAIL D2-1 "no $sotd on PATH (set SOTD)"; return; }
+    cfg="$(ls "${XDG_CONFIG_HOME:-$HOME/.config}/sot/hosts.toml" "${LOCALAPPDATA:-/nonexistent}/sot/hosts.toml" 2>/dev/null | head -n1)"
+    h0="$( [ -n "$cfg" ] && cksum < "$cfg")"
+    for args in "session-socket-path --help" "agent-exec --help" "stdio-bridge --help" "ancestors --help" \
+                "topology --help" "topology plan --help" "topology set --help" "status --help"; do
+        # shellcheck disable=SC2086
+        out="$($sotd $args 2>&1)"; rc=$?
+        printf '%s\n' "$out" | sed -n 2p | grep -qiE '^ *usage' && [ "$rc" = 0 ] || { bad=$((bad+1)); log "D2-1 $args rc=$rc: $(printf '%s' "$out" | head -n2)"; }
+    done
+    h1="$( [ -n "$cfg" ] && cksum < "$cfg")"
+    [ "$h0" = "$h1" ] || bad=$((bad+1))
+    if [ "$bad" = 0 ]; then emit PASS D2-1 "8 subcommands print usage, hosts.toml unchanged"; else emit FAIL D2-1 "$bad check(s) failed"; fi
+}
+
+# f3b-probe-rate: hub only. The precondition, printed with the result, is that every frontend in the fleet runs a
+# build with the dialer fix. Measured before the fix: 184 per 10 minutes for one address.
+item_f3b_probe_rate() {
+    local pre="every frontend in the fleet must run a build with the dialer fix" counts max n
+    command -v systemctl >/dev/null 2>&1 && sotd topology relay-sockets >/dev/null 2>&1 \
+        || { emit SKIP f3b-probe-rate "not the hub"; return; }
+    n="$(journalctl -t sshd --since -10min 2>/dev/null | grep -c "Disconnected from user $(id -un)")"
+    if [ "${n:-0}" = 0 ]; then emit SKIP f3b-probe-rate "sshd journal not readable"; return; fi
+    counts="$(journalctl -t sshd --since -10min 2>/dev/null | grep "Disconnected from user $(id -un)" \
+        | awk '{ for (i = 1; i < NF; i++) if ($i == "user") { print $(i + 2); break } }' | sort | uniq -c | sort -rn)"
+    log "f3b-probe-rate: $counts"
+    max="$(printf '%s\n' "$counts" | awk 'NR == 1 { print $1 }')"
+    if [ "${max:-0}" -le 40 ]; then
+        emit PASS f3b-probe-rate "at most $max sshd logins per source address in 10 minutes ($pre)"
+    else
+        emit FAIL f3b-probe-rate "per-address counts in 10 minutes: $(printf '%s' "$counts" | awk '{ printf "%s=%s ", $2, $1 }') (want at most 40; $pre)"
+    fi
+}
+
+# T5-layers: the agent-layers suite with every SOT_ variable unset. Windows: it prints a SKIP line and exits 0.
+item_T5_layers() {
+    local tmp rc first last fail
+    tmp="$(mktemp)"
+    # shellcheck disable=SC2046
+    env $(compgen -v SOT_ | sed 's/^/-u /') bash "$ROOT/comm/core/tests/test-agent-layers.sh" > "$tmp" 2>&1
+    rc=$?
+    { echo "--- T5-layers (rc=$rc)"; cat "$tmp"; } >> "$LOG"
+    first="$(sed -n 1p "$tmp")"; last="$(tail -n 1 "$tmp")"
+    fail="$(grep -m1 -E 'FATAL|FAIL' "$tmp")"
+    if [ "$WIN" = 1 ]; then
+        if [ "$rc" = 0 ] && [[ "$first" == "SKIP: test-agent-layers.sh runs on Linux only"* ]] && ! grep -q 'FATAL' "$tmp"; then
+            emit PASS T5-layers "the suite skips itself on Windows"; rm -f "$tmp"; return
+        fi
+    elif [ "$rc" = 0 ] && printf '%s\n' "$last" | grep -qE '^agent layers: [0-9]+ passed, 0 failed$'; then
+        emit PASS T5-layers "$last"; rm -f "$tmp"; return
+    fi
+    emit FAIL T5-layers "rc=$rc ${fail:-$last}"
+    rm -f "$tmp"
+}
+
+# PX1: a refused proxy port is logged once per streak by the daemon, however many times it is dialled.
+daemon_log_lines() {   # print the daemon's log lines added since mark $1 (epoch seconds) / line count $2
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet sotd.service 2>/dev/null; then
+        journalctl --user -u sotd.service --since "@$1" -o cat 2>/dev/null
+    else
+        local f
+        if [ "$WIN" = 1 ]; then f="$(cygpath -u "$LOCALAPPDATA")/sot/state/sotd.log"; else f="${XDG_STATE_HOME:-$HOME/.local/state}/sot/sotd.log"; fi
+        [ -f "$f" ] && tail -n +"$(($2 + 1))" "$f"
+    fi
+}
+daemon_log_count() {   # current line count of the file source (0 for the journal)
+    local f; if [ "$WIN" = 1 ]; then f="$(cygpath -u "$LOCALAPPDATA")/sot/state/sotd.log"; else f="${XDG_STATE_HOME:-$HOME/.local/state}/sot/sotd.log"; fi
+    [ -f "$f" ] && wc -l < "$f" || echo 0
+}
+item_PX1() {
+    local sotd since base i replies=0 lines frame
+    sotd="$(command -v sotd)" || { emit FAIL PX1 "no sotd on PATH"; return; }
+    frame='{"v":1,"id":1,"kind":"req","op":"proxy.connect","payload":{"port":9}}'
+    since="$(date +%s)"; base="$(daemon_log_count)"
+    for i in 1 2 3 4 5; do
+        { printf '%s\n' "$frame"; sleep 2; } | with_timeout 10 "$sotd" stdio-bridge 2>>"$LOG" | grep -q '"bad_port"' && replies=$((replies + 1))
+    done
+    sleep 1
+    lines="$(daemon_log_lines "$since" "$base" | grep -E 'WARN' | grep -E 'port not in allowlist' | grep -cE 'port=9( |$)')"
+    if [ "$replies" = 5 ] && [ "$lines" -le 1 ]; then
+        emit PASS PX1 "5 of 5 connects refused bad_port; the daemon logged $lines WARN line(s) for port 9"
+    else
+        emit FAIL PX1 "bad_port replies: $replies of 5; daemon WARN lines for port 9: $lines (want 5 and at most 1)"
+    fi
+}
+
+# FW1: an installed binary gives no way to make a forward time out on demand, so this runs the unit test from the
+# checkout the done-test runs from: it proves the box's platform, which is the whole question for this row. The
+# first run builds the backend (minutes); meant for `--only FW1` on the Windows box.
+item_FW1() {
+    local tgt out t=topology_dial::tests::cancel_kills_the_tracked_child_through_its_own_handle
+    command -v cargo >/dev/null 2>&1 || { emit MANUAL FW1 "no cargo here: read the windows-latest CI leg for $t"; return; }
+    if [ "$WIN" = 1 ]; then tgt="$(cygpath -u "$LOCALAPPDATA")/sot-done-test-target"
+    elif [ -d "/scratch/$(id -un)" ]; then tgt="/scratch/$(id -un)/done-test-target"
+    else tgt="$HOME/.cache/sot-done-test-target"; fi
+    out="$(mktemp)"
+    ( cd "$ROOT/rust" && CARGO_TARGET_DIR="$tgt" with_timeout 1800 cargo test -p sot-backend --bin sotd "$t" ) > "$out" 2>&1
+    cat "$out" >> "$LOG"
+    if grep -qF "test $t ... ok" "$out"; then emit PASS FW1 "the cancel test passed on this box's build of $(git -C "$ROOT" rev-parse --short HEAD)"
+    else emit FAIL FW1 "the cancel test did not pass on this box (see the log)"; fi
+    rm -f "$out"
+}
+
+# RA1: the endpoint is a path that cannot exist, so even the old binary never reaches a live daemon (it exits 1 there).
+item_RA1() {
+    local out1 rc1 out2 rc2
+    out1="$(env SOT_WORKSPACE_ID=ws-done-test-self CLAUDE_CODE_SESSION_ID=done-test-0000 "$SOTFE" reauth ws-done-test-other done-test-acct --endpoint unix:/nonexistent/sot-done-test.sock --timeout 3 2>&1)"; rc1=$?
+    out2="$(env -u SOT_WORKSPACE_ID CLAUDE_CODE_SESSION_ID=done-test-0000 "$SOTFE" reauth done-test-acct --endpoint unix:/nonexistent/sot-done-test.sock --timeout 3 2>&1)"; rc2=$?
+    { echo "--- RA1 (rc1=$rc1 rc2=$rc2)"; printf '%s\n%s\n' "$out1" "$out2"; } >> "$LOG"
+    if [ "$rc1" = 2 ] && [[ "$out1" == *"moves only the row it runs in"* ]] && [ "$rc2" = 2 ] && [[ "$out2" == *"SOT_WORKSPACE_ID is unset"* ]]; then
+        emit PASS RA1 "a second argument and a missing row id are both refused before any endpoint is resolved"
+    else
+        emit FAIL RA1 "second argument: rc=$rc1, missing row id: rc=$rc2 (want 2 and 2 with the refusal text; see the log)"
+    fi
+}
+
+# ST1: the installed sotd on a scratch layout (every path under $tmp, every SOT_ variable unset, so it never touches
+# the live daemon, its rows or the real comm registry), started on an unreadable held.json: it deletes the record
+# and stays up. (The spec called this item S1; that id is spawn's, below.)
+ST1_PID=""; ST1_TMP=""
+st1_cleanup() {
+    [ -n "$ST1_PID" ] && kill -9 "$ST1_PID" 2>/dev/null
+    [ -n "$ST1_TMP" ] && rm -rf "${ST1_TMP:?}"
+    ST1_PID=""; ST1_TMP=""
+}
+item_ST1() {
+    local sotd tmp sock t0 ok_log=no ok_gone=no
+    if [ "$WIN" = 1 ]; then sotd="$(cygpath -u "$LOCALAPPDATA")/sot/bin/sotd.exe"; else sotd="${SOT_PREFIX:-$HOME/.local/share/sot}/bin/sotd"; fi
+    [ -f "$sotd" ] || { emit FAIL ST1 "no sotd at $sotd"; return; }
+    tmp="$(mktemp -d)"; ST1_TMP="$tmp"
+    mkdir -p "$tmp"/state/sot "$tmp"/config "$tmp"/home "$tmp"/comm "$tmp"/run "$tmp"/proj
+    p() { if [ "$WIN" = 1 ]; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+    sock="$tmp/s1.sock"
+    [ "$WIN" = 1 ] && sock='\\.\pipe\sot-dt-ST1-'"$NONCE"
+    printf '{ not a record' > "$tmp/state/sot/held.json"
+    # shellcheck disable=SC2046
+    env $(compgen -v SOT_ | sed 's/^/-u /') RUST_LOG=info LOCALAPPDATA="$(p "$tmp/state")" XDG_STATE_HOME="$(p "$tmp/state")" \
+        XDG_CONFIG_HOME="$(p "$tmp/config")" HOME="$(p "$tmp/home")" USERPROFILE="$(p "$tmp/home")" \
+        SOT_COMM_HOME="$(p "$tmp/comm")" SOT_RUNTIME_DIR="$(p "$tmp/run")" SOT_SELF_HOST=dt-s1 \
+        "$sotd" --socket "$sock" --project-root "$(p "$tmp/proj")" > "$tmp/s1.log" 2>&1 &
+    ST1_PID=$!
+    t0="$(date +%s)"
+    while [ $(($(date +%s) - t0)) -lt 30 ]; do
+        if grep -qF 'listening (local)' "$tmp/s1.log" \
+            && grep -F 'start plan from the held record' "$tmp/s1.log" | grep -qF 'Cleanup'; then ok_log=yes; break; fi
+        sleep 1
+    done
+    t0="$(date +%s)"
+    while [ $(($(date +%s) - t0)) -lt 30 ]; do
+        [ -e "$tmp/state/sot/held.json" ] || { ok_gone=yes; break; }
+        sleep 1
+    done
+    sleep 5
+    if [ "$ok_log" = yes ] && [ "$ok_gone" = yes ] && kill -0 "$ST1_PID" 2>/dev/null; then
+        emit PASS ST1 "the installed sotd logged listening and a Cleanup start plan, deleted the unreadable held.json and stayed up"
+    else
+        { echo "--- ST1 daemon log"; cat "$tmp/s1.log"; } >> "$LOG"
+        emit FAIL ST1 "listening and Cleanup start plan logged: $ok_log, held.json deleted: $ok_gone, daemon alive after 5s: $(kill -0 "$ST1_PID" 2>/dev/null && echo yes || echo no)"
+    fi
+    st1_cleanup
+}
+
+# TL1: nothing names the shared /tmp/sotd.log (the files are per user and per host).
+item_TL1() {
+    local f n bad="" seen=0
+    for f in "$HOME/.claude/skills/sot-setup/SKILL.md" "$ROOT/scripts/restart-backend.sh" \
+             "$ROOT/.claude/skills/sot-setup/SKILL.md" "$ROOT/comm/adapters/claude/sot-setup/SKILL.md"; do
+        [ -f "$f" ] || continue
+        seen=$((seen + 1))
+        n="$(grep -c '/tmp/sotd\.log' "$f")"
+        [ "$n" = 0 ] || bad="$bad $f:$n"
+    done
+    if [ ! -f "$HOME/.claude/skills/sot-setup/SKILL.md" ]; then emit FAIL TL1 "no installed setup skill at ~/.claude/skills/sot-setup"
+    elif [ -z "$bad" ]; then emit PASS TL1 "$seen files checked, none names /tmp/sotd.log"
+    else emit FAIL TL1 "still named in:$bad"; fi
+}
+
+# W1: read-only. The last `supervisor start` line written by the pid in logs/launcher.pid carries a code id equal to
+# the SHA-256 triple of the installed repo/current/scripts files. Rows kept across an install stay I1's job.
+item_W1() {
+    if [ "$WIN" != 1 ]; then emit SKIP W1 "Windows only: no PowerShell supervisor on this box"; return; fi
+    local sot spid cmd line have want d f
+    sot="$(cygpath -u "$LOCALAPPDATA")/sot"
+    if [ ! -f "$sot/install.json" ]; then emit SKIP W1 "no install.json: a source checkout, not a release install"; return; fi
+    spid="$(tr -d '\r\n ' < "$sot/logs/launcher.pid" 2>/dev/null)"
+    if [ -z "$spid" ]; then emit FAIL W1 "no logs/launcher.pid: no supervisor is running"; return; fi
+    cmd="$(powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId = $spid').CommandLine" 2>/dev/null | tr -d '\r')"
+    case "$cmd" in
+        *launch-sot.ps1*) ;;
+        *) emit FAIL W1 "launcher.pid names $spid, which is not a running launch-sot.ps1"; return ;;
+    esac
+    line="$(tr -d '\r' < "$sot/logs/supervisor.log" | awk -v k="pid=$spid  supervisor start " 'index($0, k) { l = $0 } END { print l }')"
+    have="$(printf '%s\n' "$line" | sed -n 's/.* code=\([0-9A-F-]*\)$/\1/p')"
+    if [ -z "$have" ]; then
+        emit FAIL W1 "supervisor $spid logged no code id (started before 0.6.6, or could not read its scripts): press Ctrl+Q, Tab, Enter, then start from the Start menu"
+        return
+    fi
+    d="$sot/repo/current/scripts"
+    want="$(for f in launch-sot.ps1 sot-hosts.ps1 sot-install-layout.ps1; do sha256sum "$d/$f" | cut -c1-64; done | tr 'a-f' 'A-F' | paste -sd- -)"
+    if [ "$have" = "$want" ]; then
+        emit PASS W1 "supervisor $spid runs the installed launcher (code ${have:0:12}...)"
+    else
+        emit FAIL W1 "supervisor $spid runs code ${have:0:12}..., the installed launcher is ${want:0:12}..."
+    fi
+}
+
+# S1: a second spawn on a folder that already has a row is refused before any registry write, in this shell's own
+# path spelling (Linux: unix: endpoint, path unchanged; git-bash: pipe endpoint, cygpath -m). The first spawn's row
+# stops at Claude's folder-trust prompt, which is expected.
+item_S1() {
+    local ws1 out rc id bad=""
+    if ! spawn_row "dts1-$NONCE" "" "" || [ -z "$R_WS" ]; then
+        emit FAIL S1 "the first spawn did not return 0 with a ws id"; return
+    fi
+    ws1="$R_WS"
+    out="$("$SPAWN_BIN/comm-spawn.sh" "$R_DIR" 2>&1)"; rc=$?
+    printf '%s\n' "$out" >> "$LOG"
+    for id in $(printf '%s\n' "$out" | grep -o 'id=ws-[A-Za-z0-9_.-]*' | cut -d= -f2); do SPAWNED+=("$id"); done
+    [ "$rc" != 0 ] || bad="$bad the second spawn exited 0;"
+    printf '%s\n' "$out" | grep -qF 'already has a workspace' || bad="$bad no 'already has a workspace';"
+    ! printf '%s\n' "$out" | grep -qF 'rolled back' || bad="$bad it printed 'rolled back';"
+    ! printf '%s\n' "$out" | grep -q 'id=ws-' || bad="$bad it printed an id=ws-;"
+    despawn "$ws1"
+    if [ -z "$bad" ]; then emit PASS S1 "the second spawn on the same folder was refused (rc=$rc) before any registry write"
+    else emit FAIL S1 "${bad# }"; fi
+}
+
 cmd_run() {
     local it
     while [ $# -gt 0 ]; do
@@ -662,7 +968,7 @@ cmd_run() {
     load_driver; load_version
     log "driver @$DRIVER, sotd $SOTD_VERSION, rows under $ROWS_DIR, nonce $NONCE"
     for it in $ITEMS; do
-        selected "$it" && "item_$it"
+        selected "$it" && "item_${it//-/_}"
     done
     summary
     [ "$NFAIL" = 0 ]
