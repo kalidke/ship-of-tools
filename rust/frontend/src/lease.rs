@@ -78,6 +78,9 @@ type PendingAck = (HostKey, oneshot::Receiver<LeaveOutcome>);
 struct Slot {
     standing: Standing,
     holder: Option<mpsc::UnboundedSender<HolderCmd>>,
+    /// The state root this label's last grant named (the daemon's issued
+    /// identity); kept when a later handshake on the label fails.
+    daemon: Option<String>,
 }
 
 /// The slots and the leave, under one lock, so a lease that a handshake
@@ -114,7 +117,8 @@ impl Drop for Handshake<'_> {
 pub struct Leases {
     exempt: bool,
     book: Mutex<Book>,
-    /// `lease::LEASE_REPLY_WAIT`; tests shorten it.
+    /// `lease::LEASE_REPLY_WAIT`: how long the request may take to send, and
+    /// when an unanswered one is warned about; tests shorten it.
     reply_wait: Duration,
 }
 
@@ -122,7 +126,7 @@ impl Leases {
     pub fn new(exempt: bool, pipe_hosts: Vec<HostKey>) -> Arc<Self> {
         let slots = pipe_hosts
             .into_iter()
-            .map(|h| (h, Slot { standing: Standing::Pending, holder: None }))
+            .map(|h| (h, Slot { standing: Standing::Pending, holder: None, daemon: None }))
             .collect();
         Arc::new(Self {
             exempt,
@@ -170,7 +174,11 @@ impl Leases {
             }
             let _ = late.send((host.clone(), rx));
         }
-        book.slots.insert(host.clone(), Slot { standing, holder });
+        let daemon = match &standing {
+            Standing::Granted { state_root: Some(r) } => Some(r.clone()),
+            _ => book.slots.get(host).and_then(|s| s.daemon.clone()),
+        };
+        book.slots.insert(host.clone(), Slot { standing, holder, daemon });
     }
 
     /// Claim the daemon on a dedicated connection before a data connection is
@@ -203,17 +211,20 @@ impl Leases {
             }
         };
         let req = FeLeaseReq { boot: ident.boot, pid: ident.pid, created: ident.created, token: token.map(str::to_string) };
-        let attempt = tokio::time::timeout(self.reply_wait, async {
+        // Connect and write are bounded: failing here changes nothing at the
+        // daemon. Once the request is written the reply is awaited for as long
+        // as the connection lasts, since the daemon may still grant it and a
+        // dropped granted connection departs as a Close.
+        let sent = tokio::time::timeout(self.reply_wait, async {
             let stream = connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
-            let mut rx = codec::buffered(rx);
+            let rx = codec::buffered(rx);
             let frame = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req)?);
             codec::write_frame(&mut tx, &frame, None).await?;
-            let (reply, _) = codec::read_frame(&mut rx).await?;
-            Ok::<_, anyhow::Error>((rx, tx, reply))
+            Ok::<_, anyhow::Error>((rx, tx))
         })
         .await;
-        let (rx, tx, reply) = match attempt {
+        let (mut rx, tx) = match sent {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
                 self.set(host, Standing::Unreached, None);
@@ -222,8 +233,27 @@ impl Leases {
             }
             Err(_) => {
                 self.set(host, Standing::Unreached, None);
-                tracing::warn!(%host, "window lease: no reply in time");
-                return Err(anyhow!("no reply to the window lease in time").context("window lease"));
+                tracing::warn!(%host, "window lease: the request was not sent in time");
+                return Err(anyhow!("the window lease request was not sent in time").context("window lease"));
+            }
+        };
+        let replied = {
+            let read = codec::read_frame(&mut rx);
+            tokio::pin!(read);
+            match tokio::time::timeout(self.reply_wait, &mut read).await {
+                Ok(r) => r,
+                Err(_) => {
+                    tracing::warn!(%host, waited = ?self.reply_wait, "window lease: no reply yet; still waiting, since dropping the request would read as a close");
+                    read.await
+                }
+            }
+        };
+        let reply = match replied {
+            Ok((reply, _)) => reply,
+            Err(e) => {
+                self.set(host, Standing::Unreached, None);
+                tracing::warn!(%host, error = %format_args!("{e:#}"), "window lease: not taken");
+                return Err(anyhow::Error::from(e).context("window lease"));
             }
         };
         let res: FeLeaseRes = match serde_json::from_value(reply.payload) {
@@ -281,11 +311,24 @@ impl Leases {
             .collect()
     }
 
-    /// Tell the daemon the not-ended line for `host` has been shown.
-    pub fn notice_seen(&self, host: &HostKey, n: u32) {
+    /// The key a not-ended count is shown and acked under: the state root
+    /// this label's grant named (one daemon holds one state root), else the
+    /// label itself, since without an issued identity there is nothing to merge.
+    pub fn daemon_key(&self, host: &HostKey) -> HostKey {
         let book = self.book.lock().unwrap();
-        if let Some(h) = book.slots.get(host).and_then(|s| s.holder.as_ref()) {
-            let _ = h.send(HolderCmd::NoticeSeen(n));
+        book.slots.get(host).and_then(|s| s.daemon.clone()).unwrap_or_else(|| host.clone())
+    }
+
+    /// Tell the daemon the not-ended line for `key` (a label or a daemon key)
+    /// has been shown.
+    pub fn notice_seen(&self, key: &HostKey, n: u32) {
+        let book = self.book.lock().unwrap();
+        for (host, slot) in book.slots.iter() {
+            if host == key || slot.daemon.as_deref() == Some(key.as_str()) {
+                if let Some(h) = &slot.holder {
+                    let _ = h.send(HolderCmd::NoticeSeen(n));
+                }
+            }
         }
     }
 
@@ -727,9 +770,10 @@ mod tests {
                     1 => serde_json::json!({"error": "unknown op: fe.lease"}),
                     2 => serde_json::json!({"outcome": "closing"}),
                     3 => {
-                        // No reply: hold the connection open past the wait.
+                        // No reply, then the connection ends: a failed connect,
+                        // reached at the end, not at the wait.
                         tokio::spawn(async move {
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            tokio::time::sleep(Duration::from_millis(400)).await;
                             drop((rx, tx));
                         });
                         continue;
@@ -761,7 +805,7 @@ mod tests {
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
         assert_eq!(count.load(Ordering::SeqCst), 1);
         assert_eq!(leases.standing(&host), Some(Standing::Unsupported));
-        // Closing, and no reply in time: each a failed connect.
+        // Closing, and a connection that ends unanswered: each a failed connect.
         assert!(leases.before_data_connection(&host, &path, None).await.is_err());
         assert_eq!(count.load(Ordering::SeqCst), 2);
         assert_eq!(leases.standing(&host), Some(Standing::Unreached));
@@ -1106,6 +1150,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slow_grant_is_held_not_dropped() {
+        let (listener, path) = bind("slowgrant");
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let eof = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (a, e) = (accepts.clone(), eof.clone());
+        tokio::spawn(async move {
+            loop {
+                let conn = listener.accept().await.unwrap();
+                a.fetch_add(1, Ordering::SeqCst);
+                let e = e.clone();
+                tokio::spawn(async move {
+                    let (rx, mut tx) = conn.split();
+                    let mut rx = codec::buffered(rx);
+                    let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    let granted = serde_json::json!({"outcome": "granted", "state_root": "r", "not_ended": 2});
+                    codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
+                    if tokio::time::timeout(Duration::from_millis(500), codec::read_frame(&mut rx)).await.is_ok() {
+                        e.store(true, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        let host = "local".to_string();
+        let mut leases = Leases::new(false, vec![host.clone()]);
+        Arc::get_mut(&mut leases).unwrap().reply_wait = Duration::from_millis(100);
+        assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 2);
+        assert!(leases.held(&host));
+        assert_eq!(accepts.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!eof.load(Ordering::SeqCst), "a granted lease's connection was dropped");
+    }
+
+    #[tokio::test]
+    async fn one_daemon_under_two_labels_is_one_count() {
+        // A fake daemon that grants every connection `root` and `n`, logging each later frame.
+        fn daemon(
+            listener: interprocess::local_socket::tokio::Listener,
+            root: &'static str,
+            n: u32,
+        ) -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>>) {
+            let log = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let conns = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (l, c) = (log.clone(), conns.clone());
+            tokio::spawn(async move {
+                loop {
+                    let conn = listener.accept().await.unwrap();
+                    let l = l.clone();
+                    let task = tokio::spawn(async move {
+                        let (rx, mut tx) = conn.split();
+                        let mut rx = codec::buffered(rx);
+                        let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+                        let granted = serde_json::json!({"outcome": "granted", "state_root": root, "not_ended": n});
+                        codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
+                        while let Ok((f, _)) = codec::read_frame(&mut rx).await {
+                            l.lock().unwrap().push(f.op.to_string());
+                        }
+                    });
+                    c.lock().unwrap().push(task.abort_handle());
+                }
+            });
+            (log, conns)
+        }
+        let (l1, p1) = bind("twolabels1");
+        let (l2, p2) = bind("twolabels2");
+        let (log1, conns1) = daemon(l1, "r", 3);
+        let (_log2, _conns2) = daemon(l2, "s", 4);
+        let (a, b, c) = ("a".to_string(), "b".to_string(), "c".to_string());
+        let leases = Leases::new(false, vec![a.clone(), b.clone(), c.clone()]);
+        assert_eq!(leases.before_data_connection(&a, &p1, None).await.unwrap(), 3);
+        assert_eq!(leases.before_data_connection(&b, &p1, None).await.unwrap(), 3);
+        assert_eq!(leases.before_data_connection(&c, &p2, None).await.unwrap(), 4);
+        assert_eq!(leases.daemon_key(&a), leases.daemon_key(&b), "two labels of one daemon must share its key");
+        assert_ne!(leases.daemon_key(&a), leases.daemon_key(&c));
+        // What gpu.rs does with the queued counts: the newest per key, summed.
+        let queued = [(leases.daemon_key(&a), 3), (leases.daemon_key(&b), 3), (leases.daemon_key(&c), 4)];
+        let mut newest: Vec<(HostKey, u32)> = Vec::new();
+        for (k, n) in queued {
+            match newest.iter_mut().find(|(h, _)| *h == k) {
+                Some(slot) => slot.1 = n,
+                None => newest.push((k, n)),
+            }
+        }
+        assert_eq!(newest.iter().map(|(_, n)| n).sum::<u32>(), 7);
+        // End a's holder, then fail a re-handshake: the identity stays.
+        let key = leases.daemon_key(&a);
+        conns1.lock().unwrap()[0].abort();
+        for _ in 0..40 {
+            if !leases.held(&a) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!leases.held(&a));
+        assert!(leases.before_data_connection(&a, Path::new("/nonexistent/sot-lease-dead.sock"), None).await.is_err());
+        assert_eq!(leases.daemon_key(&a), key, "a failed re-handshake lost the daemon's identity");
+        leases.notice_seen(&leases.daemon_key(&b), 3);
+        for _ in 0..40 {
+            if log1.lock().unwrap().iter().any(|o| o == op::FE_NOTICE_SEEN) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(log1.lock().unwrap().iter().any(|o| o == op::FE_NOTICE_SEEN), "{:?}", log1.lock().unwrap());
+    }
+
+    #[tokio::test]
     async fn inflight_handshake_gets_the_leave() {
         // One host, its handshake still in flight when the window leaves.
         let (listener, path) = bind("inflight");
@@ -1189,9 +1340,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inflight_handshake_not_granted_is_not_confirmed() {
-        // The daemon never answers the lease; the handshake ends at the reply
-        // wait, after the window began to close.
+    async fn inflight_handshake_ended_unanswered_is_not_confirmed() {
+        // The daemon never answers the lease, and its connection ends after
+        // the window began to close.
         let (listener, path) = bind("inflightnogrant");
         let (asked_tx, asked) = oneshot::channel();
         let (open, open_rx) = oneshot::channel();
@@ -1205,10 +1356,10 @@ mod tests {
         };
         asked.await.unwrap();
         let mut leaving = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
-        assert!(in_flight.await.unwrap().is_err(), "the handshake timed out");
+        fake.abort();
+        assert!(in_flight.await.unwrap().is_err(), "the connection ended unanswered");
         assert_eq!(poll_out(&mut leaving).await, LeaveStep::Show, "a handshake in flight yields an outcome");
         assert_eq!(leaving.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE));
-        fake.abort();
         drop(open);
     }
 

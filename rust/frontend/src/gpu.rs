@@ -5035,8 +5035,9 @@ struct State {
     /// lease; the attach-only drawer needs a lease that carries it (ADR 0050).
     #[cfg(windows)]
     own_state_root: Option<String>,
-    /// Not-ended counts not yet reported to the daemon, newest last; acked
-    /// right after a presented frame draws them (`acks_for_frame`).
+    /// Not-ended counts not yet reported, newest last, keyed by daemon
+    /// (`Leases::daemon_key`); acked right after a presented frame draws them
+    /// (`acks_for_frame`).
     notice_acks: Vec<(crate::dial::HostKey, u32)>,
     /// The not-ended line a lease grant reported once a frame showed it, and
     /// when it stops showing.
@@ -13600,7 +13601,7 @@ impl State {
                 }
                 crate::transport::IncomingEvt::NotEnded { count } => {
                     if count > 0 {
-                        self.notice_acks.push((event_host.clone(), count));
+                        self.notice_acks.push((self.leases.daemon_key(&event_host), count));
                         self.window.request_redraw();
                     }
                 }
