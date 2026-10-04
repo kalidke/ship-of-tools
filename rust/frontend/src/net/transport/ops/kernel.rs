@@ -373,3 +373,102 @@ pub(crate) fn on_function_methods(
         methods,
     });
 }
+
+/// Convert one entry from `project.scan`'s `modules: [...]` array into
+/// a [`ScanModule`]. Field shape matches ShipToolsKernel.handle_project_scan
+/// in `julia/kernel/src/ShipToolsKernel.jl`. Tolerant of missing fields —
+/// the kernel always emits the canonical keys, but if a future version
+/// adds optionals or omits something on the error path the chrome
+/// degrades to defaults instead of dropping the whole tree.
+fn parse_scan_module(v: &Value) -> ScanModule {
+    ScanModule {
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file: v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        line: v.get("line").and_then(|x| x.as_i64()).unwrap_or(0),
+        ast_hash: v
+            .get("ast_hash")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        types: v
+            .get("types")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter().map(parse_scan_type).collect())
+            .unwrap_or_default(),
+        functions: v
+            .get("functions")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter().map(parse_scan_entity).collect())
+            .unwrap_or_default(),
+        submodules: v
+            .get("submodules")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter().map(parse_scan_module).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn parse_scan_type(v: &Value) -> ScanType {
+    ScanType {
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        kind: v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file: v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        line: v.get("line").and_then(|x| x.as_i64()).unwrap_or(0),
+        ast_hash: v
+            .get("ast_hash")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        constructors: v
+            .get("constructors")
+            .and_then(|x| x.as_array())
+            .map(|arr| arr.iter().map(parse_scan_entity).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn parse_scan_entity(v: &Value) -> ScanEntity {
+    ScanEntity {
+        name: v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        kind: v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        file: v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        line: v.get("line").and_then(|x| x.as_i64()).unwrap_or(0),
+        ast_hash: v
+            .get("ast_hash")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    }
+}

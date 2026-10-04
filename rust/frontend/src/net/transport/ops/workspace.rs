@@ -376,3 +376,67 @@ pub(crate) fn on_workspace_destroy(
     };
     emit(IncomingEvt::WorkspaceDestroyed { result });
 }
+
+/// ADR 0042 slice L1b, revised by ADR 0045 decision 1: is `payload` a
+/// `pty.open` refusal carrying `code: "attach_direct"` (the daemon's
+/// answer for a capsule-runtime workspace, `rust/backend/src/server.rs`'s
+/// `PTY_OPEN` arm)? The daemon still emits a `state_dir` alongside it
+/// (until the next `PROTOCOL_VERSION` bump) but the frontend no longer
+/// reads it — every capsule row is attached through its own daemon's
+/// `lane.connect` bridge, keyed by `target` alone.
+fn is_attach_direct(payload: &Value) -> bool {
+    payload.get("code").and_then(|v| v.as_str()) == Some("attach_direct")
+}
+
+/// The reason text `PtyOpenFailed` carries for a `pty.open` reply that
+/// isn't `attach_direct` — the reply's own `code` field, or a generic
+/// fallback when the payload carries none (a malformed frame, or a
+/// success shape this build no longer expects).
+fn pty_open_failure_reason(payload: &Value) -> String {
+    payload
+        .get("code")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unsupported daemon reply".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- ADR 0042 slice L1b: the attach_direct switch. ---
+
+    #[test]
+    fn is_attach_direct_declines_every_other_response_shape() {
+        let attach = serde_json::json!({
+            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+            "code": "attach_direct",
+            "state_dir": "/state/workspaces/ws-1",
+        });
+        assert!(is_attach_direct(&attach));
+        // Still recognized when the daemon couldn't resolve a state root —
+        // the code alone gates this now, not the (ignored) path.
+        let attach_no_dir = serde_json::json!({
+            "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+            "code": "attach_direct",
+            "state_dir": serde_json::Value::Null,
+        });
+        assert!(is_attach_direct(&attach_no_dir));
+        // Any other response shape — this build's daemon never sends
+        // one for `pty.open`, but the check must still decline it.
+        let ok = serde_json::json!({"cols": 80, "rows": 24});
+        assert!(!is_attach_direct(&ok));
+        // A DIFFERENT error code must not be mistaken for attach_direct —
+        // only the exact literal switches the pane to the attach path.
+        let other_error = serde_json::json!({"error": "boom", "code": "bad_target"});
+        assert!(!is_attach_direct(&other_error));
+    }
+
+    #[test]
+    fn pty_open_failure_reason_prefers_code_falls_back_when_absent() {
+        let coded = serde_json::json!({"error": "boom", "code": "bad_target"});
+        assert_eq!(pty_open_failure_reason(&coded), "bad_target");
+        let uncoded = serde_json::json!({"cols": 80, "rows": 24});
+        assert_eq!(pty_open_failure_reason(&uncoded), "unsupported daemon reply");
+    }
+}
