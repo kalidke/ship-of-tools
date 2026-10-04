@@ -18,7 +18,6 @@ use tokio::process::Child;
 /// report"). The daemon has become that launcher for every capsule
 /// workspace it creates or resumes, so this is the ADR's own row, not
 /// new policy.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub const RESTART_BACKOFFS: [std::time::Duration; 5] = [
     std::time::Duration::from_secs(1),
     std::time::Duration::from_secs(3),
@@ -27,10 +26,8 @@ pub const RESTART_BACKOFFS: [std::time::Duration; 5] = [
     std::time::Duration::from_secs(30),
 ];
 
-#[cfg_attr(not(windows), allow(dead_code))]
 pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
 
-#[cfg_attr(not(windows), allow(dead_code))]
 pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// `sot-capsule supervise`'s own clean-exit code (`EXIT_CLEAN`).

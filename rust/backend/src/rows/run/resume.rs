@@ -10,7 +10,6 @@ use std::sync::Arc;
 /// spawns" — the SAME fixed-width bound reused for both the startup
 /// resume-scan's concurrent spawns and `workspace.list`'s concurrent
 /// lane queries, rather than two independently-invented numbers.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub const LANE_CONCURRENCY: usize = 4;
 
 /// On daemon startup: resume every REGISTERED capsule workspace's

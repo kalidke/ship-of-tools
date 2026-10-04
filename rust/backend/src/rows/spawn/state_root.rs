@@ -15,14 +15,10 @@ use std::path::{Path, PathBuf};
 /// constant unconditionally, so it must exist wherever that function's
 /// body does; the text is identical to what the Linux-only arm already
 /// said, since `sot_state_dir`'s own resolution order is the same on
-/// every non-Windows host. Every ACTUAL caller is gated to the three
-/// platforms the capsule runtime exists on — a Unix that is neither
-/// Linux nor macOS never reaches this text at all, hence the
-/// `allow(dead_code)` below on the arm that serves it.
+/// every non-Windows host.
 #[cfg(windows)]
 pub(crate) const STATE_ROOT_HINT: &str = "%LOCALAPPDATA%";
 #[cfg(not(windows))]
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 
 /// `<state-root>/workspaces/<workspace_id>/` — the capsule's own state

@@ -10,7 +10,6 @@ use std::path::PathBuf;
 /// here, outside `runtime`, so `handlers.rs`'s outcome→response
 /// mapping stays plain and unit-testable on every platform; `end_run`'s
 /// own real lane call is the only step gated to Windows and Linux only.
-#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub enum EndRunOutcome {
     /// The run ended and its record verified green.

@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 /// the next daemon) painted every row's agent colourless on Windows,
 /// where the pty sets no `TERM`/`COLORTERM` and `NO_COLOR` overrides
 /// ConPTY's own VT detection (field report, 2026-09-17).
-#[cfg_attr(not(windows), allow(dead_code))]
 pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
     "CLAUDE_CODE_FORK_SUBAGENT",
     "CLAUDE_CODE_CHILD_SESSION",
@@ -43,7 +42,6 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
 /// HOME/USERPROFILE guess landing on two different answers. `None` when
 /// the resolver itself found nothing (matches comm-lib.sh: nothing to
 /// pin).
-#[cfg_attr(not(windows), allow(dead_code))]
 fn capsule_comm_home_str() -> Option<String> {
     Some(crate::paths::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
 }

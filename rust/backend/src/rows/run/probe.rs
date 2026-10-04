@@ -53,7 +53,6 @@ pub const FOREIGN_PHASE: &str = "foreign";
 /// reads "stopped" too — bounded by the spawn call itself and
 /// self-correcting on the very next list once the pointer (and the
 /// supervisor behind it) exists.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub const NEVER_STARTED_PHASE: &str = "stopped";
 
 /// Whether a capsule workspace's supervisor lane is even worth querying,
@@ -68,7 +67,6 @@ pub const NEVER_STARTED_PHASE: &str = "stopped";
 /// its absence subsumes "no state dir at all" (the check this replaces)
 /// as well as "a state dir exists but nothing was ever durably published
 /// to it" — both read as never started.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
     (!pointer_exists).then_some(NEVER_STARTED_PHASE)
 }
@@ -79,7 +77,6 @@ pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
 /// Portable: [`sot_log::wire`] has no OS dependency (see that crate's own
 /// module doc), so this needs no `#[cfg(windows)]` either, and the pure
 /// unit tests below exercise it directly on Linux.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
     use sot_log::wire::SupervisorPhase;
     match phase {
@@ -92,7 +89,6 @@ pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
 }
 
 /// Converts to the local `Phase` (R10); [`phase_str`] stays for the wire mapping.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn local_phase(phase: sot_log::wire::SupervisorPhase) -> crate::workspaces::Phase {
     use crate::workspaces::Phase;
     use sot_log::wire::SupervisorPhase as SP;

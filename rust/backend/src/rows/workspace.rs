@@ -322,7 +322,6 @@ impl Workspace {
     /// stating the project root) on first access. Subsequent calls
     /// return the cached `Arc`. Errors only on the *first* construction
     /// — once cached we re-emit `Ok` without re-stat'ing.
-    #[allow(dead_code)] // wired by handler routing (task #18)
     pub fn files_mode(&self) -> Result<Arc<FilesMode>> {
         if let Some(fm) = self.files_mode.get() {
             return Ok(fm.clone());
@@ -342,7 +341,6 @@ impl Workspace {
     /// Lazily get this workspace's `ConceptStore`. Rooted at the
     /// workspace's `project_root/.concept/` exactly as today's single-
     /// store backend did, just per-workspace.
-    #[allow(dead_code)] // wired by handler routing (task #18)
     pub fn concept(&self) -> Arc<ConceptStore> {
         self.concept
             .get_or_init(|| Arc::new(ConceptStore::new(&self.project_root)))
@@ -353,7 +351,6 @@ impl Workspace {
     /// spawned lazily by the Kernel itself on first `request` — this
     /// just constructs the handle (no child yet) so per-workspace
     /// kernel state is correctly isolated when ops start routing.
-    #[allow(dead_code)] // wired by handler routing (task #18)
     pub fn kernel(&self) -> Kernel {
         self.kernel
             .get_or_init(|| {
@@ -370,7 +367,6 @@ impl Workspace {
     /// onto every frame so the frontend routes them to the right drawer.
     /// Threaded in by the caller (`workspaces.repl_frame_tx()`) so the
     /// registry doesn't have to own the bus before startup wires it.
-    #[allow(dead_code)] // wired by handler routing (task #18)
     pub fn repl(&self, frame_tx: broadcast::Sender<ReplFrameMsg>) -> Repl {
         self.repl
             .get_or_init(|| {

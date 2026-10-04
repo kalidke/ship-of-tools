@@ -49,8 +49,6 @@ impl Workspaces {
 
     /// Closes the gate for good, then waits until every permit has dropped
     /// or `deadline` passes. BLOCKING. True iff no start is still in flight.
-    // The shutdown calls this; it lands after the gate.
-    #[allow(dead_code)]
     pub fn close_gate_and_settle(&self, deadline: Instant) -> bool {
         let (gate, settled) = &*self.gate;
         let mut gate = gate.lock().unwrap_or_else(|e| e.into_inner());
