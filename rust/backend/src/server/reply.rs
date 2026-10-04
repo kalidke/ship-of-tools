@@ -268,8 +268,8 @@ where
         .get("workspace_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    match workspaces.resolve(hint.as_deref()) {
-        Some(ws) => {
+    match crate::rows::row_or_reply(workspaces, hint.as_deref(), req_id, op_name) {
+        Ok(ws) => {
             if let serde_json::Value::Object(m) = payload {
                 m.insert(
                     "workspace_id".to_string(),
@@ -278,12 +278,10 @@ where
             }
             Ok(true)
         }
-        None => {
-            let err_payload = serde_json::json!({
-                "error": format!("unknown workspace: {hint:?}"),
-                "code": "unknown_workspace",
-            });
-            write_reply(tx, Frame::res(req_id, op_name, err_payload), None).await?;
+        Err(reply) => {
+            for (frame, blob) in reply {
+                write_reply(tx, frame, blob).await?;
+            }
             Ok(false)
         }
     }
