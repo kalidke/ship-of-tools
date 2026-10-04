@@ -10,7 +10,7 @@ Part of messaging; design of record: docs/adr/0049-messaging-on-one-page.md.
 - `hub_link.rs`: the link to the hub that files relayed `agent.message` frames into this box's inboxes
 - `inbox.rs`: the daemon's append of one frame to an inbox file under the shared lock, and the record of who may append
 - `inbox_tests.rs`: the tests of `inbox.rs`
-- `mod.rs`: declares the files
+- `mod.rs`: declares the files, and `record_at_boot`, the boot-time lock record
 - `relay.rs`: agent.send and agent.filed
 
 ## Start here
@@ -29,7 +29,7 @@ one ssh stdio child to the hub. On that link it files each `agent.message` whose
   cuts the file back.
 - This daemon appends locally only when line 1 of `inbox-lock-manager` equals its own `lock_identity` (`route`).
   Otherwise a guest forwards and a hub refuses, naming the recovery (`refusal`).
-- Only the hub writes the record, at start (`record_at_start`).
+- Only the hub writes the record, at start (`record_at_start`, called by `mod.rs` `record_at_boot` from main).
 - inbox.rs stays std and serde only outside its macOS arm, because tests/comm_file.rs includes it by path. T13 in
   test-hub-files.sh reads inbox.rs and inbox_tests.rs.
 - The link reads the topology once, at start (`recipe_for`).
