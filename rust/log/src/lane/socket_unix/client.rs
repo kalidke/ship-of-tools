@@ -339,8 +339,6 @@ impl crate::challenge_macos::SocketChallengeable for SocketClient {
 /// have a trusted peer-identity mechanism: everything that differs
 /// between Linux and macOS is already behind the `challenge_os` alias
 /// above, so there is no second `Endpoint` to keep in step with this one.
-/// The remaining Unix targets still have no implementor at all (ADR 0043
-/// decision 8), matching `connect_voyage_socket`'s own fail-closed arm.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy, Default)]
 pub struct SocketEndpoint;
@@ -461,13 +459,7 @@ pub fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, Tra
 /// `pub(crate)`, and MUST STAY `pub(crate)` — mirrors
 /// `pipe_win::connect_voyage_pipe_unchallenged`'s own "never widen" doc:
 /// an unchallenged `SocketClient` reachable through a PUBLIC path would
-/// defeat this whole module's enforcement. `#[cfg_attr]`: only
-/// `connect_voyage_socket`'s Linux and macOS bodies call this — its non-Linux stub
-/// (ADR 0043 decision 8) fails closed before ever reaching a connect, so
-/// a Unix build with no challenge half of its own sees this as unused —
-/// the same "hoisted but not yet called on this cfg" device this crate
-/// already uses for `deadline.rs`/`exchange_identity`.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+/// defeat this whole module's enforcement.
 pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let path = voyage_socket_path(voyage_id)?;
     connect_unix_socket_unchallenged(&path)
@@ -480,13 +472,7 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// which the caller composes itself on top of this. L1-unix LU3b: now
 /// called on Linux AND macOS, via `Endpoint for SocketEndpoint`'s own
 /// `connect_supervisor_unchallenged` (`fe_client_io.rs` and
-/// `supervisor_client`, both generic over `Endpoint`, are its callers)
-/// — the same `#[cfg_attr(..., allow(dead_code))]` device its sibling
-/// [`connect_voyage_socket_unchallenged`] already uses, since this
-/// Unix-general module still compiles on a Unix with no `SocketEndpoint`
-/// of its own (ADR 0043 decision 8). That gate NARROWED when macOS gained
-/// one: on macOS this is now a live call site, not dead code.
-#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+/// `supervisor_client`, both generic over `Endpoint`, are its callers).
 pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
     connect_unix_socket_unchallenged(&path)
@@ -516,24 +502,6 @@ pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportE
     let client = connect_voyage_socket_unchallenged(voyage_id)?;
     map_peer_auth_outcome(challenge_os::authenticate_server(&client))?;
     Ok(client)
-}
-
-/// ADR 0043 decision 8: the REMAINING Unix targets have no
-/// kernel-provided peer-pid mechanism this crate trusts (`SO_PEERCRED`'s
-/// pid field and `pidfd_open` are Linux-specific, `LOCAL_PEERTOKEN` is
-/// Darwin's; a generic `getpeereid`-style call has no pid at all).
-/// Rather than connect and then silently skip authentication, this fails
-/// closed immediately: same public name as the two real implementations
-/// above, so no caller needs a `cfg` split of its own merely to reach
-/// this function. This gate NARROWED when macOS gained its own half; it
-/// did not disappear.
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-pub fn connect_voyage_socket(_voyage_id: &str) -> Result<SocketClient, TransportError> {
-    Err(TransportError::Unsupported(
-        "connect_voyage_socket: peer identity authentication is implemented for Linux \
-         (SO_PEERCRED/pidfd) and macOS (LOCAL_PEERTOKEN) only; this Unix target fails \
-         closed (ADR 0043 decision 8)",
-    ))
 }
 
 /// Maps [`crate::challenge::PeerAuthOutcome`] to this module's own

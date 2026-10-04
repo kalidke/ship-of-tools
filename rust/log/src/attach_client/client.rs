@@ -98,7 +98,6 @@ impl std::fmt::Display for FeAttachError {
 /// is needed: `worker: AttachWorker<E>` already names `E` in a field.
 pub struct FeAttachClient<
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))] E: Endpoint = PlatformEndpoint,
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))] E: Endpoint,
 > {
     parser: vt100_ctt::Parser,
     /// The pane's current `(rows, cols)` — the CALLER's rect, tracked

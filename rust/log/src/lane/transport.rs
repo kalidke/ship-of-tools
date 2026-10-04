@@ -420,7 +420,7 @@ impl StartGate {
 /// `Io { op, source }` kept verbatim (the shape production code already
 /// matches on), `InvalidMaxInstances` folded into `InvalidMaxConnections`
 /// (one name for one concept), and the Unix-only
-/// `PathTooLong`/`RuntimeDir`/`Unsupported` carried unconditionally — an
+/// `PathTooLong`/`RuntimeDir` carried unconditionally — an
 /// enum variant costs nothing on a platform that never produces it.
 /// Background-thread failures still surface as [`LaneEvent::Closed`]/
 /// [`LaneEvent::AcceptError`] instead — this type is only ever returned
@@ -487,13 +487,6 @@ pub enum TransportError {
     /// `&'static str` cannot satisfy.)
     #[error("peer identity undetermined ({via}): {detail}")]
     Undetermined { via: &'static str, detail: String },
-    /// This Unix target has no kernel-provided peer-pid mechanism this
-    /// crate trusts (`SO_PEERCRED`'s pid field and `pidfd_open` are
-    /// Linux-specific) — the connect constructor fails closed here
-    /// rather than skip authentication silently. Never produced on
-    /// Windows.
-    #[error("{0}")]
-    Unsupported(&'static str),
     /// ADR 0045 decision 4: the daemon behind a lane-bridge dial
     /// (`sot-protocol`'s `DaemonLaneEndpoint`) answered `lane.connect`
     /// with a REFUSAL — `code` is the wire value verbatim
