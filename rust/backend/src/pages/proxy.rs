@@ -164,14 +164,12 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
 /// `rx` is the buffered reader that already consumed that first frame (any
 /// bytes it buffered past the envelope are preserved — `copy` drains the
 /// BufReader before touching the socket); `tx` is the write half; `frame` is
-/// the parsed handshake frame; `expected_token` is the daemon's configured
-/// token (if any). Returns when the pipe closes; errors are logged by the
+/// the parsed handshake frame. Returns when the pipe closes; errors are logged by the
 /// caller.
 pub async fn handle_proxy_connect<R, W>(
     rx: R,
     mut tx: W,
     frame: Frame,
-    expected_token: Option<&str>,
 ) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
@@ -183,18 +181,6 @@ where
             return reject(&mut tx, frame.id, op::PROXY_CONNECT, "bad_request", &format!("{e}")).await;
         }
     };
-
-    // Auth mirrors the op gate: honored only when the daemon has a token
-    // configured. On the normal local Unix-socket transport there is no
-    // token — filesystem permissions on the socket are the trust boundary
-    // (as for every op; ADR 0035 §3).
-    if let Some(expected) = expected_token {
-        let presented = req.token.unwrap_or_default();
-        if !crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
-            tracing::warn!(port = req.port, "proxy.connect rejected: bad token");
-            return reject(&mut tx, frame.id, op::PROXY_CONNECT, "unauthenticated", "bad or missing token").await;
-        }
-    }
 
     // Loopback-only + served-port allowlist. The frame carries no host by
     // design; we dial 127.0.0.1 exclusively, so a compromised/hostile FE
@@ -383,7 +369,7 @@ mod tests {
         let (dr, dw) = tokio::io::split(daemon);
         let (mut cr, mut cw) = tokio::io::split(client);
 
-        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(echo), None);
+        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(echo));
         let client_fut = async {
             // ONE buffered reader across the whole client side: reading the
             // res frame may buffer piped bytes past its envelope, so the
@@ -425,7 +411,7 @@ mod tests {
         let (dr, dw) = tokio::io::split(daemon);
         let (mut cr, _cw) = tokio::io::split(client);
         // 65000 is not a served backend port.
-        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(65000), None);
+        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(65000));
         let client_fut = async {
             let res = read_res(&mut cr).await;
             assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("bad_port"));
@@ -465,7 +451,7 @@ mod tests {
             let (client, daemon) = tokio::io::duplex(4096);
             let (dr, dw) = tokio::io::split(daemon);
             let (mut cr, _cw) = tokio::io::split(client);
-            let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(65011), None);
+            let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(65011));
             let client_fut = async {
                 let res = read_res(&mut cr).await;
                 assert_eq!(res.get("code").and_then(|v| v.as_str()), Some(want));
@@ -497,7 +483,7 @@ mod tests {
         let (client, daemon) = tokio::io::duplex(4096);
         let (dr, dw) = tokio::io::split(daemon);
         let (mut cr, _cw) = tokio::io::split(client);
-        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(dead), None);
+        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(dead));
         let client_fut = async {
             let res = read_res(&mut cr).await;
             assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("dial_failed"));
@@ -535,7 +521,7 @@ mod tests {
         // condition. `_cr` likewise kept so the duplex stays open.
         let (_cr, _cw) = tokio::io::split(client);
 
-        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(port), None);
+        let daemon_fut = handle_proxy_connect(codec::buffered(dr), dw, connect_frame(port));
         let res = tokio::time::timeout(std::time::Duration::from_secs(3), daemon_fut).await;
         assert!(
             res.is_ok(),
