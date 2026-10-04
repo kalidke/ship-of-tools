@@ -341,6 +341,15 @@ pub(super) mod base64_engine {
 mod tests {
     use super::*;
 
+    #[test]
+    fn wall_ms_is_unix_epoch_milliseconds_now() {
+        let ms = |t: SystemTime| t.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        let before = ms(SystemTime::now());
+        let got = wall_ms();
+        let after = ms(SystemTime::now());
+        assert!(before <= got && got <= after, "{before} <= {got} <= {after}");
+    }
+
     // -- commit_run_end_marker: ADR 0041 EndRun steps 1-2, proven directly
     // against a plain SegmentWriter/FrameCtx pair -- no real ConPTY run
     // needed for the one property this function owns (the lane operation
