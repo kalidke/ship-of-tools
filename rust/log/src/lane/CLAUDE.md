@@ -11,6 +11,7 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `pipe_transport.rs`: Windows bridge from the named-pipe server to `Transport`; twin of `socket_transport.rs`
 - `pipe_win/`: the Windows named-pipe transport, server and client
 - `socket_transport.rs`: the Unix twin, from the domain-socket server to `Transport`
+- `socket_unix/`: the Unix domain-socket transport, server and client
 - `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
 - `wire/`: the frame layouts of the three lanes, pure encode and decode
 

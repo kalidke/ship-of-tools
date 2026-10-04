@@ -103,7 +103,8 @@ pub use lane::pipe_transport;
 // `pub`, matching `pipe_win`: its tests live in `tests/socket_unix.rs`, a
 // separate integration-test crate that can only ever reach `pub` items.
 // Self-gated (`#![cfg(unix)]`), like `pipe_win` is self-gated to Windows.
-pub mod socket_unix;
+#[cfg(unix)]
+pub use lane::socket_unix;
 // L1-unix LU1b: the thin bridge from `socket_unix`'s real Unix-domain-
 // socket transport to `transport`'s `Transport` trait -- the Unix twin of
 // `pipe_transport`. Self-gated (`#![cfg(unix)]`).

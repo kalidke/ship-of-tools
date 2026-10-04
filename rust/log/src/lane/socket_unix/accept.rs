@@ -1,0 +1,225 @@
+//! The accept loop thread and admission of one new connection.
+
+use super::*;
+use super::conn::{reader_loop, report_registration_failure, send_lifecycle_event, writer_loop};
+
+/// The accept loop, one dedicated thread for the server's whole life:
+/// blocks in `libc::poll` over `{listener, wake_read}` (module doc: "the
+/// accept loop wakes via poll(2) over a self-pipe"); at capacity (ADR
+/// 0043 decision 4) the newly accepted stream is closed immediately
+/// rather than refused at the kernel level (Unix cannot refuse at
+/// connect time — the kernel completes the handshake from the listen
+/// backlog).
+pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wake_read: OwnedFd) {
+    let listener_fd = listener.as_raw_fd();
+    let wake_fd = wake_read.as_raw_fd();
+    loop {
+        if shared.accept_stopping.load(Ordering::Acquire) {
+            return;
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: listener_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: wake_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            terminalize_accept_loop(&shared, format!("poll: {err}"));
+            return;
+        }
+        if fds[1].revents & libc::POLLIN != 0 {
+            // Woken -- drain whatever is queued (defensive: only ever
+            // one byte is written per `disconnect_listener` call, but a
+            // repeat call is tolerated) and loop back to the top's
+            // `accept_stopping` check.
+            let mut discard = [0u8; 64];
+            loop {
+                let n = unsafe {
+                    libc::read(wake_fd, discard.as_mut_ptr().cast(), discard.len())
+                };
+                if n <= 0 {
+                    break;
+                }
+            }
+            continue;
+        }
+        if fds[0].revents & (libc::POLLERR | libc::POLLNVAL | libc::POLLHUP) != 0 {
+            // The listener itself is bad. `poll` would report this again
+            // immediately, so `continue` here would spin the acceptor hot
+            // forever: treat it as the permanent accept failure it is
+            // (property 32) — one `AcceptError`, then stop accepting.
+            terminalize_accept_loop(
+                &shared,
+                format!("poll: listener reported revents {:#x}", fds[0].revents),
+            );
+            return;
+        }
+        if fds[0].revents & libc::POLLIN == 0 {
+            continue; // nothing to accept yet
+        }
+        match listener.accept() {
+            Ok((stream, _addr)) => {
+                if shared.conns.lock().unwrap().len() >= shared.max_connections as usize {
+                    // ADR 0043 decision 4: accept-then-close at capacity.
+                    drop(stream);
+                    continue;
+                }
+                handle_new_connection(&shared, stream);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::Interrupted
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue; // transient: ADR 0043 decision 4's retried family
+            }
+            Err(e) => {
+                terminalize_accept_loop(&shared, format!("accept: {e}"));
+                return;
+            }
+        }
+    }
+}
+
+/// Stop the accept loop for good and report why — the ONE place every
+/// persistent-resource-failure path routes through. Sets ONLY
+/// `accept_stopping` (never `dropping` — see the module doc's "Two
+/// distinct 'stop' signals" section for why conflating them would risk
+/// silently losing the very `AcceptError` this function emits).
+fn terminalize_accept_loop(shared: &Arc<ServerShared>, message: String) {
+    shared.accept_stopping.store(true, Ordering::Release);
+    send_lifecycle_event(shared, LaneEvent::AcceptError(message));
+}
+
+/// Hand off a just-accepted stream: spawn its reader/writer threads
+/// (gated — see [`StartGate`]), register it, THEN reliably publish
+/// `Accepted` and open the gate. Mirrors
+/// `pipe_win::handle_new_connection`'s own ordering and its recoverable-
+/// spawn-failure handling — with no instance to recycle on failure (the
+/// `UnixStream` simply drops, closing its fd, once this function
+/// returns).
+fn handle_new_connection(shared: &Arc<ServerShared>, stream: UnixStream) {
+    let stream = Arc::new(stream);
+    let conn_id = shared.next_id.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel::<WriteCmd>();
+    let outbound = Arc::new(OutboundBudget::new());
+    let gate = StartGate::new();
+    let torn_down_requested = Arc::new(AtomicBool::new(false));
+
+    let reader_jh = {
+        let shared2 = Arc::clone(shared);
+        let stream2 = Arc::clone(&stream);
+        let gate2 = Arc::clone(&gate);
+        let torn = Arc::clone(&torn_down_requested);
+        thread::Builder::new()
+            .name(format!("sot-sock-r-{conn_id}"))
+            .spawn(move || {
+                if !gate2.wait_for_start() {
+                    return;
+                }
+                reader_loop(stream2, conn_id, shared2, torn)
+            })
+    };
+    let reader_jh = match reader_jh {
+        Ok(jh) => jh,
+        Err(e) => {
+            report_registration_failure(shared, "reader thread spawn failed", e);
+            return;
+        }
+    };
+
+    let writer_jh = {
+        let shared2 = Arc::clone(shared);
+        let stream2 = Arc::clone(&stream);
+        let outbound2 = Arc::clone(&outbound);
+        let gate2 = Arc::clone(&gate);
+        let torn = Arc::clone(&torn_down_requested);
+        thread::Builder::new()
+            .name(format!("sot-sock-w-{conn_id}"))
+            .spawn(move || {
+                if !gate2.wait_for_start() {
+                    return;
+                }
+                writer_loop(stream2, conn_id, rx, shared2, outbound2, torn)
+            })
+    };
+    let writer_jh = match writer_jh {
+        Ok(jh) => jh,
+        Err(e) => {
+            // The reader is spawned but still gated -- abort makes its
+            // `wait_for_start` return `false` immediately, so joining it
+            // here (NOT through the reaper: it was never registered) is
+            // bounded.
+            gate.abort();
+            reader_jh.join().ok();
+            report_registration_failure(shared, "writer thread spawn failed", e);
+            return;
+        }
+    };
+
+    // Codex review finding 2 (P2): registration must not be able to
+    // escape phase one of `disconnect_listener`. That method's own drain
+    // and this insert take the SAME `conns` lock, so whichever of the two
+    // threads acquires it first establishes a real happens-before order
+    // for `dropping` that a bare atomic load, on its own, cannot promise:
+    // if `disconnect_listener` locked first, its own `dropping` write is
+    // now certainly visible here (the lock's release-then-acquire is what
+    // provides that, not `dropping`'s own ordering in isolation) — refuse
+    // to register at all. If this insert locks FIRST instead,
+    // `disconnect_listener` — however soon after it next acquires the
+    // SAME lock — will find this connection already in `conns` and hand
+    // it a normal, correct teardown through `detached_workers`. There is
+    // no window where a connection is registered AFTER
+    // `disconnect_listener`'s own drain has already run and will never
+    // see it again — which is exactly the leak this check closes (an
+    // orphaned reader/writer pair neither joined by the reaper, since it
+    // was never registered, NOR by `join_workers`, since it never reached
+    // `detached_workers` either).
+    let mut conns = shared.conns.lock().unwrap();
+    if shared.dropping.load(Ordering::Acquire) {
+        drop(conns);
+        // Never touched the stream (still gated) -- `abort` makes both
+        // threads' own `wait_for_start` return `false` immediately, so
+        // joining them here (NOT through the reaper: neither was ever
+        // registered) is bounded and legal, the same as the writer-spawn-
+        // failure path above. `shutdown` first anyway, defensively, in
+        // case either thread is somehow already past the gate (it is
+        // not, by construction) -- costs nothing, removes any doubt.
+        unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RDWR) };
+        gate.abort();
+        reader_jh.join().ok();
+        writer_jh.join().ok();
+        return; // no event: this connection was never told to exist.
+    }
+    conns.insert(
+        conn_id,
+        ConnHandle {
+            stream,
+            outbound,
+            sender: tx,
+            reader_jh,
+            writer_jh,
+            torn_down_requested,
+        },
+    );
+    drop(conns); // never hold this lock while sending on the events channel
+    // RELIABLE, not best-effort: retries until the consumer actually has
+    // room, so the gate below can never open onto a connection the
+    // consumer was never told exists.
+    send_lifecycle_event(shared, LaneEvent::Accepted(conn_id));
+    gate.open(); // ONLY now may the reader/writer threads touch the stream.
+}
