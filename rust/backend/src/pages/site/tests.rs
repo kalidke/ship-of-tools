@@ -30,12 +30,14 @@ mod pool_tests {
         );
         // Distinct sites get distinct secrets.
         assert_ne!(s1, s2);
+        assert!(s1.len() == 32 && s1.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
         // A re-open by an existing owner REPOINTS its port, not a new one,
         // and mints a FRESH secret — the old one (and any cookie it set)
         // stops working (security review).
         let (p2_again, s2_again) = assign_pool_port(S + 2, Site::plain(PathBuf::from("/b2"))).unwrap();
         assert_eq!(p2_again, p2);
         assert_ne!(s2_again, s2);
+        assert!(s2_again.len() == 32 && s2_again.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
         assert_eq!(
             pool_entry_for(p2).map(|(r, _)| r.content_root.clone()),
             Some(PathBuf::from("/b2"))
@@ -49,6 +51,19 @@ mod pool_tests {
         let (p5, _s5) = assign_pool_port(S + 5, Site::plain(PathBuf::from("/e"))).unwrap();
         assert_eq!(p5, p3);
         reset();
+    }
+}
+
+#[cfg(test)]
+mod nonce_tests {
+    use super::*;
+
+    #[test]
+    fn set_root_mints_a_lowercase_hex_nonce() {
+        let serial = 8_000_000_101;
+        let nonce = set_root(serial, Site::plain(PathBuf::from("/mw09"))).expect("nonce");
+        assert!(nonce.len() == 32 && nonce.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
+        remove_root(serial);
     }
 }
 
