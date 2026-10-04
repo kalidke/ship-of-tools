@@ -410,6 +410,13 @@ mod tests {
     }
 
     #[test]
+    fn self_is_hub_is_exact_byte_equality() {
+        assert!(!self_is_hub("Hub-Box", "hub-box"));
+        assert!(!self_is_hub("hub-box ", "hub-box"));
+        assert!(self_is_hub("", ""));
+    }
+
+    #[test]
     fn resolve_hub_prefers_the_local_copy_over_a_disagreeing_flag() {
         let t = topology::parse("hub = \"hub-a\"\n[host.hub-a]\ndaemon = true\n").unwrap();
         let dest = std::path::Path::new("/nowhere/hosts.toml");
