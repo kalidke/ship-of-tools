@@ -1,4 +1,4 @@
-//! The main authority loop: `supervise_inner`, whole.
+//! The main authority loop: `supervise_inner`, with its setup and exit pieces.
 
 use super::*;
 
@@ -7,31 +7,7 @@ use super::*;
 // ---------------------------------------------------------------------
 
 pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
-    // ADR 0043 decision 25: set before ANYTHING else in this function —
-    // every diagnostic below, including the SIGCHLD-reset failure two
-    // lines down, goes through `note`, which reads this.
-    let _ = NOTE_PREFIX.set(format!(
-        "sot-capsule supervise[{}]",
-        config.state_dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
-    ));
-    // ADR 0043 decision 21 (Codex review round, F2): SIGCHLD is SET to
-    // SIG_DFL here, as the very first thing this function does -- never
-    // merely assumed. Whatever launched this process (a daemon, a shell)
-    // may have inherited `SIG_IGN` across `exec`, which auto-reaps every
-    // child immediately and silently breaks the pid pin every Unix leg
-    // identity is built on: on Linux a reaped pid can be recycled before
-    // `SpawnedChild::from_child`'s own `pidfd_open` ever runs
-    // (reproduced), and on macOS, which pins a leg by (pid, start time)
-    // instead, a pid that vanishes before it is read is the same hole by
-    // another road. Unix-wide for that reason, not Linux-specific: this
-    // process OWNS the disposition it depends on, the same line
-    // `producer_pty`'s own `spawn` already draws for its forked child.
-    #[cfg(unix)]
-    {
-        if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
-            return Err(crate::Error::Io(std::io::Error::last_os_error()));
-        }
-    }
+    init_process_globals(&config)?;
 
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
@@ -479,37 +455,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         // iteration as any other.
         reap_retired_legs(&mut authority.retired_legs);
 
-        // N4 (Codex review round 3): `stop`'s own exit condition — the
-        // underlying Lifecycle is NEVER touched by Stop's acceptance
-        // (see `AuthorityState::stop_requested`'s own doc), so it keeps
-        // resolving itself through EVERY ordinary transition arm above,
-        // worker ownership/panic-detection/watchdogs all UNCHANGED and
-        // fully shared with the non-stopping path. This only decides
-        // WHEN to actually break the loop once accepted:
-        //   - `Terminal` with NO stop pending: the pre-existing
-        //     `TERMINAL_EXIT_GRACE` timer (now the `Lifecycle::Terminal`
-        //     variant's own `entered_at` field — folded in, no separate
-        //     `terminal_since` local needed).
-        //   - `Terminal`, or a RESTING state (`Ready`/`EndedNoRespawn`),
-        //     WITH a stop pending: "stop ends it sooner" — exit as soon
-        //     as the primary connection's own reply has been delivered
-        //     or given up on, via the SAME per-connection `PendingClose`
-        //     gate every other reply already uses (bounded by
-        //     `REFUSAL_SENT_DEADLINE` + `REFUSAL_FLUSH_GRACE`,
-        //     ~2.25s — `service_lane` removes a connection from `conns`
-        //     once that gate closes it, which is exactly the signal
-        //     this reads).
-        //   - Any OTHER state (a worker still genuinely in flight): never
-        //     exits here regardless of a pending stop — "keep servicing
-        //     its result until it lands or its own watchdog fires".
-        let exit_now = match (&lifecycle, &authority.stop_requested) {
-            (Lifecycle::Terminal { .. }, Some(stop)) => !conns.contains_key(&stop.primary_conn),
-            (Lifecycle::Terminal { entered_at, .. }, None) => {
-                now.saturating_duration_since(*entered_at) >= TERMINAL_EXIT_GRACE
-            }
-            (Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn, Some(stop)) => !conns.contains_key(&stop.primary_conn),
-            _ => false,
-        };
+        let exit_now = should_exit_now(&lifecycle, &authority, &conns, now);
         if exit_now {
             break 'authority;
         }
@@ -529,7 +475,78 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         woke_on = lane.events().recv_timeout(MAIN_LOOP_POLL).ok();
     }
 
-    let exit_code = match (&lifecycle, &authority.stop_requested) {
+    let exit_code = final_exit_code(&lifecycle, &authority);
+
+    // `lane`'s own `Drop` performs the teardown when it goes out of
+    // scope below.
+    Ok(exit_code)
+}
+
+fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
+    // ADR 0043 decision 25: set before ANYTHING else in this function —
+    // every diagnostic below, including the SIGCHLD-reset failure two
+    // lines down, goes through `note`, which reads this.
+    let _ = NOTE_PREFIX.set(format!(
+        "sot-capsule supervise[{}]",
+        config.state_dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
+    ));
+    // ADR 0043 decision 21 (Codex review round, F2): SIGCHLD is SET to
+    // SIG_DFL here, as the very first thing this function does -- never
+    // merely assumed. Whatever launched this process (a daemon, a shell)
+    // may have inherited `SIG_IGN` across `exec`, which auto-reaps every
+    // child immediately and silently breaks the pid pin every Unix leg
+    // identity is built on: on Linux a reaped pid can be recycled before
+    // `SpawnedChild::from_child`'s own `pidfd_open` ever runs
+    // (reproduced), and on macOS, which pins a leg by (pid, start time)
+    // instead, a pid that vanishes before it is read is the same hole by
+    // another road. Unix-wide for that reason, not Linux-specific: this
+    // process OWNS the disposition it depends on, the same line
+    // `producer_pty`'s own `spawn` already draws for its forked child.
+    #[cfg(unix)]
+    {
+        if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {
+            return Err(crate::Error::Io(std::io::Error::last_os_error()));
+        }
+    }
+    Ok(())
+}
+
+fn should_exit_now(lifecycle: &Lifecycle, authority: &AuthorityState, conns: &HashMap<ConnId, Conn>, now: Instant) -> bool {
+    // N4 (Codex review round 3): `stop`'s own exit condition — the
+    // underlying Lifecycle is NEVER touched by Stop's acceptance
+    // (see `AuthorityState::stop_requested`'s own doc), so it keeps
+    // resolving itself through EVERY ordinary transition arm above,
+    // worker ownership/panic-detection/watchdogs all UNCHANGED and
+    // fully shared with the non-stopping path. This only decides
+    // WHEN to actually break the loop once accepted:
+    //   - `Terminal` with NO stop pending: the pre-existing
+    //     `TERMINAL_EXIT_GRACE` timer (now the `Lifecycle::Terminal`
+    //     variant's own `entered_at` field — folded in, no separate
+    //     `terminal_since` local needed).
+    //   - `Terminal`, or a RESTING state (`Ready`/`EndedNoRespawn`),
+    //     WITH a stop pending: "stop ends it sooner" — exit as soon
+    //     as the primary connection's own reply has been delivered
+    //     or given up on, via the SAME per-connection `PendingClose`
+    //     gate every other reply already uses (bounded by
+    //     `REFUSAL_SENT_DEADLINE` + `REFUSAL_FLUSH_GRACE`,
+    //     ~2.25s — `service_lane` removes a connection from `conns`
+    //     once that gate closes it, which is exactly the signal
+    //     this reads).
+    //   - Any OTHER state (a worker still genuinely in flight): never
+    //     exits here regardless of a pending stop — "keep servicing
+    //     its result until it lands or its own watchdog fires".
+    match (&lifecycle, &authority.stop_requested) {
+        (Lifecycle::Terminal { .. }, Some(stop)) => !conns.contains_key(&stop.primary_conn),
+        (Lifecycle::Terminal { entered_at, .. }, None) => {
+            now.saturating_duration_since(*entered_at) >= TERMINAL_EXIT_GRACE
+        }
+        (Lifecycle::Ready { .. } | Lifecycle::EndedNoRespawn, Some(stop)) => !conns.contains_key(&stop.primary_conn),
+        _ => false,
+    }
+}
+
+fn final_exit_code(lifecycle: &Lifecycle, authority: &AuthorityState) -> i32 {
+    match (&lifecycle, &authority.stop_requested) {
         (Lifecycle::Terminal { detail, .. }, _) => {
             note(format_args!("exiting terminal: {detail}"));
             EXIT_TERMINAL
@@ -542,9 +559,5 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             EXIT_TERMINAL
         }
         _ => EXIT_CLEAN,
-    };
-
-    // `lane`'s own `Drop` performs the teardown when it goes out of
-    // scope below.
-    Ok(exit_code)
+    }
 }
