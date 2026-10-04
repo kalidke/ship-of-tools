@@ -7,13 +7,14 @@ distribution; charter: scripts/CLAUDE.md.
 
 ## Files
 - `sot-daemon.sh`: the unit and wrapper renderers, the daemon ensure, the log pruner and the copy and backup helpers.
+- `sot-hosts.sh`: the `sotd topology plan` reader (`sot_topology_plan`) and the `topology sync` runner; `launch-sot.sh` sources it.
 
 ## Start here
 `sot-daemon.sh`, in this order: `render_sot_launch` (the wrapper text), `sot_daemon_ensure` (what every launch does
 before a window), then `sot_rerender_owned` (what an update does to the unit and the wrapper).
 
 ## Rules
-- The file is POSIX sh plus `local`: no arrays, `[[`, `declare`, `$'...'`, `function` or `==` in `[`, because
+- `sot-daemon.sh` is POSIX sh plus `local`: no arrays, `[[`, `declare`, `$'...'`, `function` or `==` in `[`, because
   `sot-apply.sh` runs it under dash and macOS ships bash 3.2.
 - `render_sotd_unit` and `render_sot_launch` write beside the destination under a name of the shell's own pid and move
   it in, so a failed write leaves the old file whole and returns 1.

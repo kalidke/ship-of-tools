@@ -70,7 +70,6 @@ and the launch path fails open: no update step can stop a window from starting.
 - `sot-apply.ps1`: the same for Windows.
 ### Launch (Unix)
 - `launch-sot.sh`: reads the topology plan, ensures the local daemon and execs the window with `--dial` arguments.
-- `sot-hosts.sh`: reads `sotd topology plan` output and runs `topology sync`.
 ### Launch (Windows)
 - `launch-sot.ps1`: the supervisor: self-update, install layout, apply, local daemon, leases, respawn loop.
 - `launch-splash.ps1`: the launch progress window.

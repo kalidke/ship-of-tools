@@ -713,7 +713,8 @@ dev_row() {  # <dir> <stale socket 0|1> <description>
 case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
 exec python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' "$2"
 NC
-    for f in launch-sot.sh sot-hosts.sh; do cp "$(dirname "$0")/../$f" "$d/repo/scripts/$f"; done
+    cp "$(dirname "$0")/../launch-sot.sh" "$d/repo/scripts/launch-sot.sh"
+    cp "$(dirname "$0")/../lib/sot-hosts.sh" "$d/repo/scripts/lib/sot-hosts.sh"
     cp "$LIB" "$d/repo/scripts/lib/sot-daemon.sh"
     : > "$d/log"
     cat > "$d/home/.local/share/sot/bin/sotd" <<SD

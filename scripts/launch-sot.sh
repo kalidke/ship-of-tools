@@ -65,8 +65,8 @@ fi
 unset SOT_LAUNCH_REEXEC || true
 # --- end self-update prelude ---
 
-# shellcheck source=sot-hosts.sh
-. "$(dirname "$0")/sot-hosts.sh"
+# shellcheck source=lib/sot-hosts.sh
+. "$(dirname "$0")/lib/sot-hosts.sh"
 # shellcheck source=lib/sot-daemon.sh
 . "$(dirname "$0")/lib/sot-daemon.sh"
 

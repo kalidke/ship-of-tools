@@ -15,8 +15,8 @@
 
 set -euo pipefail
 
-# shellcheck source=../sot-hosts.sh
-. "$(dirname "$0")/../sot-hosts.sh"
+# shellcheck source=../lib/sot-hosts.sh
+. "$(dirname "$0")/../lib/sot-hosts.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK:?}"' EXIT
