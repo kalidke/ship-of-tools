@@ -1,4 +1,5 @@
-//! One connection: its read-deadline reaper, its first-frame peek and its control loop (`handle_connection`).
+//! One connection: its read-deadline reaper, its first-frame peek (`handle_connection`) and its control loop
+//! (`serve_control`, with `select_once` for one pass of its select).
 
 use super::dispatch::dispatch;
 use super::events::{
