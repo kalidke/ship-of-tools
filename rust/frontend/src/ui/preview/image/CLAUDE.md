@@ -11,6 +11,7 @@ rust/frontend/src/ui/CLAUDE.md.
 - `roi.rs`: the raster-node test, the ROI capture to `image.crop` and its applied report.
 - `svg.rs`: rasterizes SVG bytes with resvg at a caller-given pixel size and uploads a quad.
 - `view.rs`: the view geometry: letterbox, zoom bound, pan scaling and the source-pixel ROI mapping both ways.
+- `replies.rs`: figure, ROI crop and pixel-size replies
 
 ## Start here
 `quad_and_source_dims_from_png_bytes` in png.rs for a standalone image; `quad_from_svg_bytes` in svg.rs for math; `solve_roi_view` and `visible_roi_px` in view.rs for zoom, pan and ROI work.

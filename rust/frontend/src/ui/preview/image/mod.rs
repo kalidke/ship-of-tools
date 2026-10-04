@@ -1,6 +1,7 @@
 //! Image previews: PNG decode and SVG rasterization into wgpu quads.
 
 pub(crate) mod figures;
+mod replies;
 mod roi;
 pub(crate) mod overlay;
 pub(crate) mod png;
