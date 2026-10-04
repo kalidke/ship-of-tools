@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
+use serde_json::json;
+use sot_protocol::Frame;
 use tokio::sync::broadcast;
 
 use crate::files::concept::ConceptStore;
@@ -22,9 +24,29 @@ use crate::sidecars::kernel::Kernel;
 use crate::paths::slug;
 use crate::sidecars::repl::{Repl, ReplFrameMsg};
 use crate::files::watcher::{PreviewChanged, Watcher};
+use crate::server::reply::HandlerOutput;
 
 use gate::RunGate;
 use workspace::PhaseCell;
+
+/// The row a hint names, or the reply an op sends when none is registered.
+pub(crate) fn row_or_reply(
+    workspaces: &Workspaces,
+    hint: Option<&str>,
+    req_id: u64,
+    op: &str,
+) -> std::result::Result<Arc<Workspace>, HandlerOutput> {
+    workspaces.resolve(hint).ok_or_else(|| {
+        vec![(
+            Frame::res(
+                req_id,
+                op,
+                json!({ "error": format!("unknown workspace: {hint:?}"), "code": "unknown_workspace" }),
+            ),
+            None,
+        )]
+    })
+}
 
 /// One deduplicated workspace lifecycle event. The daemon broadcasts one
 /// per successful create/destroy; each connection turns it into a

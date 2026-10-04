@@ -17,6 +17,7 @@ use sot_protocol::Frame;
 use crate::files::io;
 use crate::files::io::WriteResult;
 use crate::session::Session;
+use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 
@@ -222,15 +223,9 @@ pub async fn handle_file_delete(
 
     // resolve_file_node already validated the workspace; re-resolve for the
     // project root the fallback trash dir lives under.
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::FILE_DELETE,
-                json!({ "error": format!("unknown workspace: {:?}", req.workspace_id), "code": "unknown_workspace" }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::FILE_DELETE) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
 
     match io::trash_file(&path, &ws.project_root) {
@@ -341,16 +336,7 @@ fn resolve_file_node(
     workspaces: &Workspaces,
     confined: bool,
 ) -> std::result::Result<std::path::PathBuf, HandlerOutput> {
-    let Some(ws) = workspaces.resolve(workspace_id) else {
-        return Err(vec![(
-            Frame::res(
-                req_id,
-                op_name,
-                json!({ "error": format!("unknown workspace: {workspace_id:?}"), "code": "unknown_workspace" }),
-            ),
-            None,
-        )]);
-    };
+    let ws = row_or_reply(workspaces, workspace_id, req_id, op_name)?;
     let files_mode = match ws.files_mode() {
         Ok(fm) => fm,
         Err(e) => {

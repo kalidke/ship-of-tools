@@ -15,6 +15,7 @@ use crate::server::reply::HandlerOutput;
 use crate::sidecars::kernel::Kernel;
 use crate::session::Session;
 use crate::rows::Workspace;
+use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 
 pub(crate) mod crop;
@@ -339,18 +340,9 @@ pub async fn handle_preview_get(
         "preview.get"
     );
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::PREVIEW_GET,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::PREVIEW_GET) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
 
     match build_preview_payload(&ws, &req).await? {

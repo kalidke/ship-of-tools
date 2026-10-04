@@ -39,7 +39,8 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   ops, not through the file.
 
 ## Connections
-- In: every op finds its row through `Workspaces::resolve`; `ops/` creates, lists and destroys rows
+- In: every op finds its row through `Workspaces::resolve`, and the ops that answer a missing row with
+  `unknown_workspace` do it through `row_or_reply` (`mod.rs`); `ops/` creates, lists and destroys rows
   (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` calls `anchor::seed_default_row`,
   which inserts the default row.
 - Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),
@@ -55,7 +56,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - `store/`: the row toml store, its codec and the boot migrations
 
 ## Files
-- `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, the `WorkspaceChanged` event and the session name rule
+- `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, `row_or_reply`, the `WorkspaceChanged` event and the session name rule
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`

@@ -18,6 +18,7 @@ use sot_protocol::PlutoOpenRes;
 use crate::sidecars::mathjax::MathJax;
 use crate::sidecars::pluto::Pluto;
 use crate::session::Session;
+use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 use crate::files::confine::canonicalize_within_any_workspace;
@@ -36,18 +37,14 @@ pub async fn handle_kernel_request(
         "kernel.request"
     );
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::KERNEL_REQUEST,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(
+        workspaces,
+        req.workspace_id.as_deref(),
+        req_id,
+        op::KERNEL_REQUEST,
+    ) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let kernel = ws.kernel();
     let result = kernel.request(&req.kernel_op, req.kernel_payload).await;

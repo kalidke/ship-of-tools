@@ -110,11 +110,9 @@ pub async fn handle_preview_set_scale(
         )])
     };
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return err(
-            "unknown_workspace",
-            format!("unknown workspace: {:?}", req.workspace_id),
-        );
+    let ws = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::PREVIEW_SET_SCALE) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let files_mode = match ws.files_mode() {
         Ok(fm) => fm,

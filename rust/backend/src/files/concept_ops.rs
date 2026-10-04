@@ -11,6 +11,7 @@ use sot_protocol::ConceptWriteReq;
 use sot_protocol::ConceptWriteRes;
 use sot_protocol::Frame;
 use crate::session::Session;
+use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 
@@ -28,18 +29,9 @@ pub async fn handle_concept_read(
         "concept.read"
     );
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::CONCEPT_READ,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::CONCEPT_READ) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let concept = ws.concept();
     // `ConceptStore::read` is a synchronous `std::fs::read_to_string` — real
@@ -89,18 +81,14 @@ pub async fn handle_concept_write(
         "concept.write"
     );
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::CONCEPT_WRITE,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(
+        workspaces,
+        req.workspace_id.as_deref(),
+        req_id,
+        op::CONCEPT_WRITE,
+    ) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let concept = ws.concept();
 
@@ -180,18 +168,9 @@ pub async fn handle_concept_list(
         workspace_id = workspace_id.as_deref().unwrap_or("<default>"),
         "concept.list"
     );
-    let Some(ws) = workspaces.resolve(workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::CONCEPT_LIST,
-                json!({
-                    "error": format!("unknown workspace: {:?}", workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, workspace_id.as_deref(), req_id, op::CONCEPT_LIST) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let concept = ws.concept();
     let targets = match concept.list() {

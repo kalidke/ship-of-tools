@@ -5,6 +5,7 @@ use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
 use crate::session::Session;
+use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 
@@ -24,18 +25,9 @@ pub async fn handle_repl_eval(
         eval_id,
         "repl.eval"
     );
-    let Some(ws) = workspaces.resolve(workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::REPL_EVAL,
-                json!({
-                    "error": format!("unknown workspace: {:?}", workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, workspace_id.as_deref(), req_id, op::REPL_EVAL) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
     // Fire-and-forget: queue the eval at the supervisor and return an ack
@@ -99,18 +91,9 @@ pub async fn handle_repl_run_file(
         path = path_str.as_deref().unwrap_or(""),
         "repl.run_file"
     );
-    let Some(ws) = workspaces.resolve(workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::REPL_RUN_FILE,
-                json!({
-                    "error": format!("unknown workspace: {:?}", workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, workspace_id.as_deref(), req_id, op::REPL_RUN_FILE) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
 
@@ -287,18 +270,9 @@ pub async fn handle_repl_interrupt(
         workspace_id = workspace_id.as_deref().unwrap_or("<default>"),
         "repl.interrupt"
     );
-    let Some(ws) = workspaces.resolve(workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::REPL_INTERRUPT,
-                json!({
-                    "error": format!("unknown workspace: {:?}", workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, workspace_id.as_deref(), req_id, op::REPL_INTERRUPT) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let repl = ws.repl(workspaces.repl_frame_tx());
     // Daemon-side interrupt guard (P0.5 pre-work; twin of the #96 CLI

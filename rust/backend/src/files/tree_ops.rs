@@ -13,6 +13,7 @@ use sot_protocol::TreeChildrenRes;
 use sot_protocol::TreeRootReq;
 use sot_protocol::TreeRootRes;
 use crate::session::Session;
+use crate::rows::row_or_reply;
 use crate::rows::Workspaces;
 use crate::server::reply::HandlerOutput;
 
@@ -39,18 +40,9 @@ pub async fn handle_tree_root(
         return Ok(vec![(Frame::res(req_id, op::TREE_ROOT, payload), None)]);
     }
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::TREE_ROOT,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(workspaces, req.workspace_id.as_deref(), req_id, op::TREE_ROOT) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let files_mode = match ws.files_mode() {
         Ok(fm) => fm,
@@ -101,18 +93,14 @@ pub async fn handle_tree_children(
         "tree.children"
     );
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::TREE_CHILDREN,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(
+        workspaces,
+        req.workspace_id.as_deref(),
+        req_id,
+        op::TREE_CHILDREN,
+    ) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let files_mode = ws.files_mode().context("files_mode init")?;
     let children = match files_mode.children_of(&req.node_id) {
@@ -155,18 +143,14 @@ pub async fn handle_nav_toggle_hidden(
         "nav.toggle_hidden"
     );
 
-    let Some(ws) = workspaces.resolve(req.workspace_id.as_deref()) else {
-        return Ok(vec![(
-            Frame::res(
-                req_id,
-                op::NAV_TOGGLE_HIDDEN,
-                json!({
-                    "error": format!("unknown workspace: {:?}", req.workspace_id),
-                    "code": "unknown_workspace",
-                }),
-            ),
-            None,
-        )]);
+    let ws = match row_or_reply(
+        workspaces,
+        req.workspace_id.as_deref(),
+        req_id,
+        op::NAV_TOGGLE_HIDDEN,
+    ) {
+        Ok(ws) => ws,
+        Err(reply) => return Ok(reply),
     };
     let files_mode = match ws.files_mode() {
         Ok(fm) => fm,
