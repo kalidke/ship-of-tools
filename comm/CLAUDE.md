@@ -50,6 +50,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: launchers, hooks, skills, the Codex plugin.
 - `core/`: the reference client's scripts, `core/scripts/`, each sourcing `comm-lib.sh` from its own folder.
+- `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
 - `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), `agent.send` and `agent.filed`
   (`relay.rs`), the `agent.message` and `agent.receipt` buses, the hub link (`run`), and the append (`file_frame`).
@@ -62,6 +63,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - `adapters/`: Claude and Codex adapters (see Folders).
 - `bin-folders.txt`: the folders whose files install flat into `~/.sot-comm/bin`, one repo path per line.
 - `core/`: the reference client (see Folders).
+- `registry/`: the address book scripts (see Folders).
 - `tests/`: the suites and their stage (see Folders).
 
 ## Start here
