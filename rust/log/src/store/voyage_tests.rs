@@ -5,6 +5,20 @@ use super::super::support_tests::{intent_env, lc, lc_take};
 use crate::store::envelope::Seq;
 use crate::store::segment::Commit;
 
+/// The voyage layout is part of the format: bootstrap lays out these names
+/// and no others, spelled here as literals independent of the constants.
+#[test]
+fn bootstrap_lays_out_the_voyage_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("voyl");
+    VoyageStore::bootstrap(&root, "voyl", RetentionClass::Discard).unwrap();
+    assert!(root.join("seg").is_dir());
+    assert!(root.join("blobs").is_dir());
+    assert!(root.join("blobs").join(".tmp").is_dir());
+    assert!(root.join("blobs").join("sha256").is_dir());
+    assert!(root.join("writer.lock").is_file());
+}
+
 /// The concurrent-bootstrap race a shared staging pathname allowed
 /// (review finding on the DACL unit): with one `.creating` path, attempt
 /// B could delete attempt A's populated, flushed staging and substitute
