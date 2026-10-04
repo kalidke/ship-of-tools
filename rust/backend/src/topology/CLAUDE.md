@@ -5,14 +5,17 @@ answers the two argv commands that read it, `sotd status` and `sotd stdio-bridge
 the CLI commands dial the daemon with. Part of topology.
 
 ## Files
+- `cli.rs`: `sotd topology`, the verbs a box runs for itself: argv, `sync`, `set`, status's cache line and the edit parser.
 - `dial.rs`: the one-shot blocking daemon client (and `forward_comm_file`).
-- `mod.rs`: declares the five modules below.
+- `mod.rs`: declares the seven modules below.
+- `relay_units.rs`: `sotd topology apply` and `refresh`, the hub's systemd --user relay units and drop-ins.
 - `set.rs`: `handle_topology_set`, the daemon side of op `topology.set`.
 - `status.rs`: `sotd status`, declared plus live state fanned out to every reachable daemon.
 - `stdio_bridge.rs`: `sotd stdio-bridge`, the byte shuttle between stdin/stdout and this box's own daemon endpoint.
 - `store.rs`: `TopologyStore`, the daemon's cached view of hosts.toml, and `write_atomic`.
 
 ## Start here
+`cli.rs` `run` for a `sotd topology` verb; `relay_units.rs` `apply` and `refresh` for the hub's relay units;
 `store.rs` `TopologyStore::refresh` for the daemon's view; `set.rs` `handle_topology_set` for the op; `status.rs` `run`
 for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 
@@ -25,3 +28,8 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - `sotd status` bounds each probe by `PROBE_TIMEOUT`.
 - `sotd stdio-bridge` writes nothing of its own to stdout and exits 0 only on a clean EOF (`stdio_bridge::run`).
 - `sotd status` and `sotd stdio-bridge` are answered in main's early argv match, before the umask, log or state dir.
+- `apply`, `relay-sockets` and `refresh` act only on the hub (`topology::require_hub`).
+- `apply` is a dry run unless given `--yes`, and one failing unit does not stop the others.
+- `refresh_at_start` acts only when this process is sotd.service's MainPID (`supervised_by_systemd`), and the daemon
+  never waits on it (main spawns it on its own thread).
+- In `refresh`, only `daemon-reload` is fatal.
