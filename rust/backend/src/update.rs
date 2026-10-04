@@ -274,7 +274,7 @@ fn backend_role_from_topology(
 /// install with no hosts.toml at all).
 fn backend_role_wanted(install: &InstallManifest) -> bool {
     let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
-    let me = sot_log::host::state_dir::host_name().unwrap_or_default();
+    let me = crate::comm::mail::filer::comm_self_host();
     backend_role_from_topology(topo.as_ref(), &me, install.daemon)
 }
 
