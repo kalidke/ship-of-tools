@@ -294,7 +294,6 @@ impl SegmentWriter {
     /// the writer reported. One-shot: consumed by the next qualifying
     /// `append` call, never armed twice by accident.
     #[cfg(test)]
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn inject_fault_on_next_append_sync(&mut self) {
         self.fault_next_append_sync = true;
     }
