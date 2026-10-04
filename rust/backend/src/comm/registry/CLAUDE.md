@@ -29,7 +29,7 @@ count the agents between a comm script and its row's capsule.
   if it still names D (`step`). Nothing else is forced.
 - At its bound a waiter fails closed and names the holder (`Blocked::fail_text`).
 - One daemon thread at a time is inside the protocol (`TURN`). `Held` removes the file when dropped, a panic included.
-- An ID counts as this process only through `Me::is_me`. comm/core/tests/test-registry-lock.sh t15 fails on any other
+- An ID counts as this process only through `Me::is_me`. comm/tests/test-registry-lock.sh t15 fails on any other
   comparison to `.id` in lock.rs or lock_tests.rs.
 - The Rust and shell records are byte-equal (`the_shell_and_rust_records_are_byte_equal_and_judged_alike`, Linux).
 - File names map `:` to `.`.
