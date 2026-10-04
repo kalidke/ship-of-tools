@@ -20,7 +20,7 @@ mod capsule_workspace;
 mod clients;
 mod comm;
 use comm::mail::inbox as comm_inbox;
-mod comm_wake;
+use comm::wake as comm_wake;
 use comm::registry::lock as comm_registry_lock;
 mod durable;
 mod files;

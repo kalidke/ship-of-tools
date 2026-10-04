@@ -5,11 +5,12 @@ delivery and of the address book. Part of the backend; design of record: docs/ad
 
 ## Files
 - `mail/`: delivery: the daemon's link to the hub that files relayed messages
-- `mod.rs`: declares the two folders
+- `mod.rs`: declares the three folders
 - `registry/`: the address book: which handle names which session
+- `wake/`: the wake: types a line into a session's free prompt when mail is unread
 
 ## Start here
-`mail/` for delivery, `registry/` for the address book.
+`mail/` for delivery, `registry/` for the address book, `wake/` for the wake of idle sessions.
 
 ## Rules
 - A folder here holds the daemon's side only; the scripts' side stays in the repo's `comm/`.

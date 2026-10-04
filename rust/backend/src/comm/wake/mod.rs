@@ -1127,9 +1127,9 @@ mod tests {
     #[test]
     fn cc288_agent_view_off_rest_reads_free() {
         let rests = [
-            include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"),
-            include_str!("../tests/fixtures/comm_wake/cc288-avoff-4-esc.txt"),
-            include_str!("../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt"),
+            include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"),
+            include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-4-esc.txt"),
+            include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt"),
         ];
         for text in rests {
             let (l, cur) = cc288(text, true);
@@ -1143,7 +1143,7 @@ mod tests {
     #[test]
     fn cc288_rest_with_the_one_agent_footer_reads_free() {
         // DERIVED from the f6 rest capture, with the footer of the live M4 failure on rc9.12 (agent view on, 2.1.288).
-        let (mut l, cur) = cc288(include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
+        let (mut l, cur) = cc288(include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
         l[19] = "  ⏵⏵ auto mode on (shift+tab to cycle) · /tasks to see subagents · ← 1 agent".to_string();
         for windows in [false, true] {
             assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
@@ -1162,8 +1162,8 @@ mod tests {
 
     #[test]
     fn the_agent_footer_is_not_watched() {
-        let a = footer_frame(include_str!("../tests/fixtures/comm_wake/footer-frame-a.txt"));
-        let b = footer_frame(include_str!("../tests/fixtures/comm_wake/footer-frame-b.txt"));
+        let a = footer_frame(include_str!("../../../tests/fixtures/comm_wake/footer-frame-a.txt"));
+        let b = footer_frame(include_str!("../../../tests/fixtures/comm_wake/footer-frame-b.txt"));
         assert_eq!((a.len(), b.len()), (75, 75));
         for windows in [false, true] {
             assert!(prompt_free_on(&a, Some((67, 2)), "claude", windows));
@@ -1555,8 +1555,8 @@ mod tests {
     #[test]
     fn cc288_agent_view_off_panel_focus_is_refused() {
         for text in [
-            include_str!("../tests/fixtures/comm_wake/cc288-avoff-2-down1.txt"),
-            include_str!("../tests/fixtures/comm_wake/cc288-avoff-3-down2.txt"),
+            include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-2-down1.txt"),
+            include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-3-down2.txt"),
         ] {
             let (l, cur) = cc288(text, true);
             assert_eq!(cur, (23, 0));
@@ -1568,8 +1568,8 @@ mod tests {
 
     #[test]
     fn cc288_the_ticking_panel_is_not_held() {
-        let (rest, _) = cc288(include_str!("../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
-        let (later, _) = cc288(include_str!("../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt"), true);
+        let (rest, _) = cc288(include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
+        let (later, _) = cc288(include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-5-esc2.txt"), true);
         assert_ne!(rest, later);
         assert_eq!(held_rows(&rest, 15), held_rows(&later, 15));
     }
