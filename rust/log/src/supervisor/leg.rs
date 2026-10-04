@@ -1,6 +1,7 @@
 //! The leg: pointer discovery or mint, the spawn decision, the spawn lease and the leg command line.
 
 use super::*;
+use crate::store::voyage::SEG_DIR;
 
 // ---------------------------------------------------------------------
 // Pointer discovery / mint (supervisor startup only)
@@ -34,7 +35,7 @@ pub(super) fn should_spawn_after_absent(state_dir: &Path, voyage_id: &str, mode:
     if mode == StartMode::Start {
         return Ok(true);
     }
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
+    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
     match recovery::latest_leg_state(&seg_dir).map_err(crate::Error::Io)? {
         LatestLegState::NoLeg => Ok(true),
         LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch } => {
@@ -45,7 +46,7 @@ pub(super) fn should_spawn_after_absent(state_dir: &Path, voyage_id: &str, mode:
 }
 
 pub(super) fn leg_epoch_of(state_dir: &Path, voyage_id: &str) -> Option<u64> {
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
+    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
     match recovery::latest_leg_state(&seg_dir) {
         Ok(LatestLegState::Unsealed { epoch }) => Some(epoch),
         _ => None,
@@ -63,7 +64,7 @@ pub(super) fn leg_epoch_of(state_dir: &Path, voyage_id: &str) -> Option<u64> {
 /// HEURISTIC, not a safety-critical decision — never escalated past a
 /// warning).
 pub(super) fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
+    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
     let epoch = match recovery::latest_leg_state(&seg_dir) {
         Ok(LatestLegState::Sealed { epoch } | LatestLegState::Unsealed { epoch }) => epoch,
         Ok(LatestLegState::NoLeg) => return false,

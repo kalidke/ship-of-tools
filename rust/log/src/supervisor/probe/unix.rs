@@ -13,6 +13,7 @@
 use crate::identity::challenge::ChallengeOutcome;
 use crate::identity::challenge_unix::{self, ChallengedProcess};
 use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
+use crate::store::voyage::WRITER_LOCK;
 use std::cell::Cell;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
@@ -248,7 +249,7 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
-        let lock_path = voyage_root.join("writer.lock");
+        let lock_path = voyage_root.join(WRITER_LOCK);
         match crate::host::lock_writer(&lock_path) {
             // The guard drops here, releasing the fence immediately --
             // this is a PROBE, never a hold.

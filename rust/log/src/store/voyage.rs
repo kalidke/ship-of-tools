@@ -15,6 +15,13 @@ use std::path::{Path, PathBuf};
 use super::dedupe::{DedupeEntry, IdemKey};
 use super::dedupe::walk_segment;
 
+/// The segment directory under a voyage root.
+pub const SEG_DIR: &str = "seg";
+/// The blob store directory under a voyage root.
+pub const BLOBS_DIR: &str = "blobs";
+/// The writer fence's lock file, persistent and never unlinked.
+pub const WRITER_LOCK: &str = "writer.lock";
+
 pub struct VoyageStore {
     root: PathBuf,
     voyage_id: String,
@@ -153,15 +160,15 @@ impl VoyageStore {
         }
         let mut guard = StagingGuard(staging.clone(), true);
         host::create_dir_protected(&staging)?;
-        std::fs::create_dir_all(staging.join("seg"))?;
-        std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
+        std::fs::create_dir_all(staging.join(SEG_DIR))?;
+        std::fs::create_dir_all(staging.join(BLOBS_DIR).join(".tmp"))?;
         // sha256/ exists (and is flushed) from birth so the first CAS
         // publish only ever creates the SHARD level — whose entry its own
         // fsync_dir(sha256) pins. Created lazily instead, the sha256 entry
         // itself would never be anchored in blobs/.
-        std::fs::create_dir_all(staging.join("blobs").join("sha256"))?;
+        std::fs::create_dir_all(staging.join(BLOBS_DIR).join("sha256"))?;
         // The lock inode is persistent and never unlinked.
-        let mut lockf = std::fs::File::create(staging.join("writer.lock"))?;
+        let mut lockf = std::fs::File::create(staging.join(WRITER_LOCK))?;
         lockf.write_all(b"{}")?;
         lockf.sync_all()?;
         // Windows refuses to rename a directory while any handle is open
@@ -170,10 +177,10 @@ impl VoyageStore {
         drop(lockf);
         // Persist the voyage identity + retention where the genesis header
         // will restate it (bootstrap happens before any segment exists).
-        host::fsync_dir(&staging.join("blobs").join(".tmp"))?;
-        host::fsync_dir(&staging.join("blobs").join("sha256"))?;
-        host::fsync_dir(&staging.join("blobs"))?;
-        host::fsync_dir(&staging.join("seg"))?;
+        host::fsync_dir(&staging.join(BLOBS_DIR).join(".tmp"))?;
+        host::fsync_dir(&staging.join(BLOBS_DIR).join("sha256"))?;
+        host::fsync_dir(&staging.join(BLOBS_DIR))?;
+        host::fsync_dir(&staging.join(SEG_DIR))?;
         host::fsync_dir(&staging)?;
         host::publish_noreplace(&staging, root)?;
         guard.1 = false; // published: the staging path IS the root now
@@ -332,7 +339,7 @@ impl VoyageStore {
         // I/O: open-existing plus one bounded `try_lock` retry (ADR 0041
         // store port), exactly the primitive the spawned child's
         // INVISIBLE window is defined in terms of.
-        let lock = host::lock_writer(&root.join("writer.lock"))?;
+        let lock = host::lock_writer(&root.join(WRITER_LOCK))?;
 
         // The lease check: the fence's FIRST act, before any other durable
         // I/O or history traversal. `lock` (and the fence it holds) drops
@@ -362,7 +369,7 @@ impl VoyageStore {
         if let Some(parent) = prepared.path.parent() {
             host::fsync_dir(parent)?;
         }
-        let seg_dir = root.join("seg");
+        let seg_dir = root.join(SEG_DIR);
 
         // Enumerate identities across ALL states.
         let mut idents: Vec<(u64, u64)> = Vec::new();
@@ -482,7 +489,7 @@ impl VoyageStore {
         let Some(id) = self.survivor_open.take() else {
             return Ok(());
         };
-        let seg_dir = self.root.join("seg");
+        let seg_dir = self.root.join(SEG_DIR);
         let open_path = id.path(&seg_dir, SegmentState::Open);
         let reader = SegmentReader::read(&open_path, false)?;
         if reader.tail_tear.is_some() {
@@ -533,7 +540,7 @@ impl VoyageStore {
             created_wall_ms,
             retention_class: (index == 0).then_some(self.retention_class),
         };
-        let w = SegmentWriter::create(&self.root.join("seg"), header)?;
+        let w = SegmentWriter::create(&self.root.join(SEG_DIR), header)?;
         self.next_segment_index += 1;
         Ok(w)
     }
@@ -557,7 +564,7 @@ impl VoyageStore {
             }
             s
         };
-        let blobs = self.root.join("blobs");
+        let blobs = self.root.join(BLOBS_DIR);
         let shard = blobs.join("sha256").join(&digest[0..2]);
         std::fs::create_dir_all(&shard)?;
         // Anchor bottom-up. `sha256/` is created at bootstrap in stores made

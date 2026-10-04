@@ -417,7 +417,7 @@ pub fn leg_absent(state_dir: &Path) -> Result<bool, String> {
         other => return Err(format!("voyage pointer is not valid: {other:?}")),
     };
     let root = sot_log::supervisor::voyage_root_path(state_dir, &voyage);
-    match sot_log::lock_writer(&root.join("writer.lock")) {
+    match sot_log::lock_writer(&root.join(sot_log::store::voyage::WRITER_LOCK)) {
         Ok(lock) => {
             drop(lock); // observe only -- never become the holder
             Ok(true)

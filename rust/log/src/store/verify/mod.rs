@@ -21,6 +21,7 @@ use crate::store::envelope::{
     InputFactKind, LifecycleKind, RefKind, Seq,
 };
 use crate::store::segment::{SegmentIdentity, SegmentReader, SegmentState};
+use crate::store::voyage::BLOBS_DIR;
 use crate::{Error, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -118,7 +119,7 @@ fn check_integer_numbers(v: &serde_json::Value) -> std::result::Result<(), Strin
 /// `check_blob_on_disk` in the same pass; this re-reads for content checks).
 fn read_blob(root: &Path, blob: &BlobRef, seq: Seq) -> Result<Vec<u8>> {
     let path = root
-        .join("blobs")
+        .join(BLOBS_DIR)
         .join(&blob.algo)
         .join(&blob.digest[0..2])
         .join(&blob.digest);
@@ -131,7 +132,7 @@ fn read_blob(root: &Path, blob: &BlobRef, seq: Seq) -> Result<Vec<u8>> {
 fn check_blob_on_disk(root: &Path, blob: &BlobRef, seq: Seq) -> Result<()> {
     validate_blob_ref(blob)?;
     let path = root
-        .join("blobs")
+        .join(BLOBS_DIR)
         .join(&blob.algo)
         .join(&blob.digest[0..2])
         .join(&blob.digest);

@@ -1,10 +1,11 @@
 //! The checklist pass: `verify_voyage_mode` walks every segment of a voyage and applies each rule.
 
 use super::*;
+use crate::store::voyage::SEG_DIR;
 use super::frame::{check_frame, WalkState};
 
 pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Result<()> {
-    let seg_dir = root.join("seg");
+    let seg_dir = root.join(SEG_DIR);
     let entries = list_segments(&seg_dir)?;
     check_quiescent(&entries)?;
 

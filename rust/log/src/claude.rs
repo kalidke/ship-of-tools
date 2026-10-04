@@ -14,7 +14,7 @@
 
 use crate::store::envelope::*;
 use crate::store::segment::{Commit, RetentionClass, SegmentIdentity, SegmentReader, SegmentState};
-use crate::store::voyage::VoyageStore;
+use crate::store::voyage::{VoyageStore, SEG_DIR};
 use crate::{Error, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -402,7 +402,7 @@ fn redact_echo(body: &Value) -> (Value, Vec<Value>) {
 /// Successor closure (ADR 0040): find unmatched turn_opens in retained
 /// sealed history; the caller appends one synthesized_death close each.
 fn unmatched_opens(root: &Path, voyage_id: &str) -> Result<Vec<Seq>> {
-    let seg_dir = root.join("seg");
+    let seg_dir = root.join(SEG_DIR);
     let mut opens: HashMap<(u64, u64), Seq> = HashMap::new();
     let mut closed: Vec<(u64, u64)> = vec![];
     let mut names: Vec<String> = std::fs::read_dir(&seg_dir)?

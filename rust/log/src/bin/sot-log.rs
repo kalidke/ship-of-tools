@@ -42,7 +42,7 @@ fn main() {
         Ok(()) => {
             println!(
                 "ok: {} segments verified",
-                count_segments(&root.join("seg"))
+                count_segments(&root.join(sot_log::store::voyage::SEG_DIR))
             );
         }
         Err(e) => {

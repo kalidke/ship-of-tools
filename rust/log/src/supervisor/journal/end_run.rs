@@ -1,5 +1,6 @@
 //! EndRun over the voyage's own mgmt lane, and its reconciliation via the leg's durable marker.
 
+use crate::store::voyage::{SEG_DIR, WRITER_LOCK};
 use crate::supervisor::*;
 
 // ---------------------------------------------------------------------
@@ -101,7 +102,7 @@ fn probe_writer_liveness(state_dir: &Path, voyage_id: &str) -> WriterLiveness {
         // Windows -- see `TransportError::is_endpoint_absent`'s own doc.
         Err(e) if e.is_endpoint_absent() => {
             let root = voyage_root_path(state_dir, voyage_id);
-            return match host::lock_writer(&root.join("writer.lock")) {
+            return match host::lock_writer(&root.join(WRITER_LOCK)) {
                 Ok(lock) => {
                     drop(lock); // released immediately, per the module's own convention
                     WriterLiveness::Absent
@@ -245,7 +246,7 @@ fn reconcile_via_marker(
     epoch: Option<u64>,
     on_closed: Option<&mpsc::Sender<EndingProgress>>,
 ) -> crate::Result<EndRunReconciliation> {
-    let seg_dir = voyage_root_path(state_dir, voyage_id).join("seg");
+    let seg_dir = voyage_root_path(state_dir, voyage_id).join(SEG_DIR);
     let epoch = match epoch {
         Some(e) => e,
         None => match recovery::latest_leg_state(&seg_dir).map_err(crate::Error::Io)? {
