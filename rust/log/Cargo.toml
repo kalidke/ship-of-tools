@@ -1,6 +1,5 @@
 [package]
 name = "sot-log"
-description = "Ship's Log voyage store: frame codec + segment format (ADR 0037/0039)"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
