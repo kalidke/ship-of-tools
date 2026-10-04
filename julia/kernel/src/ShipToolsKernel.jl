@@ -75,13 +75,9 @@ end
 
 mutable struct KernelState
     project_root::String
-    # cache of (path, sha256_of_bytes) → JuliaSyntax.SyntaxNode root, so
-    # repeat queries against an unchanged file skip the reparse. Cleared on
-    # purpose-built ops if needed; mostly invalidated by content hash.
-    parse_cache::Dict{String,Tuple{Vector{UInt8}, JuliaSyntax.SyntaxNode}}
 end
 
-KernelState(project_root::AbstractString) = KernelState(String(project_root), Dict())
+KernelState(project_root::AbstractString) = KernelState(String(project_root))
 
 include("definitions.jl")
 include("preview.jl")
