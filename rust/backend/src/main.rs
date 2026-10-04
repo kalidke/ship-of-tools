@@ -15,6 +15,7 @@
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
 mod accounts;
+mod agents;
 mod capsule_workspace;
 mod clients;
 mod comm;
@@ -35,7 +36,7 @@ mod paths;
 mod reauth;
 #[cfg(target_os = "linux")]
 mod row_scope_aim;
-mod awareness;
+use agents::awareness;
 mod repl;
 mod sidecars;
 use sidecars::{julia, kernel, mathjax, monitor, pluto};
