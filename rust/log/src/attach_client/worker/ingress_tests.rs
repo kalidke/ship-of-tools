@@ -103,6 +103,14 @@ fn checkpoint_frame_deadline_never_exceeds_the_aggregate_one() {
     assert_eq!(checkpoint_frame_deadline(now, already_here), already_here);
 }
 
+/// ADR 0041's lane budgets: the worker and the supervisor client both use
+/// these two figures.
+#[test]
+fn lane_budgets_are_the_adr_0041_figures() {
+    assert_eq!(HELLO_BUDGET, Duration::from_secs(2));
+    assert_eq!(STATUS_BUDGET, Duration::from_secs(5));
+}
+
 /// Sanity on the constant itself: finite, and generous enough to
 /// cover at least one ordinary frame -- a zero or absurdly small
 /// budget would defeat its own purpose (refusing a checkpoint that
