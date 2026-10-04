@@ -70,8 +70,7 @@ _comm_sourced(line::AbstractString) =
     occursin(r"^\s*#", line) ? String[] :
     [replace(String(last(split(m[1], '/'))), r"[\"']" => "") for m in eachmatch(COMM_SOURCE_ARG, line)]
 
-# The lines of `path`, or none when it cannot be read: such a file is judged when its folder is published,
-# which fails on it and keeps its old copy.
+# The lines of `path`, or none when it cannot be read.
 function _comm_lines(path::AbstractString)
     try
         return readlines(path)
@@ -86,9 +85,8 @@ end
 # the files that source it (`_comm_bin_text`), so it is not one of them. Fails, and then `install_comm`
 # publishes no comm script, on two folders shipping one name and on a `source` or `.` command whose path
 # (`_comm_sourced`) names a file of its own folder in another line, a part from another folder, or any
-# shipped file from a part. A file that cannot be read is scanned as empty, stays listed, and fails when
-# its folder is published; when it is a file that sources parts, its parts are then listed as files of
-# their own.
+# shipped file from a part. A file that cannot be read is scanned as empty and stays listed; when it
+# is a file that sources parts, its parts are then listed as files of their own.
 # It reads lines, not bash: it sees a `source` or `.` only at the start of a command (after `; & | ( {`,
 # a backquote or a keyword), and not in a case arm, after an assignment or a command word (`X=1 source`,
 # `builtin source`), split over lines, or as process substitution; a path built from a variable and a

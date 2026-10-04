@@ -33,9 +33,8 @@ scripts/CLAUDE.md.
   lines, not bash: a command in a case arm, after an assignment or a command word, split over lines or in process
   substitution, a path built from a variable and a part run by another command are not seen, and here-document lines
   are read as code. A file it cannot read is scanned as empty and stays listed (a shorter list would let the prune
-  delete the folder's other scripts); it fails when its folder is published. `_publish_comm_bin!` lists, then publishes
-  folders in list order, comm/lib first, and after comm/lib records a problem no other folder publishes (pinned in
-  test/install_tests.jl).
+  delete the folder's other scripts). `_publish_comm_bin!` lists, then publishes folders in list order, comm/lib first,
+  and after comm/lib records a problem no other folder publishes (pinned in test/install_tests.jl).
 - No file named CLAUDE.md is installed from any source folder (`NEVER_INSTALLED`: `_comm_bin_files`, `_install_skills`,
   `_install_launchers`).
 - A move under comm/ edits only comm/bin-folders.txt and src/sources.jl, never src/ code or test/.
