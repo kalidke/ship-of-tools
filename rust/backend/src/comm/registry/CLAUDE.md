@@ -12,6 +12,7 @@ comm/CLAUDE.md.
 - `poll.rs`: the registry poll task (`spawn_registry_poll`) and its change detection (`project_comm_registry`)
 - `registry.rs`: the daemon's registry reads, prune, unread clear, row binding and UTC stamps
 - `registry_tests.rs`: the tests of `registry.rs`
+- `registry_write_tests.rs`: the tests of the write that ends the prune and the unread clear
 
 ## Start here
 `registry.rs` `with_comm_registry_lock` for any registry write; `lock.rs` `acquire` for how the lock is taken.

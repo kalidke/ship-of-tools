@@ -449,3 +449,7 @@ pub(crate) fn clear_comm_unread(ws: &Workspace, host: &str) {
 #[cfg(test)]
 #[path = "registry_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "registry_write_tests.rs"]
+mod write_tests;
