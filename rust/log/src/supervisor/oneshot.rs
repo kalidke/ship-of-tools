@@ -31,11 +31,10 @@ pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: Str
     let outcome = end_run_over_mgmt_lane(&crate::state_dir::state_dir_hash(state_dir), &voyage_id, &reason)?;
     match outcome {
         EndRunOutcome::Absent => {
-            // N2 (Codex review round 4): raw pipe-NotFound alone is NOT
+            // raw pipe-NotFound alone is NOT
             // proof the writer is gone -- the capsule removes the pipe
             // NAME before its final writes, seal, and writer-lock
-            // release (capsule_win.rs's own teardown order), the SAME
-            // race B3/N2 already guard against for every OTHER caller.
+            // release.
             // Trusting it directly here let a concurrent natural
             // teardown be misreported as EXIT_CLEAN with no
             // requested-end marker ever written, so a later `--resume`
@@ -116,7 +115,7 @@ pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: Str
     }
 }
 
-/// N6 (Codex review round 3): routed through the SAME journaled Reset
+/// routed through the SAME journaled Reset
 /// transaction the live lane uses — "the same TRANSITION, not the same
 /// CAPABILITIES" (ADR 0041's own words), applied for real. An earlier
 /// version called `reset_pointer` directly with no journal entry at
@@ -126,7 +125,7 @@ pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: Str
 /// the CAPSULE's own `run_end_requested` marker is ALREADY a complete,
 /// independent crash-recovery mechanism for that operation; Reset has
 /// no such secondary marker, so the journal is its ONLY recovery hook.
-/// Recovery runs FIRST here too (B1, generalized to this path): a prior
+/// Recovery runs FIRST here too: a prior
 /// crashed reset's own active journal entry is reconciled against the
 /// world before this invocation reads the pointer or decides anything,
 /// exactly like a fresh `supervise` startup — never minting a THIRD
@@ -144,7 +143,7 @@ pub(super) fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Re
     };
     reconcile_journal_on_startup(state_dir)?;
     let current = pointer::validate(state_dir);
-    // N6: a corrupt pointer is a LOUD REFUSAL, never silently treated as
+    // a corrupt pointer is a LOUD REFUSAL, never silently treated as
     // "no observed voyage" — regardless of whether `--voyage` was given.
     // An earlier version only checked this inside the `--voyage`
     // branch below, so an OMITTED `--voyage` against a corrupt pointer
@@ -215,7 +214,7 @@ pub(super) fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Re
         op: journal::ActiveOp::Reset { old_voyage: observed, new_voyage: new_voyage.clone(), aside: aside.clone() },
     };
     journal::begin(state_dir, &operation_id, &record)?;
-    // N6: the SAME journaled-reset transaction body the live lane's own
+    // the SAME journaled-reset transaction body the live lane's own
     // spawn_reset uses — called synchronously (this CLI path is already
     // blocking by nature; no background thread is needed here at all).
     match do_reset(state_dir, &operation_id, &new_voyage, aside.as_deref()) {

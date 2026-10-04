@@ -52,7 +52,7 @@ pub(super) fn leg_epoch_of(state_dir: &Path, voyage_id: &str) -> Option<u64> {
     }
 }
 
-/// N1 (Codex review round 3): whether the CURRENT leg's own recorded
+/// whether the CURRENT leg's own recorded
 /// `producer_uptime_ms` (`verify::leg_producer_uptime_ms`) proves it
 /// survived at least `STABILITY_INTERVAL` — the ONLY question the
 /// anti-flap counter's reset now depends on. Fail-safe direction is
@@ -217,8 +217,7 @@ impl LegLease {
     }
 }
 
-// ADR 0042 slice L1a added `survival` as an 8th parameter (Codex review
-// finding 7) — matching this file's own existing precedent
+// ADR 0042 slice L1a added `survival` as an 8th parameter — matching this file's own existing precedent
 // (`run_quit`-equivalent lane loops) for a constructor whose every
 // parameter is load-bearing and independently documented at its call
 // sites, rather than a struct that would only exist to satisfy this lint.

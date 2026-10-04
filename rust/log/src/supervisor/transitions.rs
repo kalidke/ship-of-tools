@@ -117,7 +117,7 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle
             // No anti-flap accounting here at all — the counter
             // resets or increments ONLY once this leg's own
             // eventual death is observed and its recorded
-            // producer_uptime_ms is read (`leg_was_stable`, N1),
+            // producer_uptime_ms is read (`leg_was_stable`),
             // never on merely reaching Ready. An earlier version
             // zeroed the counter HERE, before any death could
             // ever be counted against a prior unstable run: a
@@ -145,7 +145,7 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle
             respawn_or_terminal(consecutive_unstable_legs, &capsule_exe, &config, &lease, &authority, true)
         }
         Ok(ProbeOutcome::Foreign) => {
-            // Codex review round 2, finding M8: identity-
+            // identity-
             // mismatched interference is an OPERATOR concern,
             // never counted as another unstable leg to respawn
             // over.
@@ -184,13 +184,12 @@ pub(super) fn advance_spawning(rx: mpsc::Receiver<ProbeOutcome<Process>>, handle
 pub(super) fn advance_ready(process: Process, consecutive_unstable_legs: &mut u32, capsule_exe: &Path, config: &SuperviseConfig, lease: &LegLease, authority: &AuthorityState, now: Instant) -> Lifecycle {
     match process.wait(Duration::ZERO) {
         Ok(true) => {
-            // Single-owner reaping (review round), every Unix:
+            // Single-owner reaping, every Unix:
             // `wait` just confirmed this leg's exit and nothing
             // below reads `process` again — reap it now,
             // explicitly, here rather than relying on an implicit
             // `Drop` (see `ChallengedProcess::reap`'s own doc).
-            // This is the natural-exit transition F1's own doc
-            // used to describe. A Windows process HANDLE has no
+            // A Windows process HANDLE has no
             // zombie/reap concept — `Drop`'s own `CloseHandle` is
             // the whole cleanup there.
             //
@@ -202,7 +201,7 @@ pub(super) fn advance_ready(process: Process, consecutive_unstable_legs: &mut u3
             // `SIG_DFL` and nothing else auto-reaps.
             #[cfg(unix)]
             process.reap();
-            // N1 (Codex review round 3): stability is judged on
+            // stability is judged on
             // the PRODUCER's own recorded lifetime
             // (`leg_was_stable`), never on a wall-clock interval
             // measured from Ready to THIS observation — a slow
@@ -246,7 +245,7 @@ pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProg
         }
         Ok(EndingProgress::Final(EndRunWorkerResult::Ended)) => {
             join_and_warn(handle, "end_run");
-            // Review round, reproduced; widened round 2 (G1): the
+            // the
             // worker's own proven handle for this SAME leg is
             // reaped inside `finish_end_run_with_process` as
             // always; THIS retained handle needs its own
@@ -265,7 +264,7 @@ pub(super) fn advance_ending(operation_id: String, rx: mpsc::Receiver<EndingProg
         Ok(EndingProgress::Final(EndRunWorkerResult::PreBarrierFailed)) => {
             join_and_warn(handle, "end_run");
             retire_leg(&mut authority.retired_legs, process);
-            // N1 (Codex review round 3): the SAME producer-
+            // the SAME producer-
             // recorded stability check the natural-death Ready
             // arm uses — a pre-barrier failure still means the
             // writer is CONFIRMED gone (finish_end_run_with/

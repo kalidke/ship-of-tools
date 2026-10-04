@@ -8,7 +8,7 @@ pub(super) fn join_and_warn(handle: JoinHandle<()>, what: &str) {
     }
 }
 
-/// N7 (Codex review round 3): "watchdogs are not deadlines" — at
+/// "watchdogs are not deadlines" — at
 /// WATCHDOG EXPIRY specifically (never at ordinary happy-path
 /// completion, where the worker has already sent its result and
 /// `join_and_warn` is a near-instant unwind, not a real block), the
@@ -38,8 +38,8 @@ pub(super) fn watchdog_expired(started_at: Instant, bound: Duration, now: Instan
 
 pub(super) enum Lifecycle {
     /// Journal recovery + pointer discovery, folded into ONE
-    /// non-blocking startup step (B1: recovery runs BEFORE pointer
-    /// discovery; M1: neither may block the lane).
+    /// non-blocking startup step (recovery runs BEFORE pointer
+    /// discovery; neither may block the lane).
     Recovering { rx: mpsc::Receiver<RecoveryOutcome>, handle: JoinHandle<()>, started_at: Instant },
     /// The ONE initial placement decision (adopt if live, else consult
     /// the start-mode table).
@@ -48,7 +48,7 @@ pub(super) enum Lifecycle {
     /// this, never `InitialProbe` again.
     Spawning { rx: mpsc::Receiver<ProbeOutcome<Process>>, handle: JoinHandle<()>, started_at: Instant },
     /// A live leg. Stability is judged by [`leg_was_stable`] reading the
-    /// leg's OWN recorded `producer_uptime_ms` (N1), never by a
+    /// leg's OWN recorded `producer_uptime_ms`, never by a
     /// wall-clock `ready_at` this variant no longer carries — an
     /// earlier version's `ready_at.elapsed()` measured THIS PROCESS's
     /// own observation window, which a slow capsule teardown could
@@ -56,11 +56,11 @@ pub(super) enum Lifecycle {
     /// long the producer itself actually ran.
     Ready { process: Process },
     /// An `end_run` is in flight. `pending_reply` is the connection
-    /// awaiting the DEFERRED reply at `record_closed` (B3) — `None` once
+    /// awaiting the DEFERRED reply at `record_closed` — `None` once
     /// delivered, or if that connection disconnected first (fine: the
     /// journal carries the result for a later `query`).
     ///
-    /// `process` (review round, reproduced): the SAME retained handle
+    /// `process`: the SAME retained handle
     /// `Ready` carried, kept through the transition rather than dropped
     /// at it. `EndRun` is only ever admitted from `Ready` (`handle_command`'s
     /// own admission check), so the leg this handle identifies may exit
@@ -69,15 +69,14 @@ pub(super) enum Lifecycle {
     /// cannot always win. Before this field existed, that race left the
     /// leg an unreaped zombie for the rest of the supervisor's life:
     /// dropping `Ready`'s `process` at this exact transition was the
-    /// ONLY reference to it, single-owner reaping (an earlier review
-    /// round) having already removed the implicit `Drop`-triggered reap
+    /// ONLY reference to it, single-owner reaping having already removed the implicit `Drop`-triggered reap
     /// that used to paper over exactly this. Every place `Ending`
     /// resolves — into `EndedNoRespawn`, `Terminal`, or a respawn via
     /// [`respawn_or_terminal`] — retires this handle via [`retire_leg`]
     /// first, before it is ever dropped: reaped immediately (Linux) if
     /// [`Process::wait`] with a zero timeout confirms it already exited,
     /// a no-op check on Windows (which has no reap concept at all); if it
-    /// has NOT exited yet — round 2's own G1 finding, e.g. `Ending`
+    /// has NOT exited yet — e.g. `Ending`
     /// resolving `PreBarrierFailed`, where the writer's lock release
     /// (proving the marker check can proceed) can precede the process's
     /// own actual exit — ownership MOVES into `AuthorityState::retired_legs`
@@ -95,15 +94,14 @@ pub(super) enum Lifecycle {
         pending_reply: Option<ConnId>,
         process: Process,
     },
-    /// A `reset` is in flight — admissible ONLY from `EndedNoRespawn`
-    /// (B2).
+    /// A `reset` is in flight — admissible ONLY from `EndedNoRespawn`.
     Resetting { operation_id: String, rx: mpsc::Receiver<ResetWorkerResult>, handle: JoinHandle<()>, started_at: Instant },
     EndedNoRespawn,
     /// A loud, non-restartable stop. STICKY: no transition out of this
     /// variant exists ANYWHERE in this module — `reset` is refused from
     /// it (busy/stale), and `stop` no longer transitions the Lifecycle
     /// AT ALL (see [`AuthorityState::stop_requested`] and the module
-    /// doc's own "Stop no longer owns a Lifecycle state" section, N4).
+    /// doc's own "Stop no longer owns a Lifecycle state" section).
     Terminal { detail: String, entered_at: Instant },
 }
 
@@ -119,11 +117,11 @@ pub(super) enum EndingProgress {
 
 pub(super) enum EndRunWorkerResult {
     Ended,
-    /// Marker-absent pre-barrier failure (B4): the caller applies the
+    /// Marker-absent pre-barrier failure: the caller applies the
     /// SAME anti-flap accounting a naturally-exited `Ready` leg gets,
     /// then decides respawn. Never `PendingWriter` — [`spawn_end_run`]
     /// absorbs every `PendingWriter` attempt into its OWN bounded retry
-    /// loop and never surfaces it as a final result (N3).
+    /// loop and never surfaces it as a final result.
     PreBarrierFailed,
     Fatal(String),
 }
@@ -157,18 +155,16 @@ impl Lifecycle {
 /// (a dead accept loop, an unreadable journal). The caller immediately
 /// overwrites `*lifecycle` with `Lifecycle::Terminal{..}` right after
 /// calling this, so the placeholder this leaves behind never actually
-/// persists. N4 (Codex review round 3): `stop` no longer transitions the
+/// persists. `stop` no longer transitions the
 /// Lifecycle at all — see [`AuthorityState::stop_requested`] — so this
 /// is no longer also `Stop`'s own "carry the worker forward" mechanism;
 /// it exists for `force_terminal` alone now.
 ///
-/// Also retires a retained leg `process` (review round, reproduced;
-/// widened round 2, G1): `Ready` and `Ending` both carry one, and
+/// Also retires a retained leg `process`: `Ready` and `Ending` both carry one, and
 /// `force_terminal` can jump straight to `Terminal` from EITHER of them
 /// (the SAME "outside that state's own transition arm" cases named
 /// above) — without this, that `process` would be silently dropped here
-/// via `..`, exactly the zombie-leaking gap single-owner reaping (an
-/// earlier review round) removed the implicit `Drop`-triggered reap that
+/// via `..`, exactly the zombie-leaking gap single-owner reaping removed the implicit `Drop`-triggered reap that
 /// used to paper over. [`retire_leg`] reaps it immediately if already
 /// exited, otherwise moves it into `retired_legs` rather than dropping it
 /// — see `AuthorityState::retired_legs`'s own doc.
@@ -190,8 +186,7 @@ fn take_worker_handle(lifecycle: &mut Lifecycle, retired_legs: &mut Vec<Process>
     }
 }
 
-/// Single-owner reaping (review round), extended (LU4 review round 2,
-/// G1): the retained leg `process` handle a [`Lifecycle::Ready`]/
+/// Single-owner reaping: the retained leg `process` handle a [`Lifecycle::Ready`]/
 /// [`Lifecycle::Ending`] state carries, at the moment that state is being
 /// LEFT for something else. Reaps immediately (Linux) if a `wait` with a
 /// ZERO timeout (never blocking the authority's own tick) confirms it
@@ -239,7 +234,7 @@ pub(super) fn reap_retired_legs(retired_legs: &mut Vec<Process>) {
 // Background workers — every OS-facing wait runs on one of these,
 // signature `-> ()` uniformly (the real result travels over the
 // channel) so EVERY worker's `JoinHandle<()>` is the SAME type
-// regardless of which phase spawned it (M2).
+// regardless of which phase spawned it.
 // ---------------------------------------------------------------------
 
 pub(super) fn spawn_recovery(state_dir: PathBuf, mode: StartMode) -> (mpsc::Receiver<RecoveryOutcome>, JoinHandle<()>) {
@@ -281,7 +276,7 @@ pub(super) fn spawn_initial_probe(
     (rx, handle)
 }
 
-// Same 8th `survival` parameter (ADR 0042 L1a, Codex review finding 7)
+// Same 8th `survival` parameter (ADR 0042 L1a)
 // and the same reasoning as `build_run_command`'s own attribute above.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_owned_spawn_attempt(
@@ -321,17 +316,12 @@ pub(super) fn spawn_owned_spawn_attempt(
 /// nothing left to redeliver `Shutdown` to (delivery is that caller's
 /// own retry loop; this one never re-sends anything). Sends
 /// [`EndingProgress::RecordClosed`] the moment `mark_closed` succeeds
-/// (B3's deferred-reply signal — N8: on EVERY path that can reach it,
+/// (deferred-reply signal — on EVERY path that can reach it,
 /// an earlier version hardcoded `None` for the no-process outcomes,
 /// silently starving a `pending_reply` that would then wait forever).
 /// Retries [`finish_end_run_without_process`] while it keeps returning
-/// `PendingWriter` (the writer's own fence is still held or ambiguous,
-/// per B3's "pipe absence is NOT writer absence"), until it resolves to
-/// `Ended`/`PreBarrierFailed` or errors — N3, Codex review round 4: an
-/// earlier version had recovery discard a recovered `PendingWriter`
-/// outright, so startup would adopt/respawn right over a writer whose
-/// own EndRun was still genuinely outstanding, leaving the operation
-/// `Accepted` forever. Bounded from OUTSIDE only — by whichever
+/// `PendingWriter` (the writer's own fence is still held or ambiguous), until it resolves to
+/// `Ended`/`PreBarrierFailed` or errors. Bounded from OUTSIDE only — by whichever
 /// caller's own watchdog measures the WHOLE worker (`ENDING_WATCHDOG`
 /// for the live path, `RECOVERY_WATCHDOG` for recovery, both of which
 /// this loop shares with [`reissue_and_reconcile_end_run`]'s own
@@ -367,7 +357,7 @@ fn retry_until_writer_resolved(
 /// forever. Calling this here instead makes recovery perform the exact
 /// same first act the live worker does, closing that gap.
 ///
-/// Codex review, PR #171: a ONE-SHOT delivery attempt reopened the
+/// a ONE-SHOT delivery attempt reopened the
 /// identical bug for any TRANSIENT outcome — a `Foreign`/`Pending`
 /// challenge (an `Undetermined` OS-call hiccup, not a real identity
 /// mismatch) or a connect `Err` fell straight through to the wait-only
@@ -413,7 +403,7 @@ pub(super) fn reissue_and_reconcile_end_run(
             Ok(EndRunOutcome::Absent) => {
                 // Provably nothing left to deliver to — hand off to the
                 // wait-only reconcile, which proves the writer's own
-                // fence is free before ever trusting the marker (B3).
+                // fence is free before ever trusting the marker.
                 return retry_until_writer_resolved(state_dir, op_id, voyage_id, epoch, on_closed);
             }
             Ok(EndRunOutcome::Foreign | EndRunOutcome::Pending) => {
@@ -421,7 +411,7 @@ pub(super) fn reissue_and_reconcile_end_run(
                 // not just the wait.
             }
             Err(e) => {
-                // B4 (Codex review round 3): a generic mgmt-lane error
+                // a generic mgmt-lane error
                 // (e.g. a connect failure other than NotFound) proves
                 // nothing about the capsule's own liveness either —
                 // retry delivery rather than falling back to a
@@ -463,9 +453,7 @@ pub(super) fn spawn_end_run(
 /// The ONE journaled-reset transaction body — `reset_pointer` then
 /// `journal::finish` — shared by [`spawn_reset`] (the live lane's own
 /// background worker) and [`reset_inner`] (the no-supervisor CLI path,
-/// which calls this directly and synchronously: N6, Codex review round
-/// 3, owner-tightened — "reuse the one journaled reset function...
-/// net fewer lines, not a second implementation").
+/// which calls this directly and synchronously).
 pub(super) fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, aside: Option<&str>) -> ResetWorkerResult {
     match reset_pointer(state_dir, new_voyage, aside) {
         Ok(()) => {
@@ -476,11 +464,11 @@ pub(super) fn do_reset(state_dir: &Path, operation_id: &str, new_voyage: &str, a
             }
         }
         Err(e) => {
-            // B2: a FAILED reset_pointer is Terminal -- a half-mutated
+            // a FAILED reset_pointer is Terminal -- a half-mutated
             // pointer is the same "operator must investigate" condition
             // this module's own recovery refusal already names for a
             // third, unexplained identity. This journal::finish's OWN
-            // failure (Codex review round 3, B2) is never silently
+            // failure is never silently
             // ignored either -- logged loud, even though the overall
             // SEVERITY is unchanged either way (Fatal -> Terminal
             // regardless): an operator investigating this failure
@@ -522,7 +510,7 @@ pub(super) fn spawn_reset(
 /// not a safety hazard; a worker mid-flight when something ELSE already
 /// forces Terminal (a journal read failure, a dead accept loop) has
 /// nothing further useful to report anyway.
-/// M2 (Codex review round 3): abandoning the handle here — rather than
+/// abandoning the handle here — rather than
 /// blocking to join it — is sound ONLY because `Terminal` is itself
 /// unconditionally, boundedly exitable from this point on (the main
 /// loop's own exit condition, below, reaches process exit within a
@@ -622,8 +610,7 @@ mod tests {
 
     /// `take_worker_handle` must actually extract (not merely drop) an
     /// in-flight worker's handle, for `force_terminal`'s own "abandon
-    /// the worker while jumping straight to Terminal" (N4, Codex review
-    /// round 3: `stop` no longer uses this at all — only `force_terminal`
+    /// the worker while jumping straight to Terminal" (`stop` no longer uses this at all — only `force_terminal`
     /// does now). Constructing a real `Ready` variant needs a live,
     /// OS-proven `Process` this unit test has no safe way to
     /// fabricate (see `tests/supervisor.rs` for that half, exercised

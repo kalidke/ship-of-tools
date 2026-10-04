@@ -57,7 +57,7 @@ pub(in crate::supervisor) fn service_lane(
     now: Instant,
 ) -> bool {
     let mut accept_loop_dead = false;
-    // N10 (Codex review round 3): bounded to LANE_EVENT_QUOTA per tick —
+    // bounded to LANE_EVENT_QUOTA per tick —
     // an earlier version drained the WHOLE channel unconditionally, so
     // sustained lane traffic (each `Bytes` event triggering its own
     // `handle_lane_bytes` call) could keep this loop running
@@ -89,7 +89,7 @@ pub(in crate::supervisor) fn service_lane(
                 conns.remove(&id);
             }
             LaneEvent::Sent(id, _marker) => {
-                // N4/M3 (Codex review round 3): a `stop` reply is
+                // a `stop` reply is
                 // tracked through this SAME per-connection mechanism,
                 // not a second bespoke one — see `CommandEffect::Stop`'s
                 // own handling in `handle_lane_bytes` and
@@ -131,7 +131,7 @@ pub(in crate::supervisor) fn service_lane(
     accept_loop_dead
 }
 
-/// N10 (Codex review round 3, owner-tightened): the ONE thing that must
+/// the ONE thing that must
 /// be bounded per tick is HOW LONG `service_lane`'s own event-drain loop
 /// runs before returning control — capped there, at `LANE_EVENT_QUOTA`
 /// (`pipe_win.rs`'s own `reader_loop` is a tight, unpaced
@@ -141,12 +141,7 @@ pub(in crate::supervisor) fn service_lane(
 /// starvation risk). EACH `Bytes` event this function processes is
 /// itself already bounded to `transport::READ_BUF_LEN` (64 KiB) by the
 /// transport, so bounding events-per-tick already transitively bounds
-/// frames-per-tick too — an EARLIER version of this fix additionally
-/// queued decoded frames per-connection with a SECOND quota and a sweep
-/// to drain leftovers, which turned out to buy nothing: bytes beyond
-/// the event quota already stay queued, for free, in the transport's
-/// own bounded channel (backpressured, never dropped) — there was
-/// nothing left for a second, hand-rolled queue to do.
+/// frames-per-tick too.
 fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId, bytes: &[u8], ctx: &mut LaneCtx, now: Instant) {
     let mut close_after = false;
     let mut pending: Option<PendingClose> = None;
@@ -214,8 +209,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                                 // -- extract its retained `process` so
                                 // `Ending` can carry it forward, rather
                                 // than dropping it in the same assignment
-                                // that replaces `*ctx.lifecycle` (review
-                                // round, reproduced — see `Lifecycle::Ending`'s
+                                // that replaces `*ctx.lifecycle` (see `Lifecycle::Ending`'s
                                 // own doc for why).
                                 let process = match std::mem::replace(ctx.lifecycle, Lifecycle::EndedNoRespawn) {
                                     Lifecycle::Ready { process } => process,
@@ -229,7 +223,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                                     pending_reply: Some(id),
                                     process,
                                 };
-                                // B3: the reply is DEFERRED to record_closed — never sent here.
+                                // the reply is DEFERRED to record_closed — never sent here.
                                 None
                             }
                             Ok(CommandEffect::Reset { operation_id, new_voyage, aside }) => {
@@ -239,7 +233,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                                 Some(SupervisorOperationState::Accepted)
                             }
                             Ok(CommandEffect::Stop { reply }) => {
-                                // N4 (Codex review round 3): `stop` no
+                                // `stop` no
                                 // longer transitions the Lifecycle AT
                                 // ALL — it stays exactly whatever it
                                 // already was, resolving itself through
@@ -254,10 +248,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                                 // through to the shared tail below (which
                                 // never marker-tracks a reply). Whether
                                 // the journal write failed is read
-                                // straight off `reply`'s own shape
-                                // (Codex review round 4 deletion
-                                // candidate: a separate `journal_ok`
-                                // bool only ever duplicated this).
+                                // straight off `reply`'s own shape.
                                 let journal_failed = matches!(&reply, SupervisorOperationState::Failed { .. });
                                 let wire_reply = SupervisorReply::Operation(reply);
                                 let reply_bytes = encode_reply_or_fallback(&wire_reply);

@@ -60,11 +60,11 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 /// Everything the lane's own command/query/status handling needs —
 /// deliberately separate from the main loop's own `Lifecycle` so the
 /// borrow-checker never has to reason about both at once inside one
-/// giant function. `voyage_id` is `None` only during `Recovering` (B1:
+/// giant function. `voyage_id` is `None` only during `Recovering` (
 /// pointer discovery has not happened yet) — every state that can admit
 /// a voyage-fenced command is reached strictly AFTER it becomes `Some`
 /// and never reverts to `None`.
-/// N4 (Codex review round 3): `stop` no longer transitions the
+/// `stop` no longer transitions the
 /// `Lifecycle` at all — an earlier `Lifecycle::Stopping` variant
 /// discarded whatever worker/receiver was in flight (retaining only a
 /// bare `JoinHandle`, unable to preserve its actual RESULT), which is
@@ -105,7 +105,7 @@ pub(super) struct AuthorityState {
     pub(super) self_pid: u32,
     pub(super) self_created: u64,
     pub(super) stop_requested: Option<StopRequested>,
-    /// LU4 review round 2, G1: legs whose `Lifecycle` state was left
+    /// legs whose `Lifecycle` state was left
     /// (`Ready`/`Ending` resolving to something else) while STILL ALIVE —
     /// [`reap_leg_if_already_exited`]'s old design only ever handled
     /// "already exited by the time its state is left"; a leg that exits a
@@ -139,12 +139,12 @@ pub(super) struct AuthorityState {
 /// frame in the same read.
 pub(super) enum CommandEffect {
     /// Begin ending the current `Ready` leg. The wire reply is DEFERRED
-    /// to `record_closed` (B3) — this variant carries no reply value at
+    /// to `record_closed` — this variant carries no reply value at
     /// all; `Accepted` is never sent, only implied.
     EndRun { operation_id: String, epoch: Option<u64>, reason: String },
     /// Begin a reset (admissible only from `EndedNoRespawn` — checked by
-    /// the caller before this effect is ever produced). No `reply` field
-    /// (Codex review round 3 deletion candidate, applied): a freshly
+    /// the caller before this effect is ever produced). No `reply` field:
+    /// a freshly
     /// admitted reset is ALWAYS `Accepted` — every OTHER outcome for
     /// this operation id (a digest conflict, an already-known id) is
     /// already intercepted earlier in `handle_command`, before this
@@ -152,9 +152,8 @@ pub(super) enum CommandEffect {
     /// ever equal the one constant `handle_lane_bytes` can just write
     /// directly.
     Reset { operation_id: String, new_voyage: String, aside: Option<String> },
-    /// `stop` was accepted and already durably journaled (B5). No
-    /// separate `journal_ok` field (Codex review round 4 deletion
-    /// candidate, applied): it duplicated exactly `reply`'s own shape
+    /// `stop` was accepted and already durably journaled. No
+    /// separate `journal_ok` field: it duplicated exactly `reply`'s own shape
     /// within this variant — `journal::finish` succeeding is the ONLY
     /// way `reply` becomes `Stopping` here, and failing is the ONLY way
     /// it becomes `Failed` — so the caller reads `journal::finish`'s
@@ -182,8 +181,7 @@ impl AuthorityState {
     /// `handle_lane_bytes` calls directly through [`Self::handle_command`]
     /// so it can apply the resulting [`CommandEffect`]'s `Lifecycle`
     /// transition INLINE, before processing any further frame in the
-    /// same read (per-frame admissibility against the CURRENT lifecycle
-    /// — Codex review round 2, B2's closing point).
+    /// same read (per-frame admissibility against the CURRENT lifecycle).
     fn handle_status_or_query(&mut self, lifecycle: &Lifecycle, req: SupervisorRequest) -> SupervisorReply {
         match req {
             SupervisorRequest::Hello { .. } | SupervisorRequest::Command { .. } => {
@@ -220,7 +218,7 @@ impl AuthorityState {
             Err(e) => return Err(SupervisorOperationState::Failed { detail: bounded_detail(format!("{e}")) }),
         };
 
-        // N9 (Codex review round 3): resolve an EXISTING operation id
+        // resolve an EXISTING operation id
         // BEFORE voyage fencing, for every command family — an earlier
         // version fenced FIRST, so replaying a SUCCESSFUL Reset's own
         // id/digest, still fenced to the voyage it changed FROM, would
@@ -249,7 +247,7 @@ impl AuthorityState {
         // is confirmed genuinely new. `Reset{voyage: None}` is legal
         // ONLY when there is truly no live voyage to fence against —
         // never true once `voyage_id` is `Some` (which every state able
-        // to ADMIT a reset requires — B2).
+        // to ADMIT a reset requires).
         let fenced_ok = match &op {
             SupervisorOp::EndRun { voyage, .. } => self.voyage_id.as_deref() == Some(voyage.as_str()),
             SupervisorOp::Reset { voyage: Some(v) } => self.voyage_id.as_deref() == Some(v.as_str()),
@@ -371,18 +369,14 @@ mod tests {
     }
 
     /// Every non-`EndedNoRespawn` state must have SOME refusal detail
-    /// (B2) -- `reset_refusal_detail`'s own match is exhaustive over
+    /// -- `reset_refusal_detail`'s own match is exhaustive over
     /// every OTHER variant at compile time; this exercises a
     /// representative sample of the actual strings too. No `Stopping`
-    /// case any more (N4, Codex review round 3): `stop` no longer
+    /// case any more: `stop` no longer
     /// touches the `Lifecycle` at all, so there is no "busy because
     /// stopping" state for `reset_refusal_detail` to describe -- a
     /// reset attempted while a stop is pending is admitted and resolved
-    /// exactly like any other command would be (N9, Codex review round
-    /// 4: a former blanket "refuse everything once stopping" gate here
-    /// was DELETED, since it ran before existing-id resolution and made
-    /// a replayed EndRun/Reset id return a fresh refusal instead of its
-    /// own stored terminal state).
+    /// exactly like any other command would be.
     #[test]
     fn reset_refusal_detail_names_the_reason_for_every_busy_state() {
         let (_tx, rx) = mpsc::channel::<RecoveryOutcome>();
@@ -404,7 +398,7 @@ mod tests {
         }
     }
 
-    /// N9 (Codex review round 3): a SUCCESSFUL Reset's own operation id,
+    /// a SUCCESSFUL Reset's own operation id,
     /// resubmitted with the SAME digest AFTER the voyage it changed
     /// FROM no longer matches the current one, must answer with the
     /// stored `ResetDone` — not `refused{stale_voyage}`. Drives
@@ -441,12 +435,12 @@ mod tests {
         }
     }
 
-    /// N4 (Codex review round 3): `terminal_severity` is MONOTONIC —
+    /// `terminal_severity` is MONOTONIC —
     /// computed as `prior || new`, never reassigned from scratch. The
     /// regression this guards: the FIRST stop is accepted while the
     /// authority is genuinely `Terminal` (severity forced `true`); by
     /// the time a SECOND, entirely ordinary stop arrives, the
-    /// underlying `Lifecycle` is untouched by Stop (N4's whole point) so
+    /// underlying `Lifecycle` is untouched by Stop so
     /// it is STILL `Terminal` in reality — but this proves the
     /// bookkeeping itself never depends on that, by exercising the
     /// second stop against a DIFFERENT, non-Terminal lifecycle and a

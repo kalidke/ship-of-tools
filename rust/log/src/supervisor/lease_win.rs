@@ -129,7 +129,7 @@ pub fn create(name: &str) -> std::io::Result<Lease> {
 /// accidental-ownership outcomes (see its own table), and `ReleaseMutex`
 /// needs `MUTEX_MODIFY_STATE` — a handle opened with only `SYNCHRONIZE`
 /// can wait on the mutex but silently fails to release it, since that
-/// call's own `Err` had nowhere to go (Codex review round 1, finding 9).
+/// call's own `Err` had nowhere to go.
 pub fn open(name: &str) -> std::io::Result<LeaseCheck> {
     let wide = wide_null(name);
     let raw = unsafe { OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, 0, wide.as_ptr()) };
@@ -172,7 +172,7 @@ impl LeaseCheck {
     /// checker's own thread would corrupt every subsequent check on this
     /// same lease, including the same checker's own next call. Release
     /// requires `MUTEX_MODIFY_STATE`, which [`open`] now requests
-    /// alongside `SYNCHRONIZE` (Codex review round 1, finding 9: a
+    /// alongside `SYNCHRONIZE` (a
     /// `SYNCHRONIZE`-only handle makes `ReleaseMutex` silently fail).
     ///
     /// **Cross-context contract**: correct only when called from a thread

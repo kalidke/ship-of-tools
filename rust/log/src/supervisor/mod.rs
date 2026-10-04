@@ -5,15 +5,13 @@
 //! the no-supervisor path's own fence-acquiring in-process callers ("the
 //! same TRANSITION, not the same CAPABILITIES").
 //!
-//! # `Lifecycle` (Codex review round 2 rewrite; round 3 fixes below)
+//! # `Lifecycle`
 //!
 //! One state machine, `Recovering -> InitialProbe -> {Ready, Spawning,
 //! EndedNoRespawn}`, with `Ready <-> Spawning` (respawn), `Ready ->
 //! Ending -> {EndedNoRespawn, Terminal}`, and `EndedNoRespawn -> Resetting
 //! -> Spawning` — plus `Terminal` (STICKY: nothing ever transitions out
-//! of it once entered; carries its own `entered_at`, replacing an
-//! earlier separate `terminal_since` local the main loop tracked
-//! alongside it — Codex review round 3 deletion candidate, applied).
+//! of it once entered; carries its own `entered_at`).
 //! Every OS-facing wait (probe episode, spawn readiness, end_run's
 //! mgmt-lane exchange + process wait + O(history) verify, reset's
 //! rename+bootstrap+publish) runs on its own background thread; the main
@@ -23,13 +21,13 @@
 //! own `JoinHandle<()>` and a `started_at` an operation watchdog
 //! measures against; a worker panic is `Disconnected` on its receiver,
 //! mapped to `Terminal` from WHATEVER state observes it, and a watchdog
-//! EXPIRY (Codex review round 3, N7) never blocks the main thread in
+//! EXPIRY never blocks the main thread in
 //! `.join()` — it abandons the worker thread instead (see
 //! `abandon_worker`), because a stuck worker is exactly the case a
 //! blocking join on it would defeat the whole point of having a
 //! watchdog at all.
 //!
-//! # Stop no longer owns a Lifecycle state (Codex review round 3, N4)
+//! # Stop no longer owns a Lifecycle state
 //!
 //! An earlier `Lifecycle::Stopping` variant TRANSITIONED into on `stop`,
 //! discarding whatever worker/receiver was in flight (retaining only a
@@ -48,20 +46,18 @@
 //! exiting from, and `terminal_severity` there is MONOTONIC (`prior ||
 //! new`, never reassigned) across however many `stop` commands arrive.
 //! The reply itself reuses the SAME per-connection `PendingClose` gate
-//! every other reply already uses (Codex review round 3 deletion
-//! candidate: the former separate `StopReplyState` machine merged away)
+//! every other reply already uses
 //! — `handle_lane_bytes`'s own `CommandEffect::Stop` arm sends it
 //! inline, delivery-gated exactly like a version-skew refusal is.
 //!
 //! # Recovery runs before pointer discovery (ADR 0041 "Recovery is part
-//! of the transaction, and it runs FIRST"; Codex review round 2, B1) —
-//! and a recovered Stop does NOT stop this authority (round 3, N5)
+//! of the transaction, and it runs FIRST") —
+//! and a recovered Stop does NOT stop this authority
 //!
 //! `Recovering` reconciles every active journal entry — voyage-agnostic,
 //! keyed off nothing but `<state_dir>` itself and each entry's OWN
 //! recorded voyage — BEFORE the pointer is ever read to decide the
-//! current voyage id. Reversing this order (an earlier version read the
-//! pointer first) let a crash between a reset's journal admission and
+//! current voyage id. Reversing this order let a crash between a reset's journal admission and
 //! its rename/publish leave the authority probing or reporting a voyage
 //! identity recovery was about to change out from under it. A crashed
 //! `Stop`'s own active journal entry is finished as terminal `Stopping`
@@ -75,26 +71,23 @@
 //! would make the authority unstartable. The old operation id stays
 //! answerable via `query` for whoever originally asked.
 //! [`reset_inner`] (the no-supervisor CLI path) runs this SAME
-//! reconciliation first too (round 3, N6, below) — not only
+//! reconciliation first too — not only
 //! `supervise`'s own startup.
 //!
-//! # EndRun: the marker is never enough alone (Codex review round 2,
-//! B3/B4; round 3 fixes below)
+//! # EndRun: the marker is never enough alone
 //!
 //! The capsule commits its run-end marker BEFORE teardown begins, and
 //! the verifier tolerates an open chain tip — so a marker ALONE does not
 //! prove the writer is gone. Every marker check is preceded by proving
 //! the voyage pipe itself is unreachable (a LIVE process handle already
 //! proves this by `wait()`; the recovery path, with no handle, probes
-//! the pipe first). But pipe-absence ALONE is not writer-absence either
-//! (Codex review round 3, N2): the capsule removes the pipe NAME before
+//! the pipe first). But pipe-absence ALONE is not writer-absence either: the capsule removes the pipe NAME before
 //! its final writes, seal, and writer-fence release, so
 //! [`probe_writer_liveness`] additionally proves `writer.lock` itself is
 //! free (a bounded acquire-then-immediately-release) before ever
 //! trusting pipe-silence. A writer proven `Alive`, or whose liveness is
 //! `Ambiguous`, is neither `Ended` nor a pre-barrier failure — it is
-//! `PendingWriter` (round 3, N3: a former conflated `NotEnded` outcome
-//! split in two), leaving the operation ACTIVE, completely untouched:
+//! `PendingWriter`, leaving the operation ACTIVE, completely untouched:
 //! [`spawn_end_run`] retries it in a bounded loop on the SAME worker
 //! thread (bounded from the OUTSIDE by `ENDING_WATCHDOG`, measured from
 //! when `Ending` was FIRST entered, never reset by the retries), NEVER
@@ -108,18 +101,17 @@
 //! `(ConnId, operation_id)` correlation through `Ending`; a client
 //! disconnecting meanwhile is fine, since the journal itself carries the
 //! result for a later `query`. This deferred-reply signal is now passed
-//! on EVERY live no-process reconciliation attempt (round 3, N8: an
+//! on EVERY live no-process reconciliation attempt (an
 //! earlier version hardcoded `None` here, so a `pending_reply` could
 //! wait forever once THIS path — not the with-process one — was what
 //! actually closed the record). A generic mgmt-lane error (not merely
 //! Foreign/Pending) still runs marker reconciliation rather than failing
-//! outright (B4's own bypass, closed). The proven process handle is KEPT
+//! outright. The proven process handle is KEPT
 //! through `Ending`: an unresponsive mgmt lane gets a hard-stop
 //! (terminate + wait) fallback rather than leaking a live, untracked
 //! process.
 //!
-//! # Reset: one state, one worker, sticky failure (Codex review round 2,
-//! B2; round 3 fixes below)
+//! # Reset: one state, one worker, sticky failure
 //!
 //! `reset` is admissible ONLY from `EndedNoRespawn` — every other state
 //! refuses it (busy, or stale from `Terminal`'s own stickiness). Its
@@ -129,29 +121,26 @@
 //! half-mutated pointer is exactly the "an operator must investigate"
 //! condition this crate's own recovery refusal already names for a
 //! third, unexplained identity — and this journal write's OWN failure is
-//! never silently ignored either (round 3, B2), logged loud even though
+//! never silently ignored either, logged loud even though
 //! the severity is unchanged either way. The no-supervisor CLI path,
 //! [`reset_inner`], is routed through this SAME journaled transaction
-//! now too (round 3, N6: "the same TRANSITION, not the same
+//! now too ("the same TRANSITION, not the same
 //! CAPABILITIES", applied for real) — an earlier version called
 //! `reset_pointer` directly with no journal entry at all, so a crash
 //! mid rename left nothing for a later invocation to reconcile against;
 //! it also refuses loud on a CORRUPT pointer unconditionally now, never
 //! silently treating corruption as "no observed voyage" to re-mint past.
 //! A resubmitted operation id/digest — for EVERY command family, Reset
-//! included — resolves against the journal BEFORE voyage fencing (round
-//! 3, N9): fencing FIRST meant a successful Reset's own id, replayed
+//! included — resolves against the journal BEFORE voyage fencing: fencing FIRST meant a successful Reset's own id, replayed
 //! after the voyage it changed FROM no longer matches the current one,
 //! hit `stale_voyage` instead of reading back its own stored
 //! `ResetDone`.
 //!
-//! # Stop is durable too (Codex review round 2, B5)
+//! # Stop is durable too
 //!
 //! `stop` begins and finishes through the SAME journal as
 //! `end_run`/`reset` (`ActiveOp::Stop`, at-most-once, `id_conflict` on a
-//! digest mismatch) — an earlier version let `stop` bypass the journal
-//! entirely, so a REUSED operation id could later admit a conflicting
-//! `reset` after a restart. `journal::finish` failures are never
+//! digest mismatch). `journal::finish` failures are never
 //! ignored: a `stop` whose terminal write fails still honors the
 //! operator's own intent (the process still stops) but reports the
 //! failure and forces the exit code to `Terminal` severity rather than
@@ -161,8 +150,7 @@
 //! uses, before the process actually exits — see "Stop no longer owns a
 //! Lifecycle state" above for how that gating actually works now.
 //!
-//! # The lane is never blocked by its OWN traffic either (Codex review
-//! round 3, N10; owner-tightened to the one bound actually needed)
+//! # The lane is never blocked by its OWN traffic either
 //!
 //! `service_lane` drains at most `LANE_EVENT_QUOTA` transport events per
 //! tick — an earlier version drained the WHOLE channel unconditionally,
@@ -179,10 +167,7 @@
 //! for a LATER tick — no extra bookkeeping needed, since each event is
 //! already bounded to `transport::READ_BUF_LEN` (64 KiB) by the
 //! transport, which means this ONE cap already transitively bounds
-//! per-tick FRAME-processing work too. An earlier version of this fix
-//! also queued decoded frames per-connection with a second, separate
-//! quota and a sweep to drain leftovers — deleted once it became clear
-//! that bought nothing this one cap did not already cover.
+//! per-tick FRAME-processing work too.
 
 //! # Linux (L1-unix LU3c, ADR 0043 decision 21)
 //!
@@ -363,7 +348,7 @@ const FLAP_THRESHOLD: u32 = 3;
 const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_LANE_INSTANCES: u32 = 8;
 const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
-/// N10 (Codex review round 3, owner-tightened to this ONE cap): bounds
+/// Bounds
 /// how long `service_lane`'s own event-drain loop runs per tick — an
 /// earlier version drained the channel unconditionally, so sustained
 /// lane traffic could starve `Lifecycle` polling, worker results,
@@ -372,9 +357,7 @@ const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
 /// on a LATER tick — never dropped, no extra bookkeeping needed: each
 /// event is itself already bounded to `transport::READ_BUF_LEN` by the
 /// transport, so this ONE cap already transitively bounds per-tick
-/// frame-processing work too (see `handle_lane_bytes`'s own doc — a
-/// separate frame-level quota and queue were tried and then deleted,
-/// buying nothing this one didn't already cover). Not an ADR-pinned
+/// frame-processing work too. Not an ADR-pinned
 /// number, same "reasoned, not pinned" status as `LANE_IDLE_DEADLINE`.
 const LANE_EVENT_QUOTA: usize = 64;
 const REFUSAL_SENT_DEADLINE: Duration = Duration::from_secs(2);
@@ -392,7 +375,7 @@ const TERMINAL_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// never "wait for it to come up".
 const LIVENESS_PROBE_BUDGET: Duration = Duration::from_secs(2);
 /// [`end_run_over_mgmt_lane`]'s own three per-attempt sub-bounds —
-/// named (Codex review, PR #171) so [`RECOVERY_WATCHDOG`]'s formula can
+/// named so [`RECOVERY_WATCHDOG`]'s formula can
 /// cite the real constants a delivery attempt is bound by instead of
 /// re-deriving the same numbers as independent, driftable literals. The
 /// challenge and write bounds match every other "2s" per-op budget in
@@ -403,7 +386,7 @@ const END_RUN_CHALLENGE_BOUND: Duration = Duration::from_secs(2);
 const END_RUN_WRITE_BOUND: Duration = Duration::from_secs(2);
 const END_RUN_ACK_READ_BOUND: Duration = Duration::from_secs(5);
 /// Margin added to each worker state's own known worst-case bound before
-/// its operation watchdog fires (Codex review round 2, M2) — belt and
+/// its operation watchdog fires — belt and
 /// braces against a hang inside a call that SHOULD already be bounded by
 /// its own internal deadline; not itself an ADR number.
 const WATCHDOG_BUFFER: Duration = Duration::from_secs(10);
@@ -411,10 +394,7 @@ const WATCHDOG_BUFFER: Duration = Duration::from_secs(10);
 /// `EndRun` arm, via [`reissue_and_reconcile_end_run`]), not merely the
 /// wait-only reconcile — so its formula is the FULL sequential
 /// worst-case path a legitimate, no-retry-needed recovery can legally
-/// take (Codex review, PR #171: the previous formula omitted the
-/// delivery attempt entirely, so a genuinely slow-but-legal recovery
-/// could hit this watchdog before its own terminal journal record was
-/// durable), plus [`WATCHDOG_BUFFER`]:
+/// take, plus [`WATCHDOG_BUFFER`]:
 /// [`CONNECT_BOUND`] (connect) + [`END_RUN_CHALLENGE_BOUND`]
 /// (challenge) + [`END_RUN_WRITE_BOUND`] (shutdown write) +
 /// [`END_RUN_ACK_READ_BOUND`] (ack read) — one
@@ -470,8 +450,7 @@ const RECOVERY_END_RUN_REASON: &str = "recovered";
 /// to restart with `--resume`.
 pub const EXIT_CLEAN: i32 = 0;
 pub const EXIT_TERMINAL: i32 = 69;
-/// Fence contention, distinct from [`EXIT_TERMINAL`] (round-2 Codex
-/// finding, daemon-boot-adopts-supervisor fix): `supervise_inner` reaches
+/// Fence contention, distinct from [`EXIT_TERMINAL`]: `supervise_inner` reaches
 /// this ONLY when `crate::fence::lock_supervisor` fails with
 /// `Error::State` -- the one error that specific call can produce, and
 /// only when a bounded retry against an ALREADY-HELD lock finally times
@@ -507,7 +486,7 @@ pub struct SuperviseConfig {
     pub cols: u16,
     pub rows: u16,
     pub assume_no_rollback_target: bool,
-    /// ADR 0042 slice L1a (Codex review finding 7): the spawner's own
+    /// ADR 0042 slice L1a: the spawner's own
     /// breakaway outcome, supplied here rather than inferred (ADR 0041
     /// decision 11: "Survival is supplied, never inferred... Deriving it
     /// from `IsProcessInJob` observation would cross the ADR's
@@ -667,11 +646,9 @@ pub fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
 }
 
 /// Truncate `detail` to fit within [`wire::MAX_SUPERVISOR_STRING_LEN`]
-/// bytes, on a UTF-8 boundary. Finds the boundary BEFORE truncating
-/// (Codex review round 2, finding M4): `String::truncate` itself panics
-/// if the cut point splits a codepoint — an earlier version truncated
-/// first and "fixed" the boundary after, which never ran when the panic
-/// already fired.
+/// bytes, on a UTF-8 boundary. Finds the boundary BEFORE truncating:
+/// `String::truncate` itself panics
+/// if the cut point splits a codepoint.
 fn bounded_detail(detail: impl Into<String>) -> String {
     let mut s = detail.into();
     if s.len() > wire::MAX_SUPERVISOR_STRING_LEN {
@@ -753,7 +730,7 @@ mod tests {
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
-    /// Codex review round 2, finding M4: `String::truncate` panics if
+    /// `String::truncate` panics if
     /// the cut point splits a codepoint. A 3-byte codepoint repeated
     /// enough times to exceed 128 bytes puts byte 128 strictly INSIDE a
     /// character, unlike the `é` (2 bytes) case above where byte 128

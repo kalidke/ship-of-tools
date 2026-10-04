@@ -63,7 +63,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     // exec target for `/proc/self/exe` on Linux (see its own comment).
     let capsule_exe = std::env::current_exe().map_err(crate::Error::Io)?;
 
-    // B1: recovery + pointer discovery, folded into ONE non-blocking
+    // recovery + pointer discovery, folded into ONE non-blocking
     // background worker — the lane is already up and serviced from the
     // very first loop iteration below, well before either concludes.
     let (rx, handle) = spawn_recovery(config.state_dir.clone(), config.mode);
@@ -106,7 +106,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
             other @ (Lifecycle::EndedNoRespawn | Lifecycle::Terminal { .. }) => other,
         };
 
-        // G1 (Codex review round 2): a leg retired while still alive
+        // a leg retired while still alive
         // (`retire_leg`, above) has no other owner watching it — poll it
         // here, once per tick, the SAME `MAIN_LOOP_POLL` cadence every
         // other wait in this loop already uses (no new timer). Runs
@@ -150,7 +150,7 @@ fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
         "sot-capsule supervise[{}]",
         config.state_dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()
     ));
-    // ADR 0043 decision 21 (Codex review round, F2): SIGCHLD is SET to
+    // ADR 0043 decision 21: SIGCHLD is SET to
     // SIG_DFL here, as the very first thing this function does -- never
     // merely assumed. Whatever launched this process (a daemon, a shell)
     // may have inherited `SIG_IGN` across `exec`, which auto-reaps every
@@ -172,7 +172,7 @@ fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
 }
 
 fn should_exit_now(lifecycle: &Lifecycle, authority: &AuthorityState, conns: &HashMap<ConnId, Conn>, now: Instant) -> bool {
-    // N4 (Codex review round 3): `stop`'s own exit condition — the
+    // `stop`'s own exit condition — the
     // underlying Lifecycle is NEVER touched by Stop's acceptance
     // (see `AuthorityState::stop_requested`'s own doc), so it keeps
     // resolving itself through EVERY ordinary transition arm above,
