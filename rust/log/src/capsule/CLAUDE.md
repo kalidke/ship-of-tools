@@ -17,7 +17,7 @@ subsystem; charter: rust/log/CLAUDE.md.
 sets.
 
 ## Rules
-- Committed output reaches subscribers only after the fsync that made it durable (`flush_output!` in `run`).
+- Committed output reaches subscribers only after the fsync that made it durable (`flush_output` in `writer_loop/output_path.rs`).
 - Input is recorded redacted and its `forward_intent` fact is fsynced before the bytes reach the producer
   (`run_input_wal`).
 - The run-end marker is appended at most once and latches only after a successful append

@@ -1,5 +1,6 @@
 //! Starting a leg: open the voyage, bind the transport, write the control preamble, spawn the producer and its reader, and hand `run` the loop state.
 use super::*;
+use super::output_path::spawn_reader;
 
 pub(super) fn start<'t, P: Producer>(
     config: &CapsuleConfig,
@@ -121,87 +122,7 @@ pub(super) fn start<'t, P: Producer>(
     let output_budget = Arc::new(OutputBudget::new());
     let _budget_guard = BudgetCancelGuard(Arc::clone(&output_budget));
 
-    // Three senders share this channel, not one: the reader thread below,
-    // `Transport::set_wake`'s callback (registered earlier, sends
-    // `TransportActivity`), and this thread's own `ReaderGoneGuard` (sends
-    // `ReaderGone` on every exit, including a panic unwind). No bridging
-    // threads for input/control though (see the module doc): `commands`
-    // is serviced directly, by this loop, from its own separate receiver.
-    // `take_output` runs EXACTLY here — before this thread starts, per its
-    // own doc — so `producer` itself stays a live, fully-owned binding for
-    // every other call this function makes (`input`/`resize`/`wait`/...).
-    // `tx`/`output_rx` themselves were created earlier, ahead of
-    // `transport.0.bind` (switch-latency Phase 1 (c)) — `tx` is moved
-    // into this thread's closure below exactly as before; only its
-    // CREATION moved, not its ownership story.
-    let mut reader = producer.take_output();
-    let reader_handle = {
-        let budget = Arc::clone(&output_budget);
-        std::thread::spawn(move || {
-            // Codex review (PR #227): a drop guard, not another explicit
-            // send at the bottom of this closure — the two designed exits
-            // already send `Done` and return, but a `read()`/`budget` call
-            // panicking partway through would skip any send placed after
-            // it. `Drop` runs on every exit, unwind included, which is the
-            // one guarantee an ordinary send can't make; see `ReaderGone`'s
-            // own doc for why this needs to be a real, matched event
-            // rather than relying on the channel's sender count.
-            struct ReaderGoneGuard(mpsc::Sender<ReaderEvent>);
-            impl Drop for ReaderGoneGuard {
-                fn drop(&mut self) {
-                    let _ = self.0.send(ReaderEvent::ReaderGone);
-                }
-            }
-            let _reader_gone_guard = ReaderGoneGuard(tx.clone());
-            let mut buf = [0u8; READ_CHUNK];
-            loop {
-                if !budget.reserve(READ_CHUNK as u64) {
-                    // Cancelled: `run` is already exiting some other way.
-                    // Nothing left to report; just stop.
-                    return;
-                }
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        budget.release(READ_CHUNK as u64);
-                        let _ = tx.send(ReaderEvent::Done(Ok(())));
-                        return;
-                    }
-                    // Review round 2 (R4): a signal-interrupted read is not
-                    // an end of stream on ANY platform -- the ConPTY
-                    // producer never actually produces this (Windows has
-                    // no equivalent signal-delivery-during-read
-                    // interruption for a named pipe read), but the Unix
-                    // pty producer's plain `File` can, any time the
-                    // reading thread receives a signal (this crate's own
-                    // `Drop`-time `killpg`/`waitpid` and the reap-bound
-                    // polling elsewhere don't target this thread, but an
-                    // operator/OS signal targeting the whole process
-                    // would). Release the reservation and retry the SAME
-                    // read rather than treating it as terminal -- the loop
-                    // re-reserves at its own top.
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
-                        budget.release(READ_CHUNK as u64);
-                        continue;
-                    }
-                    Err(e) => {
-                        budget.release(READ_CHUNK as u64);
-                        let _ = tx.send(ReaderEvent::Done(Err(e)));
-                        return;
-                    }
-                    Ok(n) => {
-                        let n = n as u64;
-                        if n < READ_CHUNK as u64 {
-                            budget.release(READ_CHUNK as u64 - n);
-                        }
-                        if tx.send(ReaderEvent::Output(buf[..n as usize].to_vec())).is_err() {
-                            budget.release(n);
-                            return;
-                        }
-                    }
-                }
-            }
-        })
-    };
+    let reader_handle = spawn_reader(&mut producer, &output_budget, tx);
 
     let pending_output: Vec<u8> = Vec::new();
     let pending_bytes: usize = 0;
@@ -222,7 +143,7 @@ pub(super) fn start<'t, P: Producer>(
     // the loop never got a chance to even see.
     //
     // Round-2 review, finding 10 (the fairness claim below was overstated):
-    // `pace_output!` sleeps 1 ms per `GROUP_COMMIT_BYTES` of output
+    // `pace_output` sleeps 1 ms per `GROUP_COMMIT_BYTES` of output
     // processed. The first version used `yield_now` (`SwitchToThread`),
     // which offers a ready thread ON THE CURRENT PROCESSOR a chance and
     // may return without switching -- and the starvation it was meant to

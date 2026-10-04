@@ -146,7 +146,7 @@
 //! (`execute_actions!`) and feeds events back
 //! (`connection_opened`/`frame`/`sent`/`tick`/`ground_reached`/
 //! `checkpoint_ready`/`take_committed`/`resize_outcome`/`input_outcome`).
-//! `flush_output!`'s watermark now ALSO publishes committed bytes to
+//! `flush_output`'s watermark now ALSO publishes committed bytes to
 //! existing subscribers and, on a ground boundary, promotes any pending
 //! attach — the watermark barrier the ADR requires, one loop step.
 //!

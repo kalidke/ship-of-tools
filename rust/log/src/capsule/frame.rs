@@ -313,7 +313,7 @@ pub(super) fn run_input_wal(
                         "intent": {"epoch": intent_seq.epoch, "n": intent_seq.n}}}),
     );
     fwd.refs = vec![FrameRef { kind: RefKind::CausedBy, frame: input_seq }];
-    // Buffered: the next commit of this segment covers it (ADR 0039 Durability invariants; flush_output!).
+    // Buffered: the next commit of this segment covers it (ADR 0039 Durability invariants; flush_output).
     w.append(&fwd, Commit::Buffered)?;
     *frames_written += 1;
     if let Some(e) = store.dedupe_index.get_mut(&idem_key) {

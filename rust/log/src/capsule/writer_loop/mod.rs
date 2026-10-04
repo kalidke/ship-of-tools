@@ -3,8 +3,10 @@ use super::*;
 use std::ops::ControlFlow;
 
 mod lanes;
+mod output_path;
 mod start;
 use lanes::execute_light_actions;
+use output_path::{eager_ground_check, flush_output, maybe_rotate, pace_output};
 use start::start;
 
 struct ShutdownGuard<'a>(&'a mut dyn Transport);
@@ -131,103 +133,8 @@ pub fn run<P: Producer>(
         ControlFlow::Break(summary) => return Ok(summary),
     };
 
-    macro_rules! flush_output {
-        ($w:expr) => {
-            if leg.pending_bytes > 0 {
-                $w.commit()?; // the watermark: fsync BEFORE anything is published
-                leg.last_fsync = Instant::now();
-                execute_light_actions(leg.attach_proto.output_committed(&leg.pending_output, Instant::now()), &mut leg);
-                leg.pending_output.clear();
-                leg.pending_bytes = 0;
-            } else if $w.has_unsynced() {
-                // A Buffered input-WAL record with no output behind it: commit it
-                // by the next group-commit check (ADR 0039 Durability invariants);
-                // nothing is published, so no `output_committed`.
-                $w.commit()?;
-                leg.last_fsync = Instant::now();
-            }
-            leg.last_commit = Instant::now();
-            // ADR 0041: attach is GROUND-GATED; the watermark barrier
-            // (force pending commit -> publish to EXISTING subscribers ->
-            // checkpoint -> subscribe) is exactly this ordering -- publish
-            // above already ran, so a ground boundary found HERE is the
-            // single loop step the barrier requires.
-            if leg.parser.is_ground() {
-                execute_light_actions(leg.attach_proto.ground_reached(Instant::now()), &mut leg);
-            }
-        };
-    }
-
-    macro_rules! maybe_rotate {
-        ($w:expr) => {
-            if leg.seg_bytes >= SEGMENT_MAX_BYTES {
-                flush_output!($w);
-                let digest = $w.seal(None)?;
-                leg.store.advance_chain(digest);
-                leg.segments_sealed += 1;
-                $w = leg.store.open_segment_with_features(wall_ms(), leg.segment_features.clone())?;
-                leg.seg_bytes = 0;
-            }
-        };
-    }
-
-    /// Bounds consecutive output work to one `GROUP_COMMIT_BYTES` worth
-    /// (the SAME threshold the writer already paces its own fsyncs by)
-    /// before yielding this thread -- the loop-fairness fix above. Takes
-    /// `bytes` itself (not a pre-computed length) so every call site reads
-    /// as "handle this chunk, paced" in one line: `.len()` borrows before
-    /// `handle_output!` moves it.
-    /// Offers a scheduling window to another ready thread every
-    /// `GROUP_COMMIT_BYTES` worth of output -- a timed sleep (see
-    /// the doc above `bytes_since_yield`), not a bound: it may do nothing.
-    macro_rules! pace_output {
-        ($bytes:ident) => {
-            leg.bytes_since_yield += $bytes.len();
-            handle_output!($bytes);
-            if leg.bytes_since_yield >= GROUP_COMMIT_BYTES {
-                std::thread::sleep(Duration::from_millis(1));
-                leg.bytes_since_yield = 0;
-            }
-        };
-    }
-
-    /// Attaching to an idle session (real CI failure, windows-latest
-    /// only): `ground_reached` was previously fed ONLY from
-    /// `flush_output!`, itself reached only by fresh output crossing the
-    /// group-commit threshold, or a periodic idle check gated behind the
-    /// OUTPUT CHANNEL's own `recv_timeout` cadence — never directly by
-    /// admission, and never by `tick`, the one hook this loop already
-    /// calls unconditionally every iteration. An attach landing on an
-    /// ALREADY-idle, already-at-ground session (a shell sitting at its
-    /// prompt — the ordinary case, exercised once the fidelity test's
-    /// producer goes silent after `--linger`) depended entirely on that
-    /// separate cadence happening to notice, which is exactly the kind of
-    /// dependency `pace_output!`'s own history above already proved
-    /// fragile on a loaded windows-latest runner: the attach pended for
-    /// the full 5 s `GroundTimeout` and was refused instead of completing
-    /// on the very next iteration.
-    ///
-    /// Called every iteration, right after `tick`, so it runs in the SAME
-    /// iteration an attach was just admitted in (a) and on every
-    /// subsequent iteration while one still pends (b) — no separate
-    /// cadence to depend on. Scoped behind `ground_gate_pending()` (a
-    /// cheap check) so the vastly more common "nothing pending" iteration
-    /// pays nothing beyond it. Watermark semantics stay exact: with no
-    /// pending uncommitted bytes, NOW already is a valid commit boundary
-    /// (`flush_output!` skips the commit but still evaluates ground); with
-    /// some pending, `flush_output!` forces the SAME commit-then-check
-    /// barrier it always runs, just immediately rather than waiting for
-    /// the group-commit threshold or the idle timer to get to it.
-    macro_rules! eager_ground_check {
-        () => {
-            if leg.attach_proto.ground_gate_pending() {
-                flush_output!(leg.w);
-            }
-        };
-    }
-
     // The full action set -- everything `execute_light_actions` handles,
-    // delegated one line at a time (never re-expanding `flush_output!`
+    // delegated one line at a time (never re-expanding `flush_output`
     // itself), PLUS the five action kinds only an inbound CLIENT frame can
     // ever produce.
     macro_rules! execute_actions {
@@ -242,7 +149,7 @@ pub fn run<P: Producer>(
                         execute_light_actions(vec![light], &mut leg);
                     }
                     AttachAction::CommitTake { conn, controller_id, request_id } => {
-                        flush_output!(leg.w);
+                        flush_output(&mut leg)?;
                         leg.ctx.take_epoch += 1;
                         leg.ctx.holder = Some(controller_id.clone());
                         let f = leg.ctx.capsule_frame(
@@ -275,7 +182,7 @@ pub fn run<P: Producer>(
                             &payload,
                             connection_authorized,
                         )?;
-                        maybe_rotate!(leg.w);
+                        leg = maybe_rotate(leg)?;
                         queue.extend(leg.attach_proto.input_outcome(conn, outcome, request_id, Instant::now()));
                     }
                     AttachAction::ApplyResize { conn, cols, rows, request_id } => {
@@ -285,7 +192,7 @@ pub fn run<P: Producer>(
                         // if out of budget) -> parser/geometry updated
                         // only on success -> outcome shape step 4 already
                         // built, now reachable from the wire too.
-                        flush_output!(leg.w);
+                        flush_output(&mut leg)?;
                         let req = leg.ctx.current_controller_frame(
                             Class::ControlExchange,
                             json!({"phase": "request", "kind_ns": "conpty/resize",
@@ -321,7 +228,7 @@ pub fn run<P: Producer>(
                         );
                         leg.w.append(&out, Commit::Immediate)?;
                         leg.frames_written += 1;
-                        maybe_rotate!(leg.w);
+                        leg = maybe_rotate(leg)?;
                         queue.extend(leg.attach_proto.resize_outcome(conn, ok, cols, rows, request_id, Instant::now()));
                     }
                     AttachAction::RunEndRequested { reason } => {
@@ -613,78 +520,6 @@ pub fn run<P: Producer>(
         };
     }
 
-    // One producer-output handler, used identically pre-teardown AND
-    // during BOTH teardown phases — so "the handshake keeps answering
-    // through the drain" (ADR 0041) can't be missed by one call site and
-    // not the other. Feeds the live parser, answers the FIRST DA1 query
-    // ever seen (recording request -> response -> outcome), records the
-    // raw producer frame, and tracks the group-commit/echo state.
-    macro_rules! handle_output {
-        ($bytes:expr) => {{
-            let bytes = $bytes;
-            leg.parser.process(&bytes);
-
-            use base64_engine::encode_b64;
-            let f = leg.ctx.producer_frame(json!({"bytes_b64": encode_b64(&bytes)}));
-            leg.w.append(&f, Commit::Buffered)?;
-            leg.frames_written += 1;
-            leg.seg_bytes += bytes.len() as u64 + 128;
-            leg.output_budget.release(bytes.len() as u64);
-            leg.pending_output.extend_from_slice(&bytes);
-            leg.pending_bytes += bytes.len();
-            if leg.pending_bytes >= GROUP_COMMIT_BYTES {
-                flush_output!(leg.w);
-            }
-
-            let matches = leg.handshake.feed(&bytes);
-            if matches > 0 {
-                if !leg.dsr_answered {
-                    leg.dsr_answered = true;
-                    // Query exchange, ADR 0041's own phrase and shape:
-                    // request -> response (only on a successful write) ->
-                    // outcome (always, reflecting whether it was).
-                    let req = leg.ctx.capsule_frame(
-                        Class::ControlExchange,
-                        json!({"phase": "request", "kind_ns": "conpty/host-handshake",
-                               "to": {"kind": "producer"}, "body": {"query": "da1"}}),
-                    );
-                    let req_seq = req.seq;
-                    leg.w.append(&req, Commit::Immediate)?;
-                    leg.frames_written += 1;
-
-                    let write_result = leg.producer.input().write_all(host_handshake::DA1_REPLY);
-                    if write_result.is_ok() {
-                        let mut resp = leg.ctx.capsule_frame(
-                            Class::ControlExchange,
-                            json!({"phase": "response", "kind_ns": "conpty/host-handshake",
-                                   "body": {"query": "da1"}}),
-                        );
-                        resp.refs = vec![FrameRef { kind: RefKind::RespondsTo, frame: req_seq }];
-                        leg.w.append(&resp, Commit::Immediate)?;
-                        leg.frames_written += 1;
-                    }
-                    let outcome_body = match &write_result {
-                        Ok(()) => json!({"disposition": "ok"}),
-                        Err(e) => json!({"disposition": "failed", "reason": e.to_string()}),
-                    };
-                    let out = leg.ctx.capsule_frame(
-                        Class::ControlExchange,
-                        json!({"phase": "outcome", "kind_ns": "conpty/host-handshake", "scope": "pty",
-                               "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
-                    );
-                    leg.w.append(&out, Commit::Immediate)?;
-                    leg.frames_written += 1;
-
-                    // Any FURTHER matches in this SAME chunk are already
-                    // "later" than the one just answered.
-                    leg.handshake_suppressed_matches += (matches - 1) as u64;
-                } else {
-                    leg.handshake_suppressed_matches += matches as u64;
-                }
-            }
-        }};
-    }
-
     // Main loop: natural-exit polled every iteration (bounded to one
     // GROUP_COMMIT_WINDOW of latency, regardless of event volume); the
     // caller's command channel is polled NON-BLOCKINGLY (rare traffic, and
@@ -699,7 +534,7 @@ pub fn run<P: Producer>(
         }
         service_transport_events!();
         execute_actions!(leg.attach_proto.tick(Instant::now()));
-        eager_ground_check!();
+        eager_ground_check(&mut leg)?;
         // ADR 0041 EndRun step 2 / Codex round-1 Blocker 1 discharge: the
         // LATCH drives teardown, not the ack -- "ack completion only
         // ACCELERATES teardown". `shutdown_requested` alone (the OLD,
@@ -765,8 +600,8 @@ pub fn run<P: Producer>(
         )) {
             Ok(ReaderEvent::Output(bytes)) => {
                 leg.last_output = Instant::now();
-                pace_output!(bytes);
-                maybe_rotate!(leg.w);
+                pace_output(bytes, &mut leg)?;
+                leg = maybe_rotate(leg)?;
             }
             Ok(ReaderEvent::TransportActivity) => {
                 leg.wake_pending.store(false, Ordering::Release);
@@ -817,7 +652,7 @@ pub fn run<P: Producer>(
         // continuous transport activity every `recv_timeout` call used to
         // mean `last_commit.elapsed()` was never even read.
         if should_flush_output(leg.last_commit.elapsed(), leg.pending_bytes, leg.last_output.elapsed(), leg.last_fsync.elapsed()) {
-            flush_output!(leg.w);
+            flush_output(&mut leg)?;
         }
     };
     // N1 (Codex review round 3, owner-corrected): captured HERE, the
@@ -835,7 +670,7 @@ pub fn run<P: Producer>(
     // `producer.terminate_domain()` a few lines into teardown, with no
     // intervening I/O between here and there.
     let producer_uptime_ms = u64::try_from(spawned_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-    flush_output!(leg.w);
+    flush_output(&mut leg)?;
 
     // Producer-bound admission (take/input/resize) is revoked from here on
     // (finding 7) — but mgmt (probe/status/shutdown) and Sent completions
@@ -865,7 +700,7 @@ pub fn run<P: Producer>(
     loop {
         service_transport_events_teardown!();
         execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
-        eager_ground_check!();
+        eager_ground_check(&mut leg)?;
         if leg.producer.domain_is_empty()? {
             break;
         }
@@ -876,8 +711,8 @@ pub fn run<P: Producer>(
         }
         match leg.output_rx.recv_timeout(TEARDOWN_REAP_POLL) {
             Ok(ReaderEvent::Output(bytes)) => {
-                pace_output!(bytes);
-                maybe_rotate!(leg.w);
+                pace_output(bytes, &mut leg)?;
+                leg = maybe_rotate(leg)?;
             }
             Ok(ReaderEvent::TransportActivity) => {
                 // Switch-latency Phase 1 (c): same wake, same channel, as
@@ -920,10 +755,10 @@ pub fn run<P: Producer>(
             }
         }
     }
-    flush_output!(leg.w);
+    flush_output(&mut leg)?;
 
     // Phase B: close the pseudoconsole on a DEDICATED thread so THIS loop
-    // can keep draining `output_rx` (feeding `handle_output!`, answering
+    // can keep draining `output_rx` (feeding `handle_output`, answering
     // the handshake) CONCURRENTLY with the close — the documented call
     // pattern ("reader already draining, THEN call this") applied
     // literally: draining must never itself pause to make the call. Both a
@@ -944,7 +779,7 @@ pub fn run<P: Producer>(
         loop {
             service_transport_events_teardown!();
             execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
-            eager_ground_check!();
+            eager_ground_check(&mut leg)?;
             // Codex review (PR #227): checked here, unconditionally, every
             // iteration — mirroring Phase A's `reap_deadline` just above and
             // the main loop's own commit-deadline fix — rather than only
@@ -957,8 +792,8 @@ pub fn run<P: Producer>(
             }
             match leg.output_rx.recv_timeout(TEARDOWN_DRAIN_POLL) {
                 Ok(ReaderEvent::Output(bytes)) => {
-                    pace_output!(bytes);
-                    maybe_rotate!(leg.w);
+                    pace_output(bytes, &mut leg)?;
+                    leg = maybe_rotate(leg)?;
                 }
                 Ok(ReaderEvent::TransportActivity) => {
                     // Switch-latency Phase 1 (c): same wake as both other
@@ -996,7 +831,7 @@ pub fn run<P: Producer>(
         service_transport_events_teardown!();
         execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
     }
-    flush_output!(leg.w);
+    flush_output(&mut leg)?;
 
     // U1a, EndRun state machine item 4 / ack grace: the FINAL service poll
     // just above (the one at the exact EOF instant) can itself have

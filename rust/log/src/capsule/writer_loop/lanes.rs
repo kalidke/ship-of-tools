@@ -7,17 +7,17 @@ use super::*;
 // produce (proven by `attach_proto`'s own implementation: never
 // `CommitTake`/`ForwardInput`/`ApplyResize`/`Shutdown`) -- kept SEPARATE
 // from the full `execute_actions!` below rather than one macro calling
-// itself, because `flush_output!` needs to run actions too, and
-// `flush_output!` is itself called FROM `execute_actions!`'s
+// itself, because `flush_output` needs to run actions too, and
+// `flush_output` is itself called FROM `execute_actions!`'s
 // `CommitTake`/`ApplyResize` arms: a macro invoking itself through that
 // path is not runtime recursion (which would be fine) but INFINITE
 // COMPILE-TIME macro expansion (`recursion limit reached`, hit and
 // fixed while building this unit) -- every match arm is expanded
-// unconditionally at compile time, `flush_output!`'s body included,
+// unconditionally at compile time, `flush_output`'s body included,
 // regardless of which arm ever actually runs. Splitting the acyclic
 // subset out breaks the cycle: `execute_light_actions` calls nothing
-// else here; `flush_output!` calls only `execute_light_actions`;
-// `execute_actions!` calls `flush_output!`, `maybe_rotate!`, and (for
+// else here; `flush_output` calls only `execute_light_actions`;
+// `execute_actions!` calls `flush_output`, `maybe_rotate`, and (for
 // its own light-kind actions) `execute_light_actions` -- all strictly
 // "downward", never back.
 pub(super) fn execute_light_actions<P: Producer>(seed: Vec<AttachAction>, leg: &mut Leg<'_, P>) {
