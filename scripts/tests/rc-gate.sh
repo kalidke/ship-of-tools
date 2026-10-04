@@ -127,7 +127,7 @@ producer() {
     lane_bridge/outage::a_blackhole_is_unreachable_and_retried
     lane_bridge/outage::a_daemon_outage_past_the_window_keeps_retrying
     lane_bridge/outage::a_terminal_row_is_terminal_after_the_window
-    fe_client/unresponsive_supervisor_expires_the_health_window
+    fe_client/supervisor_word::unresponsive_supervisor_expires_the_health_window
     test-spawn-capsule-workspace
     capsule_workspaces/spawn::capsule_supervisor_spawn_survives_fence_contention_without_marking_terminal
     test-hub-files
