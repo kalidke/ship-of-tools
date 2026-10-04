@@ -146,13 +146,6 @@ pub(super) async fn handle_connection<R, W>(
     mathjax: MathJax,
     pluto: Pluto,
     files_mode: Arc<FilesMode>,
-    // Singleton handles retained on the call chain for backward compat
-    // and to keep the run_local / handle_connection signatures unchanged. All op
-    // handlers now route through Workspaces per ADR 0014; these
-    // bindings are dead in `handle_connection` itself.
-    #[allow(unused_variables, dead_code)] kernel: Kernel,
-    #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
-    #[allow(unused_variables, dead_code)] repl: Repl,
     preview_changed_tx: broadcast::Sender<PreviewChanged>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,

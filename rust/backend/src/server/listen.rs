@@ -138,13 +138,6 @@ pub(super) async fn run_local(
     mathjax: MathJax,
     pluto: Pluto,
     files_mode: Arc<FilesMode>,
-    // Singleton handles retained on the call chain for backward compat
-    // and to keep the run_local / handle_connection signatures unchanged. All op
-    // handlers now route through Workspaces per ADR 0014; these
-    // bindings are dead in `handle_connection` itself.
-    #[allow(unused_variables, dead_code)] kernel: Kernel,
-    #[allow(unused_variables, dead_code)] concept: Arc<ConceptStore>,
-    #[allow(unused_variables, dead_code)] repl: Repl,
     preview_changed_tx: broadcast::Sender<PreviewChanged>,
     label: Arc<Option<String>>,
     workspaces: Workspaces,
@@ -213,9 +206,6 @@ pub(super) async fn run_local(
         let mj = mathjax.clone();
         let pl = pluto.clone();
         let fm = files_mode.clone();
-        let ke = kernel.clone();
-        let co = concept.clone();
-        let rp = repl.clone();
         let wa = preview_changed_tx.clone();
         let lb = label.clone();
         let ws = workspaces.clone();
@@ -230,7 +220,7 @@ pub(super) async fn run_local(
         tokio::spawn(async move {
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
-                rx, tx, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe,
+                rx, tx, s, tok, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe,
                 cl, tps, tpe, "local", None, peer_identity, le,
             )
             .await

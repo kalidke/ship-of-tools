@@ -23,14 +23,12 @@ use sot_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::clients::{ClientGuard, Clients};
-use crate::concept::ConceptStore;
 use crate::files_mode::FilesMode;
 use crate::handlers;
-use crate::kernel::Kernel;
 use crate::mathjax::MathJax;
 use crate::paths;
 use crate::pluto::Pluto;
-use crate::repl::{Repl, ReplFrameMsg};
+use crate::repl::ReplFrameMsg;
 use crate::session::Session;
 use crate::watcher::PreviewChanged;
 use crate::workspaces::{AgentMessage, AgentReceipt};
@@ -258,10 +256,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         }
     }
 
-    // Concept-annotation store at `<project_root>/.concept/`. Created lazily
-    // on first write — read/list against a missing directory return empty.
-    let concept = Arc::new(ConceptStore::new(files_mode.root_path()));
-
     // Lazily-spawned MathJax sidecar. Cheap to construct (no child process
     // until the first math.render call); cloning the handle is cheap.
     let mathjax = MathJax::new(MathJax::default_script_path());
@@ -298,29 +292,14 @@ pub async fn run(opts: Opts) -> Result<()> {
     // docs.open reports "slots busy" when none are assignable.
     crate::site_serve::spawn_pool().await;
 
-    // Lazily-spawned Julia kernel — only fires up when first kernel.request
-    // op arrives. The Files-mode walker handles the no-Julia case fine on
-    // its own, so this stays a feature flag of sorts.
-    let kernel = Kernel::new(
-        Kernel::default_kernel_project(),
-        files_mode.root_path().to_path_buf(),
-    );
-
     // Streamed REPL frame bus (Option B): every eval's frames are fanned out
     // here off the per-workspace REPL supervisor; each connection subscribes
     // and writes a `repl.frame` evt frame (mirror of the agent-relay bus,
     // minus a client→daemon publish leg — the publisher is the supervisor).
     // Created before the per-workspace REPLs so it can be installed into the
-    // registry (`set_repl_frame_tx`) and threaded into the legacy singleton.
+    // registry (`set_repl_frame_tx`).
     let (repl_frame_tx, _repl_frame_rx) = broadcast::channel::<ReplFrameMsg>(256);
     workspaces.set_repl_frame_tx(repl_frame_tx.clone());
-
-    // Persistent REPL — separate Julia child from the kernel so a runaway
-    // eval can't take down introspection. Lazy spawn. The singleton is
-    // retained for back-compat on the call chain; all ops now route through
-    // per-workspace REPLs (which carry their own workspace_id), so this one
-    // publishes with `None` as its workspace_id.
-    let repl = Repl::new(repl_frame_tx.clone(), None, None);
 
     // Shared preview.changed bus (2026-07-10 multiwatch): ONE broadcast
     // channel every connection subscribes to, fed by ONE file watcher PER
@@ -459,9 +438,6 @@ pub async fn run(opts: Opts) -> Result<()> {
         let mj = mathjax.clone();
         let pl = pluto.clone();
         let fm = files_mode.clone();
-        let ke = kernel.clone();
-        let co = concept.clone();
-        let rp = repl.clone();
         let wa = preview_changed_tx.clone();
         let lb = label.clone();
         let ws = workspaces.clone();
@@ -476,7 +452,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let le = leases.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
-                path, s, tok, mj, pl, fm, ke, co, rp, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
+                path, s, tok, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
                 tpe, le,
             )
             .await
