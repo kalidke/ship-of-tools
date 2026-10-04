@@ -47,7 +47,7 @@ pub(crate) mod pipe;
 pub(crate) mod listen;
 pub(super) mod reply;
 
-pub(crate) use conn::record_test_activation_marker;
+pub(crate) use crate::rows::ops::pty::record_test_activation_marker;
 #[cfg(unix)]
 pub(crate) use listen::refuse_live_socket;
 pub(crate) use reply::{write_frame_to, write_frame_within};

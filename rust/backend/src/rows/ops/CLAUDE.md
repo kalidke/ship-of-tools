@@ -12,7 +12,7 @@ change lives in the parent folder. Part of the daemon's rows subsystem; charter:
 - `destroy_tests.rs`: tests of `destroy.rs`: `workspace.destroy` on the default row, with the state-root fixtures they share
 - `lane_bridge.rs`: `lane.connect`, the byte pipe onto a row's supervisor or voyage lane after one answered frame
 - `list.rs`: `workspace.list` (the rows the window shows, with their comm state) and `workspace.activate`
-- `pty.rs`: `pty.input` and `pty.screen` through a capsule row's supervisor lane
+- `pty.rs`: `pty.input` and `pty.screen` through a capsule row's supervisor lane, and the test-only activation barrier and marker
 
 ## Start here
 `create.rs::handle_workspace_create` for what a new row is; `destroy.rs::handle_workspace_destroy` for how one ends.

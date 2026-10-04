@@ -1,4 +1,5 @@
 //! pty.input and pty.screen: type into, or read the screen of, a capsule row through its supervisor lane.
+//! Also the test-only activation barrier and marker that `pty.open`'s start-on-attach runs under.
 
 use anyhow::Context;
 use anyhow::Result;
@@ -362,6 +363,44 @@ pub async fn handle_pty_screen(
             });
             Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)])
         }
+    }
+}
+
+/// Writes one marker file per arrival/completion/wait-for-settle-cycle
+/// under `<barrier path>.<kind>/`, so a test can poll an exact count
+/// instead of inferring one from timing. `pub(crate)` -- also called
+/// from `capsule_workspace::ensure_started`'s own reprobe loop (kind
+/// `"waitforsettle"`), which is a different module but shares this
+/// exact barrier-path convention. No-op unless `SOT_TEST_ACTIVATION_
+/// BARRIER` is set.
+pub(crate) fn record_test_activation_marker(kind: &str) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Ok(barrier_path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(format!("{barrier_path}.{kind}"));
+    let _ = std::fs::create_dir_all(&dir);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = std::fs::write(dir.join(format!("{}-{seq}", std::process::id())), b"");
+}
+
+/// Test-only barrier at the top of `pty.open`'s activation task: when
+/// `SOT_TEST_ACTIVATION_BARRIER` names a path, blocks until the test
+/// creates that file (not a guessed sleep), giving up past a 30s bound.
+/// No-op in production.
+pub(crate) async fn wait_for_test_activation_barrier() {
+    let Ok(path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
+        return;
+    };
+    record_test_activation_marker("arrivals");
+    let path = std::path::PathBuf::from(path);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !path.is_file() {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(path = ?path, "capsule activation test barrier: released by timeout, not by the test");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 

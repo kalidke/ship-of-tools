@@ -1,6 +1,7 @@
 //! The control session's op table: `dispatch` routes one request frame to its owner and writes the reply.
 
-use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person_input, wait_for_test_activation_barrier};
+use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person_input};
+use crate::rows::ops::pty::wait_for_test_activation_barrier;
 use super::hello::admit_hello;
 use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
 use super::*;
