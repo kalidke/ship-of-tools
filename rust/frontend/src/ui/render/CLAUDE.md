@@ -6,7 +6,7 @@ frame capture. Part of fe-ui; charter:
 rust/frontend/src/ui/CLAUDE.md. ADRs 0003, 0011 and 0012 give the design.
 
 ## Files
-- `mod.rs`: declares the files below and re-exports `surface` and `capture` into `ui`.
+- `mod.rs`: declares the files and the folder below and re-exports `surface` and `capture` into `ui`.
 - `text.rs`: `TextLayer`, the glyph-atlas text layer and its one `FontSystem`.
 - `cells.rs`: `WgpuBackend`, the ratatui `Backend` that keeps a cell grid, and its projection into text lines.
 - `quad.rs`: `QuadPipeline`, the textured-quad pipeline every bitmap goes through.
@@ -15,10 +15,11 @@ rust/frontend/src/ui/CLAUDE.md. ADRs 0003, 0011 and 0012 give the design.
   `build_solid_quads`, `decode_logo_quads`).
 - `capture.rs`: the `--capture` trigger frame, `selfie_path`, and the texture readback to PNG (`stage_capture`,
   `finish_capture`).
+- `pass/`: the frame's render pass, one `State` method per section (its own page).
 
 ## Start here
-`text.rs` for how text is shaped and drawn; `quad.rs` for bitmaps; `surface.rs` for the cell grid. The render-pass order is in `State::redraw`
-in ../app/frame.rs.
+`text.rs` for how text is shaped and drawn; `quad.rs` for bitmaps; `surface.rs` for the cell grid. The render-pass order
+is in `State::redraw` in ../app/frame.rs, and the sections it calls are in `pass/`.
 
 ## Rules
 - Chrome text and markdown shape with one `FontSystem`, lent by `TextLayer::font_system_mut`.
