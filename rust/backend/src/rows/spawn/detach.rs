@@ -149,8 +149,7 @@ fn supervisor_stderr() -> Stdio {
 /// there is no second log-file open, no workspace id reconstructed
 /// from a path, and no future `env_clear` call that replay could ever
 /// silently lose). `scoped` is always `false` on Windows (no scope
-/// concept there) — only how the head is built differs; only how the
-/// result is actually detached — [`spawn_detached`] — differs per platform.
+/// concept there).
 /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
 /// itself refuses (exit 69) without it pre-U4. The nesting env vars
 /// are scrubbed and `SOT_COMM_NAME` exported (Codex review finding

@@ -70,9 +70,7 @@ fn config(
 }
 
 /// Encode helpers for the attach lane's client frames and the mgmt lane's
-/// requests — identical in shape to `tests/capsule/main.rs`'s own `frame`
-/// module (not shared: a three-function module is exactly this crate's
-/// own leaf-helper-duplication convention, see `lane/pipe_win/`'s module doc).
+/// requests.
 mod frame {
     use super::wire;
 

@@ -4,12 +4,11 @@ use std::path::Path;
 #[cfg(not(target_os = "linux"))]
 use std::path::PathBuf;
 
-/// Outcome of [`runtime::end_run`] — the daemon's own portable
+/// Outcome of [`end_run`] — the daemon's own portable
 /// vocabulary over `sot_log::attach_client::supervisor_client::EndRunOutcome` (never
 /// that raw, platform-specific type crossing into `rows/run/end.rs`). Defined
 /// here, apart from the platform-specific spawn code, so `rows/run/end.rs`'s outcome→response
-/// mapping stays plain and unit-testable on every platform; `end_run`'s
-/// own real lane call is the only step gated to Windows and Linux only.
+/// mapping stays plain and unit-testable on every platform.
 #[derive(Debug, Clone)]
 pub enum EndRunOutcome {
     /// The run ended and its record verified green.
@@ -39,7 +38,7 @@ pub enum EndRunOutcome {
     /// 2026-09-11: watchdog restart-budget exhaustion, a failed
     /// adoption, or a kill/wait failure on the leg itself can all reach
     /// `Terminal` with a leg still running) — this variant is reported
-    /// ONLY once the SAME [`runtime::absence_proof`] `Unheld` uses has
+    /// ONLY once the SAME [`absence_proof`] `Unheld` uses has
     /// independently confirmed no leg holds the voyage either; a leg
     /// still present is reported (`end_run` keeps the row), never
     /// silently orphaned.
@@ -58,7 +57,7 @@ pub enum EndRunOutcome {
     /// `supervisor.lock` on the same state dir succeeded — nobody holds
     /// the AUTHORITY over this row (the kernel released the fence the
     /// instant its last holder died — `sot_log::supervisor::journal::fence`) — AND
-    /// [`runtime::leg_absent`] independently proved no LEG holds the
+    /// [`leg_absent`] independently proved no LEG holds the
     /// voyage's own `writer.lock` either (`voyage.rs`). No authority AND
     /// no leg is safe to treat as `Removable`, same as `Terminal`.
     /// Fence free but a leg still present is NOT this variant — a leg
@@ -73,7 +72,7 @@ pub enum EndRunOutcome {
     Unheld,
     /// The state directory itself does not exist AND `query_status`'s
     /// connect failure conclusively proves no supervisor answers this
-    /// row's lane (`runtime::is_definitely_orphaned` — decision 27's own
+    /// row's lane (`is_definitely_orphaned` — decision 27's own
     /// "no listener at all" classification, never a mere timeout or a
     /// foreign/undetermined challenge). Distinct from `Unheld`: that
     /// variant proves absence by taking the fence and the writer lock;

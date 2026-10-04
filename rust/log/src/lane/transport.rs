@@ -18,10 +18,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// One event the transport layer reports to the writer loop. The
-/// production transport (the platform's lane server) produces these; the
-/// in-memory transports in `tests/support/transports.rs` drive the
-/// identical channel (ADR 0041 step 5:
+/// One event the transport layer reports to the writer loop.
+/// `platform_transport` produces these from the platform lane server's
+/// `LaneEvent`s; the in-memory transports in `tests/support/transports.rs`
+/// drive the identical channel (ADR 0041 step 5:
 /// "the loop gains a transport-event channel... for THIS unit, a test
 /// transport").
 #[derive(Debug)]

@@ -8,9 +8,6 @@ license.workspace = true
 [dependencies]
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
-# `sot_log::host::state_dir` (rows/ops/pty.rs) and
-# `sot_log::attach_client::supervisor_client` (rows/reauth/restart.rs) are used
-# on every platform, so the dependency is unconditional.
 sot-log = { path = "../log" }
 # The comm wake reads a cell's dim attribute off the capsule screen (`comm::wake::screen::free_test_lines`).
 vt100-ctt = "0.17"
