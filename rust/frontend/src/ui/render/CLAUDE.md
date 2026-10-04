@@ -10,8 +10,9 @@ rust/frontend/src/ui/CLAUDE.md. ADRs 0003, 0011 and 0012 give the design.
 - `text.rs`: `TextLayer`, the glyph-atlas text layer and its one `FontSystem`.
 - `cells.rs`: `WgpuBackend`, the ratatui `Backend` that keeps a cell grid, and its projection into text lines.
 - `quad.rs`: `QuadPipeline`, the textured-quad pipeline every bitmap goes through.
-- `surface.rs`: base cell metrics, startup logos, `cell_grid_for`, `clear_color_for_surface`, and `State::resize` and
-  `State::apply_text_scale`.
+- `surface.rs`: base cell metrics, startup logos, `cell_grid_for`, `clear_color_for_surface`, `State::resize` and
+  `State::apply_text_scale`, and what `State::new` builds on the surface (`create_gpu_surface`, `build_text_grid`,
+  `build_solid_quads`, `decode_logo_quads`).
 - `capture.rs`: the `--capture` trigger frame, `selfie_path`, and the texture readback to PNG (`stage_capture`,
   `finish_capture`).
 
