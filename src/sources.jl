@@ -4,7 +4,8 @@
 const COMM_SRC = normpath(joinpath(@__DIR__, "..", "comm"))
 # The repo root: the folder holding comm/, AGENTS.md and this package.
 const REPO_ROOT = dirname(COMM_SRC)
-# The list of comm folders whose regular files install flat into `<bin>`, one repo-relative folder per line.
+# The list of comm folders whose regular files install flat into `<bin>` (a part inside the file that sources it),
+# one repo-relative folder per line.
 const COMM_BIN_FOLDERS = joinpath(COMM_SRC, "bin-folders.txt")
 # The folders holding the Claude skills (each skill a subfolder with a SKILL.md).
 const CLAUDE_SKILL_SRCS = [joinpath(COMM_SRC, "adapters", "claude"), joinpath(REPO_ROOT, "agents", "claude")]

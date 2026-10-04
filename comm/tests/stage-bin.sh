@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# stage-bin.sh DEST -- lay out the comm scripts flat in DEST the way the installer
-# lays out ~/.sot-comm/bin: every regular file directly in each folder of
-# comm/bin-folders.txt (CLAUDE.md excepted), one folder after another. Users: the
-# suites' guard (lib-home-guard.sh's guard_stage_bin), comm-matrix.sh's live run,
-# scripts/docs-media.sh and the sot-setup no-Julia recipe. It sources nothing, so
-# none of them needs the guard. bash 3.2 safe.
+# stage-bin.sh DEST -- lay out the comm scripts flat in DEST in the repo's form:
+# every regular file directly in each folder of comm/bin-folders.txt (CLAUDE.md
+# excepted), one folder after another, so comm-lib.sh and sot-fe source their parts
+# beside them. The installer puts each part inside the file that sources it instead
+# (src/comm_bin.jl); test/install_tests.jl shows both define the same functions and
+# globals. Users: the suites' guard (lib-home-guard.sh's guard_stage_bin),
+# comm-matrix.sh's live run, scripts/docs-media.sh and the sot-setup no-Julia
+# recipe. It sources nothing, so none of them needs the guard. bash 3.2 safe.
 set -u
 [ $# -eq 1 ] && [ -n "$1" ] || { echo "usage: stage-bin.sh DEST" >&2; exit 2; }
 DEST="$1"

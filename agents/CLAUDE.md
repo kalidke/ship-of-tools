@@ -49,7 +49,8 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - In: `comm-lib.sh` (sourced from the script's own folder, flat once installed), `comm-context.sh` (identity), and
   `comm-join.sh`, `comm-relay.sh` and `comm-poll.sh` (run by `spawn/comm-probe.sh`'s responder).
 - The installer copies the files of `spawn/`, `worktree/` and `sot-fe/` and the code files directly in this folder flat into
-  `~/.sot-comm/bin` (`comm/bin-folders.txt`); the suites run from a staged copy of the same list (`comm/tests/stage-bin.sh`).
+  `~/.sot-comm/bin` (`comm/bin-folders.txt`), sot-fe's parts inside `sot-fe`; the suites run from a staged copy of the
+  same list in the repo's form (`comm/tests/stage-bin.sh`).
 - `claude/` and `codex/` are installed by `src/sources.jl`: `claude/` is a skill root and `claude/bin` and `codex/bin`
   are the launcher folders, copied into `~/.local/bin`; no CLAUDE.md in them is installed.
 - Messaging's scripts call none of this folder's scripts; `comm-worktree-new.sh` and `comm-worktree-clean.sh` call

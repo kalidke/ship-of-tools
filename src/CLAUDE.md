@@ -10,7 +10,7 @@ scripts/CLAUDE.md.
 - `sources.jl`: every repo path the installer reads, named once (`COMM_SRC`, `REPO_ROOT`, the skill, launcher and Codex sources).
 - `homes.jl`: the resolved runtime homes (`comm_home`, `codex_home`, `claude_home`).
 - `publish.jl`: atomic publish (`install_file`), staging names, marker reaping, the skill-install stage collector.
-- `comm_bin.jl`: the bin folders read from comm/bin-folders.txt, the shipped bin names, the install record and its pruning, `COMM_DEPRECATED_BIN`.
+- `comm_bin.jl`: the bin folders read from comm/bin-folders.txt, the files that install and the parts inside them (`COMM_PART_LINE`, `_comm_bin_text`, `_comm_bin_stage`), the shipped bin names, the install record and its pruning, `COMM_DEPRECATED_BIN`.
 - `skills.jl`: the shared skills installer, the orphan sweep, `COMM_DEPRECATED_SKILLS`.
 - `launchers.jl`: launcher scripts into ~/.local/bin, `COMM_DEPRECATED_LAUNCHERS`.
 - `claude_hooks.jl`: account discovery and the settings.json hook merge and stale-hook removal.
@@ -26,6 +26,11 @@ scripts/CLAUDE.md.
 - Prune only names recorded or listed (`_prune_comm_bin`).
 - The bin gets every folder listed in comm/bin-folders.txt, whatever `clis` (`_comm_bin_files`); a missing folder or a
   name shipped by two folders fails the install.
+- A part (a file another file of its folder sources by `COMM_PART_LINE`) installs only inside that file, never alone
+  (`_comm_bin_text`), so a script's library is one file and an install replaces it with one rename. Any other `source`
+  or `.` line naming a part or a file of its own folder, a part that sources, or a part two files source stops the
+  install before anything is published (`_comm_bin_files`). Folders publish in list order, comm/lib first (pinned in
+  test/install_tests.jl).
 - No file named CLAUDE.md is installed from any source folder (`NEVER_INSTALLED`: `_comm_bin_files`, `_install_skills`,
   `_install_launchers`).
 - A move under comm/ edits only comm/bin-folders.txt and src/sources.jl, never src/ code or test/.

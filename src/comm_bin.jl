@@ -45,9 +45,24 @@ function _comm_bin_folders(list::AbstractString = COMM_BIN_FOLDERS, root::Abstra
     return folders
 end
 
-# The `(folder, name)` pairs of the regular files that install flat into
-# `<bin>`: list order, then `readdir` order. Two folders shipping one name
-# would overwrite each other in the bin, so that is an error naming both.
+# A line by which a file sources a file of its own folder: the library loader's
+# `source "$(dirname "${BASH_SOURCE[0]}")/<part>" || return 1`, or sot-fe's `source "$SCRIPT_DIR/<part>"`.
+const COMM_PART_LINE = r"^source \"(?:\$\(dirname \"\$\{BASH_SOURCE\[0\]\}\"\)|\$SCRIPT_DIR)/([^\"/]+)\"(?: \|\| return 1)?$"
+
+# The part `line`, a line of a file in `folder`, sources: the name a `COMM_PART_LINE` gives, when it is
+# a file of `folder` that installs; otherwise `nothing`.
+function _comm_part_of(folder::AbstractString, line::AbstractString)
+    m = match(COMM_PART_LINE, chomp(line))
+    m === nothing && return nothing
+    p = String(m[1])
+    return p != NEVER_INSTALLED && isfile(joinpath(folder, p)) ? p : nothing
+end
+
+# The `(folder, name)` pairs of the files that install flat into `<bin>`: list order, then `readdir`
+# order. A part, a file another file of its folder sources (`_comm_part_of`), installs only inside that
+# file (`_comm_bin_text`), so it is not one of them. Fails before anything is published on: two folders
+# shipping one name, a part two files source, and any other `source` or `.` line that names a file of
+# its own folder or a part, or that a part runs. So no file ships that sources a part the bin lacks.
 function _comm_bin_files(folders = _comm_bin_folders())
     files = Tuple{String,String}[]
     owner = Dict{String,String}()
@@ -58,11 +73,51 @@ function _comm_bin_files(folders = _comm_bin_folders())
         owner[name] = dir
         push!(files, (dir, name))
     end
-    return files
+    parts = Dict{String,String}()
+    for (dir, name) in files, line in eachline(joinpath(dir, name))
+        p = _comm_part_of(dir, line)
+        p === nothing && continue
+        haskey(parts, p) && error("comm bin part \"$p\" is sourced by both $(parts[p]) and $name")
+        parts[p] = name
+    end
+    for (dir, name) in files, line in eachline(joinpath(dir, name))
+        occursin(r"^\s*(?:source|\.)\s", line) || continue
+        p = _comm_part_of(dir, line)
+        for (n, d) in owner
+            occursin(Regex("[\\s\"'/]\\Q$(n)\\E(?:[\"'\\s;)]|\$)"), line) || continue
+            !haskey(parts, name) && (d == dir ? n == p : !haskey(parts, n)) ||
+                error("comm bin file $(joinpath(dir, name)) sources $n in a form the installer " *
+                      "cannot install: $(strip(line))")
+        end
+    end
+    return [(d, n) for (d, n) in files if !haskey(parts, n)]
 end
 
-# Every name this release installs directly into `<bin>`: the files of every
-# listed folder, whatever CLIs this run installs, so a name only another CLI's
+# The text `name` installs as: its own bytes, with each line that sources a part (`_comm_part_of`)
+# replaced by that part's bytes, so a script reads its whole library from one file, which an install
+# replaces with one rename.
+function _comm_bin_text(folder::AbstractString, name::AbstractString)
+    io = IOBuffer()
+    for line in eachline(joinpath(folder, name); keep = true)
+        p = _comm_part_of(folder, line)
+        p === nothing && (write(io, line); continue)
+        part = read(joinpath(folder, p))
+        write(io, part)
+        isempty(part) || last(part) == UInt8('\n') || write(io, '\n')
+    end
+    return String(take!(io))
+end
+
+# Write `name`'s installed text into `stage` with the source file's mode, for `_install_files` to publish.
+function _comm_bin_stage(folder::AbstractString, name::AbstractString, stage::AbstractString)
+    dst = joinpath(stage, name)
+    write(dst, _comm_bin_text(folder, name))
+    chmod(dst, filemode(joinpath(folder, name)) & 0o777)
+    return dst
+end
+
+# Every name this release installs directly into `<bin>`: the files
+# `_comm_bin_files` gives (parts are inside them), whatever CLIs this run installs, so a name only another CLI's
 # run used to install is never pruned.
 _comm_bin_shipped(files = _comm_bin_files()) = sort!([name for (_, name) in files])
 

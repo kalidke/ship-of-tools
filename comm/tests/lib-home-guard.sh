@@ -36,9 +36,9 @@
 #                                    suite's comm home, is empty, or equals or
 #                                    lies under a recorded live home
 #   guard_stage_bin DIR              stage-bin.sh lays the comm scripts flat in
-#                                    DIR/staged-bin, as the installer lays out
-#                                    ~/.sot-comm/bin, and prints that path; the
-#                                    suite runs its scripts from there
+#                                    DIR/staged-bin, in the repo's form
+#                                    (comm-lib.sh beside its parts), and prints
+#                                    that path; the suite runs its scripts from there
 # Paths compare physically (cd -P); the part of a path that does not exist yet
 # is kept as written, so a live home that does not exist (as on CI) compares as
 # its literal path.

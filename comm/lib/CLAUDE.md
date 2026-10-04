@@ -1,8 +1,10 @@
 # comm/lib: the shared shell library (messaging)
 
-`comm-lib.sh` is the one file every comm and agents script sources, from its own folder (flat once installed in
-`~/.sot-comm/bin`). It is a loader: it sources seven parts that sit beside it, one concept each, and a caller gets the
-same functions and globals as from one file. Part of messaging; charter: comm/CLAUDE.md.
+`comm-lib.sh` is the one file every comm and agents script sources, from its own folder (`~/.sot-comm/bin` once
+installed). In the repo it is a loader that sources seven parts beside it, one concept each; the installer installs it
+as one file, each part's text in place of its `source` line (src/comm_bin.jl), so a script reads the whole library at
+once and an install replaces it with one rename. Both forms give a caller the same functions and globals. Part of
+messaging; charter: comm/CLAUDE.md.
 
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
@@ -24,8 +26,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 
 ## Rules
 - `comm-lib.sh` only sources its parts, and a part calls nothing while it is sourced: outside function bodies there are
-  assignments only, so the order of the parts changes no behaviour. A new part is a new `source` line there and a new
-  file here; the installer and the staged bin copy every file of the folder.
+  assignments only, so the order of the parts changes no behaviour. A new part is a new file here and a new line
+  `source "$(dirname "${BASH_SOURCE[0]}")/<part>" || return 1` there, the form the installer inlines (any other form
+  that names a part stops the install). A part sources nothing, and uses no `BASH_SOURCE`, no `LINENO` and no top-level
+  `return`, so it runs the same inlined.
 - One registry write (`registry_replace` under `with_lock`) and one read (`sot_registry_read`: 0 present, 1 absent, 2
   unreadable).
 - One inbox append (`sot_inbox_append`) and one `comm.file` request (`sot_comm_file`).
@@ -36,3 +40,6 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   (raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first), not `sot_host`. A capsule's pinned self file is
   named by the daemon with its declared host, which is `sot_host`'s rule.
 - bash 3.2 and git-bash.
+- The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
+  release's scripts source this library: a release removes or changes a function or global only once no script of the
+  previous release uses it.

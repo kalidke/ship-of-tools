@@ -1,9 +1,10 @@
 # comm/tests: the suites that prove the comm scripts (messaging)
 
 One standalone bash suite per `test-*.sh`, each against its own temporary comm home, daemon stand-ins and process
-stand-ins, never the live comm home. The scripts under test run from a staged flat copy laid out as the installer lays
-out `~/.sot-comm/bin`, so a script can move between `comm/lib` and the other bin folders without editing a
-suite. Part of messaging; charter: comm/CLAUDE.md.
+stand-ins, never the live comm home. The scripts under test run from a staged flat copy of the bin folders in the repo's
+form (the library's loader beside its parts; the installer puts each part inside the file that sources it, and
+test/install_tests.jl shows both define the same functions and globals), so a script can move between `comm/lib` and
+the other bin folders without editing a suite. Part of messaging; charter: comm/CLAUDE.md.
 
 ## Files
 - `agent_layers/`: parts of `test-agent-layers.sh`: `table.sh` (the layer table and its parsers), `end_to_end.sh` (fake processes)
@@ -12,7 +13,7 @@ suite. Part of messaging; charter: comm/CLAUDE.md.
 - `hub_files/`: parts of `test-hub-files.sh`: `lock_shell.sh`, `routes.sh`, `wire.sh`, `reader.sh`, `lock_faults.sh`
 - `join_disambiguation/`: parts of `test-join-disambiguation.sh`: derived handles, self-files, `jq_args.sh`, pipe endpoints, send identity, slot guard, spawn and lock
 - `lib-home-guard.sh`: the guard every suite sources first; drops the host's comm identity and daemon routes, and gives `guard_fresh_home`, `guard_refuse_live_home`, `guard_stage_bin`, `in_row`
-- `stage-bin.sh`: lays the files of the folders in `comm/bin-folders.txt` flat into a destination, as the installer does
+- `stage-bin.sh`: lays the files of the folders in `comm/bin-folders.txt` flat into a destination, in the repo's form, as the installer does
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
 - `test-agent-layers.sh`: a process acts as a handle only with at most one agent between it and its row's capsule

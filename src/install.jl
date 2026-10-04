@@ -33,8 +33,9 @@ end
 """
     install_comm(; clis = [:claude])
 
-Install sot-comm. Copies the files of every folder listed in
-comm/bin-folders.txt to `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
+Install sot-comm. Installs the files of every folder listed in
+comm/bin-folders.txt into `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
+each part inside the file that sources it (`_comm_bin_text`),
 whatever `clis`, and installs the adapter for each CLI in `clis`
 (`:claude` skills/hooks, `:codex` skills/hooks/plugin). Idempotent — safe to
 re-run to update an existing install.
@@ -57,10 +58,13 @@ function install_comm(; clis = [:claude, :codex])
     # end, so one refused file (field report
     # 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
-    for folder in unique(first.(files))
-        names = [n for (f, n) in files if f == folder]
-        _stage!(problems, "comm scripts ($(relpath(folder, REPO_ROOT)))") do
-            _install_files(folder, bin, names; executable = endswith(".sh"))
+    mktempdir() do stage
+        for folder in unique(first.(files))
+            names = [n for (f, n) in files if f == folder]
+            _stage!(problems, "comm scripts ($(relpath(folder, REPO_ROOT)))") do
+                foreach(n -> _comm_bin_stage(folder, n, stage), names)
+                _install_files(stage, bin, names; executable = endswith(".sh"))
+            end
         end
     end
     prev_manifest = _read_comm_manifest(bin)
