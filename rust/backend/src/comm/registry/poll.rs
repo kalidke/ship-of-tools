@@ -38,7 +38,7 @@ pub(crate) fn spawn_registry_poll(ws_events_tx: &broadcast::Sender<WorkspaceChan
 /// edit alone, e.g. a stale row's
 /// owner changing, is a real change even when every other field is
 /// unchanged). `last_seen` is deliberately excluded. Used by the
-/// registry-watch task in `run` (below) to detect a real change between
+/// registry-watch task to detect a real change between
 /// polls; hoisted to module scope (out of that task's async block) so it's
 /// unit-testable on its own. Deliberately NOT host-filtered (unlike the
 /// list itself): this has no per-workspace context to filter against, only

@@ -388,13 +388,7 @@ where
             return Ok(());
         }
     };
-    // Name validation (security review): an explicit `target`
-    // becomes the real tmux session name — a `|`-containing one
-    // would corrupt `tmux.rs`'s naive `|`-delimited
-    // `list-sessions`/`list-panes` parsing for every session, not
-    // just this one. `None` (the default target) is exempt: it's
-    // the hardcoded `DEFAULT_TMUX_TARGET` constant, not
-    // request-controlled.
+    // Name validation (security review).
     if let Some(t) = req.target.as_deref() {
         if !handlers::valid_name(t) {
             let payload = serde_json::json!({

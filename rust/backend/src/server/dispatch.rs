@@ -294,10 +294,8 @@ where
             return Ok(());
         }
         op::PTY_INPUT => {
-            // ADR 0042 amendment (2026-09-07): answered, unlike
-            // `PTY_WRITE` above (this connection's own pty, fire-and-
-            // forget) — `PtyInputReq` is untouched by that arm, and
-            // vice versa. `origin`, when present, is the handler's own
+            // ADR 0042 amendment (2026-09-07): answered.
+            // `origin`, when present, is the handler's own
             // job to validate/prefer; this connection's `hello`
             // `client_id` is only the FALLBACK controller id.
             let default_controller_id = client_guard

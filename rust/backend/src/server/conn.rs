@@ -500,7 +500,6 @@ where
             }
             Ok(Woke::Again)
         }
-        // Same hygiene drain as the pty-present arm above.
         Some(res) = jobs.join_next(), if !jobs.is_empty() => {
             if let Err(e) = res {
                 tracing::error!(error = %e, "off-loop job panicked");
