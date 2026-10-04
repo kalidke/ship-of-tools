@@ -26,7 +26,7 @@ Per workspace row (built in `workspaces.rs`):
 - `preview.changed` is live-only and carries no revision.
 
 ## Connections
-- `handlers.rs` serves `preview.get`, `preview.set_scale` and `image.crop`, and asks the kernel for plugin previews
+- `preview/` serves `preview.get`, `preview.set_scale` and `image.crop`, and asks the kernel for plugin previews
   (`file.preview`). `tree_ops.rs` serves `tree.root`, `tree.children`, `nav.toggle_hidden` and `directory.list`;
   `concept_ops.rs` serves `concept.*`; `io_ops.rs` serves `file.read`, `file.write`, `file.delete` and `dir.create`;
   `transfer.rs` serves `file.download` and `file.upload`. `handlers.rs` re-exports them for the dispatch in `server.rs`.
@@ -43,6 +43,7 @@ Per workspace row (built in `workspaces.rs`):
 - `mod.rs`: the folder's module list.
 - `tree.rs`: the Files tree: node ids, listing, confined resolution, mime types.
 - `io.rs`: editor file IO: read, version-checked write, trash.
+- `preview/`: preview.get, preview.set_scale, image.crop.
 - `concept.rs`: the `.concept/` annotation store.
 - `watcher.rs`: the notify-backed watcher that feeds `preview.changed`.
 - `concept_ops.rs`: concept.read, concept.write, concept.list
