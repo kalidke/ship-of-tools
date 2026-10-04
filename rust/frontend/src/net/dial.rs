@@ -51,7 +51,7 @@ pub struct CliOverride {
 /// Anything else is an `Err` describing the problem; the caller logs it and
 /// skips the entry rather than aborting the whole list — one malformed
 /// `--dial` shouldn't take down every other host's connection.
-pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::TransportConfig), String> {
+pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::net::transport::TransportConfig), String> {
     let Some((host, endpoint)) = arg.split_once('=') else {
         return Err(format!("`--dial {arg}`: expected `<host>=<endpoint>`"));
     };
@@ -65,8 +65,8 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::Transport
         if path.is_empty() {
             return Err(format!("`--dial {arg}`: empty socket path"));
         }
-        crate::transport::TransportConfig {
-            dial: crate::transport::Dial::Pipe(PathBuf::from(path)),
+        crate::net::transport::TransportConfig {
+            dial: crate::net::transport::Dial::Pipe(PathBuf::from(path)),
             token: None,
         }
     } else if let Some(rest) = endpoint.strip_prefix("ssh:") {
@@ -82,8 +82,8 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::Transport
         };
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, ssh_host)
             .map_err(|e| format!("`--dial {arg}`: {e}"))?;
-        crate::transport::TransportConfig {
-            dial: crate::transport::Dial::Ssh(recipe),
+        crate::net::transport::TransportConfig {
+            dial: crate::net::transport::Dial::Ssh(recipe),
             token: None,
         }
     } else {
@@ -132,10 +132,10 @@ fn is_plain_host_name(s: &str) -> bool {
 /// (`main.rs`) is to report that plainly and run offline, exactly as a box
 /// with no hosts.toml and no `--socket`/`--dial` always has.
 pub fn resolve_connections(
-    dials: &[(HostKey, crate::transport::TransportConfig)],
+    dials: &[(HostKey, crate::net::transport::TransportConfig)],
     cli: &CliOverride,
-) -> Vec<(HostKey, crate::transport::TransportConfig)> {
-    let mut out: Vec<(HostKey, crate::transport::TransportConfig)> = Vec::new();
+) -> Vec<(HostKey, crate::net::transport::TransportConfig)> {
+    let mut out: Vec<(HostKey, crate::net::transport::TransportConfig)> = Vec::new();
     let mut claimed_ssh: std::collections::HashMap<String, HostKey> =
         std::collections::HashMap::new();
     for (host, config) in dials {
@@ -143,12 +143,12 @@ pub fn resolve_connections(
         // one's ssh claim first so re-dialing the same host on a new
         // endpoint doesn't spuriously collide with itself.
         if let Some(pos) = out.iter().position(|(h, _)| h == host) {
-            if let crate::transport::Dial::Ssh(recipe) = &out[pos].1.dial {
+            if let crate::net::transport::Dial::Ssh(recipe) = &out[pos].1.dial {
                 claimed_ssh.remove(&recipe.to_string());
             }
             out.remove(pos);
         }
-        if let crate::transport::Dial::Ssh(recipe) = &config.dial {
+        if let crate::net::transport::Dial::Ssh(recipe) = &config.dial {
             let key = recipe.to_string();
             if let Some(existing) = claimed_ssh.get(&key) {
                 tracing::warn!(host = %host, existing_host = %existing, endpoint = %key, "duplicate ssh --dial endpoint with another host; skipping to avoid reaching the wrong daemon");
@@ -159,8 +159,8 @@ pub fn resolve_connections(
         out.push((host.clone(), config.clone()));
     }
     if let Some(socket) = cli.socket.clone() {
-        let config = crate::transport::TransportConfig {
-            dial: crate::transport::Dial::Pipe(socket),
+        let config = crate::net::transport::TransportConfig {
+            dial: crate::net::transport::Dial::Pipe(socket),
             token: cli.token.clone(),
         };
         if let Some(existing) = out.iter_mut().find(|(h, _)| h == "local") {
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(host, "host-2");
         assert_eq!(
             cfg.dial,
-            crate::transport::Dial::Pipe(PathBuf::from("/run/user/1234/sot/sessions/sot.sock"))
+            crate::net::transport::Dial::Pipe(PathBuf::from("/run/user/1234/sot/sessions/sot.sock"))
         );
     }
 
@@ -197,7 +197,7 @@ mod tests {
     fn parse_dial_arg_good_ssh_no_host() {
         let (host, cfg) = parse_dial_arg("host-1=ssh:hub").expect("valid");
         assert_eq!(host, "host-1");
-        let crate::transport::Dial::Ssh(recipe) = &cfg.dial else {
+        let crate::net::transport::Dial::Ssh(recipe) = &cfg.dial else {
             panic!("expected an ssh dial")
         };
         assert_eq!(recipe.target(), "hub");
@@ -208,7 +208,7 @@ mod tests {
     fn parse_dial_arg_good_ssh_with_host() {
         let (host, cfg) = parse_dial_arg("host-3=ssh:hub/host-3").expect("valid");
         assert_eq!(host, "host-3");
-        let crate::transport::Dial::Ssh(recipe) = &cfg.dial else {
+        let crate::net::transport::Dial::Ssh(recipe) = &cfg.dial else {
             panic!("expected an ssh dial")
         };
         assert_eq!(recipe.target(), "hub");
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(host, "host-4");
         assert_eq!(
             cfg.dial,
-            crate::transport::Dial::Pipe(PathBuf::from(r"\\.\pipe\sot-host-4"))
+            crate::net::transport::Dial::Pipe(PathBuf::from(r"\\.\pipe\sot-host-4"))
         );
     }
 
@@ -268,7 +268,7 @@ mod tests {
         ];
         let out = resolve_connections(&dials, &CliOverride::default());
         assert_eq!(out.len(), 1);
-        let crate::transport::Dial::Ssh(recipe) = &out[0].1.dial else {
+        let crate::net::transport::Dial::Ssh(recipe) = &out[0].1.dial else {
             panic!("expected an ssh dial")
         };
         assert_eq!(recipe.target(), "hub-b");
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(out[0].0, "local");
         assert_eq!(
             out[0].1.dial,
-            crate::transport::Dial::Pipe(PathBuf::from("/fresh.sock")),
+            crate::net::transport::Dial::Pipe(PathBuf::from("/fresh.sock")),
             "cli override replaces the stale dial entirely"
         );
     }

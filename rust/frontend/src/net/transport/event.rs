@@ -416,7 +416,7 @@ pub enum IncomingEvt {
     },
     DirectoryList {
         path: String,
-        entries: Vec<crate::transport::DirEntry>,
+        entries: Vec<crate::net::transport::DirEntry>,
     },
     /// `workspace.create` reply: a workspace exists in the daemon and
     /// its tmux session is ready (when tmux didn't refuse). The chrome

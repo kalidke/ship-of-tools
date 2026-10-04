@@ -14,18 +14,18 @@ pub struct App {
     /// us a window. Held on App rather than constructed inside resumed() so
     /// main.rs can decide whether transport runs.
     evt_rx:
-        Option<std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>>,
+        Option<std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>>,
     rt: Option<tokio::runtime::Runtime>,
     cli: crate::cli::Cli,
     /// Fans in every host's transport task; each clones this once in
     /// `resumed()` before it's handed off (see `PendingTransport`).
-    evt_tx: Option<std::sync::mpsc::Sender<(crate::dial::HostKey, crate::transport::IncomingEvt)>>,
+    evt_tx: Option<std::sync::mpsc::Sender<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>>,
     /// One outgoing-request sender per host, in connection (display) order
     /// — the send-side half of `PendingTransport`. GPU thread holds these;
     /// `resumed()` spawns the matching transport task for each.
     conns: Vec<(
-        crate::dial::HostKey,
-        tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
+        crate::net::dial::HostKey,
+        tokio::sync::mpsc::UnboundedSender<crate::net::transport::OutgoingReq>,
     )>,
     pending_transports: Option<Vec<PendingTransport>>,
     leases: Arc<crate::lease::Leases>,
@@ -38,13 +38,13 @@ pub struct App {
 
 impl App {
     pub fn new(
-        evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
+        evt_rx: std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
         rt: Option<tokio::runtime::Runtime>,
         cli: crate::cli::Cli,
-        evt_tx: std::sync::mpsc::Sender<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
+        evt_tx: std::sync::mpsc::Sender<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
         conns: Vec<(
-            crate::dial::HostKey,
-            tokio::sync::mpsc::UnboundedSender<crate::transport::OutgoingReq>,
+            crate::net::dial::HostKey,
+            tokio::sync::mpsc::UnboundedSender<crate::net::transport::OutgoingReq>,
         )>,
         pending_transports: Option<Vec<PendingTransport>>,
         leases: Arc<crate::lease::Leases>,

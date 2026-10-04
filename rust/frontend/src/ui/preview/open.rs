@@ -37,7 +37,7 @@ impl State {
                 .iter()
                 .any(|ext| lower.ends_with(ext));
             if abs.ends_with(".jl") {
-                if let Err(e) = self.send(crate::transport::OutgoingReq::PlutoOpen {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::PlutoOpen {
                     path: abs.to_string(),
                 }) {
                     tracing::warn!(error = %e, "failed to dispatch pluto.open");
@@ -45,7 +45,7 @@ impl State {
             } else if is_video {
                 // Video plays in the browser (HTML5 <video>, native HW
                 // decode) — the pane only shows the poster still.
-                if let Err(e) = self.send(crate::transport::OutgoingReq::VideoOpen {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::VideoOpen {
                     path: abs.to_string(),
                 }) {
                     tracing::warn!(error = %e, "failed to dispatch video.open");
@@ -53,7 +53,7 @@ impl State {
             } else if lower.ends_with(".qmd") {
                 // Quarto: `o` = quick render (no code execution) →
                 // self-contained HTML in the browser. `O` runs chunks.
-                if let Err(e) = self.send(crate::transport::OutgoingReq::QuartoOpen {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::QuartoOpen {
                     path: abs.to_string(),
                     execute: false,
                 }) {
@@ -70,7 +70,7 @@ impl State {
     /// `W` — open the project's built Documenter site in the OS browser
     /// (ADR 0024), deep-linking `path` when it's a built docs page.
     pub(in crate::ui) fn docs_open_external(&mut self, path: String) {
-        if let Err(e) = self.send(crate::transport::OutgoingReq::DocsOpen { path }) {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::DocsOpen { path }) {
             tracing::warn!(error = %e, "failed to dispatch docs.open");
         } else {
             self.status = "docs · opening…".to_string();
@@ -81,7 +81,7 @@ impl State {
     pub(in crate::ui) fn quarto_open_execute(&mut self, abs: Option<String>) {
         if let Some(abs) = abs.as_deref() {
             if abs.to_ascii_lowercase().ends_with(".qmd") {
-                if let Err(e) = self.send(crate::transport::OutgoingReq::QuartoOpen {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::QuartoOpen {
                     path: abs.to_string(),
                     execute: true,
                 }) {

@@ -42,7 +42,7 @@ impl State {
     pub(crate) fn on_file_write_done(
         &mut self,
         node_id: String,
-        result: crate::transport::FileWriteResult,
+        result: crate::net::transport::FileWriteResult,
     ) {
         // Reconcile only when the reply targets the active file edit
         // (late replies for an abandoned edit are ignored).
@@ -52,7 +52,7 @@ impl State {
             .and_then(|e| e.file_node_id.as_deref())
             == Some(node_id.as_str());
         match result {
-            crate::transport::FileWriteResult::Ok { path, version } => {
+            crate::net::transport::FileWriteResult::Ok { path, version } => {
                 tracing::info!(%node_id, %path, %version, "file.write ok");
                 if matches_active {
                     if let Some(edit) = self.edit_state.as_mut() {
@@ -79,7 +79,7 @@ impl State {
                 // `node_id` is the pending create.
                 self.finish_pending_create(&node_id, CreateOutcome::Ok);
             }
-            crate::transport::FileWriteResult::Conflict {
+            crate::net::transport::FileWriteResult::Conflict {
                 current_version, ..
             } => {
                 tracing::warn!(%node_id, %current_version, "file.write refused: conflict");
@@ -102,7 +102,7 @@ impl State {
                 // this was a Ctrl+N create.
                 self.finish_pending_create(&node_id, CreateOutcome::AlreadyExists);
             }
-            crate::transport::FileWriteResult::Error { code, message } => {
+            crate::net::transport::FileWriteResult::Error { code, message } => {
                 tracing::error!(%node_id, %code, %message, "file.write failed");
                 if matches_active {
                     // A FAILED save of the user's live edit was

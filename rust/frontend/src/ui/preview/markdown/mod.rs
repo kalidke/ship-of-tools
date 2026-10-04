@@ -295,7 +295,7 @@ struct WalkState<'a> {
     /// of tree-sitter's base. Miss → caller is asked (via
     /// `pending_token_fences`) to fire the round-trip.
     token_cache:
-        &'a std::collections::HashMap<(String, u64), Vec<crate::transport::MarkdownToken>>,
+        &'a std::collections::HashMap<(String, u64), Vec<crate::net::transport::MarkdownToken>>,
     /// Drained by the caller after the walk to dispatch
     /// `OutgoingReq::MarkdownTokenize` for any fence that missed the
     /// cache. Each entry is `(lang, source_hash, padded_source)`.

@@ -203,7 +203,7 @@ fn run_file_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         origin: None,
     });
     if let Err(e) =
-        state.send(crate::transport::OutgoingReq::ReplRunFile {
+        state.send(crate::net::transport::OutgoingReq::ReplRunFile {
             eval_id,
             path: abs.clone(),
             fresh,

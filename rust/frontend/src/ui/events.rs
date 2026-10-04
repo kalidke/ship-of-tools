@@ -19,7 +19,7 @@ impl State {
             // `Workspaces` arm below runs on every own-host reply.
             self.note_host_connection(&event_host, &evt);
             match evt {
-                crate::transport::IncomingEvt::Connected {
+                crate::net::transport::IncomingEvt::Connected {
                     session_id,
                     revision,
                     // Already recorded into `self.hosts.declared_host` above,
@@ -40,28 +40,28 @@ impl State {
                     resolved,
                     backend_version,
                 ),
-                crate::transport::IncomingEvt::Disconnected { reason } => {
+                crate::net::transport::IncomingEvt::Disconnected { reason } => {
                     self.on_disconnected(event_host, reason)
                 }
-                crate::transport::IncomingEvt::ProtocolMismatch { message } => {
+                crate::net::transport::IncomingEvt::ProtocolMismatch { message } => {
                     self.on_protocol_mismatch(event_host, message)
                 }
-                crate::transport::IncomingEvt::TreeRoot {
+                crate::net::transport::IncomingEvt::TreeRoot {
                     workspace_id,
                     root,
                     children,
                 } => self.on_tree_root(event_host, workspace_id, root, children),
-                crate::transport::IncomingEvt::TreeChildren {
+                crate::net::transport::IncomingEvt::TreeChildren {
                     workspace_id,
                     parent_id,
                     children,
                 } => self.on_tree_children(event_host, workspace_id, parent_id, children),
-                crate::transport::IncomingEvt::TreeChildrenFailed {
+                crate::net::transport::IncomingEvt::TreeChildrenFailed {
                     workspace_id,
                     parent_id,
                     error,
                 } => self.on_tree_children_failed(event_host, workspace_id, parent_id, error),
-                crate::transport::IncomingEvt::ProjectScan {
+                crate::net::transport::IncomingEvt::ProjectScan {
                     workspace_id,
                     project_root,
                     package_name,
@@ -77,16 +77,16 @@ impl State {
                     modules,
                     generation,
                 ),
-                crate::transport::IncomingEvt::FileParseFailed { workspace_id, path } => {
+                crate::net::transport::IncomingEvt::FileParseFailed { workspace_id, path } => {
                     self.on_file_parse_failed(event_host, workspace_id, path)
                 }
-                crate::transport::IncomingEvt::FileParsed {
+                crate::net::transport::IncomingEvt::FileParsed {
                     workspace_id,
                     path,
                     ast_hash,
                     definitions,
                 } => self.on_file_parsed(event_host, workspace_id, path, ast_hash, definitions),
-                crate::transport::IncomingEvt::FunctionMethodsReceived {
+                crate::net::transport::IncomingEvt::FunctionMethodsReceived {
                     workspace_id,
                     module,
                     name,
@@ -98,7 +98,7 @@ impl State {
                     name,
                     methods,
                 ),
-                crate::transport::IncomingEvt::ConceptRead {
+                crate::net::transport::IncomingEvt::ConceptRead {
                     target,
                     workspace_id,
                     exists,
@@ -112,7 +112,7 @@ impl State {
                     content,
                     generation,
                 ),
-                crate::transport::IncomingEvt::Preview {
+                crate::net::transport::IncomingEvt::Preview {
                     node_id,
                     workspace_id,
                     mime,
@@ -128,65 +128,65 @@ impl State {
                     extras,
                     generation,
                 ),
-                crate::transport::IncomingEvt::FigureLoaded { url, mime, bytes } => {
+                crate::net::transport::IncomingEvt::FigureLoaded { url, mime, bytes } => {
                     self.on_figure_loaded(url, mime, bytes)
                 }
-                crate::transport::IncomingEvt::FigureGetFailed { url } => {
+                crate::net::transport::IncomingEvt::FigureGetFailed { url } => {
                     self.on_figure_get_failed(url)
                 }
-                crate::transport::IncomingEvt::MathRendered {
+                crate::net::transport::IncomingEvt::MathRendered {
                     latex,
                     svg_bytes,
                     ex,
                     display,
                 } => self.on_math_rendered(latex, svg_bytes, ex, display),
-                crate::transport::IncomingEvt::MarkdownTokens {
+                crate::net::transport::IncomingEvt::MarkdownTokens {
                     lang,
                     source_hash,
                     spans,
                 } => self.on_markdown_tokens(lang, source_hash, spans),
-                crate::transport::IncomingEvt::ReplEvalDone {
+                crate::net::transport::IncomingEvt::ReplEvalDone {
                     eval_id,
                     elapsed_ms,
                     frames,
                 } => self.on_repl_eval_done(event_host, eval_id, elapsed_ms, frames),
-                crate::transport::IncomingEvt::MonitorSubscribed { hosts, .. } => {
+                crate::net::transport::IncomingEvt::MonitorSubscribed { hosts, .. } => {
                     self.on_monitor_subscribed(hosts)
                 }
-                crate::transport::IncomingEvt::MonitorHistory { hosts } => {
+                crate::net::transport::IncomingEvt::MonitorHistory { hosts } => {
                     self.on_monitor_history(hosts)
                 }
-                crate::transport::IncomingEvt::MonitorTick { hosts } => self.on_monitor_tick(hosts),
-                crate::transport::IncomingEvt::ReplFrameStreamed {
+                crate::net::transport::IncomingEvt::MonitorTick { hosts } => self.on_monitor_tick(hosts),
+                crate::net::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,
                     frame,
                 } => self.on_repl_frame_streamed(event_host, eval_id, workspace_id, frame),
-                crate::transport::IncomingEvt::ConceptWriteDone { target, result } => {
+                crate::net::transport::IncomingEvt::ConceptWriteDone { target, result } => {
                     self.on_concept_write_done(target, result)
                 }
-                crate::transport::IncomingEvt::FileRead {
+                crate::net::transport::IncomingEvt::FileRead {
                     node_id,
                     exists,
                     content,
                     version,
                 } => self.on_file_read(node_id, exists, content, version),
-                crate::transport::IncomingEvt::FileWriteDone { node_id, result } => {
+                crate::net::transport::IncomingEvt::FileWriteDone { node_id, result } => {
                     self.on_file_write_done(node_id, result)
                 }
-                crate::transport::IncomingEvt::FileDeleteDone { node_id, result } => {
+                crate::net::transport::IncomingEvt::FileDeleteDone { node_id, result } => {
                     self.on_file_delete_done(node_id, result)
                 }
-                crate::transport::IncomingEvt::DirCreateDone { node_id, result } => {
+                crate::net::transport::IncomingEvt::DirCreateDone { node_id, result } => {
                     self.on_dir_create_done(node_id, result)
                 }
-                crate::transport::IncomingEvt::PtyAttachDirect { target } => {
+                crate::net::transport::IncomingEvt::PtyAttachDirect { target } => {
                     self.on_pty_attach_direct(event_host, target)
                 }
-                crate::transport::IncomingEvt::PtyOpenFailed { target, error } => {
+                crate::net::transport::IncomingEvt::PtyOpenFailed { target, error } => {
                     self.on_pty_open_failed(event_host, target, error)
                 }
-                crate::transport::IncomingEvt::Event { op, payload } => {
+                crate::net::transport::IncomingEvt::Event { op, payload } => {
                     self.on_event(event_host, op, payload)
                 }
                 // Sessions-mode pane events (ADR 0013). ADR 0042 L2a
@@ -202,42 +202,42 @@ impl State {
                 // been actively wrong had it somehow fired. Panes stay:
                 // `tmux.list_panes` (a session's pane list, fired on
                 // Sessions-tree row expansion) is live and host-qualified.
-                crate::transport::IncomingEvt::DirectoryList { path, entries } => {
+                crate::net::transport::IncomingEvt::DirectoryList { path, entries } => {
                     self.on_directory_list(event_host, path, entries)
                 }
-                crate::transport::IncomingEvt::WorkspaceCreated { result } => {
+                crate::net::transport::IncomingEvt::WorkspaceCreated { result } => {
                     self.on_workspace_created(event_host, result)
                 }
-                crate::transport::IncomingEvt::WorkspaceDestroyed { result } => {
+                crate::net::transport::IncomingEvt::WorkspaceDestroyed { result } => {
                     self.on_workspace_destroyed(event_host, result)
                 }
-                crate::transport::IncomingEvt::PlutoOpened { result } => {
+                crate::net::transport::IncomingEvt::PlutoOpened { result } => {
                     self.on_pluto_opened(event_host, result)
                 }
-                crate::transport::IncomingEvt::DocsOpened { result } => {
+                crate::net::transport::IncomingEvt::DocsOpened { result } => {
                     self.on_docs_opened(event_host, result)
                 }
-                crate::transport::IncomingEvt::VideoOpened { result } => {
+                crate::net::transport::IncomingEvt::VideoOpened { result } => {
                     self.on_video_opened(event_host, result)
                 }
-                crate::transport::IncomingEvt::QuartoOpened { result } => {
+                crate::net::transport::IncomingEvt::QuartoOpened { result } => {
                     self.on_quarto_opened(result)
                 }
-                crate::transport::IncomingEvt::FileDownloadProgress {
+                crate::net::transport::IncomingEvt::FileDownloadProgress {
                     dest,
                     written,
                     total,
                     eof,
                 } => self.on_file_download_progress(dest, written, total, eof),
-                crate::transport::IncomingEvt::FileUploadAck {
+                crate::net::transport::IncomingEvt::FileUploadAck {
                     offset: _,
                     done,
                     final_name,
                 } => self.on_file_upload_ack(event_host, done, final_name),
-                crate::transport::IncomingEvt::FileTransferFailed { op, message } => {
+                crate::net::transport::IncomingEvt::FileTransferFailed { op, message } => {
                     self.on_file_transfer_failed(event_host, op, message)
                 }
-                crate::transport::IncomingEvt::ImageCropped {
+                crate::net::transport::IncomingEvt::ImageCropped {
                     node_id,
                     path,
                     x,
@@ -247,13 +247,13 @@ impl State {
                     src_w,
                     src_h,
                 } => self.on_image_cropped(event_host, node_id, path, x, y, w, h, src_w, src_h),
-                crate::transport::IncomingEvt::ImageCropFailed { node_id, message } => {
+                crate::net::transport::IncomingEvt::ImageCropFailed { node_id, message } => {
                     self.on_image_crop_failed(event_host, node_id, message)
                 }
-                crate::transport::IncomingEvt::ScaleSetFailed { node_id, message } => {
+                crate::net::transport::IncomingEvt::ScaleSetFailed { node_id, message } => {
                     self.on_scale_set_failed(node_id, message)
                 }
-                crate::transport::IncomingEvt::PreviewGetFailed {
+                crate::net::transport::IncomingEvt::PreviewGetFailed {
                     node_id,
                     workspace_id,
                     generation,
@@ -265,10 +265,10 @@ impl State {
                     generation,
                     message,
                 ),
-                crate::transport::IncomingEvt::ReplRunFileDone { eval_id, result } => {
+                crate::net::transport::IncomingEvt::ReplRunFileDone { eval_id, result } => {
                     self.on_repl_run_file_done(event_host, eval_id, result)
                 }
-                crate::transport::IncomingEvt::Workspaces { workspaces } => {
+                crate::net::transport::IncomingEvt::Workspaces { workspaces } => {
                     self.on_workspaces(event_host, workspaces)
                 }
                 // Per-session accounts (owner-simplified brief,
@@ -276,15 +276,15 @@ impl State {
                 // open on the host this reply answers — a slow reply
                 // after Esc/commit must not resurrect a closed picker or
                 // clobber a newer one opened on a different host.
-                crate::transport::IncomingEvt::AccountsList { accounts } => {
+                crate::net::transport::IncomingEvt::AccountsList { accounts } => {
                     self.on_accounts_list(event_host, accounts)
                 }
             }
         }
     }
 
-    fn note_host_connection(&mut self, event_host: &HostKey, evt: &crate::transport::IncomingEvt) {
-        if let crate::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
+    fn note_host_connection(&mut self, event_host: &HostKey, evt: &crate::net::transport::IncomingEvt) {
+        if let crate::net::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
             self.record_declared_host(&event_host, declared.clone());
             // Session-listing brief decision 2: a reconnecting hub's
             // connection is brand new and remembers nothing from
@@ -313,10 +313,10 @@ impl State {
         // per-host connection status is exactly this — no new wire
         // signal, just watching the two evts that already exist.
         match &evt {
-            crate::transport::IncomingEvt::Connected { .. } => {
+            crate::net::transport::IncomingEvt::Connected { .. } => {
                 self.hosts.host_connected.insert(event_host.clone(), true);
             }
-            crate::transport::IncomingEvt::Disconnected { .. } => {
+            crate::net::transport::IncomingEvt::Disconnected { .. } => {
                 self.hosts.host_connected.insert(event_host.clone(), false);
             }
             _ => {}
@@ -336,8 +336,8 @@ impl State {
         // it's gated on actually being the active view.
         if matches!(
             &evt,
-            crate::transport::IncomingEvt::Connected { .. }
-                | crate::transport::IncomingEvt::Disconnected { .. }
+            crate::net::transport::IncomingEvt::Connected { .. }
+                | crate::net::transport::IncomingEvt::Disconnected { .. }
         ) {
             self.rebuild_and_install_sessions_tree();
             if matches!(self.mode, Mode::Hosts) {

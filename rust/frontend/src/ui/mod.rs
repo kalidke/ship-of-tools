@@ -27,7 +27,7 @@ use ratatui::{
 
 use crate::ui::render::cells::WgpuBackend;
 use crate::ui::preview::editor::buffer::EditBuffer;
-use crate::dial::HostKey;
+use crate::net::dial::HostKey;
 use crate::ui::input::keybindings::{Action, KeyBindings, Modifiers};
 use crate::ui::input::help;
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
@@ -42,7 +42,7 @@ use crate::ui::preview::markdown::media::{
     parse_math_svg_dims, whole_row_bottom, MathSvg, TableBufferEntry, MATHJAX_EX_FACTOR,
 };
 use crate::ui::persist::settings::Settings;
-use crate::transport::OutgoingReq;
+use crate::net::transport::OutgoingReq;
 use crate::net::hosts::{PendingTransport, lane_dial, resolve_default_host, resolve_monitor_host};
 use crate::pages::{open_html_in_browser, open_url_in_browser};
 use crate::lease::{ExitReason, ExitStep, close_now, exit_intent};
@@ -159,7 +159,7 @@ use crate::ui::render::text::TextLayer;
 // `TransportConfig`, because `IncomingEvt::Connected` now carries it. See
 // its doc there. No longer `Copy` (`SshRecipe` isn't); every former
 // `.copied()` reader below is `.cloned()`.
-use crate::transport::ResolvedDial;
+use crate::net::transport::ResolvedDial;
 
 mod connections;
 mod page_proxy;
@@ -286,7 +286,7 @@ struct State {
     // ui/app: the event fan-in, frame pacing, the exit flag and the harness's startup actions.
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).
-    evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
+    evt_rx: std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
     /// One-shot from `--auto-expand`; consumed after `pending_initial_selection`
     /// lands. Fires the same outgoing request the Enter/Right key would,
     /// so capture tests can verify expanded states.
@@ -352,7 +352,7 @@ struct State {
     /// (routes to `active_host`) or `self.send_to(host, req)` (routes to a
     /// specific row's host) rather than reading this directly.
     conns: Vec<(
-        crate::dial::HostKey,
+        crate::net::dial::HostKey,
         tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
     )>,
     // net/hosts.rs (fe-net): the per-host connection table.
@@ -706,7 +706,7 @@ struct State {
     /// vanishing. `rebuild_workspace_caches` and the Sessions tree are
     /// both derived from this in `conns` order (see `ordered_hosts`), not
     /// insertion order.
-    workspace_lists: HashMap<crate::dial::HostKey, Vec<crate::transport::WorkspaceInfo>>,
+    workspace_lists: HashMap<crate::net::dial::HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
     /// Two-press confirm for `D` (workspace destroy) in Sessions mode.
     /// First press arms with the cursor row's `(host, workspace_id)`;
     /// second press on the same row fires `workspace.destroy` via
@@ -865,7 +865,7 @@ struct State {
     /// `(active_host, active_workspace_id)` names the current workspace
     /// (ADR 0042 L2a). Defaults to the first connection in `conns`
     /// (local-first, then --dial argument order — see `dial::resolve_connections`).
-    active_host: crate::dial::HostKey,
+    active_host: crate::net::dial::HostKey,
     /// Pending 10 s read mark for the row a person just switched to.
     read_mark: Option<ReadMark>,
     /// LU6a design-review amendment: stamped by `commit_workspace_create`
@@ -1407,7 +1407,7 @@ struct State {
     /// doc (Julia ecosystem reuses the same snippets) skips the round
     /// trip.
     markdown_token_cache:
-        std::collections::HashMap<(String, u64), Vec<crate::transport::MarkdownToken>>,
+        std::collections::HashMap<(String, u64), Vec<crate::net::transport::MarkdownToken>>,
     /// In-flight markdown.tokenize requests, same key shape as
     /// `markdown_token_cache`. Prevents duplicate dispatch when the
     /// same fence appears twice in a doc or the user re-renders before
@@ -1507,10 +1507,10 @@ struct State {
             sot_protocol::topology::ssh_bridge::SshRecipe,
             Option<String>,
             sot_protocol::topology::ssh_bridge::LinkGate,
-            std::sync::Arc<crate::proxy_listen::Arm>,
+            std::sync::Arc<crate::pages::Arm>,
         )>,
     >,
-    proxy_ensured: std::collections::HashMap<u16, std::sync::Arc<crate::proxy_listen::Arm>>,
+    proxy_ensured: std::collections::HashMap<u16, std::sync::Arc<crate::pages::Arm>>,
     // relaunch.rs (distribution): the relaunch watcher's flag.
     /// Set by the relaunch-watcher thread when the sentinel file
     /// (`%LOCALAPPDATA%\sot\relaunch.request`) appears: `0` = no request,

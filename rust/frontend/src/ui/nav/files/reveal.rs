@@ -36,7 +36,7 @@ impl State {
         // Fire the preview body up front — don't wait on tree expansion.
         let (fit_w, fit_h) = self.preview_fit_px();
         let generation = self.next_preview_gen();
-        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
             node_id: node_id.clone(),
             workspace_id: self.active_workspace_id.clone(),
             page: None,
@@ -142,7 +142,7 @@ impl State {
                 } else {
                     tracing::info!(%node_id,
                         "reveal: files tree not loaded — loading tree.root and arming switch-reveal");
-                    if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
+                    if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
@@ -237,7 +237,7 @@ impl State {
                     self.reveal_refetched = None;
                     return;
                 }
-                if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                     parent_id: anc_id.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                 }) {
@@ -264,7 +264,7 @@ impl State {
             if self.reveal_awaiting.as_deref() == Some(anc_id.as_str()) {
                 return;
             }
-            if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+            if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: anc_id.clone(),
                 workspace_id: self.active_workspace_id.clone(),
             }) {

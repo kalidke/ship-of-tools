@@ -71,7 +71,7 @@ impl MarkdownPreview {
         highlight: &crate::ui::preview::markdown::highlight::HighlightService,
         token_cache: &std::collections::HashMap<
             (String, u64),
-            Vec<crate::transport::MarkdownToken>,
+            Vec<crate::net::transport::MarkdownToken>,
         >,
     ) -> Self {
         let mut buffer = Buffer::new(

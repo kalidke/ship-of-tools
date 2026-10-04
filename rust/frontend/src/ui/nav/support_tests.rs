@@ -16,8 +16,8 @@ pub(in crate::ui) fn node(id: &str, label: &str, has_children: bool) -> TreeNode
 /// Minimal `WorkspaceInfo` for cache/tree tests — every field a real
 /// `workspace.list` row carries, defaulted to the empty/false case so
 /// each test only names what it cares about.
-pub(in crate::ui) fn ws_info(slug: &str, session_name: &str) -> crate::transport::WorkspaceInfo {
-    crate::transport::WorkspaceInfo {
+pub(in crate::ui) fn ws_info(slug: &str, session_name: &str) -> crate::net::transport::WorkspaceInfo {
+    crate::net::transport::WorkspaceInfo {
         workspace_id: format!("ws-{slug}-0000"),
         slug: slug.to_string(),
         label: String::new(),

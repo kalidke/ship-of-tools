@@ -379,11 +379,11 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
             let monitor_host = state.monitor_host();
             let _ = state.send_to(
                 &monitor_host,
-                crate::transport::OutgoingReq::MonitorSubscribe,
+                crate::net::transport::OutgoingReq::MonitorSubscribe,
             );
             let _ = state.send_to(
                 &monitor_host,
-                crate::transport::OutgoingReq::MonitorHistory {
+                crate::net::transport::OutgoingReq::MonitorHistory {
                     window_s: 300.0,
                     points: 300,
                     until: None,
@@ -398,7 +398,7 @@ pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: 
             let monitor_host = state.monitor_host();
             let _ = state.send_to(
                 &monitor_host,
-                crate::transport::OutgoingReq::MonitorUnsubscribe,
+                crate::net::transport::OutgoingReq::MonitorUnsubscribe,
             );
             state.monitor_view.subscribed = false;
         }

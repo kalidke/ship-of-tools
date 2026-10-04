@@ -400,7 +400,7 @@ impl State {
             // expansion doesn't need a separate fetch.
             let generation =
                 self.next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
-            Some(crate::transport::OutgoingReq::ProjectScan {
+            Some(crate::net::transport::OutgoingReq::ProjectScan {
                 workspace_id: self.active_workspace_id.clone(),
                 generation,
             })
@@ -408,13 +408,13 @@ impl State {
             // Sessions-mode root re-expansion: refresh the workspace
             // registry. Per ADR 0014 the row source is workspace.list,
             // not tmux.list_sessions.
-            Some(crate::transport::OutgoingReq::WorkspaceList)
+            Some(crate::net::transport::OutgoingReq::WorkspaceList)
         } else if row.node.kind == "module" {
             row.node
                 .payload
                 .get("path")
                 .and_then(|v| v.as_str())
-                .map(|p| crate::transport::OutgoingReq::FileParse {
+                .map(|p| crate::net::transport::OutgoingReq::FileParse {
                     path: p.to_string(),
                     workspace_id: self.active_workspace_id.clone(),
                 })
@@ -436,14 +436,14 @@ impl State {
                 .map(String::from);
             let ws = self.active_workspace_id.clone();
             module.zip(name).map(
-                |(module, name)| crate::transport::OutgoingReq::FunctionMethods {
+                |(module, name)| crate::net::transport::OutgoingReq::FunctionMethods {
                     module,
                     name,
                     workspace_id: ws,
                 },
             )
         } else {
-            Some(crate::transport::OutgoingReq::TreeChildren {
+            Some(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: row.node.id.clone(),
                 workspace_id: self.active_workspace_id.clone(),
             })

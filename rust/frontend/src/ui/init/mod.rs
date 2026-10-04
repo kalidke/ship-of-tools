@@ -12,10 +12,10 @@ use super::render::surface::{
 impl State {
     pub(super) fn new(
         event_loop: &ActiveEventLoop,
-        evt_rx: std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
+        evt_rx: std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
         cli: &crate::cli::Cli,
         conns: Vec<(
-            crate::dial::HostKey,
+            crate::net::dial::HostKey,
             tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
         )>,
         leases: Arc<crate::lease::Leases>,
@@ -83,7 +83,7 @@ impl State {
 
 struct LaunchInputs {
     persisted_geom: crate::ui::persist::resume::GlobalState,
-    active_host: crate::dial::HostKey,
+    active_host: crate::net::dial::HostKey,
     resume_matches_last_host: bool,
     monitor_hub: Option<String>,
     init_w: f64,
@@ -92,7 +92,7 @@ struct LaunchInputs {
 }
 
 fn load_launch_inputs(
-    conns: &[(crate::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+    conns: &[(crate::net::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
 ) -> LaunchInputs {
     // Loaded here (rather than at each of its several uses below) so
     // `last_host` and the window-geometry fields below all read the
@@ -107,7 +107,7 @@ fn load_launch_inputs(
     // `default_host` since topology plan lane D, so this always falls
     // back to `conns.first()`) is the fallback when there's no
     // persisted host, or it's no longer reachable.
-    let active_host: crate::dial::HostKey = persisted_geom
+    let active_host: crate::net::dial::HostKey = persisted_geom
         .last_host
         .clone()
         .filter(|h| conns.iter().any(|(ch, _)| ch == h))
@@ -286,7 +286,7 @@ fn build_preview_content(
     // ratatui's layout pass and re-shapes against it.
     let _bootstrap_token_cache: std::collections::HashMap<
         (String, u64),
-        Vec<crate::transport::MarkdownToken>,
+        Vec<crate::net::transport::MarkdownToken>,
     > = std::collections::HashMap::new();
     let preview_md = MarkdownPreview::new(
         text.font_system_mut(),
@@ -375,11 +375,11 @@ fn apply_harness_flags(state: &mut State, cli: &crate::cli::Cli) {
         let monitor_host = state.monitor_host();
         let _ = state.send_to(
             &monitor_host,
-            crate::transport::OutgoingReq::MonitorSubscribe,
+            crate::net::transport::OutgoingReq::MonitorSubscribe,
         );
         let _ = state.send_to(
             &monitor_host,
-            crate::transport::OutgoingReq::MonitorHistory {
+            crate::net::transport::OutgoingReq::MonitorHistory {
                 window_s: 300.0,
                 points: 300,
                 until: None,

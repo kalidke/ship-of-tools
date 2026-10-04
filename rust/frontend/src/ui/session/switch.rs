@@ -108,7 +108,7 @@ impl State {
         // Refresh the workspace list so kernel_running / new rows stay
         // current — cheap and not user-facing if Sessions mode isn't
         // visible. The reply just updates the cached registry view.
-        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
+        let _ = self.send(crate::net::transport::OutgoingReq::WorkspaceList);
         // Update the connection status now so the chrome reflects the
         // new workspace immediately. The attach_session_to_bl call above
         // briefly sets a transient "attached BL → …" message; rebuild
@@ -161,7 +161,7 @@ impl State {
         // indefinitely (Codex review) — this is the one signal it can
         // always count on. `self.active_host` is already the NEW host (set
         // just above), so this routes correctly even on a cross-host switch.
-        if let Err(e) = self.send(crate::transport::OutgoingReq::WorkspaceActivate {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::WorkspaceActivate {
             workspace_id: slug.clone(),
             read: false,
         }) {
@@ -270,7 +270,7 @@ impl State {
             match self.mode {
                 Mode::Files => {
                     tracing::info!("tree.root requested: workspace switch (empty Files slot)");
-                    if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
+                    if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                         mode: "files".to_string(),
                         workspace_id: self.active_workspace_id.clone(),
                     }) {
@@ -283,7 +283,7 @@ impl State {
                     tracing::info!("project.scan requested: workspace switch (empty Modules slot)");
                     let generation = self
                         .next_project_scan_gen(self.active_host.clone(), self.active_workspace_id.clone());
-                    if let Err(e) = self.send(crate::transport::OutgoingReq::ProjectScan {
+                    if let Err(e) = self.send(crate::net::transport::OutgoingReq::ProjectScan {
                         workspace_id: self.active_workspace_id.clone(),
                         generation,
                     }) {
@@ -296,7 +296,7 @@ impl State {
                 // enter_mode's Sessions arm — the tree spans every host.
                 Mode::Sessions => {
                     for (host, _) in &self.conns {
-                        let _ = self.send_to(host, crate::transport::OutgoingReq::WorkspaceList);
+                        let _ = self.send_to(host, crate::net::transport::OutgoingReq::WorkspaceList);
                     }
                 }
                 Mode::Hosts => {
@@ -339,7 +339,7 @@ impl State {
                 let node_id = format!("files:{path}");
                 let (fit_w, fit_h) = self.preview_fit_px();
                 let generation = self.next_preview_gen();
-                if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                     page: None,
@@ -421,7 +421,7 @@ impl State {
             // tree (Codex R6).
             if !files_root_inflight {
                 tracing::info!("tree.root requested: badge consume needs a Files tree");
-                if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                     mode: "files".to_string(),
                     workspace_id: self.active_workspace_id.clone(),
                 }) {

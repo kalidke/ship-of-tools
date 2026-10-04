@@ -218,7 +218,7 @@ impl State {
                 self.needs_md_reflow = true;
                 continue;
             };
-            if let Err(e) = self.send(crate::transport::OutgoingReq::FigureGet {
+            if let Err(e) = self.send(crate::net::transport::OutgoingReq::FigureGet {
                 url: url.clone(),
                 node_id,
                 workspace_id: workspace_id.clone(),

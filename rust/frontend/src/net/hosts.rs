@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::dial::HostKey;
-use crate::transport::{OutgoingReq, ResolvedDial};
+use crate::net::dial::HostKey;
+use crate::net::transport::{OutgoingReq, ResolvedDial};
 
 /// The connection `default_host`/startup `active_host` resolve to (ADR
 /// 0042 L2a): the first connection in `conns`' display order (local-first,
@@ -49,9 +49,9 @@ pub(crate) fn resolve_monitor_host(
 /// transport task) — ADR 0042 L2a, the N-host generalisation of the old
 /// single `req_rx`.
 pub(crate) type PendingTransport = (
-    crate::dial::HostKey,
-    crate::transport::TransportConfig,
-    tokio::sync::mpsc::UnboundedReceiver<crate::transport::OutgoingReq>,
+    crate::net::dial::HostKey,
+    crate::net::transport::TransportConfig,
+    tokio::sync::mpsc::UnboundedReceiver<crate::net::transport::OutgoingReq>,
 );
 
 /// Which `LaneDial` `spawn_pane_attach_term` should use for a host, given
@@ -65,17 +65,17 @@ pub(crate) type PendingTransport = (
 /// `Local` without a configured pipe), but degrading to "no dial" rather
 /// than panicking matches this codebase's fail-soft convention throughout.
 pub(crate) fn lane_dial(
-    config: &crate::transport::TransportConfig,
+    config: &crate::net::transport::TransportConfig,
     resolved: ResolvedDial,
     gate: &sot_protocol::topology::ssh_bridge::LinkGate,
 ) -> Option<(sot_protocol::topology::lane_client::LaneDial, Option<String>)> {
     match resolved {
         ResolvedDial::Local => match &config.dial {
-            crate::transport::Dial::Pipe(path) => Some((
+            crate::net::transport::Dial::Pipe(path) => Some((
                 sot_protocol::topology::lane_client::LaneDial::Local(path.clone()),
                 config.token.clone(),
             )),
-            crate::transport::Dial::Ssh(_) => None,
+            crate::net::transport::Dial::Ssh(_) => None,
         },
         ResolvedDial::Ssh(recipe) => {
             Some((sot_protocol::topology::lane_client::LaneDial::Ssh(recipe, gate.clone()), config.token.clone()))
@@ -92,26 +92,26 @@ pub(crate) struct HostTable {
     /// connected, or currently reconnecting); `true` = connected. The
     /// Sessions tree's host nodes read this to badge status and grey an
     /// unreachable host's (retained) workspace rows.
-    pub(crate) host_connected: HashMap<crate::dial::HostKey, bool>,
+    pub(crate) host_connected: HashMap<crate::net::dial::HostKey, bool>,
     /// ADR 0045 decision 1: each host's own `TransportConfig` (its
     /// `lane.connect` bridge dial), so the session pane's capsule attach
     /// can reach THAT row's daemon — never a supervisor socket or a
     /// state-dir path directly. Filled once, from the same
     /// `PendingTransport` list `conns` is built from, before `resumed()`
     /// consumes it (`spawn_pane_attach_term` is the only reader).
-    pub(crate) host_transports: HashMap<crate::dial::HostKey, crate::transport::TransportConfig>,
+    pub(crate) host_transports: HashMap<crate::net::dial::HostKey, crate::net::transport::TransportConfig>,
     /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
     /// transport each host's CONTROL connection actually resolved to
     /// (`ResolvedDial`'s own doc) — recorded from every `Connected` evt,
     /// consulted by `lane_dial`/`spawn_pane_attach_term` so the capsule
     /// lane dials the SAME endpoint, never a second independent guess.
     /// Absent for a host that hasn't connected yet.
-    pub(crate) host_resolved_dial: HashMap<crate::dial::HostKey, ResolvedDial>,
+    pub(crate) host_resolved_dial: HashMap<crate::net::dial::HostKey, ResolvedDial>,
     /// One link gate per host (`sot_protocol::topology::ssh_bridge::LinkGate`): the
     /// host's control transport writes it, and every other site that starts
     /// an ssh login to the host (lane dials, the page proxy) asks it.
     /// Always taken through `entry().or_default()`, so there is exactly one.
-    pub(crate) link_gates: HashMap<crate::dial::HostKey, sot_protocol::topology::ssh_bridge::LinkGate>,
+    pub(crate) link_gates: HashMap<crate::net::dial::HostKey, sot_protocol::topology::ssh_bridge::LinkGate>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
     /// for each dial — `HostKey` stays the stable dial label. Read by
     /// `host_label` (display: Hosts mode, Sessions labels, the status
@@ -120,7 +120,7 @@ pub(crate) struct HostTable {
     /// the LOCAL daemon (its declared host equals `frontend_identity().host`)
     /// — the only thing that gates `fe.sessions`. Absent for a host that
     /// hasn't completed hello yet.
-    pub(crate) declared_host: HashMap<crate::dial::HostKey, String>,
+    pub(crate) declared_host: HashMap<crate::net::dial::HostKey, String>,
     /// F5 fires this to collapse the transport's exponential-backoff
     /// sleep and attempt an immediate reconnect — useful when wifi
     /// flickers and the user knows it's back before the current
@@ -135,7 +135,7 @@ pub(crate) struct HostTable {
 pub(crate) fn spawn_transports(
     rt: &tokio::runtime::Runtime,
     transports: Vec<PendingTransport>,
-    evt_tx: &std::sync::mpsc::Sender<(HostKey, crate::transport::IncomingEvt)>,
+    evt_tx: &std::sync::mpsc::Sender<(HostKey, crate::net::transport::IncomingEvt)>,
     window: &std::sync::Arc<winit::window::Window>,
     leases: &std::sync::Arc<crate::lease::Leases>,
     hosts: &mut HostTable,
@@ -150,7 +150,7 @@ pub(crate) fn spawn_transports(
         .collect();
     for (host, config, req_rx) in transports {
         let gate = hosts.link_gates.entry(host.clone()).or_default().clone();
-        crate::transport::spawn(
+        crate::net::transport::spawn(
             rt,
             host,
             config,
@@ -171,8 +171,8 @@ mod tests {
     #[test]
     fn lane_dial_matches_the_resolved_control_transport_selection() {
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-        let pipe_config = crate::transport::TransportConfig {
-            dial: crate::transport::Dial::Pipe(std::path::PathBuf::from("/tmp/sock")),
+        let pipe_config = crate::net::transport::TransportConfig {
+            dial: crate::net::transport::Dial::Pipe(std::path::PathBuf::from("/tmp/sock")),
             token: Some("tok".to_string()),
         };
         // A pipe-configured host whose control connection resolved LOCAL —
@@ -193,8 +193,8 @@ mod tests {
         // An ssh-configured host whose control connection resolved SSH —
         // the lane dial follows, carrying the resolved recipe verbatim
         // (never a second, independent read of `config.dial`).
-        let ssh_config = crate::transport::TransportConfig {
-            dial: crate::transport::Dial::Ssh(recipe.clone()),
+        let ssh_config = crate::net::transport::TransportConfig {
+            dial: crate::net::transport::Dial::Ssh(recipe.clone()),
             token: Some("tok".to_string()),
         };
         match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone()), &Default::default()) {

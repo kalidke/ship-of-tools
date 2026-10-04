@@ -38,7 +38,7 @@ impl State {
         host: &HostKey,
         proxy_capable_hosts: &std::collections::HashSet<HostKey>,
         host_resolved_dial: &HashMap<HostKey, ResolvedDial>,
-        host_transports: &HashMap<HostKey, crate::transport::TransportConfig>,
+        host_transports: &HashMap<HostKey, crate::net::transport::TransportConfig>,
     ) -> ProxyTarget {
         if !proxy_capable_hosts.contains(host) {
             return ProxyTarget::NotNeeded;
@@ -127,14 +127,14 @@ impl State {
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
             return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
         };
-        let Some(port) = crate::proxy_listen::proxy_port_from_url(url) else {
+        let Some(port) = crate::pages::proxy_port_from_url(url) else {
             return true; // nothing to proxy, so nothing to arm
         };
         if let Some(arm) = self.proxy_ensured.get(&port) {
             arm.reopen();
             return true; // already bound by this frontend; dial again, the daemon may have refused it since
         }
-        let arm = std::sync::Arc::new(crate::proxy_listen::Arm::default());
+        let arm = std::sync::Arc::new(crate::pages::Arm::default());
         self.proxy_ensured.insert(port, std::sync::Arc::clone(&arm));
         let bind = std::net::TcpListener::bind(("127.0.0.1", port));
         let permit_open = Self::proxy_open_permitted(&target, Some(&bind));
@@ -207,8 +207,8 @@ mod tests {
         let mut host_transports = HashMap::new();
         host_transports.insert(
             host.clone(),
-            crate::transport::TransportConfig {
-                dial: crate::transport::Dial::Ssh(
+            crate::net::transport::TransportConfig {
+                dial: crate::net::transport::Dial::Ssh(
                     sot_protocol::topology::ssh_bridge::SshRecipe::new("ignored", None).unwrap(),
                 ),
                 token: Some("tok-gpu".to_string()),

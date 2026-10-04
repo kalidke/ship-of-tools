@@ -29,7 +29,7 @@ struct FreshWorkspaceCaches {
 /// hub can never be MORE wrong than the strip the person on this box
 /// sees.
 pub(in crate::ui) fn declared_sessions_from(
-    workspaces: &[crate::transport::WorkspaceInfo],
+    workspaces: &[crate::net::transport::WorkspaceInfo],
 ) -> Vec<sot_protocol::DeclaredSession> {
     workspaces
         .iter()
@@ -60,7 +60,7 @@ pub(in crate::ui) fn declared_sessions_from(
 /// built from this function, not from the tree.
 fn fresh_workspace_caches(
     ordered_hosts: &[HostKey],
-    lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
+    lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
     active_host: &HostKey,
 ) -> FreshWorkspaceCaches {
     let mut out = FreshWorkspaceCaches {
@@ -544,7 +544,7 @@ mod tests {
         // The invariant this whole slice exists for: two hosts each
         // reporting a workspace named "sot" must produce TWO distinct
         // cache entries, not one clobbering the other.
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         let mut alpha_ws = ws_info("sot", "sot-be-sot");
         alpha_ws.project_root = "/projects/alpha-sot".to_string();
         let mut beta_ws = ws_info("sot", "sot-be-sot");
@@ -582,7 +582,7 @@ mod tests {
         // Each host's OWN `is_default` row exists; only active_host's
         // should set `default_workspace_slug` (a bare slug — the pair
         // with `active_host` is what the caller actually needs).
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         let mut alpha_default = ws_info("home", "sot-be-home");
         alpha_default.is_default = true;
         let mut beta_default = ws_info("root", "sot-be-root");
@@ -606,7 +606,7 @@ mod tests {
         // item J: the map's OWN key is host-qualified too, so a same-id
         // lookup can only ever resolve against the querying host's own
         // entry (a legacy id is bare-slug and DOES collide across hosts).
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert("beta".to_string(), vec![ws_info("sot", "sot-be-sot")]);
         let ordered = vec!["beta".to_string()];
         let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
@@ -634,7 +634,7 @@ mod tests {
         // for: replacing host A's slice must not disturb host B's, exactly
         // like a real `IncomingEvt::Workspaces` reply from A shouldn't
         // clobber B's last-known (possibly now-unreachable) list.
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert("alpha".to_string(), vec![ws_info("one", "sot-be-one")]);
         lists.insert("beta".to_string(), vec![ws_info("two", "sot-be-two")]);
 
@@ -654,7 +654,7 @@ mod tests {
         // ordered_hosts includes every connection, but a host that hasn't
         // answered workspace.list yet (still mid-hello) contributes no
         // rows rather than panicking on a missing map entry.
-        let lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         let ordered = vec!["alpha".to_string(), "beta".to_string()];
         let fresh = fresh_workspace_caches(&ordered, &lists, &"alpha".to_string());
         assert!(fresh.workspace_slugs.is_empty());
@@ -675,7 +675,7 @@ mod tests {
         anchor.agent = "none".to_string();
         anchor.runtime = "capsule".to_string();
         let list = vec![anchor];
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert(host.clone(), list);
         let ordered = vec![host.clone()];
         let fresh = fresh_workspace_caches(&ordered, &lists, &host);
@@ -709,7 +709,7 @@ mod tests {
         default_row.is_default = true;
         default_row.agent = "none".to_string();
         default_row.runtime = "tmux".to_string();
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert(host.clone(), vec![default_row]);
         let ordered = vec![host.clone()];
         let fresh = fresh_workspace_caches(&ordered, &lists, &host);

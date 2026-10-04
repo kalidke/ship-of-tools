@@ -170,7 +170,7 @@ impl State {
         } else {
             if let Some(t) = target.as_ref() {
                 let generation = self.next_concept_gen();
-                if let Err(e) = self.send(crate::transport::OutgoingReq::ConceptRead {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::ConceptRead {
                     target: t.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                     generation,
@@ -210,7 +210,7 @@ impl State {
                 && self.file_parse_fired.insert(path.clone())
             {
                 tracing::debug!(%path, label = %node_label, "→ file.parse for drift check");
-                if let Err(e) = self.send(crate::transport::OutgoingReq::FileParse {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::FileParse {
                     path: path.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                 }) {

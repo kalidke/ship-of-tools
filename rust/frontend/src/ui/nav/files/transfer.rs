@@ -97,7 +97,7 @@ impl State {
             return;
         }
         let dest = crate::ui::nav::files::download::non_clobbering_path(&dir, &basename);
-        if let Err(e) = self.send(crate::transport::OutgoingReq::FileDownload {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::FileDownload {
             path: abs,
             dest: dest.clone(),
         }) {
@@ -265,7 +265,7 @@ impl State {
         }
         if let Err(e) = self.send_to(
             host,
-            crate::transport::OutgoingReq::TreeChildren {
+            crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: dir_node_id.to_string(),
                 workspace_id,
             },
@@ -312,7 +312,7 @@ impl State {
                 // chunks to a different daemon.
                 if let Err(e) = self.send_to(
                     &host,
-                    crate::transport::OutgoingReq::FileUpload {
+                    crate::net::transport::OutgoingReq::FileUpload {
                         dir,
                         name: name.clone(),
                         offset,

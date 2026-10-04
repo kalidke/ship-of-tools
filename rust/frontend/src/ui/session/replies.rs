@@ -13,7 +13,7 @@ impl State {
         revision: u64,
         project_root: Option<String>,
         proxy: bool,
-        resolved: crate::transport::ResolvedDial,
+        resolved: crate::net::transport::ResolvedDial,
         backend_version: String,
     ) {
         // ADR 0045 decision 1 (Codex review, lane B5 discharge),
@@ -74,7 +74,7 @@ impl State {
         // (no children) until the user manually expanded it.
         // send_to(&event_host, ...) rather than self.send: this
         // fires for every connection, active or not.
-        let _ = self.send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList);
+        let _ = self.send_to(&event_host, crate::net::transport::OutgoingReq::WorkspaceList);
         self.resume_view_if_active(event_host);
     }
 
@@ -107,7 +107,7 @@ impl State {
             // not a person switching: leave blue as-is.
             let _ = self.send_to(
                 &event_host,
-                crate::transport::OutgoingReq::WorkspaceActivate {
+                crate::net::transport::OutgoingReq::WorkspaceActivate {
                     workspace_id: self.active_workspace_id.clone(),
                     read: false,
                 },
@@ -138,7 +138,7 @@ impl State {
                         self.active_host.clone(),
                         self.active_workspace_id.clone(),
                     );
-                    let _ = self.send(crate::transport::OutgoingReq::ProjectScan {
+                    let _ = self.send(crate::net::transport::OutgoingReq::ProjectScan {
                         workspace_id: self.active_workspace_id.clone(),
                         generation,
                     });
@@ -146,7 +146,7 @@ impl State {
                 Mode::Files => {
                     if self.active_workspace_id.is_some() {
                         tracing::info!("tree.root requested: hello/reconnect resume");
-                        let _ = self.send(crate::transport::OutgoingReq::TreeRoot {
+                        let _ = self.send(crate::net::transport::OutgoingReq::TreeRoot {
                             mode: "files".to_string(),
                             workspace_id: self.active_workspace_id.clone(),
                         });
@@ -223,7 +223,7 @@ impl State {
                         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
                         let _ = self.send_to(
                             &owner,
-                            crate::transport::OutgoingReq::PtyOpen {
+                            crate::net::transport::OutgoingReq::PtyOpen {
                                 cols,
                                 rows,
                                 target: Some(target),
@@ -244,7 +244,7 @@ impl State {
             if let Some(node_id) = self.preview_node_id_fired.clone() {
                 let (fit_w, fit_h) = self.preview_fit_px();
                 let generation = self.next_preview_gen();
-                let _ = self.send(crate::transport::OutgoingReq::PreviewGet {
+                let _ = self.send(crate::net::transport::OutgoingReq::PreviewGet {
                     node_id,
                     workspace_id: self.active_workspace_id.clone(),
                     // Hold the page across the reconnect — a
@@ -279,7 +279,7 @@ impl State {
         &mut self,
         event_host: HostKey,
         path: String,
-        entries: Vec<crate::transport::DirEntry>,
+        entries: Vec<crate::net::transport::DirEntry>,
     ) {
         // Only consume if it matches the picker we have open
         // — late replies for a previously-drilled directory
@@ -302,7 +302,7 @@ impl State {
     pub(crate) fn on_workspace_created(
         &mut self,
         event_host: HostKey,
-        result: Result<crate::transport::WorkspaceCreatedInfo, String>,
+        result: Result<crate::net::transport::WorkspaceCreatedInfo, String>,
     ) {
         match result {
             Ok(info) => {
@@ -361,7 +361,7 @@ impl State {
     pub(crate) fn on_workspace_destroyed(
         &mut self,
         event_host: HostKey,
-        result: Result<crate::transport::WorkspaceDestroyedInfo, String>,
+        result: Result<crate::net::transport::WorkspaceDestroyedInfo, String>,
     ) {
         match result {
             Ok(info) if info.kept.is_some() => {
@@ -468,7 +468,7 @@ impl State {
                 // this host's list specifically (ADR 0042 L2a),
                 // not necessarily whatever's active.
                 if let Err(e) = self
-                    .send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList)
+                    .send_to(&event_host, crate::net::transport::OutgoingReq::WorkspaceList)
                 {
                     tracing::warn!(error = %e, "drop workspace.list after destroy");
                 }
@@ -484,7 +484,7 @@ impl State {
     pub(crate) fn on_workspaces(
         &mut self,
         event_host: HostKey,
-        workspaces: Vec<crate::transport::WorkspaceInfo>,
+        workspaces: Vec<crate::net::transport::WorkspaceInfo>,
     ) {
         // ADR 0014: Sessions mode reads from the daemon's
         // workspace registry rather than scanning tmux for the
@@ -565,7 +565,7 @@ impl State {
     pub(crate) fn on_accounts_list(
         &mut self,
         event_host: HostKey,
-        accounts: Vec<crate::transport::AccountInfo>,
+        accounts: Vec<crate::net::transport::AccountInfo>,
     ) {
         if let Some(p) = self.workspace_picker.as_mut() {
             if p.host == event_host {

@@ -53,7 +53,7 @@ fn page_turn_key(state: &mut State, key: KeyPress<'_>, label: String) -> Control
                             let (fit_w, fit_h) = state.preview_fit_px();
                             let generation = state.next_preview_gen();
                             if let Err(e) = state.send(
-                                crate::transport::OutgoingReq::PreviewGet {
+                                crate::net::transport::OutgoingReq::PreviewGet {
                                     node_id,
                                     workspace_id: state
                                         .active_workspace_id

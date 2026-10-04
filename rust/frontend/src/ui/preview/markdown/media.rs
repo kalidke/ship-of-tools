@@ -172,7 +172,7 @@ impl State {
             if self.math_cache.contains_key(&key) || self.math_pending.contains(&key) {
                 continue;
             }
-            if let Err(e) = self.send(crate::transport::OutgoingReq::MathRender {
+            if let Err(e) = self.send(crate::net::transport::OutgoingReq::MathRender {
                 latex: latex.clone(),
                 display,
             }) {
@@ -267,7 +267,7 @@ impl State {
             {
                 continue;
             }
-            if let Err(e) = self.send(crate::transport::OutgoingReq::MarkdownTokenize {
+            if let Err(e) = self.send(crate::net::transport::OutgoingReq::MarkdownTokenize {
                 lang: lang.clone(),
                 source_hash,
                 source,

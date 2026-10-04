@@ -99,7 +99,7 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
 /// with `SOT_BLESS_GOLDEN=1` and review the diff.
 #[tokio::test]
 async fn every_request_kind_and_its_error_reply_match_the_golden() {
-    let _env = crate::state::test_env::set_test_env();
+    let _env = crate::net::state::test_env::set_test_env();
     let reqs = every_request_kind(&std::env::temp_dir().join("sot-golden-never-written"));
     let n = reqs.len();
     let (near, far) = tokio::io::duplex(1 << 20);

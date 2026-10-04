@@ -17,8 +17,6 @@ mod relaunch;
 mod selfupdate;
 mod ui;
 
-use net::{dial, state, transport};
-use pages as proxy_listen;
 use std::sync::mpsc;
 
 use anyhow::Result;
@@ -103,18 +101,18 @@ fn main() -> Result<()> {
     // ad hoc path is `--dial local=ssh:<target>`. The frontend reads no
     // config file for hosts (see `dial.rs`; no hosts.toml, here or
     // anywhere else).
-    let mut dials: Vec<(dial::HostKey, transport::TransportConfig)> = Vec::new();
+    let mut dials: Vec<(net::dial::HostKey, net::transport::TransportConfig)> = Vec::new();
     for arg in &cli.dial {
-        match dial::parse_dial_arg(arg) {
+        match net::dial::parse_dial_arg(arg) {
             Ok(entry) => dials.push(entry),
             Err(e) => tracing::warn!("{e}; skipping"),
         }
     }
-    let cli_override = dial::CliOverride {
+    let cli_override = net::dial::CliOverride {
         socket: cli.socket.clone(),
         token: cli.token.clone(),
     };
-    let connections = dial::resolve_connections(&dials, &cli_override);
+    let connections = net::dial::resolve_connections(&dials, &cli_override);
     let leases = lease::Leases::new(
         lease::lease_exempt(cli.ephemeral, cli.capture.is_some(), cli.no_lease),
         lease::pipe_hosts(&connections),
@@ -126,7 +124,7 @@ fn main() -> Result<()> {
     // would require an async drain. One receiver, N cloned senders (one per
     // host's transport task) — tagging happens at each transport's own send,
     // not through a forwarding task.
-    let (evt_tx, evt_rx) = mpsc::channel::<(dial::HostKey, transport::IncomingEvt)>();
+    let (evt_tx, evt_rx) = mpsc::channel::<(net::dial::HostKey, net::transport::IncomingEvt)>();
 
     // One outgoing-request channel per host: the GPU thread's `conns` sender
     // half is built here; the receiver half travels with its `TransportConfig`
@@ -134,7 +132,7 @@ fn main() -> Result<()> {
     let mut conns = Vec::with_capacity(connections.len());
     let mut pending_transports = Vec::with_capacity(connections.len());
     for (host, config) in connections {
-        let (req_tx, req_rx) = transport::outgoing_channel();
+        let (req_tx, req_rx) = net::transport::outgoing_channel();
         conns.push((host.clone(), req_tx));
         pending_transports.push((host, config, req_rx));
     }

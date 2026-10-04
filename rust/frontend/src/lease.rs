@@ -19,8 +19,8 @@ use tokio::io::{AsyncBufRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio::sync::oneshot::error::TryRecvError;
 
-use crate::dial::HostKey;
-use crate::transport::{connect_pipe, Dial, TransportConfig};
+use crate::net::dial::HostKey;
+use crate::net::transport::{connect_pipe, Dial, TransportConfig};
 
 const NOTICE_UNDETERMINED: &str =
     "closing will not end sessions: this computer's backend could not verify this window";

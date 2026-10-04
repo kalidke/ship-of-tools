@@ -469,7 +469,7 @@ impl State {
         // anisotropic (XZ) case is Phase 3 — one number can't describe it, and
         // guessing would be worse than the Phase-1 lateral bar.
         let generation = self.next_preview_gen();
-        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewSetScale {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewSetScale {
             node_id: node_id.clone(),
             nm_per_px,
             workspace_id: self.active_workspace_id.clone(),

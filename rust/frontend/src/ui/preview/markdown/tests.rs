@@ -408,7 +408,7 @@ fn walk_output_for_every_arm_matches_the_golden() {
     let first = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &HashMap::new());
     let (lang, hash, _) = first.pending_token_fences[0].clone();
     let mut tokens = HashMap::new();
-    tokens.insert((lang, hash), vec![crate::transport::MarkdownToken { start: 1, end: 2, kind: "variable".to_string() }]);
+    tokens.insert((lang, hash), vec![crate::net::transport::MarkdownToken { start: 1, end: 2, kind: "variable".to_string() }]);
     let p = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &tokens);
     let mut lines: Vec<String> = p._spans.iter().map(|s| format!("span {s:?}")).collect();
     lines.extend(p.media_blocks.iter().map(|m| format!("media {m:?}")));

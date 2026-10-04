@@ -80,7 +80,7 @@ impl State {
         if !shown_expanded {
             return;
         }
-        if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
             parent_id: dir_id.to_string(),
             workspace_id: self.active_workspace_id.clone(),
         }) {
@@ -100,7 +100,7 @@ impl State {
     /// created while the tree was parked keeps a row to sit on.
     pub(in crate::ui) fn refresh_restored_files_tree(&mut self) {
         for dir_id in expanded_files_dirs(&self.tree.rows) {
-            if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+            if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                 parent_id: dir_id.clone(),
                 workspace_id: self.active_workspace_id.clone(),
             }) {

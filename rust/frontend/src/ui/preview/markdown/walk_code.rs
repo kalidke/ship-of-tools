@@ -53,7 +53,7 @@ pub(super) fn walk_code_block<'b>(ctx: Ctx, cb: NodeCodeBlock, out: &mut Vec<(St
     // redraw (after the reply) gets the overlay.
     let overlay_key_lang =
         if matches!(lang_alias, "julia" | "jl") { Some("julia") } else { None };
-    let overlay_spans: &[crate::transport::MarkdownToken] =
+    let overlay_spans: &[crate::net::transport::MarkdownToken] =
         if let Some(lk) = overlay_key_lang {
             let h = hash_source(&padded);
             let key = (lk.to_string(), h);

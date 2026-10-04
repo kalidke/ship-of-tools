@@ -78,7 +78,7 @@ fn host_tree_node(host: &HostKey, display: &str, connected: bool, has_list: bool
 /// rewritten) is untouched: still a normal, visible session row.
 fn session_host_children(
     host: &HostKey,
-    list: &[crate::transport::WorkspaceInfo],
+    list: &[crate::net::transport::WorkspaceInfo],
 ) -> Vec<TreeNode> {
     let mut payload = serde_json::Map::new();
     payload.insert("host".to_string(), serde_json::Value::String(host.clone()));
@@ -118,7 +118,7 @@ fn session_host_children(
 /// splice.
 fn resplice_expanded_session_hosts(
     view: &mut TreeView,
-    workspace_lists: &HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>>,
+    workspace_lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
 ) {
     let open: Vec<(String, HostKey)> = view
         .rows
@@ -165,7 +165,7 @@ impl State {
     /// row id must be host-qualified even though the `name` payload stays
     /// the bare session_name `attach_session_to_bl`/`selected_session_name`
     /// already key off).
-    fn build_session_row(host: &HostKey, w: &crate::transport::WorkspaceInfo) -> TreeNode {
+    fn build_session_row(host: &HostKey, w: &crate::net::transport::WorkspaceInfo) -> TreeNode {
         let mut payload = serde_json::Map::new();
         // `name` stays the tmux session name so the existing
         // `selected_session_name` / `attach_session_to_bl` paths work

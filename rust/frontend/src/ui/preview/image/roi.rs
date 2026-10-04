@@ -44,7 +44,7 @@ impl State {
         if self
             .send_to(
                 &roi_host,
-                crate::transport::OutgoingReq::ImageCrop {
+                crate::net::transport::OutgoingReq::ImageCrop {
                     node_id: roi.node_id.clone(),
                     x: roi.x,
                     y: roi.y,
@@ -98,7 +98,7 @@ impl State {
         tracing::info!(ws = %aim.workspace, path = %aim.path, clamped = !contained,
             x = eff.x, y = eff.y, w = eff.w, h = eff.h,
             "preview --roi applied — echoing effective rect");
-        if let Err(e) = self.send(crate::transport::OutgoingReq::AgentSend {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::AgentSend {
             from: self_comm_handle(),
             to: String::new(),
             text: payload.to_string(),

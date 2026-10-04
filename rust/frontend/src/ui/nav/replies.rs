@@ -152,7 +152,7 @@ impl State {
                 tracing::info!(%node_id, "firing --capture-preview");
                 let (fit_w, fit_h) = self.preview_fit_px();
                 let generation = self.next_preview_gen();
-                if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: None,
                     page: None,
@@ -302,7 +302,7 @@ impl State {
         project_root: Option<String>,
         package_name: Option<String>,
         entry_file: Option<String>,
-        modules: Vec<crate::transport::ScanModule>,
+        modules: Vec<crate::net::transport::ScanModule>,
         generation: u64,
     ) {
         // `kernel.request` runs off-loop (switch-latency): two
@@ -404,7 +404,7 @@ impl State {
         workspace_id: Option<String>,
         path: String,
         ast_hash: String,
-        definitions: Vec<crate::transport::DefinitionInfo>,
+        definitions: Vec<crate::net::transport::DefinitionInfo>,
     ) {
         let reply_ws = self.reply_ws_key(workspace_id.as_deref());
         // ADR 0042 L2a: host-qualified -- two hosts can each
@@ -513,7 +513,7 @@ impl State {
         workspace_id: Option<String>,
         module: String,
         name: String,
-        methods: Vec<crate::transport::MethodInfo>,
+        methods: Vec<crate::net::transport::MethodInfo>,
     ) {
         // Find the function row whose id matches `modules:<mod>:<name>`.
         // The exact id is what we built when modules-col-2 splice

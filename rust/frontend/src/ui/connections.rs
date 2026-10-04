@@ -27,7 +27,7 @@ impl State {
     /// pty.open/attach on a non-active row; ADR 0042 L2a).
     pub(in crate::ui) fn send_to(
         &self,
-        host: &crate::dial::HostKey,
+        host: &crate::net::dial::HostKey,
         req: OutgoingReq,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<OutgoingReq>> {
         match self.conns.iter().find(|(h, _)| h == host) {
@@ -158,7 +158,7 @@ mod tests {
 
         // Both hosts' replies land and union into one map, neither
         // clobbering the other (mirrors the real workspace_lists.insert).
-        let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+        let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
         lists.insert("local".to_string(), vec![ws_info("home", "sot-be-home")]);
         lists.insert("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
         assert_eq!(
@@ -271,8 +271,8 @@ mod tests {
         session_name: &str,
         agent_handle: &str,
         agent_state: &str,
-    ) -> crate::transport::WorkspaceInfo {
-        crate::transport::WorkspaceInfo {
+    ) -> crate::net::transport::WorkspaceInfo {
+        crate::net::transport::WorkspaceInfo {
             agent_handle: agent_handle.to_string(),
             agent_state: agent_state.to_string(),
             ..ws_info(slug, session_name)
@@ -289,7 +289,7 @@ mod tests {
         declared_host: &HashMap<HostKey, String>,
         local_host: &str,
         event_host: &HostKey,
-        rows: &[crate::transport::WorkspaceInfo],
+        rows: &[crate::net::transport::WorkspaceInfo],
     ) {
         if declared_host.get(event_host).map(String::as_str) != Some(local_host) {
             return;

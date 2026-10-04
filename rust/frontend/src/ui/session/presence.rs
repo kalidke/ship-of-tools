@@ -111,7 +111,7 @@ impl State {
                 tracing::info!(host = %m.host, ws = ?m.workspace_id, "read mark: dwell elapsed — clearing blue");
                 let _ = self.send_to(
                     &m.host,
-                    crate::transport::OutgoingReq::WorkspaceActivate {
+                    crate::net::transport::OutgoingReq::WorkspaceActivate {
                         workspace_id: m.workspace_id,
                         read: true,
                     },

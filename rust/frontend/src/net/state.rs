@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use crate::dial::HostKey;
+use crate::net::dial::HostKey;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -153,9 +153,9 @@ pub fn save(host: &HostKey, m: &SessionMemory) -> Result<()> {
     Ok(())
 }
 
-/// Coalesces `crate::state::save` calls behind a `rev`-bearing frame so a
+/// Coalesces `crate::net::state::save` calls behind a `rev`-bearing frame so a
 /// burst of replies doesn't turn into a burst of synchronous disk writes.
-/// `crate::state::save` does a blocking `write`+`rename`; calling it inline
+/// `crate::net::state::save` does a blocking `write`+`rename`; calling it inline
 /// from EVERY `rev`-bearing frame (near enough all of them — see `Frame`'s
 /// own doc on `rev`) is what stalled the transport task's read future for
 /// the length of a reply burst in the field (2026-09-08: a workspace-switch
@@ -215,25 +215,25 @@ impl StateSaveGate {
 /// exactly one place that decides when a `rev`-bearing frame reaches disk.
 pub(super) fn note_revision(
     rev: Option<u64>,
-    memory: &mut crate::state::SessionMemory,
+    memory: &mut crate::net::state::SessionMemory,
     host: &HostKey,
     gate: &mut StateSaveGate,
 ) {
     note_revision_with(rev, memory, host, gate, |h, m| {
-        crate::state::save(h, m).ok();
+        crate::net::state::save(h, m).ok();
     });
 }
 
 /// `note_revision`'s real logic, with the persist step as a parameter so a
-/// test can substitute a counting/slow stand-in for `crate::state::save`
+/// test can substitute a counting/slow stand-in for `crate::net::state::save`
 /// without touching a real state file — see the `note_revision_with` tests
 /// below for the burst-of-50 measurement this fix was asked to prove.
 fn note_revision_with(
     rev: Option<u64>,
-    memory: &mut crate::state::SessionMemory,
+    memory: &mut crate::net::state::SessionMemory,
     host: &HostKey,
     gate: &mut StateSaveGate,
-    persist: impl FnOnce(&HostKey, &crate::state::SessionMemory),
+    persist: impl FnOnce(&HostKey, &crate::net::state::SessionMemory),
 ) {
     let Some(r) = rev else { return };
     memory.last_seen_revision = memory.last_seen_revision.max(r);
@@ -250,19 +250,19 @@ fn note_revision_with(
 /// write is behind the in-memory revision, so a `rev` that landed just
 /// inside the `MIN_INTERVAL` coalescing window is never lost to the
 /// connection ending before the next periodic write would have happened.
-fn flush_revision(memory: &crate::state::SessionMemory, host: &HostKey, gate: &mut StateSaveGate) {
+fn flush_revision(memory: &crate::net::state::SessionMemory, host: &HostKey, gate: &mut StateSaveGate) {
     flush_revision_with(memory, host, gate, |h, m| {
-        crate::state::save(h, m).ok();
+        crate::net::state::save(h, m).ok();
     });
 }
 
 /// `flush_revision`'s real logic, with the persist step as a parameter —
 /// same testability shape as `note_revision`/`note_revision_with`.
 fn flush_revision_with(
-    memory: &crate::state::SessionMemory,
+    memory: &crate::net::state::SessionMemory,
     host: &HostKey,
     gate: &mut StateSaveGate,
-    persist: impl FnOnce(&HostKey, &crate::state::SessionMemory),
+    persist: impl FnOnce(&HostKey, &crate::net::state::SessionMemory),
 ) {
     if gate.is_stale(memory.last_seen_revision) {
         persist(host, memory);
@@ -279,7 +279,7 @@ fn flush_revision_with(
 /// in this file for the same reason.
 pub(super) struct SessionState {
     pub(super) host: HostKey,
-    pub(super) memory: crate::state::SessionMemory,
+    pub(super) memory: crate::net::state::SessionMemory,
     pub(super) gate: StateSaveGate,
 }
 
@@ -512,7 +512,7 @@ mod tests {
     /// this is the flush, not a timer, `SessionState`'s `Drop` performs.
     #[test]
     fn flush_revision_with_persists_a_revision_the_throttle_held_back() {
-        let mut memory = crate::state::SessionMemory::fresh();
+        let mut memory = crate::net::state::SessionMemory::fresh();
         let host = "flush-test-host".to_string();
         let mut gate = StateSaveGate::new();
 
@@ -565,11 +565,11 @@ mod tests {
     /// well under a second. Drives the REAL `note_revision_with` (the same
     /// function `note_revision` — and so the read arm — calls) with a
     /// stand-in `persist` that sleeps 50ms, standing in for the blocking
-    /// `write`+`rename` `crate::state::save` performs: uncoalesced, 50
+    /// `write`+`rename` `crate::net::state::save` performs: uncoalesced, 50
     /// frames would cost 2.5s; the gate must bring that down to one write.
     #[test]
     fn note_revision_coalesces_a_burst_of_fifty_replies_onto_one_slow_write() {
-        let mut memory = crate::state::SessionMemory::fresh();
+        let mut memory = crate::net::state::SessionMemory::fresh();
         let host = "burst-test-host".to_string();
         let mut gate = StateSaveGate::new();
         let mut persisted_revisions: Vec<u64> = Vec::new();
@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn note_revision_with_ignores_a_frame_with_no_rev() {
-        let mut memory = crate::state::SessionMemory::fresh();
+        let mut memory = crate::net::state::SessionMemory::fresh();
         let host = "no-rev-test-host".to_string();
         let mut gate = StateSaveGate::new();
         let mut save_calls = 0u32;

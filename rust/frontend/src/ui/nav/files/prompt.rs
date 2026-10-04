@@ -279,7 +279,7 @@ impl State {
                 // manual re-expand — same tree.children refresh the
                 // delete/upload paths use.
                 let parent = parent_files_node_id(node_id);
-                if let Err(e) = self.send(crate::transport::OutgoingReq::TreeChildren {
+                if let Err(e) = self.send(crate::net::transport::OutgoingReq::TreeChildren {
                     parent_id: parent,
                     workspace_id: self.active_workspace_id.clone(),
                 }) {

@@ -7,7 +7,7 @@ impl State {
     pub(crate) fn on_file_delete_done(
         &mut self,
         node_id: String,
-        result: crate::transport::FileDeleteResult,
+        result: crate::net::transport::FileDeleteResult,
     ) {
         // Ctrl+D delete round-trip: did this reply close out the
         // file we just asked the backend to trash? Late replies for
@@ -15,7 +15,7 @@ impl State {
         let matches_delete =
             self.pending_deleted_node_id.as_deref() == Some(node_id.as_str());
         match result {
-            crate::transport::FileDeleteResult::Ok {
+            crate::net::transport::FileDeleteResult::Ok {
                 path,
                 trashed,
                 trash_path,
@@ -29,7 +29,7 @@ impl State {
                     // TreeView reconciliation re-clamps the cursor.
                     let parent = parent_files_node_id(&node_id);
                     if let Err(e) =
-                        self.send(crate::transport::OutgoingReq::TreeChildren {
+                        self.send(crate::net::transport::OutgoingReq::TreeChildren {
                             parent_id: parent,
                             workspace_id: self.active_workspace_id.clone(),
                         })
@@ -48,7 +48,7 @@ impl State {
                     self.window.request_redraw();
                 }
             }
-            crate::transport::FileDeleteResult::Error { code, message } => {
+            crate::net::transport::FileDeleteResult::Error { code, message } => {
                 tracing::error!(%node_id, %code, %message, "file.delete failed");
                 if matches_delete {
                     self.pending_deleted_node_id = None;
@@ -62,17 +62,17 @@ impl State {
     pub(crate) fn on_dir_create_done(
         &mut self,
         node_id: String,
-        result: crate::transport::DirCreateResult,
+        result: crate::net::transport::DirCreateResult,
     ) {
         // Ctrl+N new-dir round-trip: does nothing unless
         // `node_id` is the pending create (a late reply for an
         // abandoned/superseded request is ignored).
         match result {
-            crate::transport::DirCreateResult::Ok { path } => {
+            crate::net::transport::DirCreateResult::Ok { path } => {
                 tracing::info!(%node_id, %path, "dir.create ok");
                 self.finish_pending_create(&node_id, CreateOutcome::Ok);
             }
-            crate::transport::DirCreateResult::Error { code, message } => {
+            crate::net::transport::DirCreateResult::Error { code, message } => {
                 tracing::error!(%node_id, %code, %message, "dir.create failed");
                 let outcome = if code == "already_exists" {
                     CreateOutcome::AlreadyExists

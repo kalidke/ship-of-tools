@@ -326,7 +326,7 @@ impl State {
     pub(crate) fn on_concept_write_done(
         &mut self,
         target: String,
-        result: crate::transport::ConceptWriteResult,
+        result: crate::net::transport::ConceptWriteResult,
     ) {
         // Only reconcile when the reply targets the active
         // edit — late replies for an abandoned edit are
@@ -339,7 +339,7 @@ impl State {
             .map(|e| e.target == target)
             .unwrap_or(false);
         match result {
-            crate::transport::ConceptWriteResult::Ok { path, written } => {
+            crate::net::transport::ConceptWriteResult::Ok { path, written } => {
                 tracing::info!(%target, %path, written, "concept.write ok");
                 if matches_active {
                     // Snap `original` so dirty-check matches
@@ -351,7 +351,7 @@ impl State {
                     }
                 }
             }
-            crate::transport::ConceptWriteResult::Stale => {
+            crate::net::transport::ConceptWriteResult::Stale => {
                 tracing::warn!(%target, "concept.write refused: stale");
                 if matches_active {
                     if let Some(edit) = self.edit_state.as_mut() {
@@ -360,7 +360,7 @@ impl State {
                     self.rebuild_edit_preview();
                 }
             }
-            crate::transport::ConceptWriteResult::Error { code, message } => {
+            crate::net::transport::ConceptWriteResult::Error { code, message } => {
                 tracing::error!(%target, %code, %message, "concept.write failed");
             }
         }
@@ -468,7 +468,7 @@ impl State {
             let generation = self.next_preview_gen();
             let _ = self.send_to(
                 &event_host,
-                crate::transport::OutgoingReq::PreviewGet {
+                crate::net::transport::OutgoingReq::PreviewGet {
                     node_id: node_id.clone(),
                     workspace_id: self.active_workspace_id.clone(),
                     page: self.preview_page.map(|(p, _)| p),

@@ -180,7 +180,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
         // assigned id so the next reconnect is on the live session.
         session.memory.session_id = Some(hello_res.session_id.clone());
     }
-    crate::state::save(host, &session.memory).ok();
+    crate::net::state::save(host, &session.memory).ok();
     // Hello round-trip succeeded — reset backoff to the floor so any
     // *future* disconnect in this session restarts the exponential
     // climb from 200ms rather than picking up wherever the previous

@@ -79,7 +79,7 @@ impl State {
         } else {
             None
         };
-        if let Err(e) = self.send(crate::transport::OutgoingReq::ReplEval {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::ReplEval {
             eval_id,
             code,
             mode,

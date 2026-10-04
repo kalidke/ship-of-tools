@@ -27,7 +27,7 @@ pub(in crate::ui) struct WorkspacePicker {
     pub(in crate::ui) current_path: String,
     /// Subdirectory rows under `current_path`. Populated by the
     /// `IncomingEvt::DirectoryList` handler when the path echoes ours.
-    pub(in crate::ui) entries: Vec<crate::transport::DirEntry>,
+    pub(in crate::ui) entries: Vec<crate::net::transport::DirEntry>,
     /// Cursor into `entries`. `0`-based; clamped on each refresh.
     pub(in crate::ui) selected: usize,
     /// The entry the cursor lands on when the pending listing arrives,
@@ -42,7 +42,7 @@ pub(in crate::ui) struct WorkspacePicker {
     /// first. Empty until the reply lands, and stays empty (the field the
     /// render/commit paths check) when the daemon only has "default" or
     /// predates the op — either way the account choice is hidden.
-    pub(in crate::ui) accounts: Vec<crate::transport::AccountInfo>,
+    pub(in crate::ui) accounts: Vec<crate::net::transport::AccountInfo>,
     /// Cursor into `accounts` (`Tab` cycles). `0` is always "default" when
     /// `accounts` is non-empty, so index 0 and "no choice made" both mean
     /// the same thing: the agent's own default directory.
@@ -53,7 +53,7 @@ impl WorkspacePicker {
     /// Install a listing that answers `current_path` and place the cursor:
     /// on `reveal` if the listing holds it, else where it was if that is
     /// still in range, else the top.
-    pub(in crate::ui) fn land_listing(&mut self, entries: Vec<crate::transport::DirEntry>) {
+    pub(in crate::ui) fn land_listing(&mut self, entries: Vec<crate::net::transport::DirEntry>) {
         let reveal = self.reveal.take();
         self.entries = entries;
         let kept = if self.selected < self.entries.len() { self.selected } else { 0 };
@@ -207,7 +207,7 @@ impl State {
         });
         if let Err(e) = self.send_to(
             &host,
-            crate::transport::OutgoingReq::DirectoryList {
+            crate::net::transport::OutgoingReq::DirectoryList {
                 path: start.clone(),
                 include_hidden: true,
             },
@@ -220,7 +220,7 @@ impl State {
         // reply parses to an empty list (see `PendingKind::AccountsList`),
         // which keeps the choice hidden exactly like a fresh daemon that
         // only reports "default".
-        if let Err(e) = self.send_to(&host, crate::transport::OutgoingReq::AccountsList) {
+        if let Err(e) = self.send_to(&host, crate::net::transport::OutgoingReq::AccountsList) {
             tracing::warn!(error = %e, %host, "drop initial accounts.list — channel closed");
         }
         self.status = format!("create workspace · {host} · picker @ {start}");
@@ -269,7 +269,7 @@ impl State {
             let include_hidden = self.workspace_picker.as_ref().is_some_and(|p| p.show_hidden);
             if let Err(e) = self.send_to(
                 &host,
-                crate::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
+                crate::net::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
             ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (drill-in)");
             }
@@ -307,7 +307,7 @@ impl State {
             let include_hidden = self.workspace_picker.as_ref().is_some_and(|p| p.show_hidden);
             if let Err(e) = self.send_to(
                 &host,
-                crate::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
+                crate::net::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
             ) {
                 tracing::warn!(error = %e, %path, "drop directory.list (ascend)");
             }
@@ -336,7 +336,7 @@ impl State {
         let (host, path, include_hidden) = (p.host.clone(), p.current_path.clone(), p.show_hidden);
         if let Err(e) = self.send_to(
             &host,
-            crate::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
+            crate::net::transport::OutgoingReq::DirectoryList { path: path.clone(), include_hidden },
         ) {
             tracing::warn!(error = %e, %path, "drop directory.list (toggle hidden)");
         }
@@ -404,7 +404,7 @@ impl State {
         });
         if let Err(e) = self.send_to(
             &host,
-            crate::transport::OutgoingReq::WorkspaceCreate {
+            crate::net::transport::OutgoingReq::WorkspaceCreate {
                 label: label.clone(),
                 project_root: path.clone(),
                 autostart_claude: agent == "claude",
@@ -544,15 +544,15 @@ mod tests {
         );
     }
 
-    fn account(name: &str, kinds: &[&str], logged_in: &[(&str, bool)]) -> crate::transport::AccountInfo {
-        crate::transport::AccountInfo {
+    fn account(name: &str, kinds: &[&str], logged_in: &[(&str, bool)]) -> crate::net::transport::AccountInfo {
+        crate::net::transport::AccountInfo {
             name: name.to_string(),
             kinds: kinds.iter().map(|s| s.to_string()).collect(),
             logged_in: logged_in.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
     }
 
-    fn picker_with_accounts(accounts: Vec<crate::transport::AccountInfo>) -> WorkspacePicker {
+    fn picker_with_accounts(accounts: Vec<crate::net::transport::AccountInfo>) -> WorkspacePicker {
         WorkspacePicker {
             host: "local".to_string(),
             show_hidden: true,
@@ -565,8 +565,8 @@ mod tests {
         }
     }
 
-    fn picker_dir(path: &str) -> crate::transport::DirEntry {
-        crate::transport::DirEntry {
+    fn picker_dir(path: &str) -> crate::net::transport::DirEntry {
+        crate::net::transport::DirEntry {
             name: path.rsplit('/').next().unwrap_or(path).to_string(),
             path: path.to_string(),
             has_children: true,

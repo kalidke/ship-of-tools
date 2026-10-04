@@ -14,7 +14,7 @@ impl State {
             // — a non-active host's workspace churn used to
             // silently re-query the WRONG connection.
             let _ =
-                self.send_to(&event_host, crate::transport::OutgoingReq::WorkspaceList);
+                self.send_to(&event_host, crate::net::transport::OutgoingReq::WorkspaceList);
         } else if op == sot_protocol::op::AGENT_MESSAGE {
             // A session can drive this FE's nav by broadcasting a
             // `sot_ui` envelope as the message text. Filing mail

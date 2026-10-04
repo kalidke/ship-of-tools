@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender as StdSender;
 use std::sync::Arc;
 
-use crate::dial::HostKey;
+use crate::net::dial::HostKey;
 use anyhow::{Context, Result};
 use base64::Engine;
 use interprocess::local_socket::{
@@ -48,6 +48,31 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc::{self as tmpsc, UnboundedReceiver, UnboundedSender};
 
 use winit::window::Window;
+
+mod event;
+mod hello;
+mod ops;
+mod preamble;
+mod reply;
+mod request;
+
+use crate::net::state::{note_revision, SessionState, StateSaveGate};
+use hello::{accept_hello, read_hello, send_hello, HelloRefused};
+use ops::*;
+use preamble::{preamble_preview, preamble_tree_root};
+use reply::{handle_response_frame, PendingGuard, PendingKind};
+use request::send_request;
+
+// The transport's interface: what code outside this folder names.
+pub(crate) use self::{
+    event::IncomingEvt,
+    ops::{
+        AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry,
+        FileDeleteResult, FileWriteResult, MarkdownToken, MethodInfo, ReplRunFileInfo,
+        ScanModule, ScanType, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo,
+    },
+    request::OutgoingReq,
+};
 
 /// What the transport task should dial: a local socket/named pipe, or an
 /// ssh child's stdio (C3). Exactly one, never neither and never both —
@@ -79,7 +104,7 @@ pub struct TransportConfig {
 ///
 /// Lives here, beside `TransportConfig`, because `IncomingEvt::Connected`
 /// carries it — moved out of `ui/mod.rs`, which names it
-/// `crate::transport::ResolvedDial`. No longer `Copy` (`SshRecipe` isn't):
+/// `crate::net::transport::ResolvedDial`. No longer `Copy` (`SshRecipe` isn't):
 /// every former `.copied()` reader became `.cloned()` (the amendment's own
 /// site list, C3's commit).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,25 +112,6 @@ pub enum ResolvedDial {
     Local,
     Ssh(sot_protocol::topology::ssh_bridge::SshRecipe),
 }
-
-mod event;
-pub(crate) use event::IncomingEvt;
-
-mod request;
-pub(crate) use request::OutgoingReq;
-use request::send_request;
-
-mod ops;
-use ops::*;
-pub(crate) use ops::{
-    AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry, FileDeleteResult, FileWriteResult,
-    MarkdownToken, MethodInfo, ReplRunFileInfo, ScanModule, ScanType, WorkspaceCreatedInfo,
-    WorkspaceDestroyedInfo, WorkspaceInfo,
-};
-
-mod reply;
-use reply::{handle_response_frame, PendingGuard, PendingKind};
-
 
 /// Create the outgoing-request channel paired with the transport task. The
 /// sender lives on the GPU thread; the receiver gets handed to `spawn`. Both
@@ -329,8 +335,6 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
         .with_context(|| format!("connect {path:?}"))
 }
 
-use crate::net::state::{note_revision, SessionState, StateSaveGate};
-
 /// Read exactly one frame while *owning* the reader, handing it back with the
 /// result. This lets the steady-state select! loop keep a single in-flight
 /// read future across iterations (cancel-safe: a cancelled select! pauses it
@@ -361,12 +365,6 @@ fn ping_interval_duration() -> std::time::Duration {
         .map(std::time::Duration::from_millis)
         .unwrap_or(std::time::Duration::from_secs(30))
 }
-
-mod hello;
-use hello::{accept_hello, read_hello, send_hello, HelloRefused};
-
-mod preamble;
-use preamble::{preamble_preview, preamble_tree_root};
 
 /// What `run_protocol` needs of the window: a redraw request. A trait so a
 /// test can run the protocol without a real window.
@@ -465,13 +463,13 @@ where
     // produces fresh values and the backend assigns a session_id we'll
     // remember for next time.
     // `session` bundles the memory with its `StateSaveGate` (see
-    // `StateSaveGate`'s doc: throttles `crate::state::save` so a burst of
+    // `StateSaveGate`'s doc: throttles `crate::net::state::save` so a burst of
     // `rev`-bearing replies can't stall this task's read future on disk
     // I/O) and, via its `Drop`, flushes whatever the throttle held back the
     // moment this connection ends — see `SessionState`.
     let mut session = SessionState {
         host: host.clone(),
-        memory: crate::state::load(&host),
+        memory: crate::net::state::load(&host),
         gate: StateSaveGate::new(),
     };
     tracing::info!(

@@ -303,7 +303,7 @@ impl State {
         &mut self,
         event_host: HostKey,
         eval_id: u64,
-        result: Result<crate::transport::ReplRunFileInfo, String>,
+        result: Result<crate::net::transport::ReplRunFileInfo, String>,
     ) {
         // J5: route frames into the pre-registered `repl_log`
         // entry so the drawer scrollback shows the run's

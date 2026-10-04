@@ -175,7 +175,7 @@ fn repl_scroll_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
         _ if action == Some(Action::ReplInterrupt) => {
             if state.repl_log.iter().any(|e| e.in_flight) {
                 if let Err(e) =
-                    state.send(crate::transport::OutgoingReq::ReplInterrupt {
+                    state.send(crate::net::transport::OutgoingReq::ReplInterrupt {
                         workspace_id: state.active_workspace_id.clone(),
                     })
                 {

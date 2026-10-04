@@ -50,7 +50,7 @@ impl ApplicationHandler for App {
                     // it synchronously-bound listeners so a port is listening
                     // before the browser launches.
                     let (ltx, lrx) = tokio::sync::mpsc::unbounded_channel();
-                    crate::proxy_listen::spawn_proxy_manager(rt, lrx);
+                    crate::pages::spawn_proxy_manager(rt, lrx);
                     state.proxy_listener_tx = Some(ltx);
                 }
                 // If `--start-mode modules` was set, queue a project.scan

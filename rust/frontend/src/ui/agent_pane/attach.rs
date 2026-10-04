@@ -9,7 +9,7 @@ pub(in crate::ui) type PaneAttachClient = sot_log::fe_client_io::FeAttachClient<
 /// dial is several tunnel round trips). Newest last; per-host bound =
 /// that host's row count, capped at [`WARM_ATTACH_CAP`].
 pub(in crate::ui) struct WarmAttachPool<C> {
-    entries: Vec<((crate::dial::HostKey, String), C)>,
+    entries: Vec<((crate::net::dial::HostKey, String), C)>,
 }
 
 const WARM_ATTACH_CAP: usize = 16;
@@ -19,14 +19,14 @@ impl<C> WarmAttachPool<C> {
         Self { entries: Vec::new() }
     }
 
-    fn take(&mut self, key: &(crate::dial::HostKey, String)) -> Option<C> {
+    fn take(&mut self, key: &(crate::net::dial::HostKey, String)) -> Option<C> {
         let i = self.entries.iter().position(|(k, _)| k == key)?;
         Some(self.entries.remove(i).1)
     }
 
     /// Parks `client` under `key`; returns the clients evicted to keep
     /// the key's host within `bound` — the caller shuts those down.
-    fn park(&mut self, key: (crate::dial::HostKey, String), client: C, bound: usize) -> Vec<C> {
+    fn park(&mut self, key: (crate::net::dial::HostKey, String), client: C, bound: usize) -> Vec<C> {
         let mut evicted = Vec::new();
         if let Some(old) = self.take(&key) {
             evicted.push(old);
@@ -43,7 +43,7 @@ impl<C> WarmAttachPool<C> {
 
     /// Drops every entry of `host` whose row `is_live` rejects (destroyed
     /// rows); returns them for shutdown.
-    fn retain_rows(&mut self, host: &crate::dial::HostKey, is_live: impl Fn(&str) -> bool) -> Vec<C> {
+    fn retain_rows(&mut self, host: &crate::net::dial::HostKey, is_live: impl Fn(&str) -> bool) -> Vec<C> {
         let (dead, live): (Vec<_>, Vec<_>) = std::mem::take(&mut self.entries)
             .into_iter()
             .partition(|(k, _)| &k.0 == host && !is_live(&k.1));
@@ -157,7 +157,7 @@ impl State {
         let (cols, rows) = self.pty_size.unwrap_or((80, 24));
         if let Err(e) = self.send_to(
             &host,
-            crate::transport::OutgoingReq::PtyOpen {
+            crate::net::transport::OutgoingReq::PtyOpen {
                 cols,
                 rows,
                 target: Some(session_name.clone()),

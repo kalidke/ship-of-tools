@@ -299,7 +299,7 @@ impl State {
         let scaled_h = ((fh as f32 * target).round() as u32).clamp(1, 8192);
         let generation = self.next_preview_gen();
         if self
-            .send(crate::transport::OutgoingReq::PreviewGet {
+            .send(crate::net::transport::OutgoingReq::PreviewGet {
                 node_id,
                 workspace_id: self.active_workspace_id.clone(),
                 page: Some(page),

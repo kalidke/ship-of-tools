@@ -214,7 +214,7 @@ pub(in crate::ui) fn session_destroy_key(state: &mut State, was_destroy_pending:
     if was_destroy_pending.as_ref() == Some(&target) {
         if let Err(e) = state.send_to(
             &target_host,
-            crate::transport::OutgoingReq::WorkspaceDestroy {
+            crate::net::transport::OutgoingReq::WorkspaceDestroy {
                 workspace_id: target_id.clone(),
             },
         ) {

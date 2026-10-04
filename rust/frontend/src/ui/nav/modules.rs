@@ -25,7 +25,7 @@ impl State {
 /// `line` on its payload so the cursor-tracking `preview.get` knows
 /// which source to fetch and where to focus once line-anchored
 /// preview lands.
-pub(in crate::ui) fn scan_to_tree_rows(modules: &[crate::transport::ScanModule]) -> Vec<TreeRow> {
+pub(in crate::ui) fn scan_to_tree_rows(modules: &[crate::net::transport::ScanModule]) -> Vec<TreeRow> {
     let root = TreeNode {
         id: "modules:".to_string(),
         label: "modules".to_string(),
@@ -46,7 +46,7 @@ pub(in crate::ui) fn scan_to_tree_rows(modules: &[crate::transport::ScanModule])
 }
 
 fn emit_scan_module(
-    m: &crate::transport::ScanModule,
+    m: &crate::net::transport::ScanModule,
     depth: usize,
     rows: &mut Vec<TreeRow>,
     parent_id: &str,
@@ -104,7 +104,7 @@ fn emit_scan_module(
 }
 
 fn emit_scan_type(
-    t: &crate::transport::ScanType,
+    t: &crate::net::transport::ScanType,
     depth: usize,
     rows: &mut Vec<TreeRow>,
     parent_id: &str,

@@ -61,7 +61,7 @@ impl State {
         &mut self,
         lang: String,
         source_hash: u64,
-        spans: Vec<crate::transport::MarkdownToken>,
+        spans: Vec<crate::net::transport::MarkdownToken>,
     ) {
         // Backend semantic overlay landed. Stash in the per-fence
         // cache, clear in-flight pending, and ask for a reflow so

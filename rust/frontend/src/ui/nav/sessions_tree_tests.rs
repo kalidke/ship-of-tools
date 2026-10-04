@@ -100,8 +100,8 @@ fn ws_info_with_account(
     slug: &str,
     session_name: &str,
     account: &str,
-) -> crate::transport::WorkspaceInfo {
-    crate::transport::WorkspaceInfo {
+) -> crate::net::transport::WorkspaceInfo {
+    crate::net::transport::WorkspaceInfo {
         account: account.to_string(),
         ..ws_info(slug, session_name)
     }
@@ -234,7 +234,7 @@ fn resplice_expanded_session_hosts_drops_a_row_no_longer_in_workspace_lists() {
 
     // The destroy already landed server-side: `local`'s fresh list no
     // longer has "doomed", but still has an unrelated survivor.
-    let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
     lists.insert(host.clone(), vec![ws_info("survivor", "sot-be-survivor")]);
 
     resplice_expanded_session_hosts(&mut view, &lists);
@@ -273,7 +273,7 @@ fn every_configured_host_shows_up_even_without_a_list_yet() {
     // Two conns, one has answered workspace.list — both still get a
     // tree node; the empty one is flagged unreachable and childless.
     let ordered = vec!["alpha".to_string(), "beta".to_string()];
-    let mut lists: HashMap<HostKey, Vec<crate::transport::WorkspaceInfo>> = HashMap::new();
+    let mut lists: HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>> = HashMap::new();
     lists.insert("alpha".to_string(), vec![ws_info("sot", "sot-be-sot")]);
     // "beta" has no list yet.
     let host_connected: HashMap<HostKey, bool> =

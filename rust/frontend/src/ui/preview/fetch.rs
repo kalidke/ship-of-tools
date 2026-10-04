@@ -124,7 +124,7 @@ impl State {
         self.preview_page_raster_pending = None;
         let (fit_w, fit_h) = self.preview_fit_px();
         let generation = self.next_preview_gen();
-        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewGet {
+        if let Err(e) = self.send(crate::net::transport::OutgoingReq::PreviewGet {
             node_id: id.clone(),
             workspace_id: self.active_workspace_id.clone(),
             // Cursor-driven fetch always opens at page 1; the reply's

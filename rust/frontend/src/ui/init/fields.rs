@@ -5,8 +5,8 @@ use super::*;
 
 pub(super) struct StartupParts {
     pub(super) evt_rx:
-        std::sync::mpsc::Receiver<(crate::dial::HostKey, crate::transport::IncomingEvt)>,
-    pub(super) conns: Vec<(crate::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)>,
+        std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
+    pub(super) conns: Vec<(crate::net::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)>,
     pub(super) leases: Arc<crate::lease::Leases>,
     pub(super) launch: LaunchInputs,
     pub(super) window: Arc<Window>,
