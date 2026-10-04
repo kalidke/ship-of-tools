@@ -15,6 +15,7 @@ rust/frontend/src/ui/CLAUDE.md. The rest of the Files tree's code still lives in
 - `sessions_tree.rs`: the Sessions tree, host nodes and session rows (`build_sessions_tree`, `session_host_children`).
 - `sessions_tree_tests.rs`: the Sessions tree tests, agent tone and host rows.
 - `hosts_tree.rs`: the Hosts tree, one row per host (`populate_hosts_tree`, `select_active_host`).
+- `keys.rs`: What a key does in the navigation tree: its own keys and the per-row action match, in order.
 - `support_tests.rs`: `node` and `ws_info`, fixtures shared with the tests of the window around this folder.
 - `replies.rs`: tree.root, tree.children, project.scan, file.parse and function.methods replies
 

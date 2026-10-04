@@ -3,6 +3,7 @@
 use super::*;
 
 mod badge;
+pub(in crate::ui) mod keys;
 mod picker;
 mod presence;
 mod replies;

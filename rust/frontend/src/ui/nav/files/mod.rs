@@ -2,6 +2,7 @@
 
 use super::*;
 
+pub(in crate::ui) mod keys;
 mod listing;
 mod paths;
 mod prompt;

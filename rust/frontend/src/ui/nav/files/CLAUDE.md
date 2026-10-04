@@ -7,6 +7,7 @@ operation is a method on `State` or a pure function beside it. Part of fe-ui; ch
 ## Files
 - `mod.rs`: declares the files below and re-exports their names to `ui`.
 - `prompt.rs`: `NavPrompt`, `CreateOutcome`, the new-entry id builder, and `State`'s begin, push, backspace and confirm of the create and delete prompts.
+- `keys.rs`: File keys from the tree: the tree's text prompts and the file row actions (open, docs, download, upload, run).
 - `reveal.rs`: `ancestor_rels` and `State::drive_same_ws_open`, `drive_reveal_step`, which open the tree down to a driven path.
 - `paths.rs`: `parent_files_node_id` and `State`'s project root, cursored and previewed file paths, path copy and `backend_abs_path`.
 - `transfer.rs`: `UploadState`, `UploadBatch`, and `State`'s `start_download`, `start_upload` and the chunk loop.

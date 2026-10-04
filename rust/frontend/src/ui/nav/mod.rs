@@ -4,6 +4,7 @@ use super::*;
 
 pub(in crate::ui) mod files;
 mod hosts_tree;
+pub(in crate::ui) mod keys;
 mod modules;
 mod replies;
 mod sessions_tree;

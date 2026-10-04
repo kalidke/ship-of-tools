@@ -10,6 +10,7 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - `workspace_list.rs`: `workspace.list` into the strip: `fresh_workspace_caches`, `declared_sessions_from`, `activity_order`, and `State`'s `rebuild_workspace_caches`, `resort_strip`.
 - `snapshot.rs`: `WorkspaceUiSnapshot` and `WorkspaceReplSnapshot`, saved and restored by `State`'s snapshot and restore methods.
 - `switch.rs`: `State::switch_to_workspace` and `cycle_workspace`.
+- `keys.rs`: Session keys from the tree: the workspace picker, Enter on a Sessions row, and the two-press destroy.
 - `picker.rs`: `WorkspacePicker` and its start directory, and `State`'s `begin_create_session` through `commit_workspace_create`.
 - `presence.rs`: `ReadMark`, `read_mark_decision`, and `State`'s `report_presence` and `fire_due_read_mark`.
 - `badge.rs`: the badge floor: `pending_nav_status`, `State::mark_pending_nav` and `badged_keys`.
