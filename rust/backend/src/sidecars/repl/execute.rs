@@ -293,6 +293,36 @@ fn split_exec_frames(frames: Vec<serde_json::Value>, error_out: &mut Option<Repl
     (stdout, stderr, values, image_frames, frame_error_kind)
 }
 
+/// Writes the image frames under the run's folder and returns their paths.
+async fn spill_exec_figures(ws: &crate::workspaces::Workspace, run_id: &str, image_frames: Vec<(String, String)>)
+    -> Vec<String> {
+    let mut figures: Vec<String> = Vec::new();
+    if !image_frames.is_empty() {
+        let runs_dir = ws.project_root.join(".sot").join("runs").join(&run_id);
+        let run_id_blk = run_id.clone();
+        let spill = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<String>, String> {
+            use base64::engine::general_purpose::STANDARD;
+            use base64::Engine as _;
+            std::fs::create_dir_all(&runs_dir).map_err(|e| format!("create {runs_dir:?}: {e}"))?;
+            let mut out = Vec::new();
+            for (i, (mime, b64)) in image_frames.iter().enumerate() {
+                let bytes = STANDARD.decode(b64).map_err(|e| format!("fig {i} base64: {e}"))?;
+                let p = runs_dir.join(format!("fig-{i}.{}", exec_mime_ext(mime)));
+                std::fs::write(&p, &bytes).map_err(|e| format!("write {p:?}: {e}"))?;
+                out.push(p.to_string_lossy().into_owned());
+            }
+            Ok(out)
+        })
+        .await;
+        match spill {
+            Ok(Ok(paths)) => figures = paths,
+            Ok(Err(e)) => tracing::warn!(run_id = %run_id_blk, "figure spill failed: {e}"),
+            Err(e) => tracing::warn!(run_id = %run_id_blk, "figure spill task panicked: {e}"),
+        }
+    }
+    figures
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -406,30 +436,7 @@ pub async fn handle_repl_execute(
     }
 
     // Spill figures to files so the response never inlines base64 (1 MiB cap).
-    let mut figures: Vec<String> = Vec::new();
-    if !image_frames.is_empty() {
-        let runs_dir = ws.project_root.join(".sot").join("runs").join(&run_id);
-        let run_id_blk = run_id.clone();
-        let spill = tokio::task::spawn_blocking(move || -> std::result::Result<Vec<String>, String> {
-            use base64::engine::general_purpose::STANDARD;
-            use base64::Engine as _;
-            std::fs::create_dir_all(&runs_dir).map_err(|e| format!("create {runs_dir:?}: {e}"))?;
-            let mut out = Vec::new();
-            for (i, (mime, b64)) in image_frames.iter().enumerate() {
-                let bytes = STANDARD.decode(b64).map_err(|e| format!("fig {i} base64: {e}"))?;
-                let p = runs_dir.join(format!("fig-{i}.{}", exec_mime_ext(mime)));
-                std::fs::write(&p, &bytes).map_err(|e| format!("write {p:?}: {e}"))?;
-                out.push(p.to_string_lossy().into_owned());
-            }
-            Ok(out)
-        })
-        .await;
-        match spill {
-            Ok(Ok(paths)) => figures = paths,
-            Ok(Err(e)) => tracing::warn!(run_id = %run_id_blk, "figure spill failed: {e}"),
-            Err(e) => tracing::warn!(run_id = %run_id_blk, "figure spill task panicked: {e}"),
-        }
-    }
+    let figures = spill_exec_figures(&ws, &run_id, image_frames).await;
 
     let res = ReplExecuteRes {
         run_id: run_id.clone(),
