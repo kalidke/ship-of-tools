@@ -7,6 +7,8 @@ Monitor (ADR 0041). Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 - `mod.rs`: declares the tenants' folders and files.
 - `monitor.rs`: the Monitor tenant's state (a ring of samples per host) and its SVG chart (ADR 0020).
 - `keys.rs`: What a key does in the drawer: clear and paste, then the Terminal's pty or the REPL's scroll, history and input.
+- `monitor.rs`: the Monitor tenant's state (a ring of samples per host) and its SVG chart (ADR 0020), and
+  `State::layout_drawer_px`, which sizes the drawer's rects and rasterises the chart.
 - `repl/`: the REPL tenant, its eval log and the log's display lines.
 - `terminal/`: the Terminal tenant, the local pty and the vt100 helpers.
 

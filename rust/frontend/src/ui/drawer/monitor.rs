@@ -12,7 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use sot_protocol::{HostLatest, HostSeries, MonitorSample, ProcSample};
-use crate::ui::State;
+use crate::ui::*;
 
 const RING_CAP: usize = 900; // ~15 min of 1 Hz live tail
 const WINDOW_S: f64 = 300.0; // default visible window (5 min)
@@ -394,6 +394,47 @@ impl State {
         }
         self.monitor_dirty = true;
         self.window.request_redraw();
+    }
+
+    pub(in crate::ui) fn layout_drawer_px(
+        &mut self,
+        cells_to_px: impl Fn(ratatui::layout::Rect) -> ScreenRect,
+        repl_scrollback_cells: ratatui::layout::Rect,
+        repl_window: (usize, usize),
+        repl_cells: ratatui::layout::Rect,
+    ) {
+        // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
+        // Regenerate the SVG → wgpu quad whenever data or size changed
+        // (`monitor_dirty`), mirroring the math-SVG rasterise path. Build into
+        // a local first so the immutable `&self.device/queue/quad_pipeline`
+        // borrows don't collide with the `self.monitor_quad` write.
+        self.repl_scrollback_px = cells_to_px(repl_scrollback_cells);
+        self.repl_window = repl_window;
+        self.monitor_rect_px = cells_to_px(repl_cells);
+        if self.drawer == DrawerContent::Monitor {
+            let mw = self.monitor_rect_px.w.max(1.0) as u32;
+            let mh = self.monitor_rect_px.h.max(1.0) as u32;
+            if self.monitor_dirty && mw > 1 && mh > 1 {
+                // Scale the chart's text + gutters to match the chrome's
+                // effective text size (cell_h is BASE_CELL_H * scale), so the
+                // SVG's logical-px labels aren't tiny on a hi-DPI window.
+                let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
+                let svg = self.monitor_view.render_svg(mw, mh, mon_scale);
+                let quad = quad_from_svg_bytes(
+                    &self.device,
+                    &self.queue,
+                    &self.quad_pipeline,
+                    svg.as_bytes(),
+                    mw,
+                    mh,
+                )
+                .ok();
+                self.monitor_quad = quad;
+                self.monitor_dirty = false;
+            }
+        } else {
+            self.monitor_quad = None;
+        }
     }
 }
 
