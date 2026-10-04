@@ -246,10 +246,6 @@ pub const CONNECT_BOUND: Duration = Duration::from_secs(2);
 /// teardown (the ordinary case) never visibly waits for it, and small
 /// enough that a test proving "loud on expiry" against a short injected
 /// budget stays fast too.
-// On non-Windows nothing calls these two until LU1's Unix transport lands —
-// the same device `host_handshake`/`deadline` use in lib.rs, so the Linux and
-// macOS builds stay warning-free without gating the contract module itself.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Wait for `jh` to finish without ever calling the BLOCKING
@@ -282,7 +278,6 @@ pub(crate) const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// decision, made exactly once, from the caller's own single call site —
 /// nothing later re-evaluates or overturns it, whether the answer was
 /// `true` or `false`.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
     loop {
         if jh.is_finished() {
@@ -306,7 +301,6 @@ pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
 
 /// Bound on one outstanding overlapped `ReadFile` (ADR 0041: "the transport
 /// just must not read unboundedly ahead").
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const READ_BUF_LEN: usize = 65_536;
 
 /// Per-connection outbound byte budget: enqueued-but-not-yet-physically-
@@ -315,18 +309,15 @@ pub(crate) const READ_BUF_LEN: usize = 65_536;
 /// per-watcher queue" figure — not a literal citation of it (that number
 /// bounds a different queue, the future capsule's checkpoint transfer),
 /// just a consistent order of magnitude for this transport's own ceiling.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 
 /// The `events()` channel's item capacity: sized so a run of maximum-size
 /// `Bytes` deliveries caps buffered inbound at roughly the same order of
 /// magnitude as [`OUTBOUND_BUDGET_BYTES`].
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
 
 /// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
 /// sleeps between retries against a full `events` channel.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 /// How long a stalled `Bytes` delivery may retry a single chunk against a
@@ -334,7 +325,6 @@ pub(crate) const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 /// connection with a guaranteed `Closed`. Generous relative to
 /// [`EVENTS_RETRY_INTERVAL`] — this is "the consumer has genuinely
 /// stalled," not routine backpressure.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const BYTES_ABANDON_AFTER: Duration = Duration::from_secs(5);
 
 /// Per-connection outbound byte accounting: reserved eagerly before an
@@ -342,12 +332,10 @@ pub(crate) const BYTES_ABANDON_AFTER: Duration = Duration::from_secs(5);
 /// that item RETURNS (success or failure) — the in-flight item stays
 /// counted the whole time. The cap is always [`OUTBOUND_BUDGET_BYTES`] —
 /// not configurable, so no field for it.
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct OutboundBudget {
     used: Mutex<usize>,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 impl OutboundBudget {
     pub(crate) fn new() -> Self {
         Self {
@@ -375,7 +363,6 @@ impl OutboundBudget {
 /// initial lifecycle event has been RELIABLY queued, or `abort`ed if the
 /// connection could not be fully set up, in which case the gated thread
 /// returns immediately, having never touched the transport.
-#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GateSignal {
     Wait,
@@ -383,13 +370,11 @@ enum GateSignal {
     Abort,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct StartGate {
     state: Mutex<GateSignal>,
     cv: Condvar,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
 impl StartGate {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
