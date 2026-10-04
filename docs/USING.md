@@ -7,7 +7,7 @@ This page is the entry point for what to do next.
 
 Ship of Tools is a keyboard-driven development environment for Julia that turns
 coding into **directing Claude Code agents**: a four-pane window (navigation,
-preview, orchestrator, REPL) lets you steer, watch, and review while the agent
+preview, agent, REPL) lets you steer, watch, and review while the agent
 writes and runs the code. It is opinionated by design — the layout isn't
 configured, it's built around one workflow.
 
@@ -22,11 +22,9 @@ where you were working. See `docs/src/ref/keybindings.md` for configuration.
 
 ## Ask the app, not just the docs
 
-Your workspace's Claude Code agent — running in the **orchestrator pane**
+Your workspace's Claude Code agent — running in the **agent pane**
 (bottom-left), the agent associated with your workspace — is more than a
-coding assistant; it's also your help system. (In the dev self-host setup
-only, the Terminal drawer, `Ctrl+T`, also runs a Claude session; on a normal
-install that drawer is a plain shell.) Ask the orchestrator plain questions
+coding assistant; it's also your help system. Ask it plain questions
 like:
 
 - "How do I add a new preview file type?"
@@ -129,5 +127,5 @@ changes. Start with:
 - `examples/plugins/` — a complete worked example package (`HDF5Preview`)
   showing the pattern end to end, from outside core.
 
-When in doubt, ask the orchestrator pane's Claude Code agent — it has read
+When in doubt, ask the agent pane's Claude Code agent — it has read
 both.

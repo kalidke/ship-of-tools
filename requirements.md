@@ -14,6 +14,7 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 
 - Single user.
 - One project at a time. A project is flexible in definition but is typically a git repository.
+  *Status: the built system runs many rows, each on its own project root, at once.*
 - Cross-platform: must run on Windows and Linux.
 - Local and remote operation are both supported, and must offer the same user experience.
 
@@ -39,6 +40,7 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 ### Concept explorer
 
 - The system must support inspection of, at a minimum: source code, type structure, program outputs, project and module structure, and mathematical content.
+  *Status: source, project and module structure are built (Files and Modules modes); type, output and math inspection are not built.*
 - The LLM must maintain — and keep current with the codebase — artifacts capturing project intent, module purpose, type meaning, function contracts, mathematical derivations, and data shapes.
 - The user must be able to move between levels of abstraction, from project overview down to specifics, without leaving the environment.
 - When a project has no existing concept-explorer artifacts (for example, when first opening an unfamiliar repo), generating them is the LLM's responsibility.
@@ -50,8 +52,11 @@ A keyboard-driven Julia development environment built to be driven by AI agents:
 - The user must always be able to see what each active agent is doing and what state it is in.
 - The user must be able to inspect, after the fact, any agent's actions, reasoning, and outputs in enough detail to verify the work.
 - The user must be able to compare, accept, or discard each agent's work product.
+  *Status: not built.*
 
 ### LLM mediation and control
+
+*Status: the agents are Claude Code and Codex sessions, each running in its own row; the user directs them from the window. An in-app orchestrator chat is NOT BUILT.*
 
 - The LLM is the user's primary means of operating the environment beyond core editor and REPL interactions.
 - Decisions about which actions require user confirmation are the LLM's responsibility. The environment does not impose its own permission tiers, sandboxes, or rule-based action gating.
@@ -119,6 +124,7 @@ one load-bearing. The following are now **in scope**, governed by ADR 0030
 - **Installation**: a scripted installer (interactive or flag-driven) laying
   down binaries plus a repo checkout pinned at the release tag — the checkout
   doubles as the product's resource tree and its in-app manual.
+  *Status: built for Linux and macOS (scripts/install.sh); Windows installs by hand (docs/INSTALL-AGENT.md).*
 - **Self-update**: installed instances detect, download, verify, and stage
   new releases; apply is staged-next-launch with rollback.
 

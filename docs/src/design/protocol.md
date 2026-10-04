@@ -64,7 +64,6 @@ The verbs the protocol defines in phase 1 (several later gained an additive
 | `repl.interrupt` | req | interrupt a running eval |
 | `fs.read` / `fs.write` | req/res | read/write a file |
 | `concept.read` / `concept.write` | req/res | read/write a `.concept/` annotation |
-| `chat.send` / `chat.cancel` | req | drive the orchestrator session |
 
 Events: `tree.invalidate`, `repl.frame`, `chat.delta`, `file.changed`.
 

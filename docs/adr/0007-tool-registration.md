@@ -1,6 +1,6 @@
 # ADR 0007: Tool registration timing
 
-**Status:** current — accepted.
+**Status:** current — accepted, NOT BUILT: the daemon has no LLM client, and the agents are Claude Code and Codex sessions in rows.
 **Date:** 2026-05-07
 
 ## Context
