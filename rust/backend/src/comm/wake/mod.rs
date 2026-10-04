@@ -276,7 +276,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let now = crate::comm::registry::registry::unix_now_secs();
         let reason = refused_on(l, c, a, cfg!(windows)).or_else(|| stop_hook_running(&registry, handle, now).then_some("stop hook running"));
         let border = c.and_then(|(row, _)| l.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
         *seen.borrow_mut() = (reason, border);
