@@ -51,6 +51,7 @@ toml and its migrations are still in `workspaces.rs`, and the capsule start and 
 ## Folders
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: the phase strings, the lifecycle observer and the headless attach client
+- `spawn/`: launching a row's supervisor: state-root checks, the detached spawn per OS, the Linux row scope
 
 ## Files
 - `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, the `WorkspaceChanged` event and the session name rule
