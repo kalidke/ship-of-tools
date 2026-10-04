@@ -584,6 +584,14 @@ mod capsule_sibling_present_tests {
         assert!(!capsule_sibling_present(&daemon));
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[test]
+    fn sot_capsule_exe_is_the_sibling_name_beside_this_executable() {
+        let literal = if cfg!(windows) { "sot-capsule.exe" } else { "sot-capsule" };
+        let beside = std::env::current_exe().expect("current_exe").parent().expect("parent").join(literal);
+        assert_eq!(sot_capsule_exe().expect("sot_capsule_exe"), beside);
+        assert_eq!(CAPSULE_SIBLING_NAME, literal);
+    }
 }
 
 #[cfg(test)]
