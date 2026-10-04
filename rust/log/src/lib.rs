@@ -233,7 +233,7 @@ pub mod supervisor;
 pub use attach_client::supervisor_client;
 pub use store::verify;
 pub use store::voyage;
-pub mod wire;
+pub use lane::wire;
 // Field-proven defect fix: hardens a process's own inherited stdio handles
 // against leaking into a spawned child — self-gated (`#![cfg(windows)]`).
 #[cfg(windows)]

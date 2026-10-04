@@ -6,10 +6,11 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
 - `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`
-- `mod.rs`: declares the four modules; each file gates itself by platform
+- `mod.rs`: declares the five modules; each file gates itself by platform
 - `pipe_transport.rs`: Windows bridge from the named-pipe server to `Transport`; twin of `socket_transport.rs`
 - `socket_transport.rs`: the Unix twin, from the domain-socket server to `Transport`
 - `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
+- `wire/`: the frame layouts of the three lanes, pure encode and decode
 
 ## Start here
 `transport.rs` for the contract every lane server implements; `client.rs` for how a client dials one.

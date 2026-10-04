@@ -5,3 +5,4 @@ pub mod client;
 pub mod pipe_transport;
 pub mod socket_transport;
 pub mod transport;
+pub mod wire;
