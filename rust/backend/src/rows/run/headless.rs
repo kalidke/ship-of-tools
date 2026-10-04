@@ -343,7 +343,9 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::{enter_outcome, screen_of, type_into, write_and_enter, HeadlessError};
+    #[cfg(target_os = "linux")]
+    use super::screen_of;
+    use super::{enter_outcome, type_into, write_and_enter, HeadlessError};
     use sot_protocol::PtyEnter;
     use std::path::Path;
     use std::time::{Duration, Instant};
