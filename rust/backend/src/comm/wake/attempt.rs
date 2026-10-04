@@ -2,7 +2,7 @@
 
 use super::*;
 use super::screen::{free_test_lines, held_rows, wake_lines};
-use crate::rows::run::headless::{attach, send_enter, type_and_pace, wait_for_checkpoint, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
+use crate::rows::run::headless::{attach, checkpointed, send_enter, type_and_pace, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
 #[derive(Debug, PartialEq, Eq)]
@@ -54,13 +54,9 @@ pub fn wake_if_free(
     quiet_budget: Duration,
     pacing_budget: Duration,
 ) -> Result<WakeOutcome, HeadlessError> {
-    let mut client = attach(state_dir, controller_id)?;
-    if let Err(e) = wait_for_checkpoint(&mut client, Instant::now() + op_budget) {
-        client.shutdown(SHUTDOWN_WAIT);
-        return Err(e);
-    }
+    let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
     let cursor = client.screen().cursor_position();
-    let first = wake_lines(&client);
+    let first = wake_lines(client.screen());
     let seen = free_test_lines(client.screen());
     // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the attempt
     // leaves a file at each point, for a stub that moves focus at exactly `hold` and `final-ok`: `hold` when the hold
@@ -85,7 +81,7 @@ pub fn wake_if_free(
         while still && held_from.elapsed() < still_for {
             std::thread::sleep(POLL_INTERVAL);
             client.pump();
-            still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(&client), cursor.0) == held_rows(&first, cursor.0);
+            still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(client.screen()), cursor.0) == held_rows(&first, cursor.0);
         }
         // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
         if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {

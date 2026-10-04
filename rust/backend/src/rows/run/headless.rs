@@ -74,27 +74,14 @@ pub fn type_into(
     bytes: &[u8],
     deadline: Instant,
 ) -> Result<usize, HeadlessError> {
-    if bytes.len() > TAKE_QUEUE_CAP {
-        return Err(HeadlessError {
-            phase: "size",
-            detail: format!(
-                "payload is {} bytes, exceeding the take queue cap of {TAKE_QUEUE_CAP} bytes",
-                bytes.len()
-            ),
-            submitted: false,
-        });
-    }
+    size_gate(bytes.len())?;
     if bytes.is_empty() {
         // "an empty payload succeeds without taking" (ADR 0042
         // amendment review) — nothing to attach for.
         return Ok(0);
     }
 
-    let mut client = attach(state_dir, controller_id)?;
-    if let Err(e) = wait_for_checkpoint(&mut client, deadline) {
-        client.shutdown(SHUTDOWN_WAIT);
-        return Err(e);
-    }
+    let mut client = checkpointed(attach(state_dir, controller_id)?, deadline)?;
     let result = send_and_wait_recorded(&mut client, bytes, deadline);
     client.shutdown(SHUTDOWN_WAIT);
     result
@@ -205,22 +192,9 @@ pub fn write_and_enter(
     quiet_budget: Duration,
     pacing_budget: Duration,
 ) -> Result<(usize, PtyEnter), HeadlessError> {
-    if text.len() > TAKE_QUEUE_CAP {
-        return Err(HeadlessError {
-            phase: "size",
-            detail: format!(
-                "payload is {} bytes, exceeding the take queue cap of {TAKE_QUEUE_CAP} bytes",
-                text.len()
-            ),
-            submitted: false,
-        });
-    }
+    size_gate(text.len())?;
 
-    let mut client = attach(state_dir, controller_id)?;
-    if let Err(e) = wait_for_checkpoint(&mut client, Instant::now() + op_budget) {
-        client.shutdown(SHUTDOWN_WAIT);
-        return Err(e);
-    }
+    let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
     let out = type_and_pace(&mut client, text, op_budget, quiet_budget, pacing_budget)
         .map(|n| (n, enter_outcome(send_enter(&mut client, op_budget))));
     client.shutdown(SHUTDOWN_WAIT);
@@ -300,17 +274,36 @@ pub fn screen_of(
     controller_id: &str,
     deadline: Instant,
 ) -> Result<ScreenShot, HeadlessError> {
-    let mut client = attach(state_dir, controller_id)?;
+    let mut client = checkpointed(attach(state_dir, controller_id)?, deadline)?;
+    let (rows, cols) = client.screen().size();
+    let lines = current_lines(&client);
+    let cursor = Some(client.screen().cursor_position());
+    client.shutdown(SHUTDOWN_WAIT);
+    Ok(ScreenShot { cols, rows, lines, cursor })
+}
+
+/// The take-queue size gate, before any attach: a payload over [`TAKE_QUEUE_CAP`] is refused.
+fn size_gate(len: usize) -> Result<(), HeadlessError> {
+    if len > TAKE_QUEUE_CAP {
+        return Err(HeadlessError {
+            phase: "size",
+            detail: format!(
+                "payload is {} bytes, exceeding the take queue cap of {TAKE_QUEUE_CAP} bytes",
+                len
+            ),
+            submitted: false,
+        });
+    }
+    Ok(())
+}
+
+/// Waits for `client`'s checkpoint by `deadline`; on failure shuts the client down and returns the error.
+pub(crate) fn checkpointed(mut client: Client, deadline: Instant) -> Result<Client, HeadlessError> {
     if let Err(e) = wait_for_checkpoint(&mut client, deadline) {
         client.shutdown(SHUTDOWN_WAIT);
         return Err(e);
     }
-    let (rows, cols) = client.screen().size();
-    let lines: Vec<String> =
-        client.screen().rows(0, cols).map(|line| line.trim_end().to_string()).collect();
-    let cursor = Some(client.screen().cursor_position());
-    client.shutdown(SHUTDOWN_WAIT);
-    Ok(ScreenShot { cols, rows, lines, cursor })
+    Ok(client)
 }
 
 pub(crate) fn attach(state_dir: &Path, controller_id: &str) -> Result<Client, HeadlessError> {

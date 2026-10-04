@@ -1,7 +1,6 @@
 //! Whether a captured screen is a free prompt: the glyph, box, panel and typed-line tests, and the rows the wake holds.
 
 use super::*;
-use crate::rows::run::headless::Client;
 
 /// The rule drawn above and below Claude Code's input box.
 const RULE: char = '\u{2500}';
@@ -175,9 +174,9 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
 
 /// [`current_lines`] trimming ASCII spaces only: the no-break space after the
 /// glyph is the main input prompt's own mark, and `trim_end` would strip it.
-pub(super) fn wake_lines(client: &Client) -> Vec<String> {
-    let (_, cols) = client.screen().size();
-    client.screen().rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
+pub(super) fn wake_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
+    let (_, cols) = screen.size();
+    screen.rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
 }
 
 /// [`wake_lines`] as the wake's free test reads them: on the cursor's row a dim cell (SGR 2) reads as a
@@ -186,7 +185,7 @@ pub(super) fn wake_lines(client: &Client) -> Vec<String> {
 pub(crate) fn free_test_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
     let (row, _) = screen.cursor_position();
     let (_, cols) = screen.size();
-    let mut lines: Vec<String> = screen.rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect();
+    let mut lines = wake_lines(screen);
     if let Some(line) = lines.get_mut(row as usize) {
         *line = (0..cols)
             .filter_map(|col| screen.cell(row, col))
