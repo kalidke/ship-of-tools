@@ -1,7 +1,7 @@
 // One action catalog supplies dispatch, resolved shortcut labels and contextual help.
 use std::collections::HashMap;
 use std::fs;
-use crate::ui::persist::discover::find_keybindings_file;
+use crate::ui::persist::discover::find_config_file;
 use winit::keyboard::{Key, NamedKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -441,7 +441,7 @@ impl KeyBindings {
     }
     pub fn load_layered() -> Self {
         let mut b = Self::defaults();
-        if let Some(path) = find_keybindings_file() {
+        if let Some(path) = find_config_file("SOT_KEYBINDINGS", "keybindings.toml") {
             match fs::read_to_string(&path) {
                 Ok(text) => b.merge_text(&text),
                 Err(e) => {

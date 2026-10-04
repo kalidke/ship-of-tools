@@ -7,7 +7,7 @@ session. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 - `mod.rs`: `State::persist_resume_state`, the one writer of the resume snapshot.
 - `settings.rs`: `Settings` and its layered TOML reader (layout presets, display, download directory).
 - `settings_tests.rs`: the tests of `settings.rs`.
-- `discover.rs`: `find_settings_file` and `find_keybindings_file`, the two config-file finders.
+- `discover.rs`: `find_config_file`, the one config-file finder.
 - `resume.rs`: `GlobalState` and its `load`/`save`, the per-host resume file.
 
 ## Start here
@@ -20,6 +20,6 @@ session. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 - A harness window (`--capture`, `--ephemeral`) never writes resume state, and a minimized window saves nothing:
   `State::persist_resume_state` returns early on `ephemeral` and on `is_minimized`.
 - Discovery order: the `$SOT_SETTINGS` / `$SOT_KEYBINDINGS` override, then `.sot/` in the cwd's ancestors, then
-  `$HOME/.config/sot/`: `find_settings_file`, `find_keybindings_file`.
+  `$HOME/.config/sot/`: `find_config_file`, called with `SOT_SETTINGS`/`settings.toml` and `SOT_KEYBINDINGS`/`keybindings.toml`.
 - `[display] fullscreen_vsync_pin` defaults false and is a per-box choice; never add an always-redraw path for every
   panel: `Settings`'s `Default` (test `fullscreen_vsync_pin_defaults_false_and_parses`).

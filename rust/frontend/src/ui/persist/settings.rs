@@ -95,7 +95,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::discover::find_settings_file;
+use super::discover::find_config_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresetMode {
@@ -373,12 +373,12 @@ impl Default for Settings {
 
 impl Settings {
     /// Layered load: defaults overlaid with whatever
-    /// `find_settings_file()` returns. A failed load logs at warn
+    /// `find_config_file` returns. A failed load logs at warn
     /// level and falls back to defaults — same contract as
     /// `KeyBindings::load_layered()`.
     pub fn load_layered() -> Self {
         let mut s = Self::default();
-        if let Some(path) = find_settings_file() {
+        if let Some(path) = find_config_file("SOT_SETTINGS", "settings.toml") {
             match fs::read_to_string(&path) {
                 Ok(contents) => {
                     s.merge_text(&contents);
