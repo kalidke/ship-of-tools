@@ -179,6 +179,12 @@ jobs:
         run: bash scripts/tests/installer-state.sh
         working-directory: .
 
+      - name: Test installer apply (bash)
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 5
+        run: bash scripts/tests/installer-apply.sh
+        working-directory: .
+
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job.
       - name: Test sot-comm disambiguation (hermetic)

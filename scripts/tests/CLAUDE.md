@@ -5,8 +5,12 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 
 ## Files
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  `sot-apply.sh` apply and rollback, and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer
-  state (bash)" (ubuntu leg) and in `rc-gate.sh`.
+  and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
+  `rc-gate.sh`.
+- `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
+  `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
+- `installer-support.sh`: the setup both installer suites source: install.sh and lib/sot-daemon.sh, `check`,
+  `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `rc-gate.sh`: the local candidate gate: the Rust workspace tests, doc tests, windows-gnu and darwin cross checks,
   every Julia suite and the shell suites, as concurrent jobs under one cap. Linux only, run by hand.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
