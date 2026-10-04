@@ -20,7 +20,7 @@ paths, and the headless attach client. Part of the daemon's rows subsystem; char
 ## Start here
 `activation.rs::ensure_started` for how a row starts on attach, and `end_run.rs::end_run` for how a row ends with the
 destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `headless.rs::type_into` and
-`write_and_enter` for the ops that type into a sibling row (`pty.input` in `handlers.rs`, the comm wake in `comm_wake.rs`).
+`write_and_enter` for the ops that type into a sibling row (`pty.input` in `rows/ops/pty.rs`).
 
 ## Rules
 - `observer::observe` is the one call that feeds a row's phase cell, through `Workspace::apply_phase_observation`.
