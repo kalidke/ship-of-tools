@@ -300,6 +300,8 @@ mod leg;
 mod lifecycle;
 mod main_loop;
 mod oneshot;
+pub mod lease_win;
+pub mod probe;
 use authority::*;
 use authority::lane::*;
 use leg::*;

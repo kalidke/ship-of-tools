@@ -73,7 +73,7 @@ pub use lane::client;
 // table) `probe.rs` deliberately ships without — see that module's own
 // doc. Portable (L1-unix LU1a): makes no OS call of its own, so its unit
 // tests now run on every platform, not merely Windows.
-pub mod classify;
+pub use supervisor::probe::classify;
 pub mod claude;
 #[cfg(windows)]
 pub use capsule::producer::conpty;
@@ -115,21 +115,24 @@ pub use lane::socket_transport;
 // see the module's own doc. Platform-neutral (L1-unix LU1a): the
 // mechanical outcome enums, the `ProbeOps` trait, and the scripted test
 // support -- the real OS-facing implementation is `probe_win`.
-pub mod probe;
+pub use supervisor::probe;
 // L1-unix LU1a: the Windows half of the probe seam -- `RealProbeOps` and
 // `SpawnedChild`. `pub`, matching `probe`/`challenge_win`: Windows-only,
 // self-gated (see the module's own `#![cfg(windows)]`).
-pub mod probe_win;
+#[cfg(windows)]
+pub use supervisor::probe::win as probe_win;
 // L1-unix LU3c: the Linux half of the probe seam -- `RealProbeOps` and
 // `SpawnedChild`, over pidfds. `pub`, matching `probe_win`: self-gated
 // (see the module's own `#![cfg(target_os = "linux")]`).
-pub mod probe_unix;
+#[cfg(target_os = "linux")]
+pub use supervisor::probe::unix as probe_unix;
 // The macOS half of the same seam -- `RealProbeOps` and `SpawnedChild`,
 // over a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` knote. A separate module,
 // not a widened `probe_unix`: every mechanism there is a pidfd, and
 // Darwin has none. `pub`, matching its two siblings: self-gated (see the
 // module's own `#![cfg(target_os = "macos")]`).
-pub mod probe_macos;
+#[cfg(target_os = "macos")]
+pub use supervisor::probe::macos as probe_macos;
 // Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
 // "one private machine" ruling means this module's items are not part of
 // the crate's public API — `capsule_win.rs` is the only real caller and
@@ -199,7 +202,8 @@ pub mod journal;
 // equivalent is an inherited `pipe2`, owned by `supervisor.rs` itself —
 // see that module's own doc; nothing here is ported). `pub`, matching
 // `challenge_win`/`probe_win`: `tests/supervisor.rs` needs to reach it.
-pub mod lease;
+#[cfg(windows)]
+pub use supervisor::lease_win as lease;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.

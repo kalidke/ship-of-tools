@@ -32,6 +32,11 @@ use crate::challenge::ChallengeOutcome;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+pub mod classify;
+pub mod macos;
+pub mod unix;
+pub mod win;
+
 /// One connect attempt's outcome, categorized only as far as ADR 0041's
 /// probe table (Stage B) needs — MECHANICAL categories; what each one
 /// MEANS is the classifier's call, not this seam's.
