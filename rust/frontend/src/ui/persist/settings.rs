@@ -507,7 +507,7 @@ impl Settings {
                 },
                 // Known, and not the frontend's: the DAEMON reads
                 // `[trust] root_prefix` out of the user-level copy of this
-                // same file (`backend::accounts::trusted_root_prefix`), and
+                // same file (`backend::agents::folder_trust::trusted_root_prefix`), and
                 // the installer writes it there. Recognised here so a key
                 // our own install writes is not reported as a typo at every
                 // start; there is nothing for the frontend to do with it.

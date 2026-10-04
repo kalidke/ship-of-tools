@@ -638,7 +638,7 @@ fn voyages_dir(state_dir: &Path) -> PathBuf {
 }
 
 /// `pub` (ADR 0043 decision 33): exported for the daemon's own leg-absence
-/// probe (`sot-backend`'s `capsule_workspace::runtime::leg_absent`) — the
+/// probe (`sot-backend`'s `rows::run::end_run::leg_absent`) — the
 /// destroy proof's LEG half needs the exact same voyage root this module
 /// uses internally, never a second, possibly-drifting derivation.
 pub fn voyage_root_path(state_dir: &Path, voyage_id: &str) -> PathBuf {
@@ -691,7 +691,7 @@ static NOTE_PREFIX: OnceLock<String> = OnceLock::new();
 /// Format one complete diagnostic line and issue it as ONE `write_all` on
 /// stderr — never `eprintln!`'s own piecewise writes. `O_APPEND` (the
 /// daemon's `sotd.log`, opened fresh per spawn by
-/// `capsule_workspace::spawn_detached_supervisor`) keeps a single
+/// `rows::spawn::detach::spawn_detached_supervisor`) keeps a single
 /// `write(2)` intact between processes appending to the SAME file;
 /// nothing else does, so every line from the supervise path goes through
 /// this instead of `eprintln!`. Best-effort (a write failure here has no

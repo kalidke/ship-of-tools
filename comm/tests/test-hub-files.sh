@@ -22,7 +22,7 @@
 #   4. The wait is ONE number, 10, in both languages, and no stale/patience/
 #      reclaim constant is spelled at all — the lease is deleted and this
 #      keeps it deleted.
-#   5. The lock identity: the same fixture set comm_inbox.rs's unit test reads
+#   5. The lock identity: the same fixture set comm/mail/inbox_tests.rs's unit test reads
 #      gives the same strings here; a broadcast copy says so on the wire.
 #   6. A wire send (comm-relay.sh's send_frame) is one `comm.file` frame with
 #      no id, and prints the hub's answer: `filed -> @h`, or `FAILED -> @h:`

@@ -347,7 +347,7 @@ mod tests {
     /// Version-skew seam: a NEW frontend against an OLD daemon (no
     /// `workspace.activate` support). `OutgoingReq::WorkspaceActivate`
     /// deliberately stamps NO `PendingKind` (see its send-site comment) —
-    /// so an old daemon's generic unknown-op reply (`server.rs`'s `other =>`
+    /// so an old daemon's generic unknown-op reply (`server/dispatch.rs`'s `other =>`
     /// catch-all: `{"error": "unknown op: workspace.activate"}`, same `op`
     /// and `id` echoed back) finds nothing in `pending` and MUST fall all
     /// the way through to the generic `IncomingEvt::Event` catch-all —

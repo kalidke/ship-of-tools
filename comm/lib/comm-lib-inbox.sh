@@ -50,7 +50,7 @@ _sot_have_flock() { command -v flock >/dev/null 2>&1; }
 _sot_findmnt() { findmnt "$@"; }
 _sot_machine_id() { local m=""; { read -r m < /etc/machine-id; } 2>/dev/null; printf '%s' "$m"; }
 # sot_inbox_lock_identity DIR — the lock manager an append to DIR goes
-# through, by the rule comm_inbox.rs's record uses: `nfs4 <source>`,
+# through, by the rule comm/mail/inbox.rs's record uses: `nfs4 <source>`,
 # `local <machine-id>` on a local block filesystem, else `none@<machine-id>`,
 # this machine's lock alone (bare `none` with no machine id, which never
 # matches) — so an NFS v4 mount without `local_lock=none` (its lock stays on

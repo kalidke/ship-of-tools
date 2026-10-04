@@ -268,7 +268,7 @@ sot_hash6() {
     return 1
 }
 
-# sot_slug LABEL — bash mirror of rust/backend/src/paths.rs::slug (Codex
+# sot_slug LABEL — bash mirror of sot_protocol::slug (Codex
 # review PR #148 round 2, finding 3): lowercase; '.' -> '_' BEFORE the
 # keep-check; a RUN of characters outside [a-z0-9_-] collapses to a single
 # '-' (a LITERAL '-'/'_'/alnum in the input is pushed as-is and never
@@ -312,7 +312,7 @@ sot_slug() {
 # runs of '-' collapse, leading/trailing '-' trimmed) and clamp it to
 # MAXLEN (Codex review F4): a repo/parentdir basename can contain spaces,
 # Unicode, or shell metacharacters, none of which workspace.create's name
-# validator (`rust/backend/src/handlers.rs`, `valid_name`) accepts — and an
+# validator (`rust/backend/src/paths.rs`, `valid_name`) accepts — and an
 # unsanitized basename reaching the `--no-workspace` launcher string is a
 # shell-injection vector. Applied to EVERY raw piece (basename, parentdir,
 # host) BEFORE composing a candidate, never to the assembled candidate

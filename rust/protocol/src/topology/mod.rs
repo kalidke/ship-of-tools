@@ -381,7 +381,7 @@ pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)>
 }
 
 /// FNV-1a 64-bit hash of the file's exact bytes, lowercase zero-padded
-/// hex. Same algorithm as the backend's `file_io::content_version`
+/// hex. Same algorithm as the backend's `files::io::content_version`
 /// (deterministic, dependency-free, stable across rebuilds) — redefined
 /// here rather than imported because `sot-backend` depends on
 /// `sot-protocol`, never the reverse, and both the daemon (`topology.set`'s

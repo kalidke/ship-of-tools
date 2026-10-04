@@ -17,7 +17,7 @@
 //! `should_exit`/`shutdown`/...) is BYTE-IDENTICAL to before this lane,
 //! for its existing callers: the frontend's Terminal drawer and session
 //! pane (`ui/drawer/terminal/`, `ui/agent_pane/`) and the daemon's headless callers
-//! (`capsule_workspace.rs`).
+//! (`rows/run/headless.rs`).
 //!
 //! [`Self::attach_inner`] builds its own `mpsc::channel::<WorkerEvent>()`
 //! and passes a closure over its sending half — plus the caller's `wake`
@@ -28,7 +28,7 @@
 //!
 //! [`InputOutcome`] is [`crate::attach_client::worker::InputOutcome`], re-
 //! exported at this module's own path so existing callers
-//! (`capsule_workspace.rs`, `tests/fe_client/`) are unaffected by the
+//! (`rows/run/headless.rs`, `tests/fe_client/`) are unaffected by the
 //! move.
 
 use crate::attach_client::worker::{AttachWorker, DEFAULT_INGRESS_BOUND_BYTES};
@@ -236,7 +236,7 @@ impl<E: Endpoint> FeAttachClient<E> {
 
     /// ADR 0042 amendment (2026-09-07): a HEADLESS attach — the daemon's
     /// own `pty.input`/`pty.screen` client on a capsule row
-    /// (`capsule_workspace::headless`), never the frontend. No viewport
+    /// (`rows::run::headless`), never the frontend. No viewport
     /// (`cols`/`rows` are a placeholder until the checkpoint lands — see
     /// [`Self::pump`]'s `Checkpoint` arm), no `fe_down` marker (this client
     /// makes exactly one attach in its short lifetime, and

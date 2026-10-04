@@ -12,7 +12,7 @@
 //! makes that loopback port resolve by binding a local listener that pipes
 //! each browser connection to the right daemon, which dials the real service
 //! (the daemon half validates the port + does the dialing —
-//! `backend/src/proxy.rs`).
+//! `backend/src/pages/proxy.rs`).
 //!
 //! Ownership split that keeps the "bind before the browser launches" ordering
 //! honest without blocking the render thread: the GPU thread binds a
@@ -155,7 +155,7 @@ where
 /// Pipe one browser connection through an ssh child spawned from `recipe`
 /// for `port` (C3 as amended §3): spawn, do the `proxy.connect` handshake
 /// as the child's first bytes — the daemon peeks that op on ANY accepted
-/// connection (`server.rs`), so the frames are byte-identical to the old
+/// connection (`server/conn.rs`), so the frames are byte-identical to the old
 /// tcp-forwarded leg — then splice bytes both ways until either side closes
 /// (carrying a WebSocket upgrade verbatim). While the host's link is down
 /// (`gate`) no child is spawned and the browser connection closes at once.
@@ -453,7 +453,7 @@ mod tests {
                         let payload = if serving.load(SeqCst) {
                             serde_json::json!({ "ok": true })
                         } else {
-                            // What the daemon's `reject` writes for a port it does not serve (backend proxy.rs).
+                            // What the daemon's `reject` writes for a port it does not serve (backend pages/proxy.rs).
                             serde_json::json!({ "error": format!("port {port} is not a proxyable backend port"), "code": "bad_port" })
                         };
                         codec::write_frame(&mut d_wr, &Frame::res(req.id, op::PROXY_CONNECT, payload), None).await.unwrap();

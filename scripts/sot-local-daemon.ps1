@@ -21,7 +21,7 @@
 # partial dev build (sotd.exe without a matching sot-capsule.exe, e.g. built
 # before that binary existed) is not preferred over a complete install pair
 # -- `sot-capsule.exe` MUST be a sibling of whichever sotd.exe is chosen
-# (rust/backend/src/capsule_workspace.rs resolves it via
+# (rust/backend/src/rows/spawn/detach.rs resolves it via
 # `current_exe().parent()`), so a daemon started from a directory missing
 # that file can create workspaces that immediately fail to spawn. Refuse to
 # start rather than run degraded.
@@ -55,7 +55,7 @@
 # handle to it (and is listed even when every real instance is busy) --
 # presence there is not health. Connecting (then immediately closing) is
 # what proves a server is actually there to accept; the daemon treats an
-# early close as a normal EOF (server.rs), so this probe is harmless to a
+# early close as a normal EOF (server/conn.rs), so this probe is harmless to a
 # live daemon. Used for the idempotency check, the readiness wait, AND stop
 # confirmation (probe fails AND the matched process is gone -- a process
 # that's still exiting can leave the pipe briefly unconnectable without
@@ -453,7 +453,7 @@ $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 # A single string is passed through to CreateProcess's command line as-is,
 # quotes intact.
 # --adopt-legacy-registry: only THE canonical per-user daemon (this script)
-# may run the one-time legacy-registry adoption (workspaces.rs); a
+# may run the one-time legacy-registry adoption (rows/store/mod.rs); a
 # scratch/test daemon must never pass this (field defect).
 $daemonArgLine = '--socket "{0}" --project-root "{1}" --label local --adopt-legacy-registry' -f $PipePath, $ProjectRoot
 Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"

@@ -10,7 +10,7 @@
 # pid's start tick (field 22 of /proc/<pid>/stat); a field that cannot be read
 # is `-`, which never equals anything. It is made by link(2) of a temp file
 # that already holds the line, so it never exists without its holder, and a
-# link never replaces anything. The daemon's `comm_registry_lock.rs` takes
+# link never replaces anything. The daemon's `comm/registry/lock.rs` takes
 # the same lock with the same record.
 #
 # Proof of death is Linux-only, and only from the holder's own machine: the

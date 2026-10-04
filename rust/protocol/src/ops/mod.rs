@@ -106,7 +106,7 @@ pub mod op {
     /// `capsule_input_failed`, `capsule_input_unknown`, `input_not_text`,
     /// `runtime_not_available`, `bad_origin`). A capsule row is served by
     /// a HEADLESS ATTACH CLIENT that takes the pen only long enough to
-    /// type and never resizes it (`capsule_workspace::headless`) — ADR
+    /// type and never resizes it (`rows::run::headless`) — ADR
     /// 0041's take-on-first-input semantics, applied to a second kind of
     /// client.
     pub const PTY_INPUT: &str = "pty.input";
@@ -424,7 +424,7 @@ pub mod op {
     /// connection is still alive. Sent every `PING_INTERVAL` by the
     /// frontend transport;
     /// the daemon gives an `fe`/`bridge` connection a `READ_DEADLINE`
-    /// (server.rs) and drops one that goes quiet that long, reaping it
+    /// (server/conn.rs) and drops one that goes quiet that long, reaping it
     /// through the same `ClientGuard::drop` path as a clean exit.
     /// `cli`/`agent` (one-shot) connections never send this and are never
     /// deadline-gated. Opt-in by ping (manager compatibility fix): the

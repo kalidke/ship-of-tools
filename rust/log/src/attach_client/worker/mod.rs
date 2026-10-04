@@ -40,7 +40,7 @@
 //! `request_quit`/`quit_message`/`should_exit`/`shutdown`/...) is
 //! unchanged for its existing callers: the frontend's Terminal drawer
 //! and session pane (`ui/drawer/terminal/`, `ui/agent_pane/`) and the daemon's headless callers
-//! (`capsule_workspace.rs`).
+//! (`rows/run/headless.rs`).
 
 use crate::lane::client::Endpoint;
 use crate::attach_client::rules::FeDownBaseline;
@@ -192,7 +192,7 @@ pub enum WorkerEvent {
 /// can poll — unchanged from the pre-extraction module's own type,
 /// moved here since it names a worker-level (not rendering-level)
 /// observable; `attach_client::client` re-exports it at its own path so existing
-/// callers (`capsule_workspace.rs`, `tests/fe_client/`) are unaffected.
+/// callers (`rows/run/headless.rs`, `tests/fe_client/`) are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputOutcome {
     /// `input_recorded`: the record has it.

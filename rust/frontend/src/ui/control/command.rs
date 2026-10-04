@@ -282,7 +282,7 @@ mod tests {
             // Never reaches the wire (`#[serde(skip)]`) and irrelevant to
             // the FE's own `route_fe_command` — these tests exercise that
             // pure routing decision, not the daemon-side exclusive-delivery
-            // filter (which lives entirely in server.rs).
+            // filter (which lives entirely in server/events.rs).
             target_serial: None,
         }
     }

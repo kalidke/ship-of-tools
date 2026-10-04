@@ -8,7 +8,7 @@ use super::*;
 // -----------------------------------------------------------------------
 
 /// `type_into`'s own core mechanism, driven directly at the client level
-/// (the wrapper this proves lives in `sot-backend`'s `capsule_workspace::
+/// (the wrapper this proves lives in `sot-backend`'s `rows::run::
 /// headless`, which has no dependency on this crate's test harness): a
 /// headless attach adopts the CAPSULE's own geometry (never the
 /// placeholder it was constructed with), delivers one input frame, and

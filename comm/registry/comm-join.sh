@@ -66,7 +66,7 @@ _why="$(sot_require_agent)" || { echo "comm-join.sh: REFUSING to bind: $_why" >&
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
 # Spawn handoff: comm-spawn (and the daemon's capsule producer env, see
-# capsule_workspace::capsule_supervisor_env) pin the agent's handle by
+# agents::env::capsule_supervisor_env) pin the agent's handle by
 # setting SOT_COMM_NAME=<name> (and optionally SOT_COMM_EXPERTISE) before
 # the /sot-session-start join runs, so it lands on the handle the
 # spawner/daemon is awaiting.

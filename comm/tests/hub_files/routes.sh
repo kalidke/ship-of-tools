@@ -136,7 +136,7 @@ case_the_wire_frame_carries_the_broadcast_flag() {
     return 0
 }
 
-# Identity parity: the fixture set comm_inbox.rs's unit test reads, through
+# Identity parity: the fixture set comm/mail/inbox_tests.rs's unit test reads, through
 # the REAL identity function with findmnt pointed at each fixture.
 case_the_lock_identity_matches_the_shared_fixtures() {
     local fx="$SCRIPT_DIR/fixtures/inbox-lock-identity" file path want got n=0

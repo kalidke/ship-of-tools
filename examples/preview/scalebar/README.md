@@ -44,6 +44,6 @@ L-shape in the corner with its own axis-aligned label — is **Phase 3** (ADR 00
 ## Seeing it live
 
 Requires a scalebar-capable backend: the daemon must include
-`handlers::merge_scale_sidecar` (post-2026-07-18). A daemon predating that
+`files::preview::scale::merge_scale_sidecar` (post-2026-07-18). A daemon predating that
 serves the image but never sends `physical_scale`, so `b` does nothing. Rebuild
 + restart `sotd`, preview one of these images, and press `b`.

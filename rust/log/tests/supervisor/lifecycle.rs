@@ -65,7 +65,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
 /// nothing to do for well over `MAIN_LOOP_POLL` (its own 100ms idle
 /// cadence) -- so it is genuinely parked in the loop's own tail wait, not
 /// mid-tick -- a status probe through the SAME production entry point
-/// `capsule_workspace::phase_of`/`ensure_started` use
+/// `rows::run::probe::phase_of`/`rows::run::activation::ensure_started` use
 /// (`supervisor_client::query_status`: a fresh connect, the identity
 /// challenge, one status exchange) must complete near-instantly rather
 /// than risk paying the OLD worst case (a connection landing right after

@@ -365,7 +365,7 @@ sot_daemon_endpoint() {
     # survived. A scratch daemon is targeted explicitly (SOT_RELAY_ENDPOINT
     # / --endpoint), never by luck of process order. `--tcp` scraping is
     # GONE (dead since 0.4.0 -- `sotd` rejects `--tcp` outright,
-    # `rust/backend/src/main.rs:446-450`). pgrep is not on a stock git-bash
+    # `rust/backend/src/main.rs`'s `parse_args`). pgrep is not on a stock git-bash
     # PATH and must never be reached for on Windows.
     if ! _sot_is_windows; then
         local line

@@ -1,7 +1,7 @@
 # The Claude adapter's settings.json work: account discovery, hook merges, stale-hook removal.
 
 # The account-name rule, character for character the daemon's
-# `is_account_name` (`rust/backend/src/accounts.rs`), so "every account"
+# `is_account_name` (`rust/backend/src/agents/accounts.rs`), so "every account"
 # here is exactly the set the daemon can spawn a session as. `\z`, not `$`:
 # PCRE's `$` also matches before a trailing newline.
 _is_account_name(name::AbstractString) = occursin(r"\A[a-z0-9][a-z0-9_-]*\z", name)

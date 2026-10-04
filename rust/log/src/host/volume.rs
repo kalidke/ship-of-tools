@@ -86,7 +86,7 @@ fn statfs_type(dir: &Path) -> Result<i64> {
 /// SAME `&str` column instead, by substring. tmpfs is deliberately
 /// ABSENT: developer `/tmp` is often tmpfs and every suite must keep
 /// running there; the DAEMON's own, separate volatile-type refusal
-/// (`capsule_workspace::qualified_state_root`) is what refuses tmpfs, on
+/// (`rows::spawn::state_root::qualified_state_root`) is what refuses tmpfs, on
 /// the resolved destination, not this probe. Unknown types are not
 /// refused by this list at all — the two `RENAME_NOREPLACE` probes below
 /// are what actually decides an unlisted type.
@@ -379,7 +379,7 @@ mod tests {
         // tmpfs is ALLOWED here (decision 23: developer `/tmp` is often
         // tmpfs, and every suite must keep running there) — this is the
         // daemon's own, separate volatile-type refusal to make
-        // (`capsule_workspace::qualified_state_root`), never this probe's.
+        // (`rows::spawn::state_root::qualified_state_root`), never this probe's.
         // Skipped, not failed, when `/dev/shm` isn't mounted — some
         // container images omit it, and macOS never mounts tmpfs there at
         // all (no `/dev/shm`), so this always skips on macOS rather than

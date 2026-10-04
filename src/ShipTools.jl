@@ -6,7 +6,7 @@
 # Named accounts (owner ruling): a `~/.claude-auth/<name>` account folder
 # gets skills and everything else the default `~/.claude` folder carries
 # except the login via a SYMLINK the daemon creates at spawn
-# (`rust/backend/src/accounts.rs::ensure_account_links`). The one thing the
+# (`rust/backend/src/agents/accounts.rs::ensure_account_links`). The one thing the
 # installer itself writes under `.claude-auth` is the comm hooks: an account
 # holding a REAL settings.json of its own never sees the shared one, so the
 # hooks are merged into every account's settings.json that exists, each

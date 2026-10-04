@@ -532,7 +532,7 @@ fn absent_kind_from_wire(s: Option<&str>) -> std::io::ErrorKind {
 }
 
 /// `true` iff a wire `unauthenticated` refusal is actually an OLD
-/// daemon's ordinary control-loop auth gate (`server.rs`'s exact "...
+/// daemon's ordinary control-loop auth gate (`server/`'s exact "...
 /// send a token-valid hello first" text) answering a `lane.connect` it
 /// never recognized as a first-frame op — rather than the BRIDGE's own
 /// token check (`lane_bridge.rs`'s "bad or missing token", a daemon

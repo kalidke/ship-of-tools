@@ -2,7 +2,7 @@
 
 @testset "accounts: an account with no settings.json is left for the daemon's link" begin
     # A named account shares the default `~/.claude` folder by SYMLINK,
-    # created by the daemon at spawn (`rust/backend/src/accounts.rs::
+    # created by the daemon at spawn (`rust/backend/src/agents/accounts.rs::
     # ensure_account_links`), which leaves any existing entry alone. So
     # the installer must never CREATE a settings.json in an account
     # folder: a real file there would shadow the shared one for good.

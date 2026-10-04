@@ -296,7 +296,7 @@ case_foreign_row_prints_the_phase_with_no_derived_verdict() {
 
 case_legacy_daemon_predating_version_query_prints_unknown_and_exits_0() {
     # The shape a daemon that predates version.query answers with:
-    # server.rs's generic `other =>` catch-all, the SAME op echoed back on
+    # server/dispatch.rs's generic `other =>` catch-all, the SAME op echoed back on
     # a `res` frame (never a transport failure) — `sot-fe version` must
     # treat this as "daemon predates this op", not a failure.
     stage_reply "version.query" '{"v":1,"id":2,"kind":"res","op":"version.query","payload":{"error":"unknown op: version.query"}}'

@@ -90,7 +90,7 @@ pub(super) fn leg_was_stable(state_dir: &Path, voyage_id: &str) -> bool {
 }
 
 // `DETACHED_PROCESS`: `run` gets no console of its own. `supervise` has none
-// either (the daemon spawns it detached — see `capsule_workspace.rs`), and a
+// either (the daemon spawns it detached — see `rows/spawn/detach.rs`), and a
 // child of a console-less parent otherwise gets a brand-new console, which
 // the user's default terminal adopts as a stray window. `run`'s ConPTY is a
 // separate OS object for the agent child; its own stdio stays inherited.

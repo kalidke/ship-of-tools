@@ -30,7 +30,7 @@ pub(crate) fn frontend_address(host: &str) -> String {
 }
 
 /// Cached singleton, mirroring the backend's own `declared_host()`
-/// (`sot-backend`'s `workspaces.rs`) — one resolver, called once, read
+/// (`sot-backend`'s `rows/store/mod.rs`) — one resolver, called once, read
 /// everywhere after. `sot_log::host::state_dir::host_name()` failing means this
 /// process has no nameable host at all; fatal, same posture the backend
 /// takes at boot, rather than limping on with a guessed address no peer

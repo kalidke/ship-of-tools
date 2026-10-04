@@ -15,7 +15,7 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
             _install_claude_hooks(claude_home(); unhooked = unhooked)
         end
         # Named accounts get skills via the shared-folder symlink the
-        # daemon creates at spawn (`rust/backend/src/accounts.rs::
+        # daemon creates at spawn (`rust/backend/src/agents/accounts.rs::
         # ensure_account_links`); the hooks are merged into every
         # account's own settings.json by `_install_claude_hooks` itself,
         # since an account with a real settings.json never sees the

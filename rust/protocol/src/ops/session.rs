@@ -179,7 +179,7 @@ pub struct FeCommandEvt {
     /// `Clients::snapshot_with_active` when it auto-targeted this event
     /// (2026-09-08 review rework, design point B: a handle string is not a
     /// reliable identity — two connections can share one, e.g. a stale
-    /// reconnect). `server.rs`'s per-connection fan-out drops this event
+    /// reconnect). `server/events.rs`'s per-connection fan-out drops this event
     /// for every connection whose own serial doesn't match, so exactly one
     /// connection ever writes it to its wire — `target` above still rides
     /// along for that one connection's own (redundant, harmless)
@@ -272,7 +272,7 @@ pub struct VersionQueryReq {}
 /// `lane_proto`: a daemon predating ADR 0045 answers without it.
 ///
 /// `host` (topology plan §F step 1) is this daemon's own declared host —
-/// `crate::workspaces::declared_host()` on the backend side, the same
+/// `rows::store::declared_host()` on the backend side, the same
 /// `sot_log::host::state_dir::host_name()` resolution ADR 0046 uses for
 /// `HelloRes.host` and `ClientVersion.host`. `#[serde(default)]`: a
 /// daemon predating this field answers without it and an old client

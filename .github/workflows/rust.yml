@@ -345,7 +345,7 @@ jobs:
       # package as the test) but has no reason to build a binary from a
       # dependency crate, so it's built explicitly here, into the SAME
       # target dir `sotd.exe` lands in — exactly the sibling-executable
-      # layout the daemon's own `capsule_workspace::sot_capsule_exe()`
+      # layout the daemon's own `rows::spawn::detach::sot_capsule_exe()`
       # (current_exe().parent()) assumes in production.
       - name: Build sot-capsule (for the backend capsule-workspace test below)
         timeout-minutes: 5

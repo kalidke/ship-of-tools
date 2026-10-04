@@ -129,7 +129,7 @@ jobs:
           fi
           # ADR 0042 slice L1a, Codex review finding 1: `sot-capsule`
           # ships alongside `sotd` on every platform (the daemon's own
-          # `capsule_workspace::sot_capsule_exe()` resolves it next to
+          # `rows::spawn::detach::sot_capsule_exe()` resolves it next to
           # itself via `current_exe().parent()`, which the install layout
           # can only honor if it is actually shipped). On linux it comes
           # from the same musl build as `sotd`: the daemon spawns it for
@@ -164,7 +164,7 @@ jobs:
           # released Windows install had no capsule runtime at all --
           # `sot-capsule.exe` was built (part of `cargo build --release
           # --workspace` above) but never copied into the staged
-          # archive, so `capsule_workspace::sot_capsule_exe()`'s
+          # archive, so `rows::spawn::detach::sot_capsule_exe()`'s
           # `current_exe().parent()` lookup found nothing and every
           # `workspace.create` failed its spawn.
           Copy-Item rust/target/release/sot.exe, rust/target/release/sotd.exe, rust/target/release/sot-capsule.exe $stage/

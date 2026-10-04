@@ -57,7 +57,7 @@ The go/no-go gate for option C. If this lands, C is defensible. If preview-layer
 - `rust/frontend/src/net/transport/mod.rs` — SSH-spawn + Unix-socket connect + reconnect loop.
 - `rust/backend/src/main.rs` — Unix-socket listener, session-id handshake, kernel supervisor.
 - `rust/backend/src/session.rs` — session state (tree cursor, preview cache, revision counter for reconnect).
-- `rust/backend/src/mathjax.rs` — Node sidecar wrapper (math snippet → SVG).
+- `rust/backend/src/sidecars/mathjax.rs` — Node sidecar wrapper (math snippet → SVG).
 - `julia/kernel/src/ShipToolsKernel.jl` — minimal NDJSON dispatch returning fixed payloads for the spike.
 - `rust/protocol/src/lib.rs` — Request/Response/Event enums for the spike's ops only (`hello`, `preview.get`, `tree.root`).
 
@@ -78,7 +78,7 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 - `julia/plugins/markdown/src/MarkdownPreview.jl` — `preview(::Type{MarkdownDoc}, path) → PreviewPayload(mime="text/markdown", data=bytes)`.
 - `julia/plugins/png/src/PngPreview.jl` — read bytes → `image/png` payload.
 - `julia/plugins/julia-source/src/JuliaSourcePreview.jl` — read + syntect-friendly metadata → `text/plain` with extras.
-- `rust/backend/src/watcher.rs` — `notify` watcher → `file.changed` events.
+- `rust/backend/src/files/watcher.rs` — `notify` watcher → `file.changed` events.
 
 **Acceptance:** open the Ship of Tools repo, navigate to `requirements.md`, see it rendered. Drop a PNG, navigate, see it. Edit a file externally; tree refreshes.
 
@@ -105,7 +105,7 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 **Files:**
 - `repl/Project.toml`, `repl/src/ShipToolsRepl.jl`.
 - `repl/src/DisplayShim.jl` — `MIMEDisplay` emits framed JSON.
-- `rust/backend/src/repl.rs` — REPL supervisor; `repl.eval` streams `repl.frame` events tagged with `eval_id`.
+- `rust/backend/src/sidecars/repl/` — REPL supervisor; `repl.eval` streams `repl.frame` events tagged with `eval_id`.
 - `rust/frontend/src/repl_pane.rs` — consumes `repl.frame`, dispatches to preview-layer for inline images.
 - `rust/frontend/src/dispatch.rs` — block-span computation via kernel round-trip.
 

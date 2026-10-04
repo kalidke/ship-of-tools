@@ -3,7 +3,7 @@
 #
 # ADR 0046 decision 4: the launch recipe (the scrub list, the ~/.local/bin
 # PATH rule, the flag shape) has ONE owner now — the daemon's own
-# `agent_argv`/`claude_recipe` (rust/backend/src/capsule_workspace.rs) — and
+# `agent_argv`/`claude_recipe` (rust/backend/src/agents/argv.rs) — and
 # this script only resolves `sotd` and execs THROUGH it via `sotd agent-exec`.
 # `sotd agent-exec claude` bakes in `--permission-mode auto` and appends the
 # /sot-session-start bootstrap skill last, so the session comes up already

@@ -316,7 +316,7 @@ if ! SPAWN_WIRE_ROOT="$(sot_daemon_path "$CANON_ROOT")"; then
     exit 1
 fi
 # The daemon's OWN declared host: `version.query` -> `.payload.daemon.host`
-# (`DaemonVersion.host`, sourced from `workspaces::declared_host()` — the
+# (`DaemonVersion.host`, sourced from `rows::store::declared_host()` — the
 # same resolution ADR 0046 binds a hello's `host` to). NEVER parsed out of
 # the endpoint path: `sot-host-<name>.sock` is a name, not a fact, and
 # trusting a name for a host is exactly the defect class this fix removes.
@@ -529,7 +529,7 @@ fi
 # refresh (`Workspaces::insert`; a row in use is refused, `label_in_use`), and the duplicate-root gate
 # explicitly treats a same-slug match as invisible
 # (`find_other_workspace_with_root`'s doc comment,
-# `rust/backend/src/handlers.rs`) — a colliding create would silently
+# `rust/backend/src/rows/ops/create.rs`) — a colliding create would silently
 # rebind the existing workspace's project_root rather than
 # erroring. So this is a pre-check, not a reply-reaction: list existing
 # workspaces and refuse before ever calling workspace.create if our
@@ -545,7 +545,7 @@ fi
 # create must not bypass the guard silently.
 #
 # Compared by NORMALIZED SLUG (sot_slug, comm-lib.sh — a verified bash
-# mirror of `rust/backend/src/paths.rs::slug`), not the raw label
+# mirror of `sot_protocol::slug`), not the raw label
 # string: workspace.create refreshes by slug, so two labels that only
 # differ by case, or by a dot vs underscore, resolve to the SAME
 # workspace and must be caught too, not just a byte-identical match.

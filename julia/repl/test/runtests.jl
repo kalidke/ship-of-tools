@@ -382,7 +382,7 @@ const DR = ShipToolsRepl
         end
 
         @testset "a real request line parses, a real envelope round-trips" begin
-            # Same envelope shape as the fixture in rust/backend/src/repl.rs's
+            # Same envelope shape as the fixture in rust/backend/src/sidecars/repl/'s
             # own tests: {"v":1,"id":1,"kind":"res","op":"repl.eval","payload":{"answered":true}}
             line = "{\"v\":1,\"id\":1,\"kind\":\"res\",\"op\":\"repl.eval\",\"payload\":{\"answered\":true}}"
             req = DR.json_read(line)

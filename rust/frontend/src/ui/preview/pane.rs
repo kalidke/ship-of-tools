@@ -57,7 +57,7 @@ fn looks_binary(bytes: &[u8]) -> bool {
 /// Accepts EITHER `/` or `\` as the boundary/rel separator and always
 /// normalizes the derived id to `/`: every OTHER convention in this module
 /// is unix-style (node ids are unix-style on the wire regardless of host OS,
-/// per files_mode.rs), but a native Windows `notify` watcher event path is
+/// per files/tree.rs), but a native Windows `notify` watcher event path is
 /// `\`-separated (`to_string_lossy()` off the raw OS path, never
 /// canonicalized) — a `/`-only rule silently matched nothing there.
 ///

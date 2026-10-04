@@ -941,7 +941,7 @@ struct State {
     /// if the user has swapped away. Keyed by `(HostKey, eval_id)` (ADR 0042
     /// L2a, Codex review PR #163): each host's daemon independently assigns
     /// eval ids from its own counter (confirmed on the backend side --
-    /// `EXEC_EVAL_ID` is a per-process static in rust/backend/src/handlers.rs
+    /// `EXEC_EVAL_ID` is a per-process static in rust/backend/src/sidecars/repl/execute.rs
     /// -- and the FE's own `repl_eval_counter` resets per workspace-key too),
     /// so a bare `eval_id` collides the moment two hosts both have an eval
     /// id 1 in flight. The VALUE stays a `WsKey`, not a bare slug, for the

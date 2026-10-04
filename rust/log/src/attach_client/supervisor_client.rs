@@ -2,7 +2,7 @@
 //! ADR 0042 slice L1a, generalized by L1-unix LU3b (ADR 0043 decision
 //! 20): a small, PRODUCTION supervisor-lane client for a caller OUTSIDE
 //! this crate that is not the FE — today, the backend daemon's own
-//! capsule workspace runtime (`sot-backend`'s `capsule_workspace.rs`).
+//! capsule workspace runtime (`sot-backend`'s `rows/run/`).
 //! `attach_client/worker/` (ADR 0046 decision 3; formerly `attach_client/client.rs`,
 //! before that lane's extraction) already runs this exact
 //! connect+hello(build identity)+challenge procedure
@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 
 /// The retained-process type every `pub fn` below returns/accepts —
 /// [`PlatformEndpoint`]'s own `Process`, so a caller outside this crate
-/// (`sot-backend`'s `capsule_workspace.rs`) can name it without depending
+/// (`sot-backend`'s `rows/run/`) can name it without depending
 /// on `challenge_win`/`challenge_unix` directly. The SAME type Windows
 /// named before this lane (`challenge_win::ChallengedProcess`, since
 /// `PlatformEndpoint = PipeEndpoint` there) — zero backend edits

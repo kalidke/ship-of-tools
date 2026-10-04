@@ -6,7 +6,7 @@ const HOST = "127.0.0.1"
 # Preferred port 1234; fall back to an OS-assigned ephemeral port when it's
 # taken (another user's Pluto/daemon on a shared host — the 2026-07-23 shared-host
 # collision class). The daemon never assumes 1234: it parses the actual port
-# from the READY line below (rust/backend/src/pluto.rs), and the ADR-0035
+# from the READY line below (rust/backend/src/sidecars/pluto.rs), and the ADR-0035
 # proxy allowlist authorizes only that parsed port. The probe-close-rebind
 # window is a benign TOCTOU: losing it just fails Pluto's own bind loudly.
 function pick_port(preferred::Int)

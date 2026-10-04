@@ -239,7 +239,7 @@ send_repl_status() {
         fi
     fi
     # Deliberately NOT printed: kernel_running. That field is the lazily-built
-    # INTROSPECTION Kernel handle (workspaces.rs kernel_built()), unrelated to
+    # INTROSPECTION Kernel handle (rows/workspace.rs kernel_built()), unrelated to
     # the REPL child and stale by design — a workspace can read repl:dead with
     # kernel_running:true and vice versa. Printing it here steered readers
     # toward exactly the wrong escalation. `root:` is the WORKSPACE root, not

@@ -22,7 +22,7 @@ send_version() {
     local daemon_version daemon_build daemon_lane_proto daemon_host
     if [ -n "$verr" ]; then
         # The ONE shape every daemon this verb must never fail against:
-        # the generic unknown-op reply (server.rs's `other =>` catch-all,
+        # the generic unknown-op reply (server/dispatch.rs's `other =>` catch-all,
         # SAME op echoed back on a `res` frame) means "daemon predates
         # this op" -- print `unknown`, keep going, still exit 0. Any OTHER
         # refusal (a real error) is a genuine failure.

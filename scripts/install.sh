@@ -679,7 +679,7 @@ case "$RESOLVED" in *"frontend:1"*) WANT_FRONTEND=1 ;; esac
 # A coding agent isn't part of this installer's business, but a daemon role
 # with neither one on PATH will start sessions that go nowhere — warn, don't
 # die. Fallback dirs mirror resolve_claude/resolve_ccx in
-# rust/backend/src/capsule_workspace.rs.
+# rust/backend/src/agents/argv.rs.
 if [ "$WANT_DAEMON" = 1 ] && ! command -v claude >/dev/null 2>&1 \
     && ! command -v ccx >/dev/null 2>&1 \
     && [ ! -x "$HOME/.local/bin/claude" ] && [ ! -x "$HOME/.claude/local/claude" ] \

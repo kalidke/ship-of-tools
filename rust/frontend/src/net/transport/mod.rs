@@ -349,7 +349,7 @@ async fn read_owned<R: AsyncRead + Unpin>(
 }
 
 /// How often this connection sends `ping` (topology plan §F step 2) — a
-/// third of the daemon's own `PING_READ_DEADLINE` (90s, `server.rs`), so a
+/// third of the daemon's own `PING_READ_DEADLINE` (90s, `server/conn.rs`), so a
 /// missed tick or two is noise and three in a row is what actually trips
 /// the daemon's reaper. `SOT_TEST_PING_INTERVAL_MS` overrides it for tests
 /// (same `OnceLock`-cached-once-per-process convention the backend uses

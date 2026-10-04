@@ -213,7 +213,7 @@ fn script(repeats: usize, block: &[u8]) {
 fn spawn_breakaway(args: &[String]) {
     use std::io::{BufRead, Write};
     use std::os::windows::process::CommandExt as _;
-    // Matches `capsule_workspace.rs`'s own constant — no `windows-sys`
+    // Matches `rows/spawn/detach.rs`'s own constant — no `windows-sys`
     // dependency needed here for one flag value.
     const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 

@@ -532,7 +532,7 @@ pub(crate) fn on_workspace_destroy(
 
 /// ADR 0042 slice L1b, revised by ADR 0045 decision 1: is `payload` a
 /// `pty.open` refusal carrying `code: "attach_direct"` (the daemon's
-/// answer for a capsule-runtime workspace, `rust/backend/src/server.rs`'s
+/// answer for a capsule-runtime workspace, `rust/backend/src/server/dispatch.rs`'s
 /// `PTY_OPEN` arm)? The daemon still emits a `state_dir` alongside it
 /// (until the next `PROTOCOL_VERSION` bump) but the frontend no longer
 /// reads it — every capsule row is attached through its own daemon's

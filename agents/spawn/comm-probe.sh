@@ -27,8 +27,8 @@
 # one.
 #
 # A row whose responder is NOT running still declares its handle (the daemon
-# records `agent_name` at workspace.create, handlers.rs `from_label`), so the
-# frontend's receipt — which comes from declared rows, gpu.rs `receipt_for` —
+# records `agent_name` at workspace.create, rows/workspace.rs `from_label`), so the
+# frontend's receipt — which comes from declared rows —
 # stays honest and the matrix's delivery lines keep meaning something when the
 # echo is missing. That separation is the whole instrument.
 set -uo pipefail
@@ -84,7 +84,7 @@ probe_row_id() {
 }
 
 # probe_create HANDLE — create the row, print its workspace id. `agent:"none"`
-# is the bare platform shell (capsule_workspace.rs `agent_argv`/`none_argv`), so
+# is the bare platform shell (agents/argv.rs `agent_argv`/`none_argv`), so
 # the pane is a login shell we can type into; `agent_name` is what declares the
 # handle to the daemon at creation, which is why this path needs no agent.join
 # from the caller's shell (see the note in `serve`).
