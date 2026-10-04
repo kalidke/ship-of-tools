@@ -283,24 +283,22 @@ end
     end
 end
 
-@testset "a file the scan cannot read is the only file its folder lists" begin
+@testset "a file the scan cannot read stays listed, with every other file of its folder" begin
     mktempdir() do root
         lib = mkpath(joinpath(root, "lib"))
         app = mkpath(joinpath(root, "app"))
-        loader = "x=1\nsource \"\$(dirname \"\${BASH_SOURCE[0]}\")/lib-a.sh\" || return 1\n"
-        write(joinpath(lib, "lib.sh"), loader)
-        write(joinpath(lib, "lib-a.sh"), "a() { :; }\n")
+        write(joinpath(lib, "lib.sh"), "x=1\n")
         write(joinpath(app, "app.sh"), "y=1\n")
-        write(joinpath(app, "app2.sh"), "z=1\n")
-        # Where mode bits are enforced: the folder fails on that file when it is published, and none of its
-        # other files, so no part of an unreadable loader, is published.
-        chmod(joinpath(lib, "lib.sh"), 0o000)
-        unreadable = try read(joinpath(lib, "lib.sh")); false catch; true end
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) ==
-            [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
-        chmod(joinpath(lib, "lib.sh"), 0o644)
+        files = [(lib, "lib.sh"), (app, "app.sh")]
+        # The scan lists a file it cannot read (where mode bits are enforced), so only that file's folder fails.
         chmod(joinpath(app, "app.sh"), 0o000)
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh")]
+        unreadable = try read(joinpath(app, "app.sh")); false catch; true end
+        unreadable && @test ShipTools._comm_bin_files([lib, app]) == files
+        # A folder with two files, one unreadable at the scan: both names stay listed. A shorter list would
+        # let the install's prune delete the folder's other scripts from the bin and record the shorter list,
+        # when the file reads again at its folder's publish and the install succeeds.
+        write(joinpath(app, "app2.sh"), "z=1\n")
+        unreadable && @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
         chmod(joinpath(app, "app.sh"), 0o644)
         @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
     end

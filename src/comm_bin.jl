@@ -65,19 +65,19 @@ const COMM_SOURCE_ARG = r"(?:^|[;&|({`]|\b(?:if|then|do|else|elif|while|until)\s
 
 # The file names the `source` and `.` commands of `line` read: the last `/` part of each path argument,
 # quotes removed. A path built from a variable gives the variable, which names no file. A line whose
-# first non-blank character is `#` is a comment and holds no command.
+# first non-blank character is `#` is skipped.
 _comm_sourced(line::AbstractString) =
     occursin(r"^\s*#", line) ? String[] :
     [replace(String(last(split(m[1], '/'))), r"[\"']" => "") for m in eachmatch(COMM_SOURCE_ARG, line)]
 
-# The lines of `path`, or `nothing` when it cannot be read: `_comm_bin_files` then lists only that file
-# for its folder, so the folder fails on it when it is published and keeps its old copies.
+# The lines of `path`, or none when it cannot be read: such a file is judged when its folder is published,
+# which fails on it and keeps its old copy.
 function _comm_lines(path::AbstractString)
     try
         return readlines(path)
     catch e
         e isa SystemError || e isa Base.IOError || rethrow()
-        return nothing
+        return String[]
     end
 end
 
@@ -86,7 +86,9 @@ end
 # the files that source it (`_comm_bin_text`), so it is not one of them. Fails, and then `install_comm`
 # publishes no comm script, on two folders shipping one name and on a `source` or `.` command whose path
 # (`_comm_sourced`) names a file of its own folder in another line, a part from another folder, or any
-# shipped file from a part. A folder holding a file that cannot be read lists only the first such file.
+# shipped file from a part. A file that cannot be read is scanned as empty, stays listed, and fails when
+# its folder is published; when it is a file that sources parts, its parts are then listed as files of
+# their own.
 # It reads lines, not bash: it sees a `source` or `.` only at the start of a command (after `; & | ( {`,
 # a backquote or a keyword), and not in a case arm, after an assignment or a command word (`X=1 source`,
 # `builtin source`), split over lines, or as process substitution; a path built from a variable and a
@@ -102,24 +104,19 @@ function _comm_bin_files(folders = _comm_bin_folders())
         push!(files, (dir, name))
     end
     lines = Dict(p => _comm_lines(joinpath(p...)) for p in files)
-    scanned(p) = something(lines[p], String[])
     parts = Set{String}()
-    for (dir, name) in files, line in scanned((dir, name))
+    for (dir, name) in files, line in lines[(dir, name)]
         p = _comm_part_of(dir, line)
         p === nothing || push!(parts, p)
     end
-    for (dir, name) in files, line in scanned((dir, name)), n in _comm_sourced(line)
+    for (dir, name) in files, line in lines[(dir, name)], n in _comm_sourced(line)
         d = get(owner, n, nothing)
         d === nothing && continue
         !(name in parts) && (d == dir ? _comm_part_of(dir, line) == n : !(n in parts)) ||
             error("comm bin file $(joinpath(dir, name)) sources $n in a form the installer " *
                   "cannot install: $(strip(line))")
     end
-    unreadable = Dict{String,String}()
-    for (d, n) in files
-        lines[(d, n)] === nothing && !haskey(unreadable, d) && (unreadable[d] = n)
-    end
-    return [(d, n) for (d, n) in files if haskey(unreadable, d) ? n == unreadable[d] : !(n in parts)]
+    return [(d, n) for (d, n) in files if !(n in parts)]
 end
 
 # The text `name` installs as: its own bytes, with each line that sources a part (`_comm_part_of`)
