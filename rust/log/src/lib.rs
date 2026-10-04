@@ -249,14 +249,6 @@ use host as fsutil;
 // module is unreachable from another crate), so this is its facade,
 // mirroring `fence::lock_supervisor`'s own one-function reach-through.
 pub use fsutil::lock_writer;
-// ADR 0048 amendment 9: `sot-frontend` arbitrates its inbox append at the
-// file, which needs the SAME bounded, non-blocking exclusive lock
-// `lock_writer` takes -- but against a handle the frontend already holds
-// (the inbox itself), not a separate `.lock` path. One more `fsutil`
-// reach-through, same shape as `lock_writer` above: the module stays
-// private and exactly one more function becomes reachable, so the retry
-// policy is shared rather than re-derived beside it.
-pub use fsutil::try_lock_bounded;
 // Windows session-pipe hardening fix: `sot-backend`'s session listener
 // (`server.rs::run_local`, bound through the `interprocess` crate, NOT
 // this module's own `pipe_win.rs` transport) needs the SAME protected,

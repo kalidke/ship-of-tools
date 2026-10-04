@@ -12,7 +12,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   `state_dir_hash`, `host_name`).
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
-- Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`, `try_lock_bounded`).
+- Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`).
 - The volume preflight (`volume.rs`: `preflight_volume`).
 - The directory pin (`pinned_dir.rs`: `PinnedDir`, `DirIdentity`, `dir_identity`).
 - Windows owner-only descriptors and SIDs (`winsec.rs`: `owner_protected_pipe_descriptor`, `token_user_sid_string`).
