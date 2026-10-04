@@ -533,6 +533,7 @@ fn attaching_to_a_reaped_pid_fails_with_esrch() {
 /// if a future reader finds a way to force one cheaply, this is the test to
 /// extend.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: pid reuse needs a full sequential wrap")]
 fn pid_reuse_needs_a_full_sequential_wrap_and_a_spent_knote_never_rearms() {
     // --- 1. the allocator ---------------------------------------------------
     let mut pids = Vec::with_capacity(PID_SAMPLES);

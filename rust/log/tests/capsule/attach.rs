@@ -90,6 +90,7 @@ fn hello_v1_gets_a_checkpoint_with_no_scrollback_ring() {
 /// (reopen the voyage; the dedupe index is rebuilt from the retained
 /// segments, not started empty — ADR 0041 decision 5's whole point).
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: the input WAL chains across a restart, refused, stale and duplicate frames included")]
 fn wire_input_wal_chains_including_refused_stale_and_duplicate_idem_across_restart() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();

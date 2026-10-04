@@ -90,6 +90,7 @@ async fn a_blackhole_is_unreachable_and_retried() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a daemon outage past the window keeps retrying")]
 async fn a_daemon_outage_past_the_window_keeps_retrying() {
     let _serial = SERIAL.lock().await;
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found — build it first");

@@ -56,6 +56,7 @@ impl State {
     /// Apply one FE-control command, reusing the methods the keybinds call so
     /// commands inherit the same routing (incl. the ADR-0014 per-workspace
     /// tree-reply guard).
+    #[allow(clippy::too_many_lines, reason = "the FE-control command table: one arm per command; predates the 100-line limit")]
     pub(in crate::ui) fn dispatch_fe_command(&mut self, from_host: Option<&HostKey>, cmd: FeCommand) {
         match cmd {
             FeCommand::Workspace { slug, boot } => {

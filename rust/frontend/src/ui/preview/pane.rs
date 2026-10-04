@@ -247,6 +247,7 @@ impl State {
     /// Branch on mime and route a preview blob to the right renderer.
     /// Called both from the live `Preview` event arm and from the
     /// font-rescale path (which replays against the cached source).
+    #[allow(clippy::too_many_lines, reason = "routes a preview blob to its renderer by mime; predates the 100-line limit")]
     pub(in crate::ui) fn render_preview_source(&mut self, mime: &str, bytes: &[u8]) {
         let scale = self.scale * self.text_scale_mult;
         if is_raster_preview_mime(mime) {

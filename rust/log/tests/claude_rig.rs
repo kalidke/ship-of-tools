@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[allow(clippy::too_many_lines, reason = "the fake helper's script table, one body per scenario")]
 fn write_fake_helper(dir: &Path, scenario: &str) -> PathBuf {
     let body = match scenario {
         "happy" => r#"#!/bin/bash

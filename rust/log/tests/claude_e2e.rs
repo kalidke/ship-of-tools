@@ -495,6 +495,7 @@ fn e2e_interrupt_during_in_flight_query() {
 /// the whole voyage Complete-green. First live execution of the cgroup
 /// fence. Skips (loudly) where cgroup delegation is unavailable.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: the kill-domain sweep, then the successor epoch")]
 fn e2e_kill_domain_sweep() {
     if !gate() {
         return;

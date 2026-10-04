@@ -232,6 +232,7 @@ Ctrl+? shows pane actions briefly; press again for the Help drawer.
 F1 opens Help directly. Focused pane borders show the active shortcuts."#;
 
 impl Cli {
+    #[allow(clippy::too_many_lines, reason = "the command-line parser: one arm per flag; predates the 100-line limit")]
     pub fn parse() -> Self {
         let mut dial: Vec<String> = Vec::new();
         let mut socket: Option<PathBuf> = None;

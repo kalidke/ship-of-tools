@@ -194,6 +194,7 @@ pub async fn handle_video_open(
 /// `../../data/x.mp4` reaches the link folder; the returned path is then
 /// prefixed with the content root's place below it (`Site::url_path`). What is
 /// served does not widen; see `pages/site/mod.rs`.
+#[allow(clippy::too_many_lines, reason = "the docs.open handler: maps the path into the page server's URL space and replies; predates the 100-line limit")]
 pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,

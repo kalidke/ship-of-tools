@@ -300,6 +300,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 /// succeed.
 #[tokio::test]
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_lines, reason = "one test scenario: destroy after a leg that died without a marker")]
 async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     let _serial = SERIAL.lock().await;
     assert!(

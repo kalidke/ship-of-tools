@@ -5,6 +5,7 @@
 use super::*;
 
 impl State {
+    #[allow(clippy::too_many_lines, reason = "drains the daemon-event queue, one arm per event; predates the 100-line limit")]
     pub(super) fn drain_events(&mut self) {
         while let Ok((event_host, evt)) = self.evt_rx.try_recv() {
             // ADR 0046 decision 1: `HostKey` is never re-homed —

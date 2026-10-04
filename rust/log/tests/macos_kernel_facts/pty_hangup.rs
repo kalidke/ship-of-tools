@@ -57,6 +57,7 @@ impl SlaveHeld {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "one test scenario: a pty hangup reaps the child")]
 fn pty_hangup_reaps_the_child(slave_held: SlaveHeld) {
     let label = slave_held.label();
     let mut master_fd: libc::c_int = -1;

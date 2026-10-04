@@ -314,6 +314,7 @@ mod tests {
     /// the Windows default (`Everyone`/`ANONYMOUS LOGON` read).
     #[cfg(windows)]
     #[tokio::test]
+    #[allow(clippy::too_many_lines, reason = "one test scenario: the session pipe's security descriptor, checked flag by flag")]
     async fn session_pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
         use super::session_pipe_security_descriptor;
         use sot_log::host::wide_null;

@@ -171,6 +171,7 @@ async fn run_case(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: every repl.execute report checked against its pinned shape")]
 async fn repl_execute_reports_are_unchanged() {
     let dir = scratch_dir();
     let resources = dir.join("resources");

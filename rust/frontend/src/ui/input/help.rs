@@ -322,6 +322,7 @@ pub fn peek_lines(context: &Context, bindings: &KeyBindings) -> Vec<String> {
     lines
 }
 
+#[allow(clippy::too_many_lines, reason = "renders the Help drawer; predates the 100-line limit")]
 pub fn render(frame: &mut Frame<'_>, rect: Rect, help: &Help, bindings: &KeyBindings) {
     if rect.width < 4 || rect.height < 3 {
         return;

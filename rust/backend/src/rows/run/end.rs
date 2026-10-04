@@ -92,6 +92,7 @@ pub(crate) fn capsule_destroy_outcome_of(o: crate::rows::run::end_run::EndRunOut
 /// call here AND whatever the caller does with a confirmed outcome
 /// (row removal, or the default row's own reset) afterward. The caller
 /// holds it through that follow-up, then drops it.
+#[allow(clippy::too_many_lines, reason = "ends a capsule workspace's run under the caller's guard and judges the outcome; predates the 100-line limit")]
 pub(crate) async fn destroy_capsule_workspace(
     workspace_id: &str,
     reason: &str,

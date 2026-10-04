@@ -251,6 +251,7 @@ fn exit_code_high_bit_status_preserved_through_producer_dead() {
 ///    else is either a wiring bug or a checkpoint-format non-determinism
 ///    this crate depends on not existing.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a mid-stream attach reproduces the reference screen from the checkpoint")]
 fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();

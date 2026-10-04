@@ -180,6 +180,7 @@ fn spawn_stderr_tail(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
     mut child: Child,
     mut stdin: ChildStdin,

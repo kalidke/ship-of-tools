@@ -233,6 +233,7 @@ impl TextLayer {
         None
     }
 
+    #[allow(clippy::too_many_lines, reason = "reshapes the changed text buffers and prepares the glyph areas for one frame; predates the 100-line limit")]
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,

@@ -3,6 +3,7 @@
 use super::*;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: create, list, attach refusal, adopt and destroy in order")]
 async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     let _serial = SERIAL.lock().await;
     assert!(

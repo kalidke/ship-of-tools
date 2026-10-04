@@ -437,6 +437,7 @@ fn unmatched_opens(root: &Path, voyage_id: &str) -> Result<Vec<Seq>> {
 
 /// Run one Claude producer leg. `operator` is the command stream (stdin in
 /// the binary; a channel in tests).
+#[allow(clippy::too_many_lines, reason = "the dormant SDK producer (ADR 0040); cut or retired with its keep-or-retire decision")]
 pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Result<ClaudeSummary> {
     // Resolve ONCE — see the capsule's run() for why (a relative path
     // re-resolved after the fence is taken can scan an unfenced store).

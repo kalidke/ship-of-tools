@@ -328,6 +328,7 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
 ///
 /// The binary is resolved FRESH here, not cached: a removed or replaced
 /// juliaup install recovers on the very next attempt.
+#[allow(clippy::too_many_lines, reason = "runs one generation of the Julia kernel from spawn to exit; predates the 100-line limit")]
 async fn run_one_generation(
     kernel_project: &Path,
     project_root: &Path,

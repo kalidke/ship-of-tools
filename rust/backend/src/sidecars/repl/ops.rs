@@ -65,6 +65,7 @@ pub async fn handle_repl_eval(
     )])
 }
 
+#[allow(clippy::too_many_lines, reason = "the repl.run_file handler: resolves the file and project, runs it and replies; predates the 100-line limit")]
 pub async fn handle_repl_run_file(
     req_id: u64,
     payload_json: serde_json::Value,

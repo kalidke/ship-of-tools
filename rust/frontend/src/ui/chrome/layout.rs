@@ -88,6 +88,7 @@ impl LayoutGeom {
 /// The returned rects are *content* rects — interior of each pane,
 /// excluding the surrounding border cells. They match the semantics
 /// the previous 2×2 code expected (`tl_content` etc.).
+#[allow(clippy::too_many_lines, reason = "computes every pane's content rect for the current layout; predates the 100-line limit")]
 pub fn compute(
     area: Rect,
     preset: &LayoutPreset,

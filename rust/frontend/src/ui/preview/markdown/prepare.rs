@@ -103,6 +103,7 @@ impl State {
         media_paint_targets
     }
 
+    #[allow(clippy::too_many_lines, reason = "prepares the preview text, laying out each block kind in turn; predates the 100-line limit")]
     pub(in crate::ui) fn prepare_preview_text(
         &mut self,
         lines: Vec<crate::ui::render::text::Line>,

@@ -212,6 +212,7 @@ fn extract_marker_numbers(text: &str) -> Vec<u64> {
 /// is exactly what the pre-fix code violates and what round 1's weaker
 /// "some Output after PenSnapshot" check could not see.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a v3 watcher's completion drains pen and geometry before a replayed take's output")]
 fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_output() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();

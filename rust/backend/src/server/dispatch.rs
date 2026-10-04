@@ -9,6 +9,7 @@ use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_
 use super::*;
 
 /// Answers one request frame: the op table, each arm calling its owner, then the reply write.
+#[allow(clippy::too_many_lines, reason = "the op table: one arm per request op, each calling its owner; predates the 100-line limit")]
 pub(super) async fn dispatch<W>(
     tx: &mut W, frame: Frame, session: &Session, mathjax: &MathJax, pluto: &Pluto, files_mode: &Arc<FilesMode>,
     label: &Arc<Option<String>>, workspaces: &Workspaces, ws_events_tx: &broadcast::Sender<WorkspaceChanged>,

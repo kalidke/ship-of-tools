@@ -184,6 +184,7 @@ impl Leases {
     /// Claim the daemon on a dedicated connection before a data connection is
     /// made. Returns the count of sessions an earlier close could not end.
     /// An `Err` is the transport's cue to back off and retry.
+    #[allow(clippy::too_many_lines, reason = "claims the daemon on a dedicated connection before the data connection; predates the 100-line limit")]
     pub async fn before_data_connection(
         &self,
         host: &HostKey,

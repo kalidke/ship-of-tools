@@ -38,6 +38,7 @@ const REVOKE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// because `capsule/`'s rule admits either (Darwin may report a revoked
 /// master as either, and both reach the same arm).
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a revoked pty master reports how much final output survived")]
 fn a_revoked_pty_master_reports_how_much_of_the_final_output_survived() {
     let mut master_fd: libc::c_int = -1;
     let mut slave_fd: libc::c_int = -1;

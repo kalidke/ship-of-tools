@@ -386,6 +386,7 @@ pub async fn handle_preview_get(
 /// HDF5/video/PDF) where the bytes-level fallback would serve raw binary
 /// nonsense instead of a preview; callers surface this straight to the FE
 /// as "Julia kernel unavailable: <reason>" rather than silently degrading.
+#[allow(clippy::too_many_lines, reason = "asks the Julia kernel for one preview and maps each failure to a reply; predates the 100-line limit")]
 async fn try_plugin_preview(
     kernel: &Kernel,
     path: &std::path::Path,

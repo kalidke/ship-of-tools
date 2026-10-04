@@ -10,6 +10,7 @@ use super::*;
 /// job is only "does the WIRE OP reach that machinery and answer
 /// correctly for a real daemon."
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: pty input and screen reach a real row and leave the lane clean")]
 async fn capsule_pty_input_and_screen_reach_a_real_row_and_leave_the_lane_clean() {
     let _serial = SERIAL.lock().await;
     assert!(

@@ -142,6 +142,7 @@ pub(in crate::supervisor) fn service_lane(
 /// itself already bounded to `transport::READ_BUF_LEN` (64 KiB) by the
 /// transport, so bounding events-per-tick already transitively bounds
 /// frames-per-tick too.
+#[allow(clippy::too_many_lines, reason = "feeds one connection's bytes through the splitter and handles each supervisor-lane frame; predates the 100-line limit")]
 fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId, bytes: &[u8], ctx: &mut LaneCtx, now: Instant) {
     let mut close_after = false;
     let mut pending: Option<PendingClose> = None;

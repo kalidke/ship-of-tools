@@ -364,6 +364,7 @@ fn mgmt_roundtrip(
 /// and verifying the sealed voyage records the input. The twin of
 /// `tests/e2e_pipe.rs`'s `full_pipe_e2e_two_clients_and_mgmt`.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: two clients and a mgmt connection over the socket transport")]
 fn full_socket_e2e_two_clients_and_mgmt() {
     let _serial = serial();
     let _runtime = isolated_runtime_dir();

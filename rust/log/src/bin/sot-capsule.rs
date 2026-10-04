@@ -74,6 +74,7 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
 /// subscriber path). Ctrl+C still simply kills this whole process when
 /// run bare (no supervisor) — FE-loss, not EndRun (ADR 0041 Lifecycle).
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_lines, reason = "the capsule's run command: builds the transport and runs the producer; predates the 100-line limit")]
 fn cmd_run<P, T, F>(args: &[String], make_transport: F)
 where
     P: sot_log::capsule::producer::Producer,

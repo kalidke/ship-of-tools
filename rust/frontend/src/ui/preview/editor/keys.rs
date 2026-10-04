@@ -4,6 +4,7 @@ use crate::ui::*;
 use std::ops::ControlFlow::{self, Break, Continue};
 use crate::ui::input::keypress::KeyPress;
 
+#[allow(clippy::too_many_lines, reason = "the preview editor's key table; predates the 100-line limit")]
 pub(in crate::ui) fn editor_key(state: &mut State, key: KeyPress<'_>) -> ControlFlow<()> {
     let KeyPress { event, action, .. } = key;
     // Edit mode hijacks all keys — typing into the

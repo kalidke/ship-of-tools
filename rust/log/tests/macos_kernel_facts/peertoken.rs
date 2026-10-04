@@ -159,6 +159,7 @@ fn peertoken_client(sock_path: &str) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: the client fd reports the server pid through the peer token")]
 fn client_fd_reports_the_server_pid_via_local_peertoken() {
     if let Ok(path) = std::env::var(PEERTOKEN_CLIENT_ENV) {
         peertoken_client(&path);

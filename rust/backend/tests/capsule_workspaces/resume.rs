@@ -19,6 +19,7 @@ use super::*;
 /// own, and this test could pass even with `resume_if_absent` deleted.
 #[tokio::test]
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_lines, reason = "one test scenario: headless input resumes a row whose supervisor died")]
 async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     let _serial = SERIAL.lock().await;
     assert!(
@@ -286,6 +287,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
 /// the leg afterward is `pty.input`'s own `resume_if_absent` call.
 #[tokio::test]
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_lines, reason = "one test scenario: resume re-executes a leg that ended without a marker")]
 async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let _serial = SERIAL.lock().await;
     assert!(
@@ -426,6 +428,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
 /// `EXIT_CONTENDED` (the "contended (70)" log line) must never appear.
 #[tokio::test]
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a stale attach during backoff spawns no second authority")]
 async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     let _serial = SERIAL.lock().await;
     assert!(

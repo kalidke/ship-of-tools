@@ -172,6 +172,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 /// decision 33) and mints a new voyage via `reset` — the exact mechanic
 /// this proves, regardless of which row it runs on.
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a created row starts on attach and recovers by reset after its end")]
 async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after_end() {
     let _serial = SERIAL.lock().await;
     assert!(

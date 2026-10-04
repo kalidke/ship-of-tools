@@ -104,6 +104,7 @@ fn resolve_pty_input_controller_id(
 /// who typed, how many bytes, and when — never the content, which is
 /// redacted in the WAL — and this op grants no privilege either name alone
 /// could forge).
+#[allow(clippy::too_many_lines, reason = "the pty.input handler: attribution, resume and the write to the row's lane; predates the 100-line limit")]
 pub async fn handle_pty_input(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -254,6 +255,7 @@ pub async fn handle_pty_input(
 /// ADR 0042 amendment (2026-09-07), decision 2: the CURRENT screen of a
 /// named row — no scrollback, no history. Never takes the pen on a capsule
 /// row (a WATCHER attach).
+#[allow(clippy::too_many_lines, reason = "the pty.screen handler: finds the row and reads its current screen; predates the 100-line limit")]
 pub async fn handle_pty_screen(
     req_id: u64,
     payload_json: serde_json::Value,

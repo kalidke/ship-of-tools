@@ -306,6 +306,7 @@ impl VoyageStore {
     /// never opened on and has no fd-relative alias for — and it is not
     /// what the reported race targets (the swap replaces the ROOT's
     /// identity at a fixed pathname; the parent itself is untouched).
+    #[allow(clippy::too_many_lines, reason = "opens a voyage on its prepared root; predates the 100-line limit")]
     pub fn open_prepared(
         prepared: &PreparedRoot,
         voyage_id: &str,

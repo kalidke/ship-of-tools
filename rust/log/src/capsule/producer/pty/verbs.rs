@@ -12,6 +12,7 @@ impl Producer for PtyProducer {
         json!({})
     }
 
+    #[allow(clippy::too_many_lines, reason = "spawns the pty child at the given size; predates the 100-line limit")]
     fn spawn(argv: &[String], cols: u16, rows: u16) -> Result<Self> {
         if argv.is_empty() {
             return Err(Error::State("capsule argv is empty".into()));

@@ -118,6 +118,7 @@ async fn a_busy_pane_over_a_slow_link_converges() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: a headless write demotes a driving bridged client without duplicating input")]
 async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_duplicating_input() {
     let _serial = SERIAL.lock().await;
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found — build it first");

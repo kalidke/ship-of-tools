@@ -88,6 +88,7 @@ pub(super) struct FactObj {
 /// re-forward a duplicate input — silently mis-indexing it here is not a
 /// defect an optional, separate `sot-log verify` run can be trusted to
 /// catch first.
+#[allow(clippy::too_many_lines, reason = "walks one retained segment to rebuild the dedupe index; predates the 100-line limit")]
 pub(super) fn walk_segment(
     index: &mut HashMap<IdemKey, DedupeEntry>,
     by_seq: &mut HashMap<Seq, IdemKey>,

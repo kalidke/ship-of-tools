@@ -39,6 +39,7 @@ async fn strict(conn: &mut Conn, id: u64, name: &str, payload: serde_json::Value
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one test table: every control.session reply checked against its pinned shape")]
 async fn control_session_replies_are_pinned() {
     let env = Env::new("ctl");
     env.spawn_sotd();

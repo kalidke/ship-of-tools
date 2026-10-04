@@ -171,6 +171,7 @@ pub(super) fn run_attach_reader<E: Endpoint>(
 // -----------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines, reason = "the attach worker's steady-state loop; predates the 100-line limit")]
 pub(super) fn run_steady_state<E: Endpoint + Sync>(
     endpoint: &E,
     cmd_rx: &Receiver<WorkerMsg>,
@@ -532,6 +533,7 @@ pub(super) fn flush_next_driving_input<E: Endpoint>(
 /// Dispatches one incoming attach-lane frame (unsolicited `Output` or a
 /// reply to whatever the worker most recently sent).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines, reason = "the attach worker's frame handler, one arm per frame kind; predates the 100-line limit")]
 pub(super) fn handle_attach_frame<E: Endpoint>(
     frame: DecodedFrame,
     attach_conn: &E::Client,

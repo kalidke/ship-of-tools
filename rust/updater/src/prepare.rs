@@ -133,6 +133,7 @@ pub async fn prepare(spec: &PrepareSpec) -> Result<PreparedState> {
     result
 }
 
+#[allow(clippy::too_many_lines, reason = "prepares the staged update under the lock, one stage per step; predates the 100-line limit")]
 async fn prepare_locked(spec: &PrepareSpec) -> Result<PreparedState> {
     if let Ok(existing) = PreparedState::read(&spec.stage_dir).await {
         if existing.identity == spec.identity

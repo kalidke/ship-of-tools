@@ -6,6 +6,7 @@ use super::*;
 const BLOCK_PAD_Y: f32 = 4.0;
 
 impl State {
+    #[allow(clippy::too_many_lines, reason = "paints the preview PNG in its pane; predates the 100-line limit")]
     pub(in crate::ui) fn paint_preview_png(
         &mut self,
         mut rpass: &mut wgpu::RenderPass<'_>,

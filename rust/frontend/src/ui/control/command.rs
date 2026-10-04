@@ -17,6 +17,7 @@ use super::*;
 /// never existed in the code, and a session chasing a preview that did not
 /// switch reasoned from it that `--urgent` must be inert for exactly the
 /// frontend someone is typing at. Directedness is the whole gate.
+#[allow(clippy::too_many_lines, reason = "routes one FE command by its target filter and verb; predates the 100-line limit")]
 pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, self_handle: &str) -> Option<FeCommand> {
     // Target filter first — cheapest reject, and a mis-targeted command
     // shouldn't even be parsed.

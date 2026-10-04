@@ -123,6 +123,7 @@ impl MonitorView {
 
     /// Render the small-multiples chart (one panel per host) as an SVG string
     /// sized to the drawer rect in pixels.
+    #[allow(clippy::too_many_lines, reason = "renders the monitor chart as one SVG; predates the 100-line limit")]
     pub fn render_svg(&self, w: u32, h: u32, scale: f64) -> String {
         let w = w.max(1) as f64;
         let h = h.max(1) as f64;

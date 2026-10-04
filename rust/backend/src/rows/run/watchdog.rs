@@ -226,6 +226,7 @@ async fn wait_for_test_watchdog_restart_barrier() {
 /// means there is nothing to watch at all.
 ///
 /// R4a: `Terminal` reports immediately, no guard, identity-judged; `Crash` holds the guard across recheck/backoff/spawn.
+#[allow(clippy::too_many_lines, reason = "the per-row watchdog task: recheck, back off and respawn; predates the 100-line limit")]
 pub(super) fn install_watchdog(
     workspace_id: String,
     sot_capsule_exe: PathBuf,

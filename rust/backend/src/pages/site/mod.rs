@@ -450,6 +450,7 @@ pub(crate) mod links;
 use links::Site;
 use links::resolve_and_open;
 
+#[allow(clippy::too_many_lines, reason = "serves one page-server connection from request line to response; predates the 100-line limit")]
 async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {
     // Read headers (up to the blank line), bounded so a malformed client can't
     // grow this unbounded.

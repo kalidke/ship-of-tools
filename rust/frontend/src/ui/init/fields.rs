@@ -23,6 +23,7 @@ pub(super) struct StartupParts {
 }
 
 impl State {
+    #[allow(clippy::too_many_lines, reason = "unpacks the startup parts into the State's fields; predates the 100-line limit")]
     pub(super) fn from_parts(
         event_loop: &ActiveEventLoop,
         cli: &crate::cli::Cli,

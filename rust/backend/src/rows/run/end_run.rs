@@ -112,6 +112,7 @@ pub enum EndRunOutcome {
 /// orphan proof outright and keeps today's unconditional
 /// `state_dir_missing` refusal, regardless of what `query_status`'s
 /// connect returned.
+#[allow(clippy::too_many_lines, reason = "asks a capsule to end its run and judges the answer; predates the 100-line limit")]
 pub fn end_run(
     state_dir: &Path,
     reason: &str,

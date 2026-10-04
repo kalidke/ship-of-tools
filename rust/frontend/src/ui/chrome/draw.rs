@@ -5,6 +5,7 @@ use super::*;
 use super::view::{ChromeView, NavRow};
 
 impl State {
+    #[allow(clippy::too_many_lines, reason = "draws the whole chrome from one view; predates the 100-line limit")]
     pub(in crate::ui) fn draw_chrome(
         &mut self,
     ) -> Result<(

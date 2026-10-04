@@ -14,6 +14,7 @@ use crate::rows::WorkspaceChanged;
 use crate::rows::Workspaces;
 use tokio::sync::broadcast;
 
+#[allow(clippy::too_many_lines, reason = "the workspace.destroy handler: its refusals, the teardown and the reply; predates the 100-line limit")]
 pub async fn handle_workspace_destroy(
     req_id: u64,
     payload_json: serde_json::Value,

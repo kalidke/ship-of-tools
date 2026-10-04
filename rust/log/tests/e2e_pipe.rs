@@ -410,6 +410,7 @@ fn mgmt_roundtrip(
 /// ending the run via the mgmt lane's own `shutdown` and verifying the
 /// sealed voyage records the input.
 #[test]
+#[allow(clippy::too_many_lines, reason = "one test scenario: two clients and a mgmt connection over the pipe transport")]
 fn full_pipe_e2e_two_clients_and_mgmt() {
     let _serial = serial();
     let dir = tempfile::tempdir().unwrap();

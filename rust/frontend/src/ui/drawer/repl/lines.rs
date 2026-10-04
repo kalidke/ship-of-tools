@@ -71,6 +71,7 @@ pub(in crate::ui) struct ReplImageSlot {
 /// fit-to-width blank rows and report a `ReplImageSlot` — the paint pass
 /// overlays the quad there, scissored to the scrollback rect. Frames not
 /// yet decoded fall back to a one-line caption for a frame or two.
+#[allow(clippy::too_many_lines, reason = "builds the REPL scrollback lines, one arm per frame kind; predates the 100-line limit")]
 pub(in crate::ui) fn build_repl_lines(
     log: &[ReplEntry],
     images: &std::collections::HashMap<(u64, usize), ReplImage>,

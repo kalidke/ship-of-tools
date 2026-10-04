@@ -431,6 +431,7 @@ pub fn encode_attach_server(frame: &AttachServer) -> Result<Vec<u8>, WireError> 
     wrap(ATTACH_MAGIC, body)
 }
 
+#[allow(clippy::too_many_lines, reason = "decodes an attach-lane frame body, one arm per frame kind; predates the 100-line limit")]
 pub(super) fn decode_attach_body(body: &[u8]) -> Result<DecodedFrame, WireError> {
     let mut r = Reader::new(body);
     let tag = r.u8("tag")?;

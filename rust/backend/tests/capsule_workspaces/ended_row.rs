@@ -14,6 +14,7 @@ use super::*;
 /// fence produces.
 #[tokio::test]
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_lines, reason = "one test scenario: attach on an ended row serializes under the guard")]
 async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     let _serial = SERIAL.lock().await;
     assert!(
@@ -533,6 +534,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
 /// this fault-injection method, not a claim about the retirement arm.
 #[tokio::test]
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_lines, reason = "one test scenario: attach on an ended row keeps the row when the stop fails")]
 async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     let _serial = SERIAL.lock().await;
     assert!(
