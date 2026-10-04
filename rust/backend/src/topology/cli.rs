@@ -203,12 +203,13 @@ fn resolve_hub(local: Option<&Topology>, cli_hub: Option<&str>, dest: &std::path
     }
 }
 
-/// True when this box IS the hub named by `hub` — syncing would fetch its
+/// True when this box IS the hub named by `hub` (the same bytes); every "am I
+/// the hub" test in topology/ asks this. Syncing on the hub would fetch its
 /// own file over ssh to itself, which is nonsense (the hub's copy is
 /// already canonical). Checked BEFORE any ssh call, so this is a cheap
 /// no-op on the hub rather than a wasted (and often permission-denied)
 /// self-ssh round trip on every launch.
-fn self_is_hub(me: &str, hub: &str) -> bool {
+pub(super) fn self_is_hub(me: &str, hub: &str) -> bool {
     me == hub
 }
 
@@ -267,7 +268,7 @@ fn set(words: &[String]) -> Result<(), String> {
 /// an ssh child into the hub, running `sotd stdio-bridge` there with no
 /// argument (its own daemon, which IS the hub's).
 fn hub_endpoint(topo: &Topology, me: &str) -> String {
-    if me == topo.hub {
+    if self_is_hub(me, &topo.hub) {
         topology::endpoint::local_endpoint()
     } else {
         format!("ssh:{}", topo.hub)
@@ -303,7 +304,7 @@ fn local_has_running_rows(me: &str) -> bool {
 /// `status` is meant to work offline too.
 fn report_cache_divergence(topo: &Topology) {
     let Ok(me) = self_host() else { return };
-    if me == topo.hub {
+    if self_is_hub(&me, &topo.hub) {
         return;
     }
     let Some(path) = topology::locate() else { return };

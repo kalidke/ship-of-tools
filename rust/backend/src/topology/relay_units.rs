@@ -275,7 +275,7 @@ pub(super) fn refresh_cmd(topo: &Topology) -> Result<(), String> {
 pub fn refresh_at_start() {
     let Ok(Some((_, topo))) = topology::load() else { return };
     let Ok(me) = self_host() else { return };
-    if me != topo.hub {
+    if !super::cli::self_is_hub(&me, &topo.hub) {
         return;
     }
     match supervised_by_systemd() {
