@@ -33,7 +33,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - ops.rs serves `video.open`, `docs.open` and `quarto.open`; handlers.rs re-exports them.
 - server.rs spawns the listeners at boot and hands a connection whose first frame is `proxy.connect` to
   `handle_proxy_connect`.
-- lane_bridge.rs and lease.rs call `reject`; lane_bridge.rs calls `pipe_bidirectional`.
+- lane_bridge.rs and lease.rs call `reject`, and lane_bridge.rs calls `pipe_bidirectional`, both through proxy.rs's re-export of server/pipe.rs.
 - The REPL supervisor (repl.rs) records and revokes browser ports (`record_browser_port`, `revoke_browser_ports`).
 - clients.rs calls `remove_root` when a connection disconnects.
 - The window's page proxy (rust/frontend/src/proxy_listen.rs) dials `proxy.connect`.
@@ -49,7 +49,7 @@ Elsewhere: rust/frontend/src/proxy_listen.rs (the window's page proxy).
 - `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
-- `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records, `pipe_bidirectional` and `reject`.
+- `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records, and the re-export of `pipe_bidirectional` and `reject` (defined in server/pipe.rs).
 - `site/`: the static-site server (own page).
 - `video.rs`: the video listener, its token grants and the request handler.
 

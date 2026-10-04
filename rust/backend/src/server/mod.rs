@@ -41,6 +41,7 @@ use tokio::task::JoinSet;
 pub(super) mod conn;
 mod events;
 pub(super) mod hello;
+pub(crate) mod pipe;
 pub(crate) mod listen;
 pub(super) mod reply;
 

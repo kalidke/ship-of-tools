@@ -56,6 +56,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek and the control loop with the op table
 - `events.rs`: one `recv_*`/`write_*` pair per bus, turning a broadcast event into its evt frame
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
+- `pipe.rs`: the shared byte pipe after a connect frame (`pipe_bidirectional`) and the one error frame for a refused connect (`reject`)
 
 ## Start here
 An op: the `match` in `handle_connection`. Bind, accept and the lock: `run_local` and `lock_daemon`. Boot order and
