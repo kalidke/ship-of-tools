@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::fs;
 use crate::ui::persist::discover::find_config_file;
+use crate::ui::persist::settings::strip_quotes;
 use winit::keyboard::{Key, NamedKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,15 +620,6 @@ fn parse_value(v: &str) -> Vec<String> {
     } else {
         vec![strip_quotes(v)]
     }
-}
-
-fn strip_quotes(s: &str) -> String {
-    let s = s.trim();
-    s.strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-        .unwrap_or(s)
-        .to_string()
 }
 
 #[cfg(test)]

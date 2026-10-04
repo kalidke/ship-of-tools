@@ -612,7 +612,7 @@ fn parse_bool(s: &str) -> Option<bool> {
     }
 }
 
-fn strip_quotes(s: &str) -> String {
+pub(in crate::ui) fn strip_quotes(s: &str) -> String {
     let s = s.trim();
     s.strip_prefix('"')
         .and_then(|s| s.strip_suffix('"'))
