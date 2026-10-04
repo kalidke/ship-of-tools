@@ -186,6 +186,30 @@ fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::workspaces::Workspace
     (frame_ws, frame_tx)
 }
 
+/// Waits for the shim's res within the request's budget; returns the elapsed time, the base outcome and the res.
+async fn await_exec_reply(req: &ReplExecuteReq,
+    reply_rx: tokio::sync::oneshot::Receiver<Result<serde_json::Value>>)
+    -> (u64, &'static str, Option<serde_json::Value>) {
+    let timeout_ms = req
+        .timeout_ms
+        .unwrap_or(EXEC_DEFAULT_TIMEOUT_MS)
+        .clamp(EXEC_MIN_TIMEOUT_MS, EXEC_MAX_TIMEOUT_MS);
+    let start = std::time::Instant::now();
+    let awaited = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), reply_rx).await;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    // Base terminal state from the await. On timeout we deliberately do NOT
+    // send an interrupt (that could race and kill a subsequent user eval — the
+    // run keeps going and its frames still reach the drawer).
+    let (base_outcome, res_payload): (&str, Option<serde_json::Value>) = match awaited {
+        Ok(Ok(Ok(v))) => ("completed", Some(v)),
+        Ok(Ok(Err(_))) => ("repl_died", None),
+        Ok(Err(_)) => ("repl_died", None),
+        Err(_) => ("timeout", None),
+    };
+    (elapsed_ms, base_outcome, res_payload)
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -262,23 +286,7 @@ pub async fn handle_repl_execute(
         }
     };
 
-    let timeout_ms = req
-        .timeout_ms
-        .unwrap_or(EXEC_DEFAULT_TIMEOUT_MS)
-        .clamp(EXEC_MIN_TIMEOUT_MS, EXEC_MAX_TIMEOUT_MS);
-    let start = std::time::Instant::now();
-    let awaited = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), reply_rx).await;
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    // Base terminal state from the await. On timeout we deliberately do NOT
-    // send an interrupt (that could race and kill a subsequent user eval — the
-    // run keeps going and its frames still reach the drawer).
-    let (base_outcome, res_payload): (&str, Option<serde_json::Value>) = match awaited {
-        Ok(Ok(Ok(v))) => ("completed", Some(v)),
-        Ok(Ok(Err(_))) => ("repl_died", None),
-        Ok(Err(_)) => ("repl_died", None),
-        Err(_) => ("timeout", None),
-    };
+    let (elapsed_ms, base_outcome, res_payload) = await_exec_reply(&req, reply_rx).await;
 
     // Snapshot the loss-free collector.
     let (frames, truncated) = {
