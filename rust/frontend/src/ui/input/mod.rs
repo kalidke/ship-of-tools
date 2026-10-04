@@ -6,5 +6,6 @@ pub(crate) mod help;
 pub(crate) mod keybindings;
 mod help_drawer;
 mod paste;
+pub(in crate::ui) mod mouse;
 
 pub(in crate::ui) use paste::*;

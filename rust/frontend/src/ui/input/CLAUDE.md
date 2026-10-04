@@ -10,6 +10,7 @@ and the clipboard paste helpers live beside it. Part of the window; charter: rus
 - `help.rs`: the contextual help model (`Context`) and its rows, with its tests inline.
 - `help_drawer.rs`: `State`'s help drawer: `help_context`, `open_help_drawer`, `close_help_drawer`, `help_peek_expired`.
 - `paste.rs`: `read_clipboard_text`, `bracketed_paste_bytes` and the two forwarders to the agent pane and the Terminal drawer.
+- `mouse.rs`: Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on.
 
 ## Start here
 `ACTIONS` and `KeyBindings::resolve` in keybindings.rs for a new action or chord; `help::Context` in help.rs for what
