@@ -68,7 +68,7 @@ impl State {
         //
         // ADR 0042 L2a codex review, item A: EVERY host's own
         // Connected requests ITS OWN workspace list, not just
-        // active_host's — transport.rs's hello-time fetch is
+        // active_host's — the transport's hello-time fetch is
         // tree.root only (no workspace.list), so a non-active
         // host's Sessions-tree node used to stay unreachable
         // (no children) until the user manually expanded it.

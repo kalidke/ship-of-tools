@@ -360,8 +360,8 @@ mod tests {
     use super::*;
 
     // The `attach_direct` switch itself (parsing the daemon's refusal
-    // payload) is tested where it lives — `transport.rs`'s own test
-    // module (`is_attach_direct_declines_every_other_response_shape`,
+    // payload) is tested where it lives — the tests of
+    // `net/transport/ops/workspace.rs` (`is_attach_direct_declines_every_other_response_shape`,
     // plus a real-seam test driven through `handle_response_frame`) —
     // rather than a reimplementation here.
 

@@ -155,7 +155,7 @@ use crate::ui::render::text::TextLayer;
 // ADR 0045 decision 1 (Codex review, lane B5 discharge); reshaped by C3 as
 // amended (isolation-plan.md §3, dev/output/c3-second-connection-
 // amendment.md §1): `ResolvedDial` — which transport a host's CONTROL
-// connection actually resolved to — moved to `crate::transport`, beside
+// connection actually resolved to — moved to `crate::net::transport`, beside
 // `TransportConfig`, because `IncomingEvt::Connected` now carries it. See
 // its doc there. No longer `Copy` (`SshRecipe` isn't); every former
 // `.copied()` reader below is `.cloned()`.

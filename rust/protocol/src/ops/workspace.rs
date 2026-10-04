@@ -63,7 +63,7 @@ pub struct WorkspaceCreateReq {
     // `boot: bool` on this op's payload, but is intentionally NOT a struct field
     // here — `handle_workspace_create` reads it straight off the raw JSON. Adding
     // it to the struct would force the FE's `WorkspaceCreateReq { … }` literal
-    // (transport.rs) to set it, and the FE is frozen during the sot-names rename.
+    // (net/transport/ops/workspace.rs) to set it, and the FE is frozen during the sot-names rename.
     // serde ignores the unknown field on this typed deserialize, so the contract
     // stays additive. Fold `boot` into the struct once the FE is unfrozen.
 }

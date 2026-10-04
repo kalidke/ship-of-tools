@@ -123,7 +123,7 @@ fn check_create_root(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, projec
 
     // In-use gate (see `same_slug_row_in_use`): refused before any state
     // changes. `workspace_id` stays nested under `existing` -- the frontend
-    // reads a top-level `workspace_id` as success (transport.rs).
+    // reads a top-level `workspace_id` as success (rust/frontend/src/net/transport/ops/workspace.rs).
     if let Some(existing) = same_slug_row_in_use(&incoming_slug, workspaces) {
         let phase = existing.phase().as_wire_str();
         let payload = json!({

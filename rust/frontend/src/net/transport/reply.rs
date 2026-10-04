@@ -541,7 +541,7 @@ mod tests {
         }
     }
 
-    // --- Switch-latency Phase 1: the generation/owner fields transport.rs
+    // --- Switch-latency Phase 1: the generation/owner fields the transport
     // threads through `PendingKind` are exactly what the request stamped.
     // The chrome's accept/reject DECISION (`reply_is_current`) lives in
     // ui/preview/fetch.rs and is tested there; this only proves the plumbing.

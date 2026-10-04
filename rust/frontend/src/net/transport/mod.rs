@@ -1,4 +1,4 @@
-// transport.rs — local frontend ↔ remote backend over a local socket (Unix
+// net/transport — local frontend ↔ remote backend over a local socket (Unix
 // socket / Windows named pipe) or an ssh child's stdio.
 //
 // Per ADR 0010, as replaced by isolation-plan.md §3 C3 (amended by

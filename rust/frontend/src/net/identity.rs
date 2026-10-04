@@ -61,7 +61,7 @@ pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
 /// since it has call sites all over this file predating that identity.
 /// The daemon scopes an `FE_COMMAND`'s `target` to one FE by this
 /// address; we self-filter against it. `pub(crate)` because
-/// `transport.rs` sends this same value as `HelloReq::name`, so the
+/// `net/transport/hello.rs` sends this same value as `HelloReq::name`, so the
 /// daemon can name this connection without a second derivation.
 pub(crate) fn self_comm_handle() -> String {
     frontend_identity().name.clone()

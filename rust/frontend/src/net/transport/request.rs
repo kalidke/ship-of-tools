@@ -4,7 +4,7 @@ use super::*;
 
 /// Requests the GPU thread asks the transport task to send. Kept narrow: only
 /// the ops the interactive UI currently triggers. Adding a new op means a new
-/// variant + a new arm in `handle_outgoing` and `handle_response`.
+/// variant + a new arm in `send_request` and `handle_response_frame`.
 #[derive(Debug)]
 pub enum OutgoingReq {
     TreeChildren {

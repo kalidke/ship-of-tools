@@ -6,7 +6,7 @@ use super::*;
 
 /// Outcome of `State::resolve_proxy_target` — see its doc for the three
 /// cases. `Dial` carries the recipe to spawn for the remote leg
-/// (`pipe_one`, `proxy_listen.rs`) — no longer a resolved `SocketAddr`:
+/// (`pipe_one`, `pages.rs`) — no longer a resolved `SocketAddr`:
 /// the daemon has no TCP listener to resolve one for (C3 as amended §3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::ui) enum ProxyTarget {

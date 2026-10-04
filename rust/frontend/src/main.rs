@@ -99,7 +99,7 @@ fn main() -> Result<()> {
     // since the plan hands this box's own endpoint over as an ordinary
     // `--dial` entry. There is no `--tcp` twin (C3): a remote box in the
     // ad hoc path is `--dial local=ssh:<target>`. The frontend reads no
-    // config file for hosts (see `dial.rs`; no hosts.toml, here or
+    // config file for hosts (see `net/dial.rs`; no hosts.toml, here or
     // anywhere else).
     let mut dials: Vec<(net::dial::HostKey, net::transport::TransportConfig)> = Vec::new();
     for arg in &cli.dial {

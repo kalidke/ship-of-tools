@@ -144,7 +144,7 @@ impl Conn {
                 let stdout = child.stdout.take().expect("spawn_sync pipes stdout");
                 // The child's last non-empty stderr line, drained on its own
                 // thread for as long as the child lives -- the pattern
-                // `rust/frontend/src/transport.rs` already uses for its own
+                // `rust/frontend/src/net/transport/mod.rs` already uses for its own
                 // ssh child (a task there, a thread here, since this path is
                 // blocking). The thread outlives the call and is never joined:
                 // it holds one pipe and ends at EOF, whereas waiting for that
@@ -199,7 +199,7 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
         }
     }
     if let Some(rest) = endpoint.strip_prefix("ssh:") {
-        // Same two forms `rust/frontend/src/dial.rs` already parses --
+        // Same two forms `rust/frontend/src/net/dial.rs` already parses --
         // `ssh:<target>` for that box's own daemon, `ssh:<target>/<host>`
         // for a daemon `<target>` relays to on `<host>`'s behalf — one
         // grammar, not a second one invented here.
@@ -399,7 +399,7 @@ pub(crate) mod tests {
         assert!(wait_for_marker(&marker2), "the ssh:hub/gamma arm must have exec'd OUR stub too");
         drop(guard);
 
-        // The same grammar SshRecipe::new enforces (frontend/src/dial.rs's
+        // The same grammar SshRecipe::new enforces (frontend/src/net/dial.rs's
         // own parsing, C3) -- connect() delegates to it rather than
         // inventing a second check, so a value SshRecipe rejects must
         // fail HERE too, not just at the frontend. Neither call reaches

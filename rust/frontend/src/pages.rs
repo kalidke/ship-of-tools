@@ -21,6 +21,8 @@
 //! `open_url_in_browser` runs) and hands the bound listener — tagged with the
 //! ssh recipe and token it resolved for that page's host — to the transport
 //! runtime here, which owns the async accept loop + the per-connection pipe.
+//!
+//! Part of pages; charter: rust/backend/src/pages/CLAUDE.md.
 
 use std::net::TcpListener as StdTcpListener;
 

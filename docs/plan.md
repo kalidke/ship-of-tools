@@ -54,7 +54,7 @@ The go/no-go gate for option C. If this lands, C is defensible. If preview-layer
 - `rust/frontend/src/ui/render/cells.rs` — ratatui custom `Backend` impl.
 - `rust/frontend/src/ui/preview/mod.rs` — preview-layer dispatch on MIME.
 - `rust/frontend/src/ui/preview/{image/png,markdown/mod,image/svg}.rs` — three concrete renderers.
-- `rust/frontend/src/transport.rs` — SSH-spawn + Unix-socket connect + reconnect loop.
+- `rust/frontend/src/net/transport/mod.rs` — SSH-spawn + Unix-socket connect + reconnect loop.
 - `rust/backend/src/main.rs` — Unix-socket listener, session-id handshake, kernel supervisor.
 - `rust/backend/src/session.rs` — session state (tree cursor, preview cache, revision counter for reconnect).
 - `rust/backend/src/mathjax.rs` — Node sidecar wrapper (math snippet → SVG).
@@ -92,7 +92,7 @@ If any of those fail in a way the architecture can't fix, switch to option B bef
 - `julia/plugins/modules-mode/src/ModulesMode.jl` — mode-tree dispatch.
 - `core/src/ASTHash.jl` — hash function.
 - `core/test/test_ast_hash.jl` — property test.
-- `rust/frontend/src/state.rs` — per-mode cursor preservation; modes switch via `f` / `m` / `s` / `h` in nav focus.
+- `rust/frontend/src/ui/nav/tree_store.rs` — per-mode cursor preservation; modes switch via `f` / `m` / `s` / `h` in nav focus.
 
 **Acceptance:** open the Ship of Tools repo, switch to Modules mode, navigate to a method, see source. Property test passes.
 

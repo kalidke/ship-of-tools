@@ -5,10 +5,10 @@
 //! never an `ssh -L` forward. One recipe type and one argv builder here,
 //! used by every Rust site that spawns one:
 //!
-//! - the frontend's control connection (`rust/frontend/src/transport.rs`);
+//! - the frontend's control connection (`rust/frontend/src/net/transport/mod.rs`);
 //! - its per-host lane attach (`crate::topology::lane_client`, this crate);
 //! - its per-browser-connection page-proxy leg
-//!   (`rust/frontend/src/proxy_listen.rs`).
+//!   (`rust/frontend/src/pages.rs`).
 //!
 //! C10's shell helper (`comm-lib.sh`'s `sot_ssh_bridge`) spawns the same
 //! child from the comm scripts, with its own implementation — shell cannot

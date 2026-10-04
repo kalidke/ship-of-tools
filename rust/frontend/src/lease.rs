@@ -1,9 +1,10 @@
 // The window lease (ADR 0050): one dedicated connection per local daemon,
 // held for the window's life, so the daemon knows a window is attached and
 // the window can say, on leaving, what should happen to the computer's
-// sessions. This file is the lease's whole client side; `transport.rs` calls
+// sessions. This file is the lease's whole client side; `net/transport/mod.rs` calls
 // `before_data_connection` before each local data connection, and the window
 // (ui/chrome/draw.rs, ui/app/frame.rs) reads `notice()` and `owed()`, acks through `notice_seen`, and leaves through it.
+// Part of lifecycle; charter: rust/backend/src/lifecycle/CLAUDE.md.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;

@@ -36,13 +36,13 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - lane_bridge.rs and lease.rs call `reject`, and lane_bridge.rs calls `pipe_bidirectional`, both through proxy.rs's re-export of server/pipe.rs.
 - The REPL supervisor (repl.rs) records and revokes browser ports (`record_browser_port`, `revoke_browser_ports`).
 - clients.rs calls `remove_root` when a connection disconnects.
-- The window's page proxy (rust/frontend/src/proxy_listen.rs) dials `proxy.connect`.
+- The window's page proxy (rust/frontend/src/pages.rs) dials `proxy.connect`.
 
 ## Folders
 
 - `site/`: the static-site server: grant tables, listeners, the request and the link rule.
 
-Elsewhere: rust/frontend/src/proxy_listen.rs (the window's page proxy).
+Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 
 ## Files
 

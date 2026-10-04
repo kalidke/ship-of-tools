@@ -3,12 +3,14 @@
 Each op the window sends has a `send_<op>` here: it writes the request frame and records the
 `PendingKind` its reply needs. `send_request` (../request.rs) picks the function by `OutgoingReq`
 variant; for a reply, `handle_response_frame` (../reply.rs) removes the pending entry and calls
-`on_<op>` by `PendingKind`, which turns the frame into an `IncomingEvt`. An op family's file also holds the types its reply becomes (e.g. `WorkspaceInfo` in workspace.rs); mod.rs re-exports them to the UI. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
+`on_<op>` by `PendingKind`, which turns the frame into an `IncomingEvt`. An op family's file also holds the types its
+reply becomes (e.g. `WorkspaceInfo` in workspace.rs); mod.rs re-exports them to the transport, whose mod.rs re-exports
+them to the UI. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Files
-- `mod.rs`: declares the families and re-exports their functions to the transport
+- `mod.rs`: declares the families and re-exports their functions and reply types to the transport
 - `tree.rs`: tree.children, tree.root, nav.toggle_hidden, directory.list
-- `preview.rs`: preview.get, preview.set_scale, image.crop, math.render
+- `preview.rs`: preview.get (and `send_figure_get`), .set_scale, image.crop, math.render
 - `concept.rs`: concept.read, concept.write
 - `files.rs`: file.read, file.write, file.delete, dir.create, file.download, file.upload
 - `kernel.rs`: kernel.request ops: project.scan, markdown.tokenize, file.parse, function.methods
