@@ -133,4 +133,16 @@ mod tests {
         let out = unconfirmed("text", failed);
         assert_eq!(out, WakeOutcome::Unconfirmed { step: "text", detail: "write: broken pipe".to_string() });
     }
+
+    // Observed on Linux only: the attach client's worker is the same code elsewhere, but no host here runs it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_wake_without_a_lane_is_a_checkpoint_error() {
+        let free = |_: &[String], _: Option<(u16, u16)>, _: &str| true;
+        let d = Duration::from_secs(5);
+        let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "x", &free, "claude", d, d, d, d)
+            .expect_err("no lane to wake");
+        assert_eq!(err.phase, "checkpoint");
+        assert!(!err.submitted);
+    }
 }

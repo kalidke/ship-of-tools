@@ -350,13 +350,18 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::{enter_outcome, type_into, write_and_enter, HeadlessError};
+    use super::{enter_outcome, screen_of, type_into, write_and_enter, HeadlessError};
     use sot_protocol::PtyEnter;
     use std::path::Path;
     use std::time::{Duration, Instant};
 
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(5)
+    }
+
+    fn oversized_detail() -> String {
+        let cap = sot_log::attach_client::rules::TAKE_QUEUE_CAP;
+        format!("payload is {} bytes, exceeding the take queue cap of {} bytes", cap + 1, cap)
     }
 
     #[test]
@@ -377,6 +382,7 @@ mod headless_size_gate_tests {
             .expect_err("oversized payload must be refused");
         assert_eq!(err.phase, "size");
         assert!(!err.submitted);
+        assert_eq!(err.detail, oversized_detail());
     }
 
     #[test]
@@ -407,5 +413,23 @@ mod headless_size_gate_tests {
             .expect_err("oversized payload must be refused");
         assert_eq!(err.phase, "size");
         assert!(!err.submitted);
+        assert_eq!(err.detail, oversized_detail());
+    }
+
+    // Observed on Linux only: the attach client's worker is the same code elsewhere, but no host here runs it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_attach_without_a_lane_is_phase_checkpoint() {
+        let dir = Path::new("/nonexistent/sot-lu6c-test-state-dir");
+        let budget = Duration::from_secs(5);
+        let errs = [
+            type_into(dir, "ctrl", b"x", deadline()).expect_err("no lane to type into"),
+            write_and_enter(dir, "ctrl", b"x", budget, budget, budget).expect_err("no lane to write to"),
+            screen_of(dir, "ctrl", deadline()).map(|_| ()).expect_err("no lane to read"),
+        ];
+        for err in errs {
+            assert_eq!(err.phase, "checkpoint");
+            assert!(!err.submitted);
+        }
     }
 }

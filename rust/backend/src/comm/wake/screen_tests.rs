@@ -585,3 +585,11 @@ fn a_wake_line_with_more_or_less_is_a_draft() {
         assert!(typed_refusal(&boxed(&held), Some((1, 2)), "claude", false, WAKE_LINE).is_some());
     }
 }
+
+#[test]
+fn free_test_lines_trims_spaces_and_keeps_a_no_break_space() {
+    // A row off the cursor: the trailing ASCII spaces go, the no-break space after the glyph stays.
+    let mut p = vt100_ctt::Parser::new(3, 80, 0);
+    p.process("\x1b[3;1Ha\u{a0}  \x1b[1;1H".as_bytes());
+    assert_eq!(free_test_lines(p.screen())[2], "a\u{a0}");
+}
