@@ -35,18 +35,14 @@ where
     // from a neighbouring log line.
     let dispatch_started = std::time::Instant::now();
     let dispatched: Result<crate::server::reply::HandlerOutput> = match frame.op.as_str() {
-        op::HELLO => {
-            admit_hello(&frame, clients, client_guard, is_long_lived_role, hello_host, hello_name);
-            crate::server::hello::handle_hello(
-                frame.id,
-                frame.payload,
-                &session,
-                &files_mode,
-                label.as_deref(),
-                &clients,
-            )
-            .await
-        }
+        op::HELLO => match serde_json::from_value::<sot_protocol::HelloReq>(frame.payload).context("hello payload") {
+            Ok(req) => {
+                admit_hello(&req, clients, client_guard, is_long_lived_role, hello_host, hello_name);
+                crate::server::hello::handle_hello(frame.id, req, &session, &files_mode, label.as_deref(), &clients)
+                    .await
+            }
+            Err(e) => Err(e),
+        },
         op::TREE_ROOT => {
             crate::files::tree_ops::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
         }

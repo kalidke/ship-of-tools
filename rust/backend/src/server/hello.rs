@@ -27,13 +27,12 @@ fn protocol_gate(client_protocol: u32) -> ProtocolGate {
 
 pub async fn handle_hello(
     req_id: u64,
-    payload_json: serde_json::Value,
+    req: HelloReq,
     session: &Session,
     files_mode: &FilesMode,
     label: Option<&str>,
     clients: &crate::clients::Clients,
 ) -> Result<HandlerOutput> {
-    let req: HelloReq = serde_json::from_value(payload_json).context("hello payload")?;
     let (session_id, revision) = session.snapshot().await;
 
     // Protocol version gate (ADR 0030 §2): a structured `{error, code}` envelope that does NOT deserialize
@@ -146,47 +145,41 @@ pub async fn handle_hello(
 
 /// Enters a connection in the client roster at its first hello and records its declared host and name.
 pub(super) fn admit_hello(
-    frame: &Frame, clients: &Clients, client_guard: &mut Option<crate::clients::ClientGuard>,
+    req: &HelloReq, clients: &Clients, client_guard: &mut Option<crate::clients::ClientGuard>,
     is_long_lived_role: &mut bool, hello_host: &mut Option<String>, hello_name: &mut Option<String>,
 ) {
     // Register this connection in the client roster the first
     // time we learn its client_id (a reconnect re-sends hello
     // on the same connection — keep the original guard). Done
     // before `handle_hello` so `clients_connected` counts self.
-    if client_guard.is_none() {
-        if let Ok(req) =
-            serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
-        {
-            // Topology plan §F step 2: mark this connection
-            // ELIGIBLE for the read-deadline reaper -- exactly
-            // the two long-lived roles, `fe` and `bridge`
-            // (`cli`/`agent` are one-shot and stay ungated).
-            // This does NOT arm the deadline itself (manager
-            // compatibility fix, post-review) — only this
-            // connection's FIRST `ping` does that, so a peer too old to send one keeps
-            // today's behaviour exactly, never reaped by this
-            // path.
-            // A peer on another protocol is about to be
-            // refused by `handle_hello`'s gate: never enter
-            // the roster (it would be counted as a directed
-            // command's audience and listed by `version.query`
-            // while its hello stands refused). It gets the
-            // structured mismatch reply and nothing else.
-            if req.protocol == sot_protocol::PROTOCOL_VERSION {
-                *is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
-                *hello_host = req.host.clone();
-                *hello_name = req.name.clone();
-                *client_guard = Some(clients.register(
-                    req.client_id,
-                    req.app_version,
-                    req.protocol,
-                    req.role,
-                    req.host,
-                    req.instance,
-                    req.name,
-                ));
-            }
-        }
+    // Topology plan §F step 2: mark this connection
+    // ELIGIBLE for the read-deadline reaper -- exactly
+    // the two long-lived roles, `fe` and `bridge`
+    // (`cli`/`agent` are one-shot and stay ungated).
+    // This does NOT arm the deadline itself (manager
+    // compatibility fix, post-review) — only this
+    // connection's FIRST `ping` does that, so a peer too old to send one keeps
+    // today's behaviour exactly, never reaped by this
+    // path.
+    // A peer on another protocol is about to be
+    // refused by `handle_hello`'s gate: never enter
+    // the roster (it would be counted as a directed
+    // command's audience and listed by `version.query`
+    // while its hello stands refused). It gets the
+    // structured mismatch reply and nothing else.
+    if client_guard.is_none() && protocol_gate(req.protocol) == ProtocolGate::Accept {
+        *is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
+        *hello_host = req.host.clone();
+        *hello_name = req.name.clone();
+        *client_guard = Some(clients.register(
+            req.client_id.clone(),
+            req.app_version.clone(),
+            req.protocol,
+            req.role.clone(),
+            req.host.clone(),
+            req.instance.clone(),
+            req.name.clone(),
+        ));
     }
 }
 
