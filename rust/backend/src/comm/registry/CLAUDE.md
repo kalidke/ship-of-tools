@@ -5,10 +5,13 @@ design of record: docs/adr/0049-messaging-on-one-page.md.
 
 ## Files
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
+- `join.rs`: agent.join
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
 - `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
 - `mod.rs`: declares the files
 - `poll.rs`: the registry poll's change detection
+- `registry.rs`: the daemon's registry reads, lock, prune, unread clear and row binding
+- `registry_tests.rs`: its tests
 
 ## Start here
 `lock.rs` `acquire`, for any change to how the daemon takes the registry lock.
