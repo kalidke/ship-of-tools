@@ -13,119 +13,18 @@ impl State {
         )>,
         leases: Arc<crate::lease::Leases>,
     ) -> Result<Self> {
-        // Loaded here (rather than at each of its several uses below) so
-        // `last_host` and the window-geometry fields below all read the
-        // SAME snapshot of the file.
-        let persisted_geom = crate::state_persistence::load();
-        // ADR 0042 L2a codex review, item H: `last_host` is the active
-        // host AT QUIT (persist_resume_state writes it every save now —
-        // see the field's own doc for the ADR 0015 -> L2a meaning
-        // change). It wins whenever it's still a resolved connection, so a
-        // daily launch resumes wherever the user actually left off;
-        // `resolve_default_host` (G's rule — no more configured
-        // `default_host` since topology plan lane D, so this always falls
-        // back to `conns.first()`) is the fallback when there's no
-        // persisted host, or it's no longer reachable.
-        let active_host: crate::dial::HostKey = persisted_geom
-            .last_host
-            .clone()
-            .filter(|h| conns.iter().any(|(ch, _)| ch == h))
-            .unwrap_or_else(|| resolve_default_host(&conns, "offline".to_string()));
-        // ADR 0042 L2a codex review, item H: `last_workspace_id` /
-        // `last_bl_target` were saved for WHATEVER host was active at
-        // quit. If that host is unreachable now and `active_host` fell
-        // back to G's rule (a DIFFERENT host), those saved values name a
-        // workspace/session that may not exist -- or worse, exist under
-        // the SAME name -- on the fallback host. Restore them only when
-        // we actually resumed onto the host they were saved for.
-        let resume_matches_last_host =
-            persisted_geom.last_host.as_deref() == Some(active_host.as_str());
-        // The declared hub's name (4.3): loaded once here, the same pattern
-        // `selfupdate.rs::backend_owns_updates_here` uses — pure file read,
-        // no daemon round trip, `None` when no `hosts.toml` declares one.
-        let monitor_hub: Option<String> =
-            sot_protocol::topology::load().ok().flatten().map(|(_, t)| t.hub);
-        // Restore previous window geometry on launch. Saved in logical
-        // pixels so cross-DPR launches behave sensibly. Defaults are
-        // ~50% bigger than the spike's original 1024×700.
-        let init_w = persisted_geom.window_w.unwrap_or(1536.0);
-        let init_h = persisted_geom.window_h.unwrap_or(1050.0);
-        // Loaded here rather than at first use (the Terminal-drawer resume,
-        // far below) because adapter selection needs `[gpu] power_preference`
-        // and that happens a few dozen lines down. Pure env+fs, no dependency
-        // on the window or event loop. ONE load — a second call would log
-        // "settings loaded" twice and could disagree if the file changed
-        // mid-startup.
-        let settings = Settings::load_layered();
-        // Cross-platform window icon, decoded at runtime from the logo PNG that is
-        // embedded into the binary at compile time — no Windows .rc/winres
-        // resource compiler, so the build needs no extra tooling and is identical
-        // on Linux/macOS. On Windows `with_window_icon` sets only ICON_SMALL (the
-        // title-bar / Alt-Tab small icon); the *taskbar* button uses ICON_BIG,
-        // which winit exposes separately as `with_taskbar_icon` (set below) — so
-        // both must be set or the taskbar falls back to the default exe icon. On
-        // X11 the window icon populates _NET_WM_ICON. (The desktop *shortcut* icon
-        // is a separate thing, set to logo.ico by install-shortcut.ps1; this is
-        // the icon of the running window, which the shortcut never controls.)
-        // Non-fatal on decode failure: we just launch without a custom icon.
-        fn load_window_icon() -> Option<Icon> {
-            const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png"));
-            let rgba = image::load_from_memory(LOGO_PNG).ok()?.to_rgba8();
-            // 512² source → a tidy 256² icon; the OS rescales per surface. Area-
-            // averaging `thumbnail` matches the preview/png.rs downscale idiom.
-            let icon = image::imageops::thumbnail(&rgba, 256, 256);
-            let (w, h) = icon.dimensions();
-            Icon::from_rgba(icon.into_raw(), w, h).ok()
-        }
-        let mut attrs = Window::default_attributes()
-            .with_title("Ship of Tools")
-            .with_active(true)
-            .with_inner_size(LogicalSize::new(init_w, init_h));
-        if let Some(icon) = load_window_icon() {
-            // Windows taskbar buttons use ICON_BIG; `with_window_icon` sets only
-            // ICON_SMALL. Set the taskbar icon explicitly (256×256 ceiling, which
-            // matches the thumbnail above) via the Windows extension trait, or the
-            // taskbar shows the default exe icon while the title bar shows our logo.
-            #[cfg(target_os = "windows")]
-            {
-                use winit::platform::windows::WindowAttributesExtWindows;
-                attrs = attrs.with_taskbar_icon(Some(icon.clone()));
-            }
-            attrs = attrs.with_window_icon(Some(icon));
-        }
-        if let (Some(x), Some(y)) = (persisted_geom.window_x, persisted_geom.window_y) {
-            attrs = attrs.with_position(LogicalPosition::new(x, y));
-        }
-        // Resume fullscreen across launches — especially the ADR 0017
-        // self-relaunch, so a rebuild doesn't drop the user out of FS.
-        // `--start-fullscreen` forces it independently of persisted state
-        // (harness runs can't rely on the box's saved geometry; the docs
-        // shots are taken fullscreen on an ultrawide).
-        if persisted_geom.fullscreen == Some(true) || cli.start_fullscreen {
-            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
-        let window = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .context("failed to create winit window")?,
-        );
-        // Focus is deferred to the first rendered frame (see
-        // `focus_on_first_frame` / the RedrawRequested handler): a focus
-        // request issued here, before the window is shown, is ignored by
-        // most window managers. `.with_active(true)` above is the portable
-        // hint we land active; the post-paint pass does the real attempt.
-
-        // Combined scale: OS DPR for HiDPI displays + user override.
-        let scale = (cli.scale * window.scale_factor() as f32).max(0.5);
-        tracing::info!(
-            dpr = window.scale_factor(),
-            cli_scale = cli.scale,
-            effective_scale = scale,
-            "metric scale resolved"
-        );
-        let cell_h = BASE_CELL_H * scale;
-        let chrome_origin_x = BASE_CHROME_ORIGIN_X * scale;
-        let chrome_origin_y = BASE_CHROME_ORIGIN_Y * scale;
+        let LaunchInputs {
+            persisted_geom,
+            active_host,
+            resume_matches_last_host,
+            monitor_hub,
+            init_w,
+            init_h,
+            settings,
+        } = load_launch_inputs(&conns);
+        let window = create_window(event_loop, cli, &persisted_geom, init_w, init_h)?;
+        let metrics = compute_cell_metrics(cli, &window);
+        let CellMetrics { scale, cell_h, chrome_origin_x, chrome_origin_y } = metrics;
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -904,4 +803,154 @@ impl State {
         }
         Ok(state)
     }
+}
+
+struct LaunchInputs {
+    persisted_geom: crate::state_persistence::GlobalState,
+    active_host: crate::dial::HostKey,
+    resume_matches_last_host: bool,
+    monitor_hub: Option<String>,
+    init_w: f64,
+    init_h: f64,
+    settings: Settings,
+}
+
+fn load_launch_inputs(
+    conns: &[(crate::dial::HostKey, tokio::sync::mpsc::UnboundedSender<OutgoingReq>)],
+) -> LaunchInputs {
+// Loaded here (rather than at each of its several uses below) so
+// `last_host` and the window-geometry fields below all read the
+// SAME snapshot of the file.
+let persisted_geom = crate::state_persistence::load();
+// ADR 0042 L2a codex review, item H: `last_host` is the active
+// host AT QUIT (persist_resume_state writes it every save now —
+// see the field's own doc for the ADR 0015 -> L2a meaning
+// change). It wins whenever it's still a resolved connection, so a
+// daily launch resumes wherever the user actually left off;
+// `resolve_default_host` (G's rule — no more configured
+// `default_host` since topology plan lane D, so this always falls
+// back to `conns.first()`) is the fallback when there's no
+// persisted host, or it's no longer reachable.
+let active_host: crate::dial::HostKey = persisted_geom
+    .last_host
+    .clone()
+    .filter(|h| conns.iter().any(|(ch, _)| ch == h))
+    .unwrap_or_else(|| resolve_default_host(&conns, "offline".to_string()));
+// ADR 0042 L2a codex review, item H: `last_workspace_id` /
+// `last_bl_target` were saved for WHATEVER host was active at
+// quit. If that host is unreachable now and `active_host` fell
+// back to G's rule (a DIFFERENT host), those saved values name a
+// workspace/session that may not exist -- or worse, exist under
+// the SAME name -- on the fallback host. Restore them only when
+// we actually resumed onto the host they were saved for.
+let resume_matches_last_host =
+    persisted_geom.last_host.as_deref() == Some(active_host.as_str());
+// The declared hub's name (4.3): loaded once here, the same pattern
+// `selfupdate.rs::backend_owns_updates_here` uses — pure file read,
+// no daemon round trip, `None` when no `hosts.toml` declares one.
+let monitor_hub: Option<String> =
+    sot_protocol::topology::load().ok().flatten().map(|(_, t)| t.hub);
+// Restore previous window geometry on launch. Saved in logical
+// pixels so cross-DPR launches behave sensibly. Defaults are
+// ~50% bigger than the spike's original 1024×700.
+let init_w = persisted_geom.window_w.unwrap_or(1536.0);
+let init_h = persisted_geom.window_h.unwrap_or(1050.0);
+// Loaded here rather than at first use (the Terminal-drawer resume,
+// far below) because adapter selection needs `[gpu] power_preference`
+// and that happens a few dozen lines down. Pure env+fs, no dependency
+// on the window or event loop. ONE load — a second call would log
+// "settings loaded" twice and could disagree if the file changed
+// mid-startup.
+let settings = Settings::load_layered();
+    LaunchInputs { persisted_geom, active_host, resume_matches_last_host, monitor_hub, init_w, init_h, settings }
+}
+
+fn create_window(
+    event_loop: &ActiveEventLoop,
+    cli: &crate::cli::Cli,
+    persisted_geom: &crate::state_persistence::GlobalState,
+    init_w: f64,
+    init_h: f64,
+) -> Result<Arc<Window>> {
+// Cross-platform window icon, decoded at runtime from the logo PNG that is
+// embedded into the binary at compile time — no Windows .rc/winres
+// resource compiler, so the build needs no extra tooling and is identical
+// on Linux/macOS. On Windows `with_window_icon` sets only ICON_SMALL (the
+// title-bar / Alt-Tab small icon); the *taskbar* button uses ICON_BIG,
+// which winit exposes separately as `with_taskbar_icon` (set below) — so
+// both must be set or the taskbar falls back to the default exe icon. On
+// X11 the window icon populates _NET_WM_ICON. (The desktop *shortcut* icon
+// is a separate thing, set to logo.ico by install-shortcut.ps1; this is
+// the icon of the running window, which the shortcut never controls.)
+// Non-fatal on decode failure: we just launch without a custom icon.
+fn load_window_icon() -> Option<Icon> {
+    const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png"));
+    let rgba = image::load_from_memory(LOGO_PNG).ok()?.to_rgba8();
+    // 512² source → a tidy 256² icon; the OS rescales per surface. Area-
+    // averaging `thumbnail` matches the preview/png.rs downscale idiom.
+    let icon = image::imageops::thumbnail(&rgba, 256, 256);
+    let (w, h) = icon.dimensions();
+    Icon::from_rgba(icon.into_raw(), w, h).ok()
+}
+let mut attrs = Window::default_attributes()
+    .with_title("Ship of Tools")
+    .with_active(true)
+    .with_inner_size(LogicalSize::new(init_w, init_h));
+if let Some(icon) = load_window_icon() {
+    // Windows taskbar buttons use ICON_BIG; `with_window_icon` sets only
+    // ICON_SMALL. Set the taskbar icon explicitly (256×256 ceiling, which
+    // matches the thumbnail above) via the Windows extension trait, or the
+    // taskbar shows the default exe icon while the title bar shows our logo.
+    #[cfg(target_os = "windows")]
+    {
+        use winit::platform::windows::WindowAttributesExtWindows;
+        attrs = attrs.with_taskbar_icon(Some(icon.clone()));
+    }
+    attrs = attrs.with_window_icon(Some(icon));
+}
+if let (Some(x), Some(y)) = (persisted_geom.window_x, persisted_geom.window_y) {
+    attrs = attrs.with_position(LogicalPosition::new(x, y));
+}
+// Resume fullscreen across launches — especially the ADR 0017
+// self-relaunch, so a rebuild doesn't drop the user out of FS.
+// `--start-fullscreen` forces it independently of persisted state
+// (harness runs can't rely on the box's saved geometry; the docs
+// shots are taken fullscreen on an ultrawide).
+if persisted_geom.fullscreen == Some(true) || cli.start_fullscreen {
+    attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
+}
+let window = Arc::new(
+    event_loop
+        .create_window(attrs)
+        .context("failed to create winit window")?,
+);
+// Focus is deferred to the first rendered frame (see
+// `focus_on_first_frame` / the RedrawRequested handler): a focus
+// request issued here, before the window is shown, is ignored by
+// most window managers. `.with_active(true)` above is the portable
+// hint we land active; the post-paint pass does the real attempt.
+    Ok(window)
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct CellMetrics {
+    pub(super) scale: f32,
+    pub(super) cell_h: f32,
+    pub(super) chrome_origin_x: f32,
+    pub(super) chrome_origin_y: f32,
+}
+
+fn compute_cell_metrics(cli: &crate::cli::Cli, window: &Arc<Window>) -> CellMetrics {
+// Combined scale: OS DPR for HiDPI displays + user override.
+let scale = (cli.scale * window.scale_factor() as f32).max(0.5);
+tracing::info!(
+    dpr = window.scale_factor(),
+    cli_scale = cli.scale,
+    effective_scale = scale,
+    "metric scale resolved"
+);
+let cell_h = BASE_CELL_H * scale;
+let chrome_origin_x = BASE_CHROME_ORIGIN_X * scale;
+let chrome_origin_y = BASE_CHROME_ORIGIN_Y * scale;
+    CellMetrics { scale, cell_h, chrome_origin_x, chrome_origin_y }
 }
