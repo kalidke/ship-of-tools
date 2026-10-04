@@ -3,6 +3,7 @@
 use super::*;
 
 mod band;
+mod draw;
 mod hull;
 mod items;
 
