@@ -138,15 +138,6 @@ pub async fn read(updates_root: &Path, target: &str) -> Result<Option<PendingPoi
     Ok(Some(ptr))
 }
 
-/// Disarm a target's pointer (after a successful apply, or to cancel).
-pub async fn clear(updates_root: &Path, target: &str) -> Result<()> {
-    match tokio::fs::remove_file(pointer_path(updates_root, target)).await {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).context("removing pending pointer"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,10 +179,6 @@ mod tests {
         // A bad-marked version refuses to arm.
         std::fs::write(bad_marker(&root, "v0.8.0", T), b"").unwrap();
         assert!(!arm(&root, &identity("0.8.0"), &co, "ddd").await.unwrap());
-
-        clear(&root, T).await.unwrap();
-        assert!(read(&root, T).await.unwrap().is_none());
-        clear(&root, T).await.unwrap(); // idempotent
 
         tokio::fs::remove_dir_all(&root).await.unwrap();
     }
