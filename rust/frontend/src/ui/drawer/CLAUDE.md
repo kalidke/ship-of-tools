@@ -6,10 +6,11 @@ Monitor (ADR 0041). Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 ## Files
 - `mod.rs`: declares the tenants' folders and files.
 - `monitor.rs`: the Monitor tenant's state (a ring of samples per host) and its SVG chart (ADR 0020).
+- `repl/`: the REPL tenant, its eval log and the log's display lines.
 - `terminal/`: the Terminal tenant, the local pty and the vt100 helpers.
 
 ## Start here
-`MonitorView` in monitor.rs for the Monitor's data and chart; the Terminal's pieces are in terminal/.
+`MonitorView` in monitor.rs for the Monitor's data and chart; repl/ and terminal/ hold the other two tenants.
 
 ## Rules
 - A stale tick flags its host and appends nothing (`MonitorView::apply_tick`).

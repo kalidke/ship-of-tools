@@ -48,6 +48,12 @@ use crate::transport::OutgoingReq;
 use sot_protocol::ops::LeaveIntent;
 use sot_protocol::{ReplFrame, TreeNode};
 pub(crate) mod drawer;
+#[cfg(windows)]
+use drawer::terminal::backend::drawer_uses_attach;
+use drawer::repl::lines::{build_repl_lines, pinned_repl_scroll, ReplImage, ReplImageSlot};
+use drawer::repl::log::ReplEntry;
+use drawer::terminal::backend::scroll_drawer_ring;
+use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
 
 mod agent_pane;
 use agent_pane::*;
@@ -239,28 +245,6 @@ enum SpatialDir {
     Down,
     Left,
     Right,
-}
-
-/// One submitted REPL eval — code typed by the user plus the frames the
-/// kernel returned. `in_flight` means we sent the request but haven't seen
-/// the response yet; the chrome renders an italicised `(running…)` until
-/// the matching `ReplEvalDone` lands.
-#[derive(Clone)]
-struct ReplEntry {
-    eval_id: u64,
-    code: String,
-    frames: Vec<ReplFrame>,
-    elapsed_ms: u64,
-    in_flight: bool,
-    /// Which prompt the user was on when this entry was submitted —
-    /// `false` = `julia>`, `true` = `pkg>`. Stored per-entry so a
-    /// later mode switch doesn't relabel old scrollback rows.
-    pkg_mode: bool,
-    /// `Some(label)` for a run this FE did NOT originate — a session's
-    /// `repl.execute` (ADR 0033 phase 2). Renders a distinct prompt line
-    /// (e.g. `⟨session ▸ run foo.jl⟩`) instead of the `julia>` echo, and is
-    /// kept out of the Up/Down input history. `None` for a local user eval.
-    origin: Option<String>,
 }
 
 /// One cached markdown-figure image. `natural_w_px / natural_h_px`
@@ -5451,22 +5435,6 @@ fn truncate_to_cells(text: &str, cells: usize) -> (String, usize) {
     (out, w)
 }
 
-/// Which backend the drawer uses (ADR 0041, ADR 0050). The attach-only
-/// drawer needs this computer's backend, and that backend must hold this
-/// window's lease: a granted lease whose `state_root` is this window's own.
-/// The choice is made once, so an attach drawer already running stays and a
-/// plain terminal already running is never swapped out.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn drawer_uses_attach(
-    setting: bool,
-    attach_live: bool,
-    local_live: bool,
-    granted_roots: &[String],
-    own_root: Option<&str>,
-) -> bool {
-    attach_live || (setting && !local_live && own_root.is_some_and(|r| granted_roots.iter().any(|g| g == r)))
-}
-
 /// Wrap a status text into lines of display cells: the first line has
 /// `first_w` cells (the pane's width less the "status: " label), the rest
 /// `rest_w`. Breaks at a space where one falls in the line, else mid-word;
@@ -5867,70 +5835,6 @@ fn forward_clipboard_paste_to_local_term(state: &mut State) {
             t.screen_mut().set_scrollback(0);
         }
     }
-}
-
-/// Move a terminal's scrollback view by `delta` rows (positive = older).
-///
-/// The emulator owns this offset and maintains it: `Grid::scroll_up` grows
-/// it as lines enter scrollback while the view is held back, which is what
-/// keeps the rows being read still under arriving output. Write it only on
-/// a user action; never mirror it in `State`.
-fn scroll_ring(scr: &mut vt100::Screen, delta: i32) {
-    let cur = scr.scrollback() as i32;
-    scr.set_scrollback((cur + delta).max(0) as usize);
-}
-
-/// `scroll_ring` for the Terminal drawer, which has two possible clients
-/// (the in-process shell, or the Windows attach client) of which only one
-/// is ever live — three call sites share the dance.
-fn scroll_drawer_ring(state: &mut State, delta: i32) {
-    if let Some(t) = state.local_term.as_mut() {
-        scroll_ring(t.screen_mut(), delta);
-    }
-    #[cfg(windows)]
-    if let Some(t) = state.attach_term.as_mut() {
-        scroll_ring(t.screen_mut(), delta);
-    }
-}
-
-/// The REPL pane's offset counts rows back from a tail that keeps moving,
-/// so the rows being read slide away as output arrives. Track how far the
-/// tail moved and the rows stay put — the rule the emulator applies to the
-/// pty panes, which this pane has no emulator to get.
-///
-/// Measured as the span from the newest entry's first line to the end of
-/// the build, never as a change in total lines: the 256-entry cap drops an
-/// entry off the FRONT in the same frame a new one arrives, which leaves a
-/// total-line delta short by the dropped entry and slides the view once per
-/// eval. The delta is signed, because entries shrink as well as grow — a
-/// finished entry with no measurable elapsed time loses its "(running…)"
-/// line, and an evicted image falls back to a single caption line. A row
-/// removed between the viewed rows and the tail shortens their distance
-/// from it, so the offset must drop with it.
-///
-/// At the live tail (0) it stays 0: there, new output *should* follow,
-/// which is what a terminal does.
-fn pinned_repl_scroll(
-    scroll: u16,
-    anchor_eval_id: u64,
-    anchor_tail_span: usize,
-    total: usize,
-    starts: &[(u64, usize)],
-) -> u16 {
-    if scroll == 0 {
-        return scroll;
-    }
-    // From the tail: the anchor is always the newest entry, and a
-    // peer-originated entry can carry an eval_id that collides numerically
-    // with an older local one in the same log.
-    let Some(i) = starts.iter().rposition(|(id, _)| *id == anchor_eval_id) else {
-        // The anchored entry is gone: nothing trustworthy to measure from
-        // this frame, so leave the view alone and re-seed.
-        return scroll;
-    };
-    let new_span = total.saturating_sub(starts[i].1) as i64;
-    let delta = new_span - anchor_tail_span as i64;
-    (scroll as i64 + delta).clamp(0, u16::MAX as i64) as u16
 }
 
 /// Chrome grid (cols, rows) for a window, with the bottom session strip's
@@ -9550,11 +9454,6 @@ impl State {
         }
     }
 
-    /// Send the current REPL input buffer to the backend as a `repl.eval`
-    /// request, push an in-flight entry into the scrollback, and clear the
-    /// input. Empty input is a no-op (no point round-tripping whitespace).
-    /// The eval_id is locally generated; the response handler reconciles
-    /// by matching on it.
     /// Branch on mime and route a preview blob to the right renderer.
     /// Called both from the live `Preview` event arm and from the
     /// font-rescale path (which replays against the cached source).
@@ -11551,91 +11450,6 @@ impl State {
             width,
             scale,
         ));
-    }
-
-    /// ADR 0042 L2a note: the drawer's Repl content, unlike Terminal and
-    /// Monitor, is deliberately NOT pinned to `default_host` — it's the
-    /// per-workspace Julia REPL (keyed by `active_workspace_id`, one per
-    /// workspace, `repl_lifecycle` tracks each host's independently), so it
-    /// correctly follows `active_host`/`self.send` like every other
-    /// workspace-scoped operation. "No drawer host switching" refers to the
-    /// drawer's fixed TENANT (ADR 0041: one drawer, terminal/monitor/julia
-    /// + the SoT LLM) and its Terminal/Monitor content's home connection —
-    /// not to which workspace's REPL the drawer happens to be showing.
-    fn submit_repl_input(&mut self) {
-        let code = std::mem::take(&mut self.repl_input);
-        if code.trim().is_empty() {
-            return;
-        }
-        // Submit exits any active history walk — the saved buffer is
-        // discarded because the user committed to this line.
-        self.history_pos = None;
-        self.history_saved = None;
-        self.repl_eval_counter = self.repl_eval_counter.saturating_add(1);
-        let eval_id = self.repl_eval_counter;
-        // Tag the eval with the host+workspace it belongs to so a
-        // `ReplEvalDone` reply arriving after a swap routes back to the
-        // right log -- and, since this key also disambiguates which
-        // HOST'S eval_id 1 this is, to the right host's log too.
-        let owner_key: HostKey = self.active_host.clone();
-        let workspace_key = self.active_ws_key();
-        self.eval_id_workspace
-            .insert((owner_key, eval_id), workspace_key.clone());
-        // Bound the scrollback at a reasonable cap so a long session
-        // doesn't accumulate forever. Trim from the front.
-        if self.repl_log.len() >= 256 {
-            let excess = self.repl_log.len() - 255;
-            self.repl_log.drain(0..excess);
-        }
-        let pkg_mode = self.repl_pkg_mode;
-        self.repl_log.push(ReplEntry {
-            eval_id,
-            code: code.clone(),
-            frames: Vec::new(),
-            elapsed_ms: 0,
-            in_flight: true,
-            pkg_mode,
-            origin: None,
-        });
-        let mode = if pkg_mode {
-            Some("pkg".to_string())
-        } else {
-            None
-        };
-        if let Err(e) = self.send(crate::transport::OutgoingReq::ReplEval {
-            eval_id,
-            code,
-            mode,
-            workspace_id: self.active_workspace_id.clone(),
-        }) {
-            tracing::warn!(error = %e, eval_id, "drop repl.eval request — channel closed");
-            // Mark the entry done with an error frame so the user sees
-            // why nothing happened.
-            if let Some(entry) = self.repl_log.iter_mut().find(|e| e.eval_id == eval_id) {
-                entry.in_flight = false;
-                entry.frames.push(sot_protocol::ReplFrame::Error {
-                    message: format!("transport channel closed: {e}"),
-                    stacktrace: Vec::new(),
-                });
-            }
-        }
-    }
-
-    fn history_step_back(&mut self) -> Option<String> {
-        history_step_back(
-            &self.repl_log,
-            &mut self.history_pos,
-            &mut self.history_saved,
-            &self.repl_input,
-        )
-    }
-
-    fn history_step_forward(&mut self) -> Option<String> {
-        history_step_forward(
-            &self.repl_log,
-            &mut self.history_pos,
-            &mut self.history_saved,
-        )
     }
 
     fn drain_events(&mut self) {
@@ -14663,73 +14477,6 @@ impl State {
         self.flash_starts
             .retain(|_, t| now.duration_since(*t) < window);
         !self.flash_starts.is_empty()
-    }
-
-    /// ADR 0041 step 6 U3: constructs the attach-only backend the first
-    /// time the Terminal drawer opens with `drawer.attach_only` on
-    /// (mirrors `LocalTerminal::spawn`'s own lazy-spawn site). Gated by
-    /// the caller on `self.drawer == DrawerContent::Terminal` — spawning
-    /// is a user-visible-drawer-only act; PUMPING the client once it
-    /// exists is not (see `pump_attach_term`'s own doc).
-    #[cfg(windows)]
-    fn spawn_attach_term(&mut self) {
-        let Some(state_dir) = crate::paths::sot_state_dir() else {
-            tracing::warn!("attach-only: no per-machine state dir resolved");
-            self.status = "attach-only terminal failed: no per-machine state dir".to_string();
-            self.drawer = DrawerContent::Closed;
-            return;
-        };
-        let controller_id = self_comm_handle();
-        let fe_down_to = self_comm_handle();
-        let waker = self.window.clone();
-        match sot_log::fe_client_io::FeAttachClient::attach(
-            sot_log::client::PlatformEndpoint::default(),
-            sot_log::state_dir::state_dir_hash(&state_dir),
-            80,
-            24,
-            controller_id,
-            fe_down_to,
-            None,
-            Box::new(move || waker.request_redraw()),
-        ) {
-            Ok(c) => {
-                tracing::info!("fe attach-only client attaching");
-                self.attach_term = Some(c);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to start attach-only client");
-                self.status = format!("attach-only terminal failed: {e}");
-                self.drawer = DrawerContent::Closed;
-            }
-        }
-    }
-
-    /// ADR 0041 step 6 U3: drains checkpoint/output/notice/status/
-    /// terminal/fe_down events from an EXISTING attach client. Called by
-    /// the caller on every redraw whenever `self.attach_term.is_some()`
-    /// — deliberately NOT gated on `self.drawer`.
-    #[cfg(windows)]
-    fn pump_attach_term(&mut self) {
-        let Some(t) = self.attach_term.as_mut() else {
-            return;
-        };
-        let changed = t.pump();
-        // Codex review round, finding 11: status text (queue overflow/
-        // expiry, geometry refusal, pen loss, input-delivery-unknown,
-        // ...) must reach the drawer independently of `is_dead()` — the
-        // first landing only copied `status_line()` once the client was
-        // already terminal, so every one of those still-live diagnostics
-        // was invisible. `notice`/`quit_message` are the more urgent
-        // overlays and still take priority when present.
-        if changed {
-            if let Some(notice) = t.notice() {
-                self.status = notice.to_string();
-            } else if let Some(msg) = t.quit_message() {
-                self.status = msg.to_string();
-            } else {
-                self.status = t.status_line().to_string();
-            }
-        }
     }
 
     /// ADR 0041 step 6 U3 ruling (a): the ONE quit dispatcher every
@@ -21329,249 +21076,6 @@ impl ApplicationHandler for App {
     }
 }
 
-/// Project the REPL scrollback into ratatui `RtLine`s for the BR quadrant.
-/// A decoded inline REPL figure: GPU quad + natural pixel dimensions.
-struct ReplImage {
-    quad: Quad,
-    w: u32,
-    h: u32,
-}
-
-/// One reserved row-region in the REPL scrollback where an inline image
-/// paints. `line` is the absolute index into the built line list.
-#[derive(Clone, Copy)]
-struct ReplImageSlot {
-    line: usize,
-    rows: u16,
-    disp_w: f32,
-    disp_h: f32,
-    key: (u64, usize),
-}
-
-/// One entry contributes a `julia> {code}` header line, then one line per
-/// rendered frame (stdout/stderr default+red, value green, error red with
-/// dim stack lines). Multi-line frame bodies fan out into one line each so
-/// ratatui's word wrap doesn't munge them. In-flight entries get a dim
-/// `(running…)` placeholder until the response lands.
-///
-/// Image frames whose quad is already decoded (`images`) reserve
-/// fit-to-width blank rows and report a `ReplImageSlot` — the paint pass
-/// overlays the quad there, scissored to the scrollback rect. Frames not
-/// yet decoded fall back to a one-line caption for a frame or two.
-fn build_repl_lines(
-    log: &[ReplEntry],
-    images: &std::collections::HashMap<(u64, usize), ReplImage>,
-    avail_w_px: f32,
-    avail_h_px: f32,
-    cell_w: f32,
-    cell_h: f32,
-    repl_starting: bool,
-) -> (Vec<RtLine<'static>>, Vec<ReplImageSlot>, Vec<(u64, usize)>) {
-    let mut slots: Vec<ReplImageSlot> = Vec::new();
-    let mut out: Vec<RtLine<'static>> = Vec::new();
-    // Where each entry's first line falls in this build. The REPL pin
-    // measures how far the TAIL moved, which a total-line count cannot do
-    // once the 256-entry cap starts dropping entries off the front.
-    let mut starts: Vec<(u64, usize)> = Vec::new();
-    for entry in log {
-        starts.push((entry.eval_id, out.len()));
-        if let Some(label) = &entry.origin {
-            // A run this FE did NOT originate (a session's repl.execute, ADR
-            // 0033 phase 2): show a distinct labelled prompt (magenta) instead
-            // of the `julia>` code echo, so the user can tell it apart from
-            // their own input at a glance.
-            out.push(RtLine::from(vec![Span::styled(
-                format!("⟨{label}⟩"),
-                Style::default()
-                    .fg(Color::LightMagenta)
-                    .add_modifier(Modifier::BOLD),
-            )]));
-        } else {
-            let (prompt_text, prompt_color) = if entry.pkg_mode {
-                ("pkg> ", Color::LightBlue)
-            } else {
-                ("julia> ", Color::LightCyan)
-            };
-            // Multi-line submissions (Shift+Enter while typing) get one
-            // echo line per segment, first with the prompt and the rest
-            // with same-width filler — same convention as the live input.
-            let cont_pad: String = " ".repeat(prompt_text.len());
-            for (i, seg) in entry.code.split('\n').enumerate() {
-                let prefix_span = if i == 0 {
-                    Span::styled(prompt_text.to_string(), Style::default().fg(prompt_color))
-                } else {
-                    Span::raw(cont_pad.clone())
-                };
-                out.push(RtLine::from(vec![
-                    prefix_span,
-                    Span::styled(seg.to_string(), Style::default()),
-                ]));
-            }
-        }
-        // Render whatever frames have streamed in so far — even while the
-        // entry is still `in_flight` — so live output (ADR 0009 phase-2
-        // streaming) appears tick-by-tick instead of all at once on
-        // completion. The `(running…)` / elapsed line is appended AFTER the
-        // frames below. (Previously this `continue`d past the frame loop while
-        // in_flight, which worked only because the old acceptance ack flipped
-        // in_flight=false within milliseconds — that race is now gone.)
-        for (frame_idx, frame) in entry.frames.iter().enumerate() {
-            match frame {
-                ReplFrame::Stdout { text } => {
-                    for line in text.lines() {
-                        out.push(RtLine::from(line.to_string()));
-                    }
-                }
-                ReplFrame::Stderr { text } => {
-                    for line in text.lines() {
-                        out.push(RtLine::from(vec![Span::styled(
-                            line.to_string(),
-                            Style::default().fg(Color::Red),
-                        )]));
-                    }
-                }
-                ReplFrame::Value { mime, text } => {
-                    // Value frames carry the displayed repr; mime stays
-                    // text/plain in the spike. Show in green so it pops
-                    // against stdout.
-                    let prefix = if mime == "text/plain" {
-                        String::new()
-                    } else {
-                        format!("[{mime}] ")
-                    };
-                    for (i, line) in text.lines().enumerate() {
-                        let s = if i == 0 {
-                            format!("{prefix}{line}")
-                        } else {
-                            line.to_string()
-                        };
-                        out.push(RtLine::from(vec![Span::styled(
-                            s,
-                            Style::default().fg(Color::LightGreen),
-                        )]));
-                    }
-                }
-                ReplFrame::Error {
-                    message,
-                    stacktrace,
-                } => {
-                    for line in message.lines() {
-                        out.push(RtLine::from(vec![Span::styled(
-                            line.to_string(),
-                            Style::default().fg(Color::LightRed),
-                        )]));
-                    }
-                    for sf in stacktrace {
-                        out.push(RtLine::from(vec![Span::styled(
-                            format!("    at {} ({}:{})", sf.function, sf.file, sf.line),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM),
-                        )]));
-                    }
-                }
-                ReplFrame::Done { .. } => {}
-                ReplFrame::Browser { url, .. } => {
-                    // Browser frames are consumed as a side-effect (OS
-                    // browser-open, or a no-open status for `open:false`) in
-                    // drain_events and never appended to the log, so this arm
-                    // is defensive — if one ever lands here, render a compact
-                    // caption rather than dropping it silently.
-                    out.push(RtLine::from(vec![Span::styled(
-                        format!("↗ interactive figure · {url}"),
-                        Style::default().fg(Color::LightBlue),
-                    )]));
-                }
-                // Control frame — rendered via the entry's `origin` label
-                // above, never as an output row (ADR 0033 phase 2).
-                ReplFrame::Started { .. } => {}
-                // Control frame — workspace-level lifecycle, consumed in
-                // drain_events (the `repl_lifecycle` map) and never appended
-                // to a log entry. Defensive arm, mirroring `Browser`.
-                ReplFrame::Lifecycle { .. } => {}
-                ReplFrame::Image { mime, bytes, .. } => {
-                    let key = (entry.eval_id, frame_idx);
-                    // Degenerate width (drawer not yet laid out — the fit
-                    // width lags one frame) falls through to the caption
-                    // rather than reserving sliver-scaled rows.
-                    let sized = (avail_w_px > 4.0 * cell_w)
-                        .then(|| images.get(&key))
-                        .flatten();
-                    if let Some(img) = sized {
-                        // Reserve rows for the figure; the paint pass
-                        // overlays the quad there. Fit BOTH the drawer's
-                        // width and its scrollback height (a figure taller
-                        // than the drawer otherwise renders permanently
-                        // clipped — first repl-figure capture); never
-                        // upscale — small figures render at natural size.
-                        let max_w = (avail_w_px - 2.0 * cell_w).max(cell_w);
-                        let max_h = (avail_h_px - 3.0 * cell_h).max(cell_h);
-                        let scale = (max_w / img.w.max(1) as f32)
-                            .min(max_h / img.h.max(1) as f32)
-                            .min(1.0);
-                        let disp_w = img.w as f32 * scale;
-                        let disp_h = img.h as f32 * scale;
-                        let rows = ((disp_h / cell_h.max(1.0)).ceil() as u16).max(1);
-                        slots.push(ReplImageSlot {
-                            line: out.len(),
-                            rows,
-                            disp_w,
-                            disp_h,
-                            key,
-                        });
-                        for _ in 0..rows {
-                            out.push(RtLine::from(""));
-                        }
-                    } else {
-                        // Not decoded yet (arrives via the pre-draw pass a
-                        // frame later) or decode failed: caption line.
-                        out.push(RtLine::from(vec![Span::styled(
-                            format!("[image · {mime} · {} bytes]", bytes),
-                            Style::default()
-                                .fg(Color::LightMagenta)
-                                .add_modifier(Modifier::DIM),
-                        )]));
-                    }
-                }
-            }
-        }
-        if entry.in_flight {
-            if repl_starting {
-                // The workspace's REPL child is still BOOTING (repl_state ==
-                // "starting"): the first child per workspace precompiles its
-                // project env, which can take minutes with zero frames. Say
-                // so — before this line, a precompiling first run rendered
-                // the same "(running…)" as a live eval and read as a dead
-                // kernel. Yellow: attention-but-not-error, distinct from the
-                // dim running indicator and the red error rows.
-                out.push(RtLine::from(vec![Span::styled(
-                    "(julia starting — precompiling this workspace's environment; \
-                     a first run can take minutes…)"
-                        .to_string(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::DIM),
-                )]));
-            } else {
-                // Still streaming — a dim indicator AFTER the live frames so
-                // the user sees output accumulating *and* that more is coming.
-                out.push(RtLine::from(vec![Span::styled(
-                    "(running…)".to_string(),
-                    Style::default().add_modifier(Modifier::DIM),
-                )]));
-            }
-        } else if entry.elapsed_ms > 0 {
-            out.push(RtLine::from(vec![Span::styled(
-                format!("  ({} ms)", entry.elapsed_ms),
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
-            )]));
-        }
-    }
-    (out, slots, starts)
-}
-
 /// Paint a unified box-drawing wireframe over `area`, using `vlines`
 /// as the x-positions of inner vertical dividers and `hlines` as the
 /// y-positions of inner horizontal dividers (today: at most one — the
@@ -21854,78 +21358,6 @@ fn emit_scan_type(
     }
 }
 
-/// Paint the vt100 terminal grid into `rect`. Each cell of the
-/// emulator screen at (row, col) is written at (rect.x + col,
-/// rect.y + row) with the cell's foreground colour and bold/italic
-/// attributes mapped onto ratatui Style. Background colour is
-/// dropped for now — the chrome pipeline doesn't carry it yet
-/// (planned bg colour + underline modifiers).
-/// Translate a key event into the byte sequence a PTY expects. Shared by
-/// the LLM pane (remote tmux pty) and the local terminal drawer (G4). With
-/// `ctrl`, ASCII letters map to control codes (Ctrl+C → 0x03, Ctrl+B →
-/// 0x02, …) so shell editing, signals, and tmux prefixes work; non-letters
-/// under Ctrl pass through verbatim. Returns `None` for keys with no PTY
-/// encoding (bare modifiers, etc.).
-fn key_to_pty_bytes(key: &Key, ctrl: bool, shift: bool, super_: bool) -> Option<Vec<u8>> {
-    // A Command chord is never terminal input: it either resolved to an app
-    // action above (handled before this call), or it is residual input that
-    // must not leak into the shell as a raw keystroke -- macOS delivers
-    // Cmd+<letter> as a plain Character with `super_` set, which is exactly
-    // the bug this guard exists for. Gated to macOS: on Windows/Linux the OS
-    // or window manager owns Super chords and nothing changes there.
-    if cfg!(target_os = "macos") && super_ {
-        return None;
-    }
-    match key {
-        Key::Named(NamedKey::Enter) => Some(b"\r".to_vec()),
-        Key::Named(NamedKey::Backspace) => Some(b"\x7f".to_vec()),
-        // Shift+Tab is BackTab (CSI Z). TUIs that live in the pty — Claude Code
-        // most of all — read it to cycle backwards / toggle modes (the plan-mode
-        // chord). Without the shift check this collapsed to a plain `\t`, so the
-        // chord was dead through the FE. Plain Tab stays `\t` for completion.
-        Key::Named(NamedKey::Tab) => {
-            if shift {
-                Some(b"\x1b[Z".to_vec())
-            } else {
-                Some(b"\t".to_vec())
-            }
-        }
-        Key::Named(NamedKey::Escape) => Some(b"\x1b".to_vec()),
-        Key::Named(NamedKey::Space) => Some(b" ".to_vec()),
-        Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
-        Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
-        Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
-        Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
-        Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),
-        Key::Named(NamedKey::End) => Some(b"\x1b[F".to_vec()),
-        Key::Named(NamedKey::PageUp) => Some(b"\x1b[5~".to_vec()),
-        Key::Named(NamedKey::PageDown) => Some(b"\x1b[6~".to_vec()),
-        Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
-        Key::Character(s) => {
-            if ctrl {
-                let mut out = Vec::with_capacity(s.len());
-                for c in s.chars() {
-                    let lower = c.to_ascii_lowercase();
-                    if lower.is_ascii_lowercase() {
-                        out.push((lower as u8) - b'a' + 1);
-                    } else {
-                        let mut buf = [0u8; 4];
-                        out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-                    }
-                }
-                if out.is_empty() {
-                    None
-                } else {
-                    Some(out)
-                }
-            } else {
-                Some(s.as_bytes().to_vec())
-            }
-        }
-        _ => None,
-    }
-}
-
 /// Raster image mimes the preview pane decodes through the byte-sniffing quad
 /// path (`preview/png.rs`, `with_guessed_format`). Kept in sync with the raster
 /// `image/*` outputs of the backend's `mime_for_path`: `image/svg+xml` is
@@ -21936,92 +21368,6 @@ fn is_raster_preview_mime(mime: &str) -> bool {
         mime,
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
     )
-}
-
-fn paint_terminal(
-    buf: &mut ratatui::buffer::Buffer,
-    rect: ratatui::layout::Rect,
-    screen: &vt100::Screen,
-) {
-    let cols = rect.width;
-    let rows = rect.height;
-    // vt100 reports cursor in row-major (row, col) of its own grid; we
-    // overlay it via Modifier::REVERSED below. Captured before the cell
-    // walk so the cursor cell's pre-existing style still wins for color.
-    let (cur_row, cur_col) = screen.cursor_position();
-    let cursor_hidden = screen.hide_cursor();
-    for row in 0..rows {
-        for col in 0..cols {
-            let Some(cell) = screen.cell(row, col) else {
-                continue;
-            };
-            let contents = cell.contents();
-            // Empty cell: nothing to draw — the wireframe / surrounding
-            // paint already cleared this area.
-            let glyph = if contents.is_empty() { " " } else { contents };
-            let mut fg = vt100_color_to_ratatui(cell.fgcolor());
-            // Dim on the default foreground would otherwise fall back to
-            // the chrome's white default — the Claude Code CLI uses dim
-            // to muff out its suggested-prompt placeholder, so promote
-            // it to Gray so the muting actually shows.
-            if cell.dim() && matches!(fg, Color::Reset) {
-                fg = Color::Gray;
-            }
-            let mut style = Style::default().fg(fg);
-            if cell.bold() {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if cell.dim() {
-                style = style.add_modifier(Modifier::DIM);
-            }
-            if cell.italic() {
-                style = style.add_modifier(Modifier::ITALIC);
-            }
-            // Block cursor XOR's REVERSED with the cell's existing
-            // inverse state — so a cursor sitting on an inverse status-bar
-            // cell flips back to non-reversed instead of disappearing,
-            // matching how xterm/alacritty draw their block cursors.
-            // Selection visibility lives on the GPU side as a yellow
-            // quad rendered before text, not in this REVERSED flag —
-            // REVERSED inverted both fg and bg, which made selected text
-            // hard to read.
-            let is_cursor = !cursor_hidden && row == cur_row && col == cur_col;
-            let reverse = cell.inverse() ^ is_cursor;
-            if reverse {
-                style = style.add_modifier(Modifier::REVERSED);
-            }
-            buf.set_string(rect.x + col, rect.y + row, glyph, style);
-        }
-    }
-}
-
-/// Map a vt100 fg/bg colour to the nearest ratatui Color. ANSI 16-colour
-/// palette goes through the named variants; indexed (256-colour) and
-/// RGB pass through as Color::Indexed / Color::Rgb so the existing
-/// chrome render path can emit them.
-fn vt100_color_to_ratatui(c: vt100::Color) -> Color {
-    use vt100::Color as V;
-    match c {
-        V::Default => Color::Reset,
-        V::Idx(0) => Color::Black,
-        V::Idx(1) => Color::Red,
-        V::Idx(2) => Color::Green,
-        V::Idx(3) => Color::Yellow,
-        V::Idx(4) => Color::Blue,
-        V::Idx(5) => Color::Magenta,
-        V::Idx(6) => Color::Cyan,
-        V::Idx(7) => Color::Gray,
-        V::Idx(8) => Color::DarkGray,
-        V::Idx(9) => Color::LightRed,
-        V::Idx(10) => Color::LightGreen,
-        V::Idx(11) => Color::LightYellow,
-        V::Idx(12) => Color::LightBlue,
-        V::Idx(13) => Color::LightMagenta,
-        V::Idx(14) => Color::LightCyan,
-        V::Idx(15) => Color::White,
-        V::Idx(other) => Color::Indexed(other),
-        V::Rgb(r, g, b) => Color::Rgb(r, g, b),
-    }
 }
 
 /// Overlay a pane title onto a border row, clamped to `max_w` cells so
@@ -22392,68 +21738,6 @@ fn key_label(k: &Key) -> String {
         },
         other => format!("{other:?}"),
     }
-}
-
-/// Walk one step backward (older) through the REPL history. Returns
-/// the code of the entry now selected, or `None` if there's nothing
-/// older to step to. On the first step of a walk the current
-/// `input` is saved into `saved` so a later forward-walk past the
-/// newest entry can restore it.
-///
-/// In-flight entries are skipped — replaying a still-running line
-/// would be confusing, and an `in_flight=true` entry is usually the
-/// one the user just submitted anyway.
-fn history_step_back(
-    log: &[ReplEntry],
-    pos: &mut Option<usize>,
-    saved: &mut Option<String>,
-    input: &str,
-) -> Option<String> {
-    let candidates: Vec<usize> = log
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| !e.in_flight)
-        .map(|(i, _)| i)
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-    let new_pos = match *pos {
-        None => {
-            *saved = Some(input.to_string());
-            candidates.len() - 1
-        }
-        Some(0) => return None,
-        Some(p) => p - 1,
-    };
-    *pos = Some(new_pos);
-    Some(log[candidates[new_pos]].code.clone())
-}
-
-/// Walk one step forward (newer). Returns the code of the entry now
-/// selected, or — when walking past the newest entry — the saved
-/// in-progress buffer (which also exits the walk by clearing `pos`
-/// and `saved`). Returns `None` when not currently walking.
-fn history_step_forward(
-    log: &[ReplEntry],
-    pos: &mut Option<usize>,
-    saved: &mut Option<String>,
-) -> Option<String> {
-    let p = (*pos)?;
-    let candidates: Vec<usize> = log
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| !e.in_flight)
-        .map(|(i, _)| i)
-        .collect();
-    if p + 1 >= candidates.len() {
-        let restored = saved.take().unwrap_or_default();
-        *pos = None;
-        return Some(restored);
-    }
-    let new_pos = p + 1;
-    *pos = Some(new_pos);
-    Some(log[candidates[new_pos]].code.clone())
 }
 
 /// Grant the next process the right to take the OS foreground (Windows only).
@@ -22930,48 +22214,6 @@ mod tests {
     // single free function shared by both `IncomingEvt` match arms, so one
     // set of cases covers both consumers.
 
-    /// Live means live: at the tail, new output follows, as a terminal does.
-    #[test]
-    fn pinned_repl_scroll_lets_a_live_pane_follow_new_output() {
-        assert_eq!(pinned_repl_scroll(0, 7, 3, 12, &[(5, 0), (7, 5)]), 0);
-    }
-
-    /// Held back, the offset tracks the tail so the rows being read stay
-    /// under the arriving output instead of sliding away.
-    #[test]
-    fn pinned_repl_scroll_holds_the_view_still_when_the_tail_grows() {
-        // Anchored entry 7 started at line 5 and spanned 3; it now spans 5.
-        assert_eq!(pinned_repl_scroll(4, 7, 3, 10, &[(5, 0), (7, 5)]), 6);
-    }
-
-    /// The case a total-line delta gets wrong: at the 256-entry cap, an
-    /// arriving entry drops the oldest off the FRONT in the same frame. The
-    /// total can even fall while the tail grew, and compensating on the
-    /// total would slide the view once per eval. Measured at the tail, the
-    /// drop contributes nothing and only the real growth counts.
-    #[test]
-    fn pinned_repl_scroll_counts_only_the_tail_when_the_cap_drops_an_entry() {
-        // Was [(1,0),(5,4),(7,9)] with 12 lines, anchor span 3. Entry 1 is
-        // gone and the tail grew by exactly one line: total FELL 12 -> 9.
-        assert_eq!(pinned_repl_scroll(6, 7, 3, 9, &[(5, 0), (7, 5)]), 7);
-    }
-
-    /// Entries shrink as well as grow — a finished entry with no measurable
-    /// elapsed time loses its "(running…)" line. A row removed between the
-    /// viewed rows and the tail shortens their distance from it, so the
-    /// offset drops with it.
-    #[test]
-    fn pinned_repl_scroll_follows_a_tail_that_shrank() {
-        assert_eq!(pinned_repl_scroll(6, 7, 4, 8, &[(5, 0), (7, 5)]), 5);
-    }
-
-    /// The anchored entry is gone entirely: nothing trustworthy to measure
-    /// from, so leave the view alone rather than guess at a delta.
-    #[test]
-    fn pinned_repl_scroll_leaves_the_view_alone_when_its_anchor_vanished() {
-        assert_eq!(pinned_repl_scroll(6, 7, 4, 8, &[(5, 0), (9, 5)]), 6);
-    }
-
     #[test]
     fn reply_is_current_accepts_the_latest_generation_for_the_active_owner() {
         assert!(reply_is_current(
@@ -23242,44 +22484,6 @@ mod tests {
         assert_eq!(
             resolve_previewed_path(Some("modules:Foo"), Some("/proj")),
             None
-        );
-    }
-
-    #[test]
-    fn shift_tab_encodes_backtab_plain_tab_unchanged() {
-        // Shift+Tab must reach the pty as BackTab (CSI Z) so a TUI in the pty —
-        // Claude Code's plan-mode cycle above all — sees the chord. Regression
-        // guard: before the `shift` arg this collapsed to a plain `\t`.
-        assert_eq!(
-            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, true, false),
-            Some(b"\x1b[Z".to_vec())
-        );
-        // Plain Tab stays a literal tab for shell/editor completion.
-        assert_eq!(
-            key_to_pty_bytes(&Key::Named(NamedKey::Tab), false, false, false),
-            Some(b"\t".to_vec())
-        );
-        // Ctrl+Tab (no shift) has no distinct pty encoding here — still `\t`.
-        assert_eq!(
-            key_to_pty_bytes(&Key::Named(NamedKey::Tab), true, false, false),
-            Some(b"\t".to_vec())
-        );
-    }
-
-    #[test]
-    fn command_chord_never_reaches_the_pty_as_text() {
-        // macOS bug this guards: Cmd+C fell through and typed a literal "c"
-        // into the shell/LLM pane, because the pty encoder had no idea
-        // Command was held. Ctrl+C is unaffected -- still the interrupt byte.
-        // macOS only: elsewhere the OS or window manager owns Super chords,
-        // and whatever it lets through keeps typing exactly as before.
-        assert_eq!(
-            key_to_pty_bytes(&Key::Character("c".into()), false, false, true),
-            if cfg!(target_os = "macos") { None } else { Some(b"c".to_vec()) }
-        );
-        assert_eq!(
-            key_to_pty_bytes(&Key::Character("c".into()), true, false, false),
-            Some(vec![0x03])
         );
     }
 
@@ -23834,24 +23038,6 @@ mod tests {
         assert_eq!(nav_spill_take(100, 20, 0), None);
         // Degenerate nav width still respects the cap.
         assert_eq!(nav_spill_take(5, 0, 3), Some(3));
-    }
-
-    #[test]
-    fn attach_only_requires_matching_state_root() {
-        let roots = vec!["r".to_string()];
-        // (what, setting, attach_live, local_live, roots, own_root, want)
-        let cases: &[(&str, bool, bool, bool, &[String], Option<&str>, bool)] = &[
-            ("setting on, matching root, no terminals", true, false, false, &roots, Some("r"), true),
-            ("setting off", false, false, false, &roots, Some("r"), false),
-            ("no granted lease", true, false, false, &[], Some("r"), false),
-            ("a root that differs", true, false, false, &roots, Some("x"), false),
-            ("own root unknown", true, false, false, &roots, None, false),
-            ("attach already live, setting off", false, true, false, &[], None, true),
-            ("plain terminal already live", true, false, true, &roots, Some("r"), false),
-        ];
-        for (what, setting, attach, local, granted, own, want) in cases {
-            assert_eq!(drawer_uses_attach(*setting, *attach, *local, granted, *own), *want, "{what}");
-        }
     }
 
     #[test]
@@ -26893,115 +26079,6 @@ mod tests {
         assert_eq!(node_id_to_concept_target("unknown:Foo"), None);
     }
 
-    fn entry(eval_id: u64, code: &str, in_flight: bool) -> ReplEntry {
-        ReplEntry {
-            eval_id,
-            code: code.to_string(),
-            frames: Vec::new(),
-            elapsed_ms: 0,
-            in_flight,
-            pkg_mode: false,
-            origin: None,
-        }
-    }
-
-    #[test]
-    fn history_step_back_returns_none_on_empty_log() {
-        let log: Vec<ReplEntry> = Vec::new();
-        let mut pos = None;
-        let mut saved = None;
-        assert_eq!(history_step_back(&log, &mut pos, &mut saved, "draft"), None);
-        assert!(pos.is_none());
-        assert!(saved.is_none());
-    }
-
-    #[test]
-    fn history_step_back_skips_in_flight_entries() {
-        let log = vec![entry(1, "x = 1", false), entry(2, "x = 2", true)];
-        let mut pos = None;
-        let mut saved = None;
-        // Only the completed entry is a candidate, so back lands on it.
-        assert_eq!(
-            history_step_back(&log, &mut pos, &mut saved, "draft").as_deref(),
-            Some("x = 1")
-        );
-        // Saved on entry to the walk.
-        assert_eq!(saved.as_deref(), Some("draft"));
-        // No older entry; second back is a no-op.
-        assert_eq!(history_step_back(&log, &mut pos, &mut saved, "x = 1"), None);
-    }
-
-    #[test]
-    fn history_step_back_walks_oldest_to_newest_in_reverse() {
-        let log = vec![
-            entry(1, "first", false),
-            entry(2, "second", false),
-            entry(3, "third", false),
-        ];
-        let mut pos = None;
-        let mut saved = None;
-        assert_eq!(
-            history_step_back(&log, &mut pos, &mut saved, "").as_deref(),
-            Some("third")
-        );
-        assert_eq!(
-            history_step_back(&log, &mut pos, &mut saved, "third").as_deref(),
-            Some("second")
-        );
-        assert_eq!(
-            history_step_back(&log, &mut pos, &mut saved, "second").as_deref(),
-            Some("first")
-        );
-        // At the oldest; further back returns None and pos stays put.
-        assert_eq!(history_step_back(&log, &mut pos, &mut saved, "first"), None);
-        assert_eq!(pos, Some(0));
-    }
-
-    #[test]
-    fn history_step_forward_no_op_when_not_walking() {
-        let log = vec![entry(1, "a", false)];
-        let mut pos = None;
-        let mut saved = None;
-        assert_eq!(history_step_forward(&log, &mut pos, &mut saved), None);
-    }
-
-    #[test]
-    fn history_step_forward_past_newest_restores_saved_buffer() {
-        let log = vec![entry(1, "first", false), entry(2, "second", false)];
-        let mut pos = None;
-        let mut saved = None;
-        // Walk back twice; saved captures the original draft.
-        let _ = history_step_back(&log, &mut pos, &mut saved, "in-progress");
-        let _ = history_step_back(&log, &mut pos, &mut saved, "second");
-        assert_eq!(pos, Some(0));
-        // Forward once: back to "second".
-        assert_eq!(
-            history_step_forward(&log, &mut pos, &mut saved).as_deref(),
-            Some("second")
-        );
-        // Forward again: past newest, restore "in-progress", exit walk.
-        assert_eq!(
-            history_step_forward(&log, &mut pos, &mut saved).as_deref(),
-            Some("in-progress")
-        );
-        assert!(pos.is_none());
-        assert!(saved.is_none());
-    }
-
-    #[test]
-    fn history_step_forward_with_no_saved_buffer_yields_empty_string() {
-        // Shouldn't normally happen (saved is set on first back), but
-        // verify the unwrap_or_default fallback doesn't panic.
-        let log = vec![entry(1, "x", false)];
-        let mut pos = Some(0);
-        let mut saved: Option<String> = None;
-        assert_eq!(
-            history_step_forward(&log, &mut pos, &mut saved).as_deref(),
-            Some("")
-        );
-        assert!(pos.is_none());
-    }
-
     // --- ADR 0042 L2a: multi-host connection set, workspace-cache union,
     // and per-host routing. ---
 
@@ -28188,74 +27265,6 @@ mod tests {
 #[cfg(test)]
 mod repl_lifecycle_render_tests {
     use super::*;
-
-    fn entry(eval_id: u64, code: &str, in_flight: bool) -> ReplEntry {
-        ReplEntry {
-            eval_id,
-            code: code.to_string(),
-            frames: Vec::new(),
-            elapsed_ms: 0,
-            in_flight,
-            pkg_mode: false,
-            origin: None,
-        }
-    }
-
-    fn rendered_text(lines: &[RtLine<'static>]) -> String {
-        lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn in_flight_entry_says_starting_while_repl_boots() {
-        // THE repl_state deliverable: with the workspace's REPL child still
-        // booting (precompiling), an in-flight entry must say so instead of
-        // the generic "(running…)" — which is indistinguishable from a dead
-        // kernel for the minutes a first-per-workspace boot takes.
-        let log = vec![entry(1, "1+1", true)];
-        let images = std::collections::HashMap::new();
-        let (lines, _, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, true);
-        let text = rendered_text(&lines);
-        assert!(
-            text.contains("julia starting"),
-            "starting boot must be named: {text}"
-        );
-        assert!(
-            !text.contains("(running…)"),
-            "the generic running line must be replaced, not doubled: {text}"
-        );
-    }
-
-    #[test]
-    fn in_flight_entry_says_running_once_ready() {
-        let log = vec![entry(1, "1+1", true)];
-        let images = std::collections::HashMap::new();
-        let (lines, _, _) = build_repl_lines(&log, &images, 800.0, 600.0, 8.0, 16.0, false);
-        let text = rendered_text(&lines);
-        assert!(text.contains("(running…)"), "{text}");
-        assert!(!text.contains("julia starting"), "{text}");
-    }
-
-    #[test]
-    fn completed_entry_ignores_starting_flag() {
-        // A finished entry renders its elapsed footer regardless of a boot
-        // in progress (e.g. the user restarted the REPL after a run).
-        let mut e = entry(1, "1+1", false);
-        e.elapsed_ms = 42;
-        let images = std::collections::HashMap::new();
-        let (lines, _, _) = build_repl_lines(&[e], &images, 800.0, 600.0, 8.0, 16.0, true);
-        let text = rendered_text(&lines);
-        assert!(text.contains("(42 ms)"), "{text}");
-        assert!(!text.contains("julia starting"), "{text}");
-    }
 
     #[test]
     fn lifecycle_key_translates_canonical_id_to_slug() {

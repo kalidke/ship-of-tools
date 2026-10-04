@@ -5,10 +5,16 @@ turns into a screen the window paints. Part of fe-ui; charter: rust/frontend/src
 
 ## Files
 - `mod.rs`: declares the files below.
+- `backend.rs`: the backend choice (`drawer_uses_attach`), the drawer's scroll (`scroll_drawer_ring`) and the attach client's start and pump (`State::spawn_attach_term`, `State::pump_attach_term`).
 - `pty.rs`: `LocalTerminal`, which runs a shell in a pty and feeds a vt100 parser, and `resolve_shell`, which picks the shell.
+- `vt.rs`: vt100 helpers: `scroll_ring`, `key_to_pty_bytes`, `paint_terminal` and `vt100_color_to_ratatui`; the agent pane uses them too.
 
 ## Start here
 `LocalTerminal::spawn` in pty.rs for how a shell starts and its output is read.
 
 ## Rules
 - The shell is chosen by `resolve_shell`: a settings override first, then the platform's best available shell.
+- The backend is chosen once per window and never swapped (`drawer_uses_attach`).
+- The attach-only backend exists only on Windows (`State::spawn_attach_term`).
+- The emulator owns the scrollback offset, written only on a user action (`scroll_ring`).
+- A Command chord never reaches the pty as text (`key_to_pty_bytes`; macOS delivers Cmd+letter as a plain character).
