@@ -1,4 +1,4 @@
-//! Tests of create.rs: the duplicate-root and same-slug gates.
+//! Tests of create.rs: the duplicate-root and same-slug gates, and the refusal test pinning every refusal and the order of the gates.
 
 use super::*;
 
@@ -212,8 +212,44 @@ mod refusal_tests {
         w
     }
 
+    /// Pins the two folders `workspaces::save` and the state root resolve under to the test's own folder, under the
+    /// crate-wide env lock, and restores them on drop.
+    struct EnvPinned {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        config: Option<std::ffi::OsString>,
+        state: Option<std::ffi::OsString>,
+    }
+
+    impl EnvPinned {
+        fn new(dir: &Path) -> Self {
+            let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let pinned = EnvPinned {
+                _serial: serial,
+                config: std::env::var_os("XDG_CONFIG_HOME"),
+                state: std::env::var_os("XDG_STATE_HOME"),
+            };
+            std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+            std::env::set_var("XDG_STATE_HOME", dir.join("state"));
+            pinned
+        }
+    }
+
+    impl Drop for EnvPinned {
+        fn drop(&mut self) {
+            for (key, val) in [("XDG_CONFIG_HOME", &self.config), ("XDG_STATE_HOME", &self.state)] {
+                match val {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
     /// Calls the handler once and returns the single reply frame's payload; the registry's ids must not change.
-    async fn refused(workspaces: &Workspaces, payload: Value) -> Value {
+    /// Every payload carries an account that cannot resolve, so a regressed gate stops at `unknown_account`
+    /// (the account check comes after every gate these cases pin) before any row, file or capsule exists.
+    async fn refused(workspaces: &Workspaces, mut payload: Value) -> Value {
+        payload["account"] = json!("no-such-account");
         let ids = |w: &Workspaces| {
             let mut v: Vec<String> = w.list().iter().map(|r| r.workspace_id.clone()).collect();
             v.sort();
@@ -234,6 +270,7 @@ mod refusal_tests {
 
     #[tokio::test]
     async fn workspace_create_refusals_are_unchanged() {
+        let _env = EnvPinned::new(&scratch_dir("env"));
         // 1. missing root
         let gone = std::env::temp_dir().join(format!("sot-createref-gone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&gone);
@@ -290,5 +327,34 @@ mod refusal_tests {
             "error": "unknown runtime \"tmux\" (want \"capsule\" or \"\")",
             "code": "bad_runtime",
         }));
+
+        // Precedence: a payload tripping several gates gets the first gate's refusal.
+        // 1. a missing root wins over a bad agent name, kind and runtime
+        let got = refused(&Workspaces::new(), json!({
+            "label": "p1", "project_root": gone.to_string_lossy(),
+            "agent_name": "a b", "agent": "robot", "runtime": "tmux",
+        })).await;
+        assert_eq!(got["code"], "no_such_path");
+        // 2. a held root wins over a label in use
+        let held = scratch_dir("p2-held");
+        let reg = Workspaces::new();
+        let other = reg.insert(seeded("other", &held, "capsule"));
+        reg.insert(seeded("busy", &scratch_dir("p2-busy"), "tmux"));
+        let got = refused(&reg, json!({"label": "busy", "project_root": held.to_string_lossy()})).await;
+        assert_eq!(got, json!({
+            "error": "project_root is already registered as workspace 'other' (slug 'other')",
+            "code": "duplicate_root",
+            "existing": {"workspace_id": other.workspace_id, "slug": "other", "label": "other"},
+        }));
+        // 3. a bad agent name wins over a bad kind and runtime
+        let got = refused(&Workspaces::new(), json!({
+            "label": "p3", "project_root": root, "agent_name": "a b", "agent": "robot", "runtime": "tmux",
+        })).await;
+        assert_eq!(got["code"], "bad_agent_name");
+        // 4. a bad agent kind wins over a bad runtime
+        let got = refused(&Workspaces::new(), json!({
+            "label": "p4", "project_root": root, "agent": "robot", "runtime": "tmux",
+        })).await;
+        assert_eq!(got["code"], "bad_agent");
     }
 }
