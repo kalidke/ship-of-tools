@@ -15,8 +15,8 @@ this folder serve the same idea.
   receipts, frontend commands and the monitor tick. Their payloads belong to their owners.
 - Each connection's task and state, in `serve_control`: roster guard, declared host and name, active workspace,
   monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
-- The op table: the `match` in `dispatch`, which runs `pty.open` and `monitor.*` inline and hands the rest to
-  each owner's handler.
+- The op table: the `match` in `dispatch`, which hands each op to its owner's handler (four through the off-loop
+  pool) and keeps inline only the arms that touch connection state.
 - sotd's entry (argv, umask 077, boot refusals, the log tee to `<state>/sotd.log`, which follows `XDG_STATE_HOME` and
   has no size bound or rotation), the client roster (`clients.rs`) and the revision ring (`session.rs`), all in the
   crate root.

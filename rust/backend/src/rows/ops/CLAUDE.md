@@ -1,7 +1,8 @@
 # rust/backend/src/rows/ops: the row ops clients call (rows)
 
 The ops a client sends about a row: make one, end one, list them, switch the view to one, and open, type into or read the
-screen of a capsule row's pane. Each handler takes the parsed payload and the registry and answers one frame; the row state they
+screen of a capsule row's pane. Most handlers take the parsed payload and the registry and return their reply; `handle_pty_open` takes the frame and the
+connection's writer and writes its reply itself, and `handle_lane_connect` takes the connection's two halves; the row state they
 change lives in the parent folder. Part of the daemon's rows subsystem; charter: rust/backend/src/rows/CLAUDE.md.
 
 ## Files
