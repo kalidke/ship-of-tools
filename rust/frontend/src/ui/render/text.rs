@@ -392,7 +392,7 @@ impl TextLayer {
         Ok(())
     }
 
-    pub fn render<'pass>(&'pass self, render_pass: &mut wgpu::RenderPass<'pass>) -> Result<()> {
+    pub fn render(&self, render_pass: &mut wgpu::RenderPass<'_>) -> Result<()> {
         self.text_renderer
             .render(&self.atlas, &self.viewport, render_pass)
             .context("glyphon render failed")?;
@@ -510,9 +510,9 @@ impl TextLayer {
     /// Draw the overlay layer. Call AFTER `render` (and after any quads
     /// that should sit under the overlay, e.g. its backing strips) — draw
     /// order inside the pass is the z-order.
-    pub fn render_overlay<'pass>(
-        &'pass self,
-        render_pass: &mut wgpu::RenderPass<'pass>,
+    pub fn render_overlay(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
     ) -> Result<()> {
         self.overlay_renderer
             .render(&self.atlas, &self.viewport, render_pass)

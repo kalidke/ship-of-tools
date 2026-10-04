@@ -283,11 +283,11 @@ impl Quad {
         })
     }
 
-    pub fn render<'a>(
-        &'a self,
+    pub fn render(
+        &self,
         queue: &wgpu::Queue,
-        pipeline: &'a QuadPipeline,
-        render_pass: &mut wgpu::RenderPass<'a>,
+        pipeline: &QuadPipeline,
+        render_pass: &mut wgpu::RenderPass<'_>,
         rect: ScreenRect,
         surface_size: (u32, u32),
     ) -> Result<()> {
@@ -308,12 +308,12 @@ impl Quad {
     /// vertices reach the GPU. This path uploads N*6 verts in one
     /// `queue.write_buffer`, grows `vbuf` if needed, and issues a single
     /// draw. Empty input is a no-op.
-    pub fn render_many<'a>(
-        &'a mut self,
+    pub fn render_many(
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        pipeline: &'a QuadPipeline,
-        render_pass: &mut wgpu::RenderPass<'a>,
+        pipeline: &QuadPipeline,
+        render_pass: &mut wgpu::RenderPass<'_>,
         rects: &[ScreenRect],
         surface_size: (u32, u32),
     ) -> Result<()> {
@@ -352,12 +352,12 @@ impl Quad {
     /// wheels in the bottom session strip, which flick when the user cycles
     /// workspaces. Rotation is applied in pixel space so a square logo stays
     /// circular regardless of the surface aspect ratio.
-    pub fn render_many_rotated<'a>(
-        &'a mut self,
+    pub fn render_many_rotated(
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        pipeline: &'a QuadPipeline,
-        render_pass: &mut wgpu::RenderPass<'a>,
+        pipeline: &QuadPipeline,
+        render_pass: &mut wgpu::RenderPass<'_>,
         rects: &[ScreenRect],
         angle: f32,
         surface_size: (u32, u32),
