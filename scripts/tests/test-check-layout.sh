@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-test for check-layout.sh: tiny throwaway repos under mktemp -d.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-tool="$here/check-layout.sh"
+tool="${CHECK_LAYOUT_TOOL:-$here/check-layout.sh}"   # the override lets a case run against an older copy
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 pass=0; fail=0
@@ -164,6 +164,27 @@ folders checked: 2"; check "all folders" 1
 git worktree add -q --detach "$tmp/wt" HEAD
 out="$("$tool" --repo "$tmp/wt" 2>&1)"; rc=$?
 if [ $rc = 1 ] && grep -qF "no-page b" <<<"$out"; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: detached worktree"; echo "$out"; fi
+
+# named-path: the backticked repo paths of docs/ownership.md must exist (outside fenced blocks, placeholders skipped)
+np() { # np <page text...>: a repo with folder d (a.jl) and docs/ownership.md holding the given lines
+  newrepo; mkdir d docs; lines 3 'x=' > d/a.jl; mkpage d a.jl; printf '%s\n' "$@" > docs/ownership.md; commit
+}
+np 'a file `d/a.jl` and a line form `d/a.jl:3-5` and an item form `d/a.jl::item`'
+WANT="named-path: 3 tokens checked in 1 files
+violations: 0"; check "named-path present" 0 d
+np 'a missing file `d/gone.jl`'
+WANT="VIOLATION named-path docs/ownership.md d/gone.jl"; check "named-path missing" 1 d
+np 'a placeholder `d/<name>.jl`, a glob `d/*.jl`, a var `$HOME/d/x`, a tilde `~/d/x`, a spaced `d/a b`'
+WANT="named-path: 0 tokens checked
+violations: 0"; check "named-path placeholders skipped" 0 d
+np 'a brace group `d/{a,gone}.jl`'
+WANT="VIOLATION named-path docs/ownership.md d/gone.jl"; NOT="VIOLATION named-path docs/ownership.md d/a.jl"; check "named-path brace group" 1 d
+np 'before' '```' 'a fenced `d/gone.jl`' '```' 'after `d/a.jl`'
+WANT="named-path: 1 tokens checked
+violations: 0"; check "named-path fenced ignored" 0 d
+np 'an untracked top-level word `nothere/x.jl` and a folder `d`'
+WANT="named-path: 1 tokens checked
+violations: 0"; check "named-path unknown top-level skipped" 0 d
 
 # report
 newrepo; mkdir d; { lines 5 'x='; } > d/small.rs; { lines 30 'x='; echo '#[cfg(test)]'; echo 'mod t {'; echo '}'; } > d/big.rs; commit

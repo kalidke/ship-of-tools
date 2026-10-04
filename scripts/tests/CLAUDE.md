@@ -90,6 +90,12 @@ Each violation is `VIOLATION <kind> <path> <detail>`:
   colon after it. A subfolder is written `name/` and a file `name`; the slash must match the kind. Reports `missing:`
   and `extra:`.
 - `folder-size`: direct non-test source over 3,000 code lines or 12 files.
+- `named-path`: `VIOLATION named-path <page> <path>`. For each tracked page in the list `NAMED_PATH_FILES` (at first
+  `docs/ownership.md`; the list is in the tool, and later pages join it), every inline-backticked token outside fenced
+  blocks is a candidate. A trailing `:<n>` or `:<n>-<m>` and a trailing `::<item>` are stripped and one `{a,b,...}` group
+  is expanded. A token containing `<`, `>`, `*`, `$`, `~` or a space is skipped. A token whose first segment is not a
+  tracked top-level folder or root file is skipped. Any other must name a tracked file or a folder holding tracked
+  files, else it is a violation. A folder-argument run checks the listed pages too.
 
 Covered folders: a crate root (a tracked Cargo.toml with `[package]`) covers its `src/`; a Julia package root (a tracked
 Project.toml) covers `src/`, `test/` and `ext/`. A covered folder needs no CLAUDE.md of its own (a covered folder that
@@ -107,6 +113,7 @@ the folder. An exempt match is silent and counted as `exempt: n`.
 file for file-size, the CLAUDE.md for file-list, the folder otherwise. Matches print as `ALLOWED ...` and do not fail.
 An allow line that matches no violation prints `UNUSED-ALLOW <line>` and makes the exit status 1.
 
+When a listed page is tracked, the line before the last is `named-path: n tokens checked in f files`.
 Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders checked: k`. Exit 0 none, 1 any, 2 usage error.
 
 `--report`: per folder, source files as `code N test M name`, largest code first.

@@ -6,6 +6,7 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" exec python3 - "$@" <<'
 import os, re, subprocess, sys
 
 FILE_LIMIT, FOLDER_LINES, FOLDER_FILES = 800, 3000, 12
+NAMED_PATH_FILES = ["docs/ownership.md"]   # pages whose backticked repo paths must exist
 SRC_EXT = (".rs", ".jl", ".sh", ".ps1")
 
 def usage(msg=None):
@@ -87,7 +88,7 @@ try:
         if not ln:
             continue
         parts = ln.split(None, 2)
-        if len(parts) < 2 or parts[0] not in ("no-page", "file-size", "folder-size", "file-list"):
+        if len(parts) < 2 or parts[0] not in ("no-page", "file-size", "folder-size", "file-list", "named-path"):
             usage("bad exempt line: " + ln)
         exempt.append((parts[0], glob_re(parts[1]), parts[2] if len(parts) > 2 else ""))
 except FileNotFoundError:
@@ -270,6 +271,37 @@ for d in folders:
         add("folder-size", d, "%d source files, %d code lines (limits %d files, %d lines)"
             % (len(tests_free), total, FOLDER_FILES, FOLDER_LINES))
 
+# named-path: every backticked repo path in a listed page names a tracked file or a folder holding tracked files.
+def named_paths(page):
+    """Yield the checkable paths of a page: inline backticks outside fenced blocks, trailing :n, :n-m and ::item
+    stripped, one {a,b} group expanded; tokens with a placeholder character or a space are skipped."""
+    fenced = False
+    for ln in read(page).splitlines():
+        if ln.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        for tok in re.findall(r"`([^`]+)`", ln):
+            if re.search(r"[<>*$~ ]", tok):
+                continue
+            tok = re.sub(r"::.*$", "", tok)
+            tok = re.sub(r":\d+(-\d+)?$", "", tok)
+            m = re.match(r"^([^{}]*)\{([^{}]*)\}([^{}]*)$", tok)
+            for t in ([m.group(1) + x + m.group(3) for x in m.group(2).split(",")] if m else [tok]):
+                yield t.rstrip("/")
+
+top_level = {f.split("/")[0] for f in tracked}
+named_checked = 0
+named_listed = [p for p in NAMED_PATH_FILES if p in tracked_set]
+for page in named_listed:
+    for t in named_paths(page):
+        if not t or t.split("/")[0] not in top_level:
+            continue
+        named_checked += 1
+        if t not in tracked_set and not any(f.startswith(t + "/") for f in tracked):
+            add("named-path", page, t)
+
 nv = na = ne = 0
 used = set()
 for kind, path, detail in violations:
@@ -285,6 +317,8 @@ for kind, path, detail in violations:
 unused = [k for k in allow if k not in used]
 for kind, path in unused:
     print("UNUSED-ALLOW %s %s %s" % (kind, path, allow[(kind, path)]))
+if named_listed:
+    print("named-path: %d tokens checked in %d files" % (named_checked, len(named_listed)))
 print("violations: %d, allowed: %d, exempt: %d, unused-allow: %d, folders checked: %d"
       % (nv, na, ne, len(unused), len(folders)))
 sys.exit(1 if nv or unused else 0)
