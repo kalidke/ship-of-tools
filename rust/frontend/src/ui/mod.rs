@@ -1653,177 +1653,7 @@ impl State {
 
 
     fn redraw(&mut self) -> Result<()> {
-        if self.help_peek_start_pending {
-            self.help_peek_start_pending = false;
-            self.help.peek = Some(help::Peek { context: self.help_context(), started: std::time::Instant::now() });
-        }
-        if self.help_start_pending {
-            self.help_start_pending = false;
-            self.open_help_drawer(self.help_context());
-        }
-
-        self.drain_events();
-        // Prune finished status-change flashes; while any is still fading,
-        // mark dirty so the frame loop keeps animating it (the fast-repaint
-        // cadence is armed in `about_to_wait`).
-        if self.prune_expired_flashes(std::time::Instant::now()) {
-            self.dirty = true;
-        }
-        // Coalesced reflow: one MathRendered (or a burst) sets
-        // needs_md_reflow; we rebuild preview_md here so the walk pulls
-        // the freshly-cached SVG dims when sizing per-block placeholders.
-        // Markdown-only by construction — non-markdown previews don't go
-        // through the math walk.
-        if self.needs_md_reflow {
-            self.needs_md_reflow = false;
-            if let Some((mime, bytes)) = self.preview_src.clone() {
-                if mime == "text/markdown" || mime == "text/x-markdown" {
-                    self.render_preview_source(&mime, &bytes);
-                }
-            }
-        }
-        // Debounce nav-driven backend round-trips on cursor-settle. User-
-        // reported: hold-to-scroll generated hundreds of `preview.get` /
-        // `concept.read` / `file.parse` requests per second, saturating
-        // the SSH tunnel and pushing wgpu through enough rapid-fire
-        // preview blob rasterisation that the AMD driver overlay fired.
-        // Cascade: tunnel saturation → transport reconnect → hello-time
-        // `tree.root` re-fire → cursor reset to row 0. The fires below
-        // are the *only* path that ships per-row backend traffic;
-        // suppressing them until the cursor sits still for
-        // `NAV_FIRE_DEBOUNCE` makes hold-to-scroll free.
-        let cursor_now = (self.mode, self.tree.selected);
-        if self.last_cursor_pos != Some(cursor_now) {
-            self.last_cursor_pos = Some(cursor_now);
-            self.cursor_moved_at = Some(std::time::Instant::now());
-        }
-        let debouncing = self
-            .cursor_moved_at
-            .map(|t| t.elapsed() < NAV_FIRE_DEBOUNCE)
-            .unwrap_or(false);
-        if debouncing {
-            // Mark dirty so `about_to_wait` reschedules a redraw at the
-            // frame boundary; on each subsequent redraw the elapsed
-            // check passes once the user settles, then the fires go
-            // through. ~10 cheap no-op redraws per settle, which is
-            // dwarfed by the per-row backend traffic we're skipping.
-            self.dirty = true;
-        } else {
-            self.cursor_moved_at = None;
-            self.maybe_fire_concept_read();
-            self.maybe_fire_preview();
-        }
-        // Drive `--auto-expand` exactly once, after the initial selection
-        // has been applied (i.e., the first TreeRoot/ModulesList landed).
-        // We clear the flag whether or not the expansion request actually
-        // queued — a no-op row (leaf or already expanded) doesn't deserve
-        // a retry loop.
-        if self.pending_auto_expand
-            && self.pending_initial_selection.is_none()
-            && !self.tree.rows.is_empty()
-        {
-            self.try_expand_selected();
-            self.pending_auto_expand = false;
-        }
-        // `--auto-pin`: drive C2 toggle once the cursor selection has
-        // landed. Same gating as `--auto-expand`. Pinning a row whose
-        // id doesn't start with `files:` is a `toggle_pin` no-op; the
-        // flag still clears so we don't churn.
-        if self.pending_auto_pin
-            && self.pending_initial_selection.is_none()
-            && !self.tree.rows.is_empty()
-        {
-            self.toggle_pin();
-            self.pending_auto_pin = false;
-        }
-        // `--demo-repl-eval`: one-shot self-submit once the workspace is
-        // live (same gating as the other harness one-shots). Goes through
-        // submit_repl_input so a repl_log entry exists for the frames to
-        // land in, then shows the REPL drawer so the capture includes it.
-        if self.pending_demo_repl_eval.is_some()
-            && self.pending_initial_selection.is_none()
-            && !self.tree.rows.is_empty()
-        {
-            if let Some(code) = self.pending_demo_repl_eval.take() {
-                self.repl_input = code;
-                self.submit_repl_input();
-                if self.drawer != DrawerContent::Repl {
-                    self.drawer = DrawerContent::Repl;
-                }
-            }
-        }
-        // `--demo-function-methods` chain: once the target function row
-        // appears in the tree (after the col-2 splice has landed),
-        // position cursor on it and fire the methods request. Single-fire
-        // by clearing the pending tuple.
-        if let Some((module, name)) = self.pending_demo_function_methods.clone() {
-            let target_id = format!("modules:{module}:{name}");
-            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
-                self.tree.selected = idx;
-                self.try_expand_selected();
-                self.pending_demo_function_methods = None;
-            }
-        }
-        // `--start-path` walk (files mode): land the cursor on the target
-        // file, expanding one collapsed ancestor directory per tree update
-        // on the way down. Once the cursor is on the file row, the normal
-        // cursor-tracking passes above (concept.read / preview / file.parse)
-        // fire exactly as they would for a user host-2 — which is the
-        // point: `--capture-preview` only fires preview.get, but the
-        // concept panel and drift badge key off the cursored row.
-        if let Some(path) = self.pending_start_path.clone() {
-            let target_id = format!("files:{path}");
-            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
-                self.tree.selected = idx;
-                self.pending_start_path = None;
-                self.start_path_fired = None;
-            } else {
-                // Deepest ancestor directory that exists in the tree but is
-                // still collapsed. (Ancestors appear top-down, so the last
-                // match is the frontier of the walk.)
-                let mut prefix = String::new();
-                let mut frontier: Option<usize> = None;
-                for seg in path.split('/') {
-                    if !prefix.is_empty() {
-                        prefix.push('/');
-                    }
-                    prefix.push_str(seg);
-                    if prefix == path {
-                        break; // the file itself is handled above
-                    }
-                    let anc_id = format!("files:{prefix}");
-                    if let Some(idx) = self
-                        .tree
-                        .rows
-                        .iter()
-                        .position(|r| r.node.id == anc_id && !r.expanded)
-                    {
-                        frontier = Some(idx);
-                    }
-                }
-                if let Some(idx) = frontier {
-                    let anc_id = self.tree.rows[idx].node.id.clone();
-                    // Fire once per frontier; `expanded` flips only when the
-                    // children splice lands, so gate re-fires on the memo.
-                    if self.start_path_fired.as_deref() != Some(anc_id.as_str()) {
-                        self.tree.selected = idx;
-                        if self.try_expand_selected() {
-                            self.start_path_fired = Some(anc_id);
-                        } else {
-                            // Not expandable (leaf / no children): the path
-                            // can't be reached — stop walking rather than
-                            // retry every redraw.
-                            tracing::warn!(%path, %anc_id, "--start-path dead end — ancestor not expandable");
-                            self.pending_start_path = None;
-                            self.start_path_fired = None;
-                        }
-                    }
-                }
-                // No ancestor row yet (root still loading): stay pending;
-                // the next tree update re-enters this block.
-            }
-        }
-
+        self.frame_upkeep();
         // Single preview pane rect that the preview-layer surface draws
         // into. The exact source (PNG quad / SVG quad / cosmic-text
         // markdown buffer / cosmic-text concept buffer) is picked below
@@ -5156,6 +4986,195 @@ impl State {
         self.frame_counter += 1;
         self.last_frame_at = Some(std::time::Instant::now());
         Ok(())
+    }
+
+    fn frame_upkeep(&mut self) {
+        if self.help_peek_start_pending {
+            self.help_peek_start_pending = false;
+            self.help.peek = Some(help::Peek { context: self.help_context(), started: std::time::Instant::now() });
+        }
+        if self.help_start_pending {
+            self.help_start_pending = false;
+            self.open_help_drawer(self.help_context());
+        }
+
+        self.drain_events();
+        // Prune finished status-change flashes; while any is still fading,
+        // mark dirty so the frame loop keeps animating it (the fast-repaint
+        // cadence is armed in `about_to_wait`).
+        if self.prune_expired_flashes(std::time::Instant::now()) {
+            self.dirty = true;
+        }
+        self.reflow_markdown_preview();
+        self.fire_settled_cursor();
+        self.run_harness_one_shots();
+        self.walk_start_path();
+    }
+
+    fn reflow_markdown_preview(&mut self) {
+        // Coalesced reflow: one MathRendered (or a burst) sets
+        // needs_md_reflow; we rebuild preview_md here so the walk pulls
+        // the freshly-cached SVG dims when sizing per-block placeholders.
+        // Markdown-only by construction — non-markdown previews don't go
+        // through the math walk.
+        if self.needs_md_reflow {
+            self.needs_md_reflow = false;
+            if let Some((mime, bytes)) = self.preview_src.clone() {
+                if mime == "text/markdown" || mime == "text/x-markdown" {
+                    self.render_preview_source(&mime, &bytes);
+                }
+            }
+        }
+    }
+
+    fn fire_settled_cursor(&mut self) {
+        // Debounce nav-driven backend round-trips on cursor-settle. User-
+        // reported: hold-to-scroll generated hundreds of `preview.get` /
+        // `concept.read` / `file.parse` requests per second, saturating
+        // the SSH tunnel and pushing wgpu through enough rapid-fire
+        // preview blob rasterisation that the AMD driver overlay fired.
+        // Cascade: tunnel saturation → transport reconnect → hello-time
+        // `tree.root` re-fire → cursor reset to row 0. The fires below
+        // are the *only* path that ships per-row backend traffic;
+        // suppressing them until the cursor sits still for
+        // `NAV_FIRE_DEBOUNCE` makes hold-to-scroll free.
+        let cursor_now = (self.mode, self.tree.selected);
+        if self.last_cursor_pos != Some(cursor_now) {
+            self.last_cursor_pos = Some(cursor_now);
+            self.cursor_moved_at = Some(std::time::Instant::now());
+        }
+        let debouncing = self
+            .cursor_moved_at
+            .map(|t| t.elapsed() < NAV_FIRE_DEBOUNCE)
+            .unwrap_or(false);
+        if debouncing {
+            // Mark dirty so `about_to_wait` reschedules a redraw at the
+            // frame boundary; on each subsequent redraw the elapsed
+            // check passes once the user settles, then the fires go
+            // through. ~10 cheap no-op redraws per settle, which is
+            // dwarfed by the per-row backend traffic we're skipping.
+            self.dirty = true;
+        } else {
+            self.cursor_moved_at = None;
+            self.maybe_fire_concept_read();
+            self.maybe_fire_preview();
+        }
+    }
+
+    fn run_harness_one_shots(&mut self) {
+        // Drive `--auto-expand` exactly once, after the initial selection
+        // has been applied (i.e., the first TreeRoot/ModulesList landed).
+        // We clear the flag whether or not the expansion request actually
+        // queued — a no-op row (leaf or already expanded) doesn't deserve
+        // a retry loop.
+        if self.pending_auto_expand
+            && self.pending_initial_selection.is_none()
+            && !self.tree.rows.is_empty()
+        {
+            self.try_expand_selected();
+            self.pending_auto_expand = false;
+        }
+        // `--auto-pin`: drive C2 toggle once the cursor selection has
+        // landed. Same gating as `--auto-expand`. Pinning a row whose
+        // id doesn't start with `files:` is a `toggle_pin` no-op; the
+        // flag still clears so we don't churn.
+        if self.pending_auto_pin
+            && self.pending_initial_selection.is_none()
+            && !self.tree.rows.is_empty()
+        {
+            self.toggle_pin();
+            self.pending_auto_pin = false;
+        }
+        // `--demo-repl-eval`: one-shot self-submit once the workspace is
+        // live (same gating as the other harness one-shots). Goes through
+        // submit_repl_input so a repl_log entry exists for the frames to
+        // land in, then shows the REPL drawer so the capture includes it.
+        if self.pending_demo_repl_eval.is_some()
+            && self.pending_initial_selection.is_none()
+            && !self.tree.rows.is_empty()
+        {
+            if let Some(code) = self.pending_demo_repl_eval.take() {
+                self.repl_input = code;
+                self.submit_repl_input();
+                if self.drawer != DrawerContent::Repl {
+                    self.drawer = DrawerContent::Repl;
+                }
+            }
+        }
+        // `--demo-function-methods` chain: once the target function row
+        // appears in the tree (after the col-2 splice has landed),
+        // position cursor on it and fire the methods request. Single-fire
+        // by clearing the pending tuple.
+        if let Some((module, name)) = self.pending_demo_function_methods.clone() {
+            let target_id = format!("modules:{module}:{name}");
+            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
+                self.tree.selected = idx;
+                self.try_expand_selected();
+                self.pending_demo_function_methods = None;
+            }
+        }
+    }
+
+    fn walk_start_path(&mut self) {
+        // `--start-path` walk (files mode): land the cursor on the target
+        // file, expanding one collapsed ancestor directory per tree update
+        // on the way down. Once the cursor is on the file row, the normal
+        // cursor-tracking passes above (concept.read / preview / file.parse)
+        // fire exactly as they would for a user host-2 — which is the
+        // point: `--capture-preview` only fires preview.get, but the
+        // concept panel and drift badge key off the cursored row.
+        if let Some(path) = self.pending_start_path.clone() {
+            let target_id = format!("files:{path}");
+            if let Some(idx) = self.tree.rows.iter().position(|r| r.node.id == target_id) {
+                self.tree.selected = idx;
+                self.pending_start_path = None;
+                self.start_path_fired = None;
+            } else {
+                // Deepest ancestor directory that exists in the tree but is
+                // still collapsed. (Ancestors appear top-down, so the last
+                // match is the frontier of the walk.)
+                let mut prefix = String::new();
+                let mut frontier: Option<usize> = None;
+                for seg in path.split('/') {
+                    if !prefix.is_empty() {
+                        prefix.push('/');
+                    }
+                    prefix.push_str(seg);
+                    if prefix == path {
+                        break; // the file itself is handled above
+                    }
+                    let anc_id = format!("files:{prefix}");
+                    if let Some(idx) = self
+                        .tree
+                        .rows
+                        .iter()
+                        .position(|r| r.node.id == anc_id && !r.expanded)
+                    {
+                        frontier = Some(idx);
+                    }
+                }
+                if let Some(idx) = frontier {
+                    let anc_id = self.tree.rows[idx].node.id.clone();
+                    // Fire once per frontier; `expanded` flips only when the
+                    // children splice lands, so gate re-fires on the memo.
+                    if self.start_path_fired.as_deref() != Some(anc_id.as_str()) {
+                        self.tree.selected = idx;
+                        if self.try_expand_selected() {
+                            self.start_path_fired = Some(anc_id);
+                        } else {
+                            // Not expandable (leaf / no children): the path
+                            // can't be reached — stop walking rather than
+                            // retry every redraw.
+                            tracing::warn!(%path, %anc_id, "--start-path dead end — ancestor not expandable");
+                            self.pending_start_path = None;
+                            self.start_path_fired = None;
+                        }
+                    }
+                }
+                // No ancestor row yet (root still loading): stay pending;
+                // the next tree update re-enters this block.
+            }
+        }
     }
 }
 
