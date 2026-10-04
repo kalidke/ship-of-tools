@@ -45,7 +45,6 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
 - `src/ops/`: the op names and payload types, one file per family
-- `src/testdata/`: relay unit fixtures that the backend's tests include; not read by this crate
 - `src/topology/`: the topology, endpoint, ssh bridge and lane client modules
 - `src/version.rs`: the product version string and `is_release_build`
 

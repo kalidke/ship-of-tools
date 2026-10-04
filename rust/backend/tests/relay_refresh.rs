@@ -2,9 +2,9 @@
 //! `sotd topology refresh` on a scratch hub: the real binary, a stand-in `systemctl` first on PATH. Wiring-level.
 use {std::path::PathBuf, tempfile::TempDir};
 
-const STALE_SERVICE: &str = include_str!("../../protocol/src/testdata/relay-service-rc9.8.unit");
+const STALE_SERVICE: &str = include_str!("fixtures/relay/relay-service-rc9.8.unit");
 
-const OVERRIDE: &str = include_str!("../../protocol/src/testdata/relay-dropin-override.conf");
+const OVERRIDE: &str = include_str!("fixtures/relay/relay-dropin-override.conf");
 
 /// list-unit-files answers in systemd 249's line format; daemon-reload fails while `reload-fails` exists; `show -p ExecStart
 /// -p LoadState` prints the file `show-out` when a test wrote one, else `show-ok` (the healthy answer).

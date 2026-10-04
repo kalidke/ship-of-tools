@@ -409,9 +409,9 @@ fn remove_dropin(unit: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const STALE_SERVICE: &str = include_str!("../../../protocol/src/testdata/relay-service-rc9.8.unit");
-    const NO_MUX: &str = include_str!("../../../protocol/src/testdata/relay-dropin-no-mux.conf");
-    const OVERRIDE: &str = include_str!("../../../protocol/src/testdata/relay-dropin-override.conf");
+    const STALE_SERVICE: &str = include_str!("../../tests/fixtures/relay/relay-service-rc9.8.unit");
+    const NO_MUX: &str = include_str!("../../tests/fixtures/relay/relay-dropin-no-mux.conf");
+    const OVERRIDE: &str = include_str!("../../tests/fixtures/relay/relay-dropin-override.conf");
 
     const SHOW: &str = "show -p ExecStart -p LoadState sot-host-relay-remote-a@refresh-check.service";
 
