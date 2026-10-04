@@ -21,8 +21,7 @@ pub enum IncomingEvt {
         project_root: Option<String>,
         /// The daemon advertised the ADR-0035 TCP proxy (`HelloRes.proxy`).
         /// A remote FE arms its lazy loopback proxy listeners only when this
-        /// is true; `false` for older daemons (falls back to the launcher's
-        /// per-port ssh forwards exactly as before).
+        /// is true.
         proxy: bool,
         /// C3 as amended §5: which transport actually connected —
         /// `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh(recipe)`
@@ -430,14 +429,6 @@ pub enum IncomingEvt {
         op: String,
         payload: Value,
     },
-    /// `tmux.list_panes` reply for the queried session (or for the whole
-    /// server when `session: None` was sent). ADR 0042 L2a codex review
-    /// deletions: the sibling `TmuxSessions`/`TmuxSessionCreated`/
-    /// `TmuxSessionKilled` replies (to `tmux.list_sessions`/
-    /// `tmux.create_session`/`tmux.kill_session`) had no production
-    /// sender — ADR 0014 moved Sessions mode onto the daemon's workspace
-    /// registry instead of scanning tmux, before this spike-era plumbing
-    /// was ever wired up.
     DirectoryList {
         path: String,
         entries: Vec<crate::transport::DirEntry>,

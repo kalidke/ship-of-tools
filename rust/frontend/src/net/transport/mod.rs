@@ -3,8 +3,6 @@
 //
 // Per ADR 0010, as replaced by isolation-plan.md §3 C3 (amended by
 // dev/output/c3-second-connection-amendment.md):
-//   - Backend listens on a per-session Unix socket on the remote
-//     ($XDG_RUNTIME_DIR/sot/<session_id>.sock), inside a tmux session.
 //   - Reaching a daemon that is not on this box means spawning
 //     `ssh <target> '<PATH prelude>; sotd stdio-bridge [--host <host>]'`
 //     (`sot_protocol::ssh_bridge`) and speaking the protocol over its piped

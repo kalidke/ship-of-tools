@@ -270,17 +270,6 @@ pub enum OutgoingReq {
         /// false so they can't yank the foreground. See `PtyOpenReq`.
         user_switch: bool,
     },
-    /// Sessions-mode ops (ADR 0013 B1 backend; B2-B5 consumes here) that
-    /// round-trip through the host tmux server; responses surface as the
-    /// matching `IncomingEvt::Tmux*` variants. ADR 0042 L2a codex review
-    /// deletions: `TmuxListSessions`/`TmuxCreateSession`/`TmuxKillSession`
-    /// (and their `IncomingEvt::TmuxSessions`/`TmuxSessionCreated`/
-    /// `TmuxSessionKilled` replies) never got a call site — ADR 0014 moved
-    /// Sessions mode onto the daemon's workspace registry
-    /// (WorkspaceList/Workspaces) before this spike-era plumbing was ever
-    /// wired up. `TmuxListPanes`/`TmuxCapturePane` stay: both are live,
-    /// host-qualified (ADR 0042 L2a), and fired from Sessions-mode row
-    /// expansion / the live-tail preview.
     DirectoryList { path: String, include_hidden: bool },
     /// Register a new workspace with the daemon and create its tmux
     /// session (ADR 0014). Fired when the user confirms a directory in
