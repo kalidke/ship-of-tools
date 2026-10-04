@@ -12,6 +12,7 @@ rust/frontend/src/ui/CLAUDE.md. Record: ADR 0042 and 0045.
   of parked clients (`WarmAttachPool`).
 - `input.rs`: `State::send_pane_input` and the pane's mouse selection (`llm_cell_at_px`, `copy_llm_selection`).
 - `replies.rs`: pty.open replies (attach direct, failure)
+- `keys.rs`: What a key does in the agent pane: copy, paste and paging, else bytes to its session.
 
 ## Start here
 attach.rs `attach_session_to_bl`, for how a selected row becomes a pane client; screen.rs `pane_screen_choice`, for what
