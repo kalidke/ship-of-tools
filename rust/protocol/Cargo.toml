@@ -5,6 +5,11 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+# Lets a test set the lane handshake bound through the environment. Enabled
+# only from `sot-backend`'s dev-dependencies; no shipped binary carries it.
+test-handshake-bound = []
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }

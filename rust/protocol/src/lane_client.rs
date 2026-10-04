@@ -669,9 +669,16 @@ fn run_handshake(stream: &LaneStream, req: &Frame, deadline: Instant) -> Result<
     }
 }
 
-/// How long the lane handshake may run before it gives up: `CONNECT_BOUND`,
-/// or `SOT_TEST_LANE_HANDSHAKE_MS` milliseconds when that is set. A test seam
-/// in the `SOT_TEST_*` pattern, never set in production.
+/// How long the lane handshake may run before it gives up: `CONNECT_BOUND`.
+/// Only a build with the `test-handshake-bound` feature (enabled by
+/// `sot-backend`'s dev-dependency, so by no shipped binary) lets
+/// `SOT_TEST_LANE_HANDSHAKE_MS` milliseconds replace it.
+#[cfg(not(feature = "test-handshake-bound"))]
+fn lane_handshake_bound() -> Duration {
+    CONNECT_BOUND
+}
+
+#[cfg(feature = "test-handshake-bound")]
 fn lane_handshake_bound() -> Duration {
     std::env::var("SOT_TEST_LANE_HANDSHAKE_MS")
         .ok()

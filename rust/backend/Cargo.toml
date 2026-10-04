@@ -68,6 +68,10 @@ name = "sotd"
 path = "src/main.rs"
 
 [dev-dependencies]
+# The lane_bridge test sets `SOT_TEST_LANE_HANDSHAKE_MS`; the seam is compiled
+# into test builds only (resolver 2 keeps dev-dependency features out of the
+# `sotd` and `sot` builds).
+sot-protocol = { path = "../protocol", features = ["test-handshake-bound"] }
 # `start_paused` test runtime (site_serve's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
 tokio = { workspace = true, features = ["test-util"] }

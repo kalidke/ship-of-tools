@@ -1317,25 +1317,30 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     }
 }
 
-/// A stub `ssh` for the first-attach overlap: the first login (the
-/// supervisor's) waits until the second (the spare's) has recorded its pid,
-/// notes whether it saw it, then dies with one stderr line so the handshake
-/// fails; the second login records its pid and idles. The waiting is what
-/// makes the ordering deterministic: a spare started only after the
-/// supervisor handshake would never be seen.
+/// A stub `ssh` for the first-attach overlap. Both logins record their pid
+/// at once and read stdin; the one that is sent the supervisor's
+/// `lane.connect` frame is the supervisor, whichever shell happened to start
+/// first under load. It waits until the other login's pid file exists, notes
+/// that it saw it, then dies with one stderr line so the handshake fails; the
+/// other login (the spare) is never sent a frame and idles in its read.
 fn stub_ssh_failing_supervisor_after_spare(dir: &Path, state: &Path) {
     let s = state.display();
     let script = format!(
         "#!/bin/sh\n\
-         if mkdir {s}/first 2>/dev/null; then\n\
+         echo $$ > {s}/pid.$$\n\
+         read line\n\
+         case \"$line\" in\n\
+         *'\"lane\":\"supervisor\"'*)\n\
          i=0\n\
-         while [ ! -f {s}/spare.pid ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done\n\
-         if [ -f {s}/spare.pid ]; then touch {s}/supervisor_saw_spare; fi\n\
+         while [ $i -lt 600 ]; do\n\
+         for f in {s}/pid.*; do\n\
+         if [ \"$f\" != \"{s}/pid.$$\" ] && [ -s \"$f\" ]; then cp \"$f\" {s}/spare.pid; touch {s}/supervisor_saw_spare; break 2; fi\n\
+         done\n\
+         sleep 0.05; i=$((i+1))\n\
+         done\n\
          echo 'Permission denied (publickey).' >&2\n\
-         exit 255\n\
-         fi\n\
-         echo $$ > {s}/spare.tmp\n\
-         mv {s}/spare.tmp {s}/spare.pid\n\
+         exit 255;;\n\
+         esac\n\
          exec sleep 60\n"
     );
     let path = dir.join("ssh");
