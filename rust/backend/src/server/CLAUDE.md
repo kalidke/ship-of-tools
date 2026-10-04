@@ -51,7 +51,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster, and the re-exports
-- `hello.rs`: the hello handshake (protocol gate, hello reply and its replay)
+- `hello.rs`: the hello handshake (protocol gate, hello reply and its replay) and the roster entry (`admit_hello`)
 - `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek (`handle_connection`), the control loop (`serve_control`) and its select (`select_once`)
 - `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply

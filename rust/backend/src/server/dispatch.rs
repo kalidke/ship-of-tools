@@ -1,6 +1,7 @@
 //! The control session's op table: `dispatch` routes one request frame to its owner and writes the reply.
 
 use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person_input, wait_for_test_activation_barrier};
+use super::hello::admit_hello;
 use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
 use super::*;
 
@@ -33,46 +34,7 @@ where
     let dispatch_started = std::time::Instant::now();
     let dispatched: Result<handlers::HandlerOutput> = match frame.op.as_str() {
         op::HELLO => {
-            // Register this connection in the client roster the first
-            // time we learn its client_id (a reconnect re-sends hello
-            // on the same connection — keep the original guard). Done
-            // before `handle_hello` so `clients_connected` counts self.
-            if client_guard.is_none() {
-                if let Ok(req) =
-                    serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
-                {
-                    // Topology plan §F step 2: mark this connection
-                    // ELIGIBLE for the read-deadline reaper -- exactly
-                    // the two long-lived roles, `fe` and `bridge`
-                    // (`cli`/`agent` are one-shot and stay ungated).
-                    // This does NOT arm the deadline itself (manager
-                    // compatibility fix, post-review) — only this
-                    // connection's FIRST `ping` does that (`op::PING`
-                    // arm below), so a peer too old to send one keeps
-                    // today's behaviour exactly, never reaped by this
-                    // path.
-                    // A peer on another protocol is about to be
-                    // refused by `handle_hello`'s gate: never enter
-                    // the roster (it would be counted as a directed
-                    // command's audience and listed by `version.query`
-                    // while its hello stands refused). It gets the
-                    // structured mismatch reply and nothing else.
-                    if req.protocol == sot_protocol::PROTOCOL_VERSION {
-                        *is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
-                        *hello_host = req.host.clone();
-                        *hello_name = req.name.clone();
-                        *client_guard = Some(clients.register(
-                            req.client_id,
-                            req.app_version,
-                            req.protocol,
-                            req.role,
-                            req.host,
-                            req.instance,
-                            req.name,
-                        ));
-                    }
-                }
-            }
+            admit_hello(&frame, clients, client_guard, is_long_lived_role, hello_host, hello_name);
             handlers::handle_hello(
                 frame.id,
                 frame.payload,
