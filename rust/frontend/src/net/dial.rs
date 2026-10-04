@@ -183,6 +183,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_dial_arg_host_name_table() {
+        for h in ["a", "0", "host-2", "a.b_c-d", "9lives"] {
+            assert!(parse_dial_arg(&format!("{h}=ssh:hub")).is_ok(), "{h}");
+        }
+        for h in ["", "A", "aB", "-a", ".a", "_a", "a b", "a@b", "a:b", "é", "aé"] {
+            assert!(parse_dial_arg(&format!("{h}=ssh:hub")).is_err(), "{h:?}");
+        }
+    }
+
+    #[test]
     fn parse_dial_arg_good_unix() {
         let (host, cfg) = parse_dial_arg("host-2=unix:/run/user/1234/sot/sessions/sot.sock")
             .expect("valid");
