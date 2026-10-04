@@ -4,6 +4,7 @@ use super::*;
 
 pub(crate) mod layout;
 mod draw;
+mod pixels;
 mod panes;
 mod replies;
 mod spill;
