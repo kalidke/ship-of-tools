@@ -15,6 +15,8 @@ pub(crate) mod markdown;
 pub(crate) mod editor;
 pub(crate) mod pane;
 pub(crate) mod concept;
+mod fetch;
+mod open;
 pub(crate) use crate::ui::render::quad;
 
 pub(crate) use image::{png, svg};

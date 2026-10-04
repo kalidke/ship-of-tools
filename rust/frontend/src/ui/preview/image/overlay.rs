@@ -415,6 +415,94 @@ impl State {
     }
 }
 
+impl State {
+    /// Open the pixel-size prompt for the previewed raster (ADR 0034 §4).
+    /// Returns false when there's nothing to calibrate, so the caller can leave
+    /// the keystroke alone.
+    pub(in crate::ui) fn begin_scale_entry(&mut self) -> bool {
+        let Some(node_id) = self.preview_node_id_fired.clone() else {
+            return false;
+        };
+        if !Self::is_image_node_id(&node_id) {
+            return false;
+        }
+        self.nav_prompt = Some(NavPrompt::ScaleEntry {
+            node_id,
+            input: String::new(),
+        });
+        // Ctrl+S fires from the PREVIEW focus arm, but every NavPrompt's
+        // keystroke handling (chars / Backspace / Enter / Esc) lives in the
+        // NavTree arm — so without this the prompt opens and then silently
+        // swallows nothing: typing goes to the preview's zoom/pan keys and
+        // Enter never reaches `confirm_scale_entry`. Ctrl+N doesn't need this
+        // because it can only fire from NavTree focus in the first place.
+        // Codex v0.4.4 gate. Remember where the user actually was so resolving
+        // the prompt puts them back (5th-gate follow-up) — the focus move is
+        // ours, not theirs, so it shouldn't outlive the prompt.
+        self.scale_entry_prior_focus = Some(self.focus);
+        self.set_focus(PaneFocus::NavTree);
+        self.status = "pixel size (nm): ".to_string();
+        self.window.request_redraw();
+        true
+    }
+
+    /// Confirm the pixel-size prompt: validate the typed nanometres (no
+    /// nm, and fire `preview.set_scale`. The backend writes the sidecar and
+    /// replies with the re-rendered preview (carrying the F1-rescaled
+    /// `physical_scale`), which lands in the normal preview path — so the bar
+    /// appears from the authoritative value rather than a local guess that
+    /// could be wrong for a downsampled raster.
+    pub(in crate::ui) fn confirm_scale_entry(&mut self) {
+        let (node_id, raw) = match self.nav_prompt.as_ref() {
+            Some(NavPrompt::ScaleEntry { node_id, input }) => {
+                (node_id.clone(), input.trim().to_string())
+            }
+            _ => return,
+        };
+        let Some(nm_per_px) = parse_nm_pixel_size(&raw) else {
+            // Keep the prompt open so the user can correct the typo.
+            self.status = "pixel size · enter a positive number in nm".to_string();
+            self.window.request_redraw();
+            return;
+        };
+        // Isotropic from a single entry: both axes get the same value. The
+        // anisotropic (XZ) case is Phase 3 — one number can't describe it, and
+        // guessing would be worse than the Phase-1 lateral bar.
+        let generation = self.next_preview_gen();
+        if let Err(e) = self.send(crate::transport::OutgoingReq::PreviewSetScale {
+            node_id: node_id.clone(),
+            nm_per_px,
+            workspace_id: self.active_workspace_id.clone(),
+            generation,
+        }) {
+            tracing::warn!(error = %e, %node_id, "drop preview.set_scale — channel closed");
+            self.status = "pixel size · channel closed".to_string();
+            self.window.request_redraw();
+            return;
+        }
+        tracing::info!(%node_id, nm_per_px,
+            "scale entry → preview.set_scale");
+        // Arm the overlay so the bar is visible the moment the re-rendered
+        // preview lands; without a scale present the toggle would otherwise
+        // just re-open this prompt.
+        self.scalebar_on = true;
+        self.nav_prompt = None;
+        // Gate the success message on THIS save: the reply arrives as an
+        // ordinary preview install, so without a pending marker we'd either
+        // leave "saving…" up forever or congratulate the user on every
+        // unrelated preview.get.
+        self.scale_save_pending = Some((node_id.clone(), raw.clone()));
+        // Prompt resolved — hand focus back to the pane the user was actually
+        // in (the Preview they're calibrating), so their next zoom/pan key
+        // lands there rather than in the tree.
+        if let Some(prior) = self.scale_entry_prior_focus.take() {
+            self.set_focus(prior);
+        }
+        self.status = format!("pixel size {raw} nm · saving…");
+        self.window.request_redraw();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

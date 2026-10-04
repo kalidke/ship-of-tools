@@ -8,6 +8,7 @@ rust/frontend/src/ui/CLAUDE.md.
 - `figures.rs`: decodes markdown-figure fetch replies, tracks failed and pending figures, builds figure metrics and dispatches fetches.
 - `overlay.rs`: the figure caption store and the scalebar and caption draw geometry.
 - `png.rs`: decodes PNG bytes to RGBA8, fits them to the GPU's texture limit and uploads a quad.
+- `roi.rs`: the raster-node test, the ROI capture to `image.crop` and its applied report.
 - `svg.rs`: rasterizes SVG bytes with resvg at a caller-given pixel size and uploads a quad.
 - `view.rs`: the view geometry: letterbox, zoom bound, pan scaling and the source-pixel ROI mapping both ways.
 
@@ -23,3 +24,4 @@ rust/frontend/src/ui/CLAUDE.md.
 - The scalebar keys off the source-to-screen mapping, never the raster buffer size (`build_scalebar`; ADR 0034).
 - Captions are keyed by (workspace, file); the store keeps at most 256 (`CaptionStore`).
 - A failed figure stays failed until a fresh preview reply clears `figure_failed` (`figure_already_handled`).
+- Only a raster node qualifies for crop and scale, never a PDF page (`State::is_image_node_id`).

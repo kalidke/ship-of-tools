@@ -136,6 +136,10 @@ pub(in crate::ui) fn node_id_to_concept_target(id: &str) -> Option<String> {
 }
 
 impl State {
+    /// If the selected tree row's annotation target differs from the last
+    /// one we asked the backend about, fire a fresh `concept.read`. Called
+    /// from `redraw` so cursor moves and event-driven tree updates both
+    /// trigger refresh without each caller having to remember.
     pub(in crate::ui) fn maybe_fire_concept_read(&mut self) {
         let Some(row) = self.tree.rows.get(self.tree.selected) else {
             return;
