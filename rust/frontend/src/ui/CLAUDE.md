@@ -12,6 +12,8 @@ the session view and agent pane, the drawers and the preview pane. Later units m
 - Transport events are applied only on the UI thread (`State::drain_events`).
 - A reply counts only if its generation, host and workspace are current (`reply_is_current`).
 - Workspace maps key on (host, id) (`WsKey`).
+- `drain_events` (events.rs) only routes: one arm per `IncomingEvt` variant, each calling `on_<variant>`
+  in its owner's `replies.rs`, and no wildcard arm, so a new variant does not compile until it is routed.
 
 ## Connections
 main.rs builds `App` through the alias `use ui as gpu;`. net/transport.rs sends `(HostKey, IncomingEvt)` in, takes

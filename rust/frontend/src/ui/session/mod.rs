@@ -5,6 +5,7 @@ use super::*;
 mod badge;
 mod picker;
 mod presence;
+mod replies;
 mod snapshot;
 mod switch;
 mod workspace_key;

@@ -13,6 +13,7 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 - `picker.rs`: `WorkspacePicker` and its start directory, and `State`'s `begin_create_session` through `commit_workspace_create`.
 - `presence.rs`: `ReadMark`, `read_mark_decision`, and `State`'s `report_presence` and `fire_due_read_mark`.
 - `badge.rs`: the badge floor: `pending_nav_status`, `State::mark_pending_nav` and `badged_keys`.
+- `replies.rs`: a host's connect and disconnect, and the workspace and picker replies
 
 ## Start here
 `State::switch_to_workspace` in switch.rs, for any change to what happens when the window moves to another row.
