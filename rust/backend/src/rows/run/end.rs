@@ -28,8 +28,7 @@ pub(crate) const ALREADY_REMOVED: &str = "workspace was removed before its capsu
 
 /// Maps a `capsule_workspace::EndRunOutcome` to whether `workspace.destroy`
 /// may remove the row. Pure/portable so it's unit-testable without a real
-/// Windows lane; `#[cfg(test)]` below is its only caller off Windows.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// Windows lane.
 pub(crate) fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
     use crate::capsule_workspace::EndRunOutcome as O;
     match o {

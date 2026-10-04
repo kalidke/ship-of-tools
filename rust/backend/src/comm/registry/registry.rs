@@ -154,10 +154,6 @@ pub(crate) fn read_registry_fresh_with(path: &std::path::Path, mut pause: impl F
 /// one is not evidence it's ours (LU5d2, Codex text round finding 3: the
 /// prior "no host = legacy, matches on session alone" clause let a
 /// hand-edited or foreign-tool row bind here on name/session alone).
-/// Factored out of `comm_row_owned_here` so the `by_name` term in
-/// `remove_comm_agents_for_workspace` and the plain field reads in
-/// `handle_workspace_list`'s `agent_str` apply the same strict rule as the
-/// tmux-based match below.
 pub(crate) fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
     entry
         .get("host")
@@ -175,16 +171,12 @@ pub(crate) fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
 /// - `agent_handle` set (ADR 0046 decision 1: the session inside `ws`
 ///   DECLARED this via `agent.join`) wins outright, on every runtime —
 ///   the daemon is told once instead of re-deriving it.
-/// - otherwise `runtime == "capsule"`: no tmux pane exists at all, so the
-///   tmux-based match below can never discover it (Codex round finding
-///   2/companion) — read its OWN pinned self-file back instead
+/// - otherwise: read its OWN pinned self-file back instead
 ///   (`capsule_comm_handle`), falling back to the stored `agent_name`
 ///   only when that file is empty/absent. Manager review (S5, Codex
 ///   finding B8): this read-back STAYS as the fallback for a row that
 ///   has not (yet, or ever, for an older comm-join.sh) declared via
 ///   `agent.join` — deleted only with family H once every row has cycled.
-/// - every other runtime: the live tmux occupant (`resolve_comm_handle`
-///   above), same fallback.
 pub(crate) fn comm_handle_for_workspace(ws: &Workspace) -> String {
     let declared = ws.agent_handle();
     if !declared.is_empty() {
@@ -241,7 +233,7 @@ fn with_comm_registry_lock<T>(
 
 /// `remove_comm_agents_for_workspace`'s lock bound: a `workspace.destroy`
 /// is a one-shot, user-triggered action off the hot per-connection reply
-/// path (it already awaits the tmux kill above), so it can afford to sit
+/// path, so it can afford to sit
 /// out a much longer contention window than `clear_comm_unread` below
 /// before giving up — matches the OLD force-break threshold (200×50ms), so
 /// the fail-closed change doesn't also make destroys flaky on an
@@ -256,10 +248,7 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// Remove the sot-comm registry rows owned by a workspace that is being
 /// destroyed, returning the handles removed (for logging). A killed agent can't
 /// run `comm-leave` for itself, so its row would otherwise persist and show as
-/// a ghost in `workspace.list`. We mirror `handle_workspace_list`'s row-binding
-/// rule — a row belongs to this workspace when `comm_row_owned_here` matches
-/// (its `tmux` session-part equals `session_name` AND it's this `host`'s row),
-/// or (fallback for not-yet-joined `spawning` rows) when its handle equals the
+/// a ghost in `workspace.list`. A row belongs to this workspace when its handle equals the
 /// stored `agent_name` AND `host_matches` too (LU5d2: the stored name is
 /// caller-supplied, not proof of ownership — a same-named row stamped by
 /// another host must survive), or when its own `workspace_id` field equals
@@ -363,8 +352,7 @@ fn remove_comm_agents_for_workspace_bounded(
 ///
 /// Two phases, both filtered through `comm_handle_for_workspace` — THE SAME
 /// row-binding rule `handle_workspace_list` uses (declared `agent_handle`
-/// first, else the live tmux occupant / stored `agent_name`), so a capsule
-/// workspace's blue clears exactly the same way a tmux one's does:
+/// first, else stored `agent_name`):
 ///
 /// 1. **Unlocked pre-check** — read the registry once, resolve the handle,
 ///    require the row to pass `host_matches` and carry a `done` key (any

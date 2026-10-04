@@ -400,14 +400,8 @@ pub fn secure_socket_dir(dir: &Path) -> Result<()> {
     secure_private_dir(dir)
 }
 
-/// Strict allowlist for names that flow into a tmux/pty/shell invocation
-/// (security review): tmux session names (`tmux.create_session`/`kill_session`,
-/// `pty.open`'s `target`) and `workspace.create`'s `agent_name`, which
-/// `pty::boot_wrapper_command` splices RAW into a shell command string with
-/// no quoting. `1..=64` ASCII alphanumerics, `.`, `_`, `-` only — no shell
-/// metacharacters, no `|` (which would also corrupt `tmux.rs`'s naive
-/// `|`-delimited `list-sessions`/`list-panes` parsing), no whitespace/control
-/// bytes. `pub(crate)` so `server.rs` can reuse it for `pty.open`.
+/// Strict allowlist for names (security review): `1..=64` ASCII alphanumerics, `.`, `_`, `-` only — no shell
+/// metacharacters, no `|`, no whitespace/control bytes.
 pub(crate) fn valid_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64

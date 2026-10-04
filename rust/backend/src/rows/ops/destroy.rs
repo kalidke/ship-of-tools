@@ -36,21 +36,11 @@ pub async fn handle_workspace_destroy(
 
     // The default workspace's ROW is never destroyed here — it's the
     // daemon's anchor, with no fallback target to swap ops to. A default
-    // TMUX row has no run to end, so it keeps the flat refusal. A
-    // default CAPSULE row (ADR 0042: the default `local` row on a
-    // Windows FE box, ADR 0043 decision 22: on Linux only ever reached
-    // via a hand-edited toml, since the Linux platform default stays
-    // "tmux" until the bridge) instead ends its run and keeps the row,
+    // CAPSULE row instead ends its run and keeps the row,
     // reusing the non-default delete's own path below — a `Kept`
     // (unconfirmed) outcome still returns the SAME typed error, never a
     // fabricated success.
     if workspaces.default_id().as_deref() == Some(ws.workspace_id.as_str()) {
-        // Gate on the toml's own `runtime` string alone now (ADR 0043
-        // decision 22): capsule support is no longer Windows-only, so a
-        // Linux default row that genuinely carries `runtime = "capsule"`
-        // gets the same real end-run path a Windows one does. Every
-        // OTHER default row (the ordinary "tmux" case on every host)
-        // keeps the same flat refusal it always had.
         // Same end-run path the non-default delete uses below. The
         // reason is honest for THIS row (not "deleted" — it's kept).
         let (outcome, held_guard) = destroy_capsule_workspace(
@@ -94,17 +84,13 @@ pub async fn handle_workspace_destroy(
     let agent_name = ws.agent_name();
 
     // This row's guard, taken below by whichever arm runs — HELD (ADR
-    // 0043 decision 33, Codex review round 2; tmux arm added round 3,
-    // finding B) across the removal below, past the `if`, so neither a
+    // 0043 decision 33, Codex review round 2) across the removal below, past the `if`, so neither a
     // watchdog restart nor a racing `agent.join` can land between a
     // confirmed end and `remove_by_id`. Dropped explicitly once removal
     // is done; stays `None` only for a `Kept` outcome (nothing is
     // removed) or a row that was already gone by the time its arm asked.
 
-    // ADR 0042 slice L1a, Codex review finding 3: a capsule workspace has
-    // no tmux session to kill at all — end its run over the supervisor
-    // lane instead, and — unlike the tmux kill, which is a best-effort UX
-    // nicety — a capsule whose run did NOT reach `record_closed`/
+    // ADR 0042 slice L1a, Codex review finding 3: a capsule whose run did NOT reach `record_closed`/
     // `record_verified` STOPS the whole delete here: the row and its
     // toml are kept, and the caller sees a typed error, so a live or
     // unreachable run is never orphaned by a delete that silently
@@ -151,7 +137,7 @@ pub async fn handle_workspace_destroy(
     // Prune the sot-comm registry. Ending the capsule run takes the agent
     // down before it can run its own comm-leave, so the killer must deregister
     // it — otherwise its row lingers as a ghost in `workspace.list`, which
-    // merges the registry (see `resolve_handle`). Drop exactly the rows this
+    // merges the registry. Drop exactly the rows this
     // workspace owned: by stored `agent_name`, and by the row's own
     // `workspace_id` (covers a manually-joined handle, e.g. `comm-join.sh
     // --name other`, whose `ws.agent_name` was never set). Best-effort +
@@ -184,8 +170,7 @@ pub async fn handle_workspace_destroy(
     // those processes alive until they finish.
     let _ = workspaces.remove_by_id(&workspace_id);
     // Only now may this row's guard (if any) release — see its own doc
-    // above: held from whichever arm took it (capsule end/stop, or the
-    // tmux arm's own acquisition, round 3) through this exact removal,
+    // above: held from whichever arm took it (capsule end/stop) through this exact removal,
     // so neither a watchdog restart nor a waiting `agent.join` can act
     // on a row that is already gone.
     drop(destroy_guard);

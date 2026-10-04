@@ -26,7 +26,7 @@ pub async fn handle_workspace_list(
     let host = crate::workspaces::declared_host();
     // Pull `.agents[agent_name].<field>` as an owned String, "" if anything is
     // missing or not a string. LU5d2: `agent_name` here is a handle the caller
-    // (below) already bound to THIS workspace — by live tmux match or by the
+    // (below) already bound to THIS workspace — by the
     // stored `agent_name` fallback — never proof it's this host's row, so
     // filter the entry through `host_matches` too: a same-named handle
     // stamped by another host on the shared registry must read as empty, not
@@ -44,11 +44,6 @@ pub async fn handle_workspace_list(
             .unwrap_or("")
             .to_string()
     };
-    // Resolve the comm handle ACTUALLY running in a workspace's tmux session, so
-    // manually-joined / pre-state-nav agents (whose `ws.agent_name` was never set
-    // — only the spawn path writes it) still bind. `resolve_comm_handle` does the
-    // actual matching (shared with `clear_comm_unread` below — one rule, not a
-    // copy).
     let ws_list = workspaces.list();
     // Pure memory: kept current by the row's lifecycle observer, no lane query.
     let mut entries: Vec<WorkspaceListEntry> = ws_list

@@ -247,9 +247,7 @@ pub async fn handle_pty_input(
 
 /// ADR 0042 amendment (2026-09-07), decision 2: the CURRENT screen of a
 /// named row — no scrollback, no history. Never takes the pen on a capsule
-/// row (a WATCHER attach); never touches `tmux.capture_pane` (that op's
-/// scrollback-including read stays exactly what it is, for its own
-/// pane-id callers).
+/// row (a WATCHER attach).
 pub async fn handle_pty_screen(
     req_id: u64,
     payload_json: serde_json::Value,

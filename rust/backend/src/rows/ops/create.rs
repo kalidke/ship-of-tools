@@ -150,11 +150,8 @@ fn check_create_root(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, projec
 /// The agent name, agent kind and autostart flag, and the runtime the row will use.
 fn resolve_create_agent(req_id: u64, req: &sot_protocol::WorkspaceCreateReq)
     -> std::result::Result<(String, bool, String), HandlerOutput> {
-    // Name validation (security review): `agent_name` is persisted and later
-    // spliced RAW (no quoting) into a shell command string by
-    // `pty::boot_wrapper_command` (`export SOT_COMM_NAME={agent_name}; …`).
-    // Empty is a legitimate "no agent name" sentinel (boot_wrapper_command
-    // skips the export then); anything non-empty must match the strict
+    // Name validation (security review): `agent_name` is persisted. Empty is a
+    // legitimate "no agent name" sentinel; anything non-empty must match the strict
     // allowlist or this is rejected outright rather than silently sanitized.
     if !req.agent_name.is_empty() && !valid_name(&req.agent_name) {
         let payload = json!({
@@ -170,9 +167,6 @@ fn resolve_create_agent(req_id: u64, req: &sot_protocol::WorkspaceCreateReq)
         )]);
     }
 
-    // Register the workspace in memory + on disk first; the tmux session
-    // is a UX nicety that the user can always re-create later, so we
-    // don't fail the op if tmux misbehaves.
     // ADR 0031: resolve the agent kind. Explicit `agent` wins; absent derives
     // from the legacy `autostart_claude` flag.
     let agent_kind: String = if !req.agent.is_empty() {
@@ -227,8 +221,7 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
     // state mutation, whenever the resolved runtime is "capsule" (every
     // NEW workspace on Windows, or an explicitly requested one anywhere
-    // `capsule_workspace::runtime` compiles — ADR 0043 decision 22). The
-    // tmux path below accepts every agent kind unchanged. `agent_argv` is
+    // `capsule_workspace::runtime` compiles — ADR 0043 decision 22). `agent_argv` is
     // the same function the spawn itself uses, so this is the real
     // check, not a second guess at it — "codex" (no known launcher on
     // either platform) is refused here rather than silently launching a
@@ -335,7 +328,7 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
     capsule_argv: &Vec<String>, project_root: &std::path::PathBuf) -> std::result::Result<(), HandlerOutput> {
     {
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
-    // and, unlike the tmux path below, a SYNCHRONOUS failure here
+    // and a SYNCHRONOUS failure here
     // FAILS the whole op: "a capsule workspace with no supervisor is
     // not a workspace." Rule C (shrink round): this daemon no longer
     // creates the state directory itself — `sot-capsule supervise`
@@ -357,8 +350,7 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
     // worker.
     //
     // ADR 0043 decision 33 (Codex review, 2026-09-11): this row's own
-    // guard, taken HERE — inside the capsule arm only, never for a
-    // tmux row (nothing else ever contends a tmux id's guard) — and
+    // guard, taken HERE — and
     // held across the spawn attempt below, closing the exact race
     // `pty.open`'s own `ensure_started` could otherwise win against
     // this handler's still-in-flight spawn (the field latency map's
