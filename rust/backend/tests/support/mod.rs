@@ -30,7 +30,7 @@ use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 /// A4b: production's own aim rule, one source — [`arm_scope_guard`]
 /// refuses exactly what `capsule_workspace::row_scope` refuses.
 #[cfg(target_os = "linux")]
-#[path = "../../src/row_scope_aim.rs"]
+#[path = "../../src/rows/spawn/row_scope_aim.rs"]
 pub mod row_scope_aim;
 
 /// The daemon's comm-registry poller (server.rs, the ADE state-nav live

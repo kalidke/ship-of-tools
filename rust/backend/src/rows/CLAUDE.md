@@ -3,8 +3,8 @@
 ## Idea
 A row is one project directory on this host running one agent: the daemon registers it, its id survives restarts, and
 every change to its supervisor goes through one guard. This folder holds the in-memory registry of rows; the row
-toml and its migrations are still in `workspaces.rs`, and the capsule spawn, observe and end functions are still in
-`capsule_workspace.rs`. Part of the daemon's rows subsystem, under `rust/backend/src`.
+toml and its migrations are still in `workspaces.rs`, and the capsule start, observe and end functions are still in
+`capsule_workspace.rs`; the launch of a supervisor is in `spawn/`. Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Owns
 - The registry `Workspaces`: `by_id`, `by_slug` and the default id, with `insert`, `resolve`, `list`, `has_slug`,
@@ -58,6 +58,7 @@ toml and its migrations are still in `workspaces.rs`, and the capsule spawn, obs
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `default_row_launch_seed`
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
+- `spawn/`: launching a row's `sot-capsule supervise`: state-root checks, the detached spawn per OS, the Linux row scope
 
 ## Start here
 `mod.rs` for the three structs, then `registry.rs::insert` for how a row enters. For a phase change read

@@ -35,7 +35,7 @@ mod paths;
 use rows::reauth;
 mod rows;
 #[cfg(target_os = "linux")]
-mod row_scope_aim;
+use rows::spawn::row_scope_aim;
 use agents::awareness;
 mod sidecars;
 use sidecars::{julia, kernel, mathjax, monitor, pluto, repl};
