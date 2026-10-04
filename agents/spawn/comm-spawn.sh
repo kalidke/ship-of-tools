@@ -676,7 +676,7 @@ fi
 # tells the agent of mail.
 if [ -n "$TASKMSG" ]; then
     if "$BIN/comm-send.sh" @"$NAME" "$TASKMSG" >/dev/null 2>&1; then
-        echo "Task queued to @${NAME}'s inbox (durable; read on bootstrap)."
+        echo "Task queued to @${NAME}'s inbox (durable; the agent reads it with comm-poll once the daemon tells it of mail)."
     else
         # A failed enqueue must fail the command, not just warn (Codex
         # review round-3 finding 4) — the routability pre-check above

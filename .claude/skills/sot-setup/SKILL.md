@@ -43,8 +43,6 @@ user only what you can't derive. Use `AskUserQuestion` with these:
    confirm defaults:
    - SSH alias or `user@host` (default `myserver`)
    - Remote repo path (default `/home/<user>/ship-of-tools`)
-   - Backend TCP port (default `18743`)
-   - Auth token (default none / open mode)
    - **Provision the remote BE over this SSH?** (default yes, unless it's already
      built) — a frontend client *must* have working SSH to the BE anyway (the
      launcher tunnels + spawns `sotd` over it), so one run can set up both ends
@@ -265,23 +263,22 @@ SSH" variant.)
 
 ## 7. Configure hosts.toml + settings.toml (from the Q&A)
 
-**hosts.toml** — write the chosen backend into the frontend's host registry.
-Discovery order: `$SOT_HOSTS` → `$REPO/.sot/hosts.toml` → per-user config
-(`%APPDATA%\sot\hosts.toml` on Windows, `~/.config/sot/hosts.toml` on
-Linux/mac). Prefer the per-user config so it survives repo updates:
+**hosts.toml** — the declared topology (grammar: `rust/protocol/src/topology/mod.rs`,
+template: `.sot/hosts.toml.example`). The hub's own copy is canonical; a frontend
+box fetches it with `sotd topology sync --hub <ssh-alias>` (the launcher runs
+that at every launch), so write nothing by hand there. Search order: `$SOT_HOSTS`,
+else `~/.config/sot/hosts.toml` (Windows: `%LOCALAPPDATA%\sot\config\hosts.toml`).
+On the hub itself, write:
 ```toml
-default_host = "myserver"
+hub = "myserver"
 
-[host.myserver]                       # name = the SSH alias / friendly label
-ssh_alias   = "myserver"             # or user@host
-remote_repo = "/home/<user>/ship-of-tools"
-tcp_port    = 18743
-remote_home = "/home/<user>"
+[host.myserver]          # the section key is the host's name AND its ssh alias
+daemon = true
 
-# all-in-one / local backend instead of SSH:
-# [host.local]
-# socket = "\\.\pipe\sot-local"   # Windows named pipe; Linux: a unix socket path
+[host.my-frontend-box]
+frontend = true
 ```
+Reachability (User, ProxyJump, HostName) stays in `~/.ssh/config`, never here.
 
 **settings.toml** (optional but recommended) — `$REPO/.sot/settings.toml` or
 `~/.config/sot/settings.toml`. Most important key for the dogfood loop is the
@@ -349,9 +346,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$REPO\scripts\install-short
 ```
 Creates `Desktop\Ship of Tools.lnk` → `scripts\launch-sot.ps1`, which: reads
 `last_host` from `%APPDATA%\sot\state-<COMPUTERNAME>.toml` (resolved against
-hosts.toml), opens the SSH control forward (`-L 18743` → the remote user's
-`sotd` socket; browser pages ride it via the daemon proxy, ADR 0035),
-spawns/refreshes the remote `sotd`, then runs the staged frontend with the
+hosts.toml), has the frontend spawn its own `ssh` child per dialable host (no
+port, no forward; browser pages ride it via the daemon proxy, ADR 0035),
+starts/refreshes the remote `sotd`, then runs the staged frontend with the
 ADR-0017 supervisor loop (exit-75 relaunch). Launch it and confirm Files mode
 renders.
 

@@ -29,9 +29,9 @@ pub(in crate::ui) fn is_default_workspace_name(name: &str) -> bool {
 /// pattern). The hint is the Repl supervisor's identity: a CANONICAL
 /// workspace_id (`ws-<slug>-<hash>`) for per-workspace REPLs (translate via
 /// `id_slugs`; a canonical-id key against slug-keyed maps silently never
-/// matches — the `started`-frame lesson) or `None` for the legacy singleton
-/// (= the default workspace's slug, "<default>" until the first list reply
-/// resolves it). An unknown hint is stored as-is: it may already be a slug.
+/// matches — the `started`-frame lesson) or `None` for a frame with no
+/// workspace id, which only an older daemon sends (= the default workspace's
+/// slug, "<default>" until the first list reply resolves it). An unknown hint is stored as-is: it may already be a slug.
 /// ADR 0042 L2a codex review, item J: `id_slugs` is keyed by `(host, id)`,
 /// not a bare id — a canonical workspace_id is `slug+pid+time`, but a
 /// LEGACY id (older workspaces, or a daemon that hasn't rotated to the
@@ -248,8 +248,8 @@ mod tests {
 
     #[test]
     fn lifecycle_key_none_hint_is_the_default_workspace() {
-        // The legacy singleton REPL stamps no workspace id: it IS the default
-        // workspace. Resolve to its slug once known, "<default>" before the
+        // A frame with no workspace id (only an older daemon sends one) IS
+        // the default workspace. Resolve to its slug once known, "<default>" before the
         // first workspace.list reply (transient; the list's repl_state
         // catch-up re-keys it). Always under the frame's own host.
         let ids: HashMap<(HostKey, String), WsKey> = HashMap::new();

@@ -55,10 +55,11 @@ fn refusal_codes_map_to_typed_errors() {
     }
 }
 
-/// The bridge's OWN token check (a daemon that DOES speak
-/// `lane.connect` but rejected this dial's `token`) stays
-/// `unauthenticated` — distinct from the old-daemon case below, which
-/// shares the same wire code but a different message.
+/// Pins the wire shape: an `unauthenticated` reply whose message is not
+/// the old control-loop gate's text stays `unauthenticated` (a daemon
+/// older than this tree could send it; none here does) — distinct from
+/// the old-daemon case below, which shares the wire code but not the
+/// message.
 #[test]
 fn a_bridge_daemons_own_bad_token_stays_unauthenticated() {
     let result = dial_against(|conn| {

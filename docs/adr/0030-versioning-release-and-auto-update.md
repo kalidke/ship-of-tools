@@ -8,6 +8,8 @@ localhost, SSH key auth to the BE host is a hard requirement)
 
 > **Amended 2026-10-02 (0.6.6):** an update restart exits 75, and the service restarts the daemon on 75 only; exit 0 is a requested shutdown and stays down. A window relaunch for an update hands over its lease (60 s bound) rather than closing. See ADR 0050.
 
+> **Amended 2026-10 (0.6.6):** `install.json` (schema 1) has no `role` key: the "role" words in this ADR (`remote`-role installs, non-remote roles, "records role/...") are decided from the declared topology, and the manifest's `daemon`/`frontend` bits are only the fallback for a listless box (`rust/updater/src/manifest.rs`).
+
 > **Superseded in part (2026-08-10 note):** two claims above and in the body
 > drifted from the shipped implementation — read the **Amendment 2026-07-04**
 > below first. (1) The **julia bundle is retired**: every `julia-bundle-*`
