@@ -3,6 +3,7 @@
 //! (`lib.rs` aliases `host as fsutil`) until the crate's re-export cleanup.
 
 mod durable;
+mod pinned_dir;
 pub mod state_dir;
 mod volume;
 pub mod winhandle;
@@ -128,4 +129,5 @@ mod tests {
 }
 
 pub use durable::*;
+pub use pinned_dir::*;
 pub use volume::*;
