@@ -160,7 +160,7 @@ pub use store::envelope;
 // ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
 // fsutil::lock_supervisor -- fsutil itself is a private module, invisible
 // from any OTHER crate, including a future sot-capsule binary target.
-pub mod fence;
+pub use supervisor::journal::fence;
 // ADR 0041 step 6, unit U0 round-1: a pipe lane's post-SID identity
 // exchange (encode request, decode reply) -- the one thing every
 // platform's own `challenge()` delegates per-lane, via
@@ -195,7 +195,7 @@ pub use attach_client::worker as attach_worker;
 // journal (`operation_id`/`.active`/`.terminal`, recovery-first
 // reconciliation) — portable, like `pointer`/`rollout`, since it reuses
 // `fsutil::publish_noreplace` rather than any OS-specific primitive.
-pub mod journal;
+pub use supervisor::journal;
 // ADR 0041 step 6, unit U2: the parent-death lease a spawned capsule
 // checks as its first act after acquiring the writer fence — a named,
 // kernel-brokered mutex, Windows-only (L1-unix LU3c: the Linux
@@ -207,7 +207,7 @@ pub use supervisor::lease_win as lease;
 // ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.
-pub mod pointer;
+pub use supervisor::journal::pointer;
 pub use store::record;
 pub use store::recovery;
 // ADR 0041 step 6, unit U1b: the reader-first rollout gate for a

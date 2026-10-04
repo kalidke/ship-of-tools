@@ -66,6 +66,9 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub mod fence;
+pub mod pointer;
+
 const JOURNAL_DIR_NAME: &str = "supervisor-journal";
 
 /// The journal's own schema version — see the module doc's "No schema

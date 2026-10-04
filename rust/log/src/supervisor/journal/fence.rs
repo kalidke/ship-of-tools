@@ -268,7 +268,7 @@ mod tests {
             .map(|child_id| {
                 std::process::Command::new(&exe)
                     .arg("--exact")
-                    .arg("fence::tests::lock_supervisor_cross_process_race_child_role")
+                    .arg("supervisor::journal::fence::tests::lock_supervisor_cross_process_race_child_role")
                     .arg("--nocapture")
                     .arg("--test-threads=1")
                     .env("FENCE_XPROC_STATE_DIR", &state_dir)

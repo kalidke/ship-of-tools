@@ -259,7 +259,6 @@ use crate::challenge::ChallengeOutcome;
 use crate::classify::{self, ProbeOutcome};
 use crate::client::{Endpoint, PlatformEndpoint};
 use crate::fsutil;
-use crate::journal;
 use crate::pointer::{self, PointerState};
 #[cfg(windows)]
 use crate::probe_win::RealProbeOps;
@@ -296,6 +295,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 mod authority;
+pub mod journal;
 mod leg;
 mod lifecycle;
 mod main_loop;
