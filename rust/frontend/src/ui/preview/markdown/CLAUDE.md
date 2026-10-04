@@ -8,6 +8,8 @@ placeholders for the pane to draw. Part of fe-ui; charter: rust/frontend/src/ui/
 - `spans.rs`: heading metrics, attrs per context, the highlight-overlay merge and block breaks.
 - `table.rs`: table blocks, flattened to text and sent as a media block.
 - `walk.rs`: `walk`, which turns the comrak tree into spans, media blocks and pending fences.
+- `walk_code.rs`: a fenced code block in the walk: tree-sitter spans with the kernel's overlay.
+- `walk_media.rs`: tables, math and images in the walk: each reserves a placeholder and records a MediaBlock.
 - `buffer.rs`: `MarkdownPreview`'s methods (build, resize, scroll and hit-test math) and newline and anchor helpers.
 - `tests.rs`: tests for the walk, media blocks, front matter and anchor lines.
 - `media.rs`: math and table caches, the lazy `math.render` and `markdown.tokenize` requests, and the placeholder-to-rect pass.
