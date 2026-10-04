@@ -5,7 +5,7 @@ Each helper process the daemon relies on is owned by one daemon task from spawn 
 stdio. Callers submit and wait; they never spawn, kill or retry.
 
 ## Owns
-- Per row a Julia kernel (`Kernel`, kernel.rs) and a Julia REPL (`Repl`, still `rust/backend/src/repl.rs`).
+- Per row a Julia kernel (`Kernel`, kernel.rs) and a Julia REPL (`Repl`, repl/).
 - Per daemon one Pluto (`Pluto`, pluto.rs) and one MathJax node child (`MathJax`, mathjax.rs).
 - One sampler per monitored host (`MonitorHub::start` and `supervise`, monitor.rs).
 - The julia choice: `julia::resolve_bin` takes `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH
@@ -38,9 +38,10 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `rust/backend/sidecars/mathjax/`: the MathJax script (`render.mjs`); never moved.
 
 ## Files
-- `mod.rs`: declares the five supervisors.
+- `mod.rs`: declares the six modules.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
+- `repl/`: the per-row Julia REPL child.
 - `pluto.rs`: the per-daemon Pluto child.
 - `mathjax.rs`: the per-daemon MathJax child.
 - `monitor.rs`: the host monitor, one sampler per host.
@@ -57,4 +58,4 @@ for a sampler's life.
   Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax `{id, tex, display}` with
   rust/backend/sidecars/mathjax/render.mjs.
 - The shutdown wiring and `WireRequest` exist in two copies (kernel and Pluto take the `Signal`; MathJax and the monitor
-  use `ChildGuard` and `fired`; `WireRequest` is also in repl.rs); change one, check the other.
+  use `ChildGuard` and `fired`; `WireRequest` is also in repl/); change one, check the other.

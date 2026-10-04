@@ -37,9 +37,8 @@ mod reauth;
 #[cfg(target_os = "linux")]
 mod row_scope_aim;
 use agents::awareness;
-mod repl;
 mod sidecars;
-use sidecars::{julia, kernel, mathjax, monitor, pluto};
+use sidecars::{julia, kernel, mathjax, monitor, pluto, repl};
 mod server;
 mod session;
 mod session_state;
