@@ -97,7 +97,6 @@ end
         hello = JSON3.read(lines[1])
         @test hello.op == "kernel.hello"
         @test hello.payload.protocol == SK.PROTOCOL_VERSION
-        @test "file.preview" in hello.payload.features
 
         unk = JSON3.read(lines[2])
         @test unk.id == 2

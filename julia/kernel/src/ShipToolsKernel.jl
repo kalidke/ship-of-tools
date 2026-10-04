@@ -133,10 +133,6 @@ function handle_hello(io::IO, state::KernelState, id, _payload)
         :protocol => PROTOCOL_VERSION,
         :julia => string(VERSION),
         :project_root => state.project_root,
-        :features => ["modules.list", "file.parse", "file.preview",
-                      "function.methods", "project.discover", "project.scan",
-                      "markdown.tokenize",
-                      "plugins.list", "plugins.load"],
     )
     write_envelope(io, "res", id, "kernel.hello", res)
 end
