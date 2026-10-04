@@ -1447,22 +1447,12 @@ impl State {
                     }
                 }
                 crate::transport::IncomingEvt::MonitorSubscribed { hosts, .. } => {
-                    self.monitor_view.set_roster(hosts);
-                    self.monitor_dirty = true;
-                    self.window.request_redraw();
+                    self.on_monitor_subscribed(hosts)
                 }
                 crate::transport::IncomingEvt::MonitorHistory { hosts } => {
-                    self.monitor_view.apply_history(hosts);
-                    self.monitor_dirty = true;
-                    self.window.request_redraw();
+                    self.on_monitor_history(hosts)
                 }
-                crate::transport::IncomingEvt::MonitorTick { hosts } => {
-                    for h in hosts {
-                        self.monitor_view.apply_tick(h);
-                    }
-                    self.monitor_dirty = true;
-                    self.window.request_redraw();
-                }
+                crate::transport::IncomingEvt::MonitorTick { hosts } => self.on_monitor_tick(hosts),
                 crate::transport::IncomingEvt::ReplFrameStreamed {
                     eval_id,
                     workspace_id,

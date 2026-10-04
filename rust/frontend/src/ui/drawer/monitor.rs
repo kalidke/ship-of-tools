@@ -12,6 +12,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use sot_protocol::{HostLatest, HostSeries, MonitorSample, ProcSample};
+use crate::ui::State;
 
 const RING_CAP: usize = 900; // ~15 min of 1 Hz live tail
 const WINDOW_S: f64 = 300.0; // default visible window (5 min)
@@ -372,6 +373,28 @@ fn escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+impl State {
+    pub(crate) fn on_monitor_subscribed(&mut self, hosts: Vec<String>) {
+        self.monitor_view.set_roster(hosts);
+        self.monitor_dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub(crate) fn on_monitor_history(&mut self, hosts: Vec<sot_protocol::HostSeries>) {
+        self.monitor_view.apply_history(hosts);
+        self.monitor_dirty = true;
+        self.window.request_redraw();
+    }
+
+    pub(crate) fn on_monitor_tick(&mut self, hosts: Vec<sot_protocol::HostLatest>) {
+        for h in hosts {
+            self.monitor_view.apply_tick(h);
+        }
+        self.monitor_dirty = true;
+        self.window.request_redraw();
+    }
 }
 
 #[cfg(test)]
