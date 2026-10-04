@@ -141,7 +141,8 @@ mod host_handshake;
 // already bounds itself; `run_with_deadline_traced` stays `pub(crate)`
 // -- only the traced variant tests reach.
 pub mod deadline;
-pub mod envelope;
+mod store;
+pub use store::envelope;
 // ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
 // fsutil::lock_supervisor -- fsutil itself is a private module, invisible
 // from any OTHER crate, including a future sot-capsule binary target.
@@ -191,13 +192,13 @@ pub mod lease;
 // Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
 // which already has both platform arms.
 pub mod pointer;
-pub mod record;
-pub mod recovery;
+pub use store::record;
+pub use store::recovery;
 // ADR 0041 step 6, unit U1b: the reader-first rollout gate for a
 // feature-bearing segment (ADR 0039 registry) -- portable (no OS
 // dependency), like `pointer`/`exchange`.
-pub mod rollout;
-pub mod segment;
+pub use store::rollout;
+pub use store::segment;
 // ADR 0041 step 6, unit U0 (promoted from the frontend's own paths.rs):
 // the per-machine state-dir resolution rule, owned here so every process
 // that needs it (today: the frontend) shares one rule instead of
