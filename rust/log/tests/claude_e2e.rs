@@ -41,14 +41,14 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn helper_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../adapters/claude-sdk-helper")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("claude-sdk-helper")
 }
 
 fn helper_main_js() -> PathBuf {
     let p = helper_dir().join("dist/src/main.js");
     assert!(
         p.exists(),
-        "helper not built: run `npm ci && npm run build` in adapters/claude-sdk-helper"
+        "helper not built: run `npm ci && npm run build` in rust/log/claude-sdk-helper"
     );
     p.canonicalize().unwrap()
 }

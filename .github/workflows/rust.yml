@@ -31,12 +31,10 @@ on:
     # scripts/** is here because this workflow carries the launcher parse steps:
     # without it, a script-only PR — exactly the class that needs parsing — never
     # triggers them. Proven by PR #82 (a ps1-only hotfix) running zero Rust checks.
-    # adapters/** likewise: the p2-e2e job is the helper's only CI, so a
-    # helper-only PR must trigger this workflow (review finding on #119).
     # comm/** added alongside the "Test sot-comm disambiguation" step below
     # (PR #148 Codex review F10) — without it, a comm-only change (like the
     # one that added that step) would never trigger this workflow at all.
-    paths: ["rust/**", "scripts/**", "adapters/**", "comm/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", "scripts/**", "comm/**", ".github/workflows/rust.yml"]
   workflow_dispatch: {}
 
 concurrency:
@@ -406,12 +404,12 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-          cache-dependency-path: adapters/claude-sdk-helper/package-lock.json
+          cache-dependency-path: rust/log/claude-sdk-helper/package-lock.json
       - name: Install helper deps
-        working-directory: adapters/claude-sdk-helper
+        working-directory: rust/log/claude-sdk-helper
         run: npm ci
       - name: Test helper
-        working-directory: adapters/claude-sdk-helper
+        working-directory: rust/log/claude-sdk-helper
         run: npm test
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
