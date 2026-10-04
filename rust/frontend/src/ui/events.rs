@@ -15,66 +15,7 @@ impl State {
             // same-daemon collision from ever dialing twice — AND, since
             // the session-listing brief, for the LOCAL-daemon test the
             // `Workspaces` arm below runs on every own-host reply.
-            if let crate::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
-                self.record_declared_host(&event_host, declared.clone());
-                // Session-listing brief decision 2: a reconnecting hub's
-                // connection is brand new and remembers nothing from
-                // before, so re-send our last declaration to it right
-                // here rather than waiting for the next own-host
-                // `workspace.list` reply — which may not come again for a
-                // while, and wouldn't resend anyway if the projection
-                // hasn't changed. Never sent to the LOCAL daemon itself
-                // (that connection's own workspace.list reply is what
-                // computes `last_declared_sessions` in the first place).
-                if declared != &frontend_identity().host {
-                    if let Some(sessions) = self.last_declared_sessions.clone() {
-                        if let Err(e) =
-                            self.send_to(&event_host, OutgoingReq::FeSessions(sessions))
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                host = %event_host,
-                                "drop fe.sessions resend on reconnect — channel closed"
-                            );
-                        }
-                    }
-                }
-            }
-            // ADR 0042 L2a: every host's transport tags its own sends, so
-            // per-host connection status is exactly this — no new wire
-            // signal, just watching the two evts that already exist.
-            match &evt {
-                crate::transport::IncomingEvt::Connected { .. } => {
-                    self.host_connected.insert(event_host.clone(), true);
-                }
-                crate::transport::IncomingEvt::Disconnected { .. } => {
-                    self.host_connected.insert(event_host.clone(), false);
-                }
-                _ => {}
-            }
-            // ADR 0042 L2a codex review, item L: live host status in the
-            // tree. Without this, a node's `connected`/`unreachable`
-            // badge only refreshed on the NEXT unrelated event that
-            // happened to rebuild the tree (a workspace.list reply for
-            // Sessions, a fresh `h`-press for Hosts) — a Connected node
-            // could sit `unreachable` and a Disconnected one could sit
-            // `connected` indefinitely otherwise. Sessions rebuilds
-            // through the SAME install-or-park seam every other trigger
-            // uses (a `workspace.list` reply calls this unconditionally
-            // too, regardless of the active mode, so doing the same here
-            // is not a new pattern). Hosts writes `self.tree` directly
-            // (see `populate_hosts_tree`'s own doc, no parked slot), so
-            // it's gated on actually being the active view.
-            if matches!(
-                &evt,
-                crate::transport::IncomingEvt::Connected { .. }
-                    | crate::transport::IncomingEvt::Disconnected { .. }
-            ) {
-                self.rebuild_and_install_sessions_tree();
-                if matches!(self.mode, Mode::Hosts) {
-                    self.populate_hosts_tree();
-                }
-            }
+            self.note_host_connection(&event_host, &evt);
             match evt {
                 crate::transport::IncomingEvt::Connected {
                     session_id,
@@ -2918,6 +2859,69 @@ impl State {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn note_host_connection(&mut self, event_host: &HostKey, evt: &crate::transport::IncomingEvt) {
+        if let crate::transport::IncomingEvt::Connected { host: Some(declared), .. } = &evt {
+            self.record_declared_host(&event_host, declared.clone());
+            // Session-listing brief decision 2: a reconnecting hub's
+            // connection is brand new and remembers nothing from
+            // before, so re-send our last declaration to it right
+            // here rather than waiting for the next own-host
+            // `workspace.list` reply — which may not come again for a
+            // while, and wouldn't resend anyway if the projection
+            // hasn't changed. Never sent to the LOCAL daemon itself
+            // (that connection's own workspace.list reply is what
+            // computes `last_declared_sessions` in the first place).
+            if declared != &frontend_identity().host {
+                if let Some(sessions) = self.last_declared_sessions.clone() {
+                    if let Err(e) =
+                        self.send_to(&event_host, OutgoingReq::FeSessions(sessions))
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            host = %event_host,
+                            "drop fe.sessions resend on reconnect — channel closed"
+                        );
+                    }
+                }
+            }
+        }
+        // ADR 0042 L2a: every host's transport tags its own sends, so
+        // per-host connection status is exactly this — no new wire
+        // signal, just watching the two evts that already exist.
+        match &evt {
+            crate::transport::IncomingEvt::Connected { .. } => {
+                self.host_connected.insert(event_host.clone(), true);
+            }
+            crate::transport::IncomingEvt::Disconnected { .. } => {
+                self.host_connected.insert(event_host.clone(), false);
+            }
+            _ => {}
+        }
+        // ADR 0042 L2a codex review, item L: live host status in the
+        // tree. Without this, a node's `connected`/`unreachable`
+        // badge only refreshed on the NEXT unrelated event that
+        // happened to rebuild the tree (a workspace.list reply for
+        // Sessions, a fresh `h`-press for Hosts) — a Connected node
+        // could sit `unreachable` and a Disconnected one could sit
+        // `connected` indefinitely otherwise. Sessions rebuilds
+        // through the SAME install-or-park seam every other trigger
+        // uses (a `workspace.list` reply calls this unconditionally
+        // too, regardless of the active mode, so doing the same here
+        // is not a new pattern). Hosts writes `self.tree` directly
+        // (see `populate_hosts_tree`'s own doc, no parked slot), so
+        // it's gated on actually being the active view.
+        if matches!(
+            &evt,
+            crate::transport::IncomingEvt::Connected { .. }
+                | crate::transport::IncomingEvt::Disconnected { .. }
+        ) {
+            self.rebuild_and_install_sessions_tree();
+            if matches!(self.mode, Mode::Hosts) {
+                self.populate_hosts_tree();
             }
         }
     }
