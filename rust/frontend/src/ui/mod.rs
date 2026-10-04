@@ -84,7 +84,7 @@ use chrome::*;
 pub(crate) mod drawer;
 #[cfg(windows)]
 use drawer::terminal::backend::drawer_uses_attach;
-use drawer::repl::lines::{build_repl_lines, pinned_repl_scroll, ReplImage, ReplImageSlot};
+use drawer::repl::lines::{ReplImage, ReplImageSlot};
 use drawer::repl::log::ReplEntry;
 use drawer::terminal::backend::scroll_drawer_ring;
 use drawer::terminal::vt::{key_to_pty_bytes, paint_terminal, scroll_ring};
@@ -3129,94 +3129,6 @@ impl State {
             &extras,
         )?;
         Ok((scalebar_draw, media_paint_targets))
-    }
-
-    fn decode_repl_images(&mut self) {
-        // Inline REPL figures, pass 1: decode any Image frame that has no
-        // quad yet (base64 → RGBA → texture) and prune entries that aged
-        // out of the log. Runs here, outside the draw closure, so texture
-        // upload never contends with the frame's borrows.
-        {
-            let mut new_quads: Vec<((u64, usize), ReplImage)> = Vec::new();
-            for entry in &self.repl_log {
-                for (fi, fr) in entry.frames.iter().enumerate() {
-                    if let sot_protocol::ReplFrame::Image { data_base64, .. } = fr {
-                        let key = (entry.eval_id, fi);
-                        if self.repl_images.contains_key(&key) {
-                            continue;
-                        }
-                        use base64::Engine as _;
-                        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data_base64)
-                        else {
-                            continue;
-                        };
-                        let Ok(img) = image::load_from_memory(&raw) else {
-                            continue;
-                        };
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        if let Ok(quad) = Quad::from_rgba8(
-                            &self.device,
-                            &self.queue,
-                            &self.quad_pipeline,
-                            &rgba,
-                            w,
-                            h,
-                        ) {
-                            new_quads.push((key, ReplImage { quad, w, h }));
-                        }
-                    }
-                }
-            }
-            for (k, v) in new_quads {
-                self.repl_images.insert(k, v);
-            }
-            if !self.repl_images.is_empty() {
-                let log = &self.repl_log;
-                self.repl_images
-                    .retain(|k, _| log.iter().any(|e| e.eval_id == k.0));
-            }
-        }
-    }
-
-    fn build_repl_view(&mut self, mut new_repl_scroll: u16) -> (Vec<RtLine<'static>>, u16) {
-        // Pass 2: build the drawer lines, reserving rows for decoded
-        // figures. Fit width comes from LAST frame's scrollback sub-rect —
-        // the natural answer to the build-before-layout chicken-egg (review
-        // note: NOT monitor_rect_px, which is the Ctrl+M drawer's rect).
-        // One frame of lag on a resize, self-corrects; 0 before the
-        // drawer's first draw, where the caption fallback covers the gap.
-        let (repl_lines, repl_slots, repl_starts) = build_repl_lines(
-            &self.repl_log,
-            &self.repl_images,
-            self.repl_scrollback_px.w,
-            self.repl_scrollback_px.h,
-            self.cell_w,
-            self.cell_h,
-            self.active_repl_starting(),
-        );
-        self.repl_image_slots = repl_slots;
-        let build_key = (
-            self.repl_scrollback_px.w.to_bits(),
-            self.repl_scrollback_px.h.to_bits(),
-            self.cell_w.to_bits(),
-            self.cell_h.to_bits(),
-        );
-        if let Some((prev_key, anchor_id, anchor_span)) = self.repl_build_anchor {
-            if prev_key == build_key {
-                new_repl_scroll = pinned_repl_scroll(
-                    new_repl_scroll,
-                    anchor_id,
-                    anchor_span,
-                    repl_lines.len(),
-                    &repl_starts,
-                );
-            }
-        }
-        self.repl_build_anchor = repl_starts
-            .last()
-            .map(|&(id, start)| (build_key, id, repl_lines.len().saturating_sub(start)));
-        (repl_lines, new_repl_scroll)
     }
 
     fn pump_drawer_terminals(&mut self) {
