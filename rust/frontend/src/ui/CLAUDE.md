@@ -15,7 +15,9 @@ the session view and agent pane, the drawers and the preview pane. Later units m
 
 ## Connections
 main.rs builds `App` through the alias `use ui as gpu;`. net/transport.rs sends `(HostKey, IncomingEvt)` in, takes
-`OutgoingReq` out, and reads `crate::gpu::frontend_identity`.
+`OutgoingReq` out, and reads `crate::gpu::frontend_identity`. connections.rs (fe-net's data: which connection a request
+goes to) and page_proxy.rs (the pages subsystem's window half) read `State`'s private fields, so the window holds them
+until `State` is split.
 
 ## Folders
 - `control/`: agent control of the window: the fe.command route, its dispatch, the nav envelope and the file channel.
@@ -23,6 +25,8 @@ main.rs builds `App` through the alias `use ui as gpu;`. net/transport.rs sends 
 ## Files
 - `control/`: the agent control surface, with its own page.
 - `mod.rs`: `State`, `App` and the rest of the window's code (over 800 lines under standing exemption E11).
+- `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
+- `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`); the pages subsystem's window half.
 - `scan_tests.rs`: the crate's own source for the tests that scan it.
 
 ## Start here
