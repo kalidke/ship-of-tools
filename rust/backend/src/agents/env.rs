@@ -79,10 +79,8 @@ fn capsule_comm_home_str() -> Option<String> {
 /// that same file (`comm::registry::registry::capsule_comm_handle`) stays as the
 /// FALLBACK for a row with no declaration yet (manager review, S5) —
 /// deleted only with family H once every row has cycled onto `agent.join`.
-/// Pure (no I/O beyond env reads): exercised by
-/// the cross-platform test suite even though
-/// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
-/// Windows and Linux only.
+/// Pure (no I/O beyond env reads); its only caller is
+/// `rows::spawn::detach::spawn_detached_supervisor`.
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {

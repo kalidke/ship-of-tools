@@ -240,7 +240,6 @@ fn apply_refuses_structural_violations() {
 
 #[test]
 fn locate_honours_sot_hosts() {
-    // Env is process-global; this test only reads the override path.
     std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
     assert_eq!(locate(), Some(PathBuf::from("/nowhere/hosts.toml")));
     std::env::remove_var("SOT_HOSTS");

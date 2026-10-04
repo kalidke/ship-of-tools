@@ -252,7 +252,7 @@ mod tests {
     }
 }
 
-/// Every op that answers a missing row sends this one reply, byte for byte.
+/// Every op that answers a missing row through `row_or_reply` sends this one reply, byte for byte.
 #[cfg(test)]
 mod unknown_workspace_tests {
     use serde_json::json;

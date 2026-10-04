@@ -114,10 +114,7 @@ fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
 /// `cfg(unix)` and already exercised on macOS by [`agent_exec_argv`],
 /// which is how `ccb` itself launches there; a launcher recipe that
 /// differs from `agent-exec`'s only by `--continue` cannot need a
-/// narrower platform gate than the resolver it calls. The remaining
-/// macOS gap is in the capsule RUNTIME, not in this argv (see `mod
-/// runtime`'s own gate below), and a stale refusal here would only
-/// mislabel that gap.
+/// narrower platform gate than the resolver it calls.
 #[cfg(unix)]
 fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     let claude = resolve_claude(

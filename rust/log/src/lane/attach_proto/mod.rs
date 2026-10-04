@@ -3,8 +3,8 @@
 //! clocks read directly (every timing-relevant method is fed a monotonic
 //! `now: Instant`) — the `host_handshake.rs`/`lane/wire/` precedent this crate
 //! already follows for a byte/state machine that must run and be tested on
-//! every CI leg, not just Windows. THIS module decides; `capsule_win.rs`'s
-//! writer loop (the U3 seam: a real named pipe on Windows) executes the
+//! every CI leg, not just Windows. THIS module decides; the writer loop
+//! (`capsule/writer_loop/`) executes the
 //! [`Action`]s and feeds the [`AttachProto`] events back.
 //!
 //! # What this module owns, and what it explicitly does not

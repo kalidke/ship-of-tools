@@ -18,7 +18,7 @@ sot-updater = { path = "../updater" }
 # so a non-Windows build of THIS crate pulls in nothing new merely by
 # depending on the library.
 sot-log = { path = "../log" }
-# The comm wake reads a cell's dim attribute off the capsule screen (`headless::free_test_lines`).
+# The comm wake reads a cell's dim attribute off the capsule screen (`comm::wake::screen::free_test_lines`).
 vt100-ctt = "0.17"
 tokio = { workspace = true }
 serde = { workspace = true }

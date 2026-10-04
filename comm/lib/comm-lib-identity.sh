@@ -115,7 +115,7 @@ sot_raw_host() {
 
 # sot_capsule_workspace_id — print the row id THIS SHELL'S IDENTITY names,
 # or print nothing and return 1 when it names none. The identity is the
-# pinned $SOT_COMM_SELF_FILE, which comm-context.sh names
+# pinned $SOT_COMM_SELF_FILE, which the daemon names
 # "<host>__<workspace_id>.txt", so the row id travels with the identity
 # instead of with the environment. $SOT_WORKSPACE_ID answers only where no
 # self file is pinned — there the slot comm-context.sh derives is keyed by

@@ -464,7 +464,7 @@ impl AttachProto {
     /// before being refused, work that should have completed on the very
     /// next loop iteration. The loop now calls this cheap check every
     /// iteration and, when true, evaluates ground directly (see
-    /// `capsule_win.rs`'s call site) instead of waiting on that separate
+    /// `capsule/writer_loop/output_path.rs`'s call site) instead of waiting on that separate
     /// cadence — `false` on the vastly more common "nothing pending"
     /// iteration costs one `Option` comparison.
     pub fn ground_gate_pending(&self) -> bool {
@@ -476,7 +476,7 @@ impl AttachProto {
 
     /// The attach-lane protocol version `conn` negotiated at `hello`
     /// (Codex round on #194, finding 1 — "attach proto v2 bound to
-    /// checkpoint v2"). `capsule_win.rs`'s `BeginCheckpoint` handler
+    /// checkpoint v2"). `capsule/writer_loop/lanes.rs`'s `BeginCheckpoint` handler
     /// reads this to decide which checkpoint format version to encode:
     /// [`wire::ATTACH_PROTO_V1`] gets checkpoint format v1 (no
     /// scrollback ring — the shape an old client's own vt100 fork build
@@ -518,7 +518,7 @@ impl AttachProto {
     /// `WatcherState::pending_post_watermark` two genuinely
     /// non-overlapping halves of the same committed timeline, the
     /// invariant a fidelity check across the two can only hold if it's true
-    /// (`tests/capsule_win.rs`'s `attach_mid_stream_checkpoint_reproduces_
+    /// (`tests/capsule/windows_only.rs`'s `attach_mid_stream_checkpoint_reproduces_
     /// reference_screen`).
     pub fn checkpoint_ready(&mut self, conn: ConnId, bytes: Vec<u8>, now: Instant) -> Vec<Action> {
         let awaiting = matches!(

@@ -582,9 +582,7 @@ mod tests {
     // `Error::State` shape as genuine contention. `is_lock_contention` is
     // the pure predicate that tells them apart (Codex review,
     // 2026-09-11); this is its regression test -- pure string matching,
-    // independent of any real lock file, but `is_lock_contention` itself
-    // lives inside `mod runtime`, gated like every other function this
-    // module's tests reach.
+    // independent of any real lock file.
     #[test]
     fn lock_contention_is_recognized_only_by_its_own_message() {
         assert!(

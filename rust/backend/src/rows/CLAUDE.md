@@ -40,9 +40,10 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Connections
 - In: ops find their row through `Workspaces::resolve` (`agent.join` through `capsule_guard` and
-  `set_agent_handle`). The fifteen handler sites that print an optional hint answer a missing row through
-  `row_or_reply` (`mod.rs`), and `server::reply::canonicalize_workspace_id` calls it for the offloaded ops;
-  `workspace.destroy`, `pty.input`, `pty.screen`, `repl.execute`, `agent.join`, `workspace.reauth` and `lane.connect`
+  `set_agent_handle`; `pty.open` and `lane.connect` by target through `workspace_for_tmux`). The handlers that print
+  an optional hint answer a missing row through `row_or_reply` (`mod.rs`), and
+  `server::reply::canonicalize_workspace_id` calls it for the offloaded ops; `workspace.destroy`, `pty.input`,
+  `pty.screen`, `repl.execute`, `agent.join`, `workspace.reauth`, `lane.connect` and `pty.open` (`no_workspace`)
   write their own refusal. `ops/` creates, lists and destroys rows
   (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` calls `anchor::seed_default_row`,
   which inserts the default row.

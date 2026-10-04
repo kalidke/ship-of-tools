@@ -2,7 +2,7 @@
 //! Integration tests for the ADR 0041 step-5 pipe transport
 //! (`src/lane/pipe_win/`, unit U3 round 3 — discharges the second Codex
 //! adversarial round's test findings). Lives in `tests/` for the same
-//! structural reason `tests/conpty.rs` and `tests/capsule_win.rs` do:
+//! structural reason `tests/conpty.rs` and `tests/capsule/` do:
 //! this module's own types are `pub` specifically so a real-pipe
 //! integration test can reach them.
 //!

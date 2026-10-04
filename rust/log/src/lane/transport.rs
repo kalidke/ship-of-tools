@@ -8,8 +8,8 @@
 //!
 //! [`ConnId`] lives in [`crate::lane::attach_proto`], not here — this module
 //! only uses it. [`TEARDOWN_AGGREGATE_DEADLINE`]/`join_within` are the
-//! one teardown bound and poll-join both platforms, and `capsule_win`'s
-//! own closer/reader thread joins, share.
+//! one teardown bound and poll-join both platforms, and the capsule writer
+//! loop's closer/reader thread joins (`capsule/writer_loop/phases.rs`), share.
 
 use crate::lane::attach_proto::ConnId;
 use crate::Result;
@@ -19,9 +19,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// One event the transport layer reports to the writer loop. The
-/// production transport produces these (a named pipe on Windows today; a
-/// Unix domain socket once L1-unix lands); `capsule_win`'s tests drive
-/// the identical channel with a synthetic transport (ADR 0041 step 5:
+/// production transport (the platform's lane server) produces these; the
+/// in-memory transports in `tests/support/transports.rs` drive the
+/// identical channel (ADR 0041 step 5:
 /// "the loop gains a transport-event channel... for THIS unit, a test
 /// transport").
 #[derive(Debug)]
@@ -62,7 +62,7 @@ pub enum TransportEvent {
 
 /// What the writer loop needs from a transport to deliver bytes and sever
 /// connections. `platform_transport` implements this over the platform's
-/// lane server; `capsule_win`'s tests implement it as an in-memory sink.
+/// lane server; `tests/support/transports.rs` holds the in-memory ones.
 ///
 /// # Contract (round-2 review, finding 7)
 ///
@@ -211,7 +211,7 @@ pub trait Transport {
 /// listener is gone, one absolute deadline shared by every join
 /// (acceptor, reaper, and — inside the reaper's own drain — every
 /// connection worker), loud on expiry. Shared by every platform's
-/// transport and by `capsule_win`'s own closer/reader joins — one
+/// transport and by the capsule writer loop's closer/reader joins — one
 /// constant, one mechanism.
 pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
@@ -251,7 +251,7 @@ pub(crate) const JOIN_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// (`false`: LOUD, since this crate cannot force an OS thread to stop —
 /// the handle is simply dropped here, which detaches rather than kills
 /// it; the thread keeps running in the background). `pub(crate)`:
-/// `capsule_win.rs` reuses this SAME mechanism (Codex round-1 Blocker 3)
+/// `capsule/writer_loop/phases.rs` reuses this SAME mechanism (Codex round-1 Blocker 3)
 /// to join its own closer/reader threads under the identical aggregate
 /// deadline, rather than a second bespoke poll loop.
 ///

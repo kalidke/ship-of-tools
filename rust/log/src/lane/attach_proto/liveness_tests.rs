@@ -408,7 +408,7 @@ fn the_driver_is_closed_on_overflow_same_as_a_watcher_but_labeled_distinctly() {
 }
 
 /// Reconstructs, event-for-event, what
-/// `tests/capsule_win.rs::slow_watcher_overflow_closes_while_driver_stays_live`
+/// `tests/capsule/attach.rs::slow_watcher_overflow_closes_while_driver_stays_live`
 /// drives through the wire (PR #139 discharge round CI failure: "timed
 /// out waiting for an expected frame on conn 1"): conn 1 (DRIVER)
 /// attaches and takes; conn 2 (WATCHER) attaches to a `Done` checkpoint
@@ -423,7 +423,7 @@ fn the_driver_is_closed_on_overflow_same_as_a_watcher_but_labeled_distinctly() {
 ///
 /// `now` never advances past `t0()`: this isolates the state machine's
 /// own LOGIC from real wall-clock throughput. If this passes, the bug
-/// is not in `AttachProto` and must be sought in `capsule_win.rs`'s
+/// is not in `AttachProto` and must be sought in `capsule/writer_loop/`'s
 /// wiring or the integration test's own synthetic transport.
 #[test]
 fn replay_slow_watcher_flood_the_driver_still_answers_a_resize() {

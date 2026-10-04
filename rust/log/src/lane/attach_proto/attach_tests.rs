@@ -348,7 +348,7 @@ fn output_queues_behind_an_in_flight_checkpoint_and_flushes_once_done() {
 /// two) — but the live parser that produces the checkpoint at
 /// `checkpoint_ready` time has, by construction, ALREADY consumed
 /// everything ever published to this connection up to and including
-/// that exact commit round (`capsule_win.rs`'s watermark barrier:
+/// that exact commit round (`capsule/writer_loop/output_path.rs`'s watermark barrier:
 /// fsync -> publish -> checkpoint, one loop step, in that order — the
 /// barrier's own ordering was never the bug). Left in the queue, that
 /// backlog is a duplicate of what the checkpoint already encodes, and

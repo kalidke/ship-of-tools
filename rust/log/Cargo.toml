@@ -35,7 +35,7 @@ getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From im
 tracing = { workspace = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
-# (L1-unix LU2a): `capsule/` (formerly `capsule_win.rs`) is no longer
+# (L1-unix LU2a): `capsule/` is no longer
 # Windows-only — the writer loop is generic over `Producer` and its own
 # checkpoint tracking is platform-neutral, so the dependency moves here
 # from the Windows-only target table below, matching "a dependency should

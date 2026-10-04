@@ -1,7 +1,7 @@
 #![cfg(windows)]
 //! End-to-end test for the ADR 0041 step-5 pipe transport's deferred half
 //! (U3 round 2): a REAL capsule run, driven entirely over a REAL named
-//! pipe. `tests/capsule_win.rs` proves the writer loop and `AttachProto`
+//! pipe. `tests/capsule/` proves the writer loop and `AttachProto`
 //! against a synthetic `TestTransport`; `tests/pipe_win/` proves the raw
 //! transport against a plain echo consumer with no capsule. This file is
 //! the one place both are proven together: `platform_transport::PlatformTransport`
@@ -9,7 +9,7 @@
 //! via `pipe_win::connect_voyage_pipe` — a watcher, a driver, and a mgmt
 //! connection, all against the SAME running capsule.
 //!
-//! Heavy, like `tests/capsule_win.rs`'s own tests (a real ConPTY producer,
+//! Heavy, like `tests/capsule/`'s own tests (a real ConPTY producer,
 //! a real writer loop, now real pipe I/O on top) — the same SERIAL lock
 //! pattern is reused here for the same reason (one shared lock makes
 //! concurrent heavy tests additive rather than adversarial; a separate
@@ -37,7 +37,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 /// A fresh, canonical lowercase-hyphenated UUID — `pipe_win::PipeServer::bind`
 /// (reached through `PlatformTransport::bind`, called by `run` itself) validates
 /// the voyage id as exactly this shape before it will ever create the pipe,
-/// so (unlike `tests/capsule_win.rs`'s short mnemonic names, which never
+/// so (unlike `tests/capsule/`'s short mnemonic names, which never
 /// touch a real pipe) this file's voyage id MUST be one.
 fn fresh_voyage_id() -> String {
     uuid::Uuid::now_v7().to_string()
@@ -70,7 +70,7 @@ fn config(
 }
 
 /// Encode helpers for the attach lane's client frames and the mgmt lane's
-/// requests — identical in shape to `tests/capsule_win.rs`'s own `frame`
+/// requests — identical in shape to `tests/capsule/main.rs`'s own `frame`
 /// module (not shared: a three-function module is exactly this crate's
 /// own leaf-helper-duplication convention, see `lane/pipe_win/`'s module doc).
 mod frame {
@@ -125,7 +125,7 @@ mod frame {
     }
 }
 
-/// Bounded join — see `tests/capsule_win.rs`'s identical helper: `run`
+/// Bounded join — see `tests/capsule/main.rs`'s helper of the same name: `run`
 /// blocks until the run ends, and a teardown-ordering bug is exactly the
 /// class of bug that would hang it forever.
 fn wait_for_join<T: Send + 'static>(
@@ -168,7 +168,7 @@ fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>
 }
 
 /// Every sealed frame across every `.sotseg` in `root/seg`, in segment
-/// order — identical to `tests/capsule_win.rs`'s own helper of the same
+/// order — identical to `tests/capsule/main.rs`'s own helper of the same
 /// name.
 fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
     let seg_dir = root.join("seg");
@@ -194,7 +194,7 @@ fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
 /// caller's own thread the whole time), decoding through a
 /// `wire::FrameSplitter`, appending every decoded frame to a shared,
 /// growing log this struct polls. The real-pipe analog of
-/// `tests/capsule_win.rs`'s `FrameWatcher`, needed here (unlike the mgmt
+/// `tests/capsule/main.rs`'s `FrameWatcher`, needed here (unlike the mgmt
 /// lane below, serviced with plain synchronous reads) because the watcher
 /// and driver connections must also observe UNSOLICITED frames — live
 /// `Output` and the server-originated `Keepalive` — arriving between
@@ -273,7 +273,7 @@ impl RealFrames {
     ///   guarantee itself is broken, not merely late;
     /// - the reassembled bytes actually RESTORE into a valid vt100
     ///   screen (`vt100_ctt::Parser::restore_screen` succeeding is the
-    ///   oracle, the same idiom `tests/capsule_win.rs`'s own mid-stream
+    ///   oracle, the same idiom `tests/capsule/windows_only.rs`'s own mid-stream
     ///   checkpoint test uses) -- proving the bytes are a real, complete
     ///   checkpoint, not merely nonempty and well-framed. `cols`/`rows`
     ///   must match the capsule's own configured geometry, or a
@@ -426,7 +426,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     // hasn't already finished and gone silent by then. A SMALL initial
     // block (5 repeats, not 1000: this test only needs a non-empty
     // checkpoint, not an exhaustive fidelity fixture — see
-    // `tests/capsule_win.rs`'s `attach_mid_stream_checkpoint_reproduces_
+    // `tests/capsule/windows_only.rs`'s `attach_mid_stream_checkpoint_reproduces_
     // reference_screen` for that) bounds the one-time burst every
     // pre-`take` connection's watcher-role queue (4 MiB, ADR 0041 budget
     // table) must absorb; the indefinite low-rate drip after it replaces
@@ -447,7 +447,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     let handle = std::thread::spawn(move || capsule::run::<ConptyProducer>(cfg, cmd_rx, &mut transport));
 
     // The pipe is created INSIDE `run` (`Transport::bind` runs right after
-    // `open_for_writing` — see `capsule_win.rs`'s own doc at that call
+    // `open_for_writing` — see `capsule/writer_loop/start.rs`'s own comment at that call
     // site). ADR 0043 decision 27: `connect_voyage_pipe` no longer
     // retries an absent instance (`ERROR_FILE_NOT_FOUND` now fails on the
     // first attempt — only `ERROR_PIPE_BUSY` is retried) — this test owns

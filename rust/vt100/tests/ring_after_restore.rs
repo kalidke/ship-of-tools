@@ -61,7 +61,7 @@ fn absolute_positioning_repaint_does_not_fill_the_ring() {
 
 #[test]
 fn checkpoint_carries_the_capsules_ring_into_the_restored_parser() {
-    // The capsule side (`capsule_win.rs`: CAPSULE_SCROLLBACK_ROWS = 200)
+    // The capsule side (`CAPSULE_SCROLLBACK_ROWS` in `rust/log/src/capsule/mod.rs`)
     // after a long newline-driven reply: 100 lines scrolled off a 24-row
     // screen sit in its ring.
     let mut source = Parser::new(24, 80, 200);

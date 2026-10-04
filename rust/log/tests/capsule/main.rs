@@ -1,8 +1,7 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
 //! Integration tests for the capsule runtime (`src/capsule/`, ADR 0041
-//! step 4; ADR 0043 "Decisions for LU2": renamed from `tests/capsule_win.rs`
-//! in L1-unix LU2a when the writer loop became generic over `Producer`,
-//! ungated in LU2b once a real Unix producer existed to drive it). Lives
+//! step 4; ADR 0043 "Decisions for LU2": ungated in LU2b once a real Unix
+//! producer existed to drive it). Lives
 //! in `tests/` for the same reason `tests/conpty.rs` does: one of these
 //! (the flood test) needs `env!("CARGO_BIN_EXE_...")` to find its helper
 //! binary, which Cargo only wires up for integration test binaries, and
@@ -293,8 +292,7 @@ impl<'a> FrameWatcher<'a> {
 }
 
 /// Every sealed frame across every `.sotseg` in `root/seg`, in segment
-/// order — mirrors `capsule/`'s own test helper of the same name (not
-/// shared: see `capsule_win.rs`'s module doc on duplication).
+/// order.
 fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
     let seg_dir = root.join("seg");
     let mut out = Vec::new();
@@ -313,8 +311,8 @@ fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
     out
 }
 
-/// Test-only base64 decoder for `capsule_win.rs`'s encode-only engine —
-/// duplicated from `capsule/`'s own test helper.
+/// Test-only base64 decoder for the encoder in `src/capsule/frame.rs`
+/// (`base64_engine`).
 fn decode_b64(s: &str) -> Vec<u8> {
     let val = |c: u8| -> u32 {
         match c {

@@ -338,12 +338,8 @@ pub(crate) fn wait_for_checkpoint(client: &mut Client, deadline: Instant) -> Res
 
 #[cfg(test)]
 mod headless_size_gate_tests {
-    // Size-gate tests (no attach) and attach-failure tests against a
-    // state dir with no lane. `type_into` checks the payload length BEFORE
-    // ever attempting an attach, so the size-gate tests need no supervisor,
-    // no state dir on disk, and no real process at all — a nonexistent path
-    // is fine, and a real attach attempt there would prove the test wrong
-    // (the size gate must short-circuit before that).
+    // Size-gate tests and attach-failure tests against a state dir with no
+    // lane, and the enter-outcome mapping.
     #[cfg(target_os = "linux")]
     use super::screen_of;
     use super::{enter_outcome, type_into, write_and_enter, HeadlessError};

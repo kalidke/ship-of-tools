@@ -37,15 +37,10 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// ADR 0043 decision 23: the ONE seam a capsule launch passes through
 /// before it is ever allowed to touch disk on the row's behalf — called by
 /// `rows/ops/create.rs`'s `workspace.create` so it can refuse an unqualified root
-/// BEFORE any row persists, and again by [`runtime::spawn_detached_supervisor`]
-/// — the one mechanism every later launch (attach start-on-attach, boot
-/// resume, the watchdog's own restart) shares. This FUNCTION is portable
-/// (no platform gate on the item
-/// itself — every host the capsule runtime compiles for must be able
-/// to typecheck it), but every real CALLER stays gated to Windows and
-/// Linux exactly like the capsule runtime's own availability elsewhere in
-/// this module — macOS never actually calls this (`allow(dead_code)`
-/// below). Three steps:
+/// BEFORE any row persists, and again by
+/// `rows::spawn::detach::spawn_detached_supervisor` — the one mechanism
+/// every later launch (attach start-on-attach, boot resume, the
+/// watchdog's own restart) shares. Three steps:
 ///
 /// 1. [`sot_log::host::state_dir::sot_state_dir`] resolves the root at all —
 ///    else the same [`STATE_ROOT_HINT`] wording every other "could not

@@ -3,8 +3,8 @@
 # The real settings.toml is machine/user-specific and NOT committed
 # (ADR 0030 §6): copy this next to it, or to ~/.config/sot/settings.toml.
 #
-# Discovery order: $SOT_SETTINGS → <repo-root>/.sot/settings.toml →
-# $HOME/.config/sot/settings.toml → built-in defaults.
+# Discovery order: $SOT_SETTINGS → the nearest .sot/settings.toml in the cwd
+# or an ancestor → $HOME/.config/sot/settings.toml → built-in defaults.
 # Any value missing or out-of-range silently falls back to the default;
 # the chrome should never crash because the user wrote a malformed
 # settings file.

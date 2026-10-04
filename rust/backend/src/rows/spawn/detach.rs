@@ -32,14 +32,6 @@ pub fn mode_flag(mode: StartMode) -> &'static str {
     }
 }
 
-/// The daemon's capsule runtime — spawning, watching, querying, and
-/// ending a supervisor over `sot_log::attach_client::supervisor_client`. Platform
-/// chosen by exactly TWO forks inside (ADR 0043 decision 22): the
-/// capsule executable's name ([`CAPSULE_SIBLING_NAME`]) and the detach mechanism
-/// ([`spawn_detached`]'s per-OS twins). (A third fork, the adopted leg's
-/// exit-status read, existed here before decision 33 deleted the
-/// adopted-leg watch entirely — a watchdog now exists only for a
-/// `Child` this daemon itself spawned.)
 /// The `sot-capsule` file name next to the daemon's own executable, read
 /// by the startup check right below and by every launch
 /// ([`sot_capsule_exe`]). `not(windows)`, not `target_os = "linux"`: the
@@ -158,8 +150,7 @@ fn supervisor_stderr() -> Stdio {
 /// from a path, and no future `env_clear` call that replay could ever
 /// silently lose). `scoped` is always `false` on Windows (no scope
 /// concept there) — only how the head is built differs; only how the
-/// result is actually detached — [`spawn_detached`], the second of
-/// decision 22's three forks — differs per platform.
+/// result is actually detached — [`spawn_detached`] — differs per platform.
 /// `--assume-no-rollback-target` is mandatory: `sot_log::supervisor::supervise`
 /// itself refuses (exit 69) without it pre-U4. The nesting env vars
 /// are scrubbed and `SOT_COMM_NAME` exported (Codex review finding
@@ -502,8 +493,7 @@ fn spawn_detached(
 /// `setsid`'s failure propagates for exactly the reason the Linux
 /// twin's does — see its own doc.
 ///
-/// Unrun on a real Mac (`mod runtime`'s own gate doc, and the
-/// ruling's §7 item 2): that a `setsid` capsule survives its
+/// Unrun on a real Mac: that a `setsid` capsule survives its
 /// spawning `sotd`'s exit under launchd is a claim only a Mac
 /// settles. The Linux cgroup hazard has no macOS analogue, which is
 /// why this arm is plausible, not why it is proven.
