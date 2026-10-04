@@ -176,7 +176,8 @@ pub mod fe_client;
 // `DaemonLaneEndpoint`) needs the module too -- only the
 // `PlatformEndpoint`-typed default and the tests that construct it stay
 // cfg-gated, inside the module itself.
-pub mod fe_client_io;
+mod attach_client;
+pub use attach_client::client as fe_client_io;
 // ADR 0046 decision 3 (lane B3a): the attach lane's transport half,
 // extracted out of `fe_client_io` into a reusable worker with an event
 // sink and bounded ingress — see that module's own top doc. Ungated for
@@ -226,7 +227,7 @@ pub mod supervisor;
 // `client::PlatformEndpoint` (L1-unix LU3b), so it now compiles on Linux
 // too, and `sot-backend` (a separate crate) needs to reach it.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-pub mod supervisor_client;
+pub use attach_client::supervisor_client;
 pub mod verify;
 pub mod voyage;
 pub mod wire;
