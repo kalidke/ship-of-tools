@@ -87,7 +87,8 @@ pub use lane::transport;
 // `tests/pipe_win.rs`, a separate integration-test crate that can only ever
 // reach `pub` items — the same reason those sibling modules are `pub`
 // rather than `pub(crate)`.
-pub mod pipe_win;
+#[cfg(windows)]
+pub use lane::pipe_win;
 // ADR 0041 step 5, unit U3 round 2: the thin bridge from `pipe_win`'s real
 // named-pipe transport to `transport`'s `Transport` trait. Lives in the
 // library (not the `sot-capsule` bin) for two reasons: `tests/e2e_pipe.rs`

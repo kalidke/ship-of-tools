@@ -4,6 +4,7 @@
 pub mod attach_proto;
 pub mod client;
 pub mod pipe_transport;
+pub mod pipe_win;
 pub mod socket_transport;
 pub mod transport;
 pub mod wire;
