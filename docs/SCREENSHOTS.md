@@ -178,13 +178,6 @@ Check every new still and several frames of each loop for private content
 before committing, for example
 `ffmpeg -i hero.mp4 -vf fps=1,scale=480:-1,tile=4x4 -frames:v 1 tile.png`.
 
-## Scripted captures (display-box path)
-
-`scripts/docs-shots.sh` is the older `--capture` harness for a box with a real
-display and GPU. It writes to `docs/src/assets/screenshots/`, which no published
-page uses; treat its output as scratch. `scripts/docs-shots.sh list` prints each
-shot's exact `sotd` and `sot` invocations. It needs the MathJax sidecar
-(`npm ci` in `rust/backend/sidecars/mathjax`) and poppler on PATH.
 
 ## Conventions
 

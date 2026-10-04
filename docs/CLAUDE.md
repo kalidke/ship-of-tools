@@ -7,9 +7,8 @@ the commit that changes the code it describes, and a design that is not built is
 ## Owns
 - `docs/`: the ADRs and their index, the manual (`src/`, `make.jl`, `Project.toml`), `INSTALL-AGENT.md`,
   `ENROLLING-A-HOST.md`, `USING.md`, `SCREENSHOTS.md`, `plan.md` and the demo project the screenshots are taken from.
-- Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, the media script
-  `scripts/docs-shots.sh`, and the publish guard (`.claude/settings.json`,
-  `.claude/hooks/`). Each folder's own `CLAUDE.md` belongs to the subsystem that owns that folder.
+- Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, and the publish guard
+  (`.claude/settings.json`, `.claude/hooks/`). Each folder's own `CLAUDE.md` belongs to the subsystem that owns that folder.
 
 ## Promises
 - Line 3 of every ADR starts with one status token: `current`, `superseded by ADR NNNN` or `partly superseded by ADR
@@ -29,8 +28,8 @@ the commit that changes the code it describes, and a design that is not built is
 - `.github/workflows/CI.yml` (job `docs`) builds the manual with `make.jl` and deploys it on a push to `main`.
 - The root `CLAUDE.md` sends a reader to ADR 0017 (frontend restart) and ADR 0023 and ADR 0046 (session spawn and daemon
   boot); code comments and folder pages cite ADRs by number.
-- `docs/tools/docs-media.sh` and `scripts/docs-shots.sh` render the frontend against `fixtures/DemoProject`;
-  `SCREENSHOTS.md` is their recipe.
+- `docs/tools/docs-media.sh` renders the frontend against `fixtures/DemoProject`;
+  `SCREENSHOTS.md` is its recipe.
 - `INSTALL-AGENT.md` is the runbook an agent follows to install; its engine is `scripts/install.sh` (distribution
   charter: scripts/CLAUDE.md).
 

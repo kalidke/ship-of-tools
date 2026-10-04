@@ -12,8 +12,7 @@
 # Linux only, no display or GPU needed: the frontend renders through Mesa's
 # software Vulkan (lavapipe) into a private Xvfb, ffmpeg x11grab records the
 # screen, and a ~40-line ctypes XTest driver (python3 + libX11 + libXtst, no
-# extra packages) presses the keys a user would. docs-shots.sh stays the
-# display-box path (--capture on a real GPU).
+# extra packages) presses the keys a user would.
 #
 # Isolation — the demo must never show or touch the maintainer's own state:
 #   * every process runs under `env -i` with a throwaway HOME and XDG_* dirs

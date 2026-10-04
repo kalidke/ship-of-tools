@@ -94,6 +94,3 @@
 
 # docs fixture: scripts/route.jl writes this figure
 docs/fixtures/DemoProject/data/track.png
-
-# docs-shots.sh output (display-box capture path; not published)
-docs/src/assets/screenshots/
