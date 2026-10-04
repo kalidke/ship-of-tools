@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The window's mirror of the daemon's `session_name` (rust/backend/src/rows/mod.rs):
+/// it only adds the prefix, where the daemon's rule slugs a label first.
+pub(in crate::ui) fn session_name_of(slug: &str) -> String {
+    format!("sot-be-{slug}")
+}
+
 impl State {
     /// Cycle to the next or previous workspace in `workspace_slugs`
     /// order — the UNION across every connected host (ADR 0042 L2a), so
@@ -45,7 +51,7 @@ impl State {
             .unwrap_or(0);
         let next = ((idx + direction).rem_euclid(n)) as usize;
         let (next_host, next_slug) = self.workspace_slugs[next].clone();
-        let session_name = format!("sot-be-{next_slug}");
+        let session_name = session_name_of(&next_slug);
         // Flick the brand wheels in the direction of travel (forward = CW). The
         // per-frame decay + redraw live in the bottom-strip block; nudge the
         // event loop so the spin animates even if nothing else is dirty.
@@ -198,7 +204,7 @@ impl State {
         // the ENTERING workspace's cursor-follow preview until the user
         // moved the cursor (blank preview on switch).
         self.driven_preview_hold_cursor = None;
-        if let Some(target) = session_name.or_else(|| slug.as_ref().map(|s| format!("sot-be-{s}")))
+        if let Some(target) = session_name.or_else(|| slug.as_ref().map(|s| session_name_of(s)))
         {
             // `self.active_host` was just set to `host` above, before
             // anything in this function fired a request — correct BY
@@ -437,5 +443,16 @@ impl State {
         self.status = format!("nav ← agent (pending) · {path}");
         tracing::info!(%node_id, ws = %slug,
             "pending nav.preview driven on workspace switch");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_name_of_prefixes_the_slug_unchanged() {
+        assert_eq!(session_name_of("proj"), "sot-be-proj");
+        assert_eq!(session_name_of("My.Pkg"), "sot-be-My.Pkg");
     }
 }
