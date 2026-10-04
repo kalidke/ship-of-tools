@@ -18,9 +18,10 @@ main.rs builds `App` through the alias `use ui as gpu;`. net/transport.rs sends 
 `OutgoingReq` out, and reads `crate::gpu::frontend_identity`.
 
 ## Folders
-None yet.
+- `control/`: agent control of the window: the fe.command route, its dispatch, the nav envelope and the file channel.
 
 ## Files
+- `control/`: the agent control surface, with its own page.
 - `mod.rs`: `State`, `App` and the rest of the window's code (over 800 lines under standing exemption E11).
 - `scan_tests.rs`: the crate's own source for the tests that scan it.
 
