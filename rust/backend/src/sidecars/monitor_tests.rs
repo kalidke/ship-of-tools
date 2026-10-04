@@ -319,6 +319,7 @@ mod config_tests {
     #[test]
     fn a_box_with_no_hub_declaration_samples_itself() {
         // Env is process-global; this test only reads the override path.
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
         let hosts = load_hosts();
         std::env::remove_var("SOT_HOSTS");

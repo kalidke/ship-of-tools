@@ -5,8 +5,8 @@ use super::super::support_tests::{intent_env, lc, lc_take};
 use crate::store::envelope::Seq;
 use crate::store::segment::Commit;
 
-/// The voyage layout is part of the format: bootstrap lays out these names
-/// and no others, spelled here as literals independent of the constants.
+/// The voyage layout is part of the format: bootstrap lays out these names,
+/// spelled here as literals independent of the constants.
 #[test]
 fn bootstrap_lays_out_the_voyage_by_name() {
     let dir = tempfile::tempdir().unwrap();

@@ -619,6 +619,14 @@ mod select_once_wire_tests {
             .expect("select_once")
         }
 
+        /// `once`, bounded so a regression in a bus's arm fails its test
+        /// instead of hanging the suite.
+        async fn once_on(&mut self, bus: &str) -> Woke<tokio::io::Empty> {
+            tokio::time::timeout(std::time::Duration::from_secs(5), self.once())
+                .await
+                .unwrap_or_else(|_| panic!("select_once on the {bus} bus did not return in 5 s"))
+        }
+
         /// The one evt frame the writer holds: its op and payload.
         async fn the_evt(&self) -> (String, serde_json::Value) {
             let mut rest = &self.buf[..];
@@ -641,7 +649,7 @@ mod select_once_wire_tests {
                 async fn one_item_is_one_evt_frame() {
                     let (mut w, s) = wire();
                     s.$tx.send($item).unwrap();
-                    assert!(matches!(w.once().await, Woke::Again));
+                    assert!(matches!(w.once_on(stringify!($name)).await, Woke::Again));
                     assert_eq!(w.the_evt().await, ($op.to_string(), $payload));
                 }
 
@@ -650,7 +658,7 @@ mod select_once_wire_tests {
                     let (mut w, s) = wire();
                     s.$tx.send($item).unwrap();
                     s.$tx.send($item).unwrap();
-                    assert!(matches!(w.once().await, Woke::Again));
+                    assert!(matches!(w.once_on(stringify!($name)).await, Woke::Again));
                     assert!(w.buf.is_empty());
                 }
 
@@ -658,7 +666,7 @@ mod select_once_wire_tests {
                 async fn a_closed_bus_writes_nothing() {
                     let (mut w, s) = wire();
                     drop(s.$tx);
-                    assert!(matches!(w.once().await, Woke::Again));
+                    assert!(matches!(w.once_on(stringify!($name)).await, Woke::Again));
                     assert!(w.buf.is_empty());
                 }
             }
