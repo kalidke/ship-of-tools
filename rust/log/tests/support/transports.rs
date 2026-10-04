@@ -66,6 +66,11 @@ pub struct TestTransport {
     /// below that pushes to `events_tx` pings it AFTER, exactly like a
     /// real transport.
     wake: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    /// Run at the top of every `shutdown_all`, outside `inner`'s lock; its
+    /// result is recorded in `shutdown_probe_results`. Lets a test observe
+    /// what is true at the instant `run` (or `ShutdownGuard`) shuts the
+    /// transport down.
+    shutdown_probe: Arc<Mutex<Option<Arc<dyn Fn() -> bool + Send + Sync>>>>,
 }
 
 #[derive(Default)]
@@ -89,6 +94,8 @@ struct TestInner {
     /// "expiry is terminal" contract is testable without needing to
     /// genuinely wedge a real OS thread.
     force_shutdown_expiry: bool,
+    /// What `shutdown_probe` returned on each `shutdown_all` call, in order.
+    shutdown_probe_results: Vec<bool>,
 }
 
 impl TestTransport {
@@ -99,6 +106,7 @@ impl TestTransport {
             events_rx: Arc::new(Mutex::new(rx)),
             inner: Arc::new(Mutex::new(TestInner::default())),
             wake: Arc::new(Mutex::new(None)),
+            shutdown_probe: Arc::new(Mutex::new(None)),
         }
     }
     /// Pings the registered wake, if any — called AFTER every push to
@@ -192,6 +200,15 @@ impl TestTransport {
     pub fn force_shutdown_expiry(&self) {
         self.inner.lock().unwrap().force_shutdown_expiry = true;
     }
+    /// Registers a probe every `shutdown_all` call runs first (before it
+    /// counts itself), its result recorded for `shutdown_probe_results`.
+    pub fn set_shutdown_probe(&self, probe: Arc<dyn Fn() -> bool + Send + Sync>) {
+        *self.shutdown_probe.lock().unwrap() = Some(probe);
+    }
+    /// What the probe returned on each `shutdown_all` call, in call order.
+    pub fn shutdown_probe_results(&self) -> Vec<bool> {
+        self.inner.lock().unwrap().shutdown_probe_results.clone()
+    }
 }
 
 impl Transport for TestTransport {
@@ -227,7 +244,13 @@ impl Transport for TestTransport {
         self.inner.lock().unwrap().closed.push(conn);
     }
     fn shutdown_all(&mut self, _deadline: Instant) -> bool {
+        // Cloned out so the probe runs without `inner`'s lock held.
+        let probe = self.shutdown_probe.lock().unwrap().clone();
+        let probed = probe.map(|p| p());
         let mut inner = self.inner.lock().unwrap();
+        if let Some(result) = probed {
+            inner.shutdown_probe_results.push(result);
+        }
         inner.shutdown_all_call_count += 1;
         !inner.force_shutdown_expiry
     }
