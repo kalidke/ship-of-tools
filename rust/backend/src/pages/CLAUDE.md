@@ -30,7 +30,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 
 ## Connections
 
-- handlers.rs serves `video.open`, `docs.open` and `quarto.open`.
+- ops.rs serves `video.open`, `docs.open` and `quarto.open`; handlers.rs re-exports them.
 - server.rs spawns the listeners at boot and hands a connection whose first frame is `proxy.connect` to
   `handle_proxy_connect`.
 - lane_bridge.rs and lease.rs call `reject`; lane_bridge.rs calls `pipe_bidirectional`.
@@ -47,6 +47,7 @@ window's page proxy).
 
 - `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules.
+- `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records, `pipe_bidirectional` and `reject`.
 - `video.rs`: the video listener, its token grants and the request handler.
 
