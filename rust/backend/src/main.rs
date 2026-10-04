@@ -33,6 +33,7 @@ mod lifecycle;
 mod pages;
 mod paths;
 mod reauth;
+mod rows;
 #[cfg(target_os = "linux")]
 mod row_scope_aim;
 use agents::awareness;
