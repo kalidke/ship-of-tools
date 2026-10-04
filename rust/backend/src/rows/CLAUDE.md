@@ -52,7 +52,7 @@ toml and its migrations are still in `workspaces.rs`, and the capsule spawn, obs
 None yet.
 
 ## Files
-- `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs and the `WorkspaceChanged` event
+- `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, the `WorkspaceChanged` event and the session name rule
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`

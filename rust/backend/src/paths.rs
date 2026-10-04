@@ -207,13 +207,7 @@ mod non_windows_noop_tests {
 /// the moved doc comments/tests.
 pub use sot_protocol::{current_uid, local_daemon_label, runtime_sot_dir, session_socket_path, slug};
 
-/// A row's session name for the given label, `sot-be-<slug>` — the
-/// token `pty.open` / `lane.connect` `target` address the row by (see
-/// `Workspace::session_name`). The authoritative naming rule; the
-/// frontend mirrors it when it builds a target from a slug.
-pub fn session_name(label: &str) -> String {
-    format!("sot-be-{}", slug(label))
-}
+pub(crate) use crate::rows::session_name;
 
 /// Resolves the Windows per-machine state root, or fails startup with a
 /// clear message. On Windows this is the ONLY root `state_dir()` below and
@@ -404,23 +398,6 @@ pub fn secure_socket_dir(dir: &Path) -> Result<()> {
         return Ok(());
     }
     secure_private_dir(dir)
-}
-
-// `slug`/`session_socket_path`'s own unit tests (including
-// `session_socket_path_honours_xdg_runtime_dir` and the Windows named-pipe
-// tests) moved with them to `sot_protocol::session_socket` (ADR 0042 L2b) —
-// see that module. What stays here only exercises what's still DEFINED
-// here: `session_name`'s use of the (now re-exported) `slug`, and
-// `tmux_socket_path`'s env override.
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_name_uses_slug() {
-        assert_eq!(session_name("MyPackage.jl"), "sot-be-mypackage_jl");
-    }
-
 }
 
 /// `is_private_dir`'s own tests moved to `sot_protocol::session_socket`

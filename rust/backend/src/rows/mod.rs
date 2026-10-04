@@ -14,6 +14,7 @@ use tokio::sync::broadcast;
 use crate::concept::ConceptStore;
 use crate::files_mode::FilesMode;
 use crate::kernel::Kernel;
+use crate::paths::slug;
 use crate::repl::{Repl, ReplFrameMsg};
 use crate::watcher::{PreviewChanged, Watcher};
 
@@ -210,4 +211,22 @@ struct Inner {
     /// review round 3), so it guards every row's lifecycle, not only a
     /// capsule's.
     capsule_guards: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// A row's session name for the given label, `sot-be-<slug>` — the
+/// token `pty.open` / `lane.connect` `target` address the row by (see
+/// `Workspace::session_name`). The authoritative naming rule; the
+/// frontend mirrors it when it builds a target from a slug.
+pub fn session_name(label: &str) -> String {
+    format!("sot-be-{}", slug(label))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_name_uses_slug() {
+        assert_eq!(session_name("MyPackage.jl"), "sot-be-mypackage_jl");
+    }
 }
