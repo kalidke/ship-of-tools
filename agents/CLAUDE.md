@@ -4,16 +4,17 @@
 Ship of Tools meets an agent program (Claude Code, Codex) at one edge. The daemon starts the program from one launch
 recipe (argv, environment, account, folder trust), and the program drives Ship of Tools only through the daemon's wire,
 using the tools and skills installed from the repository. This folder is the shell side of that edge; the daemon side is
-`rust/backend/src/agents/`. At this commit only the row-lifecycle CLIs live here; the rest is still under `comm/` and
+`rust/backend/src/agents/`. At this commit only the row-lifecycle CLIs and the /worktree scripts live here; the rest is still under `comm/` and
 moves in later units of the organize pass.
 
 ## Owns
 - The CLIs that start, end, probe and bootstrap rows: `spawn/`.
+- The /worktree scripts, one parallel session per git worktree: `worktree/`.
 - Their suites: `tests/`.
 - Still elsewhere, listed so a reader finds them:
   - the shell daemon client in `comm/core/scripts/comm-lib.sh` (`sot_daemon_endpoint`, `sot_relay_endpoint`,
     `sot_oneshot_request`, `sot_pty_input`) and `comm/core/scripts/comm-pipe-request.ps1`;
-  - the other daemon-client CLIs in `comm/core/scripts/`: `sot-fe`, `comm-worktree-*.sh`, `sot-nav.sh`, `sot-gh-auth.sh`;
+  - the other daemon-client CLIs in `comm/core/scripts/`: `sot-fe`, `sot-nav.sh`, `sot-gh-auth.sh`;
   - the launchers `ccb` and `ccx`, the PATH wrappers and the skills in `comm/adapters/claude/` and
     `comm/adapters/codex/` (the two comm skills there are messaging's).
 - The daemon side: `agent_argv` and `agent_exec_argv` (argv per agent kind), `account_env`, `ensure_folder_trusted`,
@@ -47,12 +48,14 @@ moves in later units of the organize pass.
 
 ## Folders
 - `spawn/`: the four row-lifecycle CLIs (see its page).
+- `worktree/`: the four /worktree scripts (see its page).
 - `tests/`: the hermetic suites of those CLIs (see its page).
 - `rust/backend/src/agents/`: the daemon's launch recipe, accounts and folder trust.
 - `comm/core/scripts/`, `comm/adapters/`: where the rest of the agent edge still lives (see Owns).
 
 ## Files
 - `spawn/`: the CLIs that start, end, probe and bootstrap rows.
+- `worktree/`: the scripts that make, list, remind and remove a session's git worktree.
 - `tests/`: the suites that prove them.
 
 ## Start here

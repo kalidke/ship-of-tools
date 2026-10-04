@@ -1,4 +1,5 @@
 agents/spawn
+agents/worktree
 comm/core/scripts
 comm/registry
 comm/work_state
