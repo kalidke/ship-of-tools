@@ -203,8 +203,10 @@ fn resolve_hub(local: Option<&Topology>, cli_hub: Option<&str>, dest: &std::path
     }
 }
 
-/// True when this box IS the hub named by `hub` (the same bytes); every "am I
-/// the hub" test in topology/ asks this. Syncing on the hub would fetch its
+/// True when this box IS the hub named by `hub` (the same bytes); the "am I
+/// the hub" comparisons in cli.rs, relay_units.rs and set.rs ask this. The
+/// calls of sot-protocol's `topology::relay_units::require_hub` are its own
+/// check and stay. Syncing on the hub would fetch its
 /// own file over ssh to itself, which is nonsense (the hub's copy is
 /// already canonical). Checked BEFORE any ssh call, so this is a cheap
 /// no-op on the hub rather than a wasted (and often permission-denied)

@@ -72,7 +72,7 @@ pub async fn handle_topology_set(
         return Ok(refused(req_id, format!("no hosts.toml at {}", store.path().display()), "no_topology"));
     };
 
-    if me != topo.hub {
+    if !super::cli::self_is_hub(me, &topo.hub) {
         return Ok(refused(
             req_id,
             format!("this daemon (`{me}`) is not the hub (`{}`); topology.set only applies on the hub", topo.hub),
