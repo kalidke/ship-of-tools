@@ -8,9 +8,8 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `attach_proto/`: the attach and mgmt lanes' connection and role state machine (decides; the leg executes)
 - `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`
 - `mod.rs`: declares the lane modules; each file gates itself by platform
-- `pipe_transport.rs`: Windows bridge from the named-pipe server to `Transport`; twin of `socket_transport.rs`
 - `pipe_win/`: the Windows named-pipe transport, server and client
-- `socket_transport.rs`: the Unix twin, from the domain-socket server to `Transport`
+- `platform_transport.rs`: `PlatformTransport`, the capsule's `Transport` over `PlatformLaneServer`
 - `socket_unix/`: the Unix domain-socket transport, server and client
 - `transport.rs`: `Transport`, `TransportEvent`, `LaneServer`, `LaneEvent`, `TransportError`, the teardown bound and the servers' shared helpers
 - `wire/`: the frame layouts of the three lanes, pure encode and decode
@@ -23,4 +22,3 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 - `TransportError::is_endpoint_absent` is the one absence predicate on every platform.
 - The platform is chosen once, by `client::PlatformEndpoint` and `transport::PlatformLaneServer`.
 - A connection's outbound bytes are reserved in `OutboundBudget` before queueing and released when the write returns.
-- `pipe_transport.rs` and `socket_transport.rs` differ only in nouns; change both together.

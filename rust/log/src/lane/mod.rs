@@ -1,11 +1,10 @@
 //! The capsule's lanes: the transport contract (`transport`), the client
-//! seam (`client`) and the two platform bridges (`pipe_transport`,
-//! `socket_transport`) that each lane server rides on.
+//! seam (`client`) and the one platform bridge (`platform_transport`)
+//! that the platform's lane server rides on.
 pub mod attach_proto;
 pub mod client;
-pub mod pipe_transport;
 pub mod pipe_win;
-pub mod socket_transport;
+pub mod platform_transport;
 pub mod socket_unix;
 pub mod transport;
 pub mod wire;

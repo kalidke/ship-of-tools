@@ -43,11 +43,11 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
         Some("build-id") => println!("{}", sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID),
         #[cfg(windows)]
         Some("run") => cmd_run::<sot_log::capsule::producer::conpty::producer::ConptyProducer, _, _>(&args[1..], |n| {
-            sot_log::lane::pipe_transport::PipeTransport::new(n)
+            sot_log::lane::platform_transport::PlatformTransport::new(n)
         }),
         #[cfg(unix)]
         Some("run") => cmd_run::<sot_log::capsule::producer::pty::PtyProducer, _, _>(&args[1..], |n| {
-            sot_log::lane::socket_transport::SocketTransport::new(n)
+            sot_log::lane::platform_transport::PlatformTransport::new(n)
         }),
         Some("supervise") => cmd_supervise(&args[1..]),
         Some("endrun") => cmd_endrun(&args[1..]),
@@ -64,7 +64,7 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
 /// [`sot_log::capsule::producer::Producer`] (`ConptyProducer` on Windows,
 /// `PtyProducer` on Linux), `make_transport` builds its
 /// [`sot_log::lane::transport::Transport`] from the connection ceiling above
-/// (`PipeTransport::new`/`SocketTransport::new`). Everything else — the
+/// (`PlatformTransport::new`). Everything else — the
 /// flag grammar, the rollout-evidence gate, the exit-code mapping — is
 /// genuinely one shared implementation now; only the lease flag's own
 /// name and `--survival`'s own meaning still differ per platform, both

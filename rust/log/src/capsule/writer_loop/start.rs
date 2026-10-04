@@ -205,8 +205,8 @@ pub(super) fn start<'t, P: Producer>(
 
 
 fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
-    // Resolve ONCE — the fresh `capsule::producer::pty`/`socket_transport` pair on
-    // Linux and `producer_conpty`/`pipe_transport` on Windows share this
+    // Resolve ONCE — the fresh `capsule::producer::pty` and `platform_transport` pair on
+    // Linux and `producer_conpty` and `platform_transport` on Windows share this
     // exact ordering (voyage root, then the lease, then the writer fence).
     let voyage_root = crate::host::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {

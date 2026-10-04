@@ -419,7 +419,7 @@ struct ServerShared {
     reaper_tx: SyncSender<ReaperMsg>,
     events_tx: SyncSender<LaneEvent>,
     /// Switch-latency Phase 1 (c): the bridging `Transport` impl's own
-    /// wake callback (`PipeTransport::bind`, via [`PipeServer::set_wake`])
+    /// wake callback (`PlatformTransport::bind`, via [`PipeServer::set_wake`])
     /// — invoked, if set, every time [`send_lifecycle_event`]/
     /// [`deliver_bytes`] successfully push a fresh event, AFTER the push
     /// (so a caller woken by it is guaranteed the event is already

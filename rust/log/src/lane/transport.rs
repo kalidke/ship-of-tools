@@ -61,7 +61,7 @@ pub enum TransportEvent {
 }
 
 /// What the writer loop needs from a transport to deliver bytes and sever
-/// connections. The Windows transport (`pipe_transport` over `pipe_win`)
+/// connections. The Windows transport (`platform_transport` over `pipe_win`)
 /// implements this over a named pipe; `capsule_win`'s tests implement it
 /// as an in-memory sink; the Unix transport (L1-unix) implements it over
 /// a Unix domain socket.
@@ -112,7 +112,7 @@ pub trait Transport {
     /// [`Transport::bind`] — a real transport stores the callback and
     /// forwards it to whatever it binds; the concrete `PipeServer`/
     /// `SocketServer` created inside `bind` is what actually invokes it
-    /// (see `pipe_transport`/`socket_transport`'s own `bind` for the
+    /// (see `platform_transport`'s own `bind` for the
     /// exact hookup). The callback itself carries no event data — it is a
     /// PURE wake, "something may be waiting"; the loop's own
     /// non-blocking `try_recv_event` drain (already run every iteration,
@@ -558,9 +558,8 @@ pub enum ClosedReason {
 /// This transport's event surface to its consumer, hoisted (ADR 0043
 /// decision 19) from `pipe_win`/`socket_unix`'s own byte-for-byte
 /// identical copies — both platforms' servers produce the SAME event
-/// type now, so `pipe_transport`'s and `socket_transport`'s own
-/// `translate()` functions read this one type instead of two separately
-/// defined ones. Delivered over a `LaneServer::events()` receiver in the
+/// type now, so `platform_transport`'s own `translate()` function reads
+/// this one type instead of two separately defined ones. Delivered over a `LaneServer::events()` receiver in the
 /// order the transport observed them; the consumer feeds `Bytes`
 /// payloads to its own [`crate::lane::wire::FrameSplitter`] per connection.
 ///
@@ -568,7 +567,7 @@ pub enum ClosedReason {
 /// OLDER, ADR-0041-era capsule-facing contract `Transport::try_recv_event`
 /// returns) — that is a DIFFERENT vocabulary, one level up the stack
 /// (`ConnectionOpened`/`ConnectionClosed`/`TransportFatal`, no
-/// `ClosedReason`); `pipe_transport`/`socket_transport` translate FROM
+/// `ClosedReason`); `platform_transport` translates FROM
 /// this type TO that one.
 #[derive(Debug)]
 pub enum LaneEvent {

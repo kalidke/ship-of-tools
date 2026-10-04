@@ -197,7 +197,7 @@ impl PipeServer {
 
     /// Switch-latency Phase 1 (c): register `wake` to be pinged (see
     /// [`notify_wake`]) after every event this server successfully queues
-    /// from here on — `pipe_transport::PipeTransport::bind` is the one
+    /// from here on — `platform_transport::PlatformTransport::bind` is the one
     /// real caller, immediately after this server itself is bound, so
     /// `capsule::run`'s own `output_rx.recv_timeout` wakes on real voyage-
     /// pipe activity. `pub(crate)`: an implementation detail of the

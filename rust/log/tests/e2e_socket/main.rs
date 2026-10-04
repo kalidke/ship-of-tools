@@ -5,7 +5,7 @@
 //! writer loop and `AttachProto` against a synthetic `TestTransport` (now
 //! against `PtyProducer` too, on Linux); this file is the one place both
 //! are proven together with a REAL transport:
-//! `socket_transport::SocketTransport` wrapping a real
+//! `platform_transport::PlatformTransport` wrapping a real
 //! `socket_unix::SocketServer`, with real OS clients connecting via
 //! `socket_unix::connect_voyage_socket` — a watcher, a driver, and a mgmt
 //! connection, all against the SAME running capsule.
@@ -18,7 +18,7 @@
 use sot_log::capsule::{self, CapsuleConfig, ExitKind};
 use sot_log::capsule::producer::pty::PtyProducer;
 use sot_log::store::segment::{RetentionClass, SegmentReader};
-use sot_log::lane::socket_transport::SocketTransport;
+use sot_log::lane::platform_transport::PlatformTransport;
 use sot_log::lane::socket_unix::{connect_voyage_socket, SocketClient};
 use sot_log::store::verify::verify_voyage;
 use sot_log::lane::wire::{self, Survival};
@@ -72,7 +72,7 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
 }
 
 /// A fresh, canonical lowercase-hyphenated UUID — `socket_unix::SocketServer::bind`
-/// (reached through `SocketTransport::bind`, called by `run` itself)
+/// (reached through `PlatformTransport::bind`, called by `run` itself)
 /// validates the voyage id as exactly this shape before it will ever
 /// create the socket.
 fn fresh_voyage_id() -> String {
@@ -392,7 +392,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
     let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
     let root = cfg.voyage_root.clone();
 
-    let mut transport = SocketTransport::new(8);
+    let mut transport = PlatformTransport::new(8);
     let (_cmd_tx, cmd_rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule::run::<PtyProducer>(cfg, cmd_rx, &mut transport));
 
@@ -543,7 +543,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
 /// near-instantly rather than risk paying the OLD worst case (each step
 /// landing right after a drain, sitting unnoticed for up to the full
 /// window before the loop's own tick would have found it), only reachable
-/// at all if `Transport::set_wake`'s callback (`SocketTransport::bind`,
+/// at all if `Transport::set_wake`'s callback (`PlatformTransport::bind`,
 /// via `SocketServer::set_wake`) actually wakes this loop on real
 /// transport activity rather than solely on its own group-commit cadence.
 ///
@@ -567,7 +567,7 @@ fn an_attach_against_an_idle_capsule_is_not_group_commit_bound() {
     let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
     let root = cfg.voyage_root.clone();
 
-    let mut transport = SocketTransport::new(8);
+    let mut transport = PlatformTransport::new(8);
     let (_cmd_tx, cmd_rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule::run::<PtyProducer>(cfg, cmd_rx, &mut transport));
 

@@ -4,7 +4,7 @@
 //! pipe. `tests/capsule_win.rs` proves the writer loop and `AttachProto`
 //! against a synthetic `TestTransport`; `tests/pipe_win/` proves the raw
 //! transport against a plain echo consumer with no capsule. This file is
-//! the one place both are proven together: `pipe_transport::PipeTransport`
+//! the one place both are proven together: `platform_transport::PlatformTransport`
 //! wrapping a real `pipe_win::PipeServer`, with real OS clients connecting
 //! via `pipe_win::connect_voyage_pipe` — a watcher, a driver, and a mgmt
 //! connection, all against the SAME running capsule.
@@ -18,7 +18,7 @@
 //! test below over time).
 
 use sot_log::capsule::{self, CapsuleConfig, ExitKind};
-use sot_log::lane::pipe_transport::PipeTransport;
+use sot_log::lane::platform_transport::PlatformTransport;
 use sot_log::capsule::producer::conpty::producer::ConptyProducer;
 use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeClient};
 use sot_log::store::segment::{RetentionClass, SegmentReader};
@@ -35,7 +35,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// A fresh, canonical lowercase-hyphenated UUID — `pipe_win::PipeServer::bind`
-/// (reached through `PipeTransport::bind`, called by `run` itself) validates
+/// (reached through `PlatformTransport::bind`, called by `run` itself) validates
 /// the voyage id as exactly this shape before it will ever create the pipe,
 /// so (unlike `tests/capsule_win.rs`'s short mnemonic names, which never
 /// touch a real pipe) this file's voyage id MUST be one.
@@ -442,7 +442,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
     let cfg = config(dir.path(), &voyage_id, argv, 80, 25);
     let root = cfg.voyage_root.clone();
 
-    let mut transport = PipeTransport::new(8);
+    let mut transport = PlatformTransport::new(8);
     let (_cmd_tx, cmd_rx) = mpsc::channel();
     let handle = std::thread::spawn(move || capsule::run::<ConptyProducer>(cfg, cmd_rx, &mut transport));
 
