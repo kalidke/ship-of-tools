@@ -47,6 +47,7 @@ use crate::settings::Settings;
 use crate::transport::OutgoingReq;
 use crate::net::hosts::{PendingTransport, lane_dial, resolve_default_host, resolve_monitor_host};
 use crate::pages::{open_html_in_browser, open_url_in_browser};
+use crate::lease::{ExitReason, ExitStep, close_now, exit_intent};
 use crate::net::identity::self_comm_handle;
 pub(crate) use crate::net::identity::{FrontendIdentity, frontend_identity};
 use sot_protocol::ops::LeaveIntent;
@@ -548,50 +549,6 @@ fn quit_prompt_line(keep: bool) -> (String, String) {
         "Keep the daemon and sessions running?  Tab switches \u{b7} Enter confirms \u{b7} Esc cancels".to_string(),
         choice.to_string(),
     )
-}
-
-/// Why the window is being asked to exit.
-#[derive(Clone, Copy)]
-enum ExitReason {
-    WindowClose,
-    QuitKey,
-    Relaunch(i32),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum ExitStep {
-    Ask,
-    Leave { intent: LeaveIntent, code: i32 },
-    Supersede,
-    Now { code: i32 },
-    Ignore,
-}
-
-/// What an exit request does. A window already leaving exits at once, with
-/// 0, on a second close, except that an X or OS close during a Keep
-/// supersedes it with a Close: the user's latest intent wins, so a second
-/// close during a Handover never relaunches. A relaunch then defers to the
-/// leave in progress.
-fn exit_intent(reason: ExitReason, leaving: Option<LeaveIntent>) -> ExitStep {
-    match (reason, leaving) {
-        (ExitReason::WindowClose, None) => ExitStep::Leave { intent: LeaveIntent::Close, code: 0 },
-        (ExitReason::QuitKey, None) => ExitStep::Ask,
-        (ExitReason::Relaunch(code), None) => ExitStep::Leave { intent: LeaveIntent::Handover, code },
-        (ExitReason::WindowClose, Some(LeaveIntent::Keep)) => ExitStep::Supersede,
-        (ExitReason::WindowClose | ExitReason::QuitKey, Some(_)) => ExitStep::Now { code: 0 },
-        (ExitReason::Relaunch(_), Some(_)) => ExitStep::Ignore,
-    }
-}
-
-/// A second close exits at once with `code` (0), and the leave in progress
-/// takes that code: winit still runs `about_to_wait` while it shuts down, and
-/// its poll exits with the leave's own code, so no restart code outlives a
-/// close.
-fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
-    if let Some(l) = leaving {
-        l.exit_code = code;
-    }
-    code
 }
 
 
@@ -19307,45 +19264,6 @@ mod tests {
         let (_, yes) = quit_prompt_line(true);
         assert!(yes.contains("[Yes]") && !yes.contains("[No]"));
     }
-
-    #[test]
-    fn exit_intent_table() {
-        use ExitReason::*;
-        use ExitStep::*;
-        let (keep, close, handover) = (Some(LeaveIntent::Keep), Some(LeaveIntent::Close), Some(LeaveIntent::Handover));
-        assert_eq!(exit_intent(WindowClose, None), Leave { intent: LeaveIntent::Close, code: 0 });
-        assert_eq!(exit_intent(QuitKey, None), Ask);
-        assert_eq!(exit_intent(Relaunch(75), None), Leave { intent: LeaveIntent::Handover, code: 75 });
-        assert_eq!(exit_intent(Relaunch(76), None), Leave { intent: LeaveIntent::Handover, code: 76 });
-        // The user's latest intent wins: an X or OS close during a Keep closes.
-        assert_eq!(exit_intent(WindowClose, keep), Supersede);
-        // A second close exits 0: during a Handover it never relaunches.
-        assert_eq!(exit_intent(WindowClose, close), Now { code: 0 });
-        assert_eq!(exit_intent(WindowClose, handover), Now { code: 0 });
-        for leaving in [keep, close, handover] {
-            assert_eq!(exit_intent(QuitKey, leaving), Now { code: 0 });
-            assert_eq!(exit_intent(Relaunch(75), leaving), Ignore);
-        }
-    }
-
-    #[test]
-    fn second_close_during_handover_exits_zero_on_every_path() {
-        use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
-        let t0 = std::time::Instant::now();
-        let (ack, rx) = tokio::sync::oneshot::channel();
-        let mut leaving = Some(Leaving::new(LeaveIntent::Handover, 75, vec![("h".to_string(), rx)], t0));
-        // The second close, as `request_quit` applies it.
-        let ExitStep::Now { code } = exit_intent(ExitReason::WindowClose, leaving.as_ref().map(|l| l.intent)) else {
-            panic!("a second close exits at once");
-        };
-        assert_eq!(close_now(leaving.as_mut(), code), 0);
-        // The handover's ack is then ready, and winit still runs
-        // `about_to_wait`: its poll exits with the leave's code.
-        ack.send(LeaveOutcome::Replied(0)).unwrap();
-        assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
-        assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
-    }
-
 
     #[test]
     fn redraw_exit_table() {

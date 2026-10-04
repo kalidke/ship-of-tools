@@ -606,3 +606,41 @@ fn leave_failure_table() {
     assert_eq!(l.poll(t0), LeaveStep::Show);
     assert_eq!(l.line().as_deref(), Some(LEAVE_UNCONFIRMED_CLOSE));
 }
+
+#[test]
+fn exit_intent_table() {
+    use ExitReason::*;
+    use ExitStep::*;
+    let (keep, close, handover) = (Some(LeaveIntent::Keep), Some(LeaveIntent::Close), Some(LeaveIntent::Handover));
+    assert_eq!(exit_intent(WindowClose, None), Leave { intent: LeaveIntent::Close, code: 0 });
+    assert_eq!(exit_intent(QuitKey, None), Ask);
+    assert_eq!(exit_intent(Relaunch(75), None), Leave { intent: LeaveIntent::Handover, code: 75 });
+    assert_eq!(exit_intent(Relaunch(76), None), Leave { intent: LeaveIntent::Handover, code: 76 });
+    // The user's latest intent wins: an X or OS close during a Keep closes.
+    assert_eq!(exit_intent(WindowClose, keep), Supersede);
+    // A second close exits 0: during a Handover it never relaunches.
+    assert_eq!(exit_intent(WindowClose, close), Now { code: 0 });
+    assert_eq!(exit_intent(WindowClose, handover), Now { code: 0 });
+    for leaving in [keep, close, handover] {
+        assert_eq!(exit_intent(QuitKey, leaving), Now { code: 0 });
+        assert_eq!(exit_intent(Relaunch(75), leaving), Ignore);
+    }
+}
+
+#[test]
+fn second_close_during_handover_exits_zero_on_every_path() {
+    use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
+    let t0 = std::time::Instant::now();
+    let (ack, rx) = tokio::sync::oneshot::channel();
+    let mut leaving = Some(Leaving::new(LeaveIntent::Handover, 75, vec![("h".to_string(), rx)], t0));
+    // The second close, as `request_quit` applies it.
+    let ExitStep::Now { code } = exit_intent(ExitReason::WindowClose, leaving.as_ref().map(|l| l.intent)) else {
+        panic!("a second close exits at once");
+    };
+    assert_eq!(close_now(leaving.as_mut(), code), 0);
+    // The handover's ack is then ready, and winit still runs
+    // `about_to_wait`: its poll exits with the leave's code.
+    ack.send(LeaveOutcome::Replied(0)).unwrap();
+    assert_eq!(leaving.as_mut().map(|l| l.poll(t0)), Some(LeaveStep::Exit));
+    assert_eq!(leaving.as_ref().map_or(0, |l| l.exit_code), 0, "about_to_wait's exit code after a close");
+}
