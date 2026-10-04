@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn fixture_unified_memory_gpu_reports_mem_not_applicable() {
-        let fixture = include_str!("../tests/fixtures/monitor/unified_memory_gpu.ndjson");
+        let fixture = include_str!("../../tests/fixtures/monitor/unified_memory_gpu.ndjson");
         for line in fixture.lines() {
             let s = serde_json::from_str::<RawSample>(line).unwrap().into_sample();
             assert_eq!(s.gpus.len(), 1);
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn fixture_many_process_host_parses() {
-        let fixture = include_str!("../tests/fixtures/monitor/many_process_host.ndjson");
+        let fixture = include_str!("../../tests/fixtures/monitor/many_process_host.ndjson");
         for line in fixture.lines() {
             let s = serde_json::from_str::<RawSample>(line).unwrap().into_sample();
             assert_eq!(s.cpu_cores, Some(64));
