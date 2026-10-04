@@ -236,32 +236,9 @@ fn load_splash_png(
     queue: &wgpu::Queue,
     quad_pipeline: &QuadPipeline,
 ) -> Option<Quad> {
-    // Spike-step-4 placeholders. Kernel-driven previews replace both once
-    // transport.rs is wired.
-    // Probe order: exe-relative first so dropping `sample.png` next to
-    // the binary works out of the box; then a repo-relative path
-    // (`examples/preview/sample.png`) so a clean clone has content; then
-    // cwd; then the legacy `/tmp` paths from Linux-side dev so existing
-    // setups don't regress. Empty slot is fine — kernel-driven previews
-    // replace this path once the wire carries PNG mime types.
-    let mut probe_paths: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            probe_paths.push(dir.join("sample.png"));
-            probe_paths.push(dir.join("../sample.png"));
-            // From <repo>/rust/target/release/, ../../examples/preview
-            // resolves to <repo>/examples/preview.
-            probe_paths.push(dir.join("../../examples/preview/sample.png"));
-        }
-    }
-    probe_paths.push(std::path::PathBuf::from("examples/preview/sample.png"));
-    probe_paths.push(std::path::PathBuf::from("sample.png"));
-    probe_paths.push(std::path::PathBuf::from("/tmp/heatmap_test.png"));
-    probe_paths.push(std::path::PathBuf::from("/tmp/LossPlot_v2g.png"));
     // Startup splash: the bundled "Ship of Tools" wordmark fills the preview
     // pane until the user navigates (kernel-driven previews replace it).
-    // Linear-sampled so the logo scales smoothly. Falls back to a probed
-    // sample.png only if the bundled wordmark ever fails to decode.
+    // Linear-sampled so the logo scales smoothly.
     let preview_png = quad_from_png_bytes(
         &device,
         &queue,
@@ -270,26 +247,10 @@ fn load_splash_png(
         crate::preview::quad::SamplerKind::Linear,
     )
     .map_err(|e| {
-        tracing::warn!(error = %e, "startup wordmark decode failed; probing sample.png");
+        tracing::warn!(error = %e, "startup wordmark decode failed");
         e
     })
-    .ok()
-    .or_else(|| {
-        probe_paths
-            .iter()
-            .find_map(|p| std::fs::read(p).ok().map(|b| (p, b)))
-            .and_then(|(path, bytes)| {
-                tracing::info!(path = %path.display(), "sample PNG loaded");
-                quad_from_png_bytes(
-                    &device,
-                    &queue,
-                    &quad_pipeline,
-                    &bytes,
-                    crate::preview::quad::SamplerKind::Nearest,
-                )
-                .ok()
-            })
-    });
+    .ok();
     preview_png
 }
 
