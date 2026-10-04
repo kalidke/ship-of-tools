@@ -32,8 +32,8 @@ Per workspace row (built in `workspaces.rs`):
   `transfer.rs` serves `file.download` and `file.upload`. `handlers.rs` re-exports them for the dispatch in `server.rs`.
 - `workspaces.rs` builds the three per row; `server.rs` creates the `preview.changed` bus and filters it per connection
   (`preview_changed_visible`).
-- Confinement is also written in `confine.rs` (`path_within_root`; `paths.rs` re-exports it) and `handlers.rs`
-  (`canonical_under_root`); the copies
+- Confinement is also written in `confine.rs` (`path_within_root`; `paths.rs` re-exports it) and again beside it
+  (`canonical_under_root`, for `pluto.open` and `docs.open`); the copies
   here (`node_id_to_path_confined`, `target_to_path`) and the two rename-without-fsync writes (`write_file`,
   `ConceptStore::write`) are separate on purpose.
 

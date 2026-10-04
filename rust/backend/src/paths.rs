@@ -400,6 +400,21 @@ pub fn secure_socket_dir(dir: &Path) -> Result<()> {
     secure_private_dir(dir)
 }
 
+/// Strict allowlist for names that flow into a tmux/pty/shell invocation
+/// (security review): tmux session names (`tmux.create_session`/`kill_session`,
+/// `pty.open`'s `target`) and `workspace.create`'s `agent_name`, which
+/// `pty::boot_wrapper_command` splices RAW into a shell command string with
+/// no quoting. `1..=64` ASCII alphanumerics, `.`, `_`, `-` only — no shell
+/// metacharacters, no `|` (which would also corrupt `tmux.rs`'s naive
+/// `|`-delimited `list-sessions`/`list-panes` parsing), no whitespace/control
+/// bytes. `pub(crate)` so `server.rs` can reuse it for `pty.open`.
+pub(crate) fn valid_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// `is_private_dir`'s own tests moved to `sot_protocol::session_socket`
 /// with the function (ADR 0042 L2b) — see that module's
 /// `is_private_dir_tests`. `secure_private_dir`'s tests (below) still
@@ -594,5 +609,43 @@ mod state_dir_tests {
         std::env::remove_var("LOCALAPPDATA");
         std::env::remove_var("USERPROFILE");
         let _ = state_dir();
+    }
+}
+
+#[cfg(test)]
+mod valid_name_tests {
+    use super::valid_name;
+
+    #[test]
+    fn accepts_typical_names() {
+        assert!(valid_name("sot-be-myhost"));
+        assert!(valid_name("myhost-dev"));
+        assert!(valid_name("MyPackage.jl"));
+        assert!(valid_name("a"));
+        assert!(valid_name(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn rejects_empty_and_oversize() {
+        assert!(!valid_name(""));
+        assert!(!valid_name(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn rejects_shell_and_parser_metacharacters() {
+        // The pipe is the specific `tmux.rs` list-parsing corruption vector;
+        // the rest are generic shell-injection/whitespace rejects.
+        for bad in [
+            "a|b",
+            "a;b",
+            "a b",
+            "a'b",
+            "a$b",
+            "a`b",
+            "a\nb",
+            "/etc/passwd",
+        ] {
+            assert!(!valid_name(bad), "expected {bad:?} to be rejected");
+        }
     }
 }

@@ -138,64 +138,11 @@ fn find_other_workspace_with_root(
     })
 }
 
-/// Canonicalizes `path` and returns it if it resolves under `root`'s
-/// canonical form — `None` on any canonicalization failure (missing path,
-/// dangling symlink, ...) or if it escapes `root`.
-fn canonical_under_root(
-    path: &std::path::Path,
-    root: &std::path::Path,
-) -> Option<std::path::PathBuf> {
-    let canon_path = path.canonicalize().ok()?;
-    let canon_root = root.canonicalize().ok()?;
-    canon_path.starts_with(&canon_root).then_some(canon_path)
-}
-
-/// Confines `path` to ANY currently-registered workspace, not just the
-/// default one (a non-default-workspace open would otherwise be wrongly
-/// rejected) — the guard shared by `pluto.open` and `docs.open` (security
-/// review). Returns the canonical path; callers MUST use this value for
-/// everything downstream rather than re-deriving from the raw input, so the
-/// checked path and the acted-upon path can't diverge (TOCTOU).
-pub(crate) fn canonicalize_within_any_workspace(
-    path: &std::path::Path,
-    workspaces: &Workspaces,
-) -> Option<std::path::PathBuf> {
-    workspaces
-        .list()
-        .iter()
-        .find_map(|ws| canonical_under_root(path, &ws.project_root))
-}
-
-/// Same confinement as `canonicalize_within_any_workspace`, but also hands
-/// back the matching workspace's own canonical root — `docs.open`'s
-/// site-root walk (its only caller) needs that bound to climb toward without
-/// running a second, possibly-disagreeing confinement check of its own.
-pub(crate) fn canonicalize_and_workspace_root(
-    path: &std::path::Path,
-    workspaces: &Workspaces,
-) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    workspaces.list().iter().find_map(|ws| {
-        let canon_root = ws.project_root.canonicalize().ok()?;
-        canonical_under_root(path, &ws.project_root).map(|canon_path| (canon_path, canon_root))
-    })
-}
+pub(crate) use crate::files::confine::{canonicalize_and_workspace_root, canonicalize_within_any_workspace};
 
 pub(crate) use crate::pages::ops::{handle_docs_open, handle_quarto_open, handle_video_open};
 
-/// Strict allowlist for names that flow into a tmux/pty/shell invocation
-/// (security review): tmux session names (`tmux.create_session`/`kill_session`,
-/// `pty.open`'s `target`) and `workspace.create`'s `agent_name`, which
-/// `pty::boot_wrapper_command` splices RAW into a shell command string with
-/// no quoting. `1..=64` ASCII alphanumerics, `.`, `_`, `-` only — no shell
-/// metacharacters, no `|` (which would also corrupt `tmux.rs`'s naive
-/// `|`-delimited `list-sessions`/`list-panes` parsing), no whitespace/control
-/// bytes. `pub(crate)` so `server.rs` can reuse it for `pty.open`.
-pub(crate) fn valid_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-}
+pub(crate) use crate::paths::valid_name;
 
 pub(crate) use crate::files::transfer::{handle_file_upload, stream_file_download};
 
@@ -2098,44 +2045,6 @@ mod label_in_use_tests {
     fn a_different_slug_is_not_this_gates_question() {
         let r = reg(row("sot", "capsule", Some(Phase::Ready)));
         assert!(same_slug_row_in_use("other", &r).is_none());
-    }
-}
-
-#[cfg(test)]
-mod valid_name_tests {
-    use super::valid_name;
-
-    #[test]
-    fn accepts_typical_names() {
-        assert!(valid_name("sot-be-myhost"));
-        assert!(valid_name("myhost-dev"));
-        assert!(valid_name("MyPackage.jl"));
-        assert!(valid_name("a"));
-        assert!(valid_name(&"a".repeat(64)));
-    }
-
-    #[test]
-    fn rejects_empty_and_oversize() {
-        assert!(!valid_name(""));
-        assert!(!valid_name(&"a".repeat(65)));
-    }
-
-    #[test]
-    fn rejects_shell_and_parser_metacharacters() {
-        // The pipe is the specific `tmux.rs` list-parsing corruption vector;
-        // the rest are generic shell-injection/whitespace rejects.
-        for bad in [
-            "a|b",
-            "a;b",
-            "a b",
-            "a'b",
-            "a$b",
-            "a`b",
-            "a\nb",
-            "/etc/passwd",
-        ] {
-            assert!(!valid_name(bad), "expected {bad:?} to be rejected");
-        }
     }
 }
 
