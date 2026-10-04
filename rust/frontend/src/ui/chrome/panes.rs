@@ -47,7 +47,7 @@ impl PaneFocus {
     }
 
     /// Spatial neighbour of `self` in `dir`, walking only the panes the
-    /// layout shows: `columns` is the preset's column order (ADR 0014) and
+    /// layout shows: `columns` is the preset's column order and
     /// `drawer` is the slot the open drawer shows (`None` when closed or the
     /// preset has none). Left/Right step along `columns` and stop at its
     /// ends; Down enters the drawer; Up from a column stays. The drawer pane
@@ -131,11 +131,8 @@ pub(in crate::ui) fn maximize_slot(maximized: bool, focus: PaneFocus, leave_line
     (maximized && !leave_line).then(|| focus.slot())
 }
 
-/// Cached pane geometry. `tl` and `bl` are reserved for future use
-/// (click-to-focus, per-pane mouse interactions); only `tr` / `br` are
-/// read today for keyboard viewport sizing.
+/// Cached pane geometry.
 #[derive(Default, Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub(in crate::ui) struct PaneRects {
     pub(in crate::ui) nav: ratatui::layout::Rect,
     pub(in crate::ui) preview: ratatui::layout::Rect,

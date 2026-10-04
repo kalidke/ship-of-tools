@@ -238,7 +238,7 @@ impl ChromeView<'_> {
         //
         //   col 0 = outer left   col mid_col = inner vertical   col last = outer right
         //   row 0 = outer top    row mid_row = inner horizontal row last = outer bottom
-        // Preset-driven geometry (ADR 0014 layout rework).
+        // Preset-driven geometry.
         // Each named slot gets a rect; vlines/hlines drive the
         // wireframe + title positioning. Maximisation collapses
         // every other slot + every inner border so the focused

@@ -1,12 +1,5 @@
-// gpu.rs — winit + wgpu surface lifecycle.
-//
-// Owns the winit Window, wgpu Surface/Device/Queue, and the text layer
-// (text.rs). Drives a redraw on RedrawRequested: clears, then draws text on
-// top in the same render pass.
-//
-// chrome.rs (ratatui custom Backend) and preview.rs (preview-layer surface)
-// will plug in here as additional draw stages, both feeding into the same
-// wgpu surface — see ADR 0011 for the chrome-vs-preview-layer split.
+//! The window's state: `State`, the one struct every folder under ui/ reads and writes, and the
+//! module root that declares those folders.
 
 pub(crate) mod input;
 use input::*;

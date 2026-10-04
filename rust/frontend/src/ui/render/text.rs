@@ -4,14 +4,7 @@
 // and metrics. glyphon hosts cosmic-text-shaped runs in a wgpu glyph atlas
 // and renders them inside a render pass.
 //
-// This module is the lowest layer of the text stack. The custom ratatui
-// Backend in chrome.rs will sit on top and translate cells into TextAreas;
-// the markdown previewer in preview.rs will use the same FontSystem to lay
-// out longer flows.
-//
-// Public surface for now is intentionally tiny — `prepare_lines` + `render` —
-// and grows as chrome and preview demand more (multiple buffers, scrolling
-// regions, attribute spans, mixed monospace/proportional, etc.).
+// This module is the lowest layer of the text stack.
 
 use anyhow::{Context, Result};
 use glyphon::{

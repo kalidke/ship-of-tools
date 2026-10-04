@@ -1,5 +1,4 @@
-// layout.rs — geometry for the chrome's pane wireframe (ADR 0014
-// layout-presets rework).
+// layout.rs — geometry for the chrome's pane wireframe.
 //
 // Previously the chrome was hard-coded to a 2×2 quadrant (TL nav · TR
 // preview · BL llm · BR repl) parameterised by two percentages. This

@@ -332,8 +332,7 @@ pub(in crate::ui) fn layout_chords(state: &mut State, key: KeyPress<'_>, label: 
 
 pub(in crate::ui) fn drawer_chords(state: &mut State, key: KeyPress<'_>, label: String) -> ControlFlow<()> {
     let KeyPress { action, .. } = key;
-    // Ctrl+J: toggle the REPL drawer (ADR 0014 layout
-    // rework). VS Code's panel-toggle convention; reads
+    // Ctrl+J: toggle the REPL drawer. VS Code's panel-toggle convention; reads
     // intuitively as "show me the bottom panel". When
     // the drawer opens, focus moves into it so the user
     // can immediately type. When it closes, focus

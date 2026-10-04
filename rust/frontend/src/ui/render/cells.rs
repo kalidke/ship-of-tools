@@ -7,13 +7,10 @@
 //
 // Limitations of this step (deliberate — keep the spike scope tight):
 //   - Foreground color is honoured (per-cell, projected into runs of
-//     same-colour cells so each run becomes a coloured TextArea). Background
-//     colour and text modifiers (bold/italic/etc.) are still dropped; the
-//     grid records them but `project_lines` doesn't emit them yet.
+//     same-colour cells so each run becomes a coloured TextArea).
 //   - Per-cell glyph width is approximated as a constant; we trust monospace
 //     metrics from cosmic-text rather than per-cell measuring.
-//   - The cursor position is tracked but not rendered. Cursor draw lands once
-//     a quad pipeline exists for the bg layer (next bg-color step).
+//   - The cursor position is tracked but not rendered.
 
 use std::io;
 
