@@ -3,6 +3,7 @@
 mod registry;
 pub(crate) mod anchor;
 pub(crate) mod gate;
+pub(super) mod ops;
 pub(crate) mod reauth;
 pub(crate) mod run;
 pub(crate) mod spawn;

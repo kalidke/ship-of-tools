@@ -39,8 +39,8 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   ops, not through the file.
 
 ## Connections
-- In: every op finds its row through `Workspaces::resolve`; `handlers.rs` creates, lists and destroys rows
-  (`handle_workspace_create`, `handle_workspace_destroy`); `server::run` inserts the default
+- In: every op finds its row through `Workspaces::resolve`; `ops/` creates, lists and destroys rows
+  (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` inserts the default
   row.
 - Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),
   writes observations (`run::observer::observe`) and installs the observer (`install_observer`); the lifecycle close calls
@@ -49,6 +49,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   re-exports the names callers still reach as `crate::workspaces::`.
 
 ## Folders
+- `ops/`: the row ops clients call
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: a row's run as the daemon sees it: phase strings, observer, headless client, start, end, activation, watchdog, boot resume
 - `spawn/`: launching a row's supervisor: state-root checks, the detached spawn per OS, the Linux row scope
@@ -60,6 +61,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`
+- `ops/`: the row ops clients call
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: a row's run as the daemon sees it: phase strings, observer, headless client, start, end, activation, watchdog, boot resume
 - `spawn/`: launching a row's `sot-capsule supervise`: state-root checks, the detached spawn per OS, the Linux row scope
