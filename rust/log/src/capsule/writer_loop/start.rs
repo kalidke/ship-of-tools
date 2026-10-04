@@ -157,7 +157,7 @@ pub(super) fn start<'t, P: Producer>(
     // 250 MiB/s -- two orders of magnitude above anything conhost
     // delivers -- and at real delivery rates the pacer fires rarely.
     // Nothing about protocol ordering or durability depends on this:
-    // `service_transport_events!`/`tick` already run once per iteration,
+    // `service_transport_events`/`tick` already run once per iteration,
     // every write is fsynced before it's published (the watermark
     // barrier), and `attach_proto`'s replay tests prove the protocol
     // correct independent of timing.

@@ -5,7 +5,7 @@ use std::ops::ControlFlow;
 mod lanes;
 mod output_path;
 mod start;
-use lanes::{execute_actions, execute_light_actions};
+use lanes::{execute_actions, execute_light_actions, service_transport_events};
 use output_path::{eager_ground_check, flush_output, maybe_rotate, pace_output};
 use start::start;
 
@@ -133,78 +133,6 @@ pub fn run<P: Producer>(
         ControlFlow::Break(summary) => return Ok(summary),
     };
 
-    // Drains every currently-available transport event (non-blocking, like
-    // `commands.try_recv()` below) through `AttachProto`, executing
-    // whatever it decides. Called every MAIN-LOOP iteration only: once this
-    // loop is left for teardown, the wire lane's admission is revoked at
-    // the SAME boundary `commands` already is (`pty` is also moved into the
-    // Phase-B closer thread by then, so a wire-triggered resize could not
-    // run even if admitted).
-    macro_rules! service_transport_events {
-        () => {
-            let mut quota = TRANSPORT_EVENTS_PER_PASS;
-            while quota > 0 {
-                quota -= 1;
-                let Some(ev) = leg.transport.0.try_recv_event() else { break };
-                match ev {
-                    TransportEvent::ConnectionOpened(conn) => {
-                        leg.splitters.insert(conn, wire::FrameSplitter::new());
-                        leg = execute_actions(leg.attach_proto.connection_opened(conn, Instant::now()), leg)?;
-                    }
-                    TransportEvent::Bytes(conn, bytes) => {
-                        let Some(splitter) = leg.splitters.get_mut(&conn) else { continue };
-                        let (frames, err) = splitter.feed(&bytes);
-                        for f in frames {
-                            leg = execute_actions(leg.attach_proto.frame(conn, f, Instant::now()), leg)?;
-                        }
-                        if err.is_some() {
-                            leg.transport.0.close(conn);
-                            leg.splitters.remove(&conn);
-                            leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
-                            leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
-                        }
-                    }
-                    TransportEvent::ConnectionClosed(conn) => {
-                        leg.splitters.remove(&conn);
-                        leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
-                        leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
-                    }
-                    TransportEvent::Sent(conn, id) => {
-                        match leg.pending_sends.remove(&(conn, id)) {
-                            Some(marker) => leg = execute_actions(leg.attach_proto.sent(conn, marker, Instant::now()), leg)?,
-                            // Round-2 review, finding 7: legitimate ONLY
-                            // for a connection this loop already forgot
-                            // (closed, `pending_sends` purged by finding
-                            // 11's own retain) -- a late completion racing
-                            // the close. For a connection STILL active
-                            // (still in `splitters`), an unmatched `Sent`
-                            // is a transport contract violation: a
-                            // duplicate completion, or one for an id never
-                            // actually issued.
-                            None => assert!(
-                                !leg.splitters.contains_key(&conn),
-                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
-                                 matching outstanding send"
-                            ),
-                        }
-                    }
-                    // Round-2 e2e review, finding 4: a terminal transport
-                    // failure gets the SAME orderly self-end as an
-                    // externally requested EndRun -- no future connection
-                    // can ever be admitted, so continuing to run would
-                    // leave this capsule silently unreachable forever.
-                    TransportEvent::TransportFatal(detail) => {
-                        eprintln!(
-                            "sot-capsule: transport reported a terminal failure, ending this run: {detail}"
-                        );
-                        leg.shutdown_requested = true;
-                        leg.shutdown_reason = Some("transport-accept-failed".to_string());
-                    }
-                }
-            }
-        };
-    }
-
     // Finding 7: producer-bound admission is revoked once EndRun begins
     // (`AttachProto::begin_teardown`), but mgmt (`probe`/`status`) and
     // `Sent` completions must keep being serviced through BOTH teardown
@@ -271,7 +199,7 @@ pub fn run<P: Producer>(
         }};
     }
 
-    /// As `service_transport_events!`, but dispatching through
+    /// As `service_transport_events`, but dispatching through
     /// `execute_teardown_actions!` -- used by BOTH teardown phases so mgmt
     /// traffic and `Sent` completions keep flowing right up until the pipe
     /// is closed (finding 7).
@@ -406,14 +334,14 @@ pub fn run<P: Producer>(
     // caller's command channel is polled NON-BLOCKINGLY (rare traffic, and
     // this is the last point it is EVER polled — teardown never touches it
     // again, which is what makes admission revocation real). The wire
-    // transport is serviced every iteration too (`service_transport_events!`
+    // transport is serviced every iteration too (`service_transport_events`
     // + `tick`) — see the module doc's "Step 5 (U2)" section.
 
     let exit_kind = 'main: loop {
         if leg.producer.wait(Duration::ZERO)? {
             break 'main ExitKind::ProducerExited;
         }
-        service_transport_events!();
+        leg = service_transport_events(leg)?;
         leg = execute_actions(leg.attach_proto.tick(Instant::now()), leg)?;
         eager_ground_check(&mut leg)?;
         // ADR 0041 EndRun step 2 / Codex round-1 Blocker 1 discharge: the
@@ -466,7 +394,7 @@ pub fn run<P: Producer>(
         // before `bind`) pushes `ReaderEvent::TransportActivity` on the
         // SAME channel this `recv_timeout` already blocks on, the instant
         // the transport queues a fresh event (AFTER queuing it — see that
-        // callback's own doc — so `service_transport_events!` at the top
+        // callback's own doc — so `service_transport_events` at the top
         // of the NEXT iteration is guaranteed to find it). `Transport::
         // try_recv_event` itself is still never blocking (its own
         // contract, unchanged); this wait is what wakes early, not that
@@ -486,7 +414,7 @@ pub fn run<P: Producer>(
             }
             Ok(ReaderEvent::TransportActivity) => {
                 leg.wake_pending.store(false, Ordering::Release);
-                // Nothing else to do: `service_transport_events!` at this
+                // Nothing else to do: `service_transport_events` at this
                 // loop's own top (next iteration) drains and processes
                 // whatever prompted this wake.
             }

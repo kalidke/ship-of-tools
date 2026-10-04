@@ -1,4 +1,4 @@
-//! Carrying out AttachProto's actions for the leg.
+//! The leg's side of its lanes: transport events in through AttachProto and its actions carried out, in the main loop and through teardown.
 use super::*;
 use crate::attach_proto::RequestId;
 
@@ -207,5 +207,77 @@ fn apply_resize<'t, P: Producer>(
     leg.frames_written += 1;
     leg = maybe_rotate(leg)?;
     queue.extend(leg.attach_proto.resize_outcome(conn, ok, cols, rows, request_id, Instant::now()));
+    Ok(leg)
+}
+
+
+// Drains every currently-available transport event (non-blocking, like
+// `commands.try_recv()` below) through `AttachProto`, executing
+// whatever it decides. Called every MAIN-LOOP iteration only: once this
+// loop is left for teardown, the wire lane's admission is revoked at
+// the SAME boundary `commands` already is (`pty` is also moved into the
+// Phase-B closer thread by then, so a wire-triggered resize could not
+// run even if admitted).
+pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t, P>> {
+    let mut quota = TRANSPORT_EVENTS_PER_PASS;
+    while quota > 0 {
+        quota -= 1;
+        let Some(ev) = leg.transport.0.try_recv_event() else { break };
+        match ev {
+            TransportEvent::ConnectionOpened(conn) => {
+                leg.splitters.insert(conn, wire::FrameSplitter::new());
+                leg = execute_actions(leg.attach_proto.connection_opened(conn, Instant::now()), leg)?;
+            }
+            TransportEvent::Bytes(conn, bytes) => {
+                let Some(splitter) = leg.splitters.get_mut(&conn) else { continue };
+                let (frames, err) = splitter.feed(&bytes);
+                for f in frames {
+                    leg = execute_actions(leg.attach_proto.frame(conn, f, Instant::now()), leg)?;
+                }
+                if err.is_some() {
+                    leg.transport.0.close(conn);
+                    leg.splitters.remove(&conn);
+                    leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
+                    leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
+                }
+            }
+            TransportEvent::ConnectionClosed(conn) => {
+                leg.splitters.remove(&conn);
+                leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
+                leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
+            }
+            TransportEvent::Sent(conn, id) => {
+                match leg.pending_sends.remove(&(conn, id)) {
+                    Some(marker) => leg = execute_actions(leg.attach_proto.sent(conn, marker, Instant::now()), leg)?,
+                    // Round-2 review, finding 7: legitimate ONLY
+                    // for a connection this loop already forgot
+                    // (closed, `pending_sends` purged by finding
+                    // 11's own retain) -- a late completion racing
+                    // the close. For a connection STILL active
+                    // (still in `splitters`), an unmatched `Sent`
+                    // is a transport contract violation: a
+                    // duplicate completion, or one for an id never
+                    // actually issued.
+                    None => assert!(
+                        !leg.splitters.contains_key(&conn),
+                        "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
+                         matching outstanding send"
+                    ),
+                }
+            }
+            // Round-2 e2e review, finding 4: a terminal transport
+            // failure gets the SAME orderly self-end as an
+            // externally requested EndRun -- no future connection
+            // can ever be admitted, so continuing to run would
+            // leave this capsule silently unreachable forever.
+            TransportEvent::TransportFatal(detail) => {
+                eprintln!(
+                    "sot-capsule: transport reported a terminal failure, ending this run: {detail}"
+                );
+                leg.shutdown_requested = true;
+                leg.shutdown_reason = Some("transport-accept-failed".to_string());
+            }
+        }
+    }
     Ok(leg)
 }
