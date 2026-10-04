@@ -11,6 +11,7 @@ rust/frontend/src/ui/CLAUDE.md. Record: ADR 0042 and 0045.
 - `attach.rs`: the attach client (`PaneAttachClient`), `State::attach_session_to_bl`, its event pump, and the warm pool
   of parked clients (`WarmAttachPool`).
 - `input.rs`: `State::send_pane_input` and the pane's mouse selection (`llm_cell_at_px`, `copy_llm_selection`).
+- `replies.rs`: pty.open replies (attach direct, failure)
 
 ## Start here
 attach.rs `attach_session_to_bl`, for how a selected row becomes a pane client; screen.rs `pane_screen_choice`, for what

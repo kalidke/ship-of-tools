@@ -4,6 +4,7 @@ use super::*;
 
 mod attach;
 mod input;
+mod replies;
 mod screen;
 
 pub(in crate::ui) use attach::*;
