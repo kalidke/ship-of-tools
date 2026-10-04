@@ -11,7 +11,8 @@ scripts/CLAUDE.md.
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
   itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the PowerShell 5.1 parse and the
-  `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu), `conpty-windows-2022` (ConPTY and capsule
+  `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, and on ubuntu the steps "Check the layout"
+  (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
   into a clean container).
 - `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
@@ -31,6 +32,8 @@ scripts/CLAUDE.md.
 - CI is the tag gate: `scripts/release.sh` refuses a cut unless the latest non-skipped `rust.yml` and `CI.yml` runs on
   the branch being cut are green and in HEAD's history; a `fixes/*` or `rc/*` branch has runs only if they are
   dispatched there (`gh workflow run <workflow> --ref <branch>`).
+- A new exception to the layout limits is a line in `scripts/tests/check-layout.allow` with its reason, in the commit that
+  needs it.
 - A suite runs only if a step names it: add a new suite to `rust.yml` (or `CI.yml` for Julia) by name, in the commit
   that adds it.
 - The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of

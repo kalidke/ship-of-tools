@@ -170,6 +170,16 @@ jobs:
           [ "$n" -gt 0 ] || { echo "no shell scripts found"; rc=1; }
           exit "$rc"
 
+      - name: Check the layout
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: .
+        run: bash scripts/tests/check-layout.sh --allow scripts/tests/check-layout.allow
+
+      - name: Test the layout tools
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: .
+        run: bash scripts/tests/test-check-layout.sh && bash scripts/tests/test-moved-check.sh
+
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
       - name: Test topology plan (bash)
