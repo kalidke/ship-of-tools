@@ -12,6 +12,7 @@ placeholders for the pane to draw. Part of fe-ui; charter: rust/frontend/src/ui/
 - `tests.rs`: tests for the walk, media blocks, front matter and anchor lines.
 - `media.rs`: math and table caches, the lazy `math.render` and `markdown.tokenize` requests, and the placeholder-to-rect pass.
 - `highlight.rs`: tree-sitter highlighting service and scope-to-color mapping.
+- `testdata/`: the walk's golden output for a fixture that reaches every arm.
 
 ## Start here
 `MarkdownPreview` in mod.rs; `walk` in walk.rs for how the tree becomes spans.

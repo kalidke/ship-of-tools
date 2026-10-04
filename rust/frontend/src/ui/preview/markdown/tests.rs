@@ -304,3 +304,122 @@ fn anchor_scroll_for_def_line_maps_to_docstring_top() {
     // Out of range -> 0 (caller's clamp keeps EOF items on-screen).
     assert_eq!(p.anchor_scroll_for_def_line(999), 0);
 }
+
+/// A fixture that reaches every arm of `walk`, including the cached and
+/// uncached branches of fences, math and figures.
+const EVERY_ARM: &str = r#"---
+title: Front matter
+---
+
+# Heading one
+
+## Heading two
+
+### Heading three
+
+#### Heading four
+
+Plain *emphasis*, **strong**, ~~struck~~, `inline code`, <b>html</b> and a [link with *style*](https://example.com).
+Soft break here
+and a hard break here\
+after a backslash. A footnote[^1].
+
+> Quoted *line* one
+>
+> > Nested quote
+
+- bullet one
+- bullet two
+  1. nested ordered
+  2. nested ordered again
+
+7. seventh
+8. eighth
+
+- [ ] open task
+- [x] done task
+
+***
+
+```julia
+x = 1  # cached fence
+```
+
+```julia
+y = 2  # uncached fence
+```
+
+```rust
+fn main() {}
+```
+
+```
+plain fence
+```
+
+| A | B |
+|---|:-:|
+| 1 | 2 |
+| 3 | 4 |
+
+Inline $a+b$ cached and $c+d$ uncached.
+
+$$E = mc^2$$
+
+$$\int_0^1 x\,dx$$
+
+![cached figure](figs/cached.png)
+
+![pending figure](figs/pending.png)
+
+![failed figure](figs/failed.png)
+
+![remote badge](https://img.example.com/badge.svg?style=flat)
+
+![](https://img.example.com/path/banner.png)
+
+![an alt text that is longer than sixty characters so the label is truncated](data:image/png;base64,AAAA)
+
+[^1]: The note.
+"#;
+
+/// The walk's whole output for `EVERY_ARM` (spans with their attributes,
+/// media blocks, fence sources and the fences still to tokenize) matches
+/// `testdata/walk_every_arm.golden`. To regenerate it after a deliberate
+/// rendering change, run this test once with `SOT_BLESS_GOLDEN=1` and
+/// review the diff.
+#[test]
+fn walk_output_for_every_arm_matches_the_golden() {
+    let mut math: MathMetricsMap = HashMap::new();
+    math.insert(
+        ("a+b".to_string(), false),
+        MathMetrics { width_px: 40.0, height_px: 18.0, baseline_drop_px: 4.0 },
+    );
+    math.insert(
+        ("E = mc^2".to_string(), true),
+        MathMetrics { width_px: 90.0, height_px: 30.0, baseline_drop_px: 6.0 },
+    );
+    let mut figures = FigureMetricsMap::new();
+    figures.insert("figs/cached.png".to_string(), FigureMetrics { width_px: 120.0, height_px: 80.0 });
+    figures.insert("figs/failed.png".to_string(), FigureMetrics { width_px: 0.0, height_px: 0.0 });
+    let highlight = crate::preview::highlight::HighlightService::new().expect("highlight service init");
+    // The first julia fence gets a cached overlay: its key is the one a
+    // walk with an empty cache asks for first.
+    let first = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &HashMap::new());
+    let (lang, hash, _) = first.pending_token_fences[0].clone();
+    let mut tokens = HashMap::new();
+    tokens.insert((lang, hash), vec![crate::transport::MarkdownToken { start: 1, end: 2, kind: "variable".to_string() }]);
+    let p = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &tokens);
+    let mut lines: Vec<String> = p._spans.iter().map(|s| format!("span {s:?}")).collect();
+    lines.extend(p.media_blocks.iter().map(|m| format!("media {m:?}")));
+    lines.extend(p.code_block_sources.iter().map(|c| format!("source {c:?}")));
+    lines.extend(p.pending_token_fences.iter().map(|(lang, _, src)| format!("fence {lang:?} {src:?}")));
+    let actual = lines.join("\n") + "\n";
+    let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/preview/markdown/testdata/walk_every_arm.golden");
+    if std::env::var_os("SOT_BLESS_GOLDEN").is_some() {
+        std::fs::create_dir_all(golden.parent().unwrap()).unwrap();
+        std::fs::write(&golden, &actual).unwrap();
+    }
+    let want = std::fs::read_to_string(&golden).expect("golden missing: run once with SOT_BLESS_GOLDEN=1");
+    assert!(actual == want, "walk output differs from {}:\n{actual}", golden.display());
+}
