@@ -13,6 +13,7 @@ platform; charter: rust/log/src/host/CLAUDE.md (written by a later unit, not yet
 - `challenge_win.rs`: Windows steps 1-3: the pipe server's token SID and process handle.
 - `exchange.rs`: the identity request and reply codec for the wire round trip (`feed`).
 - `deadline.rs`: the three-state deadline race that bounds a blocking call (`run_with_deadline`).
+- `os_account.rs`: this process's OS account as the OS issues it (`own_account_id`), the value two accounts on one box are told apart by.
 - `peer_owner/`: whose OS account owns the far end of an accepted loopback connection.
 
 ## Start here
