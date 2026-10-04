@@ -12,9 +12,7 @@ pub(super) fn lc(epoch: u64, n: u64) -> crate::envelope::Envelope {
 }
 
 /// A controller-actor frame (`Actor.kind=controller` requires
-/// `controller_id`+`take_epoch` — ADR 0039's cross-field matrix), the
-/// shape both `input` and `input_fact` frames use in `capsule_win.rs`'s
-/// real WAL.
+/// `controller_id`+`take_epoch` — ADR 0039's cross-field matrix).
 pub(super) fn ctrl_env(epoch: u64, n: u64, class: Class, payload: serde_json::Value, refs: Vec<FrameRef>) -> Envelope {
     Envelope {
         seq: Seq { epoch, n },

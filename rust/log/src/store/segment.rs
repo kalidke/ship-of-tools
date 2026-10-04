@@ -292,12 +292,7 @@ impl SegmentWriter {
     /// pessimistic" — the exact boundary ADR 0041's one-fact-one-barrier
     /// rule pins: a visible marker is authoritative regardless of what
     /// the writer reported. One-shot: consumed by the next qualifying
-    /// `append` call, never armed twice by accident. Its only real
-    /// caller (`capsule_win.rs`'s own test module) is Windows-only, so a
-    /// non-Windows test build has no caller at all for this item —
-    /// `cfg_attr` suppresses the resulting dead_code warning there
-    /// specifically, matching `host_handshake`/`deadline`'s identical
-    /// reasoning in `lib.rs`.
+    /// `append` call, never armed twice by accident.
     #[cfg(test)]
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn inject_fault_on_next_append_sync(&mut self) {

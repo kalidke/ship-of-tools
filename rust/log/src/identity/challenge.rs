@@ -5,9 +5,8 @@
 //! trait every transport implements ([`ChallengeableConnection`]), and the
 //! wire half of the challenge (`exchange_identity` — steps 4-5, the
 //! deadline-bounded request/reply loop every lane shares). Steps 1-3 (the
-//! OS-level peer-identity check) are necessarily platform-specific and
-//! live in `challenge_win.rs` today; a `challenge_unix.rs` counterpart
-//! lands in L1-unix's LU1c. Both platforms' own `challenge()`/
+//! OS-level peer-identity check) are necessarily platform-specific.
+//! `challenge()`/
 //! `authenticate_server()` call into THIS module's `exchange_identity`
 //! for steps 4-5, so the wire behavior is provably identical everywhere,
 //! not merely independently re-implemented per platform.

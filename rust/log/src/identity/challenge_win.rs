@@ -79,7 +79,7 @@ impl ChallengedProcess {
 
     /// The creation time this handle was PROVEN against, as the exact
     /// FILETIME bits (`(high << 32) | low`) — the same packing
-    /// `capsule_win.rs`'s own `self_status` uses for the wire's
+    /// `self_status` uses for the wire's
     /// `status_ok.created` field, so a caller can compare the two
     /// directly with no repacking.
     pub fn created(&self) -> u64 {
