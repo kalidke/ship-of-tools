@@ -86,6 +86,7 @@ pub enum VerifyMode {
 }
 
 mod leg;
+mod lifecycle;
 mod pass;
 
 pub use leg::{leg_carries_run_end_marker, leg_producer_uptime_ms};
