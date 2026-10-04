@@ -268,7 +268,7 @@ impl Leases {
 
     /// The grant rule, in order: `Closing` once a shutdown has begun;
     /// `Undetermined` if the peer is, or this daemon's boot is unknown;
-    /// `Granted` iff the token passed and the claim equals this boot and
+    /// `Granted` iff the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
     /// generation and clears an in-process handover and a pending start:
     /// one still here is one the ticker has not acted on, whatever the
@@ -279,13 +279,12 @@ impl Leases {
         &self,
         req: &FeLeaseReq,
         peer: &PeerAuthOutcome,
-        token_ok: bool,
     ) -> (LeaseOutcome, Option<u64>) {
         let mut st = self.lock();
         if st.phase != Phase::Open {
             return (LeaseOutcome::Closing, None);
         }
-        let who = match claim(st.own_boot.as_deref(), req, peer, token_ok) {
+        let who = match claim(st.own_boot.as_deref(), req, peer) {
             Ok(who) => who,
             Err((outcome, check)) => {
                 tracing::warn!(
@@ -556,7 +555,6 @@ pub(crate) async fn hold<R, W>(
     mut tx: W,
     first: Frame,
     peer: PeerAuthOutcome,
-    expected_token: Option<&str>,
     leases: &Leases,
     state_root: Option<&Path>,
 ) -> anyhow::Result<()>
@@ -567,11 +565,7 @@ where
     let Ok(req) = serde_json::from_value::<FeLeaseReq>(first.payload.clone()) else {
         return crate::proxy::reject(&mut tx, first.id, op::FE_LEASE, "bad_request", "malformed fe.lease").await;
     };
-    let token_ok = expected_token.is_none_or(|expected| {
-        let presented = req.token.clone().unwrap_or_default();
-        crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes())
-    });
-    let (outcome, gen) = leases.grant(&req, &peer, token_ok);
+    let (outcome, gen) = leases.grant(&req, &peer);
     let granted = gen.is_some();
     let res = FeLeaseRes {
         outcome,
@@ -713,13 +707,11 @@ pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<
 }
 
 /// The grant rule's claim checks, in order: the claimant's identity, or
-/// the refusal and the check that failed. A bad token is `Foreign`: the
-/// peer is not proven ours, and only a broken install hits it.
+/// the refusal and the check that failed.
 fn claim(
     own_boot: Option<&str>,
     req: &FeLeaseReq,
     peer: &PeerAuthOutcome,
-    token_ok: bool,
 ) -> Result<ProcessIdentity, (LeaseOutcome, &'static str)> {
     let Some(own_boot) = own_boot else {
         return Err((LeaseOutcome::Undetermined, "own boot unknown"));
@@ -729,9 +721,6 @@ fn claim(
         PeerAuthOutcome::Foreign => return Err((LeaseOutcome::Foreign, "peer foreign")),
         PeerAuthOutcome::Authenticated(peer) => peer,
     };
-    if !token_ok {
-        return Err((LeaseOutcome::Foreign, "bad token"));
-    }
     if !boots_match(&req.boot, own_boot, cfg!(windows)) {
         return Err((LeaseOutcome::Foreign, "boot mismatch"));
     }

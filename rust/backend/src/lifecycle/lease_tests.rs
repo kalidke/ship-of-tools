@@ -46,7 +46,7 @@ fn fixture(own_boot: Option<&str>) -> Fixture {
 
 impl Fixture {
     fn grant(&self, who: &ProcessIdentity) -> u64 {
-        let (outcome, gen) = self.leases.grant(&req(who), &peer(who), true);
+        let (outcome, gen) = self.leases.grant(&req(who), &peer(who));
         assert_eq!(outcome, LeaseOutcome::Granted, "{who:?}");
         gen.expect("a grant carries its generation")
     }
@@ -125,7 +125,7 @@ fn lease_during_startup_cleanup_keeps_the_record() {
         write_or_delete(&path, &rec).unwrap();
         let leases = start_on(&path);
         let who = id(1);
-        let (outcome, _) = leases.grant(&req(&who), &peer(&who), true);
+        let (outcome, _) = leases.grant(&req(&who), &peer(&who));
         assert_eq!(outcome, LeaseOutcome::Granted, "{what}: a grant still answers the window");
         assert_eq!(
             read_record(&path).unwrap(),
@@ -160,22 +160,20 @@ fn lease_claim_table() {
         edit(&mut r);
         r
     };
-    let cases: Vec<(&str, FeLeaseReq, PeerAuthOutcome, bool, LeaseOutcome, Option<&str>)> = vec![
-        ("equal identity", req(&me), peer(&me), true, Granted, None),
-        ("different pid", edited(|r| r.pid += 1), peer(&me), true, Foreign, Some("pid mismatch")),
-        ("different created", edited(|r| r.created += 1), peer(&me), true, Foreign, Some("created mismatch")),
-        ("different boot, same pid and created", edited(|r| r.boot = "boot-b".into()), peer(&me), true, Foreign, Some("boot mismatch")),
-        ("foreign peer", req(&me), PeerAuthOutcome::Foreign, true, Foreign, Some("peer foreign")),
-        ("undetermined peer", req(&me), PeerAuthOutcome::Undetermined, true, Undetermined, Some("peer undetermined")),
-        ("undetermined peer, bad token", req(&me), PeerAuthOutcome::Undetermined, false, Undetermined, Some("peer undetermined")),
-        ("bad token", req(&me), peer(&me), false, Foreign, Some("bad token")),
+    let cases: Vec<(&str, FeLeaseReq, PeerAuthOutcome, LeaseOutcome, Option<&str>)> = vec![
+        ("equal identity", req(&me), peer(&me), Granted, None),
+        ("different pid", edited(|r| r.pid += 1), peer(&me), Foreign, Some("pid mismatch")),
+        ("different created", edited(|r| r.created += 1), peer(&me), Foreign, Some("created mismatch")),
+        ("different boot, same pid and created", edited(|r| r.boot = "boot-b".into()), peer(&me), Foreign, Some("boot mismatch")),
+        ("foreign peer", req(&me), PeerAuthOutcome::Foreign, Foreign, Some("peer foreign")),
+        ("undetermined peer", req(&me), PeerAuthOutcome::Undetermined, Undetermined, Some("peer undetermined")),
     ];
     let f = fixture(Some(BOOT));
-    for (name, r, p, token_ok, want, why) in &cases {
-        let (got, gen) = f.leases.grant(r, p, *token_ok);
+    for (name, r, p, want, why) in &cases {
+        let (got, gen) = f.leases.grant(r, p);
         assert_eq!(got, *want, "{name}");
         assert_eq!(gen.is_some(), *want == Granted, "{name}: a generation iff granted");
-        assert_eq!(claim(Some(BOOT), r, p, *token_ok).err(), why.map(|why| (*want, why)), "{name}: the check named");
+        assert_eq!(claim(Some(BOOT), r, p).err(), why.map(|why| (*want, why)), "{name}: the check named");
     }
     let a = f.grant(&me);
     let b = f.grant(&me);
@@ -184,15 +182,15 @@ fn lease_claim_table() {
 
     let f = fixture(None);
     for p in [peer(&me), PeerAuthOutcome::Foreign] {
-        assert_eq!(f.leases.grant(&req(&me), &p, true).0, Undetermined, "missing daemon boot, {p:?}");
-        assert_eq!(claim(None, &req(&me), &p, true).err(), Some((Undetermined, "own boot unknown")), "{p:?}");
+        assert_eq!(f.leases.grant(&req(&me), &p).0, Undetermined, "missing daemon boot, {p:?}");
+        assert_eq!(claim(None, &req(&me), &p).err(), Some((Undetermined, "own boot unknown")), "{p:?}");
     }
     assert_eq!(f.on_disk(), None, "a refusal records nothing");
 
     let f = fixture(Some(BOOT));
     f.leases.begin_close();
     for p in [peer(&me), PeerAuthOutcome::Undetermined] {
-        assert_eq!(f.leases.grant(&req(&me), &p, true), (Closing, None), "closing, {p:?}");
+        assert_eq!(f.leases.grant(&req(&me), &p), (Closing, None), "closing, {p:?}");
     }
 }
 
@@ -206,7 +204,7 @@ fn grant_refused_when_record_cannot_be_written() {
     let f = fixture(Some(BOOT));
     let a = f.grant(&id(1));
     mode(&f, 0o500);
-    assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true), (LeaseOutcome::Undetermined, None), "refused, never Granted");
+    assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2))), (LeaseOutcome::Undetermined, None), "refused, never Granted");
     mode(&f, 0o700);
     f.leases.depart(a, Some(LeaveIntent::Keep), T0);
     assert_eq!(f.on_disk(), None, "the refused grant's entry is undone");
@@ -215,7 +213,7 @@ fn grant_refused_when_record_cannot_be_written() {
     let f = fixture(Some(BOOT));
     f.leases.install_pending(T0 + handover_bound_ms()).unwrap();
     mode(&f, 0o500);
-    assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true), (LeaseOutcome::Undetermined, None));
+    assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1))), (LeaseOutcome::Undetermined, None));
     mode(&f, 0o700);
     assert_eq!(
         f.leases.tick(T0 + handover_bound_ms()),
@@ -252,7 +250,7 @@ async fn departure_table() {
         assert_eq!(gone, want == Decision::Shutdown, "gone fires iff shutdown, {intent:?}");
         assert_eq!(f.on_disk(), rec, "{intent:?}");
         if want == Decision::Shutdown {
-            assert_eq!(f.leases.grant(&req(&id(3)), &peer(&id(3)), true).0, LeaseOutcome::Closing);
+            assert_eq!(f.leases.grant(&req(&id(3)), &peer(&id(3))).0, LeaseOutcome::Closing);
         }
     }
 }
@@ -328,7 +326,7 @@ fn pending_start_table() {
     assert_eq!(f.leases.tick(until), Tick::Shutdown, "expiry with no lease held");
     assert_eq!(f.leases.tick(until + 1), Tick::None, "decided once");
     assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }));
-    assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1)), true).0, LeaseOutcome::Closing);
+    assert_eq!(f.leases.grant(&req(&id(1)), &peer(&id(1))).0, LeaseOutcome::Closing);
 }
 
 #[test]
@@ -337,7 +335,7 @@ fn cleanup_finish_never_ends_a_shutdown() {
     f.leases.begin_close();
     f.leases.finish_cleanup(0, vec![]).unwrap();
     assert_eq!(f.on_disk(), Some(HeldRecord { closing: true, ..empty() }), "closing until the shutdown's own step 5");
-    assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2)), true).0, LeaseOutcome::Closing);
+    assert_eq!(f.leases.grant(&req(&id(2)), &peer(&id(2))).0, LeaseOutcome::Closing);
 }
 
 #[tokio::test]
@@ -609,7 +607,7 @@ fn line(id: u64, op: &str, payload: impl Serialize) -> Vec<u8> {
 async fn hold_over(ours: tokio::io::DuplexStream, who: ProcessIdentity, leases: &Leases) -> anyhow::Result<()> {
     let (rx, tx) = tokio::io::split(ours);
     let first = Frame::req(1, op::FE_LEASE, serde_json::to_value(req(&who)).unwrap());
-    hold(tokio::io::BufReader::new(rx), tx, first, peer(&who), None, leases, None).await
+    hold(tokio::io::BufReader::new(rx), tx, first, peer(&who), leases, None).await
 }
 
 #[tokio::test]
@@ -734,7 +732,7 @@ fn grant_after_deadline_before_tick_clears_the_pending() {
     let until = T0 + handover_bound_ms();
     let f = fixture(Some(BOOT));
     f.leases.install_pending(until).unwrap();
-    let (outcome, gen) = f.leases.grant(&req(&id(1)), &peer(&id(1)), true);
+    let (outcome, gen) = f.leases.grant(&req(&id(1)), &peer(&id(1)));
     assert_eq!(outcome, LeaseOutcome::Granted);
     assert_eq!(f.leases.depart(gen.unwrap(), Some(LeaveIntent::Keep), until + 1), Decision::None);
     assert_eq!(

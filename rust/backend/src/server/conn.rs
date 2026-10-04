@@ -184,7 +184,6 @@ where
                     tx,
                     f,
                     peer_identity,
-                    None,
                     &leases,
                     state_root.as_deref(),
                 )
