@@ -2,11 +2,11 @@
 # Self-test for moved-check.sh: tiny throwaway repos under mktemp -d.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tool="$here/moved-check.sh"
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:?}"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 pass=0; fail=0
 G() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
-newrepo() { rm -rf "$tmp/r"; mkdir "$tmp/r"; cd "$tmp/r"; G init -q -b main; }
+newrepo() { rm -rf "${tmp:?}/r"; mkdir "$tmp/r"; cd "$tmp/r"; G init -q -b main; }
 commit() { G add -A; G commit -q -m "$1"; }
 # run <name> <want-rc> [grep-patterns that must appear...]; range is base..head
 check() {

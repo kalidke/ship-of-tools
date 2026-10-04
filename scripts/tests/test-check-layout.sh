@@ -2,10 +2,10 @@
 # Self-test for check-layout.sh: tiny throwaway repos under mktemp -d.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tool="${CHECK_LAYOUT_TOOL:-$here/check-layout.sh}"   # the override lets a case run against an older copy
-tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d)"; trap 'rm -rf "${tmp:?}"' EXIT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 pass=0; fail=0
-newrepo() { rm -rf "$tmp/r"; mkdir "$tmp/r"; cd "$tmp/r"; git init -q -b main; }
+newrepo() { rm -rf "${tmp:?}/r"; mkdir "$tmp/r"; cd "$tmp/r"; git init -q -b main; }
 commit() { git add -A; git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q -m x; }
 lines() { awk -v n="$1" -v p="$2" 'BEGIN{for(i=1;i<=n;i++) print p i}'; }
 # check <name> <want-rc> <args...>; patterns come from $WANT (newline-separated), $NOT
