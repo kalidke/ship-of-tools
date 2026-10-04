@@ -151,9 +151,7 @@ fn nav_action_key(state: &mut State, key: KeyPress<'_>, was_destroy_pending: Opt
         // status line tells the user; second press
         // on the same row fires `workspace.destroy`.
         // Cursor move, mode switch, or any other
-        // key clears the arm (handled by the
-        // snapshot-and-clear at the top of this
-        // handler). A default TMUX row is rejected
+        // key clears the arm. A default TMUX row is rejected
         // backend-side (surfaces as a status error);
         // a default CAPSULE row instead ends its
         // run and keeps the row (backend-side too —

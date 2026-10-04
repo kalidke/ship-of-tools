@@ -91,8 +91,7 @@ fn preview_action_key(state: &mut State, key: KeyPress<'_>, h: i32) {
         // croppable image.
         //
         // Deliberately unguarded on modifiers: Ctrl+C lands
-        // here too (it is not a PNG zoom/pan binding, so
-        // the block above falls through), and users reach
+        // here too, and users reach
         // for the universal copy chord out of habit. Both
         // spellings are the same action and both move focus
         // to the LLM pane once the crop paste lands — the

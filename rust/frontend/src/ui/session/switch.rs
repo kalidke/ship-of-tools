@@ -253,7 +253,7 @@ impl State {
 
     fn load_entering_tree(&mut self, old_tree_key: TreeKey) -> bool {
         // Is a FILES tree.root already on its way? Tracked so the badge-consume
-        // below never fires a second one (Codex R6 — the corrective reload and
+        // never fires a second one (Codex R6 — the corrective reload and
         // the badge path both used to be able to request a root).
         let mut files_root_inflight = false;
         // Swap the nav tree through the store now that the entering mode is
@@ -321,7 +321,7 @@ impl State {
         // Resolve the switched-to slug the same way `handle_nav_envelope`'s gate
         // does (active id, falling back to the default workspace's slug) so the
         // key matches what `mark_pending_nav` recorded. `self.active_host` is
-        // already the switched-to host at this point (set earlier in this fn).
+        // already the switched-to host at this point.
         let switched_slug = self
             .active_workspace_id
             .clone()
@@ -383,8 +383,7 @@ impl State {
         // preview stay in sync. Two cases, keyed on `restored`:
         if restored && files_tree_usable {
             // Revisit: restore_workspace_ui put the snapshot tree
-            // back and sent NO tree.root (the `!restored` guard
-            // above), so a tree.root-gated reveal would never fire —
+            // back and sent NO tree.root, so a tree.root-gated reveal would never fire —
             // the original #4 gap, and exactly the maintainer's case (his was
             // a revisit). The rows are present now, so reveal
             // immediately: `drive_reveal_step` lands a visible row or
@@ -410,13 +409,12 @@ impl State {
         } else {
             // First visit (a tree.root was requested but its rows
             // aren't in yet), a restored-but-FOREIGN tree, or a
-            // restored MODULES tree that this block just forced into
-            // Files mode. The rows we want don't exist yet, so arm a
+            // restored MODULES tree. The rows we want don't exist yet, so arm a
             // one-shot reveal consumed on the incoming reply (see the
             // TreeRoot handler).
             self.pending_switch_reveal = Some(node_id.clone());
             // ...and make sure a reply is actually coming. The
-            // Modules-restore case fires nothing above (the
+            // Modules-restore case fires nothing (the
             // corrective reload is Files-gated, correctly), so
             // without this the badge would arm a one-shot that never
             // resolves and Files mode would keep showing the Modules

@@ -415,8 +415,7 @@ pub(in crate::ui) fn scroll_line_chords(state: &mut State, key: KeyPress<'_>) ->
     // focused pane. Shared across REPL and Preview here so
     // the rule reads in one place. NavTree is cursor-driven
     // (manual scroll would desync) and LLM passes alt+arrow
-    // through to the pty so tmux/shell keep alt-keybinds —
-    // both fall through to the per-pane match below.
+    // through to the pty so tmux/shell keep alt-keybinds.
     if matches!(action, Some(Action::ScrollLineUp | Action::ScrollLineDown)) {
         let row_step: i32 = 1;
         match (state.focus, action) {

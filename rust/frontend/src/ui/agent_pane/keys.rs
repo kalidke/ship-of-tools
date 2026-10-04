@@ -10,8 +10,7 @@ pub(in crate::ui) fn agent_pane_key(state: &mut State, key: KeyPress<'_>, label:
     // Esc, Tab, arrows, Ctrl+letter all reach the
     // terminal so shell editing, tmux prefix
     // (Ctrl+B), and TUI apps work. To leave this
-    // pane use Ctrl+Arrow — pane move is handled
-    // above before this arm runs.
+    // pane use Ctrl+Arrow.
     //
     // Paste shortcut interception: Ctrl+V / Cmd+V /
     // Shift+Insert read the OS clipboard and forward

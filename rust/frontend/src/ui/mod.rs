@@ -1243,8 +1243,6 @@ struct State {
     /// distinct field from `preview_node_id_fired`.
     preview_src_node_id: Option<String>,
     // ui/preview/image: the image view, ROI, pages, scalebar, captions and figures.
-    /// Spike-step-4 placeholders — kernel-driven previews replace these once
-    /// transport lands.
     preview_png: Option<Quad>,
     /// Zoom multiplier for the PNG preview pane — 1.0 fits the image to
     /// the pane (current letterbox behaviour); >1.0 samples a 1/zoom-wide

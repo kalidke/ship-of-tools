@@ -424,8 +424,7 @@ impl State {
         // events that are then discarded. Keeping both outcomes
         // at info made the diagnostic log proportional to the
         // flood it exists to diagnose. Both paths still log
-        // every field, so RUST_LOG=sot::gpu=debug restores the
-        // 2026-08-17 forensic view verbatim.
+        // every field.
         let Some(node_id) = resolved else {
             // Not ours to render (foreign workspace, or the
             // active root is unknown and the tag didn't match).

@@ -172,7 +172,7 @@ impl State {
 
     fn run_harness_one_shots(&mut self) {
         // Drive `--auto-expand` exactly once, after the initial selection
-        // has been applied (i.e., the first TreeRoot/ModulesList landed).
+        // has been applied (i.e., the first TreeRoot landed).
         // We clear the flag whether or not the expansion request actually
         // queued — a no-op row (leaf or already expanded) doesn't deserve
         // a retry loop.
