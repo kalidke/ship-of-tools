@@ -51,7 +51,7 @@ _sot_windows_local_pipe() {
 }
 
 # _sot_is_plain_host_name — the shell twin of `sot_protocol`'s Rust grammar
-# (`topology::is_plain_host_name` / `ssh_bridge::SshRecipe::new`): first
+# (`topology::endpoint::is_plain_host_name` / `ssh_bridge::SshRecipe::new`): first
 # character an ASCII lowercase letter or digit, the rest lowercase
 # letters, digits, `.`, `_`, `-`. Two implementations of one grammar, not
 # one shared: a value from THIS shell's own environment never passed

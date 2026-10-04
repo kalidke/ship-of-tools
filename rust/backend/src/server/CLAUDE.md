@@ -56,7 +56,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 - `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek (`handle_connection`), the control loop (`serve_control`) and its select (`select_once`)
 - `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply
-- `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection may lack
+- `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection holds as `Option` (always `Some` in a served connection, `None` only in tests)
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
 - `pipe.rs`: the shared byte pipe after a connect frame (`pipe_bidirectional`) and the one error frame for a refused connect (`reject`)
 

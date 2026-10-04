@@ -37,7 +37,8 @@ through the channel types below.
   receiver to the window; the window's `resumed` calls `hosts::spawn_transports`, which calls `transport::spawn` once
   per host.
 - Out: `Leases::before_data_connection` (`lease.rs`) before a pipe connection; `sot_protocol::topology::ssh_bridge` (`SshRecipe`,
-  `LinkGate`) for ssh hosts; the wire codec in `sot_protocol` (`codec::read_frame`, frame writes).
+  `LinkGate`) for ssh hosts; `sot_protocol::topology::endpoint::is_plain_host_name` (`dial.rs`, `parse_dial_arg`) to check a `--dial` host name before
+  accepting it; the wire codec in `sot_protocol` (`codec::read_frame`, frame writes).
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.

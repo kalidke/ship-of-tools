@@ -305,8 +305,8 @@ where
     let mut watcher_rx = Some(preview_changed_tx.subscribe());
 
     // One workspace-lifecycle subscription per connection. Always present
-    // (the channel is created unconditionally in `run`), unlike the file
-    // watcher which can fail to start. Each connection writes its own
+    // (the channel is created unconditionally in `run`), like the watcher
+    // receiver above, which is always `Some`. Each connection writes its own
     // `workspace.changed` evt frame; the broadcast's per-receiver lag
     // detection surfaces a connection that fell behind.
     let mut ws_events_rx = ws_events_tx.subscribe();
@@ -345,7 +345,9 @@ where
     // forwards ticks while its drawer is open — `monitor.subscribe` flips the
     // flag, `monitor.unsubscribe` clears it. The receiver is still polled while
     // unsubscribed so it never lags (the client gets fresh ticks on subscribe).
-    // Optional like `watcher_rx`: `None` if the hub wasn't installed.
+    // Held as an `Option` like `watcher_rx`: `run` installs the hub before any
+    // connection is accepted, so it is `None` only where a test builds the
+    // registry without one.
     let mut monitor_rx = workspaces.monitor_hub().map(|h| h.subscribe());
     let mut monitor_subscribed = false;
 

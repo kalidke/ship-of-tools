@@ -33,8 +33,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   daemon's hub link and comm forward build logins with `SshRecipe`; `sotd topology
   plan|sync|status|apply|relay-endpoint|relay-sockets` call the parser, the derivations and `relay_units`.
 - Out: the lane dial calls sot-log's client, challenge and transport (`Client`, `IdentityExchange`).
-- Shell twins: comm-lib-client.sh's `sot_ssh_bridge` spells the same ssh child and comm-lib-identity.sh's `sot_slug` the same slug; change both
-  together.
+- Shell twins: comm-lib-client.sh's `sot_ssh_bridge` spells the same ssh child, its `_sot_is_plain_host_name` the grammar of
+  `endpoint::is_plain_host_name`, and comm-lib-identity.sh's `sot_slug` the same slug; change each pair together.
 
 ## Folders
 - `rust/protocol/src/topology/`: this folder.

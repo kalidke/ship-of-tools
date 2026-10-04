@@ -1,6 +1,6 @@
 //! The platform subsystem: state dirs, durable publication, kernel locks.
-//! The glob re-exports below keep the old `crate::host::...` paths
-//! (`lib.rs` aliases `host as host`) until the crate's re-export cleanup.
+//! The glob re-exports below are the module's interface: callers name
+//! `sot_log::host::wide_null`, `sot_log::host::daemon_lock_path` and so on.
 
 mod durable;
 mod lock;

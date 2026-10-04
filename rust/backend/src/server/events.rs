@@ -1,10 +1,11 @@
 //! The per-bus evt writers (`write_*`), each turning one broadcast item into its evt frame, and `recv_or_pending` for
-//! the two buses a connection may lack.
+//! the two buses a connection holds as `Option` (`Some` in `run`'s connections; `None` only in tests).
 
 use super::*;
 
-/// The next item of a bus this connection may lack; pending forever when `rx`
-/// is `None`, so its arm never fires.
+/// The next item of a bus a connection holds as an `Option` (the watcher and
+/// monitor receivers; `None` only in tests); pending forever when `rx` is
+/// `None`, so its arm never fires.
 pub(super) async fn recv_or_pending<T: Clone>(
     rx: &mut Option<broadcast::Receiver<T>>,
 ) -> Result<T, broadcast::error::RecvError> {
