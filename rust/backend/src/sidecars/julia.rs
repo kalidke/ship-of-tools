@@ -392,6 +392,25 @@ mod tests {
     }
 
     #[test]
+    fn env_guard_restores_a_set_variable_and_unsets_an_unset_one() {
+        let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        const KEY: &str = "SOT_MW14_GUARD_PIN";
+        std::env::set_var(KEY, "before");
+        {
+            let _g = EnvGuard::capture(KEY);
+            std::env::set_var(KEY, "during");
+            assert_eq!(std::env::var(KEY).as_deref(), Ok("during"));
+        }
+        assert_eq!(std::env::var(KEY).as_deref(), Ok("before"));
+        std::env::remove_var(KEY);
+        {
+            let _g = EnvGuard::capture(KEY);
+            std::env::set_var(KEY, "x");
+        }
+        assert!(std::env::var_os(KEY).is_none());
+    }
+
+    #[test]
     fn sot_julia_bin_wins_outright_when_absolute() {
         let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
