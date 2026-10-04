@@ -99,7 +99,7 @@ mod ops;
 use ops::*;
 pub(crate) use ops::{
     AccountInfo, ConceptWriteResult, DefinitionInfo, DirCreateResult, DirEntry, FileDeleteResult, FileWriteResult,
-    MarkdownToken, MethodInfo, ModuleInfo, ReplRunFileInfo, ScanEntity, ScanModule, ScanType, WorkspaceCreatedInfo,
+    MarkdownToken, MethodInfo, ModuleInfo, ReplRunFileInfo, ScanModule, ScanType, WorkspaceCreatedInfo,
     WorkspaceDestroyedInfo, WorkspaceInfo,
 };
 

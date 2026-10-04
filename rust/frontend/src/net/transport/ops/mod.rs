@@ -16,7 +16,7 @@ pub(super) use {concept::*, files::*, kernel::*, monitor::*, pages::*, preview::
 pub(crate) use {
     concept::ConceptWriteResult,
     files::{DirCreateResult, FileDeleteResult, FileWriteResult},
-    kernel::{DefinitionInfo, MarkdownToken, MethodInfo, ModuleInfo, ScanEntity, ScanModule, ScanType},
+    kernel::{DefinitionInfo, MarkdownToken, MethodInfo, ModuleInfo, ScanModule, ScanType},
     repl::ReplRunFileInfo,
     tree::DirEntry,
     workspace::{AccountInfo, WorkspaceCreatedInfo, WorkspaceDestroyedInfo, WorkspaceInfo},
