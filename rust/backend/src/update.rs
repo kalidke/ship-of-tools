@@ -693,6 +693,37 @@ mod tests {
         assert!(backend_role_from_topology(Some(&t), "host-2", Some(false)));
     }
 
+    // The update path reads this host's own entry in the declared topology:
+    // the name comes from `SOT_SELF_HOST` here, and only that entry's
+    // `daemon` flag decides (the recorded bit is `true` and must not win).
+    #[test]
+    fn backend_role_wanted_reads_this_hosts_declared_entry() {
+        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = (std::env::var_os("SOT_HOSTS"), std::env::var_os("SOT_SELF_HOST"));
+        let dir = tempfile::tempdir().unwrap();
+        let hosts = dir.path().join("hosts.toml");
+        std::fs::write(
+            &hosts,
+            "hub = \"mw21-hub\"\n[host.mw21-hub]\ndaemon = true\n[host.mw21-laptop]\nfrontend = true\n",
+        )
+        .unwrap();
+        let install: InstallManifest =
+            serde_json::from_value(json!({"schema": 1, "prefix": "/nowhere", "daemon": true})).unwrap();
+        std::env::set_var("SOT_HOSTS", &hosts);
+        std::env::set_var("SOT_SELF_HOST", "mw21-laptop");
+        let laptop = backend_role_wanted(&install);
+        std::env::set_var("SOT_SELF_HOST", "mw21-hub");
+        let hub = backend_role_wanted(&install);
+        for (key, value) in [("SOT_HOSTS", saved.0), ("SOT_SELF_HOST", saved.1)] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        assert!(!laptop, "a frontend-only entry wants no backend role");
+        assert!(hub, "a daemon entry wants the backend role");
+    }
+
     fn fake_identity(tag: &str) -> ReleaseIdentity {
         ReleaseIdentity {
             repo: "kalidke/ship-of-tools".into(),
