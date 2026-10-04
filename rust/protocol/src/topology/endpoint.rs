@@ -1,3 +1,5 @@
+//! How a process names this box's own daemon: the session socket or pipe path, the local label, the slug, the
+//! `unix:`/`pipe:` spelling, and the plain host-name grammar.
 // session_socket.rs — the ONE derivation of a Ship of Tools daemon's
 // per-user session endpoint (ADR 0042 L2b design A).
 //
@@ -120,6 +122,42 @@ pub fn slug(label: &str) -> String {
     } else {
         out
     }
+}
+
+// `pub(crate)`, not private: `ssh_bridge::SshRecipe::new` (same crate)
+// checks an ssh target/host against this exact grammar too, and a second
+// Rust copy of one grammar is exactly what a `pub(crate)` bump avoids —
+// `dial.rs`'s own copy stays separate only because it is a DIFFERENT
+// crate (the frontend), which cannot reach this one at all.
+pub(crate) fn is_plain_host_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// This box's own control endpoint for its own daemon, in the `unix:`/`pipe:`
+/// spelling the comm scripts and the frontend already speak. The label is
+/// never a caller's: every caller here means the one local daemon, and a
+/// `label` parameter they all passed `"sot"` to was how a Windows box came
+/// to dial a pipe name nothing listens on. The daemon's own precedence
+/// (`main.rs`'s own arg parsing): `$SOT_SOCKET`, a bare path, beats a
+/// label; else `session_socket_path($SOT_BACKEND_LABEL)` when that is set
+/// (the shell-side spelling of `--label`); else
+/// `session_socket_path(`[`crate::local_daemon_label`]`())`, byte-for-byte
+/// what this returned before the overrides existed. **Never** the literal
+/// `sot` as a default — on Windows the daemon's label is `local`, and
+/// `sot` derives a pipe nothing listens on.
+pub fn local_endpoint() -> String {
+    let p = std::env::var_os("SOT_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("SOT_BACKEND_LABEL")
+                .filter(|v| !v.is_empty())
+                .map(|label| crate::session_socket_path(&label.to_string_lossy()))
+        })
+        .unwrap_or_else(|| crate::session_socket_path(crate::local_daemon_label()));
+    if cfg!(windows) { format!("pipe:{}", p.display()) } else { format!("unix:{}", p.display()) }
 }
 
 #[cfg(test)]

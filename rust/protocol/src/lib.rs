@@ -17,15 +17,15 @@ pub mod ir;
 // Lives here, not in `sot-log`, because it is a WIRE client of this
 // crate's own `LaneConnectReq`/`LaneConnectRes` op — `sot-log` has no
 // dependency on `sot-protocol` to build against.
-pub mod lane_client;
+pub use topology::lane_client;
 pub mod ops;
-pub mod session_socket;
+pub use topology::endpoint as session_socket;
 // C3 (isolation-plan.md §3, as amended by dev/output/c3-second-connection-
 // amendment.md): the ssh child every non-local dial spawns -- one recipe
 // type and one argv builder, shared by the control connection
 // (`rust/frontend/src/transport.rs`), the lane attach (`lane_client.rs`
 // above) and the page-proxy leg (`rust/frontend/src/proxy_listen.rs`).
-pub mod ssh_bridge;
+pub use topology::ssh_bridge;
 // The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
 // ONE search rule for the daemon, `sotd topology`, and the frontend.
 pub mod topology;
