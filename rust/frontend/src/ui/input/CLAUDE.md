@@ -12,6 +12,7 @@ and the clipboard paste helpers live beside it. Part of the window; charter: rus
 - `paste.rs`: `read_clipboard_text`, `bracketed_paste_bytes` and the two forwarders to the agent pane and the Terminal drawer.
 - `mouse.rs`: Pointer events: cursor moves, clicks and the wheel, each sent to the pane it acts on.
 - `keypress.rs`: One keypress, from the key event to the layer that takes it.
+- `global_keys.rs`: The layers a key meets before the focused pane: the quit prompt, help, and the keys every pane shares.
 
 ## Start here
 `ACTIONS` and `KeyBindings::resolve` in keybindings.rs for a new action or chord; `help::Context` in help.rs for what

@@ -8,5 +8,6 @@ mod help_drawer;
 mod paste;
 pub(in crate::ui) mod mouse;
 pub(in crate::ui) mod keypress;
+pub(in crate::ui) mod global_keys;
 
 pub(in crate::ui) use paste::*;
