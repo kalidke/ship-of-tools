@@ -414,7 +414,7 @@ enum ReaderEvent {
     /// reader thread. Purely a wake: every `output_rx.recv_timeout` site
     /// that matches this just clears `wake_pending` and loops back to its
     /// own top, where `service_transport_events`/
-    /// `service_transport_events_teardown!` (already run there,
+    /// `service_transport_events_teardown` (already run there,
     /// unconditionally, every iteration) is what actually drains and
     /// processes whatever the transport queued.
     TransportActivity,

@@ -5,7 +5,10 @@ use std::ops::ControlFlow;
 mod lanes;
 mod output_path;
 mod start;
-use lanes::{execute_actions, execute_light_actions, service_transport_events};
+use lanes::{
+    drain_pending_sends_only, execute_actions, execute_teardown_actions, service_transport_events,
+    service_transport_events_teardown,
+};
 use output_path::{eager_ground_check, flush_output, maybe_rotate, pace_output};
 use start::start;
 
@@ -28,14 +31,6 @@ impl Drop for ShutdownGuard<'_> {
         }
     }
 }
-
-// Per-pass event quota: a client flood can refill the bounded transport
-// channel as fast as this loop drains it, and an UNBOUNDED while-let
-// would then starve output commits, tick, and the exit checks
-// indefinitely (review finding). The quota bounds one pass; the next
-// loop iteration resumes immediately, so nothing is dropped -- only
-// interleaved.
-const TRANSPORT_EVENTS_PER_PASS: usize = 64;
 
 /// The leg's writer-loop state from `start` to `seal_run`: every value two or more of
 /// `run`'s pieces share. Each piece takes it last: by `&mut`, or by value where the piece may
@@ -132,202 +127,6 @@ pub fn run<P: Producer>(
         ControlFlow::Continue(running) => running,
         ControlFlow::Break(summary) => return Ok(summary),
     };
-
-    // Finding 7: producer-bound admission is revoked once EndRun begins
-    // (`AttachProto::begin_teardown`), but mgmt (`probe`/`status`) and
-    // `Sent` completions must keep being serviced through BOTH teardown
-    // phases, until the pipe is explicitly closed -- step 6's adoption
-    // status-challenge premise depends on it ("revoke admission" applies to
-    // producer-bound input/resize/take, never to mgmt status/probe). This
-    // is the teardown-safe action executor: every "light" action
-    // (Send/Close/RecordRefusal/BeginCheckpoint -- none of which need
-    // `pty`, already moved into the Phase-B closer thread by the time this
-    // runs there) delegates to `execute_light_actions`; `RunEndRequested`/
-    // `Shutdown` (a second EndRun request racing the first) are harmless
-    // (idempotent past the first marker); `CommitTake`/
-    // `ForwardInput`/`ApplyResize` are asserted UNREACHABLE --
-    // `begin_teardown` guarantees `AttachProto` never emits them again at
-    // the SOURCE, so this is a documented invariant enforced loudly, not a
-    // live code path (which could not exist here regardless: `pty` is not
-    // even in scope during Phase B).
-    macro_rules! execute_teardown_actions {
-        ($seed:expr) => {{
-            let mut queue: VecDeque<AttachAction> = VecDeque::from($seed);
-            while let Some(action) = queue.pop_front() {
-                match action {
-                    light @ (AttachAction::Send { .. }
-                    | AttachAction::Close(_)
-                    | AttachAction::RecordRefusal { .. }
-                    | AttachAction::BeginCheckpoint { .. }) => {
-                        execute_light_actions(vec![light], &mut leg);
-                    }
-                    AttachAction::RunEndRequested { reason } => {
-                        // A `shutdown` admitted during the final teardown
-                        // poll (ADR 0041 EndRun step 4's "accepted in the
-                        // final service poll" case) still latches the SAME
-                        // way -- mgmt keeps being serviced through both
-                        // teardown phases (finding 7), and this is the one
-                        // place that knows whether the marker already
-                        // committed. Same reason-recording discipline as
-                        // the main loop's own arm (Codex round-1 Blocker 1).
-                        leg.shutdown_reason.get_or_insert_with(|| reason.clone());
-                        commit_run_end_marker(&mut leg.ctx, &mut leg.w, &mut leg.frames_written, &mut leg.run_end_latched, reason)?;
-                    }
-                    AttachAction::Shutdown { reason } => {
-                        // Round-2 review deletion residue: `shutdown_requested`
-                        // is only ever READ inside the main `'main: loop`
-                        // (the `if shutdown_requested { break 'main ... }`
-                        // check) -- which has already exited by the time
-                        // `execute_teardown_actions!` ever runs. Setting it
-                        // here was dead. `shutdown_reason` still matters: a
-                        // second, teardown-time `Shutdown` (a racing EndRun
-                        // request) still gets its own reason string folded
-                        // into `producer_dead`'s eventual detail -- UNLESS
-                        // an earlier request's reason (via
-                        // `RunEndRequested`, above) already won (first
-                        // commit wins, ADR 0041 step 4): `get_or_insert`,
-                        // not an unconditional overwrite.
-                        leg.shutdown_reason.get_or_insert(reason);
-                    }
-                    other @ (AttachAction::CommitTake { .. }
-                    | AttachAction::ForwardInput { .. }
-                    | AttachAction::ApplyResize { .. }) => {
-                        unreachable!("AttachProto must never emit {other:?} once begin_teardown() has run");
-                    }
-                }
-            }
-        }};
-    }
-
-    /// As `service_transport_events`, but dispatching through
-    /// `execute_teardown_actions!` -- used by BOTH teardown phases so mgmt
-    /// traffic and `Sent` completions keep flowing right up until the pipe
-    /// is closed (finding 7).
-    macro_rules! service_transport_events_teardown {
-        () => {
-            // Same per-pass quota as the main loop's macro, same reason --
-            // teardown's own deadlines must not be defeatable by a client
-            // flood refilling the channel mid-drain (review finding).
-            let mut quota = TRANSPORT_EVENTS_PER_PASS;
-            while quota > 0 {
-                quota -= 1;
-                let Some(ev) = leg.transport.0.try_recv_event() else { break };
-                match ev {
-                    TransportEvent::ConnectionOpened(conn) => {
-                        leg.splitters.insert(conn, wire::FrameSplitter::new());
-                        execute_teardown_actions!(leg.attach_proto.connection_opened(conn, Instant::now()));
-                    }
-                    TransportEvent::Bytes(conn, bytes) => {
-                        let Some(splitter) = leg.splitters.get_mut(&conn) else { continue };
-                        let (frames, err) = splitter.feed(&bytes);
-                        for f in frames {
-                            execute_teardown_actions!(leg.attach_proto.frame(conn, f, Instant::now()));
-                        }
-                        if err.is_some() {
-                            leg.transport.0.close(conn);
-                            leg.splitters.remove(&conn);
-                            leg.pending_sends.retain(|&(c, _), _| c != conn);
-                            execute_teardown_actions!(leg.attach_proto.connection_closed(conn, Instant::now()));
-                        }
-                    }
-                    TransportEvent::ConnectionClosed(conn) => {
-                        leg.splitters.remove(&conn);
-                        leg.pending_sends.retain(|&(c, _), _| c != conn);
-                        execute_teardown_actions!(leg.attach_proto.connection_closed(conn, Instant::now()));
-                    }
-                    TransportEvent::Sent(conn, id) => {
-                        match leg.pending_sends.remove(&(conn, id)) {
-                            Some(marker) => execute_teardown_actions!(leg.attach_proto.sent(conn, marker, Instant::now())),
-                            // Finding 7, same reasoning as the main loop's
-                            // identical arm: tolerated only for a
-                            // connection already closed.
-                            None => assert!(
-                                !leg.splitters.contains_key(&conn),
-                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
-                                 matching outstanding send"
-                            ),
-                        }
-                    }
-                    TransportEvent::TransportFatal(detail) => {
-                        // Round-2 e2e review, finding 4, teardown-phase
-                        // analog of `AttachAction::Shutdown`'s own
-                        // teardown-time arm just above: `shutdown_requested`
-                        // is dead here (already left `'main`), but a fatal
-                        // transport failure arriving DURING teardown still
-                        // deserves its own reason folded into the eventual
-                        // `producer_dead` detail -- unless a real reason is
-                        // already recorded (the run is ending for some
-                        // OTHER cause; don't overwrite it with a fatal
-                        // event that is likely just this SAME pipe closing
-                        // as a side effect of that other teardown).
-                        eprintln!(
-                            "sot-capsule: transport reported a terminal failure during teardown: {detail}"
-                        );
-                        leg.shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
-                    }
-                }
-            }
-        };
-    }
-
-    // U1a Codex round-1, Major 6 discharge: the ack-grace window's own
-    // drain -- STOP ADMITTING new connections or new request bytes once
-    // the final ordinary teardown poll is behind us, so a request that
-    // slips in with, say, 50ms left in the grace can never be credited
-    // with the full 2s the "final service poll" guarantee actually
-    // promises. `Sent`/`ConnectionClosed` still drain normally (the whole
-    // POINT of the grace is letting an ALREADY-QUEUED ack finish); a brand
-    // new `ConnectionOpened` or a new `Bytes` payload on an existing
-    // connection is closed outright, WITHOUT ever reaching `attach_proto`
-    // -- no admission, so no new obligation this bounded window cannot
-    // keep.
-    macro_rules! drain_pending_sends_only {
-        () => {
-            let mut quota = TRANSPORT_EVENTS_PER_PASS;
-            while quota > 0 {
-                quota -= 1;
-                let Some(ev) = leg.transport.0.try_recv_event() else { break };
-                match ev {
-                    TransportEvent::ConnectionOpened(conn) => {
-                        // Never admitted: no splitter, no `attach_proto`
-                        // event, just closed.
-                        leg.transport.0.close(conn);
-                    }
-                    TransportEvent::Bytes(conn, _bytes) => {
-                        // A connection admitted during ORDINARY teardown
-                        // (before the grace began) sending more bytes now:
-                        // still no new admission -- close it, purging
-                        // whatever this loop already tracked for it.
-                        leg.transport.0.close(conn);
-                        leg.splitters.remove(&conn);
-                        leg.pending_sends.retain(|&(c, _), _| c != conn);
-                        execute_teardown_actions!(leg.attach_proto.connection_closed(conn, Instant::now()));
-                    }
-                    TransportEvent::ConnectionClosed(conn) => {
-                        leg.splitters.remove(&conn);
-                        leg.pending_sends.retain(|&(c, _), _| c != conn);
-                        execute_teardown_actions!(leg.attach_proto.connection_closed(conn, Instant::now()));
-                    }
-                    TransportEvent::Sent(conn, id) => {
-                        match leg.pending_sends.remove(&(conn, id)) {
-                            Some(marker) => execute_teardown_actions!(leg.attach_proto.sent(conn, marker, Instant::now())),
-                            None => assert!(
-                                !leg.splitters.contains_key(&conn),
-                                "Transport reported Sent({conn:?}, {id}) for an ACTIVE connection with no \
-                                 matching outstanding send"
-                            ),
-                        }
-                    }
-                    TransportEvent::TransportFatal(detail) => {
-                        eprintln!(
-                            "sot-capsule: transport reported a terminal failure during the shutdown-ack grace: {detail}"
-                        );
-                        leg.shutdown_reason.get_or_insert_with(|| "transport-accept-failed".to_string());
-                    }
-                }
-            }
-        };
-    }
 
     // Main loop: natural-exit polled every iteration (bounded to one
     // GROUP_COMMIT_WINDOW of latency, regardless of event volume); the
@@ -484,8 +283,8 @@ pub fn run<P: Producer>(
     // Producer-bound admission (take/input/resize) is revoked from here on
     // (finding 7) — but mgmt (probe/status/shutdown) and Sent completions
     // keep being serviced through BOTH phases below, via
-    // `service_transport_events_teardown!`, until the pipe closes (see that
-    // macro's own doc for why, and `execute_teardown_actions!` for the
+    // `service_transport_events_teardown`, until the pipe closes (see that
+    // function's own doc for why, and `execute_teardown_actions` for the
     // reduced action set this implies).
     leg.attach_proto.begin_teardown();
 
@@ -507,8 +306,8 @@ pub fn run<P: Producer>(
     leg.producer.terminate_domain()?;
     let reap_deadline = Instant::now() + TEARDOWN_REAP_TIMEOUT;
     loop {
-        service_transport_events_teardown!();
-        execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
+        service_transport_events_teardown(&mut leg)?;
+        execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
         eager_ground_check(&mut leg)?;
         if leg.producer.domain_is_empty()? {
             break;
@@ -528,7 +327,7 @@ pub fn run<P: Producer>(
                 // the main loop's own arm -- mgmt/`Sent` traffic keeps
                 // being serviced through teardown (finding 7), so it gets
                 // the same early wake here rather than waiting out
-                // `TEARDOWN_REAP_POLL`. `service_transport_events_teardown!`
+                // `TEARDOWN_REAP_POLL`. `service_transport_events_teardown`
                 // at this loop's own top does the actual draining.
                 leg.wake_pending.store(false, Ordering::Release);
             }
@@ -586,8 +385,8 @@ pub fn run<P: Producer>(
     if leg.output_ended_early.is_none() {
         let drain_deadline = Instant::now() + TEARDOWN_DRAIN_TIMEOUT;
         loop {
-            service_transport_events_teardown!();
-            execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
+            service_transport_events_teardown(&mut leg)?;
+            execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
             eager_ground_check(&mut leg)?;
             // Codex review (PR #227): checked here, unconditionally, every
             // iteration — mirroring Phase A's `reap_deadline` just above and
@@ -618,8 +417,8 @@ pub fn run<P: Producer>(
                     // here to `shutdown_all`'s eventual close (the flush and
                     // joins below, the exit-status wait, writing lifecycle
                     // state, sealing) is a live-but-unserviced pipe tail.
-                    service_transport_events_teardown!();
-                    execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
+                    service_transport_events_teardown(&mut leg)?;
+                    execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
                     break;
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -637,8 +436,8 @@ pub fn run<P: Producer>(
         // 5) -- pay it here instead, so a mgmt request that arrived
         // just after the last loop-top poll is still answered while the
         // pipe is provably live.
-        service_transport_events_teardown!();
-        execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
+        service_transport_events_teardown(&mut leg)?;
+        execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
     }
     flush_output(&mut leg)?;
 
@@ -651,7 +450,7 @@ pub fn run<P: Producer>(
     //
     // U1a Codex round-1, Major 6 discharge: this window drains ONLY what
     // is ALREADY pending (`Sent`/`ConnectionClosed`, via
-    // `drain_pending_sends_only!`) — it admits NOTHING new
+    // `drain_pending_sends_only`) — it admits NOTHING new
     // (`ConnectionOpened`/fresh `Bytes` are closed outright, never reaching
     // `attach_proto`). A request newly accepted with, say, 50ms left in
     // this window would have almost no time to get its own ack physically
@@ -666,8 +465,8 @@ pub fn run<P: Producer>(
         .any(|m| matches!(m, Some(SentMarker::ShutdownAck { .. })))
         && Instant::now() < shutdown_ack_deadline
     {
-        drain_pending_sends_only!();
-        execute_teardown_actions!(leg.attach_proto.tick(Instant::now()));
+        drain_pending_sends_only(&mut leg)?;
+        execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
         std::thread::sleep(SHUTDOWN_ACK_GRACE_POLL);
     }
     // The pipe's own disappearance: explicit HERE, rather than only
