@@ -412,3 +412,7 @@ pub async fn handle_repl_execute(
         None,
     )])
 }
+
+#[cfg(all(test, unix))]
+#[path = "execute_tests.rs"]
+mod tests;

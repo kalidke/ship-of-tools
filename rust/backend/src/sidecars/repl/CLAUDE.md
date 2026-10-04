@@ -7,6 +7,7 @@ rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
 - `execute.rs`: repl.execute, the whole-report run
+- `execute_tests.rs`: repl.execute against a stub child: every reply and drawer frame pinned
 - `ops.rs`: repl.eval, repl.run_file, repl.interrupt
 - `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
 - `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
