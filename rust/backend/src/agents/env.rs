@@ -1,0 +1,334 @@
+// env.rs — the spawn env: nesting-marker scrub list, the supervisor env and `agent_env`.
+
+use std::path::{Path, PathBuf};
+
+/// Environment variables scrubbed from the spawned supervisor's (and
+/// hence its capsule leg's) environment before launch — the exact list
+/// `comm/adapters/claude/bin/ccb` unsets, for the identical reason: a
+/// spawning parent's own Claude Code nesting markers make a fresh
+/// `claude` mis-detect itself as nested/forked and exit silently.
+/// `CLAUDECODE`/`AI_AGENT`/`CLAUDE_CODE_SESSION_ID` make it think it is
+/// running INSIDE another claude; `CLAUDE_CODE_FORK_SUBAGENT`/
+/// `CLAUDE_CODE_CHILD_SESSION`/`CLAUDE_CODE_TEAMMATE_MODE`/
+/// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` make it think it is a forked/
+/// teammate session. A daemon started from within a claude session (or
+/// restarted by one) would otherwise propagate every one of these into
+/// every capsule it spawns (ADR 0042 L1a, Codex review finding 9).
+/// `NO_COLOR` rides the same path for the same reason: a daemon that
+/// inherited it (a relaunch fired from inside a capsule hands its env to
+/// the next daemon) painted every row's agent colourless on Windows,
+/// where the pty sets no `TERM`/`COLORTERM` and `NO_COLOR` overrides
+/// ConPTY's own VT detection (field report, 2026-09-17).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
+    "CLAUDE_CODE_FORK_SUBAGENT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_TEAMMATE_MODE",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+    "CLAUDECODE",
+    "AI_AGENT",
+    "CLAUDE_CODE_SESSION_ID",
+    "NO_COLOR",
+];
+
+/// The `SOT_COMM_HOME` value (forward-slash string form — a git-bash/MSYS
+/// shell, not this native Windows process, is what reads it; MSYS accepts
+/// either slash spelling for a drive-letter-absolute path) to hand a
+/// capsule's producer env, so its own comm scripts resolve the EXACT SAME
+/// home this builds `SOT_COMM_SELF_FILE` from below — Codex round finding
+/// 8: ONE resolver ([`crate::paths::sot_comm_home`], also what the
+/// daemon's own registry reads use, `handlers::comm_registry_path`),
+/// injected into the child explicitly rather than left to each side's own
+/// HOME/USERPROFILE guess landing on two different answers. `None` when
+/// the resolver itself found nothing (matches comm-lib.sh: nothing to
+/// pin).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn capsule_comm_home_str() -> Option<String> {
+    Some(crate::paths::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
+}
+
+/// The `SOT_*` awareness env a capsule supervisor spawn stamps on its
+/// producer — capsule-comm-identity fix: a capsule has no tmux pane, so
+/// `comm-context.sh`'s pane-keyed self-file slot never applies to it, and
+/// without `SOT_COMM_HOME`/`SOT_COMM_SELF_FILE` it fell back to the
+/// shared per-host `__nopane` slot, colliding with any other no-pane
+/// session on the same host (e.g. the frontend itself — the field bug
+/// this fixes). Bare `SOT_SOCKET` (ADR 0046 decision 1, S4: no typed
+/// prefix, Unix only), `SOT_WORKSPACE`/`SOT_WORKSPACE_ID` (and
+/// `SOT_WORKSPACE_ROOT`/
+/// `SOT_SESSION`/`SOT_MANUAL`) reuse [`crate::awareness::awareness_env`]
+/// verbatim — ONE builder, not a second copy that could drift — keyed on
+/// `slug` (Codex round finding 1: the frontend keys results and the
+/// active workspace by SLUG, not the internal `ws-<slug>-<hex>` id;
+/// `workspace_id` is used ALSO below, for the state dir and self-file
+/// paths, where stability and uniqueness matter more than the display
+/// shape). `SOT_COMM_NAME` is set ONLY for an explicitly requested
+/// `agent_name` (Codex round finding 2: a synthesized default here would
+/// become an explicit pin that OVERWRITES any existing registry row of
+/// that name — exactly what PROTOCOL.md's "never reuse a handle" forbids,
+/// and a hand-started session in the same repo on the same host derives
+/// precisely `<slug>-<host>` on its own). `SOT_COMM_SELF_FILE`
+/// (`<comm_home>/self/<host>__<workspace_id>.txt`, comm-lib.sh's EXISTING
+/// pin-the-self-file-path seam — already used by its own test suite, and
+/// already honoured unchanged by both `comm-context.sh`, the reader, and
+/// `comm-join.sh`, the writer) is what actually gives the capsule its own
+/// slot: `comm-join.sh`'s #148 auto-disambiguating derivation decides the
+/// handle and writes it there. The session inside the capsule now also
+/// DECLARES it via `agent.join` over this same pinned `SOT_SOCKET`
+/// (`Workspace.agent_handle`, `handlers::handle_agent_join`); a declared
+/// `agent_handle` wins when present, but the daemon's OWN read-back of
+/// that same file (`handlers::capsule_comm_handle`) stays as the
+/// FALLBACK for a row with no declaration yet (manager review, S5) —
+/// deleted only with family H once every row has cycled onto `agent.join`.
+/// Pure (no I/O beyond env reads): exercised by
+/// the cross-platform test suite even though
+/// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
+/// Windows and Linux only.
+pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
+    let mut env = crate::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
+    if !agent_name.is_empty() {
+        env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
+    }
+    if let Some(comm_home) = capsule_comm_home_str() {
+        let host = crate::workspaces::declared_host();
+        let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
+        env.push(("SOT_COMM_HOME".to_string(), comm_home));
+        env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
+    }
+    // Claude Code's feedback survey is a modal panel that holds a row's
+    // session until someone answers it, so no row's agent shows it, on
+    // any OS. Only this switch: telemetry and nonessential traffic stay
+    // the user's own choice.
+    env.push(("CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY".to_string(), "1".to_string()));
+    // A row's conversation never leaves its row (agent view moves it into Claude Code's own
+    // daemon, outside the capsule); an env var, not a settings key, as --settings is not passed to every row.
+    env.push(("CLAUDE_CODE_DISABLE_AGENT_VIEW".to_string(), "1".to_string()));
+    // The `ccb` launcher's own PATH rule, promoted to the daemon: a leg
+    // inherits the SERVICE's PATH, which has no `~/.local/bin` (CLAUDE.md's
+    // documented gotcha — the same reason [`claude_argv`] full-paths
+    // `claude`), so a capsule session found neither `gh`, the comm
+    // launchers, nor any user-installed tool a tmux row's login shell
+    // sees (found 2026-09-12: the first capsule-row release cut failed
+    // its preflight on the system's ancient `gh`). Windows relies on the
+    // daemon's own PATH already reaching everything, as `claude_argv`
+    // documents.
+    #[cfg(not(windows))]
+    env.extend(agent_env(
+        std::env::var_os("PATH").as_deref(),
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    ));
+    env
+}
+
+/// `~/.local/bin` on `PATH`, prepended once — the ONE copy of this rule
+/// (ADR 0046 decision 4), shared by every Unix agent-launch path: a
+/// capsule supervisor spawn ([`capsule_supervisor_env`] above) and `sotd
+/// agent-exec` (`main.rs`, execing THIS process into the agent directly)
+/// both call it rather than keeping two copies of "prepend once, only
+/// when absent." Pure — takes `PATH`/`HOME` explicitly rather than
+/// reading `std::env` itself (mirrors [`resolve_claude`]'s own
+/// testability rule) — so it is unit-tested without mutating global
+/// process state. Returns a single `PATH` entry to add, or nothing when
+/// `~/.local/bin` is already on it or there is no `HOME` to derive it
+/// from. Windows relies on the daemon's/`claude`'s own `PATH` already
+/// reaching everything (`claude_argv`'s doc) — this is never called
+/// there.
+#[cfg(not(windows))]
+pub fn agent_env(path_var: Option<&std::ffi::OsStr>, home: Option<&Path>) -> Vec<(String, String)> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let local_bin = home.join(".local").join("bin");
+    let inherited = path_var.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    if inherited.split(':').any(|dir| Path::new(dir) == local_bin) {
+        return Vec::new();
+    }
+    let joined = if inherited.is_empty() {
+        local_bin.display().to_string()
+    } else {
+        format!("{}:{inherited}", local_bin.display())
+    };
+    vec![("PATH".to_string(), joined)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::support_tests::self_file_env_guarded;
+
+    #[test]
+    fn nesting_env_scrub_list_matches_ccb() {
+        // Mirrors comm/adapters/claude/bin/ccb's own `unset` line
+        // exactly -- see that file for the reasoning per variable.
+        assert_eq!(
+            NESTING_ENV_VARS_TO_SCRUB,
+            &[
+                "CLAUDE_CODE_FORK_SUBAGENT",
+                "CLAUDE_CODE_CHILD_SESSION",
+                "CLAUDE_CODE_TEAMMATE_MODE",
+                "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+                "CLAUDECODE",
+                "AI_AGENT",
+                "CLAUDE_CODE_SESSION_ID",
+                "NO_COLOR",
+            ]
+        );
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn agent_env_prepends_local_bin_to_path_once() {
+        // The ccb launcher's PATH rule, now the ONE shared function (ADR
+        // 0046 decision 4): PATH with no ~/.local/bin gets it prepended
+        // -- and a PATH that already reaches it is left alone (no
+        // duplicate entry). Pure/DI'd (mirrors `resolve_claude`'s own
+        // tests) -- no env mutation, no guard needed.
+        let env = agent_env(
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Some(Path::new("/fake-home")),
+        );
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("PATH"), Some("/fake-home/.local/bin:/usr/bin:/bin"));
+
+        let env = agent_env(
+            Some(std::ffi::OsStr::new("/fake-home/.local/bin:/usr/bin")),
+            Some(Path::new("/fake-home")),
+        );
+        assert!(env.is_empty(), "already on PATH: nothing to stamp");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn agent_env_is_empty_with_no_home_to_derive_it_from() {
+        let env = agent_env(Some(std::ffi::OsStr::new("/usr/bin:/bin")), None);
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn capsule_supervisor_env_carries_slug_workspace_and_comm_home() {
+        // Codex round: SOT_WORKSPACE is keyed on SLUG (finding 1 — the
+        // frontend keys results/the active workspace by slug, not the
+        // internal ws-<slug>-<hex> id), while the id is used only for the
+        // self-file path. SOT_COMM_HOME and SOT_COMM_SELF_FILE
+        // (comm-lib.sh's existing pin-the-self-file seam) are stamped
+        // unconditionally so a capsule never falls back to the shared
+        // per-host __nopane slot.
+        //
+        // ADR 0046 decision 1 (manager review, S2/S4): the leg ALSO
+        // carries a bare SOT_SOCKET and SOT_WORKSPACE_ID — every
+        // pane/capsule alike, so `comm-join.sh`'s `agent.join` can always
+        // find its owner daemon. No SOT_SELF_HOST pin (an override on the
+        // daemon's own process already reaches this child by inheritance).
+        // `set_own_endpoint` is idempotent (the daemon binds exactly one
+        // listener per process) and process-global (`OnceLock`), so this
+        // pins the value itself here rather than trusting whatever another
+        // test in this binary may have already set it to.
+        crate::awareness::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_SELF_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        let env = capsule_supervisor_env(
+            "ws-myrepo-1a2b",
+            "myrepo",
+            Path::new("/home/me/myrepo"),
+            "myrepo-myhost",
+        );
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("SOT_WORKSPACE"), Some("myrepo"));
+        assert_eq!(get("SOT_WORKSPACE_ID"), Some("ws-myrepo-1a2b"));
+        assert_eq!(get("SOT_WORKSPACE_ROOT"), Some("/home/me/myrepo"));
+        assert_eq!(get("SOT_COMM_NAME"), Some("myrepo-myhost"));
+        assert_eq!(get("SOT_SESSION"), Some("1"));
+        assert_eq!(get("SOT_HOST"), None, "no SOT_SELF_HOST pin -- inheritance carries an override, if any");
+        if cfg!(unix) {
+            // `OWN_ENDPOINT` is process-global (`OnceLock`) -- another test
+            // in this binary may have already pinned it to a different
+            // exact path, so this asserts the BARE SHAPE only (S4: no
+            // typed unix:/pipe: prefix), never an exact value.
+            assert!(
+                get("SOT_SOCKET").is_some_and(|s| !s.starts_with("unix:") && !s.starts_with("pipe:")),
+                "SOT_SOCKET must be a bare path, got {:?}",
+                get("SOT_SOCKET")
+            );
+        } else {
+            assert_eq!(get("SOT_SOCKET"), None, "S4: SOT_SOCKET is pinned on Unix only");
+        }
+        assert_eq!(get("SOT_COMM_HOME"), Some("/fake-home/.sot-comm"));
+        assert_eq!(
+            get("SOT_COMM_SELF_FILE"),
+            Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
+        );
+    }
+
+    #[test]
+    fn capsule_supervisor_env_disables_the_feedback_survey() {
+        // Every row's agent, named or not, on every OS: the survey's
+        // modal panel would otherwise hold the row's session until
+        // someone answers it. Only that switch, not telemetry's.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_SELF_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        for name in ["myrepo-myhost", ""] {
+            let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), name);
+            let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY").collect();
+            assert_eq!(hits.len(), 1, "exactly one survey switch for agent_name {name:?}");
+            assert_eq!(hits[0].1, "1");
+            assert!(!env
+                .iter()
+                .any(|(k, _)| k == "DISABLE_TELEMETRY" || k == "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"));
+        }
+    }
+
+    #[test]
+    fn capsule_supervisor_env_keeps_the_conversation_in_its_row() {
+        // Agent view would move a row's conversation into Claude Code's own
+        // daemon, outside the capsule. Only that switch: background tasks
+        // and the bg exit handoff stay as they are.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_SELF_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        for agent_name in ["myrepo-myhost", ""] {
+            let env = capsule_supervisor_env("ws-myrepo-1a2b", "myrepo", Path::new("/home/me/myrepo"), agent_name);
+            let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CLAUDE_CODE_DISABLE_AGENT_VIEW").collect();
+            assert_eq!(hits.len(), 1, "exactly one agent-view switch for agent_name {agent_name:?}");
+            assert_eq!(hits[0].1, "1");
+            assert!(!env
+                .iter()
+                .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" || k == "CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF"));
+        }
+    }
+
+    #[test]
+    fn capsule_supervisor_env_omits_comm_name_when_unnamed() {
+        // Codex round finding 2: NO synthesized default here — an
+        // un-pinned autostart (no explicit agent_name in the request)
+        // gets no SOT_COMM_NAME at all. comm-join.sh's own #148
+        // auto-disambiguating derivation decides the handle instead
+        // (reading SOT_COMM_SELF_FILE to know where to write it), exactly
+        // as a hand-started shell would — a synthesized <slug>-<host>
+        // pin would become an explicit overwrite of any existing row of
+        // that name, which PROTOCOL.md's "never reuse a handle" forbids.
+        // SOT_WORKSPACE/SOT_COMM_HOME/SOT_COMM_SELF_FILE stay
+        // unconditional regardless.
+        let _guard = self_file_env_guarded();
+        std::env::set_var("SOT_SELF_HOST", "testhost");
+        std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");
+        let env = capsule_supervisor_env("ws-anon-9f9f", "anon", Path::new("/home/me/anon"), "");
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("SOT_WORKSPACE"), Some("anon"));
+        assert_eq!(get("SOT_COMM_NAME"), None);
+        assert_eq!(
+            get("SOT_COMM_SELF_FILE"),
+            Some("/fake-home/.sot-comm/self/testhost__ws-anon-9f9f.txt")
+        );
+    }
+
+    #[test]
+    fn capsule_comm_home_str_none_when_no_home_var_is_set() {
+        let _guard = self_file_env_guarded();
+        std::env::remove_var("SOT_COMM_HOME");
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        assert_eq!(capsule_comm_home_str(), None);
+    }
+}
