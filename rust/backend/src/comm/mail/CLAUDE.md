@@ -8,6 +8,7 @@ Part of messaging; design of record: docs/adr/0049-messaging-on-one-page.md.
 - `filer.rs`: comm.file and the filing behind it
 - `hub_link.rs`: the link to the hub that files relayed `agent.message` frames into this box's inboxes
 - `inbox.rs`: the daemon's append of one frame to an inbox file under the shared lock, and the record of who may append
+- `inbox_tests.rs`: the tests of `inbox.rs`
 - `mod.rs`: declares the files
 - `relay.rs`: agent.send and agent.filed
 
@@ -29,7 +30,7 @@ one ssh stdio child to the hub. On that link it files each `agent.message` whose
   Otherwise a guest forwards and a hub refuses, naming the recovery (`refusal`).
 - Only the hub writes the record, at start (`record_at_start`).
 - inbox.rs stays std and serde only outside its macOS arm, because tests/comm_file.rs includes it by path. T13 in
-  test-hub-files.sh reads inbox.rs.
+  test-hub-files.sh reads inbox.rs and inbox_tests.rs.
 - The link reads the topology once, at start (`recipe_for`).
 - `hold_link` backs off from 1 s, doubling to 30 s, and starts over after a connection that lasted 60 s. It never
   reconnects once the shutdown signal fires.
