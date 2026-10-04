@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+/// Julia's executable file name on this target, for the PATH search and the juliaup layout.
+const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
+
 /// Resolve the `julia` binary honestly. Order:
 /// 1. `SOT_JULIA_BIN`, trimmed — must be an absolute path (upstream juliaup's
 ///    own override semantics); a non-empty but relative value is a hard
@@ -53,8 +56,7 @@ pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
             ),
         }
     }
-    let exe_name = if cfg!(windows) { "julia.exe" } else { "julia" };
-    let candidates = candidates_on_path(exe_name);
+    let candidates = candidates_on_path(JULIA_EXE);
     if candidates.is_empty() {
         return Ok(("julia".to_string(), "PATH (unverified fallback)"));
     }
@@ -179,8 +181,7 @@ fn resolve_juliaup_julia_from_config(
     // so the joined path reads cleanly in logs (`PathBuf::join` doesn't
     // normalize a literal `./` component away).
     let rel_path = rel_path.strip_prefix("./").unwrap_or(rel_path);
-    let exe_name = if cfg!(windows) { "julia.exe" } else { "julia" };
-    let bin = juliaup_dir.join(rel_path).join("bin").join(exe_name);
+    let bin = juliaup_dir.join(rel_path).join("bin").join(JULIA_EXE);
     if bin.is_file() {
         Ok(bin)
     } else {
