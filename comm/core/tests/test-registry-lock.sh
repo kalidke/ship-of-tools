@@ -432,7 +432,7 @@ t15() {
         _sot_lock_is_me "$_SOT_LOCK_ID" && echo mine || echo not')"
     [ "$out" = not ] || { echo "the same host name and pid, with no proof: $out"; return 1; }
     # A call site put back to a bare comparison would pass the two above.
-    local rs="$SCRIPT_DIR/../../../rust/backend/src/comm_registry_lock.rs" hits
+    local rs="$SCRIPT_DIR/../../../rust/backend/src/comm/registry/lock.rs" hits
     [ -f "$rs" ] || { echo "no $rs"; return 1; }
     hits="$( { sed '/^_sot_lock_is_me() {/,/^}/s/.*//' "$SCRIPTS_DIR/comm-lib.sh" \
             | grep -nE ' (=|==|!=) +"?\$\{?_SOT_LOCK_ID([^A-Za-z0-9_]|$)|\$\{?_SOT_LOCK_ID\}?"? +(=|==|!=) |case +"?\$\{?_SOT_LOCK_ID|^ *"?\$\{?_SOT_LOCK_ID\}?"? *\)' \

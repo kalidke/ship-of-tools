@@ -21,7 +21,7 @@ mod clients;
 mod comm;
 mod comm_inbox;
 mod comm_wake;
-mod comm_registry_lock;
+use comm::registry::lock as comm_registry_lock;
 mod durable;
 mod files;
 use files::{concept, watcher};

@@ -114,7 +114,7 @@ cached_read() {
             got="$(sh_at "$reader" "$c" '_sot_lock_self_id; _sot_lock_fresh "$SOT_COMM_HOME/.registry.lock"; echo "$_SOT_LOCK_READ"')"
         else
             got="$( (cd "$RUST_DIR" && SOT_TEST_LOCK_PATH="$c/.registry.lock" cargo test -q -p sot-backend --bin sotd \
-                comm_registry_lock::tests::print_fresh -- --ignored --exact --nocapture 2>/dev/null) | sed -n 's/^FRESH //p')"
+                comm::registry::lock::tests::print_fresh -- --ignored --exact --nocapture 2>/dev/null) | sed -n 's/^FRESH //p')"
         fi
         [ "$got" = "$new" ] || wrong=$((wrong + 1))
     done
