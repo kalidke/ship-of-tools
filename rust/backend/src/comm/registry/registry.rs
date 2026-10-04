@@ -106,6 +106,34 @@ fn write_synced(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
+/// Write `root` as the registry: pretty JSON and a newline, flushed to the temp
+/// file, then renamed into place. A failure is logged and the registry stays as
+/// it was. Run under the lock.
+fn replace_registry(
+    reg_path: &std::path::Path,
+    tmp_path: &std::path::Path,
+    root: &serde_json::Value,
+) -> bool {
+    let mut serialized = match serde_json::to_vec_pretty(root) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "comm registry serialize failed");
+            return false;
+        }
+    };
+    serialized.push(b'\n');
+    if let Err(e) = write_synced(tmp_path, &serialized) {
+        tracing::warn!(error = %e, "comm registry tmp write failed");
+        return false;
+    }
+    if let Err(e) = std::fs::rename(tmp_path, reg_path) {
+        tracing::warn!(error = %e, "comm registry rename failed");
+        let _ = std::fs::remove_file(tmp_path);
+        return false;
+    }
+    true
+}
+
 /// The registry's bytes, as the scripts' `sot_registry_bytes` reads them. An
 /// NFSv4 client can get ESTALE (stale file handle) from a read after its open
 /// succeeded, when another host renames a new registry over the file: the
@@ -315,21 +343,7 @@ fn remove_comm_agents_for_workspace_bounded(
         for handle in &to_remove {
             agents.remove(handle);
         }
-        let mut serialized = match serde_json::to_vec_pretty(&root) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "comm registry serialize failed");
-                return Vec::new();
-            }
-        };
-        serialized.push(b'\n');
-        if let Err(e) = write_synced(tmp_path, &serialized) {
-            tracing::warn!(error = %e, "comm registry tmp write failed");
-            return Vec::new();
-        }
-        if let Err(e) = std::fs::rename(tmp_path, reg_path) {
-            tracing::warn!(error = %e, "comm registry rename failed");
-            let _ = std::fs::remove_file(tmp_path);
+        if !replace_registry(reg_path, tmp_path, &root) {
             return Vec::new();
         }
         to_remove
@@ -427,22 +441,7 @@ pub(crate) fn clear_comm_unread(ws: &Workspace, host: &str) {
             );
         }
 
-        let mut serialized = match serde_json::to_vec_pretty(&root) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "comm registry serialize failed");
-                return;
-            }
-        };
-        serialized.push(b'\n');
-        if let Err(e) = write_synced(tmp_path, &serialized) {
-            tracing::warn!(error = %e, "comm registry tmp write failed");
-            return;
-        }
-        if let Err(e) = std::fs::rename(tmp_path, reg_path) {
-            tracing::warn!(error = %e, "comm registry rename failed");
-            let _ = std::fs::remove_file(tmp_path);
-        }
+        replace_registry(reg_path, tmp_path, &root);
     });
 }
 

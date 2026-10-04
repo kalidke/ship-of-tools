@@ -21,7 +21,8 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
 
 ## Rules
 - Every daemon registry write (`remove_comm_agents_for_workspace`, `clear_comm_unread`) runs under
-  `with_comm_registry_lock` and is one document: `write_synced` flushes a temp file, then it is renamed into place.
+  `with_comm_registry_lock` and goes through `replace_registry`: `write_synced` flushes a temp file, then it is renamed
+  into place.
   `remove_comm_agents_for_workspace` prunes a destroyed row's entry.
 - `clear_comm_unread` removes `done` (and turns a `done` state to `idle`) on a person's view of a row. It is the
   daemon's only work-state write.
