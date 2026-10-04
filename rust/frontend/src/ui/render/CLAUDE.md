@@ -14,7 +14,7 @@ rust/frontend/src/ui/CLAUDE.md. ADRs 0003, 0011 and 0012 give the design.
   `State::apply_text_scale`, and what `State::new` builds on the surface (`create_gpu_surface`, `build_text_grid`,
   `build_solid_quads`, `decode_logo_quads`).
 - `capture.rs`: the `--capture` trigger frame, `selfie_path`, and the texture readback to PNG (`stage_capture`,
-  `finish_capture`).
+  `finish_capture`), and a frame's use of them: `State::stage_frame_capture` and `State::finish_frame_capture`.
 - `pass/`: the frame's render pass, one `State` method per section (its own page).
 
 ## Start here
@@ -27,3 +27,5 @@ is in `State::redraw` in ../app/frame.rs, and the sections it calls are in `pass
 - The chrome grid holds back the strip's rows once, in `cell_grid_for`.
 - The clear colour is converted for the surface format in `clear_color_for_surface`.
 - Old paths `crate::text` and `crate::chrome` resolve through `use` lines in main.rs; `crate::chrome` is `cells.rs`.
+- A `--capture` shot exits the window after it is written; a selfie keeps it running, and the harness shot wins when
+  both fall on one frame (`stage_frame_capture`, `finish_frame_capture`).

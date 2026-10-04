@@ -119,3 +119,102 @@ pub(in crate::ui) fn finish_capture(
         .with_context(|| format!("save PNG to {}", path.display()))?;
     Ok(())
 }
+
+
+impl State {
+    pub(in crate::ui) fn stage_frame_capture(
+        &mut self,
+        mut encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::SurfaceTexture,
+    ) -> (Option<(wgpu::Buffer, u32, u32)>, Option<PathBuf>, bool, Option<PathBuf>) {
+        // If `--capture` is set and we've waited long enough for transport
+        // events to push through, copy the swapchain texture into a CPU
+        // buffer in this same encoder, before `frame.present()` consumes it.
+        // --capture-preview adds a second async round-trip (preview.get for
+        // a specific file) on top of the connect-time root preview. Math
+        // also has to wait on the MathJax sidecar per `$$…$$` block. Give
+        // it more frames so the readback is taken after the math SVGs have
+        // landed and been laid out.
+        let capture_target_frame = if self.capture_delay_ms > 0 {
+            // Explicit override from --capture-delay-ms. Redraw loop is
+            // 60 Hz, so ms * 60 / 1000.
+            (self.capture_delay_ms * 60 / 1000).max(1)
+        } else if self.capture_preview_armed {
+            CAPTURE_FRAME * 4
+        } else {
+            CAPTURE_FRAME
+        };
+        let capture_now = self.capture_path.is_some() && self.frame_counter == capture_target_frame;
+        // Ctrl+Shift+S selfie: capture the current frame to a timestamped PNG
+        // without exiting. Shares the readback machinery with the --capture
+        // harness path; the harness `capture_now` (one-shot + exit) wins if
+        // both request a shot on the same frame.
+        let selfie_target = self.selfie_pending.take();
+        let capture_target = if capture_now {
+            self.capture_path.clone()
+        } else {
+            selfie_target.clone()
+        };
+        let readback = if capture_target.is_some() {
+            Some(stage_capture(
+                &self.device,
+                &mut encoder,
+                &frame.texture,
+                self.config.width,
+                self.config.height,
+            ))
+        } else {
+            None
+        };
+        (readback, capture_target, capture_now, selfie_target)
+    }
+
+    pub(in crate::ui) fn finish_frame_capture(
+        &mut self,
+        readback: Option<(wgpu::Buffer, u32, u32)>,
+        capture_target: Option<PathBuf>,
+        capture_now: bool,
+        selfie_target: Option<PathBuf>,
+    ) {
+        if let Some((buf, padded_bpr, unpadded_bpr)) = readback {
+            let path = capture_target.unwrap();
+            let is_selfie = !capture_now && selfie_target.is_some();
+            match finish_capture(
+                &self.device,
+                buf,
+                padded_bpr,
+                unpadded_bpr,
+                self.config.width,
+                self.config.height,
+                self.config.format,
+                &path,
+            ) {
+                Ok(()) => {
+                    tracing::info!(path = %path.display(), "capture wrote PNG");
+                    if is_selfie {
+                        self.status = format!("selfie saved: {}", path.display());
+                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "capture failed");
+                    if is_selfie {
+                        self.status = format!("selfie failed: {e}");
+                        self.notify_sticky_until = Some(std::time::Instant::now() + NOTIFY_STICKY);
+                    }
+                }
+            }
+            // The --capture harness exits after its one shot; a selfie is live,
+            // so keep running and repaint once so the toast shows.
+            if capture_now {
+                self.should_exit = true;
+            } else {
+                self.window.request_redraw();
+            }
+        } else if self.capture_path.is_some() && !self.should_exit {
+            // Keep redrawing so frame_counter ticks up to CAPTURE_FRAME even
+            // when there are no transport events to trigger redraws.
+            self.window.request_redraw();
+        }
+    }
+}
