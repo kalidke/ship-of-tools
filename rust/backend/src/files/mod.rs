@@ -3,6 +3,7 @@
 
 pub(super) mod concept;
 pub(super) mod concept_ops;
+pub(crate) mod confine;
 pub(super) mod io;
 pub(super) mod io_ops;
 pub(super) mod preview;

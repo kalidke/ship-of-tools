@@ -32,7 +32,8 @@ Per workspace row (built in `workspaces.rs`):
   `transfer.rs` serves `file.download` and `file.upload`. `handlers.rs` re-exports them for the dispatch in `server.rs`.
 - `workspaces.rs` builds the three per row; `server.rs` creates the `preview.changed` bus and filters it per connection
   (`preview_changed_visible`).
-- Confinement is also written in `paths.rs` (`path_within_root`) and `handlers.rs` (`canonical_under_root`); the copies
+- Confinement is also written in `confine.rs` (`path_within_root`; `paths.rs` re-exports it) and `handlers.rs`
+  (`canonical_under_root`); the copies
   here (`node_id_to_path_confined`, `target_to_path`) and the two rename-without-fsync writes (`write_file`,
   `ConceptStore::write`) are separate on purpose.
 
@@ -45,6 +46,7 @@ Per workspace row (built in `workspaces.rs`):
 - `io.rs`: editor file IO: read, version-checked write, trash.
 - `preview/`: preview.get, preview.set_scale, image.crop.
 - `concept.rs`: the `.concept/` annotation store.
+- `confine.rs`: workspace confinement: whether a path lies under a root, and the canonical form of a path that may not exist yet.
 - `watcher.rs`: the notify-backed watcher that feeds `preview.changed`.
 - `concept_ops.rs`: concept.read, concept.write, concept.list
 - `io_ops.rs`: file.read, file.write, file.delete, dir.create
