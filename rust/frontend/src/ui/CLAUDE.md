@@ -48,6 +48,7 @@ until `State` is split.
 - `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`); the pages subsystem's window half.
 - `scan_tests.rs`: the crate's own source for the tests that scan it.
+- `events.rs`: `drain_events`, which applies each daemon event (`IncomingEvt`) to the window by variant
 
 ## Start here
 `State` in mod.rs for view state; `app/handler.rs` for the event loop.
