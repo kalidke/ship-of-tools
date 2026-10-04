@@ -1,250 +1,108 @@
 # Ship of Tools
 
-An agentic Julia development environment: AI agents drive the interface, REPL, and navigation to read, run, and surface code — the developer steers, watches, and reviews. It preserves conventional editor and REPL mechanics and layers a **concept explorer** on top (moving fluidly between project, module, type, function, output, and math). The LLM is the primary author of code and maintainer of the concept-explorer artifacts.
+An agentic development environment for Julia. Agent programs (Claude Code, Codex) run in rows, one project directory
+each; a native window lets the developer steer, watch and review them, browse the project, preview files and run a
+Julia REPL. `requirements.md` is the scope; `docs/adr/` records why; `docs/src/` is the user manual.
 
-`requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
+## How it runs
+- `sot`, the window (Rust, winit + wgpu). ratatui computes the chrome's cells only; one wgpu pass draws every pixel.
+  It is not a terminal program. It holds one connection to each daemon it dials.
+- `sotd`, the daemon, one per OS account per computer. It owns that computer's rows, serves files, previews and pages,
+  supervises the Julia children, and answers on one private socket (a named pipe on Windows).
+- `sot-capsule`, one supervisor per row and one leg under it running the agent on a real terminal, recorded into an
+  append-only voyage. Rows outlive the window and the daemon by design; the last window's lease decides whether a
+  computer's rows end when it closes.
+- Julia children of the daemon: a kernel per row (Julia-aware previews and project scans; it never runs user code and
+  never loads the user's environment), a REPL per row (runs user code in the row's environment), one Pluto server.
+- Other computers: `hosts.toml` declares them and names the hub; the window reaches a far daemon over ssh into
+  `sotd stdio-bridge`. Sessions message each other through the comm folder `~/.sot-comm`.
 
-**Operational handoff** — a session's current state is its handoff, `dev/output/handoff-<handle>.md` (gitignored), written at milestones. The private ops sidecar (`../ship-of-tools-ops`, override `$SOT_OPS_DIR`) holds the publish guard's denylist.
+## Subsystems
+Each line names the subsystem and the folder of its charter page (idea, owns, promises, connections).
+- **wire**: every byte two programs exchange; one integer for compatibility. `rust/protocol/`
+- **topology**: hosts.toml, endpoints, ssh logins, relay units. `rust/protocol/src/topology/`
+- **server**: sotd's one listener; admission and routing. `rust/backend/src/server/`
+- **lifecycle**: leases, the close, child ownership, bounded exits. `rust/backend/src/lifecycle/`
+- **rows**: the row registry and the daemon side of each row's capsule. `rust/backend/src/rows/`
+- **agents**: the agent launch recipe, accounts, launchers, skills, daemon-client CLIs. `agents/`
+- **capsule**: supervisor, leg, voyage record, lanes, attach client. `rust/log/`
+- **platform**: dirs, host name, durable writes, locks, peer identity. `rust/log/src/host/`
+- **messaging**: inboxes, the registry, work-state, the wake. `comm/`
+- **files**: a workspace's files, previews and `.concept/` annotations. `rust/backend/src/files/`
+- **sidecars**: kernel, REPL, Pluto, MathJax, monitor; the plugin ABI. `rust/backend/src/sidecars/`
+- **pages**: loopback HTTP pages and the window's page proxy. `rust/backend/src/pages/`
+- **fe-ui**: the window's one UI thread, drawing and input. `rust/frontend/src/ui/`
+- **fe-net**: the window's connections to daemons. `rust/frontend/src/net/`
+- **distribution**: release, CI, install, update, apply, launch. `scripts/`
+- **records**: ADRs, the manual, this file. `docs/`
 
-## Architecture at a glance
+Who owns what: `docs/ownership.md`. How they connect: `docs/integration.md`.
 
-Three processes, even when running locally, communicating over a socket:
+## Finding your way
+- Pages come in three tiers: this root map; one charter per subsystem in its charter folder; and a 15-40 line module
+  page in every other source folder. No page repeats its parent.
+- Search finds the path. The first Read of a file in a folder loads that folder's page and every page above it; Grep and
+  shell searches load none. So read the file, not only grep it.
+- Folders with no page of their own are listed, with their reason, in `scripts/tests/exempt.txt`.
 
-1. **Frontend (Rust + winit/wgpu)** — yazi-inspired native window that owns rendering end-to-end on the GPU (ADR 0012). **Not a terminal UI and not driven through a terminal:** `ratatui` supplies the chrome *layout* model only, via a custom `Backend` that maps cells to glyphs on the wgpu surface (ADR 0011). Stateless about the project. Renders what the backend sends; forwards keystrokes and commands.
-2. **Backend daemon (Rust)** — owns project state. Watches files, supervises Julia processes, holds the orchestrator LLM session, exposes a JSON line protocol to the frontend.
-3. **Julia kernel** — plugin host and project introspector. Owns dispatch tables, mode tree computation, file-type-aware indexing, AST hashing, and Julia-aware previews. Loads the project's `Project.toml` environment.
+## Limits
+- A file holds one concept and at most 800 code lines. Tests sit inline, or in a sibling file of at most 800 lines.
+- A folder holds at most 3,000 non-test code lines and 12 source files.
+- A function holds at most 100 lines.
+- The checks: `scripts/tests/check-layout.sh`, run by rust.yml's "Check the layout" with each exception and its reason
+  in `scripts/tests/check-layout.allow`; and rust.yml's "Function length" clippy step, whose count of allowances can
+  only fall. This page is the map tier and has no `## Files` list (a reasoned exception in that allow file).
 
-Plus a separate **REPL process** (Julia) for the user's interactive session, supervised by the backend, with a display shim that emits structured frames (stdout, stderr, value, image, error) over stdio.
+## Rules
+- **Elegance first: simple and elegant leads to performance and security; as simple as possible, but no simpler.** Every
+  design and review round asks both "what is missing?" and "what can be deleted?". A field, type, file or knob names the
+  invariant it serves, or it is a deletion candidate. Stripping past an invariant (durability, identity, the honesty of
+  the record) is false elegance.
+- One owner per concept. Before adding code, find the concept's owner in the ownership table and change it there.
+- Julia for plugin code and Julia-aware logic (the kernel parses with JuliaSyntax); Rust for plumbing (rendering, IPC,
+  watching, supervision), kept boring. The Rust-Julia boundary is a serialization seam: the daemon speaks to the kernel
+  and the REPL in JSON frames over their stdio, and Rust builds every tree node.
+- A new file type is a `FileType` plugin written against `core/`'s public methods, as the built-in ones are. The kernel
+  loads plugins only from its own project: the built-ins are `using`d in `julia/kernel/src/ShipToolsKernel.jl`, each a
+  `[sources]` dependency in `julia/kernel/Project.toml`; HDF5Preview, the one heavy plugin, loads on its first preview
+  through `LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl`. Nothing discovers a user's packages (ADR 0006's
+  declarative mechanism is unbuilt), so a new plugin is a kernel dependency plus a `using` line or a table row. A plugin
+  whose output must be bounded also needs its extensions in `is_bounded_output_plugin`
+  (`rust/backend/src/files/preview/mod.rs`). `Mode`, `ConceptEntity`, `AnnotationKind`, `Tool` and `Capture` are
+  declared in `core/` but unbuilt; scope any extensibility claim to `FileType`.
+- Reactive over eager. A concept annotation shows stale when the file's hash, which the kernel computes on
+  `file.parse`, no longer matches its `synced_against`; nothing sweeps in the background.
+- Defer features until forced. A diagnosed defect is never deferred: it goes in the next candidate, and the only reasons
+  to hold one back are two fixes contending for one file or a root cause not yet proven (say which, per item).
+- Read `requirements.md` before adding a feature. Change a CLAUDE.md, ADR status or manual page in the commit that
+  changes the code it describes. Plots in Julia use CairoMakie.
+- The repo is public: no private host names, user names, LAN details or host-suffixed handles in commits, PRs, code
+  comments or docs.
 
-Client/server even on local because it makes remote operation almost free later (same protocol, different transport). Pay the plumbing cost once.
-
-## Why this language split
-
-- **Rust** for the frontend, backend, file watching, IPC, GPU rendering, LLM provider client. Single-binary cross-platform distribution. `tokio` + `notify` + `winit` + `wgpu` + `cosmic-text` + `glyphon` + `ratatui` (chrome layout model only) cover the stack. ADR 0012 rules `ratatui-image`, `crossterm` and terminal image protocols of any kind explicitly **out**.
-- **Julia** for everything plugin-extensible and Julia-aware. `JuliaSyntax.jl` for parsing — reimplementing in Rust is a non-starter. Dispatch-as-plugin-mechanism is the unique value proposition here.
-
-## The plugin model: multiple dispatch as the extension substrate
-
-A small set of abstract types defines what's pluggable — declared in `core/src/ConceptExplorerCore.jl`, read them there. Methods on these are the ABI; users and packages extend the system by writing methods. No registration, no manifest — `using MyExtension` and the dispatch tables grow.
-
-Dispatched methods (the contract — most of these are design targets with no
-implementation yet, so they are NOT derivable from source):
-
-```julia
-preview(::Type{<:FileType}, path)        :: PreviewPayload
-parse_entities(::Type{<:FileType}, path) :: Vector{ConceptEntity}
-
-tree_root(::Type{<:Mode}, project)       :: TreeNode
-tree_children(::Type{<:Mode}, node)      :: Vector{TreeNode}
-preview_for(::Type{<:Mode}, node)        :: PreviewPayload
-
-ast_hash(e::ConceptEntity)               :: String
-applicable_annotations(::ConceptEntity)  :: Vector{Type{<:AnnotationKind}}
-
-capture_payload(x::Capture)              :: Frame
-
-tool_spec(::Type{<:Tool})                :: ToolSpec
-tool_call(::Type{<:Tool}, args)          :: Result
-```
-
-**Core ships as plugins to itself.** The standard file types are implemented as methods on these types — no privileged access. This forces the ABI to stay honest and exercises the same path third-party plugins use.
-
-**Implementation status (v0.3.x):** `FileType` is the seam that is wired end-to-end today (seven standard plugins + the HDF5 external example, all through the public ABI). The other five abstract types — `Mode`, `ConceptEntity`, `AnnotationKind`, `Tool`, `Capture` — are declared design targets with **no concrete subtypes yet**: the shipped navigation modes are implemented natively in the Rust frontend/backend (`files/tree.rs`, the kernel's `project.scan`), not dispatched through `Mode`. Plugin discovery is likewise not the declarative ADR 0006 mechanism yet (see that ADR's status note). When writing docs or answering questions about extensibility, scope claims to `FileType`.
-
-The Rust↔Julia boundary is a serialization seam. The IR is generic — `TreeNode`
-and `PreviewPayload` are defined in `core/src/ConceptExplorerCore.jl`; both carry
-opaque, kernel-defined payloads so Rust never learns about new entity kinds.
-
-Adding a new `FileType` requires zero Rust changes.
-
-## Modes (the switchable nav-tree roots)
-
-Same three-level tree shape across all of them. A hotkey switches the root tree. Cursor position is preserved per-mode across switches.
-
-| Mode      | Level 1 → Level 2 → Level 3                           | Preview                              |
-|-----------|-------------------------------------------------------|--------------------------------------|
-| Project   | Sections → contents → subitems                        | Rendered markdown / task detail      |
-| Files     | Parent dir → current dir → contents                   | File at appropriate fidelity         |
-| Modules   | Modules → functions → methods                         | Method source + concept artifact     |
-| Types     | Types → facets (fields/methods/sub) → members         | Type def + meaning + data shape      |
-| Math      | Concept areas → concepts → derivations/impls          | LaTeX + implementing functions       |
-| Outputs   | Recent runs → contents → artifacts                    | PNG/plot/JSON/MP4                    |
-| Agents    | Tasks → timeline → step detail                        | Diff / live tail / message           |
-
-This table is the **design target**. Built today: **Files**, **Modules**, plus two modes the table predates — **Sessions** and **Hosts** (the frontend `Mode` enum is `{Files, Modules, Sessions, Hosts}`). Project, Types, Math, Outputs, and Agents modes are unbuilt; Agents mode is **pinned for later** — single orchestrator only in phase 1.
-
-## Concept layer
-
-LLM-maintained annotations live in a sidecar `.concept/` directory:
-
-```
-.concept/
-  project/intent.md
-  modules/MyModule.md
-  types/MyModule/MyType.md
-  functions/MyModule/myfunction.md
-  math/geometry/rotation.md
-```
-
-Each annotation file has YAML frontmatter:
-
-```yaml
-target: MyModule.MyType
-target_kind: type
-synced_against: <ast_hash>
-synced_at: 2026-01-15T14:30Z
-authored_by: orchestrator | user
-references:
-  - MyModule.method1
-  - math/geometry/rotation
-```
-
-**Two layers** with different update mechanics:
-
-1. **Structural layer** — derived mechanically from code via `JuliaSyntax.jl` parse + (where loaded) live introspection. Always current. No LLM.
-2. **Annotation layer** — LLM/user-authored prose attached to nodes in the structural layer. Can drift; staleness is detected by AST hash mismatch.
-
-**Update lifecycle:**
-- File save → re-parse affected files → annotations whose target's AST hash changed are marked stale.
-- Stale annotations render with a yellowed/wilting badge in every mode (color is cross-cutting over entity provenance, not mode-specific).
-- Refresh is **reactive**: user navigates to a stale annotation and triggers refresh with one keypress. Background sweep is opt-in for later.
-
-**Reference verification:** annotations link to entities (`MyModule.method1`, `math/geometry/rotation`). Background pass verifies refs after every re-index; broken refs mark the annotation stale.
-
-## Color coding (cross-cutting layer)
-
-Independent of mode. Rendered uniformly across all trees because the same entities carry the same provenance.
-
-- *User-edited recently* — warm color, fades over time
-- *Agent-edited, unaccepted* — distinct color (unresolved diff)
-- *Agent-edited, accepted* — neutral, small sigil
-- *Immutable / external* (Base, deps, vendored) — dimmed
-- *Stale annotation* — yellowed
-- *Pinned / favorited* — accented border
-
-## Phase 1 milestone
-
-The smallest useful working slice:
-
-- **Files mode** — filesystem nav with previews (markdown, PNG, syntax-highlighted `.jl`)
-- **Modules mode (read-only)** — structural view from `JuliaSyntax.jl`
-- **Persistent Julia REPL** with code dispatch (line, block, file)
-- **Orchestrator LLM chat** that can read/write files and dispatch code to the REPL
-- **`.concept/` annotation read and write** with AST-hash provenance
-- **One demo external plugin** (e.g., HDF5 file preview) shipped as a separate package, validating the extension surface from outside core
-
-**Explicitly out of scope for phase 1:**
-
-- Multi-agent (orchestrator only)
-- Types mode, Math mode, Outputs mode (come after)
-- Remote operation (architecture supports it; transport not built)
-- ~~MP4 playback (thumbnail only via shelled-out ffmpeg)~~ — **done post-phase-1:** the preview pane shows an ffmpeg poster frame; playback opens in the OS browser (HTML5 `<video>`, native decode) via `o` → `video.open`. An earlier in-pane `VideoPlayer` (frame streaming + transport controls) was built and then **removed** — see the ADR 0018 revision.
-- Embedded editor — shell out to `$EDITOR`
-- Background staleness sweep — reactive only
-- Automatic plot capture from REPL — phase 1, user saves to `.concept/outputs/` or calls a small helper
-- Windows polish — get Linux working first; Rust + a modern terminal mostly handles it but expect edge cases
+## Working in this repo
+- Development runs in the `ship-of-tools` workspace row. The daemon's default row is a hidden anchor; nothing runs in it.
+- `/worktree` (`agents/worktree/comm-worktree-new.sh <short>`) makes `<repo-parent>/worktrees/ship-of-tools-wt-<short>`
+  on branch `wt/<short>` with its own session; `/worktree status|sync|clean` manage it.
+- The repo is canonical, not any machine's memory: the user works across computers, and per-machine session memory is
+  never a prerequisite. Session memory holds working practices only; a fact about the code belongs in the CLAUDE.md of
+  the folder that owns it.
+- A launcher the daemon spawns full-paths its binaries: a capsule inherits the daemon's environment, whose `PATH`
+  lacks `~/.local/bin`. Spawn and daemon boot: ADR 0046.
+- Window restart (ADR 0017; read it before any restart): never kill the window's process. `scripts/relaunch-sot.ps1`
+  writes the relaunch sentinel and the Windows launcher respawns the window on exit 75 or 76. On Linux and macOS the
+  installed all-in-one `sot-launch` respawns on 75 only, and a window started by `scripts/launch-sot.sh` is not
+  respawned.
+- Releases follow the `release` skill and `scripts/release.sh`.
+- A session's handoff is its recovery file, `dev/output/handoff-<handle>.md` (gitignored), written at milestones.
+  The private ops sidecar (`../ship-of-tools-ops`, or `$SOT_OPS_DIR`) holds the publish guard's denylist; on a machine
+  where the sidecar exists but the denylist is unreadable, the guard blocks publishing.
 
 ## Messaging between sessions
-
-- This is ADR 0049's design of record, landing in stages: a send's verdict
-  now is `filed -> @h` or `FAILED -> @h: <reason>`, except that until B2 a
-  handle the hub's folder does not list can still get `NOT CONFIRMED: sent
-  for @h; …` or `filed -> @h (by <filer>, relay)`.
-- A session that can receive has one handle: its folder name plus its box name.
-- `comm-context.sh` prints yours.
-- Send with `comm-send.sh @handle "text"` and read its one result, `filed` or `FAILED` — nothing is queued and there is no second route.
-- When `[sot-comm] you have mail` appears, or your end-of-turn check says so, run `comm-poll.sh`.
-- To wait for a reply, end your turn.
-- Run the session-start step once, when a session first starts. A
-  resumed session must re-run it, which is why the launcher's `--continue`
-  does exactly that.
-
-## Conventions for Claude
-
-When working in this repo:
-
-- **THE design principle, senior to any process — elegance: simple and
-  elegant leads to performance and security. As simple as possible, but no
-  simpler.** It applies at every design and iteration stage, not only the
-  final artifact: a small design surface is simultaneously the function
-  argument (fewer states, fewer interactions, fewer bugs) and the security
-  argument (complexity is where corruption and attack hide). Every review
-  round asks BOTH questions — "what's missing?" AND "what can be deleted?" —
-  a round that only adds has done half its job. The "no simpler" edge:
-  stripping past the invariants (durability, identity, honesty of the
-  record) buys false elegance. A field, type, or knob must name the
-  invariant it serves; if it cannot, it is a deletion candidate.
-- **Julia is the canonical language** for plugin code, ABI definitions, and Julia-aware logic. Use it expressively — leverage multiple dispatch, the type system, and idiomatic patterns.
-- **Rust is for plumbing** — rendering, IPC, file watching, process supervision. Keep it boring and predictable.
-- **Plotting is CairoMakie** when generating plots in Julia.
-- **Eat dogfood**: core handlers ship as plugins to themselves. If core wants privileged access, fix the ABI instead.
-- **Boundaries are serialization seams.** `TreeNode` and `PreviewPayload` carry opaque payloads. Rust never learns about new entity kinds.
-- **Reactive over eager** for staleness, refresh, indexing. Visible drift is a feature, not a bug.
-- **Defer until forced.** If a feature can wait until phase 2, it should.
-- **Everything we know is wrong goes in the next rc or release.** Deferral is for *features*; it is never for a defect we have already diagnosed. The next candidate carries every open defect, and a known-wrong thing is not parked in a later line to keep a candidate tidy. The only legitimate reasons to hold one back are that two fixes contend for the same file, or that a fix rests on an unproven root cause and a cheaper diagnostic ships first — state the reason per item, out loud. "Small", "not a blocker" and "it can wait" are not reasons. Mechanics in the `release` skill's hard rules.
-- **Read `requirements.md` before adding features.** That document defines scope. This document defines structure.
-- **Use Agent subagents actively when working in this repo** — both worktree-isolated (forked) and inline (non-forked). Pick per task: forked for speculative or risky multi-file work, inline for focused research and subtasks. Don't default to one mode.
-- **Worktrees of this repo show as `ship-of-tools-wt-<thing>`** in the sessions list — next to the `ship-of-tools` workspace row they were cut from. Make them with the **`/worktree`** skill (`comm-worktree-new.sh <short>`), never by hand: it places the worktree at `<repo-parent>/worktrees/ship-of-tools-wt-<short>`, branches `wt/<short>`, replicates the external storage data symlinks, and spawns a session whose display label, comm handle and on-disk dir are all `ship-of-tools-wt-<short>` (the display prefix is pinned to the repo name in the committed `.sot/worktree.toml`). `/worktree status|sync|clean` manage them.
-- **Ship of Tools development runs in the `ship-of-tools` workspace row** (root = this checkout), like every other project. The daemon's default row is a hidden, home-rooted anchor on every host; nothing runs in its pane.
-
-## Cross-OS Claude context — the repo is canonical, not per-machine memory
-
-The user may work across local and remote machines (see `.sot/hosts.toml.example`).
-Some deployments use a shared `$HOME`; others are per-machine.
-
-**Do not rely on per-machine Claude auto-memory.** It is *not* seeded on every box, and a session that depends on it having been seeded will run on stale or absent context — this has caused real failures (a Windows session followed a deleted memory rule and broke a working flow). The fix is not to seed harder; it is to treat the **repo itself as the single source of truth** and read it on any machine:
-
-- **Operational procedures live in repo docs and are authoritative there** — read them in-repo, no copy step:
-  - `requirements.md` (scope), this `CLAUDE.md` (design + conventions), `dev/output/handoff-<handle>.md` (each session's handoff).
-  - `docs/adr/` for design decisions. **Frontend rebuild/restart is `docs/adr/0017-frontend-self-relaunch.md`** plus the header comments in `scripts/launch-sot.ps1` and `scripts/relaunch-sot.ps1`. **Read ADR 0017 before attempting any frontend restart** — the dev `claude` runs *inside* the frontend's Terminal drawer, so killing the frontend kills your own session; use `scripts/relaunch-sot.ps1` (sentinel → exit-75 respawn), never a process kill.
-  - **Session spawn / daemon boot is `docs/adr/0023-daemon-fe-commands-and-spawn.md`** (its top Update) and **ADR 0046** (declared identity, daemon-owned rows). A session is a capsule row whose agent is claude, codex or bash; `workspace.create` with `autostart_claude` makes the daemon start the agent's launcher (`ccb`/`ccx`) in the row's capsule, and the frontend attaches directly. **Gotcha: launchers the daemon spawns must full-path their binaries** — the capsule inherits the daemon's env, whose `PATH` lacks `~/.local/bin` (a bare `exec claude` → not found → silent <1s boot death). The daemon→FE command channel is **ADR 0025**.
-- Session memory holds working practices only; a fact about the code belongs in the CLAUDE.md of the folder that owns it.
-
-## Decisions explicitly deferred
-
-- Multi-agent coordination model and isolation (worktrees vs containers vs ?)
-- Remote transport (architecture supports it; specific transport TBD)
-- MCP as internal protocol (not used in phase 1; may revisit)
-- Embedded editor (shell out for now)
-- Configuration mechanism for user preferences
-- Automatic plot capture from REPL (manual save in phase 1)
-
-## Open questions
-
-- **AST hash exact algorithm**: walk `JuliaSyntax.GreenNode`, skip trivia, hash kind+text. Pin a `JuliaSyntax` version; treat hash format as part of cache invalidation.
-- **Project root detection**: `Project.toml` is the anchor. Multi-`Project.toml` repos: pick one, document the rule, allow override via project config.
-- **Plugin discovery**: explicit `concept_extensions = ["MyExt"]` key in project config (predictable) vs auto-scan loaded packages for `ConceptExplorerCore` dependents (magical). Leaning explicit.
-- **Tool registration timing**: orchestrator learns tools at session start (simple) vs dynamically as plugins load (nicer). Static for phase 1.
-- **REPL streaming protocol**: length-prefixed JSON frames over stdio with structured event types (stdout, stderr, value, image, error). Borrow IJulia's protocol shape, simplified.
-
-## Repository layout (target)
-
-```
-Ship of Tools/
-  requirements.md         # source of truth for scope
-  CLAUDE.md               # this file — design and conventions
-  Project.toml            # the umbrella Julia package
-  
-  core/                   # Julia: ConceptExplorerCore.jl
-    src/                  # abstract types, IR, dispatch contracts
-    
-  julia/                  # Julia kernel + standard plugins
-    kernel/               # plugin host process entry point
-    plugins/
-      julia-source/       # JuliaSource FileType plugin
-      markdown/           # MarkdownDoc plugin
-      modules-mode/       # Modules Mode plugin
-      files-mode/         # Files Mode plugin
-      
-  rust/                   # Rust workspace
-    frontend/             # native winit/wgpu window binary
-    backend/              # daemon binary
-    protocol/             # shared types for the JSON line protocol
-    
-  repl/                   # Julia REPL shim (display protocol, framing)
-  
-  examples/
-    plugins/              # demo external plugins (HDF5 preview, etc.)
-```
-
-This layout is a target, not gospel. The first commits will likely be smaller — start with `core/`, the Rust workspace skeleton, and a single end-to-end skeleton that can render an empty Files mode.
+- Design of record: `docs/adr/0049-messaging-on-one-page.md`; the contract is `comm/PROTOCOL.md`.
+- A session's handle is its folder name plus its box name; `comm-context.sh` prints it.
+- Send with `comm-send.sh @<handle> "text"`; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`,
+  except that a send relayed to a handle the hub's folder does not list can still end `NOT CONFIRMED: sent for @h; ...`
+  or `filed -> @h (by <filer>, relay)` (`comm/mail/comm-relay.sh`).
+- An idle row is woken by the line `[sot-comm] you have mail: run comm-poll.sh`; a turn cannot end with directed
+  mail unread. Read with `comm-poll.sh`. To wait for a reply, end your turn.
+- Run `/sot-session-start` once when a session starts.

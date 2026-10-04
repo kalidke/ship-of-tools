@@ -2,11 +2,11 @@
 
 This directory is a decision log. Each ADR records why a decision was made,
 at the time it was made — not a description of how the system works today.
-`CLAUDE.md` does still send a reader here for three operational facts —
-frontend rebuild and restart (ADR 0017), and session spawn and daemon boot
-(ADR 0023 and ADR 0046). Until those facts move into per-subsystem pages,
-read the status token first: a record marked `partly superseded` can be
-right about the thing you came for and wrong about the machinery around it.
+The root `CLAUDE.md` sends a reader here for four records — the window's
+restart (ADR 0017), session spawn and daemon boot (ADR 0046), messaging
+(ADR 0049), and the plugin discovery that is not built (ADR 0006). Read the
+status token first: a record marked `partly superseded` can be right about
+the thing you came for and wrong about the machinery around it.
 
 Every ADR's line 3 begins with one of three status tokens:
 
