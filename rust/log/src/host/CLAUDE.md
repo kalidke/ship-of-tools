@@ -13,6 +13,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
 - Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`).
+- The daemon's single-instance lock (`lock.rs`: `daemon_lock_path`, `try_lock_daemon`, `DaemonLock`), re-exported at
+  `sot_log::fence` because the backend has no library target its tests could reach.
 - The volume preflight (`volume.rs`: `preflight_volume`).
 - The directory pin (`pinned_dir.rs`: `PinnedDir`, `DirIdentity`, `dir_identity`).
 - Windows owner-only descriptors and SIDs (`winsec.rs`: `owner_protected_pipe_descriptor`, `token_user_sid_string`).
@@ -51,7 +53,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
   and the re-exports that keep the old `fsutil` paths.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
-- `lock.rs`: the writer fence and the supervisor fence, held by the kernel.
+- `lock.rs`: the writer fence, the supervisor fence and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.
 - `state_dir.rs`: where a file lives, and the host name.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.

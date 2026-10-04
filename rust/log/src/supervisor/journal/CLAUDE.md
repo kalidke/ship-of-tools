@@ -11,7 +11,7 @@ startup-recovery code that writes them. Part of the capsule; charter: rust/log/C
 - `reset.rs`: `reset_pointer` and `reconcile_reset`, the pointer rename-aside and the recovery of a crashed reset
 - `recover.rs`: `reconcile_journal_on_startup`, the sweep of active entries before the pointer is read
 - `pointer.rs`: the voyage pointer `drawer.voyage`: path, publication, validation
-- `fence.rs`: the authority fence `supervisor.lock` (`lock_supervisor`) and the daemon lock
+- `fence.rs`: the authority fence `supervisor.lock` (`lock_supervisor`)
 
 ## Start here
 `begin` and `finish` in `mod.rs` for how an operation is recorded; `reconcile_journal_on_startup` in `recover.rs` for restart; `end_run_over_mgmt_lane` in `end_run.rs` for ending a run.

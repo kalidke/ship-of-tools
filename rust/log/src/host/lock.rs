@@ -3,6 +3,7 @@
 use crate::{Error, Result};
 use std::fs::File;
 use std::path::Path;
+use std::path::PathBuf;
 use super::{RETRY_DEADLINE_MS, RETRY_STEP_MS};
 #[cfg(windows)]
 use super::io_ctx;
@@ -153,6 +154,34 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
     Ok(f)
 }
 
+/// The daemon's single-instance lock file name under the state dir.
+const DAEMON_LOCK_FILE_NAME: &str = "daemon.lock";
+
+/// `<state_dir>/daemon.lock`.
+pub fn daemon_lock_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(DAEMON_LOCK_FILE_NAME)
+}
+
+/// The held daemon lock, kernel-released on drop (including hard kills).
+pub struct DaemonLock(#[allow(dead_code)] std::fs::File); // held for its Drop
+
+/// One attempt at the daemon lock under `state_dir`: `Ok(None)` when
+/// another holder has it. std's `File::try_lock` is the same kernel lock
+/// `fsutil` uses for the supervisor fence.
+pub fn try_lock_daemon(state_dir: &Path) -> std::io::Result<Option<DaemonLock>> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(daemon_lock_path(state_dir))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(DaemonLock(file))),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +245,15 @@ mod tests {
             .collect();
         assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert!(lock_path.is_file());
+    }
+
+    #[test]
+    fn try_lock_daemon_excludes_a_second_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = try_lock_daemon(dir.path()).unwrap();
+        assert!(first.is_some());
+        assert!(try_lock_daemon(dir.path()).unwrap().is_none());
+        drop(first);
+        assert!(try_lock_daemon(dir.path()).unwrap().is_some());
     }
 }
