@@ -159,12 +159,13 @@ impl State {
     }
 }
 
+/// Field order is load-bearing: fields drop in declaration order and are declared in reverse order of creation, so a failed start drops them as `new`'s locals did.
 pub(in crate::ui) struct GpuSurface {
-    pub(in crate::ui) surface: wgpu::Surface<'static>,
-    pub(in crate::ui) device: wgpu::Device,
-    pub(in crate::ui) queue: wgpu::Queue,
     pub(in crate::ui) config: wgpu::SurfaceConfiguration,
     pub(in crate::ui) surface_format: wgpu::TextureFormat,
+    pub(in crate::ui) queue: wgpu::Queue,
+    pub(in crate::ui) device: wgpu::Device,
+    pub(in crate::ui) surface: wgpu::Surface<'static>,
 }
 
 pub(in crate::ui) fn create_gpu_surface(window: &Arc<Window>, settings: &Settings) -> Result<GpuSurface> {
@@ -250,10 +251,11 @@ pub(in crate::ui) fn create_gpu_surface(window: &Arc<Window>, settings: &Setting
     Ok(GpuSurface { surface, device, queue, config, surface_format })
 }
 
+/// Field order is load-bearing: fields drop in declaration order and are declared in reverse order of creation, so a failed start drops them as `new`'s locals did.
 pub(in crate::ui) struct TextGrid {
-    pub(in crate::ui) text: TextLayer,
-    pub(in crate::ui) cell_w: f32,
     pub(in crate::ui) terminal: Terminal<WgpuBackend>,
+    pub(in crate::ui) cell_w: f32,
+    pub(in crate::ui) text: TextLayer,
 }
 
 pub(in crate::ui) fn build_text_grid(
@@ -295,16 +297,17 @@ pub(in crate::ui) fn build_text_grid(
     Ok(TextGrid { text, cell_w, terminal })
 }
 
+/// Field order is load-bearing: fields drop in declaration order and are declared in reverse order of creation, so a failed start drops them as `new`'s locals did.
 pub(in crate::ui) struct SolidQuads {
-    pub(in crate::ui) quad_pipeline: QuadPipeline,
-    pub(in crate::ui) selection_bg_quad: Quad,
-    pub(in crate::ui) overlay_back_quad: Quad,
-    pub(in crate::ui) code_bg_quad: Quad,
-    pub(in crate::ui) code_border_quad: Quad,
-    pub(in crate::ui) strike_line_quad: Quad,
-    pub(in crate::ui) scalebar_bar_quad: Quad,
-    pub(in crate::ui) scalebar_back_quad: Quad,
     pub(in crate::ui) caption_back_quad: Quad,
+    pub(in crate::ui) scalebar_back_quad: Quad,
+    pub(in crate::ui) scalebar_bar_quad: Quad,
+    pub(in crate::ui) strike_line_quad: Quad,
+    pub(in crate::ui) code_border_quad: Quad,
+    pub(in crate::ui) code_bg_quad: Quad,
+    pub(in crate::ui) overlay_back_quad: Quad,
+    pub(in crate::ui) selection_bg_quad: Quad,
+    pub(in crate::ui) quad_pipeline: QuadPipeline,
 }
 
 pub(in crate::ui) fn build_solid_quads(
@@ -385,9 +388,10 @@ pub(in crate::ui) fn build_solid_quads(
     })
 }
 
+/// Field order is load-bearing: fields drop in declaration order and are declared in reverse order of creation, so a failed start drops them as `new`'s locals did.
 pub(in crate::ui) struct LogoQuads {
-    pub(in crate::ui) logo_quad: Option<(Quad, u32, u32)>,
     pub(in crate::ui) wordmark_quad: Option<(Quad, u32, u32)>,
+    pub(in crate::ui) logo_quad: Option<(Quad, u32, u32)>,
 }
 
 pub(in crate::ui) fn decode_logo_quads(
