@@ -9,6 +9,7 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - `leg.rs`: the leg: voyage pointer discovery or mint, the spawn decision, `SpawnLease`, `LegLease`, `build_run_command`
 - `lifecycle.rs`: the `Lifecycle` state machine, its recovery, end-run and reset worker threads, leg retirement, `force_terminal`
 - `main_loop.rs`: `supervise_inner`, the authority's main loop
+- `transitions.rs`: one tick of each `Lifecycle` state, called by the main loop
 - `oneshot.rs`: `endrun_inner` and `reset_inner`, the fence-acquiring in-process callers
 - `probe/`: is a leg there, and is it this user's: the `ProbeOps` seam, the classifier and the three OS implementations
 - `lease_win.rs`: the Windows parent-death lease: a named mutex the supervisor owns for its whole life and the leg opens; abandoned means broken

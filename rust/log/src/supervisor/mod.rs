@@ -300,6 +300,7 @@ mod leg;
 mod lifecycle;
 mod main_loop;
 mod oneshot;
+mod transitions;
 pub mod lease_win;
 pub mod probe;
 use authority::*;
@@ -311,6 +312,7 @@ use leg::*;
 use lifecycle::*;
 use main_loop::*;
 use oneshot::*;
+use transitions::*;
 
 // ---------------------------------------------------------------------
 // L1-unix LU3c (ADR 0043 decisions 20/21): the platform, chosen ONCE.
