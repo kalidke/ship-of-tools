@@ -6,7 +6,9 @@ get frames back over the broadcast bus, or a collected reply. Part of the sideca
 rust/backend/src/sidecars/CLAUDE.md.
 
 ## Files
-- `mod.rs`: the handle (`Repl`), lifecycle, supervisor and the child's task, until they are split.
+- `mod.rs`: the handle (`Repl`): submit, execute, interrupt and restart, the frame bus message and `ExecAccum`.
+- `lifecycle.rs`: the child's state (`ReplLifecycle`), spawn generations and the `lifecycle` frames.
+- `supervisor.rs`: spawning the child and `supervisor_task`, its life: wire, routing and close-out on death.
 
 ## Start here
 mod.rs `Repl::ensure_supervisor` for when a child starts; `supervisor_task` for its life.
