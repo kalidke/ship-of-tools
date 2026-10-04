@@ -1,0 +1,144 @@
+#![cfg(any(windows, target_os = "linux"))]
+//! A control session's replies, pinned through a real `sotd`: the op table's unknown-op answer, the
+//! `monitor.*` and `pty.open` arms that answer inline, the four off-loop ops, `workspace.activate`,
+//! the evt-frame skip, the no-hello-needed `ping` and the protocol-gated roster entry.
+
+mod support;
+
+use serde_json::json;
+use sot_protocol::{codec, op, Frame, HelloReq, Kind};
+use support::{call, connect_and_hello, poll_until, try_connect, Env, BOUND};
+
+#[tokio::test]
+async fn control_session_replies_are_pinned() {
+    let env = Env::new("ctl");
+    env.spawn_sotd();
+    let (mut conn, mut id) = connect_and_hello(&env.socket_path).await;
+    let mut next = || {
+        id += 1;
+        id - 1
+    };
+
+    // 1. A frame of kind evt is skipped without a reply; ping needs no hello.
+    codec::write_frame(&mut conn, &Frame::evt("probe.evt", json!({})), None).await.expect("write evt");
+    let ping_id = next();
+    codec::write_frame(&mut conn, &Frame::req(ping_id, op::PING, json!({})), None).await.expect("write ping");
+    let reply = loop {
+        let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+            .await
+            .expect("ping reply within BOUND")
+            .expect("read_frame");
+        if frame.kind != Kind::Evt {
+            break frame;
+        }
+    };
+    assert_eq!((reply.id, reply.op.as_str(), reply.kind), (ping_id, op::PING, Kind::Res));
+    assert_eq!(reply.payload, json!({"ok": true}));
+    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a second connection").await;
+    let mut bare = tokio::io::BufReader::new(stream);
+    let reply = call(&mut bare, 1, op::PING, json!({})).await;
+    assert_eq!(reply.payload, json!({"ok": true}), "a request before any hello is answered");
+
+    // 2. An op nobody owns.
+    let reply = call(&mut conn, next(), "no.such.op", json!({})).await;
+    assert_eq!(reply.op, "no.such.op");
+    assert_eq!(reply.payload, json!({"error": "unknown op: no.such.op"}));
+
+    // 3. monitor.*
+    let reply = call(&mut conn, next(), op::MONITOR_SUBSCRIBE, json!({})).await;
+    assert_eq!(reply.payload["interval_s"], json!(1.0), "{:?}", reply.payload);
+    assert!(reply.payload["hosts"].is_array(), "{:?}", reply.payload);
+    let reply = call(&mut conn, next(), op::MONITOR_HISTORY, json!({"window_s": 60})).await;
+    assert!(reply.payload["hosts"].is_array(), "{:?}", reply.payload);
+    let reply = call(&mut conn, next(), op::MONITOR_HISTORY, json!({"window_s": "x"})).await;
+    assert_eq!(reply.payload["code"], "handler_error", "{:?}", reply.payload);
+    assert!(
+        reply.payload["error"].as_str().is_some_and(|e| e.starts_with("monitor.history payload")),
+        "{:?}",
+        reply.payload
+    );
+    let reply = call(&mut conn, next(), op::MONITOR_UNSUBSCRIBE, json!({})).await;
+    assert_eq!(reply.payload, json!({}));
+
+    // 4. pty.open's refusals.
+    let reply = call(&mut conn, next(), op::PTY_OPEN, json!({"rows": 24})).await;
+    assert_eq!(reply.payload["code"], "bad_request", "{:?}", reply.payload);
+    assert!(
+        reply.payload["error"].as_str().is_some_and(|e| e.starts_with("pty.open payload: ")),
+        "{:?}",
+        reply.payload
+    );
+    let reply = call(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "a|b"})).await;
+    assert_eq!(
+        reply.payload,
+        json!({"error": "invalid target \"a|b\" (want 1-64 chars of [A-Za-z0-9._-])", "code": "bad_target"})
+    );
+    let reply = call(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "nosuch"})).await;
+    assert_eq!(reply.payload, json!({"error": "no workspace owns session \"nosuch\"", "code": "no_workspace"}));
+
+    // 5. The four off-loop ops, on an unknown row and on the default row.
+    let list = call(&mut conn, next(), op::WORKSPACE_LIST, json!({})).await.payload;
+    let default_id = list["workspaces"]
+        .as_array()
+        .expect("workspaces array")
+        .iter()
+        .find(|w| w["is_default"].as_bool() == Some(true))
+        .and_then(|w| w["workspace_id"].as_str())
+        .expect("the default row")
+        .to_string();
+    let ops = [
+        (op::PREVIEW_GET, "preview.get payload: missing field `node_id`"),
+        (op::IMAGE_CROP, "image.crop payload: missing field `node_id`"),
+        (op::KERNEL_REQUEST, "kernel.request payload: missing field `kernel_op`"),
+        (op::CONCEPT_READ, "concept.read payload: missing field `target`"),
+    ];
+    for (name, default_row_error) in ops {
+        let reply = call(&mut conn, next(), name, json!({"workspace_id": "ws-nosuch"})).await;
+        assert_eq!(reply.op, name);
+        assert_eq!(
+            reply.payload,
+            json!({"error": "unknown workspace: Some(\"ws-nosuch\")", "code": "unknown_workspace"}),
+            "{name}"
+        );
+        let reply = call(&mut conn, next(), name, json!({"workspace_id": default_id})).await;
+        assert_eq!(reply.op, name);
+        assert_eq!(
+            reply.payload,
+            json!({"error": default_row_error, "code": "handler_error"}),
+            "{name} on the default row"
+        );
+    }
+
+    // 6. workspace.activate on an unknown row.
+    let reply = call(&mut conn, next(), op::WORKSPACE_ACTIVATE, json!({"workspace_id": "ws-nosuch"})).await;
+    assert_eq!(reply.payload, json!({}));
+
+    // 7. A hello on another protocol is refused and never enters the roster.
+    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a third connection").await;
+    let mut probe = tokio::io::BufReader::new(stream);
+    let hello = HelloReq {
+        client_id: "mismatch-probe".to_string(),
+        session_id: None,
+        last_seen_revision: 0,
+        token: None,
+        protocol: sot_protocol::PROTOCOL_VERSION + 1,
+        app_version: sot_protocol::app_version(),
+        host: None,
+        role: String::new(),
+        instance: None,
+        name: None,
+    };
+    let reply = call(&mut probe, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
+    assert_eq!(reply.payload["code"], "protocol_mismatch", "{:?}", reply.payload);
+    let reply = call(&mut conn, next(), op::VERSION_QUERY, json!({})).await;
+    let ids: Vec<&str> = reply.payload["clients"]
+        .as_array()
+        .expect("clients array")
+        .iter()
+        .filter_map(|c| c["client_id"].as_str())
+        .collect();
+    assert!(ids.contains(&"capsule-workspaces-test"), "the helloed connection is listed: {ids:?}");
+    assert!(!ids.contains(&"mismatch-probe"), "a refused hello never enters the roster: {ids:?}");
+    drop(probe);
+    env.kill_daemon_bounded().await;
+}

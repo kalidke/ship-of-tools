@@ -10,6 +10,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
+- `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the protocol-gated roster
 - `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change
 - `hub_link.rs`: messaging; a hub `sotd` and a guest `sotd` joined by a stub `ssh`, broadcast filed on the guest
 - `keystroke_latency.rs`: rows; keystroke timing against a private daemon, every test `#[ignore]`
