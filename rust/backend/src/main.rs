@@ -27,12 +27,11 @@ use files::{concept, watcher};
 use files::io as file_io;
 use files::tree as files_mode;
 mod handlers;
-mod http_serve;
 mod lane_bridge;
 mod lease;
 mod lifecycle;
+mod pages;
 mod paths;
-mod proxy;
 mod reauth;
 #[cfg(target_os = "linux")]
 mod row_scope_aim;
@@ -57,6 +56,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use lifecycle::{shutdown, startup};
+
+use pages::proxy;
+use pages::video as http_serve;
 
 /// Restrict default file-creation permissions to owner-only (security
 /// review): without this, every file sotd creates — its own log, the
