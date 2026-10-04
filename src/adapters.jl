@@ -3,15 +3,16 @@
 function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
     problems = String[]
     if cli === :claude
-        srcdir = joinpath(COMM_SRC, "adapters", "claude")
-        _stage!(problems, "claude skills") do
-            _install_skills(srcdir, joinpath(claude_home(), "skills"))
+        for srcdir in CLAUDE_SKILL_SRCS
+            _stage!(problems, "claude skills") do
+                _install_skills(srcdir, joinpath(claude_home(), "skills"))
+            end
         end
         _stage!(problems, "claude launchers") do
-            _install_launchers(joinpath(srcdir, "bin"))
+            _install_launchers(CLAUDE_LAUNCHER_SRC)
         end
         _stage!(problems, "claude hooks") do
-            _install_claude_hooks(joinpath(srcdir, "hooks"), claude_home(); unhooked = unhooked)
+            _install_claude_hooks(claude_home(); unhooked = unhooked)
         end
         # Named accounts get skills via the shared-folder symlink the
         # daemon creates at spawn (`rust/backend/src/accounts.rs::
@@ -45,21 +46,14 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
                     CODEX_HOME=$value julia --project=. -e 'using ShipTools; ShipTools.update_comm()'""" profile = path resolved = value installed = home
             end
         end
-        srcdir = joinpath(COMM_SRC, "adapters", "codex")
-        isdir(srcdir) || return nothing
-        skills_src = joinpath(srcdir, "skills")
+        isdir(CODEX_ADAPTER_SRC) || return nothing
         # Same function as the Claude adapter: a Codex skill's resource files
         # travel too, which the old one-entry-per-skill list never carried.
-        isdir(skills_src) && _stage!(problems, "codex skills") do
-            _install_skills(skills_src, joinpath(codex_home(), "skills"))
+        isdir(CODEX_SKILL_SRC) && _stage!(problems, "codex skills") do
+            _install_skills(CODEX_SKILL_SRC, joinpath(codex_home(), "skills"))
         end
         _stage!(problems, "codex launchers") do
-            _install_launchers(joinpath(srcdir, "bin"))
-        end
-        hookssrc = joinpath(srcdir, "hooks")
-        isdir(hookssrc) && _stage!(problems, "codex hooks") do
-            bin = joinpath(comm_home(), "bin")
-            _install_files(hookssrc, bin, readdir(hookssrc); executable = Returns(true))
+            _install_launchers(CODEX_LAUNCHER_SRC)
         end
         # Global codex memory: our AGENTS.md also installs as
         # $CODEX_HOME/AGENTS.md so conventions reach codex sessions in ANY
@@ -67,14 +61,13 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
         # (found live: the first daemon-booted codex reported "AGENTS.md
         # conventions not found" from a scratch workspace). Marker-guarded like
         # hooks.json.
-        src_agents = joinpath(dirname(COMM_SRC), "AGENTS.md")
-        isfile(src_agents) && _stage!(problems, "codex AGENTS.md") do
+        isfile(AGENTS_MD_SRC) && _stage!(problems, "codex AGENTS.md") do
             dstdir = codex_home()
             mkpath(dstdir)
             dst = joinpath(dstdir, "AGENTS.md")
             marker = "Codex sessions in Ship of Tools"
             if !isfile(dst) || occursin(marker, read(dst, String))
-                install_file(src_agents, dst)
+                install_file(AGENTS_MD_SRC, dst)
                 @info "Installed global codex AGENTS.md" file = dst
             else
                 @warn "codex AGENTS.md exists and is not ours — merge manually" file = dst
@@ -105,14 +98,13 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
         # with no error anywhere) are written up in
         # comm/adapters/codex/hooks.README.md — read it before editing
         # hooks.json. The guard below enforces the first one.
-        src = joinpath(srcdir, "hooks.json")
-        isfile(src) && _stage!(problems, "codex plugin") do
+        isfile(CODEX_HOOKS_JSON_SRC) && _stage!(problems, "codex plugin") do
             pdir = joinpath(homedir(), ".agents", "plugins", "sot-comm")
             mkpath(joinpath(pdir, ".codex-plugin"))
             mkpath(joinpath(pdir, "hooks"))
-            install_file(joinpath(srcdir, "plugin", ".codex-plugin", "plugin.json"),
+            install_file(joinpath(CODEX_PLUGIN_SRC, ".codex-plugin", "plugin.json"),
                          joinpath(pdir, ".codex-plugin", "plugin.json"))
-            txt = replace(read(src, String), "\$HOME" => homedir())
+            txt = replace(read(CODEX_HOOKS_JSON_SRC, String), "\$HOME" => homedir())
             # codex REJECTS the whole hooks file — every event, silently — if it
             # carries ANY unrecognized top-level key (the config struct is
             # deny_unknown_fields). A "_comment" key documenting the file did

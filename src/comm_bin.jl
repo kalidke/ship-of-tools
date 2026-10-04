@@ -31,15 +31,40 @@ const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-w
 # The names the last successful install shipped into `<bin>`, one per line.
 const COMM_MANIFEST = ".sot-comm-installed"
 
-# Every name this release installs directly into `<bin>`: the core scripts and
-# both adapters' hook scripts, from all three dirs whatever CLIs this run
-# installs, so a name only another CLI's run installs is never pruned.
-function _comm_bin_shipped()
-    dirs = [joinpath(COMM_SRC, "core", "scripts"),
-            joinpath(COMM_SRC, "adapters", "claude", "hooks"),
-            joinpath(COMM_SRC, "adapters", "codex", "hooks")]
-    return sort!(unique(reduce(vcat, [isdir(d) ? readdir(d) : String[] for d in dirs])))
+# The folders of comm/bin-folders.txt as absolute paths under `root`. Blank
+# lines are skipped and CR is stripped, so a CRLF checkout reads the same.
+function _comm_bin_folders(list::AbstractString = COMM_BIN_FOLDERS, root::AbstractString = REPO_ROOT)
+    folders = String[]
+    for line in eachline(list)
+        line = strip(line)
+        isempty(line) && continue
+        dir = joinpath(root, split(line, '/')...)
+        isdir(dir) || error("comm bin folder \"$line\" (listed in $list) is not a folder: $dir")
+        push!(folders, dir)
+    end
+    return folders
 end
+
+# The `(folder, name)` pairs of the regular files that install flat into
+# `<bin>`: list order, then `readdir` order. Two folders shipping one name
+# would overwrite each other in the bin, so that is an error naming both.
+function _comm_bin_files(folders = _comm_bin_folders())
+    files = Tuple{String,String}[]
+    owner = Dict{String,String}()
+    for dir in folders, name in readdir(dir)
+        isfile(joinpath(dir, name)) || continue
+        haskey(owner, name) &&
+            error("comm bin name \"$name\" is shipped by both $(owner[name]) and $dir")
+        owner[name] = dir
+        push!(files, (dir, name))
+    end
+    return files
+end
+
+# Every name this release installs directly into `<bin>`: the files of every
+# listed folder, whatever CLIs this run installs, so a name only another CLI's
+# run used to install is never pruned.
+_comm_bin_shipped(files = _comm_bin_files()) = sort!([name for (_, name) in files])
 
 # A bare file name: the only shape a prune will act on.
 _plain_name(n::AbstractString) =

@@ -109,15 +109,14 @@ function _claude_settings_targets(home::AbstractString, claude_dir::AbstractStri
 end
 
 """
-    _install_claude_hooks(srchooks, claude_dir)
+    _install_claude_hooks(claude_dir; unhooked)
 
-Install the comm hook script(s) from `srchooks` into `\$SOT_COMM_HOME/bin`
-(next to the comm-*.sh scripts they shell out to), then idempotently
-register the work-state hooks in every Claude account's
+Idempotently register the work-state hooks in every Claude account's
 settings.json: each real file [`_claude_settings_targets`] returns for
 `claude_dir` (the install's own dir, the default `~/.claude`, and each
 `~/.claude-auth/<name>` that has one), links resolved, each written once.
-The scripts are installed once, not per account.
+The hook scripts themselves install with the other bin folders
+(`_comm_bin_files`), whatever `clis`; this function only wires them.
 
 The work-state hooks make state **event-driven — instant, automatic, and free of
 model cooperation**: `UserPromptSubmit → working`, `PreToolUse` on `AskUserQuestion` → blocked, `Stop → idle`, and a `PostToolUse`
@@ -130,16 +129,10 @@ it adds one entry for that event only if absent and preserves every other hook
 (repo-boundary-guard, tmux-send-guard, … are untouched). A missing settings.json is created fresh in one dir only, the create dir of [`_claude_settings_targets`], and
 never under `~/.claude-auth`; an
 unparseable one, or any file when `jq` is unavailable, is left alone and
-the exact JSON to add by hand is printed. No-op if `srchooks` is absent.
+the exact JSON to add by hand is printed.
 """
-function _install_claude_hooks(srchooks::AbstractString, claude_dir::AbstractString;
+function _install_claude_hooks(claude_dir::AbstractString;
                               unhooked::Vector{String} = String[])
-    isdir(srchooks) || return nothing
-    bin = joinpath(comm_home(), "bin")
-    installed = [f for f in readdir(srchooks) if isfile(joinpath(srchooks, f))]
-    isempty(installed) && return nothing
-    _install_files(srchooks, bin, installed; executable = Returns(true))
-    @info "Installed comm hook scripts" hooks = installed dir = bin
     # Register the work-state hooks. Together they write the FACTS a row is
     # reduced from (ADR 0044 amendment): a turn starting sets `floor`, an
     # AskUserQuestion sets `question` then clears `floor` (a real turn end),

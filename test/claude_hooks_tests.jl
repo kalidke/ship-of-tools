@@ -78,10 +78,9 @@ end
         b = joinpath(auth, "b", "settings.json")
         mkpath(dirname(b)); symlink(default, b)
         c = joinpath(auth, "c"); mkpath(c)
-        srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
         withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-            ShipTools._install_claude_hooks(srchooks, ShipTools.claude_home())
+            ShipTools._install_claude_hooks(ShipTools.claude_home())
 
             # Each real file holds each comm hook exactly once.
             for f in (shared, a), (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -98,12 +97,10 @@ end
             @test islink(default) && readlink(default) == shared
             @test islink(b) && readlink(b) == default
             @test isempty(readdir(c))
-            # The scripts went in once, to the one bin.
-            @test isfile(joinpath(home, ".sot-comm", "bin", "comm-status-idle.sh"))
 
             # A re-run changes nothing.
             before = Dict(f => read(f) for f in (shared, a))
-            ShipTools._install_claude_hooks(srchooks, ShipTools.claude_home())
+            ShipTools._install_claude_hooks(ShipTools.claude_home())
             for f in (shared, a)
                 @test read(f) == before[f]
             end
@@ -122,10 +119,9 @@ end
         write(target, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user.sh"}]}]}}""")
         link = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(link)); symlink(target, link)
-        srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
         withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-            ShipTools._install_claude_hooks(srchooks, ShipTools.claude_home())
+            ShipTools._install_claude_hooks(ShipTools.claude_home())
             @test islink(link) && readlink(link) == target
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
                 @test count(==(ShipTools._hook_command(script)), cmds(target, ev)) == 1
@@ -141,10 +137,9 @@ end
     mktempdir() do home
         mkpath(joinpath(home, ".claude"))
         c = joinpath(home, ".claude-auth", "c"); mkpath(c)
-        srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
         withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-            ShipTools._install_claude_hooks(srchooks, c)
+            ShipTools._install_claude_hooks(c)
             @test isempty(readdir(c))
             f = joinpath(home, ".claude", "settings.json")
             @test isfile(f)
@@ -188,16 +183,15 @@ end
             f = joinpath(home, ".claude", "settings.json")
             mkpath(dirname(f)); write(f, "{}")
             chmod(f, 0o604)  # a mode no umask produces
-            srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
             withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                     "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-                ShipTools._install_claude_hooks(srchooks, joinpath(home, ".claude"))
+                ShipTools._install_claude_hooks(joinpath(home, ".claude"))
                 @test filemode(f) & 0o777 == 0o604
                 for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
                     @test count(==(ShipTools._hook_command(script)), cmds(f, ev)) == 1
                 end
                 ino1 = stat(f).inode
-                ShipTools._install_claude_hooks(srchooks, joinpath(home, ".claude"))
+                ShipTools._install_claude_hooks(joinpath(home, ".claude"))
                 @test stat(f).inode == ino1
                 @test filemode(f) & 0o777 == 0o604
             end
@@ -231,14 +225,13 @@ end
         auth = joinpath(home, ".claude-auth")
         c = joinpath(auth, "c"); mkpath(c)
         symlink(c, joinpath(home, "alias"))
-        srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
         withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
             cd(home) do
-                ShipTools._install_claude_hooks(srchooks, joinpath(".claude-auth", "c"))
+                ShipTools._install_claude_hooks(joinpath(".claude-auth", "c"))
             end
-            ShipTools._install_claude_hooks(srchooks, joinpath(home, "alias"))
-            ShipTools._install_claude_hooks(srchooks, auth)
+            ShipTools._install_claude_hooks(joinpath(home, "alias"))
+            ShipTools._install_claude_hooks(auth)
             @test isempty(readdir(c))
             @test !ispath(joinpath(auth, "settings.json"))
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -285,10 +278,9 @@ end
             if !restrained
                 @test_skip false
             else
-                srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
                 withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                         "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-                    @test_throws ErrorException ShipTools._install_claude_hooks(srchooks, ro)
+                    @test_throws ErrorException ShipTools._install_claude_hooks(ro)
                     for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
                         @test count(==(ShipTools._hook_command(script)), cmds(a, ev)) == 1
                     end
@@ -312,10 +304,9 @@ end
         mkpath(joinpath(home, ".claude-auth"))
         team = joinpath(home, ".claude-auth", "team")
         symlink(elsewhere, team)
-        srchooks = joinpath(COMM_DIR, "adapters", "claude", "hooks")
         withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-            ShipTools._install_claude_hooks(srchooks, team)
+            ShipTools._install_claude_hooks(team)
             @test isempty(readdir(elsewhere))
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
                 @test count(==(ShipTools._hook_command(script)), cmds(default, ev)) == 1

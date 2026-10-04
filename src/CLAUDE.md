@@ -7,10 +7,10 @@ scripts/CLAUDE.md.
 
 ## Files
 - `ShipTools.jl`: the module, the installer overview comment, and the `include` order.
-- `sources.jl`: `COMM_SRC`, the repo's comm/ folder.
+- `sources.jl`: every repo path the installer reads, named once (`COMM_SRC`, `REPO_ROOT`, the skill, launcher and Codex sources).
 - `homes.jl`: the resolved runtime homes (`comm_home`, `codex_home`, `claude_home`).
 - `publish.jl`: atomic publish (`install_file`), staging names, marker reaping, the skill-install stage collector.
-- `comm_bin.jl`: the shipped bin names, the install record and its pruning, `COMM_DEPRECATED_BIN`.
+- `comm_bin.jl`: the bin folders read from comm/bin-folders.txt, the shipped bin names, the install record and its pruning, `COMM_DEPRECATED_BIN`.
 - `skills.jl`: the shared skills installer, the orphan sweep, `COMM_DEPRECATED_SKILLS`.
 - `launchers.jl`: launcher scripts into ~/.local/bin, `COMM_DEPRECATED_LAUNCHERS`.
 - `claude_hooks.jl`: account discovery and the settings.json hook merge and stale-hook removal.
@@ -24,6 +24,9 @@ scripts/CLAUDE.md.
 ## Rules
 - Publish only through `install_file` (copy, then rename), never `cp` or `mv` with `force=true`.
 - Prune only names recorded or listed (`_prune_comm_bin`).
+- The bin gets every folder listed in comm/bin-folders.txt, whatever `clis` (`_comm_bin_files`); a missing folder or a
+  name shipped by two folders fails the install.
+- A move under comm/ edits only comm/bin-folders.txt and src/sources.jl, never src/ code or test/.
 - Remove `VERSION` first and write it last (`install_comm`).
 - Never drop a hook that is not ours, and never create a settings.json under ~/.claude-auth
   (`_claude_settings_targets`, `_remove_stale_comm_hooks!`).

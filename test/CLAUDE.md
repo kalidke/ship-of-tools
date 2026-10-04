@@ -4,7 +4,7 @@ The tests of the Julia installer package (`ShipTools`), one file per installer c
 as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Files
-- `runtests.jl`: the entry; defines `COMM_DIR` and includes the six subject files inside one "Ship of Tools" testset
+- `runtests.jl`: the entry; includes the six subject files inside one "Ship of Tools" testset
 - `codex_tests.jl`: Codex hooks payload, marketplace registry and home profile export parsing (src/codex.jl)
 - `publish_tests.jl`: `install_file` and `_install_files` publishing, staging names, marker reaping (src/publish.jl)
 - `skills_tests.jl`: skill install, orphan sweep, retired session-start aliases, shipped project-local skills (src/skills.jl, src/launchers.jl)
@@ -21,4 +21,6 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 - Every test writes only under `mktempdir()`, with `HOME`, `SOT_COMM_HOME`, `CLAUDE_CONFIG_DIR` and `CODEX_HOME` set or
   unset by `withenv`.
 - A test that needs Unix mode bits probes at run time and skips itself.
-- A subject file defines its own helpers inside its testsets; the only shared global is `COMM_DIR` from `runtests.jl`.
+- A subject file defines its own helpers inside its testsets.
+- Comm paths come from ShipTools' constants (`ShipTools.CLAUDE_SKILL_SRCS`, `ShipTools._comm_bin_files()`), never a literal
+  path.

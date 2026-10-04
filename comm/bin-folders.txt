@@ -1,0 +1,3 @@
+comm/core/scripts
+comm/adapters/claude/hooks
+comm/adapters/codex/hooks

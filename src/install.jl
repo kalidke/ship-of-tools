@@ -15,7 +15,7 @@ const COMM_PROTOCOL_VERSION = 1
 "Short git commit this checkout is at (dirty-suffixed if the working tree \
 has uncommitted changes), or \"unknown\" when git is unavailable."
 function _repo_commit()
-    repo_root = normpath(joinpath(@__DIR__, ".."))
+    repo_root = REPO_ROOT
     try
         sha = readchomp(`git -C $repo_root rev-parse --short=9 HEAD`)
         isempty(sha) && return "unknown"
@@ -33,8 +33,9 @@ end
 """
     install_comm(; clis = [:claude])
 
-Install sot-comm. Copies the core scripts to `\$SOT_COMM_HOME/bin`
-(default `~/.sot-comm/bin`) and installs the adapter for each CLI in `clis`
+Install sot-comm. Copies the files of every folder listed in
+comm/bin-folders.txt to `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
+whatever `clis`, and installs the adapter for each CLI in `clis`
 (`:claude` skills/hooks, `:codex` skills/hooks/plugin). Idempotent — safe to
 re-run to update an existing install.
 """
@@ -51,15 +52,16 @@ function install_comm(; clis = [:claude, :codex])
     version_file = joinpath(comm_home(), "VERSION")
     rm(version_file; force = true)
 
-    srcscripts = joinpath(COMM_SRC, "core", "scripts")
-    isdir(srcscripts) || error("comm scripts not found at $srcscripts")
-    srcfiles = readdir(srcscripts)
+    files = _comm_bin_files()
     # Every stage runs; failures are collected and raised together at the
     # end, so one refused file (field report
     # 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
-    _stage!(problems, "comm scripts") do
-        _install_files(srcscripts, bin, srcfiles; executable = endswith(".sh"))
+    for folder in unique(first.(files))
+        names = [n for (f, n) in files if f == folder]
+        _stage!(problems, "comm scripts ($(relpath(folder, REPO_ROOT)))") do
+            _install_files(folder, bin, names; executable = endswith(".sh"))
+        end
     end
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
@@ -80,7 +82,7 @@ function install_comm(; clis = [:claude, :codex])
 
     # Only now, with every file of this install copied, prune what the release
     # no longer ships and record what it does; a failed install got here never.
-    shipped = _comm_bin_shipped()
+    shipped = _comm_bin_shipped(files)
     _prune_comm_bin(bin, shipped, prev_manifest)
     _write_comm_manifest(bin, shipped)
 

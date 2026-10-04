@@ -7,7 +7,7 @@
     # every codex session stops reporting its work-state, which reads as a
     # Ship of Tools bug rather than a parse failure. These checks are the
     # cheap standing guard; see comm/adapters/codex/hooks.README.md.
-    hooks_path = joinpath(COMM_DIR, "adapters", "codex", "hooks.json")
+    hooks_path = ShipTools.CODEX_HOOKS_JSON_SRC
     @test isfile(hooks_path)
     txt = read(hooks_path, String)
 
@@ -37,17 +37,10 @@
 
     # (4) Every hook command must be a script install_comm actually deploys
     # into $SOT_COMM_HOME/bin, so a rename can't leave the payload pointing
-    # at a file that never arrives. Sources are searched across adapters on
-    # purpose: three of the four scripts the CODEX payload references
-    # (comm-status-{working,heartbeat,idle}.sh) ship with the CLAUDE
-    # adapter, so `install_comm(clis = [:codex])` on its own would deploy
-    # hooks pointing at scripts it never installed. Harmless under the
-    # default clis = [:claude, :codex]; worth knowing before anyone splits
-    # them.
-    sources = String[]
-    for (root, _, files) in walkdir(COMM_DIR), f in files
-        endswith(f, ".sh") && push!(sources, f)
-    end
+    # at a file that never arrives. The bin gets every listed folder's files
+    # whatever `clis`, so `install_comm(clis = [:codex])` on its own deploys
+    # the scripts the payload references too.
+    sources = ShipTools._comm_bin_shipped()
     for m in eachmatch(r"\$HOME/\.sot-comm/bin/([A-Za-z0-9._-]+)", txt)
         @test m.captures[1] in sources
     end

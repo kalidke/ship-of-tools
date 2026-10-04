@@ -134,12 +134,10 @@ end
 @testset "project-local skills match their shipped copies" begin
     # A fresh checkout runs /sot-setup (and the skills it calls) from
     # .claude/skills before anything is installed; the installer ships
-    # comm/adapters/claude. A skill held in both must be byte-identical.
-    root = dirname(@__DIR__)
-    localdir = joinpath(root, ".claude", "skills")
-    shipped = joinpath(root, "comm", "adapters", "claude")
+    # the Claude skill folders. A skill held in both must be byte-identical.
+    localdir = joinpath(dirname(@__DIR__), ".claude", "skills")
     relfiles(d) = sort([relpath(joinpath(r, f), d) for (r, _, fs) in walkdir(d) for f in fs])
-    for name in readdir(localdir)
+    for shipped in ShipTools.CLAUDE_SKILL_SRCS, name in readdir(localdir)
         isdir(joinpath(shipped, name)) || continue
         a, b = joinpath(localdir, name), joinpath(shipped, name)
         @test relfiles(a) == relfiles(b)
