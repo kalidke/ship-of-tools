@@ -7,6 +7,7 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `event.rs`: `IncomingEvt`, every event a connection hands the UI thread
 - `request.rs`: `OutgoingReq`, every request the UI can send a host
 - `mod.rs`: the per-host connection task (`spawn`, `connect_and_run`, `run_protocol`, `run_session`) and every part of the transport no other file here holds
+- `reply.rs`: reply matching: the pending entry per request id (`PendingKind`), `PendingGuard`, and `handle_response_frame`, which turns each reply into an `IncomingEvt`
 
 ## Start here
 `spawn`, then `connect_and_run`, `run_protocol`, `run_session`.
