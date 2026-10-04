@@ -2,9 +2,9 @@
 
 ## Idea
 A row is one project directory on this host running one agent: the daemon registers it, its id survives restarts, and
-every change to its supervisor goes through one guard. This folder holds the in-memory registry of rows; the row
-toml and its migrations are still in `workspaces.rs`, and the capsule start and end functions are still in
-`capsule_workspace.rs`; the launch of a supervisor is in `spawn/`. Part of the daemon's rows subsystem, under `rust/backend/src`.
+every change to its supervisor goes through one guard. This folder holds the in-memory registry of rows and the row toml store
+(`store/`); the capsule start and end functions are still in `capsule_workspace.rs`; the launch of a supervisor is in `spawn/`.
+Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Owns
 - The registry `Workspaces`: `by_id`, `by_slug` and the default id, with `insert`, `resolve`, `list`, `has_slug`,
@@ -35,7 +35,7 @@ toml and its migrations are still in `workspaces.rs`, and the capsule start and 
   (`run::observer::observe` is the caller).
 - The default row is an inert anchor when its agent is `none`, on every runtime: `is_inert_default_anchor` is the one
   predicate for that.
-- The row toml is a projection of this state that `workspaces::save` rewrites; the state changes through the daemon's
+- The row toml is a projection of this state that `store::save` rewrites; the state changes through the daemon's
   ops, not through the file.
 
 ## Connections
@@ -45,13 +45,14 @@ toml and its migrations are still in `workspaces.rs`, and the capsule start and 
 - Out: `capsule_workspace` takes the guard and a `StartPermit` (`runtime::start_supervisor`, `runtime::reset_run`),
   writes observations (`run::observer::observe`) and installs the observer (`install_observer`); the lifecycle close calls
   `close_gate_and_settle`.
-- Persistence: `workspaces.rs` (`scan_disk`, `save`, `toml_path_for`) reads and writes the row toml and re-exports the
-  names callers still reach as `crate::workspaces::`.
+- Persistence: `store/` (`scan_disk`, `save`, `toml_path_for`) reads and writes the row toml; `workspaces.rs`
+  re-exports the names callers still reach as `crate::workspaces::`.
 
 ## Folders
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: the phase strings, the lifecycle observer and the headless attach client
 - `spawn/`: launching a row's supervisor: state-root checks, the detached spawn per OS, the Linux row scope
+- `store/`: the row toml store, its codec and the boot migrations
 
 ## Files
 - `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, the `WorkspaceChanged` event and the session name rule
@@ -62,6 +63,7 @@ toml and its migrations are still in `workspaces.rs`, and the capsule start and 
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: the phase strings, the lifecycle observer and the headless attach client
 - `spawn/`: launching a row's `sot-capsule supervise`: state-root checks, the detached spawn per OS, the Linux row scope
+- `store/`: the row toml store, its codec and the boot migrations
 
 ## Start here
 `mod.rs` for the three structs, then `registry.rs::insert` for how a row enters. For a phase change read
