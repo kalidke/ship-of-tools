@@ -416,13 +416,15 @@ where
         let frame = if let Some((f, _blob)) = pending_first.take() {
             f
         } else {
-            tokio::select! {
-                biased;
-                Some((frame, blob)) = out_rx.recv() => {
-                    write_reply(&mut tx, frame, blob).await?;
-                    continue;
-                }
-                done = read_fut.as_mut().expect("read_fut is always Some at loop top") => {
+            match select_once(
+                &mut tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
+                &mut agent_events_rx, &mut agent_receipt_rx, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
+                &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
+                &client_guard,
+            )
+            .await?
+            {
+                Woke::Read(done) => {
                     let (rx_back, wire) = done;
                     read_fut = Some(Box::pin(read_owned(rx_back)));
                     match wire {
@@ -433,66 +435,8 @@ where
                         }
                     }
                 }
-                change = recv_watcher(&mut watcher_rx) => {
-                    write_preview_changed(
-                        &mut tx,
-                        change,
-                        active_workspace.as_deref(),
-                        &workspaces,
-                    )
-                    .await?;
-                    continue;
-                }
-                wsc = recv_ws_events(&mut ws_events_rx) => {
-                    write_workspace_changed(&mut tx, wsc).await?;
-                    continue;
-                }
-                tpc = recv_topo_changed(&mut topo_changed_rx) => {
-                    write_topology_changed(&mut tx, tpc).await?;
-                    continue;
-                }
-                msg = recv_agent_msg(&mut agent_events_rx) => {
-                    write_agent_message(&mut tx, msg).await?;
-                    continue;
-                }
-                rcp = recv_agent_receipt(&mut agent_receipt_rx) => {
-                    write_agent_receipt(&mut tx, rcp).await?;
-                    continue;
-                }
-                fc = recv_fe_command(&mut fe_command_rx) => {
-                    write_fe_command(&mut tx, fc, client_guard.as_ref().map(|g| g.serial())).await?;
-                    continue;
-                }
-                rf = recv_repl_frame(&mut repl_frame_rx) => {
-                    write_repl_frame(&mut tx, rf).await?;
-                    continue;
-                }
-                tick = recv_monitor(&mut monitor_rx) => {
-                    if monitor_subscribed {
-                        write_monitor_tick(&mut tx, tick).await?;
-                    }
-                    continue;
-                }
-                // Same hygiene drain as the pty-present arm above.
-                Some(res) = jobs.join_next(), if !jobs.is_empty() => {
-                    if let Err(e) = res {
-                        tracing::error!(error = %e, "off-loop job panicked");
-                    }
-                    continue;
-                }
-                // Topology plan §F step 2: an ARMED `fe`/`bridge` connection
-                // (has sent at least one `ping`) that has since sent no
-                // frame at all within `ping_read_deadline()` is dead — reap
-                // it exactly like a clean EOF. Guarded on `deadline_armed`,
-                // not merely `is_long_lived_role`, so this arm stays inert
-                // — never even polled — before hello, for `cli`/`agent`
-                // connections, AND for an `fe`/`bridge` peer that has never
-                // sent a `ping` at all (opt-in by ping: see the arming
-                // comment above `is_long_lived_role`'s declaration).
-                () = tokio::time::sleep_until(read_deadline), if deadline_armed => {
-                    tracing::info!("no frame within the read deadline; reaping half-open connection");
-                    return Ok(());
-                }
+                Woke::Again => continue,
+                Woke::Reap => return Ok(()),
             }
         };
 
@@ -1140,6 +1084,103 @@ where
 
         for (out_frame, out_blob) in out_frames {
             write_reply(&mut tx, out_frame, out_blob).await?;
+        }
+    }
+}
+
+/// What one pass of a control session's select produced.
+enum Woke<R> {
+    /// The read future finished: the reader back, and what it read.
+    Read((tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>)),
+    /// An event or a job reply was handled; wait again.
+    Again,
+    /// The read deadline passed: end the connection.
+    Reap,
+}
+
+/// Waits for the next thing a control session must act on and handles every event but a read.
+async fn select_once<R, W, F>(
+    tx: &mut W, read_fut: &mut Option<std::pin::Pin<Box<F>>>,
+    out_rx: &mut mpsc::Receiver<(Frame, Option<Vec<u8>>)>,
+    watcher_rx: &mut Option<broadcast::Receiver<PreviewChanged>>,
+    ws_events_rx: &mut broadcast::Receiver<WorkspaceChanged>,
+    topo_changed_rx: &mut broadcast::Receiver<crate::topology_store::TopologyChanged>,
+    agent_events_rx: &mut broadcast::Receiver<AgentMessage>, agent_receipt_rx: &mut broadcast::Receiver<AgentReceipt>,
+    fe_command_rx: &mut broadcast::Receiver<FeCommandEvt>, repl_frame_rx: &mut broadcast::Receiver<ReplFrameMsg>,
+    monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, jobs: &mut JoinSet<()>,
+    read_deadline: tokio::time::Instant, deadline_armed: bool, monitor_subscribed: bool,
+    active_workspace: &Option<String>, workspaces: &Workspaces, client_guard: &Option<crate::clients::ClientGuard>,
+) -> Result<Woke<R>>
+where
+    W: AsyncWrite + Unpin,
+    F: std::future::Future<Output = (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>)>,
+{
+    tokio::select! {
+        biased;
+        Some((frame, blob)) = out_rx.recv() => {
+            write_reply(tx, frame, blob).await?;
+            Ok(Woke::Again)
+        }
+        done = read_fut.as_mut().expect("read_fut is always Some at loop top") => Ok(Woke::Read(done)),
+        change = recv_watcher(watcher_rx) => {
+            write_preview_changed(
+                tx,
+                change,
+                active_workspace.as_deref(),
+                &workspaces,
+            )
+            .await?;
+            Ok(Woke::Again)
+        }
+        wsc = recv_ws_events(ws_events_rx) => {
+            write_workspace_changed(tx, wsc).await?;
+            Ok(Woke::Again)
+        }
+        tpc = recv_topo_changed(topo_changed_rx) => {
+            write_topology_changed(tx, tpc).await?;
+            Ok(Woke::Again)
+        }
+        msg = recv_agent_msg(agent_events_rx) => {
+            write_agent_message(tx, msg).await?;
+            Ok(Woke::Again)
+        }
+        rcp = recv_agent_receipt(agent_receipt_rx) => {
+            write_agent_receipt(tx, rcp).await?;
+            Ok(Woke::Again)
+        }
+        fc = recv_fe_command(fe_command_rx) => {
+            write_fe_command(tx, fc, client_guard.as_ref().map(|g| g.serial())).await?;
+            Ok(Woke::Again)
+        }
+        rf = recv_repl_frame(repl_frame_rx) => {
+            write_repl_frame(tx, rf).await?;
+            Ok(Woke::Again)
+        }
+        tick = recv_monitor(monitor_rx) => {
+            if monitor_subscribed {
+                write_monitor_tick(tx, tick).await?;
+            }
+            Ok(Woke::Again)
+        }
+        // Same hygiene drain as the pty-present arm above.
+        Some(res) = jobs.join_next(), if !jobs.is_empty() => {
+            if let Err(e) = res {
+                tracing::error!(error = %e, "off-loop job panicked");
+            }
+            Ok(Woke::Again)
+        }
+        // Topology plan §F step 2: an ARMED `fe`/`bridge` connection
+        // (has sent at least one `ping`) that has since sent no
+        // frame at all within `ping_read_deadline()` is dead — reap
+        // it exactly like a clean EOF. Guarded on `deadline_armed`,
+        // not merely `is_long_lived_role`, so this arm stays inert
+        // — never even polled — before hello, for `cli`/`agent`
+        // connections, AND for an `fe`/`bridge` peer that has never
+        // sent a `ping` at all (opt-in by ping: see the arming
+        // comment above `is_long_lived_role`'s declaration).
+        () = tokio::time::sleep_until(read_deadline), if deadline_armed => {
+            tracing::info!("no frame within the read deadline; reaping half-open connection");
+            Ok(Woke::Reap)
         }
     }
 }
