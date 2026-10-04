@@ -11,9 +11,10 @@
 // `parse_range`, `serve_file` and `write_simple` are shared with `pages::site`,
 // so the two servers cannot disagree about Range or an empty file.
 //
-// Scope/security: binds 127.0.0.1 only. Serves only files whose extension is a known video type, and only
-// real regular files. This port has no auth of its own, though — any local
-// user on a shared host can reach it — so it must never accept a raw
+// Scope/security: binds 127.0.0.1 only and serves only connections from this
+// OS account (`spawn_accept_loop`, decision 0031). Serves only files whose
+// extension is a known video type, and only real regular files. It still must
+// never accept a raw
 // filesystem path from the request itself (that turned "video files the
 // single user can already read" into "any file, video or not, anyone on the
 // box can read"). Instead `video.open` REGISTERS the one file it's handing
@@ -132,23 +133,42 @@ pub async fn spawn(preferred: u16) -> Result<()> {
         .port();
     BOUND_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "video http server listening");
+    spawn_accept_loop(listener, "video", sot_log::identity::peer_owner::admit, handle_conn);
+    Ok(())
+}
+
+/// The accept loop every loopback page listener this daemon opens runs: the video server, the static-site server
+/// and each docs-pool listener. Decision 0031: a connection whose far end is not this OS account is closed with no
+/// byte written; `admit` is `sot_log::identity::peer_owner::admit` outside tests. The check runs in the connection's own
+/// task, on a blocking thread, never on the accept loop.
+pub(crate) fn spawn_accept_loop<H, Fut>(listener: TcpListener, name: &'static str, admit: sot_log::identity::peer_owner::Admit, handle: H)
+where
+    H: Fn(TcpStream) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+{
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let handle = std::sync::Arc::new(handle);
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
-                Ok((stream, _peer)) => {
+                Ok((stream, peer)) => {
+                    let handle = std::sync::Arc::clone(&handle);
                     tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream).await {
-                            tracing::debug!(error = %e, "video http conn ended");
+                        let Ok(local) = stream.local_addr() else { return };
+                        if !tokio::task::spawn_blocking(move || admit(name, local, peer)).await.unwrap_or(false) {
+                            return; // `stream` drops here: closed with no byte written
+                        }
+                        if let Err(e) = handle(stream).await {
+                            tracing::debug!(listener = name, port, error = %e, "page connection ended");
                         }
                     });
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "video http accept failed");
+                    tracing::warn!(listener = name, port, error = %e, "page accept failed");
                 }
             }
         }
     });
-    Ok(())
 }
 
 /// Whether this path is a video extension this server will serve. Public so
@@ -284,5 +304,46 @@ mod video_ext_tests {
         for p in ["clip.avi", "song.mp3", "x.gif", "noext", "mp4"] {
             assert!(!is_servable_video(Path::new(p)), "{p} should not be servable");
         }
+    }
+}
+
+#[cfg(test)]
+mod accept_loop_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// Decision 0031: a connection the owner check refuses gets no byte, though the handler would have answered.
+    #[tokio::test]
+    async fn a_connection_the_owner_check_refuses_gets_no_byte() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        spawn_accept_loop(listener, "test", |_, _, _| false, |mut s: TcpStream| async move {
+            s.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await?;
+            Ok(())
+        });
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        let _ = c.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").await;
+        let mut raw = Vec::new();
+        // An Err from a reset counts as the end.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), c.read_to_end(&mut raw))
+            .await
+            .expect("the refused connection must close");
+        assert!(raw.is_empty(), "got: {}", String::from_utf8_lossy(&raw));
+    }
+
+    #[tokio::test]
+    async fn this_accounts_connection_is_served_through_the_real_check() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        spawn_accept_loop(listener, "test", sot_log::identity::peer_owner::admit, handle_conn);
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"GET /nosuchtoken HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        let mut buf = [0u8; 128];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut buf))
+            .await
+            .expect("this account's connection must be answered")
+            .unwrap();
+        let head = String::from_utf8_lossy(&buf[..n]);
+        assert!(head.starts_with("HTTP/1.1 404"), "got: {head}");
     }
 }
