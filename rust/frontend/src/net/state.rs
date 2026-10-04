@@ -392,6 +392,15 @@ mod tests {
     }
 
     #[test]
+    fn state_path_lives_in_sot_logs_state_dir() {
+        let _g = set_test_env();
+        assert_eq!(
+            state_path(&"alpha".to_string()),
+            sot_log::host::state_dir::sot_state_dir().unwrap().join("session-alpha.json")
+        );
+    }
+
+    #[test]
     fn state_path_is_stable_for_the_same_host() {
         let _serial = serial();
         let a1 = state_path(&"alpha".to_string());
