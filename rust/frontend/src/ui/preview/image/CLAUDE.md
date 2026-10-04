@@ -6,6 +6,7 @@ rust/frontend/src/ui/CLAUDE.md.
 ## Files
 - `mod.rs`: declares the image files and brings the shared `quad` module into scope for them.
 - `figures.rs`: decodes markdown-figure fetch replies, tracks failed and pending figures, builds figure metrics and dispatches fetches.
+- `keys.rs`: Image preview keys: zoom, pan, reset and the scalebar.
 - `overlay.rs`: the figure caption store and the scalebar and caption draw geometry.
 - `png.rs`: decodes PNG bytes to RGBA8, fits them to the GPU's texture limit and uploads a quad.
 - `roi.rs`: the raster-node test, the ROI capture to `image.crop` and its applied report.

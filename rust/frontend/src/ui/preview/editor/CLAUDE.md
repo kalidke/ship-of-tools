@@ -5,6 +5,7 @@ The text buffer behind the preview pane's editor. Part of fe-ui; charter: rust/f
 ## Files
 - `mod.rs`: declares `buffer`, `state` and `replies`.
 - `buffer.rs`: `EditBuffer`, a UTF-8 body with a byte cursor, edits and undo.
+- `keys.rs`: The editor's keys, and entering edit mode from the preview.
 - `state.rs`: `EditState`, the active annotation edit, and `State::rebuild_edit_preview`, which shapes its preview buffer.
 - `replies.rs`: file read and write replies for the editor
 

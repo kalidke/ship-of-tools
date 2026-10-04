@@ -8,6 +8,7 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 - `pane.rs`: which node the pane shows and how a reply's bytes route to a renderer (`render_preview_source`), plus the pin and the path routing for `o`/`W`/`O`.
 - `concept.rs`: the concept-annotation slot beside the preview: the `concept.read` request, the frontmatter split and the `file.parse` drift check.
 - `fetch.rs`: the cursor-follow `preview.get` (`maybe_fire_preview`), the request-generation counters for the preview and concept slots, and which reply counts (`reply_is_current`).
+- `keys.rs`: What a key does in the preview pane, in order: the editor, page turns, the image, then actions and scroll.
 - `open.rs`: the external opens of the previewed file: the right outside tool (`open_path_external`), the docs page and the quarto execute.
 - `image/`: image previews (PNG decode, SVG rasterization).
 - `markdown/`: markdown and source text shaped by cosmic-text, with tree-sitter highlighting.

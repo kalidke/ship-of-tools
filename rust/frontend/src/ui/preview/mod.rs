@@ -10,6 +10,7 @@ pub(crate) mod editor;
 pub(crate) mod pane;
 pub(crate) mod concept;
 mod fetch;
+pub(in crate::ui) mod keys;
 mod open;
 mod replies;
 pub(in crate::ui) use fetch::reply_is_current;
