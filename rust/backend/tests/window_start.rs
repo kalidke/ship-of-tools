@@ -473,7 +473,8 @@ async fn restart_with_holders_no_lease_shuts_down() {
 }
 
 /// #1: a handover's deadline is the one recorded before the restart; a
-/// lease inside it keeps everything running.
+/// lease inside it keeps everything running. Without one, the shutdown's
+/// decision (the record losing its deadline) is timed, not the daemon's exit.
 #[tokio::test]
 async fn handover_countdown_survives_restart() {
     let _serial = SERIAL.lock().await;
@@ -505,11 +506,37 @@ async fn handover_countdown_survives_restart() {
             leaving(&mut conn, 2, "keep").await;
             env.kill_daemon_bounded().await;
         } else {
-            let status = wait_exit(&env, Duration::from_millis(COUNTDOWN_MS) + BOUND).expect("no shutdown at the handover");
-            let at = now_ms();
-            assert_eq!(status.code(), Some(0), "the handover's shutdown exit: {status:?}");
+            // Timed at the decision, not the exit: shutdown step 1 clears the
+            // record's deadline before any row is ended; ending rows is the
+            // runner's time, not the deadline's.
+            let at = poll_until(
+                || async {
+                    let text = match std::fs::read_to_string(record_path(&env)) {
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(now_ms()),
+                        Err(_) => return None,
+                        Ok(text) => text,
+                    };
+                    let r: serde_json::Value = serde_json::from_str(&text).expect("held.json parses");
+                    match r["handover_until_ms"].as_u64() {
+                        Some(d) => {
+                            assert_eq!(d, until, "the restart rewrote the handover's deadline: {r}");
+                            None
+                        }
+                        None => Some(now_ms()),
+                    }
+                },
+                Duration::from_millis(COUNTDOWN_MS) + BOUND,
+                "the handover's shutdown to begin",
+            )
+            .await;
             assert!(at >= until, "the shutdown came before the recorded deadline");
-            assert!(at < until + 3000, "the restart moved the handover's deadline: shut down {} ms after it", at - until);
+            assert!(
+                at < until + 3000,
+                "the restart moved the handover's deadline: the shutdown began {} ms after it",
+                at - until
+            );
+            let status = wait_exit(&env, BOUND).expect("no exit after the handover's shutdown began");
+            assert_eq!(status.code(), Some(0), "the handover's shutdown exit: {status:?}");
             assert!(!row_toml(&env, &row.slug).exists(), "the shutdown left the row registered");
         }
     }
