@@ -10,8 +10,10 @@ hand-over it serves.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
 
 ## Start here
-`window_event` in handler.rs for any input or redraw change; `about_to_wait` for wake-up scheduling and the
-`[display] fullscreen_vsync_pin` setting; `request_quit` in exit.rs for how the window closes.
+`window_event` in handler.rs for which winit event goes where and for the redraw arm; `keyboard_input` and `route_key`
+in ui/input/keypress.rs and the pointer functions in ui/input/mouse.rs for any input change; `about_to_wait` for
+wake-up scheduling and the `[display] fullscreen_vsync_pin` setting; `request_quit` in exit.rs for how the window
+closes.
 
 ## Rules
 - Every user quit goes through `request_quit`: `exit_intent` asks on Ctrl+Q and leaves at once on the close button.
