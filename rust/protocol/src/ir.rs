@@ -1,9 +1,3 @@
-// ir.rs — Rust mirrors of the Julia core IR types.
-//
-// `TreeNode` and `PreviewPayload` here serialize to the same JSON the Julia
-// kernel emits from `core/src/ConceptExplorerCore.jl`. Treat both as one
-// shared schema; the moment the Julia struct gains a field, this one does too.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

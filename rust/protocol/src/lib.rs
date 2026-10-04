@@ -4,10 +4,6 @@
 // Wire format: NDJSON envelopes — one JSON object per line, UTF-8, `\n`-terminated.
 // Blob payloads are length-prefixed binary frames following an envelope whose
 // payload contains `"blob": {"len": N, "mime": "…"}`. See docs/adr/0001.
-//
-// The IR types (`TreeNode`, `PreviewPayload`) mirror the Julia types in
-// `core/src/ConceptExplorerCore.jl` so the same JSON shape works on both
-// sides of the Rust↔Julia seam.
 
 pub mod codec;
 pub mod ir;
