@@ -51,7 +51,7 @@ pub(crate) use conn::record_test_activation_marker;
 pub(crate) use listen::refuse_live_socket;
 pub(crate) use reply::{write_frame_to, write_frame_within};
 use listen::{run_local, take_daemon_lock};
-use crate::comm::registry::poll::project_comm_registry;
+use crate::comm::registry::poll::spawn_registry_poll;
 use crate::rows::anchor::seed_default_row;
 
 pub async fn run(opts: Opts) -> Result<()> {
@@ -171,30 +171,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // POLL, not notify — the registry is on NFS where inotify is unreliable; the
     // 1.5s tick also coalesces a working agent's periodic status_at re-stamps. The
     // diff excludes `last_seen` so frequent send/poll heartbeats never spam re-lists.
-    if let Some(reg_path) = crate::handlers::comm_registry_path() {
-        let tx = ws_events_tx.clone();
-        tokio::spawn(async move {
-            let mut last: Option<String> = None;
-            let mut tick = tokio::time::interval(std::time::Duration::from_millis(1500));
-            loop {
-                tick.tick().await;
-                if let Some(cur) = tokio::fs::read(&reg_path)
-                    .await
-                    .ok()
-                    .map(|b| project_comm_registry(&b))
-                {
-                    if last.as_ref().map_or(false, |p| *p != cur) {
-                        let _ = tx.send(WorkspaceChanged {
-                            action: "agent_state".into(),
-                            slug: String::new(),
-                            workspace_id: String::new(),
-                        });
-                    }
-                    last = Some(cur);
-                }
-            }
-        });
-    }
+    spawn_registry_poll(&ws_events_tx);
 
 
     // Comm wake (0031 B3): types the unread-mail line into rows at a free

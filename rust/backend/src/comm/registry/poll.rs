@@ -1,4 +1,36 @@
-//! The registry poll's change detection; the poll task runs in the server's `run` until cut-run moves it here.
+//! The registry poll: the task the daemon starts at boot and its change detection.
+
+use tokio::sync::broadcast;
+
+use crate::workspaces::WorkspaceChanged;
+
+/// Starts the task that polls the comm registry and publishes `agent_state` on the workspace bus when an agent's state changes.
+pub(crate) fn spawn_registry_poll(ws_events_tx: &broadcast::Sender<WorkspaceChanged>) {
+    if let Some(reg_path) = crate::handlers::comm_registry_path() {
+        let tx = ws_events_tx.clone();
+        tokio::spawn(async move {
+            let mut last: Option<String> = None;
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(1500));
+            loop {
+                tick.tick().await;
+                if let Some(cur) = tokio::fs::read(&reg_path)
+                    .await
+                    .ok()
+                    .map(|b| project_comm_registry(&b))
+                {
+                    if last.as_ref().map_or(false, |p| *p != cur) {
+                        let _ = tx.send(WorkspaceChanged {
+                            action: "agent_state".into(),
+                            slug: String::new(),
+                            workspace_id: String::new(),
+                        });
+                    }
+                    last = Some(cur);
+                }
+            }
+        });
+    }
+}
 
 /// Canonical projection of just the state-relevant fields per sot-comm
 /// registry agent (state/summary/status_at, plus `host` — LU5d2:

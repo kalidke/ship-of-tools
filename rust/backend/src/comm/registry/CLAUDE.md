@@ -9,7 +9,7 @@ design of record: docs/adr/0049-messaging-on-one-page.md.
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
 - `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
 - `mod.rs`: declares the files
-- `poll.rs`: the registry poll's change detection
+- `poll.rs`: the registry poll task (`spawn_registry_poll`) and its change detection (`project_comm_registry`)
 - `registry.rs`: the daemon's registry reads, lock, prune, unread clear and row binding
 - `registry_tests.rs`: its tests
 

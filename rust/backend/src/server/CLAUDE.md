@@ -50,7 +50,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 (the revision ring).
 
 ## Files
-- `mod.rs`: the entry: `run` boots the buses and the roster, the registry-watch projection, and the re-exports
+- `mod.rs`: the entry: `run` boots the buses and the roster, and the re-exports
 - `hello.rs`: the hello handshake (protocol gate, hello reply and its replay)
 - `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek and the control loop with the op table
