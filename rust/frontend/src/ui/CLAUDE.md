@@ -24,6 +24,7 @@ until `State` is split.
 - `chrome/`: the pane chrome: focus and panes, the status line, nav spill, colours and the wireframe.
 - `control/`: agent control of the window: the fe.command route, its dispatch, the nav envelope and the file channel.
 - `drawer/`: the bottom drawer and its three tenants: the REPL, a Terminal and the Monitor.
+- `input/`: the key-binding catalog, contextual help and clipboard paste.
 - `nav/`: the navigation pane's trees (CLAUDE.md there).
 - `persist/`: the window's settings, config discovery and resume state.
 - `preview/`: the preview pane (image, markdown and editor subfolders).
@@ -33,6 +34,7 @@ until `State` is split.
 - `chrome/`: the pane chrome: focus and panes, the status line, nav spill, colours and the wireframe.
 - `control/`: the agent control surface, with its own page.
 - `drawer/`: the bottom drawer: the REPL log and lines, the Terminal's pty and vt100 helpers, the Monitor's view.
+- `input/`: the key-binding catalog, contextual help and clipboard paste.
 - `nav/`: the navigation pane's trees: mode and tree store, tree view, Modules, Sessions and Hosts trees.
 - `persist/`: the window's settings, config discovery and resume state.
 - `preview/`: the preview pane, with its image, markdown and editor subfolders.

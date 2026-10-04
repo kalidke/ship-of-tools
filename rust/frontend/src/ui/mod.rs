@@ -8,6 +8,7 @@
 // will plug in here as additional draw stages, both feeding into the same
 // wgpu surface — see ADR 0011 for the chrome-vs-preview-layer split.
 
+pub(crate) mod input;
 pub(crate) mod persist;
 
 use std::collections::HashMap;

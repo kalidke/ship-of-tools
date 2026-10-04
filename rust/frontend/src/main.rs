@@ -11,8 +11,6 @@
 mod chrome;
 mod cli;
 mod download;
-mod help;
-mod keybindings;
 use ui::chrome::layout;
 mod lease;
 use ui::drawer::monitor as monitor_view;
@@ -21,6 +19,7 @@ mod pages;
 mod paths;
 mod relaunch;
 mod selfupdate;
+use ui::input::{help, keybindings};
 use ui::persist::settings;
 use ui::persist::resume as state_persistence;
 use ui::drawer::terminal::pty as term;
