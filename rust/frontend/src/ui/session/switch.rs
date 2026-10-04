@@ -102,6 +102,31 @@ impl State {
         session_name: Option<String>,
         person_driven: bool,
     ) {
+        let old_tree_key = self.retarget_workspace(host, slug, session_name, person_driven);
+        let restored = self.restore_entering_workspace();
+        let files_root_inflight = self.load_entering_tree(old_tree_key);
+        // Refresh the workspace list so kernel_running / new rows stay
+        // current — cheap and not user-facing if Sessions mode isn't
+        // visible. The reply just updates the cached registry view.
+        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
+        // Update the connection status now so the chrome reflects the
+        // new workspace immediately. The attach_session_to_bl call above
+        // briefly sets a transient "attached BL → …" message; rebuild
+        // *after* that so the persistent label wins. The next workspace
+        // .list response will refresh it again (kernel_running may flip).
+        self.rebuild_connection_status();
+        self.persist_resume_state();
+        self.consume_pending_nav_badge(restored, files_root_inflight);
+        self.window.request_redraw();
+    }
+
+    fn retarget_workspace(
+        &mut self,
+        host: HostKey,
+        slug: Option<String>,
+        session_name: Option<String>,
+        person_driven: bool,
+    ) -> TreeKey {
         self.snapshot_current_workspace_ui();
         self.snapshot_current_workspace_repl();
         // The departing tree's key, computed while (mode, workspace) still
@@ -181,6 +206,10 @@ impl State {
             // own doc).
             self.attach_session_to_bl(self.active_host.clone(), target);
         }
+        old_tree_key
+    }
+
+    fn restore_entering_workspace(&mut self) -> bool {
         let key = self.active_ws_key();
         // Restore REPL state independently of the UI snapshot — they
         // travel in parallel and either may be missing (e.g. a first
@@ -188,10 +217,6 @@ impl State {
         // snapshot yet).
         let _ = self.restore_workspace_repl(&key);
         let restored = self.restore_workspace_ui(&key);
-        // Is a FILES tree.root already on its way? Tracked so the badge-consume
-        // below never fires a second one (Codex R6 — the corrective reload and
-        // the badge path both used to be able to request a root).
-        let mut files_root_inflight = false;
         if !restored {
             // First visit — start from a clean slate.
             self.mode = Mode::Files;
@@ -223,6 +248,14 @@ impl State {
             self.edit_state = None;
             self.preview_edit = None;
         }
+        restored
+    }
+
+    fn load_entering_tree(&mut self, old_tree_key: TreeKey) -> bool {
+        // Is a FILES tree.root already on its way? Tracked so the badge-consume
+        // below never fires a second one (Codex R6 — the corrective reload and
+        // the badge path both used to be able to request a root).
+        let mut files_root_inflight = false;
         // Swap the nav tree through the store now that the entering mode is
         // settled (snapshot-restored, or Files for a first visit). The
         // departing view parks under its own key; the entering (mode, ws)
@@ -279,17 +312,10 @@ impl State {
             // shape as the mode-return refresh in `enter_mode`.
             self.refresh_restored_files_tree();
         }
-        // Refresh the workspace list so kernel_running / new rows stay
-        // current — cheap and not user-facing if Sessions mode isn't
-        // visible. The reply just updates the cached registry view.
-        let _ = self.send(crate::transport::OutgoingReq::WorkspaceList);
-        // Update the connection status now so the chrome reflects the
-        // new workspace immediately. The attach_session_to_bl call above
-        // briefly sets a transient "attached BL → …" message; rebuild
-        // *after* that so the persistent label wins. The next workspace
-        // .list response will refresh it again (kernel_running may flip).
-        self.rebuild_connection_status();
-        self.persist_resume_state();
+        files_root_inflight
+    }
+
+    fn consume_pending_nav_badge(&mut self, restored: bool, files_root_inflight: bool) {
         // Badge floor (ADR 0025 §1): if we just switched to a workspace that
         // had a pending `nav.preview` result, drive it now and clear the badge.
         // Resolve the switched-to slug the same way `handle_nav_envelope`'s gate
@@ -328,80 +354,90 @@ impl State {
                     // above silently lose the badge on a closed channel.
                     self.pending_nav.insert(pending_key, path);
                 } else {
-                    self.preview_node_id_fired = Some(node_id.clone());
-                    self.preview_anchor_line = None;
-                    // The active view is THIS workspace's Files tree by
-                    // construction (force_files_mode swapped it in by key);
-                    // the only remaining question is whether it has rows yet
-                    // (a first visit's slot is empty until tree.root lands).
-                    let files_tree_usable = self
-                        .tree
-                        .rows
-                        .iter()
-                        .any(|r| r.node.id.starts_with("files:"));
-                    // #4: land the nav cursor on the driven file so cursor +
-                    // preview stay in sync. Two cases, keyed on `restored`:
-                    if restored && files_tree_usable {
-                        // Revisit: restore_workspace_ui put the snapshot tree
-                        // back and sent NO tree.root (the `!restored` guard
-                        // above), so a tree.root-gated reveal would never fire —
-                        // the original #4 gap, and exactly the maintainer's case (his was
-                        // a revisit). The rows are present now, so reveal
-                        // immediately: `drive_reveal_step` lands a visible row or
-                        // expands a collapsed ancestor, overriding the stale
-                        // restored cursor.
-                        // Hold the per-frame preview-follow off the stale cursor
-                        // row while a deep (async) reveal lands, so
-                        // `maybe_fire_preview` can't clobber the driven badge
-                        // preview with the cursor's file (the post-relaunch
-                        // badge-consume race). Mirrors `drive_same_ws_open`;
-                        // `drive_reveal_step` clears the hold when it lands.
-                        if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
-                            self.driven_preview_hold_cursor = self
-                                .tree
-                                .rows
-                                .get(self.tree.selected)
-                                .map(|r| r.node.id.clone());
-                        }
-                        self.pending_reveal = Some(node_id.clone());
-                        self.reveal_awaiting = None;
-                        self.reveal_refetched = None;
-                        self.drive_reveal_step(None);
-                    } else {
-                        // First visit (a tree.root was requested but its rows
-                        // aren't in yet), a restored-but-FOREIGN tree, or a
-                        // restored MODULES tree that this block just forced into
-                        // Files mode. The rows we want don't exist yet, so arm a
-                        // one-shot reveal consumed on the incoming reply (see the
-                        // TreeRoot handler).
-                        self.pending_switch_reveal = Some(node_id.clone());
-                        // ...and make sure a reply is actually coming. The
-                        // Modules-restore case fires nothing above (the
-                        // corrective reload is Files-gated, correctly), so
-                        // without this the badge would arm a one-shot that never
-                        // resolves and Files mode would keep showing the Modules
-                        // tree (Codex R6).
-                        if !files_root_inflight {
-                            tracing::info!("tree.root requested: badge consume needs a Files tree");
-                            if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
-                                mode: "files".to_string(),
-                                workspace_id: self.active_workspace_id.clone(),
-                            }) {
-                                tracing::warn!(error = %e,
-                                    "badge consume: drop tree.root — channel closed");
-                                self.pending_switch_reveal = None;
-                            }
-                            // No `files_root_inflight = true` here: this is the
-                            // last point in the switch that can request a root,
-                            // so nothing reads it again.
-                        }
-                    }
-                    self.status = format!("nav ← agent (pending) · {path}");
-                    tracing::info!(%node_id, ws = %slug,
-                        "pending nav.preview driven on workspace switch");
+                    self.land_pending_nav_badge(node_id, path, slug, restored, files_root_inflight);
                 }
             }
         }
-        self.window.request_redraw();
+    }
+
+    fn land_pending_nav_badge(
+        &mut self,
+        node_id: String,
+        path: String,
+        slug: String,
+        restored: bool,
+        files_root_inflight: bool,
+    ) {
+        self.preview_node_id_fired = Some(node_id.clone());
+        self.preview_anchor_line = None;
+        // The active view is THIS workspace's Files tree by
+        // construction (force_files_mode swapped it in by key);
+        // the only remaining question is whether it has rows yet
+        // (a first visit's slot is empty until tree.root lands).
+        let files_tree_usable = self
+            .tree
+            .rows
+            .iter()
+            .any(|r| r.node.id.starts_with("files:"));
+        // #4: land the nav cursor on the driven file so cursor +
+        // preview stay in sync. Two cases, keyed on `restored`:
+        if restored && files_tree_usable {
+            // Revisit: restore_workspace_ui put the snapshot tree
+            // back and sent NO tree.root (the `!restored` guard
+            // above), so a tree.root-gated reveal would never fire —
+            // the original #4 gap, and exactly the maintainer's case (his was
+            // a revisit). The rows are present now, so reveal
+            // immediately: `drive_reveal_step` lands a visible row or
+            // expands a collapsed ancestor, overriding the stale
+            // restored cursor.
+            // Hold the per-frame preview-follow off the stale cursor
+            // row while a deep (async) reveal lands, so
+            // `maybe_fire_preview` can't clobber the driven badge
+            // preview with the cursor's file (the post-relaunch
+            // badge-consume race). Mirrors `drive_same_ws_open`;
+            // `drive_reveal_step` clears the hold when it lands.
+            if !self.tree.rows.iter().any(|r| r.node.id == node_id) {
+                self.driven_preview_hold_cursor = self
+                    .tree
+                    .rows
+                    .get(self.tree.selected)
+                    .map(|r| r.node.id.clone());
+            }
+            self.pending_reveal = Some(node_id.clone());
+            self.reveal_awaiting = None;
+            self.reveal_refetched = None;
+            self.drive_reveal_step(None);
+        } else {
+            // First visit (a tree.root was requested but its rows
+            // aren't in yet), a restored-but-FOREIGN tree, or a
+            // restored MODULES tree that this block just forced into
+            // Files mode. The rows we want don't exist yet, so arm a
+            // one-shot reveal consumed on the incoming reply (see the
+            // TreeRoot handler).
+            self.pending_switch_reveal = Some(node_id.clone());
+            // ...and make sure a reply is actually coming. The
+            // Modules-restore case fires nothing above (the
+            // corrective reload is Files-gated, correctly), so
+            // without this the badge would arm a one-shot that never
+            // resolves and Files mode would keep showing the Modules
+            // tree (Codex R6).
+            if !files_root_inflight {
+                tracing::info!("tree.root requested: badge consume needs a Files tree");
+                if let Err(e) = self.send(crate::transport::OutgoingReq::TreeRoot {
+                    mode: "files".to_string(),
+                    workspace_id: self.active_workspace_id.clone(),
+                }) {
+                    tracing::warn!(error = %e,
+                        "badge consume: drop tree.root — channel closed");
+                    self.pending_switch_reveal = None;
+                }
+                // No `files_root_inflight = true` here: this is the
+                // last point in the switch that can request a root,
+                // so nothing reads it again.
+            }
+        }
+        self.status = format!("nav ← agent (pending) · {path}");
+        tracing::info!(%node_id, ws = %slug,
+            "pending nav.preview driven on workspace switch");
     }
 }
