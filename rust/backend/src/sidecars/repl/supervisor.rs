@@ -470,7 +470,7 @@ fn route_line(
             if let Some(port) = frame
                 .get("url")
                 .and_then(Value::as_str)
-                .and_then(crate::pages::proxy::loopback_port_from_url)
+                .and_then(sot_protocol::page_url::loopback_port_from_url)
             {
                 crate::pages::proxy::record_browser_port(browser_ports_key(&workspace_id), port);
             }

@@ -127,7 +127,7 @@ impl State {
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
             return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
         };
-        let Some(port) = crate::pages::proxy_port_from_url(url) else {
+        let Some(port) = sot_protocol::page_url::loopback_port_from_url(url) else {
             return true; // nothing to proxy, so nothing to arm
         };
         if let Some(arm) = self.proxy_ensured.get(&port) {

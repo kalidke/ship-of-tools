@@ -15,6 +15,7 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - The wire's tree and preview payload types, `TreeNode`, `PreviewPayload` and `BlobDescriptor` (ir.rs). The kernel
   builds the JSON these deserialize; nothing in the Julia core serializes its own types to them.
 - The product version string and the release predicate (version.rs); build.rs stamps their inputs.
+- The loopback page-URL grammar, owned by pages: `loopback_port_from_url` (page_url.rs).
 - Reaching a daemon: the topology grammar, endpoints, ssh recipe and lane client (`topology/`).
 
 ## Promises
@@ -45,6 +46,7 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - `src/ir.rs`: the wire's tree and preview payload types
 - `src/lib.rs`: `Frame`, `Kind`, `PROTOCOL_VERSION` and the crate's re-exports
 - `src/ops/`: the op names and payload types, one file per family
+- `src/page_url.rs`: the loopback page-URL grammar, one parser for the daemon's proxy allowlist and the window's page proxy
 - `src/topology/`: the topology, endpoint, ssh bridge and lane client modules
 - `src/version.rs`: the product version string and `is_release_build`
 

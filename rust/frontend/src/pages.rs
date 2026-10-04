@@ -250,22 +250,6 @@ where
     Ok(Answer::Piped)
 }
 
-/// Parse the loopback port out of a `http(s)://127.0.0.1:<port>/…` URL — the
-/// shape every backend-served page carries (video/docs/WGL). Returns `None`
-/// for any non-loopback host or portless URL, so only the daemon's own
-/// loopback pages arm a proxy listener.
-pub fn proxy_port_from_url(url: &str) -> Option<u16> {
-    let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://"))?;
-    // authority is up to the first '/', '?' or '#'
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let (host, port) = authority.rsplit_once(':')?;
-    // Loopback only — never arm a listener for an external host.
-    if host != "127.0.0.1" && host != "localhost" {
-        return None;
-    }
-    port.parse::<u16>().ok()
-}
-
 /// Hand `url` (any browser-openable address — `http://…`, `file:///…`, or
 /// a local filesystem path) off to the OS default handler. Fire-and-
 /// forget — we don't wait for the browser to exit.
@@ -501,44 +485,5 @@ mod tests {
         assert!(arm.dial().is_none());
         arm.reopen();
         assert!(arm.dial().is_some(), "opening the page again un-parks");
-    }
-
-    use super::proxy_port_from_url;
-
-    #[test]
-    fn parses_loopback_ports_only() {
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:1241/"), Some(1241));
-        assert_eq!(
-            proxy_port_from_url("http://127.0.0.1:1237/foo/bar?secret=abc"),
-            Some(1237)
-        );
-        assert_eq!(proxy_port_from_url("https://localhost:1235/tok"), Some(1235));
-        // Non-loopback host → None (never proxy an external address).
-        assert_eq!(proxy_port_from_url("http://example.com:80/"), None);
-        assert_eq!(proxy_port_from_url("http://10.0.0.5:1234/"), None);
-        // No port, or non-http scheme, or garbage → None.
-        assert_eq!(proxy_port_from_url("http://127.0.0.1/"), None);
-        assert_eq!(proxy_port_from_url("file:///tmp/x"), None);
-        assert_eq!(proxy_port_from_url("127.0.0.1:1241"), None);
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:notaport/"), None);
-        // The backend's own cases.
-        assert_eq!(proxy_port_from_url("http://localhost:45817/app?x=1"), Some(45817));
-        assert_eq!(proxy_port_from_url("https://127.0.0.1:9000"), Some(9000));
-        assert_eq!(proxy_port_from_url("http://10.0.0.5:1241/"), None);
-        // Edge classes shared by every copy of the grammar.
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:65536/"), None);
-        assert_eq!(proxy_port_from_url("http://[::1]:80/"), None);
-        assert_eq!(proxy_port_from_url("HTTP://127.0.0.1:80/"), None);
-        assert_eq!(proxy_port_from_url("http://user@127.0.0.1:80/"), None);
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:80#x"), Some(80));
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:65535/"), Some(65535));
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:0080/"), Some(80));
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:+80/"), Some(80));
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:-1/"), None);
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:/"), None);
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:80:90/"), None);
-        assert_eq!(proxy_port_from_url("http://127.0.0.1:80?secret=t"), Some(80));
-        assert_eq!(proxy_port_from_url("http://LOCALHOST:80/"), None);
-        assert_eq!(proxy_port_from_url("https://localhost:80"), Some(80));
     }
 }

@@ -8,6 +8,7 @@
 pub mod codec;
 pub mod ir;
 pub mod ops;
+pub mod page_url;
 // The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
 // ONE search rule for the daemon, `sotd topology`, and the frontend.
 pub mod topology;

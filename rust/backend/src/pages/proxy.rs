@@ -89,21 +89,6 @@ pub fn revoke_browser_ports(workspace: &str) {
     }
 }
 
-/// Parse the port out of a loopback `http(s)://` URL — `None` for any
-/// non-loopback host (never allowlist an external address). Mirrors the FE's
-/// `proxy_port_from_url`.
-pub fn loopback_port_from_url(url: &str) -> Option<u16> {
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    let (host, port) = authority.rsplit_once(':')?;
-    if host != "127.0.0.1" && host != "localhost" {
-        return None;
-    }
-    port.parse().ok()
-}
-
 /// The set of loopback ports `proxy.connect` will dial — the daemon's own
 /// served HTTP surface. Computed per request so a runtime-assigned port is
 /// honored without a restart.
@@ -311,42 +296,6 @@ mod tests {
         let n = allowed_proxy_ports().iter().filter(|p| (46000..46020).contains(*p)).count();
         assert!(n <= BROWSER_PORTS_PER_WS, "cap enforced, kept {n}");
         revoke_browser_ports("wsCap-test");
-    }
-
-    #[test]
-    fn loopback_port_from_url_is_loopback_only() {
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:1241/"), Some(1241));
-        assert_eq!(loopback_port_from_url("http://localhost:45817/app?x=1"), Some(45817));
-        assert_eq!(loopback_port_from_url("https://127.0.0.1:9000"), Some(9000));
-        // Never allowlist an external host, a portless URL, or garbage.
-        assert_eq!(loopback_port_from_url("http://10.0.0.5:1241/"), None);
-        assert_eq!(loopback_port_from_url("http://example.com:80/"), None);
-        assert_eq!(loopback_port_from_url("http://127.0.0.1/"), None);
-        assert_eq!(loopback_port_from_url("file:///tmp/x"), None);
-        // The window's own cases.
-        assert_eq!(
-            loopback_port_from_url("http://127.0.0.1:1237/foo/bar?secret=abc"),
-            Some(1237)
-        );
-        assert_eq!(loopback_port_from_url("https://localhost:1235/tok"), Some(1235));
-        assert_eq!(loopback_port_from_url("http://10.0.0.5:1234/"), None);
-        assert_eq!(loopback_port_from_url("127.0.0.1:1241"), None);
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:notaport/"), None);
-        // Edge classes shared by every copy of the grammar.
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:65536/"), None);
-        assert_eq!(loopback_port_from_url("http://[::1]:80/"), None);
-        assert_eq!(loopback_port_from_url("HTTP://127.0.0.1:80/"), None);
-        assert_eq!(loopback_port_from_url("http://user@127.0.0.1:80/"), None);
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:80#x"), Some(80));
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:65535/"), Some(65535));
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:0080/"), Some(80));
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:+80/"), Some(80));
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:-1/"), None);
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:/"), None);
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:80:90/"), None);
-        assert_eq!(loopback_port_from_url("http://127.0.0.1:80?secret=t"), Some(80));
-        assert_eq!(loopback_port_from_url("http://LOCALHOST:80/"), None);
-        assert_eq!(loopback_port_from_url("https://localhost:80"), Some(80));
     }
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
