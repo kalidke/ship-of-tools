@@ -5,10 +5,15 @@ it: the entry points and exit codes, the leg it spawns, its lifecycle state mach
 Part of the capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: the whole authority today: entry points, numbers, leg, lifecycle, lane, main loop, one-shot end and reset
+- `mod.rs`: entry points (`supervise`, `endrun`, `reset`), exit codes and bounds, config, voyage paths, `note`, and the end-run and reset journal recovery (moves to `journal/` later)
+- `leg.rs`: the leg: voyage pointer discovery or mint, the spawn decision, `SpawnLease`, `LegLease`, `build_run_command`
+- `lifecycle.rs`: the `Lifecycle` state machine, its recovery, end-run and reset worker threads, leg retirement, `force_terminal`
+- `main_loop.rs`: `supervise_inner`, the authority's main loop
+- `oneshot.rs`: `endrun_inner` and `reset_inner`, the fence-acquiring in-process callers
+- `authority/`: the SOSV lane's server side: the authority's state and command handling, and the lane's connections
 
 ## Start here
-`supervise` in `mod.rs` for the entry point, `supervise_inner` for the main loop.
+`supervise` in `mod.rs` for the entry point, `supervise_inner` in `main_loop.rs` for the loop, `Lifecycle` in `lifecycle.rs` for a state change.
 
 ## Rules
 - One authority per state dir: `supervise_inner` takes `fence::lock_supervisor` before binding the lane, else exit 70.
@@ -17,4 +22,5 @@ Part of the capsule; charter: rust/log/CLAUDE.md.
 - The main loop never joins a stuck worker (`watchdog_expired`, `abandon_worker`).
 - `Terminal` is sticky (`force_terminal`).
 - A leg dies with its supervisor (`LegLease`).
+- On Unix SIGCHLD is reset first in `supervise_inner` and each leg is reaped once (`retire_leg`, `reap_retired_legs`).
 - One write per diagnostic line (`note`).
