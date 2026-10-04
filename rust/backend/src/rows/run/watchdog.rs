@@ -465,6 +465,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exit_codes_classify_as_the_supervisor_returns_them() {
+        assert!(matches!(classify_exit_code(Some(0)), LegOutcome::Clean));
+        assert!(matches!(classify_exit_code(Some(69)), LegOutcome::Terminal));
+        assert!(matches!(classify_exit_code(Some(70)), LegOutcome::Contended));
+        for code in [Some(1), Some(2), Some(-1), None] {
+            assert!(matches!(classify_exit_code(code), LegOutcome::Crash));
+        }
+    }
+
+    #[test]
     fn restart_budget_numbers_match_adr_0041s_own_launcher_table() {
         assert_eq!(RESTART_BACKOFFS.len(), 5);
         assert_eq!(MAX_RESTARTS_PER_WINDOW, 5);
