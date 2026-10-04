@@ -18,4 +18,5 @@ pub(in crate::ui) use snapshot::*;
 #[cfg(test)]
 pub(in crate::ui) use workspace_key::*;
 pub(in crate::ui) use workspace_key::is_default_workspace_name;
+pub(in crate::ui) use switch::session_name_of;
 pub(in crate::ui) use workspace_list::*;

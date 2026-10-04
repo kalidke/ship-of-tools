@@ -77,7 +77,7 @@ impl State {
                         return;
                     }
                 }
-                let tmux = slug.as_ref().map(|s| format!("sot-be-{s}"));
+                let tmux = slug.as_ref().map(|s| session_name_of(s));
                 tracing::info!(?slug, boot, "fe-command: switch workspace");
                 // Agent-driven, not a person looking: leave blue as-is.
                 self.switch_to_workspace(self.active_host.clone(), slug, tmux, false);
@@ -264,7 +264,7 @@ impl State {
                     let (slug, tmux) = if is_default {
                         (None, None)
                     } else {
-                        (Some(workspace.clone()), Some(format!("sot-be-{workspace}")))
+                        (Some(workspace.clone()), Some(session_name_of(&workspace)))
                     };
                     // Focus capture is honoring the AGENT's --urgent request,
                     // not a person switching the view: leave blue as-is.
