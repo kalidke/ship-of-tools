@@ -47,6 +47,7 @@ use crate::settings::Settings;
 use crate::transport::OutgoingReq;
 use sot_protocol::ops::LeaveIntent;
 use sot_protocol::{ReplFrame, TreeNode};
+pub(crate) mod drawer;
 
 mod agent_pane;
 use agent_pane::*;

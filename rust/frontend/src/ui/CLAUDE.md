@@ -28,6 +28,10 @@ until `State` is split.
 ## Files
 - `agent_pane/`: the agent pane (its own page).
 - `control/`: the agent control surface, with its own page.
+- `drawer/`: the bottom drawer and its three tenants, the REPL, a Terminal and the Monitor.
+
+## Files
+- `drawer/`: the bottom drawer: the Monitor's view, the Terminal's pty and vt100 helpers.
 - `mod.rs`: `State`, `App` and the rest of the window's code (over 800 lines under standing exemption E11).
 - `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`); the pages subsystem's window half.
