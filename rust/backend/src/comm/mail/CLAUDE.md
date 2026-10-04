@@ -4,6 +4,7 @@ Mail is delivered when one line is appended to the receiver's inbox file. This f
 Part of messaging; design of record: docs/adr/0049-messaging-on-one-page.md.
 
 ## Files
+- `bus.rs`: the payloads of the daemon's `agent.message` and `agent.receipt` broadcast buses
 - `hub_link.rs`: the link to the hub that files relayed `agent.message` frames into this box's inboxes
 - `mod.rs`: declares the files
 
