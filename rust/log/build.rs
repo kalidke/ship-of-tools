@@ -1,8 +1,6 @@
-// build.rs — embed a git-derived build identity for the supervisor
-// lane's build boundary (ADR 0041 step 6 U2; Codex review round 1,
-// finding 7: `SUPERVISOR_LANE_BUILD_ID` must distinguish distinct
-// commits at the SAME `Cargo.toml` version, not just carry
-// `CARGO_PKG_VERSION`).
+// build.rs — stamp SOT_LOG_BUILD_SHA, the build id the supervisor lane's hello carries.
+// The id is informational: ADR 0045 decision 7 retired the build-boundary gate it was
+// made for (src/identity/exchange.rs says "never compared"); the rules below outlive that gate.
 //
 // `sot-log` cannot depend on `sot-protocol` (whose own `build.rs` already
 // does exactly this for `app_version`/`version_line`) without a real
@@ -93,9 +91,8 @@ fn main() {
 
     let sha = git(&["rev-parse", "HEAD"]); // the FULL sha, never --short
 
-    // Re-stamp when HEAD moves (commit, checkout, tag) OR the tree's
-    // dirty/clean state changes. Best-effort: absent paths make these
-    // directives inert.
+    // Re-stamp when HEAD, refs or the index change (a staged edit; an unstaged
+    // edit is not seen). Best-effort: absent paths make these directives inert.
     if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
         println!("cargo:rerun-if-changed={git_dir}/HEAD");
         println!("cargo:rerun-if-changed={git_dir}/refs");
