@@ -10,6 +10,7 @@ change lives in the parent folder. Part of the daemon's rows subsystem; charter:
 - `create_tests.rs`: tests of `create.rs`: the duplicate-root and same-slug gates
 - `destroy.rs`: `workspace.destroy`, which ends a row's run and then removes the row; the default row only ends its run
 - `destroy_tests.rs`: tests of `destroy.rs`: `workspace.destroy` on the default row, with the state-root fixtures they share
+- `lane_bridge.rs`: `lane.connect`, the byte pipe onto a row's supervisor or voyage lane after one answered frame
 - `list.rs`: `workspace.list` (the rows the window shows, with their comm state) and `workspace.activate`
 - `pty.rs`: `pty.input` and `pty.screen` through a capsule row's supervisor lane
 
@@ -26,3 +27,6 @@ change lives in the parent folder. Part of the daemon's rows subsystem; charter:
   excepted), a same-slug row in use (`same_slug_row_in_use`) and an `agent_name` failing `valid_name`, each before
   the row is registered by `insert`.
 - `handle_workspace_list` reads memory and one registry read (`read_comm_agents`), never a lane.
+- A voyage id given to `lane.connect` must be the target row's own (`check_voyage_ownership`), checked before any dial.
+- The daemon authenticates the lane's server before piping (`dial_and_authenticate`) and never decodes a lane frame after
+  the pipe starts (`handle_lane_connect`).

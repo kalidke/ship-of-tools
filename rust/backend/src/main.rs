@@ -28,7 +28,7 @@ use files::{concept, watcher};
 use files::io as file_io;
 use files::tree as files_mode;
 mod handlers;
-mod lane_bridge;
+use rows::ops::lane_bridge;
 mod lifecycle;
 mod pages;
 mod paths;
