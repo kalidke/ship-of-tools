@@ -2,6 +2,7 @@
 
 pub(crate) mod bus;
 pub(crate) mod filer;
+pub(crate) mod forward;
 pub(crate) mod hub_link;
 pub(crate) mod inbox;
 pub(crate) mod relay;

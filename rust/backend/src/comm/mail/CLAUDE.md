@@ -6,6 +6,7 @@ Part of messaging; design of record: docs/adr/0049-messaging-on-one-page.md.
 ## Files
 - `bus.rs`: the payloads of the daemon's `agent.message` and `agent.receipt` broadcast buses
 - `filer.rs`: comm.file and the filing behind it
+- `forward.rs`: a guest daemon's `comm.file` forward to the hub, bounded by a deadline and the shutdown signal
 - `hub_link.rs`: the link to the hub that files relayed `agent.message` frames into this box's inboxes
 - `inbox.rs`: the daemon's append of one frame to an inbox file under the shared lock, and the record of who may append
 - `inbox_tests.rs`: the tests of `inbox.rs`

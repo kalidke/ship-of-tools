@@ -57,7 +57,7 @@ struct ChildGuard {
 /// How a forwarding caller reaches the ssh child a dial thread owns: the
 /// child itself while its guard holds it unreaped, and a flag that tells a
 /// thread that has not spawned yet not to bother.
-struct Track {
+pub(crate) struct Track {
     sig: &'static crate::shutdown::Signal,
     /// The dial thread's child while its guard holds it unreaped; `None` before the spawn and from the moment the
     /// guard starts reaping.
@@ -66,13 +66,13 @@ struct Track {
 }
 
 impl Track {
-    fn new(sig: &'static crate::shutdown::Signal) -> Self {
+    pub(crate) fn new(sig: &'static crate::shutdown::Signal) -> Self {
         Self { sig, child: std::sync::Mutex::new(None), cancelled: std::sync::atomic::AtomicBool::new(false) }
     }
 
     /// Kill the child, if there is one yet; the dial thread's blocking read
     /// then fails and its `ChildGuard` reaps it.
-    fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         use std::sync::atomic::Ordering::SeqCst;
         self.cancelled.store(true, SeqCst);
         // Held across the kill: the guard takes the child out of this slot before it reaps, so a kill here only ever
@@ -225,7 +225,7 @@ pub fn dial_and_call(endpoint: &str, self_host: &str, req_op: &str, payload: ser
     dial_and_call_tracked(endpoint, self_host, req_op, payload, None)
 }
 
-fn dial_and_call_tracked(
+pub(crate) fn dial_and_call_tracked(
     endpoint: &str,
     self_host: &str,
     req_op: &str,
@@ -286,58 +286,20 @@ fn dial_and_call_tracked(
     Err(fold(&guard, format!("{endpoint}: no reply to {req_op} within 8 frames")))
 }
 
-/// A guest daemon's `comm.file` forward to its folder's hub (0031 B1): the
-/// request as given, the hub's payload verbatim. [`dial_and_call`] sets no
-/// deadline of its own, so the call runs on its own thread and no answer
-/// within `within` is an error, and so is the shutdown signal firing first;
-/// either way the ssh child is killed before this returns, and the thread
-/// ends with the connection.
-pub fn forward_comm_file(
-    endpoint: &str,
-    self_host: &str,
-    req: &sot_protocol::CommFileReq,
-    within: std::time::Duration,
-    sig: &'static crate::shutdown::Signal,
-) -> Result<serde_json::Value, String> {
-    let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    let (e, h) = (endpoint.to_string(), self_host.to_string());
-    let track = std::sync::Arc::new(Track::new(sig));
-    let dial_track = std::sync::Arc::clone(&track);
-    std::thread::spawn(move || {
-        let _ = tx.send(dial_and_call_tracked(&e, &h, sot_protocol::op::COMM_FILE, payload, Some(dial_track)));
-    });
-    let deadline = std::time::Instant::now() + within;
-    loop {
-        let step = deadline.saturating_duration_since(std::time::Instant::now()).min(std::time::Duration::from_millis(50));
-        match rx.recv_timeout(step) {
-            Ok(done) => return done,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(format!("{endpoint}: the forward thread ended")),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        if sig.is_fired() {
-            track.cancel();
-            return Err(format!("{endpoint}: the daemon is shutting down"));
-        }
-        if std::time::Instant::now() >= deadline {
-            track.cancel();
-            return Err(format!("{endpoint}: no reply to {} within {}s", sot_protocol::op::COMM_FILE, within.as_secs()));
-        }
-    }
-}
+pub(crate) use crate::comm::mail::forward::forward_comm_file;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Round-2 item 4's `PATH` guard, restoring the exact original value
     /// on drop -- same shape as `julia.rs`'s own `EnvGuard`, copied
     /// rather than shared because that one is private to its module.
     #[cfg(unix)]
-    struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+    pub(crate) struct EnvGuard(&'static str, Option<std::ffi::OsString>);
     #[cfg(unix)]
     impl EnvGuard {
-        fn capture(key: &'static str) -> Self {
+        pub(crate) fn capture(key: &'static str) -> Self {
             Self(key, std::env::var_os(key))
         }
     }
@@ -363,7 +325,7 @@ mod tests {
     /// Writes `body` as an executable `ssh` in `dir`, for a test that puts
     /// `dir` first on `PATH`.
     #[cfg(unix)]
-    fn write_ssh_script(dir: &std::path::Path, body: &str) {
+    pub(crate) fn write_ssh_script(dir: &std::path::Path, body: &str) {
         let script = dir.join("ssh");
         std::fs::write(&script, format!("#!/bin/sh\n{body}")).expect("write stub ssh");
         let mut perms = std::fs::metadata(&script).unwrap().permissions();
@@ -374,7 +336,7 @@ mod tests {
     /// PREPENDS `dir` to `PATH` rather than replacing it -- see the first
     /// test below for why the rest of `PATH` has to survive.
     #[cfg(unix)]
-    fn prepend_to_path(dir: &std::path::Path) {
+    pub(crate) fn prepend_to_path(dir: &std::path::Path) {
         let real = std::env::var_os("PATH").unwrap_or_default();
         std::env::set_var("PATH", std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&real))).expect("join PATH"));
     }
@@ -385,7 +347,7 @@ mod tests {
     /// rather than checking once, bounded so a genuinely wrong dispatch
     /// still fails promptly instead of hanging the suite.
     #[cfg(unix)]
-    fn wait_for_marker(marker: &std::path::Path) -> bool {
+    pub(crate) fn wait_for_marker(marker: &std::path::Path) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             if marker.exists() {
@@ -511,46 +473,6 @@ mod tests {
             err.contains("ssh:hub") && err.contains("hello"),
             "the error must name the endpoint and the step that failed, got: {err}"
         );
-    }
-
-    /// A forwarded comm.file call is cut short by its own timeout or by the
-    /// shutdown signal, and either way the ssh child dies and is no longer counted.
-    #[cfg(unix)]
-    #[test]
-    fn forward_comm_file_kills_its_ssh_child_on_timeout_and_on_shutdown() {
-        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _path_guard = EnvGuard::capture("PATH");
-        let req: sot_protocol::CommFileReq = serde_json::from_value(serde_json::json!({"from": "a", "to": "b", "text": "t"})).expect("a CommFileReq");
-        let alive = |pid: i32| unsafe { libc::kill(pid, 0) == 0 };
-        for by_shutdown in [false, true] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let pid_file = dir.path().join("pid");
-            write_ssh_script(dir.path(), &format!("echo $$ > '{}'\nexec sleep 30\n", pid_file.display()));
-            prepend_to_path(dir.path());
-            let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
-            let within = std::time::Duration::from_secs(if by_shutdown { 20 } else { 1 });
-            let firer = std::thread::spawn({
-                let pid_file = pid_file.clone();
-                move || {
-                    if by_shutdown {
-                        assert!(wait_for_marker(&pid_file));
-                        std::thread::sleep(std::time::Duration::from_millis(200));
-                        sig.fire();
-                    }
-                }
-            });
-            let began = std::time::Instant::now();
-            let result = forward_comm_file("ssh:hub", "self", &req, within, sig);
-            firer.join().unwrap();
-            assert!(result.is_err());
-            assert!(began.elapsed() < std::time::Duration::from_secs(5), "the forward outlived its bound");
-            let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-            let gone = (0..100).any(|_| {
-                std::thread::sleep(std::time::Duration::from_millis(30));
-                !alive(pid) && sig.live() == 0
-            });
-            assert!(gone, "the ssh child survived (shutdown={by_shutdown}) or is still counted");
-        }
     }
 
     /// A cancel kills the tracked child through the guard's own handle on every platform, and the guard then reaps it
