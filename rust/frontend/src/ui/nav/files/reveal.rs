@@ -110,7 +110,7 @@ impl State {
             } else {
                 // Files tree NOT loaded FOR THE ACTIVE WS: empty, rows belong to
                 // another mode, OR the tree is stamped to a different workspace
-                // (`!tree_is_active_ws` — the papers-vortex-tree-while-hs-tirf
+                // (`!tree_is_active_ws` — the demo-b-tree-while-demo-a
                 // desync). Two bugs converge here: (1) the 2026-07-15 case — the
                 // preview body fired (path-based, works) but the cursor-reveal
                 // had no anchor row to walk from, so it silently no-op'd and the
@@ -123,7 +123,7 @@ impl State {
                 // first-visit switch path uses; the TreeRoot handler rebuilds the
                 // rows (routed by key to this view), then runs the reveal —
                 // auto-resyncing the visible tree too (the same end state as
-                // Keith's manual collapse-to-root workaround).
+                // the maintainer's manual collapse-to-root workaround).
                 //
                 // Safe to `set_root` here: an UNLOADED tree collapses nothing,
                 // and a STALE-ws tree SHOULD be collapsed (it's the wrong

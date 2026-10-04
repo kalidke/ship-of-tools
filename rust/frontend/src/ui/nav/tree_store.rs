@@ -378,13 +378,13 @@ mod tests {
             let wk: WsKey = ("h".to_string(), ws_key_of(ws, None));
             (Mode::Files, mode_scope(Mode::Files, &wk))
         };
-        assert_eq!(k(Some("hs-tirf")), k(Some("hs-tirf")));
+        assert_eq!(k(Some("demo-a")), k(Some("demo-a")));
         assert_eq!(k(None), k(None));
-        // The original desync: papers-vortex reply while hs-tirf is active
+        // The original desync: demo-b reply while demo-a is active
         // → different key → parks in its own slot, can't clobber.
-        assert_ne!(k(Some("papers-vortex")), k(Some("hs-tirf")));
-        assert_ne!(k(None), k(Some("hs-tirf")));
-        assert_ne!(k(Some("hs-tirf")), k(None));
+        assert_ne!(k(Some("demo-b")), k(Some("demo-a")));
+        assert_ne!(k(None), k(Some("demo-a")));
+        assert_ne!(k(Some("demo-a")), k(None));
         // The wire's None must normalize to the SAME literal
         // `current_workspace_key` uses for the default workspace.
         assert_eq!(ws_key_of(None, None), "<default>");
