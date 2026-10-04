@@ -41,7 +41,7 @@ prepare() {
     # no real user.
     cp -r "$FIXTURE" "$HOSTHOME/DemoProject"
     mkdir -p "$HOSTHOME"/{analysis,figures,gpu-train,survey}
-    cp "$REPO/comm/core/scripts/"* "$HOSTHOME/.sot-comm/bin/"
+    bash "$REPO/comm/tests/stage-bin.sh" "$HOSTHOME/.sot-comm/bin"
     printf "PS1='demo@\\\\h:\\\\w\\\\$ '\n" >"$HOSTHOME/.bashrc"
     # Pasted text (the crop and copy loops) stays plain, not bash's
     # reverse-video paste highlight (readline 8.1 has no switch for the

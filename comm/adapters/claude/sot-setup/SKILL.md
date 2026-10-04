@@ -324,8 +324,7 @@ join-time endpoint.
 Julia, which FE clients don't install (§3). `update_comm()` is just a file copy —
 replicate it directly (idempotent), then join as above:
 ```sh
-mkdir -p ~/.sot-comm/bin
-cp -f "$REPO"/comm/core/scripts/* ~/.sot-comm/bin/ && chmod 755 ~/.sot-comm/bin/*.sh
+bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
 for s in sot-comm sot-install; do
   mkdir -p ~/.claude/skills/$s
   cp -f "$REPO/comm/adapters/claude/$s/SKILL.md" ~/.claude/skills/$s/SKILL.md
