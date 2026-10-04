@@ -12,13 +12,13 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 - `editor/`: in-pane editing.
 
 ## Start here
-`pane.rs` `render_preview_source` for a new kind of preview; `markdown/mod.rs` for text previews; `image/png.rs` for bitmaps. The shared quad pipeline is still read from
-rust/frontend/src/preview/quad.rs.
+`pane.rs` `render_preview_source` for a new kind of preview; `markdown/mod.rs` for text previews; `image/png.rs` for bitmaps. The shared quad pipeline is in
+rust/frontend/src/ui/render/quad.rs.
 
 ## Rules
 - The old paths `crate::preview::{markdown, highlight, png, svg, quad}` resolve through this mod.rs's re-exports, because
   main.rs declares `use ui::preview;`.
-- quad is read from rust/frontend/src/preview/quad.rs by a `#[path]` attribute until it moves to ui/render/.
+- quad lives in ui/render/quad.rs; this mod.rs re-exports it (`pub(crate) use crate::ui::render::quad`) so `super::quad` still resolves in png.rs and svg.rs.
 - Text over 512 KiB, or bytes that look binary, are summarized, never shaped (`render_preview_source`, `PREVIEW_TEXT_CAP`,
   `looks_binary`).
 - Opening the previewed file acts on the installed preview, never on a fired request or a pin (`resolve_previewed_path`).
