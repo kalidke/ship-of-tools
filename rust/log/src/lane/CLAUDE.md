@@ -5,6 +5,7 @@ byte transport chosen once per platform; this folder holds the contracts the leg
 program against. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
+- `attach_proto/`: the attach and mgmt lanes' connection and role state machine (decides; the leg executes)
 - `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`
 - `mod.rs`: declares the five modules; each file gates itself by platform
 - `pipe_transport.rs`: Windows bridge from the named-pipe server to `Transport`; twin of `socket_transport.rs`

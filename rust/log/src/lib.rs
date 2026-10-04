@@ -7,7 +7,7 @@
 //! retention deletion, no forks, no packs — those return through the
 //! `codec_id` / `required_features` / version seams).
 
-pub mod attach_proto;
+pub use lane::attach_proto;
 // L1-unix LU2a (ADR 0043 "Decisions for LU2"): the ONE writer loop,
 // generic over `producer::Producer` -- the file that used to be
 // `capsule_win.rs`, renamed here once `ConptyProducer` (`producer_conpty.rs`)
