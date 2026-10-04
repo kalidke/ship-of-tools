@@ -1,16 +1,7 @@
-//! kernel.request ops: modules.list, project.scan, markdown.tokenize, file.parse, function.methods: the requests (send_<op>: write the frame, then record its PendingKind).
+//! kernel.request ops: project.scan, markdown.tokenize, file.parse, function.methods: the requests (send_<op>: write the frame, then record its PendingKind).
 //! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
-
-/// One row from `modules.list`. The kernel reply is a JSON object per
-/// module; we extract just the fields the chrome consumes. `path` is
-/// `None` for built-ins (Base, Core, Main) which have no on-disk file.
-#[derive(Debug, Clone)]
-pub struct ModuleInfo {
-    pub name: String,
-    pub path: Option<String>,
-}
 
 /// One row from `file.parse`'s `definitions[]`. Mirrors the kernel's
 /// per-entity shape (name + kind + line + optional parent + per-entity
@@ -100,33 +91,6 @@ pub struct MethodInfo {
     pub line: i64,
     #[allow(dead_code)] // future: per-method drift badge
     pub ast_hash: Option<String>,
-}
-
-pub(crate) async fn send_modules_list<W: AsyncWrite + Unpin>(
-    mut tx: W,
-    pending: &mut HashMap<u64, PendingKind>,
-    id: u64,
-    workspace_id: Option<String>,
-) -> Result<()> {
-    tracing::debug!(?workspace_id, id, "→ kernel.request modules.list");
-    codec::write_frame(
-        &mut tx,
-        &Frame::req(
-            id,
-            op::KERNEL_REQUEST,
-            serde_json::to_value(KernelRequestReq {
-                kernel_op: "modules.list".to_string(),
-                kernel_payload: serde_json::json!({}),
-                workspace_id: workspace_id.clone(),
-            })?,
-        ),
-        None,
-    )
-    .await?;
-    // Capture the ws into the pending entry so the reply is
-    // keyable (tree-provenance redesign).
-    pending.insert(id, PendingKind::ModulesList { workspace_id });
-    Ok(())
 }
 
 pub(crate) async fn send_project_scan<W: AsyncWrite + Unpin>(
@@ -239,40 +203,6 @@ pub(crate) async fn send_function_methods<W: AsyncWrite + Unpin>(
     .await?;
     pending.insert(id, PendingKind::FunctionMethods { module, name, workspace_id });
     Ok(())
-}
-
-pub(crate) fn on_modules_list(
-    frame: Frame,
-    emit: &impl Fn(IncomingEvt),
-    workspace_id: Option<String>,
-) {
-    // The KERNEL_REQUEST envelope returns the kernel's response
-    // payload verbatim. modules.list shape after Linux's
-    // 4e1c8c0 is `{modules: [{name, uuid, is_main, path}, ...]}`.
-    let modules: Vec<ModuleInfo> = frame
-        .payload
-        .get("modules")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    let name = m.get("name").and_then(|n| n.as_str())?;
-                    let path = m.get("path").and_then(|p| p.as_str()).map(String::from);
-                    Some(ModuleInfo {
-                        name: name.to_string(),
-                        path,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if modules.is_empty() {
-        tracing::warn!(payload = %frame.payload, "modules.list returned no modules");
-    }
-    emit(IncomingEvt::ModulesList {
-        workspace_id,
-        modules,
-    });
 }
 
 pub(crate) fn on_project_scan(

@@ -26,7 +26,6 @@ fn every_request_kind(download_dest: &std::path::Path) -> Vec<OutgoingReq> {
             summary: s("fs.summary"),
             status_at: s("fs.at"),
         }]),
-        OutgoingReq::ModulesList { workspace_id: o("ml.ws") },
         OutgoingReq::ProjectScan { workspace_id: o("ps.ws"), generation: 101 },
         OutgoingReq::MarkdownTokenize { lang: s("mt.lang"), source_hash: 102, source: s("mt.source") },
         OutgoingReq::ConceptRead { target: s("cr.target"), workspace_id: o("cr.ws"), generation: 103 },

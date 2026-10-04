@@ -3,8 +3,7 @@
 use super::*;
 
 /// Which root tree the left pane is showing. Files mode → backend's files
-/// hierarchy via `tree.root {mode: "files"}`; Modules mode → kernel's loaded
-/// module list via `kernel.request modules.list`; Sessions mode → backend
+/// hierarchy via `tree.root {mode: "files"}`; Sessions mode → backend
 /// tmux registry (ADR 0013) via `tmux.list_sessions`. Cursor position IS
 /// preserved across switches: each (mode, scope) keeps its own tree in
 /// `TreeStore`, and `enter_mode` swaps the parked view (cursor, expansion,

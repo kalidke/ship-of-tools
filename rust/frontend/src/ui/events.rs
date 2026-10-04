@@ -77,10 +77,6 @@ impl State {
                     modules,
                     generation,
                 ),
-                crate::transport::IncomingEvt::ModulesList {
-                    workspace_id,
-                    modules,
-                } => self.on_modules_list(event_host, workspace_id, modules),
                 crate::transport::IncomingEvt::FileParseFailed { workspace_id, path } => {
                     self.on_file_parse_failed(event_host, workspace_id, path)
                 }

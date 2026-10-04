@@ -15,7 +15,7 @@ pub enum OutgoingReq {
     },
     /// Re-request the root of a named mode tree. Used by the m/f mode-switch
     /// in the chrome to swap the left pane between modes. Today the backend
-    /// only knows "files"; other modes are routed via `ModulesList` etc.
+    /// only knows "files".
     TreeRoot {
         mode: String,
         /// ADR 0014 workspace routing. Same shape as TreeChildren.
@@ -75,11 +75,6 @@ pub enum OutgoingReq {
     /// `PendingKind`, an older daemon's unknown-op error is silently
     /// dropped by the unmatched-id fallthrough.
     FeSessions(Vec<sot_protocol::DeclaredSession>),
-    /// Ask the kernel for its loaded-modules list. Response surfaces as
-    /// `IncomingEvt::ModulesList`. Currently the only kernel.request the
-    /// frontend issues directly; expand the enum as more land.
-    #[allow(dead_code)] // ditto.
-    ModulesList { workspace_id: Option<String> },
     /// Ask the kernel to scan the project's package source tree
     /// (`<project_root>/src/<PkgName>.jl` + everything it `include`s)
     /// and return a nested {modules → types/functions/submodules}
@@ -406,7 +401,6 @@ pub(super) async fn send_request<W: AsyncWrite + Unpin>(
         OutgoingReq::WorkspaceActivate { workspace_id, read } => send_workspace_activate(&mut tx, id, workspace_id, read).await?,
         OutgoingReq::FePresence => send_fe_presence(&mut tx, id).await?,
         OutgoingReq::FeSessions(sessions) => send_fe_sessions(&mut tx, id, sessions).await?,
-        OutgoingReq::ModulesList { workspace_id } => send_modules_list(&mut tx, pending, id, workspace_id).await?,
         OutgoingReq::ProjectScan { workspace_id, generation } => send_project_scan(&mut tx, pending, id, workspace_id, generation).await?,
         OutgoingReq::MarkdownTokenize { lang, source_hash, source } => send_markdown_tokenize(&mut tx, pending, id, lang, source_hash, source).await?,
         OutgoingReq::ConceptRead { target, workspace_id, generation } => send_concept_read(&mut tx, pending, id, target, workspace_id, generation).await?,

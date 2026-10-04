@@ -14,14 +14,6 @@ pub(super) enum PendingKind {
     TreeRoot {
         workspace_id: Option<String>,
     },
-    /// Tree-provenance redesign: both kernel-request tree loaders now CARRY
-    /// the workspace they were fired for (previously discarded here, which
-    /// left their replies un-keyable — a late Modules reply could clobber
-    /// another workspace's tree with no way to detect it; the v0.4.3 saga's
-    /// last open hole).
-    ModulesList {
-        workspace_id: Option<String>,
-    },
     ProjectScan {
         workspace_id: Option<String>,
         generation: u64,
@@ -209,7 +201,6 @@ pub(super) fn handle_response_frame(
         match kind {
             PendingKind::TreeChildren { parent_id, workspace_id } => on_tree_children(frame, &emit, parent_id, workspace_id),
             PendingKind::TreeRoot { workspace_id } => on_tree_root(frame, &emit, workspace_id),
-            PendingKind::ModulesList { workspace_id } => on_modules_list(frame, &emit, workspace_id),
             PendingKind::ProjectScan { workspace_id, generation } => on_project_scan(frame, &emit, workspace_id, generation),
             PendingKind::MarkdownTokenize { lang, source_hash } => on_markdown_tokenize(frame, &emit, lang, source_hash),
             PendingKind::ConceptRead { target, workspace_id, generation } => on_concept_read(frame, &emit, target, workspace_id, generation),

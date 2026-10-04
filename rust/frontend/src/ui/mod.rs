@@ -604,7 +604,7 @@ struct State {
     /// node id that `preview.get` expects. Reset on each scan reply.
     scan_project_root: Option<String>,
     /// One-shot from `--start-selected <n>`; consumed by the first tree.root
-    /// or modules.list response that lands so the cursor opens on that row.
+    /// response that lands so the cursor opens on that row.
     /// `None` after consumption (or if the flag wasn't set).
     pending_initial_selection: Option<usize>,
     /// One-shot nav cursor restore across an ADR-0017 relaunch: the

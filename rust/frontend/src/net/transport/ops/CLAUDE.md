@@ -11,7 +11,7 @@ variant; for a reply, `handle_response_frame` (../reply.rs) removes the pending 
 - `preview.rs`: preview.get, preview.set_scale, image.crop, math.render
 - `concept.rs`: concept.read, concept.write
 - `files.rs`: file.read, file.write, file.delete, dir.create, file.download, file.upload
-- `kernel.rs`: kernel.request ops: modules.list, project.scan, markdown.tokenize, file.parse, function.methods
+- `kernel.rs`: kernel.request ops: project.scan, markdown.tokenize, file.parse, function.methods
 - `workspace.rs`: workspace.activate, .create, .list, .destroy, accounts.list, fe.presence, fe.sessions, pty.open, agent.send
 - `repl.rs`: repl.eval, repl.interrupt, repl.run_file
 - `pages.rs`: pluto.open, video.open, docs.open, quarto.open

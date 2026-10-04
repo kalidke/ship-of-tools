@@ -147,26 +147,11 @@ pub enum IncomingEvt {
         parent_id: String,
         error: String,
     },
-    /// The kernel reported its currently-loaded module list. The chrome
-    /// turns each name into a synthetic `TreeNode` and feeds them through
-    /// the same `TreeView::set_root` path Files-mode uses. `path` is
-    /// `Some(file)` when `Base.pathof(mod)` returned a value (per Linux's
-    /// `4e1c8c0`) — built-ins like Base/Core have `None` and aren't
-    /// expandable into col-2 definitions.
-    ModulesList {
-        /// The workspace this list was requested for, echoed from the pending
-        /// entry (tree-provenance redesign — lets the chrome install into the
-        /// right (Modules, workspace) slot instead of blindly into the shared
-        /// tree). `None` = default workspace.
-        workspace_id: Option<String>,
-        modules: Vec<ModuleInfo>,
-    },
     /// `kernel.request project.scan` reply — full nested package tree
     /// (modules → types/functions/submodules). Drives the unified
     /// Modules+Types nav mode; surfaces from a single round-trip
     /// rather than module-by-module `file.parse` calls.
     ProjectScan {
-        /// Same ws echo as `ModulesList` (tree-provenance redesign).
         workspace_id: Option<String>,
         /// Absolute path of the workspace's `project_root`. The chrome
         /// needs this to strip the prefix off the absolute file paths

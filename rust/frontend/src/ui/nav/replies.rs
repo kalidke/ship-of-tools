@@ -1,5 +1,5 @@
 //! Replies that build the nav trees: tree.root and tree.children (Files); project.scan,
-//! modules.list, file.parse and function.methods (Modules). A reply for a tree not on screen goes
+//! file.parse and function.methods (Modules). A reply for a tree not on screen goes
 //! to that tree's own slot.
 
 use crate::ui::*;
@@ -360,78 +360,6 @@ impl State {
         self.tree.set_flat(rows);
         // Key match implies Modules mode — the old mode gate on
         // this consume is subsumed.
-        if let Some(n) = self.pending_initial_selection.take() {
-            self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
-        }
-    }
-
-    pub(crate) fn on_modules_list(
-        &mut self,
-        event_host: HostKey,
-        workspace_id: Option<String>,
-        modules: Vec<crate::transport::ModuleInfo>,
-    ) {
-        // Synthesize TreeNodes so Modules-mode reuses the same
-        // TreeView rendering as Files-mode. `path` from Linux's
-        // 4e1c8c0 rides along on `payload.path` so the keyboard
-        // handler can issue `file.parse` for module expansion
-        // without re-querying the kernel. Built-ins (no path)
-        // stay unexpandable.
-        let root = TreeNode {
-            id: "modules:".to_string(),
-            label: "modules".to_string(),
-            kind: "modules".to_string(),
-            has_children: !modules.is_empty(),
-            badges: Vec::new(),
-            payload: Default::default(),
-        };
-        let children = modules
-            .into_iter()
-            .map(|m| {
-                let mut payload = serde_json::Map::new();
-                if let Some(p) = m.path.as_ref() {
-                    payload.insert(
-                        "path".to_string(),
-                        serde_json::Value::String(p.clone()),
-                    );
-                }
-                TreeNode {
-                    id: format!("modules:{}", m.name),
-                    label: m.name,
-                    kind: "module".to_string(),
-                    has_children: m.path.is_some(),
-                    badges: Vec::new(),
-                    payload,
-                }
-            })
-            .collect();
-        // Route by the reply's key (same shape as ProjectScan —
-        // this is the alternate/legacy Modules loader).
-        let reply_key: TreeKey = (
-            Mode::Modules,
-            TreeScope::Workspace((
-                event_host.clone(),
-                self.reply_ws_key(workspace_id.as_deref()),
-            )),
-        );
-        if reply_key != self.active_tree_key() {
-            // Same empty-slot-only rule as the TreeRoot park: a
-            // root+modules rebuild would destroy parked col-2/3
-            // splices.
-            let slot = self.tree_store.slot_mut(reply_key.clone());
-            if slot.view.rows.is_empty() || slot.from_reply {
-                tracing::info!(?reply_key, "modules.list parked into its slot");
-                slot.view.set_root(root, children);
-                slot.from_reply = true;
-            } else {
-                tracing::info!(
-                    ?reply_key,
-                    "modules.list dropped — parked slot holds user state"
-                );
-            }
-            return;
-        }
-        self.tree.set_root(root, children);
         if let Some(n) = self.pending_initial_selection.take() {
             self.tree.selected = n.min(self.tree.rows.len().saturating_sub(1));
         }
