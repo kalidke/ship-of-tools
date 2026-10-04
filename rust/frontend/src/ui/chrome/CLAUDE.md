@@ -16,6 +16,8 @@ the wireframe that frames the panes. Part of fe-ui; charter: rust/frontend/src/u
   pieces it calls.
 - `pixels.rs`: the chrome's pixel layer: `State::project_chrome` (text lines and border quads) and
   `State::prepare_overlays`.
+- `nav_body.rs`: `ChromeView::nav_body`: the nav pane's body inside the draw, with its row colours and spill
+  segments.
 
 ## Start here
 `panes.rs` for who has focus and which slot is shown; `status.rs` for what the bottom line and the nav pane's pinned
