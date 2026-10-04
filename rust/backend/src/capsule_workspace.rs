@@ -5151,11 +5151,36 @@ mod tests {
         let mut resets = 0;
         let mut spawn_calls = 0;
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        for entry in std::fs::read_dir(&src).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        let mut files = Vec::new();
+        let mut pending = vec![src.clone()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+        let mut files_read = 0;
+        for path in files {
+            // Test files have no `#[cfg(test)] mod` wrapper for `without_test_modules` to strip.
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let in_tests_folder = path.strip_prefix(&src).is_ok_and(|rel| {
+                rel.parent().is_some_and(|dirs| dirs.components().any(|c| c.as_os_str() == "tests"))
+            });
+            if in_tests_folder
+                || name.ends_with("_tests.rs")
+                || name == "tests.rs"
+                || name == "test_support.rs"
+                || name.starts_with("tests_")
+                || name.contains("_tests_")
+            {
                 continue;
             }
+            files_read += 1;
             let text = without_test_modules(&std::fs::read_to_string(&path).unwrap());
             for (pos, _) in text.match_indices(reset_needle) {
                 resets += 1;
@@ -5178,6 +5203,9 @@ mod tests {
                     faults.push(format!("{}: a spawn_detached_supervisor call passes {first:?} first", path.display()));
                 }
             }
+        }
+        if files_read == 0 {
+            faults.push(format!("the scan read no source files under {}", src.display()));
         }
         if resets != 1 {
             faults.push(format!("supervisor_client::reset occurs {resets} times outside tests, not once"));
