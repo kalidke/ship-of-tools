@@ -33,7 +33,8 @@ end
 """
     install_comm(; clis = [:claude])
 
-Install sot-comm. Installs the files of every folder listed in
+Install sot-comm, creating the comm folder owner-only (0700) when it does not
+exist. Installs the files of every folder listed in
 comm/bin-folders.txt into `\$SOT_COMM_HOME/bin` (default `~/.sot-comm/bin`),
 each part inside the file that sources it (`_comm_bin_text`),
 whatever `clis`, and installs the adapter for each CLI in `clis`
@@ -42,6 +43,7 @@ re-run to update an existing install.
 """
 function install_comm(; clis = [:claude, :codex])
     bin = joinpath(comm_home(), "bin")
+    mkpath(comm_home(); mode = 0o700)
     mkpath(bin)
     # ADR 0030 §8 "Installed comm scripts", Codex review (should-fix): a
     # stamp that survives a FAILED install claims a commit that may not
