@@ -12,6 +12,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `installer-support.sh`: the setup both installer suites source: install.sh and lib/sot-daemon.sh, `check`,
   `starts_with`, `case_start`, the sandboxed tool dir (`mk_tools`) and the recording stubs (`mk_stubs`).
 - `check-layout.sh`: the layout check (file and folder sizes, pages, `## Files` lists); see Tools below.
+- `check-layout.allow`: the layout exceptions CI passes to `check-layout.sh`, each with its reason.
 - `exempt.txt`: the standing exemptions `check-layout.sh` reads from beside itself.
 - `moved-check.sh`: compares the lines a commit range added and removed, to show a move left no residual.
 - `test-check-layout.sh`: self-test of `check-layout.sh` over throwaway repos.

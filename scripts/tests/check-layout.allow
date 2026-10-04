@@ -1,0 +1,11 @@
+# Exceptions to the layout limits that the organize pass could not remove. A new exception is a line here with its
+# reason, in the commit that needs it. Format: <kind> <path> <reason...> (see the Tools part of CLAUDE.md).
+
+# records plan, decision 5: its top-level flow and its -Local-gated section cannot move into a dot-sourced file without changing behaviour
+file-size scripts/launch-sot.ps1 top-level flow and -Local-gated section stay in one file
+
+# skeleton E10: entry-point paths under scripts/ are a published interface
+folder-size scripts entry-point paths are a published interface
+
+# the repo-root page is the map tier (it names the subsystems' charter folders, not every root entry); records plan, rec-12
+file-list CLAUDE.md the repo-root page is the map tier, not a module page
