@@ -251,3 +251,21 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
 
     let _ = std::fs::remove_file(&sock_path);
 }
+
+#[tokio::test]
+async fn stderr_drain_keeps_the_last_non_empty_line() {
+    async fn drained(input: &'static [u8]) -> Option<String> {
+        let cell = spawn_stderr_drain(input);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while Arc::strong_count(&cell) != 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the drain task ends at end of input");
+        let line = cell.lock().unwrap().clone();
+        line
+    }
+    assert_eq!(drained(b"first\n\n  \nsecond\n \t \n").await.as_deref(), Some("second"));
+    assert_eq!(drained(b"\n  \n").await, None);
+}

@@ -273,26 +273,7 @@ async fn connect_and_run(
             let stdin = child.stdin.take().expect("spawned with a piped stdin");
             let stdout = child.stdout.take().expect("spawned with a piped stdout");
             let stderr = child.stderr.take().expect("spawned with a piped stderr");
-            // The child's last non-empty stderr line, drained on its own task
-            // for as long as `child` lives — ssh's own complaint ("Permission
-            // denied", or `unrecognised argument: --host` from a hub whose
-            // `sotd` predates C1) is the diagnosis a dead child leaves behind,
-            // the same rule `stdio_bridge.rs` already sets for the far end.
-            let last_stderr = Arc::new(std::sync::Mutex::new(None::<String>));
-            {
-                let last_stderr = Arc::clone(&last_stderr);
-                tokio::spawn(async move {
-                    use tokio::io::AsyncBufReadExt;
-                    let mut lines = tokio::io::BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if !line.trim().is_empty() {
-                            if let Ok(mut guard) = last_stderr.lock() {
-                                *guard = Some(line);
-                            }
-                        }
-                    }
-                });
-            }
+            let last_stderr = spawn_stderr_drain(stderr);
             // Pre-hello, same labeling rule as the pipe branch above.
             tracing::info!(dial = %host, %recipe, "connected via ssh child");
             let rx = codec::buffered(stdout);
@@ -619,6 +600,33 @@ fn take_id(next_id: &mut u64) -> u64 {
     let id = *next_id;
     *next_id += 1;
     id
+}
+
+/// The child's last non-empty stderr line, drained on its own task
+/// for as long as `child` lives — ssh's own complaint ("Permission
+/// denied", or `unrecognised argument: --host` from a hub whose
+/// `sotd` predates C1) is the diagnosis a dead child leaves behind,
+/// the same rule `stdio_bridge.rs` already sets for the far end.
+pub(crate) fn spawn_stderr_drain<R>(stderr: R) -> Arc<std::sync::Mutex<Option<String>>>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let last_stderr = Arc::new(std::sync::Mutex::new(None::<String>));
+    {
+        let last_stderr = Arc::clone(&last_stderr);
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    if let Ok(mut guard) = last_stderr.lock() {
+                        *guard = Some(line);
+                    }
+                }
+            }
+        });
+    }
+    last_stderr
 }
 
 #[cfg(test)]
