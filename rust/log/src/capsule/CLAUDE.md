@@ -23,4 +23,4 @@ sets.
 - The run-end marker is appended at most once and latches only after a successful append
   (`commit_run_end_marker`).
 - Every exit from `run` cancels the output budget (`BudgetCancelGuard`).
-- Geometry outside 2x2..512x256 is refused (the `MIN_COLS`..`MAX_ROWS` constants, checked in `run`).
+- Geometry outside 2x2..512x256 is refused (the `MIN_COLS`..`MAX_ROWS` constants, checked in `spawn_producer` and `apply_resize`).

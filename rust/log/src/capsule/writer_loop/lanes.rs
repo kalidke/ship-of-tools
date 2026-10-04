@@ -1,4 +1,5 @@
 //! The leg's side of its lanes: transport events in through AttachProto and its actions carried out, in the main loop and through teardown.
+use super::output_path::{flush_output, maybe_rotate};
 use super::*;
 use crate::attach_proto::RequestId;
 

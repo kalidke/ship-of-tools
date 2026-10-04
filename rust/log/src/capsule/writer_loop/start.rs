@@ -1,6 +1,6 @@
 //! Starting a leg: open the voyage, bind the transport, write the control preamble, spawn the producer and its reader, and hand `run` the loop state.
-use super::*;
 use super::output_path::spawn_reader;
+use super::*;
 
 pub(super) fn start<'t, P: Producer>(
     config: &CapsuleConfig,

@@ -9,6 +9,7 @@ capsule; charter: rust/log/CLAUDE.md.
 - `start.rs`: Starting a leg: open the voyage, bind the transport, write the control preamble, spawn the producer and its reader, and hand `run` the loop state.
 - `lanes.rs`: The leg's side of its lanes: transport events in through AttachProto and its actions carried out, in the main loop and through teardown.
 - `output_path.rs`: The loop's output path: the reader thread, recording and pacing output, the commit watermark and segment rotation. The byte budget and the commit-timing rules are capsule/output.rs.
+- `phases.rs`: The writer loop after `start`, in `run`'s order: the main loop, Phase A (reap), Phase B (drain), the shutdown-ack grace, the worker join and the run end.
 
 ## Start here
 `run` in mod.rs, read top to bottom.
