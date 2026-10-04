@@ -8,6 +8,7 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `request.rs`: `OutgoingReq`, every request the UI can send a host, and `send_request`, which writes one
 - `mod.rs`: the per-host connection task (`spawn`, `connect_and_run`, `run_protocol`, `run_session`, `steady_loop`) and every part of the transport no other file here holds
 - `reply.rs`: reply matching: the pending entry per request id (`PendingKind`), `PendingGuard`, and `handle_response_frame`, which turns each reply into an `IncomingEvt`
+- `tests.rs`: the connection task's tests: backoff, the link gate, a closed local connection
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
 - `testdata/`: golden files for golden_tests.rs
 - `ops/`: one file per op family: the request each op writes, and the event its reply becomes

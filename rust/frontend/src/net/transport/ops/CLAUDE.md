@@ -3,7 +3,7 @@
 Each op the window sends has a `send_<op>` here: it writes the request frame and records the
 `PendingKind` its reply needs. `send_request` (../request.rs) picks the function by `OutgoingReq`
 variant; for a reply, `handle_response_frame` (../reply.rs) removes the pending entry and calls
-`on_<op>` by `PendingKind`, which turns the frame into an `IncomingEvt`. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
+`on_<op>` by `PendingKind`, which turns the frame into an `IncomingEvt`. An op family's file also holds the types its reply becomes (e.g. `WorkspaceInfo` in workspace.rs); mod.rs re-exports them to the UI. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Files
 - `mod.rs`: declares the families and re-exports their functions to the transport
