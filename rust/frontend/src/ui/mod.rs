@@ -9,6 +9,7 @@
 // wgpu surface — see ADR 0011 for the chrome-vs-preview-layer split.
 
 pub(crate) mod input;
+use input::*;
 pub(crate) mod persist;
 
 use std::collections::HashMap;
@@ -3376,86 +3377,6 @@ fn clear_color_for_surface(visible_srgb: (f64, f64, f64), is_srgb_target: bool) 
         g: convert(visible_srgb.1),
         b: convert(visible_srgb.2),
         a: 1.0,
-    }
-}
-
-/// Read the OS clipboard as text. Returns `None` (logging at warn) on
-/// clipboard failure or empty contents so callers fall through without
-/// panicking. winit does not deliver paste events on Windows (see
-/// `Cargo.toml`), so every paste path goes through an explicit clipboard
-/// read.
-fn read_clipboard_text() -> Option<String> {
-    let mut cb = match arboard::Clipboard::new() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "clipboard.new failed — paste dropped");
-            return None;
-        }
-    };
-    match cb.get_text() {
-        Ok(t) if !t.is_empty() => Some(t),
-        Ok(_) => None,
-        Err(e) => {
-            tracing::warn!(error = %e, "clipboard.get_text failed — paste dropped");
-            None
-        }
-    }
-}
-
-/// Wrap clipboard text in the bracketed-paste envelope. Newlines are
-/// normalized to `\r` (matching the Enter handlers that drive the ptys) so a
-/// paste behaves exactly like the user retyping the text; the
-/// `\e[200~ ... \e[201~` envelope tells the receiving CLI "this is one
-/// paste, don't run line-by-line".
-fn bracketed_paste_bytes(text: &str) -> Vec<u8> {
-    let normalized: String = text.replace("\r\n", "\r").replace('\n', "\r");
-    let mut bytes: Vec<u8> = Vec::with_capacity(normalized.len() + 12);
-    bytes.extend_from_slice(b"\x1b[200~");
-    bytes.extend_from_slice(normalized.as_bytes());
-    bytes.extend_from_slice(b"\x1b[201~");
-    bytes
-}
-
-/// Read the OS clipboard and forward it to the session pane as one
-/// bracketed-paste blob, via `send_pane_input` (capsule client / pending
-/// buffer / daemon `pty.write`, keyed on `pane_feed` — ADR 0042 slice
-/// L1b). Returns `false` only when the OS clipboard itself couldn't be
-/// read; once bytes exist, `send_pane_input` never signals failure back
-/// (a closed channel is logged internally, same as every other
-/// `pty.write` call site in this file).
-fn forward_clipboard_paste_to_llm(state: &mut State) -> bool {
-    let Some(text) = read_clipboard_text() else {
-        return false;
-    };
-    let bytes = bracketed_paste_bytes(&text);
-    if let Some(t) = state.pane_attach_term.as_mut() {
-        t.screen_mut().set_scrollback(0);
-    }
-    // ADR 0042 slice L1b fix 2/3: routed through the ONE session-pane
-    // input dispatcher (capsule client / pending buffer / daemon
-    // `pty.write`, keyed on `pane_feed`) — see `send_pane_input`'s own
-    // doc.
-    state.send_pane_input(&bytes);
-    true
-}
-
-/// Read the OS clipboard and forward it to the local Terminal drawer's pty as
-/// one bracketed-paste blob. Mirrors `forward_clipboard_paste_to_llm` but
-/// targets the in-process `local_term` rather than the remote pty.
-fn forward_clipboard_paste_to_local_term(state: &mut State) {
-    let Some(text) = read_clipboard_text() else {
-        return;
-    };
-    let bytes = bracketed_paste_bytes(&text);
-    if let Some(t) = state.local_term.as_mut() {
-        t.send_input(&bytes);
-        t.screen_mut().set_scrollback(0);
-    } else {
-        #[cfg(windows)]
-        if let Some(t) = state.attach_term.as_mut() {
-            t.send_input(&bytes);
-            t.screen_mut().set_scrollback(0);
-        }
     }
 }
 
@@ -7201,92 +7122,6 @@ impl State {
         if let Some((mime, bytes)) = self.preview_src.clone() {
             self.render_preview_source(&mime, &bytes);
         }
-    }
-
-    fn help_peek_expired(&self) -> bool {
-        self.help.peek.as_ref().is_some_and(|p| p.opacity(std::time::Instant::now()) <= 0.0)
-    }
-
-    fn help_context(&self) -> help::Context {
-        let pane = match self.focus {
-            PaneFocus::NavTree => help::Pane::Nav,
-            PaneFocus::Preview => help::Pane::Preview,
-            PaneFocus::Llm => help::Pane::Agent,
-            PaneFocus::Repl => match self.drawer {
-                DrawerContent::Terminal => help::Pane::Terminal,
-                DrawerContent::Monitor => help::Pane::Monitor,
-                DrawerContent::Help => help::Pane::Help,
-                _ => help::Pane::Repl,
-            },
-        };
-        let editing = self.focus == PaneFocus::Preview && self.edit_state.is_some();
-        let prompt = self.focus == PaneFocus::NavTree && self.nav_prompt.is_some();
-        let picker = self.focus == PaneFocus::NavTree && self.workspace_picker.is_some();
-        let file = if pane == help::Pane::Preview { self.previewed_files_path() }
-            else if pane == help::Pane::Nav { self.cursored_files_path() } else { None };
-        help::Context {
-            pane, mode: match self.mode { Mode::Files => help::Mode::Files, Mode::Modules => help::Mode::Modules,
-                Mode::Sessions => help::Mode::Sessions, Mode::Hosts => help::Mode::Hosts },
-            file, image: self.preview_png.is_some(),
-            pages: self.preview_page.is_some_and(|(_, count)| count > 1),
-            editable: self.preview_png.is_none() && self.previewed_files_path().is_some()
-                || self.concept.as_ref().is_some_and(|c| c.exists && self.concept_target_fired.as_ref() == Some(&c.target)),
-            confirmation: if matches!(self.nav_prompt, Some(NavPrompt::ConfirmDelete { .. })) && prompt {
-                help::Confirmation::Delete
-            } else if editing && self.edit_state.as_ref().is_some_and(|e| e.confirm_discard) {
-                help::Confirmation::Discard
-            } else if editing && self.edit_state.as_ref().is_some_and(|e| e.stale_banner) {
-                help::Confirmation::Stale
-            } else { help::Confirmation::None },
-            workspace_locked: self.edit_state.is_some(),
-            picker, prompt, editing, modal: editing || prompt || picker,
-            restore: self.maximized || self.wide_preview && self.edit_state.is_none()
-                && self.nav_prompt.is_none() && self.workspace_picker.is_none()
-                && matches!(self.focus, PaneFocus::NavTree | PaneFocus::Preview),
-            session: self.tree.rows.get(self.tree.selected).is_some_and(|r| r.node.kind == "session"),
-            alternate_screen: match pane {
-                help::Pane::Terminal => {
-                    #[cfg(windows)]
-                    let screen = self.local_term.as_ref().map(|t| t.screen())
-                        .or_else(|| self.attach_term.as_ref().map(|t| t.screen()));
-                    #[cfg(not(windows))]
-                    let screen = self.local_term.as_ref().map(|t| t.screen());
-                    screen.is_some_and(|s| s.alternate_screen())
-                }
-                help::Pane::Agent => {
-                    // A capsule row in alternate-screen mode receives the
-                    // original key instead of having it consumed as a
-                    // local-ring scrollback page.
-                    self.pane_feed == PaneFeed::Capsule && self.pane_attach_term.as_ref()
-                        .is_some_and(|t| t.screen().alternate_screen())
-                },
-                _ => false,
-            },
-        }
-    }
-
-    fn open_help_drawer(&mut self, context: help::Context) {
-        if self.help_origin.is_none() {
-            self.help_origin = Some((self.focus, self.drawer, self.maximized));
-        }
-        self.help.open(context);
-        self.drawer = DrawerContent::Help;
-        self.maximized = false;
-        self.set_focus(PaneFocus::Repl);
-        self.window.request_redraw();
-    }
-
-    fn close_help_drawer(&mut self) {
-        if let Some((focus, drawer, maximized)) = self.help_origin.take() {
-            self.set_focus(focus);
-            self.drawer = drawer;
-            self.maximized = maximized;
-        } else {
-            self.drawer = DrawerContent::Closed;
-            self.set_focus(PaneFocus::NavTree);
-        }
-        self.help.peek = None;
-        self.window.request_redraw();
     }
 
     fn drain_events(&mut self) {

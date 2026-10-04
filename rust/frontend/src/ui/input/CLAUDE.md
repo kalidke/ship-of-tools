@@ -8,6 +8,8 @@ and the clipboard paste helpers live beside it. Part of the window; charter: rus
 - `keybindings.rs`: the action catalog (`ACTIONS`), chords, defaults and `keybindings.toml` merging.
 - `keybindings_tests.rs`: tests of the catalog, chord parsing, merging, literal-text and shifted punctuation.
 - `help.rs`: the contextual help model (`Context`) and its rows, with its tests inline.
+- `help_drawer.rs`: `State`'s help drawer: `help_context`, `open_help_drawer`, `close_help_drawer`, `help_peek_expired`.
+- `paste.rs`: `read_clipboard_text`, `bracketed_paste_bytes` and the two forwarders to the agent pane and the Terminal drawer.
 
 ## Start here
 `ACTIONS` and `KeyBindings::resolve` in keybindings.rs for a new action or chord; `help::Context` in help.rs for what
