@@ -28,7 +28,7 @@ use std::net::TcpListener as StdTcpListener;
 
 use sot_protocol::topology::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Whether an armed port's listener dials the daemon, shared by the GPU thread, which opens pages, and that port's
@@ -174,20 +174,7 @@ async fn pipe_one(
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
     let d_rd = child.stdout.take().expect("spawned with a piped stdout");
     let stderr = child.stderr.take().expect("spawned with a piped stderr");
-    let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-    {
-        let last_stderr = std::sync::Arc::clone(&last_stderr);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    if let Ok(mut guard) = last_stderr.lock() {
-                        *guard = Some(line);
-                    }
-                }
-            }
-        });
-    }
+    let last_stderr = crate::net::transport::spawn_stderr_drain(stderr);
     let mut d_wr = d_wr;
     let _ = browser.set_nodelay(true);
 
