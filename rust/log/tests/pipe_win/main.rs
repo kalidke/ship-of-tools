@@ -40,6 +40,7 @@
 //! the separate `sot_log::identity::challenge_win::PipeChallengeable` extension
 //! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
 
+use sot_log::host::wide_null;
 use sot_log::identity::challenge::ChallengeOutcome;
 use sot_log::identity::challenge_win::challenge;
 use sot_log::identity::exchange::VoyageMgmtExchange;
@@ -190,15 +191,6 @@ fn accumulate_bytes(
     out
 }
 
-/// NUL-terminated UTF-16, matching `lane/pipe_win/`'s own private helper.
-fn wide(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
 /// Attempt to create the FIRST instance of `voyage_id`'s pipe name with
 /// `FILE_FLAG_FIRST_PIPE_INSTANCE` — the squat-detection probe.
 /// `max_instances` MUST match the server's own value under test (round-3
@@ -215,7 +207,7 @@ fn try_create_first_instance(voyage_id: &str, max_instances: u32) -> std::io::Re
         CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
     };
 
-    let name = wide(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
+    let name = wide_null(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
     let h = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
@@ -349,7 +341,7 @@ fn canonical_sddl(sddl: &str) -> String {
     };
     use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
-    let wide_sddl = wide(sddl);
+    let wide_sddl = wide_null(sddl);
     unsafe {
         let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         assert_ne!(
@@ -388,7 +380,7 @@ fn open_pipe_handle(voyage_id: &str) -> windows_sys::Win32::Foundation::HANDLE {
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, READ_CONTROL,
     };
-    let name = wide(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
+    let name = wide_null(&format!(r"\\.\pipe\sot-voyage-{voyage_id}"));
     let h = unsafe {
         CreateFileW(
             name.as_ptr(),

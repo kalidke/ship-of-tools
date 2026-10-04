@@ -316,6 +316,7 @@ mod tests {
     #[tokio::test]
     async fn session_pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
         use super::session_pipe_security_descriptor;
+        use sot_log::host::wide_null;
         use interprocess::local_socket::tokio::prelude::*;
         use interprocess::local_socket::{GenericFilePath, ListenerOptions};
         use interprocess::os::windows::local_socket::ListenerOptionsExt;
@@ -333,11 +334,6 @@ mod tests {
             CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, READ_CONTROL,
         };
         use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-
-        fn wide(s: &str) -> Vec<u16> {
-            use std::os::windows::ffi::OsStrExt;
-            std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
-        }
 
         fn current_user_sid_string() -> String {
             unsafe {
@@ -404,7 +400,7 @@ mod tests {
         /// canonical form, so the expected side speaks the same
         /// well-known-SID-aliasing dialect the actual side comes back in.
         fn canonical_sddl(sddl: &str) -> String {
-            let wide_sddl = wide(sddl);
+            let wide_sddl = wide_null(sddl);
             unsafe {
                 let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
                 assert_ne!(
@@ -443,7 +439,7 @@ mod tests {
             .create_tokio()
             .unwrap();
 
-        let wide_name = wide(&name);
+        let wide_name = wide_null(&name);
         let handle = unsafe {
             CreateFileW(
                 wide_name.as_ptr(),

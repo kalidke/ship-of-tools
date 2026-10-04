@@ -216,11 +216,11 @@ unsafe fn pwstr_to_string(p: *const u16) -> String {
     String::from_utf16_lossy(slice)
 }
 
-/// NUL-terminated UTF-16 for an arbitrary Rust string (the SDDL text) —
-/// distinct from `wide_verbatim`, which additionally applies path-specific
-/// `\\?\` prefixing that would corrupt a non-path string like this one.
+/// NUL-terminated UTF-16 for any string that is not a path (a command line,
+/// an SDDL text, a pipe or object name). `wide_verbatim` is the path form: it
+/// adds `\\?\` prefixing that would corrupt a non-path string.
 #[cfg(windows)]
-fn wide_null(s: &str) -> Vec<u16> {
+pub fn wide_null(s: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }

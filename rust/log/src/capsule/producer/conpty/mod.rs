@@ -21,6 +21,7 @@
 
 #![cfg(windows)]
 
+use crate::host::wide_null;
 use crate::{Error, Result};
 use std::ffi::c_void;
 use std::fs::File;
@@ -83,14 +84,6 @@ fn hresult_to_io_error(hr: i32) -> std::io::Error {
     } else {
         std::io::Error::other(format!("HRESULT {hr:#010x}"))
     }
-}
-
-/// NUL-terminated UTF-16 for an arbitrary Rust string. Distinct from a
-/// path-normalizing helper on purpose: a command line is not a path and
-/// must not get `\\?\`-prefixed or separator-normalized.
-fn wide_null(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
 /// Windows has no execv: `CreateProcessW` takes ONE command-line string, and

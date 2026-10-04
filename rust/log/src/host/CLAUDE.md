@@ -56,7 +56,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - `state_dir.rs`: where a file lives, and the host name.
 - `volume.rs`: the preflight that proves a volume supports the store's primitives.
 - `winhandle.rs`: Windows-only hardening of a process's own inherited stdio handles.
-- `winsec.rs`: Windows-only owner-only security descriptors and SID lookups.
+- `winsec.rs`: Windows-only owner-only security descriptors and SID lookups, and `wide_null`, the UTF-16 form of a non-path string.
 
 ## Start here
 `durable.rs` `publish_noreplace` for how a file is published; `state_dir.rs` for where a file lives.

@@ -230,6 +230,7 @@
 
 #![cfg(windows)]
 
+use crate::host::wide_null;
 use crate::lane::client::{Client, Endpoint};
 use crate::lane::transport::{
     join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
@@ -287,18 +288,6 @@ fn pipe_name_wide(voyage_id: &str) -> Vec<u16> {
 /// enforce.
 fn supervisor_pipe_name_wide(h: &str) -> Vec<u16> {
     wide_null(&format!(r"\\.\pipe\sot-supervisor-{h}"))
-}
-
-/// NUL-terminated UTF-16 for an arbitrary Rust string. A small, deliberate
-/// duplicate of `capsule/producer/conpty/`'s and `host.rs`'s own private copies of this
-/// exact helper — sharing a three-line leaf helper would add machinery
-/// without value under this crate's existing rule.
-fn wide_null(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
 }
 
 /// The voyage id is validated as a canonical RFC 4122 UUID — lowercase,

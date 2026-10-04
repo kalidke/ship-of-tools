@@ -38,6 +38,7 @@
 
 #![cfg(windows)]
 
+use crate::host::wide_null;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, WAIT_ABANDONED_0, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{CreateMutexW, MUTEX_MODIFY_STATE, OpenMutexW, ReleaseMutex, WaitForSingleObject};
@@ -197,11 +198,6 @@ impl LeaseCheck {
             _ => true, // WAIT_FAILED, or anything else
         }
     }
-}
-
-fn wide_null(s: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
 #[cfg(test)]
