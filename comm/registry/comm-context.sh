@@ -34,8 +34,7 @@ else
 fi
 
 # The workspace row this shell runs in, stamped into the capsule leg's env
-# by the daemon; empty in a bare shell. It keys the self-file slot and is
-# the target comm-send.sh types into.
+# by the daemon; empty in a bare shell. It keys the self-file slot.
 WORKSPACE_ID="${SOT_WORKSPACE_ID:-}"
 
 RAW_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"

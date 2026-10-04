@@ -359,9 +359,7 @@ fi
 # and no block: the same fail-open discipline as the rest of the hook, which
 # must never be able to wedge a turn.
 MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
-# Both counters start at 0 OUTSIDE the gate: on Windows this file often does
-# not exist at all (nothing but the frontend files there) and the frontend arm below must
-# still run.
+# Both counters start at 0 OUTSIDE the gate.
 mail_total=0; mail_pending=0
 # The count and the read run in a SUBSHELL that sources comm-lib.sh, so this
 # hook sees exactly the offset comm-poll.sh does (sot_cursor_offset: the ts
