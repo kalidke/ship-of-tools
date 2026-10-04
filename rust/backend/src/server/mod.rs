@@ -49,7 +49,7 @@ pub(crate) use conn::record_test_activation_marker;
 #[cfg(unix)]
 pub(crate) use listen::refuse_live_socket;
 pub(crate) use reply::{write_frame_to, write_frame_within};
-use listen::{lock_daemon, run_local};
+use listen::{run_local, take_daemon_lock};
 use crate::comm::registry::poll::project_comm_registry;
 
 pub async fn run(opts: Opts) -> Result<()> {
@@ -57,17 +57,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // (a kill included), so a successor never reads the registry while its
     // predecessor is still shutting down. With no state root there is no
     // record to fence, the same posture as the resume skip below.
-    let _daemon_lock = match sot_log::state_dir::sot_state_dir() {
-        Some(state_root) => Some(lock_daemon(&state_root, opts.socket.as_deref()).await?),
-        None => {
-            tracing::warn!(
-                "daemon lock skipped, running unfenced: could not resolve this machine's state root \
-                 ({} unset)",
-                crate::capsule_workspace::STATE_ROOT_HINT
-            );
-            None
-        }
-    };
+    let _daemon_lock = take_daemon_lock(&opts).await?;
 
     // ADR 0046 decision 1: resolve this daemon's declared host at boot,
     // fatal if it can't be named, so the failure is a boot error rather

@@ -76,6 +76,21 @@ pub(super) async fn lock_daemon(
     }
 }
 
+/// Takes the daemon lock for `opts`, or runs unfenced when this machine has no state root.
+pub(super) async fn take_daemon_lock(opts: &crate::Opts) -> Result<Option<sot_log::fence::DaemonLock>> {
+    Ok(match sot_log::state_dir::sot_state_dir() {
+        Some(state_root) => Some(lock_daemon(&state_root, opts.socket.as_deref()).await?),
+        None => {
+            tracing::warn!(
+                "daemon lock skipped, running unfenced: could not resolve this machine's state root \
+                 ({} unset)",
+                crate::capsule_workspace::STATE_ROOT_HINT
+            );
+            None
+        }
+    })
+}
+
 /// Whether a daemon answers on the session socket: on Unix a connect
 /// succeeds, on Windows a client open of the pipe name succeeds.
 fn socket_answers(path: &std::path::Path) -> bool {
