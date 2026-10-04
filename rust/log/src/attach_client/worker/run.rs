@@ -1,6 +1,5 @@
 //! The worker thread: `run_worker`, its held-input bookkeeping and the retry and link-pause waits.
 
-use crate::challenge::PeerAuthOutcome;
 use crate::client::Endpoint;
 use crate::fe_client::{
     FeDownBaseline, OutstandingSlot, QuitDispatcher,
@@ -232,77 +231,11 @@ pub(super) fn run_worker<E: Endpoint>(
             voyage_uuid = Some(voyage.clone());
         }
 
-        // --- attach lane: the voyage pipe is already connected --
-        // `converge_on_ready` made that ONE attempt itself (finding 1),
-        // folded into its own Status-polling loop rather than an
-        // independent retry here.
-        let attach_identity = match endpoint.authenticate_server(&voyage_conn) {
-            PeerAuthOutcome::Authenticated(a) => (a.pid, a.created),
-            PeerAuthOutcome::Foreign => {
-                emit(WorkerEvent::Terminal("voyage pipe: foreign".to_string()));
-                return;
-            }
-            PeerAuthOutcome::Undetermined => {
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
-                    WaitOutcome::Shutdown => break 'episodes,
-                    WaitOutcome::Continue => continue 'episodes,
-                }
-            }
+        let (attach_identity, attach_reader, checkpoint) = match attach_voyage::<E>(&endpoint, &voyage_conn, &cmd_rx, &mut reconnect, &mut held, &mut preferred_attach_proto, &controller_id, &emit) {
+            Ok(v) => v,
+            Err(EpisodeExit::Retry) => continue 'episodes,
+            Err(EpisodeExit::End) => return,
         };
-
-        let mut attach_reader = FrameReader::new();
-        match attach_lane_hello::<E>(&voyage_conn, &mut attach_reader, preferred_attach_proto) {
-            Ok(HelloOutcome::Accepted) => {}
-            Ok(HelloOutcome::RetryAt(fallback)) => {
-                // The capsule does not speak `preferred_attach_proto` (an
-                // older build, predating attach proto v2 / the
-                // scrollback ring) but DOES speak a version this client
-                // also understands. Retry the whole episode immediately
-                // -- a fresh connection, since the refused one is already
-                // closed server-side -- at that version rather than
-                // failing outright: v1 still works, just without
-                // history.
-                preferred_attach_proto = fallback;
-                continue 'episodes;
-            }
-            Err(e) => match e {
-                LaneError::Protocol(p) if p.contains("version_skew") => {
-                    emit(WorkerEvent::Terminal(
-                        "attach hello: version_skew".to_string(),
-                    ));
-                    return;
-                }
-                _ => {
-                    match wait_for_retry_or_shutdown(
-                        &cmd_rx,
-                        reconnect.retry_with_backoff(),
-                        &mut held,
-                    ) {
-                        WaitOutcome::Shutdown => break 'episodes,
-                        WaitOutcome::Continue => continue 'episodes,
-                    }
-                }
-            },
-        }
-        let checkpoint =
-            match attach_and_collect_checkpoint::<E>(&voyage_conn, &mut attach_reader, &controller_id) {
-                Ok(c) => c,
-                Err(e) => {
-                    // A refusal the capsule NAMED is the one failure here
-                    // a user can act on, so it reaches the row's status
-                    // line (the same `WorkerEvent::Status` path every
-                    // other retrying lane failure uses). Every other
-                    // error keeps the silent retry: the pane's own
-                    // "connecting..." already says what is happening.
-                    if let LaneError::AttachRefused(reason) = e {
-                        emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
-                    }
-                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
-                        WaitOutcome::Shutdown => break 'episodes,
-                        WaitOutcome::Continue => continue 'episodes,
-                    }
-                }
-            };
 
         // switch-latency Phase 1: the checkpoint (and the "attached"
         // status right behind it) now land BEFORE the mgmt-identity

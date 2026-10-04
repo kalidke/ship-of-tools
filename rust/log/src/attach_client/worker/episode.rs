@@ -1,9 +1,20 @@
 //! The steps of one attach episode, in the order run_worker calls them: reach the supervisor, attach, announce, resume input, start and stop the episode reader.
 
 use super::*;
+use crate::challenge::PeerAuthOutcome;
 use crate::client::Client;
 use crate::fe_client::{self, FeDownBaseline, OutstandingSlot, ReconnectState, Role, TakeTransaction};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::Receiver;
+
+/// Why an episode step stopped short of its result. `Retry` starts the next
+/// episode (it was `continue 'episodes`); `End` ends the worker (it was
+/// `return` or `break 'episodes`, one exit because the episode loop is the
+/// last statement of `run_worker`).
+pub(super) enum EpisodeExit {
+    Retry,
+    End,
+}
 
 pub(super) fn cancel_input_for_new_voyage(
     voyage: &str,
@@ -37,6 +48,91 @@ pub(super) fn cancel_input_for_new_voyage(
             discarded.fetch_add(lost, Ordering::AcqRel);
             emit(WorkerEvent::InputsDiscarded);
         }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn attach_voyage<E: Endpoint>(
+    endpoint: &E,
+    voyage_conn: &E::Client,
+    cmd_rx: &Receiver<WorkerMsg>,
+    reconnect: &mut ReconnectState,
+    held: &mut Held,
+    preferred_attach_proto: &mut u32,
+    controller_id: &str,
+    emit: &dyn Fn(WorkerEvent),
+) -> Result<((u32, u64), FrameReader, Vec<u8>), EpisodeExit> {
+    // --- attach lane: the voyage pipe is already connected --
+    // `converge_on_ready` made that ONE attempt itself (finding 1),
+    // folded into its own Status-polling loop rather than an
+    // independent retry here.
+    let attach_identity = match endpoint.authenticate_server(&voyage_conn) {
+        PeerAuthOutcome::Authenticated(a) => (a.pid, a.created),
+        PeerAuthOutcome::Foreign => {
+            emit(WorkerEvent::Terminal("voyage pipe: foreign".to_string()));
+            return Err(EpisodeExit::End);
+        }
+        PeerAuthOutcome::Undetermined => {
+            match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), held) {
+                WaitOutcome::Shutdown => return Err(EpisodeExit::End),
+                WaitOutcome::Continue => return Err(EpisodeExit::Retry),
+            }
+        }
+    };
+
+    let mut attach_reader = FrameReader::new();
+    match attach_lane_hello::<E>(&voyage_conn, &mut attach_reader, *preferred_attach_proto) {
+        Ok(HelloOutcome::Accepted) => {}
+        Ok(HelloOutcome::RetryAt(fallback)) => {
+            // The capsule does not speak `preferred_attach_proto` (an
+            // older build, predating attach proto v2 / the
+            // scrollback ring) but DOES speak a version this client
+            // also understands. Retry the whole episode immediately
+            // -- a fresh connection, since the refused one is already
+            // closed server-side -- at that version rather than
+            // failing outright: v1 still works, just without
+            // history.
+            *preferred_attach_proto = fallback;
+            return Err(EpisodeExit::Retry);
+        }
+        Err(e) => match e {
+            LaneError::Protocol(p) if p.contains("version_skew") => {
+                emit(WorkerEvent::Terminal(
+                    "attach hello: version_skew".to_string(),
+                ));
+                return Err(EpisodeExit::End);
+            }
+            _ => {
+                match wait_for_retry_or_shutdown(
+                    &cmd_rx,
+                    reconnect.retry_with_backoff(),
+                    held,
+                ) {
+                    WaitOutcome::Shutdown => return Err(EpisodeExit::End),
+                    WaitOutcome::Continue => return Err(EpisodeExit::Retry),
+                }
+            }
+        },
+    }
+    let checkpoint =
+        match attach_and_collect_checkpoint::<E>(&voyage_conn, &mut attach_reader, &controller_id) {
+            Ok(c) => c,
+            Err(e) => {
+                // A refusal the capsule NAMED is the one failure here
+                // a user can act on, so it reaches the row's status
+                // line (the same `WorkerEvent::Status` path every
+                // other retrying lane failure uses). Every other
+                // error keeps the silent retry: the pane's own
+                // "connecting..." already says what is happening.
+                if let LaneError::AttachRefused(reason) = e {
+                    emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
+                }
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), held) {
+                    WaitOutcome::Shutdown => return Err(EpisodeExit::End),
+                    WaitOutcome::Continue => return Err(EpisodeExit::Retry),
+                }
+            }
+        };
+    Ok((attach_identity, attach_reader, checkpoint))
 }
 
 #[allow(clippy::too_many_arguments)]
