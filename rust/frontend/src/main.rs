@@ -19,6 +19,7 @@ use ui::drawer::monitor as monitor_view;
 mod net;
 mod pages;
 mod paths;
+mod relaunch;
 mod selfupdate;
 use ui::persist::settings;
 use ui::persist::resume as state_persistence;
