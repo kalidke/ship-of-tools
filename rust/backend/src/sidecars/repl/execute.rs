@@ -169,7 +169,7 @@ fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::workspaces:
 
 /// Broadcasts the `started` control frame that pre-registers the run in the drawer.
 fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::workspaces::Workspace, workspaces: &Workspaces,
-    eval_id: u64, run_id: &str, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
+    eval_id: u64, run_id: &String, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
     let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
     let frame_ws = ws.slug.clone();
     let frame_tx = workspaces.repl_frame_tx();
@@ -294,7 +294,7 @@ fn split_exec_frames(frames: Vec<serde_json::Value>, error_out: &mut Option<Repl
 }
 
 /// Writes the image frames under the run's folder and returns their paths.
-async fn spill_exec_figures(ws: &crate::workspaces::Workspace, run_id: &str, image_frames: Vec<(String, String)>)
+async fn spill_exec_figures(ws: &crate::workspaces::Workspace, run_id: &String, image_frames: Vec<(String, String)>)
     -> Vec<String> {
     let mut figures: Vec<String> = Vec::new();
     if !image_frames.is_empty() {
