@@ -493,10 +493,7 @@ fn start_on_attach(ws: &Workspace, workspaces: &Workspaces, state_root: &Option<
 
 /// Writes one marker file per arrival/completion/wait-for-settle-cycle
 /// under `<barrier path>.<kind>/`, so a test can poll an exact count
-/// instead of inferring one from timing. `pub(crate)` -- also called
-/// from `capsule_workspace::ensure_started`'s own reprobe loop (kind
-/// `"waitforsettle"`), which is a different module but shares this
-/// exact barrier-path convention. No-op unless `SOT_TEST_ACTIVATION_
+/// instead of inferring one from timing. No-op unless `SOT_TEST_ACTIVATION_
 /// BARRIER` is set.
 pub(crate) fn record_test_activation_marker(kind: &str) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

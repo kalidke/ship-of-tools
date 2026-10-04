@@ -66,17 +66,13 @@ pub(super) fn test_slow_concept_read_delay() -> std::time::Duration {
 /// read future across iterations so a cancelled select! *pauses* a mid-blob
 /// read rather than dropping it — `codec::read_frame` is NOT cancellation-safe
 /// (it reads the `\n` envelope then `read_exact`s the blob tail across two
-/// awaits). Mirrors the frontend transport fix (commit 8746b74). See the
-/// CANCEL-SAFETY note in `handle_connection`'s loop.
+/// awaits). Mirrors the frontend transport fix (commit 8746b74).
 async fn read_owned<R: AsyncRead + Unpin>(
     mut rx: tokio::io::BufReader<R>,
 ) -> (tokio::io::BufReader<R>, Result<(Frame, Option<Vec<u8>>)>) {
     let res = codec::read_frame(&mut rx).await;
     (rx, res)
 }
-
-/// Generic over the AsyncRead/AsyncWrite halves (a relic of the two-transport
-/// era that keeps this testable against in-memory duplex streams).
 
 /// Stamp this connection's `last_person_input_at` if it has registered.
 /// Call ONLY from the `fe.presence` op arm (2026-09-08 review rework,
@@ -404,9 +400,7 @@ where
         // unconditional on the op: ordinary traffic counts exactly as much
         // as a `ping`, so a busy connection never needs one. Before this
         // connection's first `ping` (`deadline_armed` still false) this is
-        // a no-op; arming itself (flag + first deadline) happens in the
-        // `op::PING` arm below, the moment role-eligibility (set at hello)
-        // and a first ping coincide.
+        // a no-op.
         if deadline_armed {
             read_deadline = tokio::time::Instant::now() + ping_read_deadline();
         }

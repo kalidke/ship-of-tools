@@ -164,8 +164,7 @@ pub(super) fn admit_hello(
             // (`cli`/`agent` are one-shot and stay ungated).
             // This does NOT arm the deadline itself (manager
             // compatibility fix, post-review) — only this
-            // connection's FIRST `ping` does that (`op::PING`
-            // arm below), so a peer too old to send one keeps
+            // connection's FIRST `ping` does that, so a peer too old to send one keeps
             // today's behaviour exactly, never reaped by this
             // path.
             // A peer on another protocol is about to be

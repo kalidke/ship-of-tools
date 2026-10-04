@@ -29,9 +29,8 @@ where
     // request instead of letting it bubble out of `handle_connection` and
     // tear down the whole connection (pre-fix, one malformed payload for
     // any op dropped the socket and forced a full FE reconnect).
-    // Per-request service time (switch-latency Phase 1, 2026-09-08): the
-    // loop below awaits every handler inline, so one slow request delays
-    // every later frame on this connection. Logged at info above
+    // Per-request service time (switch-latency Phase 1, 2026-09-08):
+    // Logged at info above
     // SLOW_REQUEST_MS so the culprit op is identified, never inferred
     // from a neighbouring log line.
     let dispatch_started = std::time::Instant::now();
@@ -161,16 +160,14 @@ where
         op::ACCOUNTS_LIST => handlers::handle_accounts_list(frame.id, frame.payload).await,
         // ADR 0046 decision 6: the ONE op whose reply must be written
         // before its effect runs, because the caller IS the session
-        // being replaced. Written here rather than through the common
-        // path below (same reason `PTY_OPEN`'s arm writes its own) so
-        // the kill cannot precede the ack.
+        // being replaced.
         op::WORKSPACE_REAUTH => {
             answer_workspace_reauth(tx, frame, workspaces).await?;
             return Ok(());
         }
         op::WORKSPACE_ACTIVATE => {
-            // Update `active_workspace` (declared above) HERE, inline —
-            // same pattern as HELLO's auth flag just above: peek the raw
+            // Update `active_workspace` HERE, inline —
+            // peek the raw
             // JSON for `workspace_id` before the typed parse the handler
             // does again, so a malformed payload still reaches the
             // handler's ordinary error path instead of silently
@@ -349,8 +346,7 @@ where
     W: AsyncWrite + Unpin,
 {
     // Off-loop (switch-latency Phase 1): a read-and-render of
-    // the requested node. `preview.set_scale` stays INLINE just
-    // below — it writes a `.scale.json` sidecar.
+    // the requested node.
     let req_id = frame.id;
     let op_name = frame.op.clone();
     let mut payload = frame.payload;
@@ -434,7 +430,7 @@ where
     // rather than adding a second cap for the same shape of
     // operation (a bounded external-process call). Note this is
     // NOT about `job_sem` ever being shared with pty ops —
-    // pty.* dispatch inline just below and never touch it; the
+    // pty.* dispatch inline and never touch it; the
     // actual shared choke point was the inline `.await` itself.
     let req_id = frame.id;
     let op_name = frame.op.clone();

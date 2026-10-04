@@ -465,11 +465,6 @@ async fn lane_connect_refusals() {
     assert_eq!(res["code"].as_str(), Some("unknown_workspace"), "{res:?}");
     assert_lane_connect_closes(&mut s).await;
 
-    // The anchor/default row -- its runtime is decided by
-    // `default_row_runtime`, independent of ADR 0042's L6 flip, and it
-    // stays "tmux" on a fresh Linux install regardless (ADR 0043
-    // decision 22).
-
     // A ready capsule row, shared by the two voyage-lane sub-cases below.
     let create_req = serde_json::json!({
         "label": "lcf-ready",
