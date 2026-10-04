@@ -84,11 +84,8 @@ pub const CLOSE_ACK_WAIT: Duration = Duration::from_secs(125);
 pub const NOTICE_ACK_WAIT: Duration = Duration::from_secs(5);
 pub const EXIT_REQUESTED_SHUTDOWN: i32 = 0;
 pub const EXIT_UPDATE_RESTART: i32 = 75;
-pub const EXIT_LOCK_TIMEOUT: i32 = 1;
 /// In the daemon's state root.
 pub const HELD_RECORD_FILE: &str = "held.json";
-/// In the daemon's state root.
-pub const DAEMON_LOCK_FILE: &str = "daemon.lock";
 
 #[cfg(test)]
 mod lease_wire_tests {
