@@ -116,6 +116,20 @@ impl Env {
         if hub.is_some() {
             cmd.env("XDG_RUNTIME_DIR", runtime_tmp.path());
         }
+        // Every daemon starts from a login shell's usual mask, so what it
+        // creates owner-only is its own doing (ADR 0049, User isolation).
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: `umask` is async-signal-safe and changes only the
+            // child's own mask.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::umask(0o022);
+                    Ok(())
+                });
+            }
+        }
         let daemon = cmd.spawn().expect("spawn sotd");
 
         Self { _tmp: tmp, _runtime_tmp: runtime_tmp, hosts_toml, socket_path, comm_root, daemon }
@@ -233,6 +247,13 @@ async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
     let inbox = std::fs::read_to_string(hub.comm_root.join("inbox/peer.jsonl")).expect("the hub's inbox");
     let line: serde_json::Value = serde_json::from_str(inbox.trim_end()).expect("one line");
     assert_eq!((line["from"].as_str(), line["msg"].as_str()), (Some("guest-sender"), Some("forwarded hi")));
+    // The hub was started from umask 022: what it made in its comm folder is its user's alone.
+    use std::os::unix::fs::PermissionsExt;
+    for rel in ["inbox", "inbox/peer.jsonl", "inbox/peer.lock", "inbox-lock-manager"] {
+        let path = hub.comm_root.join(rel);
+        let mode = std::fs::metadata(&path).expect("the hub's comm path").permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o077, 0, "{} is {mode:o}: group or other can reach it", path.display());
+    }
 }
 
 #[tokio::test]
