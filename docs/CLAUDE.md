@@ -6,7 +6,8 @@ the commit that changes the code it describes, and a design that is not built is
 
 ## Owns
 - `docs/`: the ADRs and their index, the manual (`src/`, `make.jl`, `Project.toml`), `INSTALL-AGENT.md`,
-  `ENROLLING-A-HOST.md`, `USING.md`, `SCREENSHOTS.md`, `plan.md` and the demo project the screenshots are taken from.
+  `ENROLLING-A-HOST.md`, `USING.md`, `SCREENSHOTS.md`, `plan.md`, the ownership table `ownership.md` and the demo
+  project the screenshots are taken from.
 - Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, and the publish guard
   (`.claude/settings.json`, `.claude/hooks/`). Each folder's own `CLAUDE.md` belongs to the subsystem that owns that folder.
 
@@ -51,6 +52,7 @@ the commit that changes the code it describes, and a design that is not built is
 - `adr/`: the decision records and their `README.md` index.
 - `fixtures/`: `DemoProject`, the demo project the media are taken from.
 - `make.jl`: builds the manual and runs the built-site checks.
+- `ownership.md`: the one table of who owns each state file, process, op, setting and lock, and the pairs of copies that remain.
 - `plan.md`: the phase-1 implementation plan; staged into the manual as the roadmap.
 - `tools/`: the docs media scripts: docs-media.sh, run by hand from `SCREENSHOTS.md`.
 - `src/.vitepress/`: the VitePress site configuration and theme.
