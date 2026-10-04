@@ -147,30 +147,9 @@ fn check_create_root(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, projec
     Ok(())
 }
 
-pub async fn handle_workspace_create(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-    workspaces: &Workspaces,
-    ws_events: &broadcast::Sender<WorkspaceChanged>,
-) -> Result<HandlerOutput> {
-    use sot_protocol::{WorkspaceCreateReq, WorkspaceCreateRes};
-    // ADR 0023 §3 daemon-boot trigger — read off the raw payload (it is not a
-    // `WorkspaceCreateReq` struct field: adding one would force the frozen FE's
-    // struct literal to set it). serde ignores it on the typed deserialize below.
-    let boot = payload_json
-        .get("boot")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let req: WorkspaceCreateReq =
-        serde_json::from_value(payload_json).context("workspace.create payload")?;
-    tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
-
-    let project_root = std::path::PathBuf::from(&req.project_root);
-    if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
-        return Ok(out);
-    }
-
+/// The agent name, agent kind and autostart flag, and the runtime the row will use.
+fn resolve_create_agent(req_id: u64, req: &sot_protocol::WorkspaceCreateReq)
+    -> std::result::Result<(String, bool, String), HandlerOutput> {
     // Name validation (security review): `agent_name` is persisted and later
     // spliced RAW (no quoting) into a shell command string by
     // `pty::boot_wrapper_command` (`export SOT_COMM_NAME={agent_name}; …`).
@@ -185,7 +164,7 @@ pub async fn handle_workspace_create(
             ),
             "code": "bad_agent_name",
         });
-        return Ok(vec![(
+        return Err(vec![(
             Frame::res(req_id, op::WORKSPACE_CREATE, payload),
             None,
         )]);
@@ -204,7 +183,7 @@ pub async fn handle_workspace_create(
                     "error": format!("unknown agent kind '{other}' (want claude | codex | none)"),
                     "code": "bad_agent",
                 });
-                return Ok(vec![(
+                return Err(vec![(
                     Frame::res(req_id, op::WORKSPACE_CREATE, payload),
                     None,
                 )]);
@@ -232,11 +211,42 @@ pub async fn handle_workspace_create(
                 "error": format!("unknown runtime {other:?} (want \"capsule\" or \"\")"),
                 "code": "bad_runtime",
             });
-            return Ok(vec![(
+            return Err(vec![(
                 Frame::res(req_id, op::WORKSPACE_CREATE, payload),
                 None,
             )]);
         }
+    };
+    Ok((agent_kind, autostart, runtime))
+}
+
+pub async fn handle_workspace_create(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+    ws_events: &broadcast::Sender<WorkspaceChanged>,
+) -> Result<HandlerOutput> {
+    use sot_protocol::{WorkspaceCreateReq, WorkspaceCreateRes};
+    // ADR 0023 §3 daemon-boot trigger — read off the raw payload (it is not a
+    // `WorkspaceCreateReq` struct field: adding one would force the frozen FE's
+    // struct literal to set it). serde ignores it on the typed deserialize below.
+    let boot = payload_json
+        .get("boot")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let req: WorkspaceCreateReq =
+        serde_json::from_value(payload_json).context("workspace.create payload")?;
+    tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
+
+    let project_root = std::path::PathBuf::from(&req.project_root);
+    if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
+        return Ok(out);
+    }
+
+    let (agent_kind, autostart, runtime) = match resolve_create_agent(req_id, &req) {
+        Ok(agent) => agent,
+        Err(out) => return Ok(out),
     };
     // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
     // state mutation, whenever the resolved runtime is "capsule" (every
