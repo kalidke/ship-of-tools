@@ -32,4 +32,6 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - Every endpoint leaves through `_sot_emit_endpoint`.
 - A value that may start with `/` goes through `sot_jq_rawfile`, never `jq --arg`.
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity).
+- A self file's host part comes only from `sot_raw_host` (raw `hostname -s`, case kept, `SOT_COMM_TEST_HOST` first), never
+  `sot_host`.
 - bash 3.2 and git-bash.

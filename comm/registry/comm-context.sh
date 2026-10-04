@@ -27,11 +27,7 @@ elif sot_require_agent >/dev/null 2>&1; then ensure_home; fi
 # hostname is longer than a dev box's. Pinning through this seam removes
 # the dependency entirely, on both the scripts' side and the test's own
 # host-3. Unset in normal use.
-if [ -n "${SOT_COMM_TEST_HOST:-}" ]; then
-    HOST="$SOT_COMM_TEST_HOST"
-else
-    HOST="$(hostname -s 2>/dev/null || hostname)"
-fi
+sot_raw_host HOST
 
 # The workspace row this shell runs in, stamped into the capsule leg's env
 # by the daemon; empty in a bare shell. It keys the self-file slot.

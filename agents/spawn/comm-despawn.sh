@@ -49,12 +49,8 @@ if [ "$reg_rc" -eq 0 ]; then
     AGENT_WSID="$(printf '%s' "$ROW" | sot_jq -r '.workspace_id // ""' 2>/dev/null || true)"
     ROW_HOST="$(printf '%s' "$ROW" | sot_jq -r '.host // ""' 2>/dev/null || true)"
 fi
-# The host part of a self-file name, by the expression comm-context.sh uses.
-if [ -n "${SOT_COMM_TEST_HOST:-}" ]; then
-    LOCAL_HOST="$SOT_COMM_TEST_HOST"
-else
-    LOCAL_HOST="$(hostname -s 2>/dev/null || hostname)"
-fi
+# The host part of a self-file name, by the rule comm-context.sh uses.
+sot_raw_host LOCAL_HOST
 
 # WHO names no workspace: refuse loudly, having changed nothing. The
 # comm-leave hint is printed only when a successful workspace.list proved the

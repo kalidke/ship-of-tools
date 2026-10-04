@@ -96,6 +96,20 @@ sot_write_self_file() {
     return 0
 }
 
+# sot_raw_host VAR — set VAR to the host part of a self file's name: raw
+# `hostname -s`, case kept, $SOT_COMM_TEST_HOST first when set. Not sot_host.
+sot_raw_host() {
+    if [ -n "${SOT_COMM_TEST_HOST:-}" ]; then
+        printf -v "$1" '%s' "$SOT_COMM_TEST_HOST"
+        return 0
+    fi
+    local _sot_rh _sot_rc
+    _sot_rh="$(hostname -s 2>/dev/null || hostname)"
+    _sot_rc=$?
+    printf -v "$1" '%s' "$_sot_rh"
+    return "$_sot_rc"
+}
+
 # sot_capsule_workspace_id — print the row id THIS SHELL'S IDENTITY names,
 # or print nothing and return 1 when it names none. The identity is the
 # pinned $SOT_COMM_SELF_FILE, which comm-context.sh names
