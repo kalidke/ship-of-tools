@@ -697,3 +697,20 @@ mod clear_comm_unread_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod unix_now_secs_tests {
+    use super::unix_now_secs;
+
+    fn wall_secs() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+    }
+
+    #[test]
+    fn unix_now_secs_is_the_wall_clock_in_whole_seconds() {
+        let before = wall_secs();
+        let got = unix_now_secs();
+        let after = wall_secs();
+        assert!(before <= got && got <= after, "{before} <= {got} <= {after}");
+    }
+}
