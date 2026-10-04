@@ -40,6 +40,7 @@ use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinSet;
 
 pub(super) mod conn;
+mod dispatch;
 mod events;
 pub(super) mod hello;
 pub(crate) mod pipe;
