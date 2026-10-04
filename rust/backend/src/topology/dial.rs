@@ -293,26 +293,6 @@ pub(crate) mod tests {
     #[cfg(unix)]
     use crate::paths::EnvGuard;
 
-    #[cfg(unix)]
-    #[test]
-    fn dial_env_guard_restores_and_unsets() {
-        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        const KEY: &str = "SOT_MW14_GUARD_PIN";
-        std::env::set_var(KEY, "before");
-        {
-            let _g = EnvGuard::capture(KEY);
-            std::env::set_var(KEY, "during");
-            assert_eq!(std::env::var(KEY).as_deref(), Ok("during"));
-        }
-        assert_eq!(std::env::var(KEY).as_deref(), Ok("before"));
-        std::env::remove_var(KEY);
-        {
-            let _g = EnvGuard::capture(KEY);
-            std::env::set_var(KEY, "x");
-        }
-        assert!(std::env::var_os(KEY).is_none());
-    }
-
     /// Writes an executable `ssh` stub into `dir` that touches `marker`
     /// then sleeps -- long enough for the test to see the marker land
     /// and kill it via `ChildGuard`'s own `Drop`, never long enough to

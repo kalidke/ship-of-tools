@@ -584,7 +584,8 @@ mod tests {
     /// or blank, the trimmed value otherwise; the prior value is restored.
     #[test]
     fn repo_from_env_trims_and_defaults() {
-        let prior = std::env::var("SOT_UPDATE_REPO").ok();
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = crate::paths::EnvGuard::capture("SOT_UPDATE_REPO");
         std::env::remove_var("SOT_UPDATE_REPO");
         assert_eq!(repo_from_env(), DEFAULT_REPO);
         std::env::set_var("SOT_UPDATE_REPO", "");
@@ -593,10 +594,6 @@ mod tests {
         assert_eq!(repo_from_env(), DEFAULT_REPO);
         std::env::set_var("SOT_UPDATE_REPO", "  fork/x  ");
         assert_eq!(repo_from_env(), "fork/x");
-        match prior {
-            Some(v) => std::env::set_var("SOT_UPDATE_REPO", v),
-            None => std::env::remove_var("SOT_UPDATE_REPO"),
-        }
     }
 
     /// An update's exit is a restart (75), never a requested shutdown (0),

@@ -20,10 +20,6 @@ comm/bin-folders.txt text eol=lf
 # CRLF checkout on Windows fails every golden test there.
 *.golden text eol=lf
 
-# The lock-identity fixtures are read line by line by a shell suite, whose
-# fields would end in a CR on a CRLF checkout.
-comm/tests/fixtures/inbox-lock-identity/** text eol=lf
-
 # The vendored vt100 fixture corpus is recorded terminal traffic: CR, LF and
 # raw escape bytes are DATA, not line endings. Left to git's own judgement a
 # Windows checkout would rewrite them and the parser tests would fail there

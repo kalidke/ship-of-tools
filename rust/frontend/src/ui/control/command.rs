@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn file_channel_array_form_error_texts_are_pinned() {
-        let text = |json: &str| serde_json::from_str::<FeCommand>(json).unwrap_err().to_string();
+        let text = |json: &str| serde_json::from_slice::<FeCommand>(json.as_bytes()).unwrap_err().to_string();
         assert_eq!(
             text(r#"["reveal","ws"]"#),
             "invalid length 1, expected struct variant FeCommand::Reveal with 5 elements"

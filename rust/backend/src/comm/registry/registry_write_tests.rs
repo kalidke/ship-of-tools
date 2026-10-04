@@ -76,12 +76,18 @@ mod prune_write_tests {
     fn a_failed_temp_write_prunes_nothing() {
         let _guard = guarded();
         let (dir, registry_path, seeded) = seed("tmpfail");
+        // On Unix a dangling symlink makes only the create fail (ENOENT): a
+        // write that went on to rename would leave the link at the registry.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("missing/x"), dir.join("registry.json.tmp")).unwrap();
+        #[cfg(not(unix))]
         std::fs::create_dir(dir.join("registry.json.tmp")).unwrap();
 
         let removed = remove_comm_agents_for_workspace("", "ws-1", "hostA");
         assert!(removed.is_empty());
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
+        let _ = std::fs::remove_file(dir.join("registry.json.tmp"));
         let _ = std::fs::remove_dir(dir.join("registry.json.tmp"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -174,11 +180,17 @@ mod clear_write_tests {
     fn a_failed_temp_write_clears_nothing() {
         let _guard = guarded();
         let (dir, registry_path, seeded, ws) = seed("tmpfail");
+        // On Unix a dangling symlink makes only the create fail (ENOENT): a
+        // write that went on to rename would leave the link at the registry.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("missing/x"), dir.join("registry.json.tmp")).unwrap();
+        #[cfg(not(unix))]
         std::fs::create_dir(dir.join("registry.json.tmp")).unwrap();
 
         clear_comm_unread(&ws, "host-4");
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
+        let _ = std::fs::remove_file(dir.join("registry.json.tmp"));
         let _ = std::fs::remove_dir(dir.join("registry.json.tmp"));
         let _ = std::fs::remove_dir_all(&dir);
     }
