@@ -6,10 +6,6 @@
 //
 // G5 (Per-OS shell selection): `resolve_shell` picks the best available shell
 // on the current platform, honouring a user override from settings.
-//
-// The public API is marked `#[allow(dead_code)]` because the caller (the GPU
-// render loop / pane manager) is wired in a separate step. Warnings on these
-// items would be noise before that wiring lands.
 
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +24,6 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 /// `CommandBuilder`. On Unix, typical args are empty (the shell is its own
 /// interactive mode). On Windows, `/K` or similar may be injected later by
 /// the caller if needed — the resolver itself keeps args minimal.
-#[allow(dead_code)]
 pub struct ResolvedShell {
     pub program: String,
     pub args: Vec<String>,
@@ -47,7 +42,6 @@ pub struct ResolvedShell {
 /// The fallback chain on Windows and the `$SHELL` env var on Unix each
 /// guarantee a non-empty `program`; the final `/bin/sh` / `cmd.exe`
 /// candidates are always present on their respective platforms.
-#[allow(dead_code)]
 pub fn resolve_shell(override_: Option<&str>) -> ResolvedShell {
     if let Some(s) = override_ {
         let trimmed = s.trim();
@@ -131,7 +125,6 @@ fn program_on_path(name: &str) -> bool {
 /// 4. Call `send_input` to forward keystrokes to the shell's stdin.
 /// 5. Call `resize` when the pane rect changes.
 /// 6. Poll `is_dead()` to detect shell exit.
-#[allow(dead_code)]
 pub struct LocalTerminal {
     /// Owns the PTY master so we can resize and keep the slave alive.
     /// Behind a `Box` because `MasterPty` is not `Sized`.
@@ -152,7 +145,6 @@ pub struct LocalTerminal {
     dead: Arc<AtomicBool>,
     /// Join handle for the reader thread (held so the thread is not
     /// detached; we never explicitly join but the handle keeps it named).
-    #[allow(dead_code)]
     _reader_thread: thread::JoinHandle<()>,
 }
 
@@ -166,7 +158,6 @@ impl LocalTerminal {
     ///
     /// `wake` is called by the reader thread after each chunk arrives so
     /// the UI event loop can schedule a redraw without polling.
-    #[allow(dead_code)]
     pub fn spawn(
         shell: &ResolvedShell,
         cols: u16,
@@ -248,7 +239,6 @@ impl LocalTerminal {
     /// Drain all pending byte chunks from the reader channel into the vt100
     /// parser (non-blocking). Returns `true` if at least one chunk was
     /// processed — the caller should schedule a repaint.
-    #[allow(dead_code)]
     pub fn pump(&mut self) -> bool {
         let mut processed = false;
         loop {
@@ -312,14 +302,12 @@ impl LocalTerminal {
     }
 
     /// Current parsed terminal screen. Pass to the renderer.
-    #[allow(dead_code)]
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
 
     /// Mutable screen access — used to drive `set_scrollback` for the
     /// drawer's scrollback offset before the immutable draw borrow.
-    #[allow(dead_code)]
     pub fn screen_mut(&mut self) -> &mut vt100::Screen {
         self.parser.screen_mut()
     }
@@ -328,7 +316,6 @@ impl LocalTerminal {
     /// htop). The drawer forwards wheel events to such apps as SGR mouse
     /// sequences instead of scrolling our own ring (which they bypass with
     /// cursor-positioned redraws). Plain shells leave this `false`.
-    #[allow(dead_code)]
     pub fn mouse_tracking_on(&self) -> bool {
         !matches!(
             self.parser.screen().mouse_protocol_mode(),
@@ -337,7 +324,6 @@ impl LocalTerminal {
     }
 
     /// Forward raw keystroke bytes to the shell's stdin.
-    #[allow(dead_code)]
     pub fn send_input(&mut self, bytes: &[u8]) {
         // Best-effort: log on error but don't propagate (the render loop
         // is not in a position to handle a write error gracefully, and
@@ -351,7 +337,6 @@ impl LocalTerminal {
 
     /// Resize both the PTY (sends SIGWINCH to the child) and the vt100
     /// parser so their grids stay in sync.
-    #[allow(dead_code)]
     pub fn resize(&mut self, cols: u16, rows: u16) {
         // See `spawn`: the PTY and the emulator must be told the same size.
         let rows = rows.max(2);
@@ -371,7 +356,6 @@ impl LocalTerminal {
     /// Checked by the pane manager to show a "Process exited" overlay.
     /// Polls the child handle (non-blocking) in addition to the reader
     /// thread's EOF/error flag.
-    #[allow(dead_code)]
     pub fn is_dead(&mut self) -> bool {
         if self.dead.load(Ordering::Relaxed) {
             return true;
