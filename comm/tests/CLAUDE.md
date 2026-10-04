@@ -37,8 +37,6 @@ suite. Part of messaging; charter: comm/CLAUDE.md.
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
 - `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire and a hit files locally, never both
-- `test-sot-fe-reauth.sh`: `sot-fe reauth` moves only the row it runs in
-- `test-sot-fe-version.sh`: `sot-fe version` asks the daemon what build it is
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
 ## Start here

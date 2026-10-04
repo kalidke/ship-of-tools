@@ -1,3 +1,4 @@
+agents/sot-fe
 agents/spawn
 agents/worktree
 comm/core/scripts

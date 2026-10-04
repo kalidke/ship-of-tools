@@ -240,9 +240,6 @@ jobs:
           # 10 s bound, so a call that ends at once costs 50 ms, not a whole
           # second. Timed against a stub, hermetic, about two seconds.
           bash test-heartbeat-ctx-wait.sh
-          bash test-sot-fe-version.sh
-          # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
-          bash test-sot-fe-reauth.sh
           # A session may declare its handle only into the row its own
           # identity names. Until this suite ran here, the one thing that
           # proves it was a suite nobody ran but by hand -- and the defect it
@@ -274,6 +271,9 @@ jobs:
           bash test-spawn-remote-no-local-row.sh
           bash test-spawn-capsule-workspace.sh
           bash test-despawn-resolve.sh
+          bash test-sot-fe-version.sh
+          # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
+          bash test-sot-fe-reauth.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
