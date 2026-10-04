@@ -169,7 +169,6 @@ where
                     buffered,
                     tx,
                     f,
-                    None,
                     &workspaces,
                 )
                 .await;

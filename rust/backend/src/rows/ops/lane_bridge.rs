@@ -192,15 +192,13 @@ fn dial_and_authenticate(
 /// Handle a connection whose first frame was `lane.connect` (ADR 0045
 /// decision 2). `rx` is the buffered reader that already consumed that
 /// first frame; `tx` is the write half; `frame` is the parsed handshake
-/// frame; `expected_token` is the daemon's configured token (if any);
-/// `workspaces` is the registry `lane.connect` resolves `target`
+/// frame; `workspaces` is the registry `lane.connect` resolves `target`
 /// against. Returns when the pipe closes; errors are logged by the
 /// caller (mirrors `proxy::handle_proxy_connect`).
 pub(crate) async fn handle_lane_connect<R, W>(
     rx: R,
     mut tx: W,
     frame: Frame,
-    expected_token: Option<&str>,
     workspaces: &Workspaces,
 ) -> Result<()>
 where
@@ -214,19 +212,6 @@ where
             return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "bad_request", &format!("{e}")).await;
         }
     };
-
-    // Auth mirrors `proxy.connect`'s own gate (`proxy.rs`'s
-    // `handle_proxy_connect`): honored only when the daemon has a token
-    // configured, and BEFORE any row lookup; the normal local Unix-socket
-    // transport has none — filesystem permissions on the socket are the
-    // trust boundary.
-    if let Some(expected) = expected_token {
-        let presented = req.token.clone().unwrap_or_default();
-        if !crate::handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
-            tracing::warn!(target = %req.target, lane = %req.lane, "lane.connect rejected: bad token");
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "unauthenticated", "bad or missing token").await;
-        }
-    }
 
     let lane = match (req.lane.as_str(), req.voyage_id.clone()) {
         ("supervisor", _) => Lane::Supervisor,
@@ -360,99 +345,4 @@ where
     let owned = conn.into_handle();
     let upstream = unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(owned.into_raw_handle())? };
     crate::proxy::pipe_bidirectional(rx, tx, upstream, what).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::workspaces::Workspace;
-
-    /// A registry with exactly one CAPSULE row, named `session_name` —
-    /// no real state dir, no real supervisor: these tests never reach
-    /// past the token gate (a known target with the WRONG token still
-    /// refuses), so nothing here needs to dial anything.
-    fn workspaces_with_one_capsule_row(session_name: &str) -> Workspaces {
-        let workspaces = Workspaces::default();
-        let mut ws = Workspace::from_label("token-gate-test", std::env::temp_dir(), false, "none".to_string(), String::new(), String::new());
-        ws.runtime = "capsule".to_string();
-        ws.session_name = session_name.to_string();
-        workspaces.insert(ws);
-        workspaces
-    }
-
-    fn connect_frame(target: &str, token: Option<&str>) -> Frame {
-        let mut payload = serde_json::json!({ "target": target, "lane": "supervisor" });
-        if let Some(t) = token {
-            payload["token"] = serde_json::json!(t);
-        }
-        Frame::req(1, op::LANE_CONNECT, payload)
-    }
-
-    async fn read_res<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> serde_json::Value {
-        let mut buf = codec::buffered(r);
-        let (f, _) = codec::read_frame(&mut buf).await.unwrap();
-        f.payload
-    }
-
-    /// Codex review SHOULD-FIX (2026-09-11): the printed-SKIPPED
-    /// integration test (no `Env` mechanism ever starts a real `sotd`
-    /// with a token) is replaced by calling the HANDLER directly with
-    /// `expected_token: Some(..)` configured — an existing AND an
-    /// unknown target, each with a missing and a wrong token, all four
-    /// refuse `unauthenticated` — proving the gate runs BEFORE any row
-    /// lookup (the unknown-target cases never surface `unknown_workspace`
-    /// instead). A fifth case (existing target, the RIGHT token) proves
-    /// the gate is not simply unconditional: it passes through to the
-    /// dial attempt, which this in-memory `Workspaces` (no real state
-    /// dir) then fails with `dial_failed` — any code OTHER than
-    /// `unauthenticated` is enough to prove the token was accepted.
-    #[tokio::test]
-    async fn token_gate_runs_before_any_row_lookup() {
-        let workspaces = workspaces_with_one_capsule_row("sot-be-known-row");
-
-        for target in ["sot-be-known-row", "sot-be-no-such-row"] {
-            for token in [None, Some("wrong")] {
-                let (client, daemon) = tokio::io::duplex(4096);
-                let (dr, dw) = tokio::io::split(daemon);
-                let (mut cr, _cw) = tokio::io::split(client);
-                let daemon_fut =
-                    handle_lane_connect(codec::buffered(dr), dw, connect_frame(target, token), Some("secret"), &workspaces);
-                let client_fut = async {
-                    let res = read_res(&mut cr).await;
-                    assert_eq!(
-                        res.get("code").and_then(|v| v.as_str()),
-                        Some("unauthenticated"),
-                        "target {target:?} token {token:?}: {res:?}"
-                    );
-                };
-                let (dres, _) = tokio::join!(daemon_fut, client_fut);
-                dres.unwrap();
-            }
-        }
-
-        // The right token passes the gate: some code OTHER than
-        // `unauthenticated` follows (this in-memory registry has no
-        // real state dir to dial, so `dial_failed` is what it settles
-        // on — the point is only that it is not the auth refusal).
-        let (client, daemon) = tokio::io::duplex(4096);
-        let (dr, dw) = tokio::io::split(daemon);
-        let (mut cr, _cw) = tokio::io::split(client);
-        let daemon_fut = handle_lane_connect(
-            codec::buffered(dr),
-            dw,
-            connect_frame("sot-be-known-row", Some("secret")),
-            Some("secret"),
-            &workspaces,
-        );
-        let client_fut = async {
-            let res = read_res(&mut cr).await;
-            assert_ne!(
-                res.get("code").and_then(|v| v.as_str()),
-                Some("unauthenticated"),
-                "the right token must pass the gate: {res:?}"
-            );
-        };
-        let (dres, _) = tokio::join!(daemon_fut, client_fut);
-        dres.unwrap();
-    }
 }
