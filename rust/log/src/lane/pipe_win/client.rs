@@ -63,7 +63,7 @@ pub(super) fn map_peer_auth_outcome(outcome: crate::identity::challenge::PeerAut
 /// [`TransportError::Undetermined`] — never a silent retry. A caller that
 /// needs the FULL proof (mgmt lane; the probe classifier) runs
 /// `challenge_win::challenge` itself on top of this — see
-/// `probe_win::RealProbeOps` for exactly that composition.
+/// `supervisor::probe::win::RealProbeOps` for exactly that composition.
 ///
 /// Retries `CreateFileW` (bounded, 2s total) on `ERROR_PIPE_BUSY` ONLY
 /// (all instances currently connected — waits on `WaitNamedPipeW`
@@ -81,7 +81,7 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError
 /// The raw connect, with NO authentication — every step-5 client must go
 /// through [`connect_voyage_pipe`] instead. `pub(crate)`, and MUST STAY
 /// `pub(crate)` (U1a Codex round-1, Blocker 2): the only in-crate consumer
-/// is `probe_win::RealProbeOps::connect`, which is itself `pub(crate)` for
+/// is `supervisor::probe::win::RealProbeOps::connect`, which is itself `pub(crate)` for
 /// exactly this reason — an unchallenged `PipeClient` reachable through a
 /// PUBLIC type would be a public path to raw pipe I/O on an unauthenticated
 /// connection, defeating this whole module's own enforcement. See
@@ -110,7 +110,7 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 /// supervisor lane's security is "MUTUAL", not the weaker SID-only proof
 /// [`connect_voyage_pipe`] settles for), so unlike that function this one
 /// intentionally has no `_unchallenged`-free sibling here — the caller
-/// composes the full challenge itself, exactly as `probe_win::RealProbeOps`
+/// composes the full challenge itself, exactly as `supervisor::probe::win::RealProbeOps`
 /// does for the mgmt lane's own unchallenged connect.
 pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, TransportError> {
     connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))

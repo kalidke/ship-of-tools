@@ -161,7 +161,7 @@ fn init_process_globals(config: &SuperviseConfig) -> crate::Result<()> {
     // instead, a pid that vanishes before it is read is the same hole by
     // another road. Unix-wide for that reason, not Linux-specific: this
     // process OWNS the disposition it depends on, the same line
-    // `producer_pty`'s own `spawn` already draws for its forked child.
+    // `capsule::producer::pty`'s own `spawn` already draws for its forked child.
     #[cfg(unix)]
     {
         if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_DFL) } == libc::SIG_ERR {

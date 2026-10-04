@@ -31,7 +31,7 @@
 //! its `Receiver`) exits — without any call site needing to remember to
 //! release it by hand.
 //!
-//! `fe_client_io::FeAttachClient` is the thin wrapper: it owns the
+//! `attach_client::client::FeAttachClient` is the thin wrapper: it owns the
 //! `vt100_ctt::Parser` and `pump()`'s UI bookkeeping, subscribing an
 //! `AttachWorker` via a sink closure built from its own mpsc channel +
 //! wake, exactly as the pre-extraction module's `run_worker` was spawned
@@ -190,7 +190,7 @@ pub enum WorkerEvent {
 /// 0041), exposed as an observable a caller (the headless daemon client)
 /// can poll — unchanged from the pre-extraction module's own type,
 /// moved here since it names a worker-level (not rendering-level)
-/// observable; `fe_client_io` re-exports it at its own path so existing
+/// observable; `attach_client::client` re-exports it at its own path so existing
 /// callers (`capsule_workspace.rs`, `tests/fe_client/`) are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputOutcome {
@@ -222,9 +222,9 @@ impl std::error::Error for IngressRefused {}
 
 /// Default bound for [`AttachWorker::send_input`]'s own ingress
 /// reservation — a memory bound on "commands enqueued, not yet popped
-/// by the worker's own loop," generous relative to [`fe_client::
+/// by the worker's own loop," generous relative to [`crate::attach_client::rules::
 /// TAKE_QUEUE_CAP`] (8 KiB: several pastes' worth of headroom) without
-/// being unbounded. `fe_client_io::FeAttachClient` uses this constant;
+/// being unbounded. `attach_client::client::FeAttachClient` uses this constant;
 /// a caller free to choose a tighter or looser bound may construct an
 /// `AttachWorker` with its own.
 pub const DEFAULT_INGRESS_BOUND_BYTES: usize = 64 * 1024;
@@ -266,7 +266,7 @@ impl<E: Endpoint> AttachWorker<E> {
     /// synchronously, ON the worker thread, for every [`WorkerEvent`]
     /// this worker ever produces; a caller wanting cross-thread delivery
     /// (the rendering client's own `pump()`/mpsc shape) builds that INTO
-    /// its own `sink` closure, exactly as `fe_client_io::FeAttachClient`
+    /// its own `sink` closure, exactly as `attach_client::client::FeAttachClient`
     /// does. `recorded_bytes`/`last_input_outcome` are the SAME shared
     /// observables the pre-extraction worker wrote directly — this
     /// worker still writes them directly; they are not part of
@@ -342,7 +342,7 @@ impl<E: Endpoint> AttachWorker<E> {
     /// A sink that consumes [`WorkerEvent::Output`] bytes calls this with
     /// however many it just consumed, releasing the episode reader's own
     /// backpressure by that much — the ONLY way [`QueuedBytes`] ever goes
-    /// down (see that type's own doc). `fe_client_io::FeAttachClient::
+    /// down (see that type's own doc). `attach_client::client::FeAttachClient::
     /// pump` calls this exactly where the pre-extraction module's own
     /// `queued_bytes.sub` call was.
     pub fn ack_output_consumed(&self, n: usize) {
@@ -439,8 +439,8 @@ impl<E: Endpoint> AttachWorker<E> {
         true
     }
 
-    /// A worker handle with no worker thread behind it — `fe_client_io`'s
-    /// own unit tests build an [`fe_client_io::FeAttachClient`] by struct
+    /// A worker handle with no worker thread behind it — `attach_client::client`'s
+    /// own unit tests build an [`crate::attach_client::client::FeAttachClient`] by struct
     /// literal (this crate's child-module-privacy pattern) and need SOME
     /// value for this field; nothing here is ever sent to. `pub(crate)`:
     /// test-only, never a real caller's construction path.

@@ -6,7 +6,7 @@
 //! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor/`
 //! already proves the supervisor's OWN lifecycle wiring across a real
 //! process boundary; what THIS file adds is proof the CLIENT's own six
-//! rulings (`fe_client`'s pure state machines) hold when driven by a real
+//! rulings (`attach_client::rules`'s pure state machines) hold when driven by a real
 //! reconnect-classified episode loop against real named pipes/Unix
 //! domain sockets, not merely scripted inputs.
 //!
@@ -23,7 +23,7 @@
 //! never a sleep-and-hope. The reconnect episode's own backoff (250ms
 //! doubling to 4s) means real time passes during the reconnect test —
 //! this file does not attempt to inject a clock into a live worker
-//! thread, unlike `fe_client`'s own unit tests.
+//! thread, unlike `attach_client::rules`'s own unit tests.
 
 use sot_log::lane::client::{Endpoint, PlatformEndpoint};
 use sot_log::attach_client::client::{FeAttachClient, InputOutcome};

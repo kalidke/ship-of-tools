@@ -4,7 +4,7 @@
 //! `challenge_win::ChallengedProcess`/`challenge_unix::ChallengedProcess`
 //! directly; this module only adds the trait vocabulary and the
 //! delegating `impl`s that prove each concrete type already satisfies
-//! it. Generic consumers (`fe_client_io`, `supervisor`) are LU3b/LU3c's
+//! it. Generic consumers (`attach_client::client`, `supervisor`) are LU3b/LU3c's
 //! job, not this lane's.
 //!
 //! Ungated, like `challenge.rs`/`transport.rs`: this is the CONTRACT, not
@@ -101,7 +101,7 @@ pub trait PeerIdentity: Send {
     fn created(&self) -> u64;
 }
 
-/// The rest of what a step-6 supervisor (and, now, `fe_client_io`'s health
+/// The rest of what a step-6 supervisor (and, now, `attach_client::client`'s health
 /// path) needs beyond bare identity — split from [`PeerIdentity`] so a
 /// consumer that only reads pid/created (the bridge's `BridgedPeer`, B4a)
 /// is not forced to implement re-verification or termination it has no
@@ -176,7 +176,7 @@ pub trait Endpoint {
 /// half is chosen inside `socket_unix` by its own `challenge_os` alias.
 /// No other platform has an endpoint yet (a generic build for one still
 /// needs a concrete `Endpoint` to monomorphize against, which is exactly
-/// what does not exist off these three today — see `fe_client_io`'s own
+/// what does not exist off these three today — see `attach_client::client`'s own
 /// top-of-module `cfg`).
 #[cfg(windows)]
 pub type PlatformEndpoint = crate::lane::pipe_win::PipeEndpoint;

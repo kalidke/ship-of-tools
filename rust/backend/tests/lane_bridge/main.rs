@@ -37,7 +37,7 @@ use tokio::net::{TcpListener, UnixStream};
 /// THIS binary would race it exactly the same way.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// `fe_client_io::CHECKPOINT_TRANSFER_BUDGET` is private (12 checkpoint
+/// `attach_client::client::CHECKPOINT_TRANSFER_BUDGET` is private (12 checkpoint
 /// chunks x its own private 5s per-frame `STATUS_BUDGET`) — reconstructed
 /// here from the one piece that IS `pub`, `wire::CHECKPOINT_CHUNKS_AT_
 /// MAX_PAYLOAD`, rather than a second, drifting magic number.

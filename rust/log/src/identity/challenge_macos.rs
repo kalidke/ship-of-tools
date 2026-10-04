@@ -599,7 +599,7 @@ pub fn challenge(
         // THIS caller's reading of `ESRCH` (`Ok(None)`): the peer is
         // nobody's child here, so nothing pins its number and an
         // unattachable pid proves only that it cannot be watched --
-        // "unprovable", never "it exited". (`probe_macos`, whose child
+        // "unprovable", never "it exited". (`supervisor::probe::macos`, whose child
         // IS pinned by its own zombie, reads the same errno as proof of
         // exit; see [`watch_exit`].)
         Ok(None) => return ChallengeOutcome::Undetermined,

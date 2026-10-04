@@ -282,7 +282,7 @@ jobs:
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
   # pre-24H2 blocking close the ConPTY drain ordering (`Pseudoconsole::close_pty`
-  # in conpty.rs) is pinned against. `windows-2022` is the older image that
+  # in capsule/producer/conpty/mod.rs) is pinned against. `windows-2022` is the older image that
   # still blocks there. Deliberately its own tiny job rather than added to
   # the main matrix above: it exists ONLY to catch that one behavioral gap,
   # not to duplicate the full workspace build+test on a second Windows image.

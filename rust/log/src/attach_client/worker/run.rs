@@ -290,7 +290,7 @@ pub(super) fn pause_for_link<E: Endpoint>(
 pub(super) fn iso_now() -> String {
     // No chrono dependency in this crate; a plain RFC-3339-shaped UTC
     // stamp built from `SystemTime` is sufficient here since this string
-    // is carried opaquely (fe_client::build_fe_down_marker never parses
+    // is carried opaquely (attach_client::rules::build_fe_down_marker never parses
     // it) and only ever compared/read by a human or a future durable
     // reader that already tolerates the daemon's own ISO-8601 strings.
     let now = std::time::SystemTime::now()

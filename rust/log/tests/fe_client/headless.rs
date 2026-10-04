@@ -276,7 +276,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
 
     // 3. driver_a's NEXT input: its own worker sees `input_refused_stale`,
     // re-takes automatically (ruling (c)), and this keystroke still lands
-    // — entirely inside fe_client_io, invisible to this test except for
+    // — entirely inside attach_client::client, invisible to this test except for
     // the eventual echo.
     driver_a.send_input(b"echo A2RETAKE\r\n");
     assert!(

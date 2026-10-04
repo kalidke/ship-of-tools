@@ -125,7 +125,7 @@ pub fn preflight_volume(dir: &std::path::Path) -> crate::Result<()> {
 /// L1-unix LU3b: moved here from `supervisor/` (a pure hash of a path,
 /// with no OS-facing mechanism of its own) — the supervisor lane's own
 /// per-state-dir pipe/socket name, shared by every caller that connects
-/// to it: `fe_client_io`'s worker, `supervisor_client`'s `connect`, the
+/// to it: `attach_client::client`'s worker, `supervisor_client`'s `connect`, the
 /// authority's own `PipeServer::bind_supervisor`/`SocketServer::
 /// bind_supervisor` call in `supervisor/`, and both platforms' real-
 /// process integration tests. Stable for the SAME path (canonicalized

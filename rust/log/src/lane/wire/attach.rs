@@ -177,7 +177,7 @@ pub enum Negotiated {
 /// existing oldest-first-fallback shape a client already retries
 /// through: a future, still-newer client refused here learns to try the
 /// next older version down. ADR 0046 decision 3 (lane B3b1) is
-/// CAPSULE-side only: `attach_worker::attach_lane_hello`'s own client
+/// CAPSULE-side only: `attach_client::worker::attach_lane_hello`'s own client
 /// still asks for `ATTACH_PROTO_V2` first today (unchanged by this
 /// lane), falling back to `ATTACH_PROTO_V1` against a pre-scrollback-ring
 /// capsule — v3-first negotiation is a resident worker's job (B3b2),

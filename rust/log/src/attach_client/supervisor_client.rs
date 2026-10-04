@@ -7,7 +7,7 @@
 //! before that lane's extraction) already runs this exact
 //! connect+hello(build identity)+challenge procedure
 //! (`connect_and_challenge`, moved HERE from `supervisor/` this lane)
-//! and its own `status` round trip (`attach_worker::supervisor_status`,
+//! and its own `status` round trip (`attach_client::worker::supervisor_status`,
 //! still private there — right, since the attach worker's own six
 //! rulings own everything downstream of it there). This
 //! module is the SAME procedure's production entry point for a caller
@@ -208,7 +208,7 @@ pub fn stop(state_dir: &Path) -> crate::Result<()> {
 /// Connect, challenge, and run [`run_end_run_and_wait`] — the SAME
 /// end_run+heartbeat-query loop `attach_client/worker/quit.rs`'s own `run_quit` uses
 /// (ADR 0042 L1a, Codex review finding 4), bounded by that function's own
-/// ADR-pinned `fe_client::QUIT_CUTOFF` (90 s), never a daemon-invented
+/// ADR-pinned `attach_client::rules::QUIT_CUTOFF` (90 s), never a daemon-invented
 /// budget. `voyage` MUST be the voyage the caller most recently observed
 /// via [`query_status`] — lifecycle commands are voyage-fenced (ADR 0041
 /// Lifecycle), so a stale value is safely refused rather than mutated

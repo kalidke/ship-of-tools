@@ -158,8 +158,8 @@ pub struct FeAttachClient<
     /// geometry as [`Self::pane_size`] instead of reflowing the restored
     /// screen TO `pane_size` (there is no real viewport size to reflow to).
     /// The take transaction's own headless behavior (never sending
-    /// `Resize`) is a separate, independent flag on [`fe_client::
-    /// TakeTransaction`] itself, chosen by `attach_worker::run_worker` at
+    /// `Resize`) is a separate, independent flag on [`crate::attach_client::rules::
+    /// TakeTransaction`] itself, chosen by `attach_client::worker::run_worker` at
     /// construction (private there, so not a linkable path from here) —
     /// this field never reaches that decision directly.
     headless: bool,
@@ -244,7 +244,7 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// attach" rule means `fe_down_last_evidence: None` here is never
     /// observed to matter), no real wake (the caller pumps on its own
     /// clock, not an event loop). The take transaction this spawns is
-    /// [`fe_client::TakeTransaction::new_headless`] — it sends no `Resize`,
+    /// [`crate::attach_client::rules::TakeTransaction::new_headless`] — it sends no `Resize`,
     /// ever.
     pub fn attach_headless(
         endpoint: E,
@@ -525,7 +525,7 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// Records the desired viewport. A WATCHER cannot correct the
     /// geometry until it holds the pen (ruling (b)) — the worker applies
     /// this only once `take_ok` grants the pen (via its OWN `resize`,
-    /// awaited alone — see `fe_client::TakeTransaction::on_take_ok`), or
+    /// awaited alone — see `attach_client::rules::TakeTransaction::on_take_ok`), or
     /// immediately (as an ordinary `resize` request) while already
     /// DRIVING.
     ///

@@ -4,7 +4,7 @@
 //! Import only neutral items (`attach_proto`/`transport`, `std`) — no
 //! producer, no platform `cfg` — so this file is usable unmodified from
 //! `tests/capsule/` (Windows, `ConptyProducer`) and, later,
-//! `tests/e2e_socket/` (Unix, `producer_pty`) alike. `#[path]`-included,
+//! `tests/e2e_socket/` (Unix, `capsule::producer::pty`) alike. `#[path]`-included,
 //! not a crate: see each including file's own `mod` declaration.
 
 use sot_log::lane::attach_proto::ConnId;

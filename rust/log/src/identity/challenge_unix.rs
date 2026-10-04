@@ -476,7 +476,7 @@ impl ChallengedProcess {
     /// via `OwnedFd`'s own `Drop`) — the OWNER reaps, explicitly, only
     /// after it has observed the exit (`wait` returned `true`) and read
     /// everything it wanted from the process. The supervisor owns its own
-    /// legs (spawned via `probe_unix`/`producer_pty`) and calls this once
+    /// legs (spawned via `supervisor::probe::unix`/`capsule::producer::pty`) and calls this once
     /// it is done reading a leg's exit; the daemon owns the supervisors
     /// IT spawned, through `tokio::process::Child::wait` — never through
     /// this method, since a `ChallengedProcess` the daemon holds only

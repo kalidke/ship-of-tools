@@ -69,7 +69,7 @@ fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
 /// instead of the bounded wait it asked for (ADR 0041 U0 round-1 finding
 /// 8). Shared by every bounded Win32 process wait in this crate
 /// (`conpty::PrimaryProcess::wait`, `challenge_win::wait_handle` — used by
-/// both `ChallengedProcess` and `probe_win::SpawnedChild`) so the guard
+/// both `ChallengedProcess` and `supervisor::probe::win::SpawnedChild`) so the guard
 /// exists exactly once, not once per call site.
 #[cfg(windows)]
 pub(crate) fn duration_to_wait_ms(timeout: std::time::Duration) -> u32 {

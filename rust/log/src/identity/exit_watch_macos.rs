@@ -1,5 +1,5 @@
 //! The macOS process-exit death watch: one `kqueue` per handle holding an `EVFILT_PROC`/`NOTE_EXIT` knote.
-//! Shared by the challenged process (`challenge_macos`) and `probe_macos`'s not-yet-challenged child.
+//! Shared by the challenged process (`challenge_macos`) and `supervisor::probe::macos`'s not-yet-challenged child.
 
 #![cfg(target_os = "macos")]
 
@@ -28,7 +28,7 @@ use std::time::Duration;
 /// function deliberately does not decide -- it hands the caller an
 /// `Option` and each call site states its own reading: for a peer we
 /// did not spawn it is "unprovable" ([`challenge()`] returns
-/// `Undetermined`); for `probe_macos`'s own unreaped child the zombie
+/// `Undetermined`); for `supervisor::probe::macos`'s own unreaped child the zombie
 /// pins the number, so it provably means "already exited" and that
 /// handle is built already latched. Same errno, two correct answers,
 /// neither flattened into this mechanism.

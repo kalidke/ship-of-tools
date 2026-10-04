@@ -1,7 +1,7 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! ADR 0046 decision 3 (lane B3a): real cross-process integration tests
 //! for `sot_log::attach_client::worker::AttachWorker` — the transport half
-//! extracted out of `fe_client_io::FeAttachClient`. This is a PURE,
+//! extracted out of `attach_client::client::FeAttachClient`. This is a PURE,
 //! behavior-preserving extraction (see `attach_client/worker/`'s own top
 //! doc): `tests/fe_client/`'s existing 11 real-process tests, run
 //! unchanged against the new wrapper, are the proof of that. This file
@@ -185,7 +185,7 @@ fn end_run_and_wait_verified(conn: &Client, voyage: &str) {
 
 /// Spawns a real [`AttachWorker`] against the supervisor lane named by
 /// `h`, wiring its sink into a plain channel this file polls directly —
-/// the same shape `fe_client_io::FeAttachClient::attach_inner` builds,
+/// the same shape `attach_client::client::FeAttachClient::attach_inner` builds,
 /// minus the parser/UI bookkeeping this file has no need for.
 /// `recorded_bytes`/`last_input_outcome` are the worker's own shared
 /// observables; this file has no use for them beyond satisfying the
@@ -245,7 +245,7 @@ fn recv_until<T>(rx: &Receiver<WorkerEvent>, timeout: Duration, mut f: impl FnMu
 /// REFUSAL half of the rule (something already queued, and admitting a
 /// second send too would push the total past the bound) is proven
 /// deterministically, with a held channel receiver standing in for "not
-/// yet drained," by `attach_worker::tests::
+/// yet drained," by `attach_client::worker::tests::
 /// an_oversize_input_is_admitted_alone_but_blocks_further_sends_until_drained`
 /// — a real worker thread would race to drain it, which is exactly the
 /// kind of timing dependency this file avoids.

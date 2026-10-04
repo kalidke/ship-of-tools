@@ -19,7 +19,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Bounds [`SpawnedChild::from_child`]'s own
-/// failure-path reap — matches `producer_pty::PtyProducer`'s own `Drop`
+/// failure-path reap — matches `capsule::producer::pty::PtyProducer`'s own `Drop`
 /// bound (`REAP_BOUND`), the same shape for the same reason (a leader
 /// stuck in an uninterruptible kernel wait must never block the caller
 /// forever).
@@ -28,7 +28,7 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// A just-spawned, NOT YET CHALLENGED child process handle. Stage A's
 /// A1-A3 observations are about THIS type, never `ChallengedProcess`:
 /// nothing has proven this handle's identity — it's ours only because we
-/// just created it (mirrors `probe_win::SpawnedChild`'s own doc).
+/// just created it (mirrors `supervisor::probe::win::SpawnedChild`'s own doc).
 ///
 /// # Reaping (ADR 0043 decision 21)
 ///
@@ -86,7 +86,7 @@ impl SpawnedChild {
                 // uninterruptible kernel wait can outlive `SIGKILL`
                 // entirely, and this runs on the classifier's own spawn
                 // worker thread, not a destructor with nothing else
-                // waiting on it. Same shape as `producer_pty::PtyProducer`'s
+                // waiting on it. Same shape as `capsule::producer::pty::PtyProducer`'s
                 // own `Drop` — poll `waitpid(pid, WNOHANG)` every 10ms,
                 // retrying `EINTR`, stopping on a real reap or `ECHILD`
                 // (already reaped, harmless), bounded by
@@ -184,7 +184,7 @@ impl SpawnedChild {
 /// `VoyageMgmtExchange`), `std::process` spawn, and the bounded
 /// wait/terminate helpers, unmediated. No decisions — just the
 /// mechanical OS calls the classifier drives through [`ProbeOps`].
-/// `pub(crate)`, not `pub` — mirrors `probe_win::RealProbeOps`'s own doc
+/// `pub(crate)`, not `pub` — mirrors `supervisor::probe::win::RealProbeOps`'s own doc
 /// for why (no production consumer outside this crate; `sot-capsule`
 /// reaches this crate only through its `pub` API regardless). This
 /// lane's own consumer is `supervisor/`, on Linux exactly as on

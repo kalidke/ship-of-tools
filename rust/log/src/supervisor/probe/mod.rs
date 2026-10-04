@@ -22,7 +22,7 @@
 //!
 //! `ProbeOps` is generic over three associated types (`Conn`,
 //! `SpawnedChild`, `Process`) rather than hard-wiring `PipeClient` /
-//! `ChallengedProcess`. `probe_win::RealProbeOps` binds them to the real
+//! `ChallengedProcess`. `supervisor::probe::win::RealProbeOps` binds them to the real
 //! Windows types; `ScriptedProbeOps` binds them to zero-sized dummy types
 //! that never touch the OS at all — so a model test can construct every
 //! row without a real pipe, a real spawned process, or a real challenge.

@@ -205,7 +205,7 @@ pub(super) fn start<'t, P: Producer>(
 
 
 fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
-    // Resolve ONCE — the fresh `producer_pty`/`socket_transport` pair on
+    // Resolve ONCE — the fresh `capsule::producer::pty`/`socket_transport` pair on
     // Linux and `producer_conpty`/`pipe_transport` on Windows share this
     // exact ordering (voyage root, then the lease, then the writer fence).
     let voyage_root = crate::host::ensure_container(&config.voyage_root)?;
@@ -221,7 +221,7 @@ fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
     // `crate::supervisor::lease_win::open`'s own documented contract: an unopenable lease
     // name is reported identically to an opened-but-broken one, never
     // treated as "no lease was ever passed" (that is `None` below).
-    // `InheritedFd` (Unix): `producer_pty::parent_lease_fd_broken` does one
+    // `InheritedFd` (Unix): `capsule::producer::pty::parent_lease_fd_broken` does one
     // non-blocking read on the inherited fd — `EAGAIN` means alive,
     // anything else (including a missing fd) means broken, never silently
     // treated as "no lease".

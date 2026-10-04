@@ -54,7 +54,7 @@ pub(crate) const QUIT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 /// failure is what let the second pass spin for 60 s against a
 /// connection already gone) — every write's own result feeds the SAME
 /// reconnect decision a read failure does. `tick` against `quit`'s own
-/// `fe_client::QUIT_CUTOFF` (90 s, ADR 0041's own bound-graph figure)
+/// `attach_client::rules::QUIT_CUTOFF` (90 s, ADR 0041's own bound-graph figure)
 /// each iteration is the ONLY terminal bound: a lane that cannot be
 /// reconnected within it still yields `OutcomeUnknown`.
 ///

@@ -56,7 +56,7 @@ pub enum ExitStatus {
 /// The parent-death lease's own per-platform shape (ADR 0043 decision
 /// 15): a named, kernel-brokered mutex on Windows (`crate::supervisor::lease_win`),
 /// checked by name; an inherited pipe read-end file descriptor on Unix,
-/// checked by `producer_pty::parent_lease_fd_broken` — a real descendant
+/// checked by `capsule::producer::pty::parent_lease_fd_broken` — a real descendant
 /// is the only thing that can hold the fd. `capsule::CapsuleConfig`'s
 /// `parent_lease` field is `Option<ParentLease>` — `None` is this
 /// crate's own manual-testing harness and every capsule test, unchanged

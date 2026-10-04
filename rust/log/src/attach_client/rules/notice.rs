@@ -66,7 +66,7 @@ impl FeDownBaseline {
     /// `fe-inbox.jsonl`'s content as read at FE PROCESS START (before
     /// this run's own first append of ANY kind — the frontend calls
     /// this from `State::new`, never from drawer-open time; see
-    /// `fe_client_io`'s own module doc for the Codex review finding
+    /// `attach_client::client`'s own module doc for the Codex review finding
     /// this fixes).
     pub fn capture(last_evidence: Option<String>) -> Self {
         Self { last_evidence, first_attach_done: false }

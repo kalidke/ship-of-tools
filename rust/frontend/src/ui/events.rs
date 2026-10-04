@@ -192,9 +192,7 @@ impl State {
                 // Sessions-mode pane events (ADR 0013). ADR 0042 L2a
                 // codex review deletions: the sibling `tmux.list_sessions`/
                 // `tmux.create_session`/`tmux.kill_session` request/reply
-                // plumbing (OutgoingReq::TmuxListSessions/TmuxCreateSession/
-                // TmuxKillSession, IncomingEvt::TmuxSessions/
-                // TmuxSessionCreated/TmuxSessionKilled) had no production
+                // plumbing had no production
                 // sender — ADR 0014 moved Sessions mode onto the daemon's
                 // workspace registry (WorkspaceList/Workspaces) instead of
                 // scanning tmux, and this dead code still built a

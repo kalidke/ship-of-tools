@@ -30,7 +30,7 @@
 //!   safe as the Linux call, because the pid is pinned: `SIGCHLD` is
 //!   `SIG_DFL` for the supervisor's whole life (`supervisor::
 //!   supervise_inner`, F2) and nothing auto-reaps, so an exited child is
-//!   a retained zombie whose number cannot be recycled. `probe_unix::
+//!   a retained zombie whose number cannot be recycled. `supervisor::probe::unix::
 //!   SpawnedChild::from_child`'s own failure-path `libc::kill` already
 //!   rests on precisely this premise. The pin ends at the reap, which is
 //!   why [`SpawnedChild::reap`] latches and [`SpawnedChild::terminate`]
@@ -57,7 +57,7 @@
 //! FOREVER, and the supervisor polls with `Duration::ZERO` on every
 //! `Ready` tick) are `challenge_macos::watch_exit`/`drain_exit`,
 //! consumed here rather than written a second time — the direction this
-//! module already runs in everywhere else (`probe_unix` consumes
+//! module already runs in everywhere else (`supervisor::probe::unix` consumes
 //! `challenge_unix`), and the one place the zero-timeout mistake can be
 //! made is therefore also the one place a test pins it.
 //!
@@ -78,7 +78,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Bounds [`SpawnedChild::from_child`]'s own failure-path reap — the
-/// same bound, for the same reason, as `probe_unix`'s own
+/// same bound, for the same reason, as `supervisor::probe::unix`'s own
 /// `FAILURE_CLEANUP_REAP_BOUND` (a leader stuck in an uninterruptible
 /// kernel wait must never block the caller forever).
 const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
@@ -114,7 +114,7 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 const NO_OWNER_READABLE_GENERATION: u64 = 0;
 
 /// A just-spawned, NOT YET CHALLENGED child process handle — the macOS
-/// twin of `probe_unix::SpawnedChild`, and identical in contract: Stage
+/// twin of `supervisor::probe::unix::SpawnedChild`, and identical in contract: Stage
 /// A's A1-A3 observations are about THIS type, never
 /// [`ChallengedProcess`], because nothing has proven this handle's
 /// identity — it is ours only because we just created it.

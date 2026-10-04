@@ -183,7 +183,7 @@
 //! the leg across `exec`), and a leg is reaped exactly once per handle
 //! that observes its exit, after this process has read everything it
 //! needs from the dead process — never eagerly, never via a global
-//! `waitpid(-1, ..)` reaper.** `probe_unix::SpawnedChild::wait` reaps the
+//! `waitpid(-1, ..)` reaper.** `supervisor::probe::unix::SpawnedChild::wait` reaps the
 //! moment it observes the exit (nothing further Stage A needs to read
 //! off it); a leg identified by a [`challenge_unix::ChallengedProcess`]
 //! (adopted, or promoted from a `SpawnedChild` once its own pipe
@@ -196,7 +196,7 @@
 //! process's child at all — its own parent reaps it, not us.
 //!
 //! The parent-death lease (`LegLease`/[`SpawnLease`], replacing the
-//! Windows-only `lease` module here) is a close-on-exec pipe
+//! Windows-only `lease_win` module here) is a close-on-exec pipe
 //! (`pipe2(O_CLOEXEC)` where that call exists, `pipe` plus `fcntl` on
 //! macOS, which has none — see [`LegLease::create`] for why the
 //! difference is not a race): this
