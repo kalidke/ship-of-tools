@@ -220,6 +220,115 @@ fn resolve_create_agent(req_id: u64, req: &sot_protocol::WorkspaceCreateReq)
     Ok((agent_kind, autostart, runtime))
 }
 
+/// The launcher, the state root, the state root outside the project, and the account.
+fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_kind: &str, runtime: &str,
+    project_root: &std::path::PathBuf)
+    -> std::result::Result<(Vec<String>, Option<std::path::PathBuf>, String), HandlerOutput> {
+    // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
+    // state mutation, whenever the resolved runtime is "capsule" (every
+    // NEW workspace on Windows, or an explicitly requested one anywhere
+    // `capsule_workspace::runtime` compiles — ADR 0043 decision 22). The
+    // tmux path below accepts every agent kind unchanged. `agent_argv` is
+    // the same function the spawn itself uses, so this is the real
+    // check, not a second guess at it — "codex" (no known launcher on
+    // either platform) is refused here rather than silently launching a
+    // bare shell nobody asked for. Codex's check is a plain file read (no
+    // spawn), so this stays a direct call, no `spawn_blocking`.
+    let capsule_argv: Vec<String> = if runtime == "capsule" {
+        match crate::capsule_workspace::agent_argv(&agent_kind, Some(project_root.as_path())) {
+            Ok(argv) => argv,
+            Err(detail) => {
+                let payload = json!({
+                    "error": detail,
+                    "code": "unsupported_agent_on_this_host",
+                });
+                return Err(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    // ADR 0043 decision 23: refuse an unqualified state root at the SAME
+    // "before any state mutation" moment `capsule_argv` above already
+    // established — before `ws_seed`, before `workspaces.insert`, before
+    // any toml. Ungated, like the capsule spawn further down (macOS
+    // wiring lane): there is no host this daemon builds for that lacks a
+    // capsule runtime, so there is no second, platform-shaped refusal for
+    // this check to defer to.
+    let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
+        match crate::capsule_workspace::qualified_state_root() {
+            Ok(root) => Some(root),
+            Err(detail) => {
+                let payload = json!({
+                    "error": detail,
+                    "code": "state_root_unqualified",
+                });
+                return Err(vec![(
+                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                    None,
+                )]);
+            }
+        }
+    } else {
+        None
+    };
+    // A second refusal at the same before-any-mutation moment: a state
+    // root resolving INSIDE this workspace's own project root would sit
+    // under this daemon's project-root file watcher, whose open
+    // directory handles block a Windows rename underneath them (field
+    // defect: `sot-capsule supervise` exiting terminal 69 on
+    // `MoveFileExW`). Same predicate `spawn_detached_supervisor` checks
+    // again right before it spawns; this copy just gets a clean `code`
+    // here instead of a rollback after a partial row insert.
+    if let Some(root) = &capsule_state_root {
+        if crate::capsule_workspace::state_root_inside_project(root, &project_root) {
+            let payload = json!({
+                "error": format!(
+                    "state root {root:?} lies inside the project root {project_root:?}: a \
+                     capsule's state tree must never sit inside a directory this workspace watches"
+                ),
+                "code": "state_root_inside_project",
+            });
+            return Err(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    }
+    // Accounts brief (v0.6.0): resolved once, HERE, and recorded on the
+    // row — never re-derived later. `""`/absent is the default account,
+    // a no-op. A non-default account is checked with the SAME pure
+    // resolver the spawn path itself calls ([`crate::accounts::account_env`]),
+    // so a create-time refusal and a later spawn-time one (the folder
+    // vanishing in between) can never disagree. Refuses loudly, before
+    // any state mutation (the same moment `capsule_argv`/the state-root
+    // checks above already established) — never a silent fallback to
+    // the default folder: a bash (`agent == "none"`) row is refused the
+    // same way a claude/codex row with a missing folder is, both
+    // surfacing `account_env`'s own exact-command message.
+    let account: String = req.account.clone().unwrap_or_default();
+    if !account.is_empty() && account != "default" {
+        let home = crate::accounts::account_home();
+        let check = home
+            .ok_or_else(|| "no home directory to resolve an account against".to_string())
+            .and_then(|home| crate::accounts::account_env(&agent_kind, &account, &home));
+        if let Err(detail) = check {
+            let payload = json!({
+                "error": detail,
+                "code": "unknown_account",
+            });
+            return Err(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    }
+    Ok((capsule_argv, capsule_state_root, account))
+}
+
 pub async fn handle_workspace_create(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -248,108 +357,11 @@ pub async fn handle_workspace_create(
         Ok(agent) => agent,
         Err(out) => return Ok(out),
     };
-    // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
-    // state mutation, whenever the resolved runtime is "capsule" (every
-    // NEW workspace on Windows, or an explicitly requested one anywhere
-    // `capsule_workspace::runtime` compiles — ADR 0043 decision 22). The
-    // tmux path below accepts every agent kind unchanged. `agent_argv` is
-    // the same function the spawn itself uses, so this is the real
-    // check, not a second guess at it — "codex" (no known launcher on
-    // either platform) is refused here rather than silently launching a
-    // bare shell nobody asked for. Codex's check is a plain file read (no
-    // spawn), so this stays a direct call, no `spawn_blocking`.
-    let capsule_argv: Vec<String> = if runtime == "capsule" {
-        match crate::capsule_workspace::agent_argv(&agent_kind, Some(project_root.as_path())) {
-            Ok(argv) => argv,
-            Err(detail) => {
-                let payload = json!({
-                    "error": detail,
-                    "code": "unsupported_agent_on_this_host",
-                });
-                return Ok(vec![(
-                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                    None,
-                )]);
-            }
-        }
-    } else {
-        Vec::new()
-    };
-    // ADR 0043 decision 23: refuse an unqualified state root at the SAME
-    // "before any state mutation" moment `capsule_argv` above already
-    // established — before `ws_seed`, before `workspaces.insert`, before
-    // any toml. Ungated, like the capsule spawn further down (macOS
-    // wiring lane): there is no host this daemon builds for that lacks a
-    // capsule runtime, so there is no second, platform-shaped refusal for
-    // this check to defer to.
-    let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
-        match crate::capsule_workspace::qualified_state_root() {
-            Ok(root) => Some(root),
-            Err(detail) => {
-                let payload = json!({
-                    "error": detail,
-                    "code": "state_root_unqualified",
-                });
-                return Ok(vec![(
-                    Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                    None,
-                )]);
-            }
-        }
-    } else {
-        None
-    };
-    // A second refusal at the same before-any-mutation moment: a state
-    // root resolving INSIDE this workspace's own project root would sit
-    // under this daemon's project-root file watcher, whose open
-    // directory handles block a Windows rename underneath them (field
-    // defect: `sot-capsule supervise` exiting terminal 69 on
-    // `MoveFileExW`). Same predicate `spawn_detached_supervisor` checks
-    // again right before it spawns; this copy just gets a clean `code`
-    // here instead of a rollback after a partial row insert.
-    if let Some(root) = &capsule_state_root {
-        if crate::capsule_workspace::state_root_inside_project(root, &project_root) {
-            let payload = json!({
-                "error": format!(
-                    "state root {root:?} lies inside the project root {project_root:?}: a \
-                     capsule's state tree must never sit inside a directory this workspace watches"
-                ),
-                "code": "state_root_inside_project",
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                None,
-            )]);
-        }
-    }
-    // Accounts brief (v0.6.0): resolved once, HERE, and recorded on the
-    // row — never re-derived later. `""`/absent is the default account,
-    // a no-op. A non-default account is checked with the SAME pure
-    // resolver the spawn path itself calls ([`crate::accounts::account_env`]),
-    // so a create-time refusal and a later spawn-time one (the folder
-    // vanishing in between) can never disagree. Refuses loudly, before
-    // any state mutation (the same moment `capsule_argv`/the state-root
-    // checks above already established) — never a silent fallback to
-    // the default folder: a bash (`agent == "none"`) row is refused the
-    // same way a claude/codex row with a missing folder is, both
-    // surfacing `account_env`'s own exact-command message.
-    let account: String = req.account.clone().unwrap_or_default();
-    if !account.is_empty() && account != "default" {
-        let home = crate::accounts::account_home();
-        let check = home
-            .ok_or_else(|| "no home directory to resolve an account against".to_string())
-            .and_then(|home| crate::accounts::account_env(&agent_kind, &account, &home));
-        if let Err(detail) = check {
-            let payload = json!({
-                "error": detail,
-                "code": "unknown_account",
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                None,
-            )]);
-        }
-    }
+    let (capsule_argv, capsule_state_root, account) =
+        match check_create_host(req_id, &req, &agent_kind, &runtime, &project_root) {
+            Ok(host) => host,
+            Err(out) => return Ok(out),
+        };
     let mut ws_seed = crate::workspaces::Workspace::from_label(
         &req.label,
         project_root.clone(),
