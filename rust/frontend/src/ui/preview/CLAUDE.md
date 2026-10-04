@@ -12,6 +12,7 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 - `image/`: image previews (PNG decode, SVG rasterization).
 - `markdown/`: markdown and source text shaped by cosmic-text, with tree-sitter highlighting.
 - `editor/`: in-pane editing.
+- `replies.rs`: preview, preview.changed, concept, browser-open and protocol-mismatch replies
 
 ## Start here
 `pane.rs` `render_preview_source` for a new kind of preview; `markdown/mod.rs` for text previews; `image/png.rs` for bitmaps. The shared quad pipeline is in
