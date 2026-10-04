@@ -7,7 +7,7 @@ change lives in the parent folder. Part of the daemon's rows subsystem; charter:
 ## Files
 - `mod.rs`: the module list
 - `create.rs`: `workspace.create` and its two gates, one root per session and no refresh of a row in use
-- `create_tests.rs`: tests of `create.rs`: the duplicate-root and same-slug gates
+- `create_tests.rs`: tests of `create.rs`: the duplicate-root and same-slug gates, and the seven refusals of `workspace.create`
 - `destroy.rs`: `workspace.destroy`, which ends a row's run and then removes the row; the default row only ends its run
 - `destroy_tests.rs`: tests of `destroy.rs`: `workspace.destroy` on the default row, with the state-root fixtures they share
 - `lane_bridge.rs`: `lane.connect`, the byte pipe onto a row's supervisor or voyage lane after one answered frame
