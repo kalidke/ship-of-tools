@@ -8989,26 +8989,6 @@ impl State {
 
 
 #[cfg(test)]
-mod tests {
-}
-
-
-/// ADR 0042 slice L1b: runtime keying, the attach_direct switch, and
-/// phase → badge mapping. LU6a adds the session pane's screen-selection
-/// decision (`pane_screen_choice`). Pure functions, Linux-run.
-#[cfg(test)]
-mod capsule_pane_tests {
-    // `pane_backend_for`/`PaneBackend` were deleted alongside
-    // `try_attach_capsule_pane` (ADR 0042 shrink round, rule A) — the
-    // fast path was their only production call site, and once it was
-    // gone they had none left.
-
-
-
-
-
-}
-#[cfg(test)]
 mod scan_tests;
 pub(crate) mod preview;
 pub(crate) mod render;
