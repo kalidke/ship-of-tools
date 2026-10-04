@@ -343,6 +343,25 @@ mod tests {
         assert_eq!(initial_mode(Some("hosts"), Some("modules"), true), Mode::Hosts);
     }
 
+    /// The mode names the window persists and `--start-mode` reads: each
+    /// `label()` round-trips through `initial_mode`.
+    #[test]
+    fn mode_label_names_each_mode() {
+        for (m, name) in [
+            (Mode::Files, "files"),
+            (Mode::Modules, "modules"),
+            (Mode::Sessions, "sessions"),
+            (Mode::Hosts, "hosts"),
+        ] {
+            assert_eq!(m.label(), name);
+            assert_eq!(initial_mode(Some(m.label()), None, false), m);
+        }
+        // Names are matched exactly: case and aliases are not folded.
+        assert_eq!(initial_mode(Some("Hosts"), None, false), Mode::Files);
+        assert_eq!(initial_mode(Some("SESSIONS"), None, false), Mode::Files);
+        assert_eq!(initial_mode(Some("module"), None, false), Mode::Files);
+    }
+
     /// Pins the workspace-identity equivalences the deleted
     /// `tree_matches_active_ws` test pinned, now expressed as tree-KEY
     /// equality — the comparison every install route makes. Same semantics:

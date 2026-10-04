@@ -531,6 +531,19 @@ pub fn cheat_sheet_html(bindings: &KeyBindings) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn nav_title_and_default_mode() {
+        assert_eq!(Context::default().mode, Mode::Files);
+        for (mode, title) in [
+            (Mode::Files, "Files"),
+            (Mode::Modules, "Modules"),
+            (Mode::Sessions, "Sessions"),
+            (Mode::Hosts, "Hosts"),
+        ] {
+            let c = Context { pane: Pane::Nav, mode, ..Context::default() };
+            assert_eq!(c.title(), title);
+        }
+    }
+    #[test]
     fn fade_holds_for_five_seconds_and_expires() {
         let start = Instant::now();
         let p = Peek {
