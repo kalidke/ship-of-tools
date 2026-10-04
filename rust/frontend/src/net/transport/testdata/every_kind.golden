@@ -1,0 +1,76 @@
+> {"v":2,"id":2,"kind":"req","op":"tree.root","payload":{"mode":"files"}}
+> {"v":2,"id":3,"kind":"req","op":"preview.get","payload":{"node_id":""}}
+> {"v":2,"id":4,"kind":"req","op":"tree.children","payload":{"node_id":"tc.parent","workspace_id":"tc.ws"}}
+> {"v":2,"id":5,"kind":"req","op":"tree.root","payload":{"mode":"tr.mode","workspace_id":"tr.ws"}}
+> {"v":2,"id":6,"kind":"req","op":"nav.toggle_hidden","payload":{"mode":"files","workspace_id":"th.ws"}}
+> {"v":2,"id":7,"kind":"req","op":"workspace.activate","payload":{"read":true,"workspace_id":"wa.ws"}}
+> {"v":2,"id":8,"kind":"req","op":"fe.presence","payload":{}}
+> {"v":2,"id":9,"kind":"req","op":"fe.sessions","payload":{"sessions":[{"handle":"fs.handle","state":"fs.state","status_at":"fs.at","summary":"fs.summary"}]}}
+> {"v":2,"id":10,"kind":"req","op":"kernel.request","payload":{"kernel_op":"modules.list","kernel_payload":{},"workspace_id":"ml.ws"}}
+> {"v":2,"id":11,"kind":"req","op":"kernel.request","payload":{"kernel_op":"project.scan","kernel_payload":{},"workspace_id":"ps.ws"}}
+> {"v":2,"id":12,"kind":"req","op":"kernel.request","payload":{"kernel_op":"markdown.tokenize","kernel_payload":{"lang":"mt.lang","source":"mt.source"}}}
+> {"v":2,"id":13,"kind":"req","op":"concept.read","payload":{"target":"cr.target","workspace_id":"cr.ws"}}
+> {"v":2,"id":14,"kind":"req","op":"math.render","payload":{"display":true,"latex":"mr.latex"}}
+> {"v":2,"id":15,"kind":"req","op":"image.crop","payload":{"h":107,"node_id":"ic.node","w":106,"workspace_id":"ic.ws","x":104,"y":105}}
+> {"v":2,"id":16,"kind":"req","op":"concept.write","payload":{"content":"cw.content","expected_ast_hash":"cw.hash","target":"cw.target","workspace_id":"cw.ws"}}
+> {"v":2,"id":17,"kind":"req","op":"file.read","payload":{"node_id":"fr.node","workspace_id":"fr.ws"}}
+> {"v":2,"id":18,"kind":"req","op":"file.write","payload":{"content":"fw.content","expected_version":"fw.version","node_id":"fw.node","workspace_id":"fw.ws"}}
+> {"v":2,"id":19,"kind":"req","op":"file.delete","payload":{"node_id":"fd.node","workspace_id":"fd.ws"}}
+> {"v":2,"id":20,"kind":"req","op":"dir.create","payload":{"node_id":"dc.node","workspace_id":"dc.ws"}}
+> {"v":2,"id":21,"kind":"req","op":"kernel.request","payload":{"kernel_op":"file.parse","kernel_payload":{"path":"fp.path"},"workspace_id":"fp.ws"}}
+> {"v":2,"id":22,"kind":"req","op":"preview.get","payload":{"fit_h":110,"fit_w":109,"node_id":"pg.node","page":108,"workspace_id":"pg.ws"}}
+> {"v":2,"id":23,"kind":"req","op":"preview.set_scale","payload":{"node_id":"pss.node","physical_scale":{"axes":[{"name":"x","nm_per_px":1.5},{"name":"y","nm_per_px":1.5}],"unit":"nm"},"workspace_id":"pss.ws"}}
+> {"v":2,"id":24,"kind":"req","op":"preview.get","payload":{"node_id":"fg.node","workspace_id":"fg.ws"}}
+> {"v":2,"id":25,"kind":"req","op":"kernel.request","payload":{"kernel_op":"function.methods","kernel_payload":{"module":"fm.module","name":"fm.name"},"workspace_id":"fm.ws"}}
+> {"v":2,"id":26,"kind":"req","op":"repl.eval","payload":{"code":"re.code","eval_id":113,"mode":"re.mode","workspace_id":"re.ws"}}
+> {"v":2,"id":27,"kind":"req","op":"repl.interrupt","payload":{"workspace_id":"ri.ws"}}
+> {"v":2,"id":28,"kind":"req","op":"pty.open","payload":{"cols":114,"rows":115,"target":"po.target","user_switch":true}}
+> {"v":2,"id":29,"kind":"req","op":"directory.list","payload":{"include_hidden":true,"path":"dl.path"}}
+> {"v":2,"id":30,"kind":"req","op":"workspace.create","payload":{"account":"wc.account","agent":"wc.agent","agent_name":"","autostart_claude":true,"label":"wc.label","project_root":"wc.root","runtime":"","task":""}}
+> {"v":2,"id":31,"kind":"req","op":"workspace.list","payload":{}}
+> {"v":2,"id":32,"kind":"req","op":"accounts.list","payload":{}}
+> {"v":2,"id":33,"kind":"req","op":"workspace.destroy","payload":{"workspace_id":"wd.ws"}}
+> {"v":2,"id":34,"kind":"req","op":"pluto.open","payload":{"path":"pl.path"}}
+> {"v":2,"id":35,"kind":"req","op":"video.open","payload":{"path":"vo.path"}}
+> {"v":2,"id":36,"kind":"req","op":"docs.open","payload":{"path":"do.path"}}
+> {"v":2,"id":37,"kind":"req","op":"quarto.open","payload":{"execute":true,"path":"qo.path"}}
+> {"v":2,"id":38,"kind":"req","op":"repl.run_file","payload":{"eval_id":116,"fresh":true,"path":"rf.path","workspace_id":"rf.ws"}}
+> {"v":2,"id":39,"kind":"req","op":"file.download","payload":{"path":"fdl.path"}}
+> {"v":2,"id":40,"kind":"req","op":"file.upload","payload":{"data_b64":"AQID","dir":"fu.dir","eof":true,"name":"fu.name","offset":117,"total":118}}
+> {"v":2,"id":41,"kind":"req","op":"monitor.subscribe","payload":{}}
+> {"v":2,"id":42,"kind":"req","op":"monitor.unsubscribe","payload":{}}
+> {"v":2,"id":43,"kind":"req","op":"agent.send","payload":{"from":"as.from","text":"as.text","to":"as.to"}}
+> {"v":2,"id":44,"kind":"req","op":"monitor.history","payload":{"host":"mh.host","points":119,"until":3.5,"window_s":2.5}}
+< golden Connected { session_id: "sess-1", revision: 0, host: None, project_root: None, proxy: false, resolved: Local, backend_version: "" }
+< golden TreeChildrenFailed { workspace_id: Some("tc.ws"), parent_id: "tc.parent", error: "err-tree.children" }
+< golden Event { op: "nav.toggle_hidden", payload: Object {"code": String("code-nav.toggle_hidden"), "error": String("err-nav.toggle_hidden")} }
+< golden Event { op: "workspace.activate", payload: Object {"code": String("code-workspace.activate"), "error": String("err-workspace.activate")} }
+< golden Event { op: "fe.presence", payload: Object {"code": String("code-fe.presence"), "error": String("err-fe.presence")} }
+< golden Event { op: "fe.sessions", payload: Object {"code": String("code-fe.sessions"), "error": String("err-fe.sessions")} }
+< golden ModulesList { workspace_id: Some("ml.ws"), modules: [] }
+< golden ProjectScan { workspace_id: Some("ps.ws"), project_root: None, package_name: None, entry_file: None, modules: [], generation: 101 }
+< golden MarkdownTokens { lang: "mt.lang", source_hash: 102, spans: [] }
+< golden ImageCropFailed { node_id: "ic.node", message: "err-image.crop" }
+< golden ConceptWriteDone { target: "cw.target", result: Error { code: "code-concept.write", message: "err-concept.write" } }
+< golden FileWriteDone { node_id: "fw.node", result: Error { code: "code-file.write", message: "err-file.write" } }
+< golden FileDeleteDone { node_id: "fd.node", result: Error { code: "code-file.delete", message: "err-file.delete" } }
+< golden DirCreateDone { node_id: "dc.node", result: Error { code: "code-dir.create", message: "err-dir.create" } }
+< golden FileParseFailed { workspace_id: Some("fp.ws"), path: "fp.path" }
+< golden PreviewGetFailed { node_id: Some("pg.node"), workspace_id: Some("pg.ws"), generation: 111, message: "code-preview.get: err-preview.get" }
+< golden ScaleSetFailed { node_id: "pss.node", message: "code-preview.set_scale: err-preview.set_scale" }
+< golden FigureGetFailed { url: "fg.url" }
+< golden FunctionMethodsReceived { workspace_id: Some("fm.ws"), module: "fm.module", name: "fm.name", methods: [] }
+< golden Event { op: "repl.interrupt", payload: Object {"code": String("code-repl.interrupt"), "error": String("err-repl.interrupt")} }
+< golden PtyOpenFailed { target: Some("po.target"), error: "code-pty.open" }
+< golden WorkspaceCreated { result: Err("err-workspace.create") }
+< golden AccountsList { accounts: [] }
+< golden WorkspaceDestroyed { result: Err("err-workspace.destroy") }
+< golden PlutoOpened { result: Err("err-pluto.open") }
+< golden VideoOpened { result: Err("err-video.open") }
+< golden DocsOpened { result: Err("err-docs.open") }
+< golden QuartoOpened { result: Err("err-quarto.open") }
+< golden ReplRunFileDone { eval_id: 116, result: Err("err-repl.run_file") }
+< golden FileTransferFailed { op: "download", message: "err-file.download" }
+< golden FileTransferFailed { op: "upload", message: "err-file.upload" }
+< golden Event { op: "monitor.unsubscribe", payload: Object {"code": String("code-monitor.unsubscribe"), "error": String("err-monitor.unsubscribe")} }
+< golden Event { op: "agent.send", payload: Object {"code": String("code-agent.send"), "error": String("err-agent.send")} }

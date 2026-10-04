@@ -8,6 +8,8 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `request.rs`: `OutgoingReq`, every request the UI can send a host
 - `mod.rs`: the per-host connection task (`spawn`, `connect_and_run`, `run_protocol`, `run_session`) and every part of the transport no other file here holds
 - `reply.rs`: reply matching: the pending entry per request id (`PendingKind`), `PendingGuard`, and `handle_response_frame`, which turns each reply into an `IncomingEvt`
+- `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
+- `testdata/`: golden files for golden_tests.rs
 - `hello.rs`: the hello: its 30 s reply bound, the refusal type `HelloRefused`, and the protocol-mismatch message
 
 ## Start here

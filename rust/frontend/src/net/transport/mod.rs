@@ -2083,6 +2083,9 @@ fn parse_scan_entity(v: &Value) -> ScanEntity {
 
 
 #[cfg(test)]
+mod golden_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
