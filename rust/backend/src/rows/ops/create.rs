@@ -56,32 +56,15 @@ fn same_slug_row_in_use(
     })
 }
 
-pub async fn handle_workspace_create(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-    workspaces: &Workspaces,
-    ws_events: &broadcast::Sender<WorkspaceChanged>,
-) -> Result<HandlerOutput> {
-    use sot_protocol::{WorkspaceCreateReq, WorkspaceCreateRes};
-    // ADR 0023 §3 daemon-boot trigger — read off the raw payload (it is not a
-    // `WorkspaceCreateReq` struct field: adding one would force the frozen FE's
-    // struct literal to set it). serde ignores it on the typed deserialize below.
-    let boot = payload_json
-        .get("boot")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let req: WorkspaceCreateReq =
-        serde_json::from_value(payload_json).context("workspace.create payload")?;
-    tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
-
-    let project_root = std::path::PathBuf::from(&req.project_root);
+/// The root exists, is a directory, is no other row's, and its slug is not in use.
+fn check_create_root(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, project_root: &std::path::PathBuf,
+    workspaces: &Workspaces) -> std::result::Result<(), HandlerOutput> {
     if !project_root.exists() {
         let payload = json!({
             "error": format!("project_root does not exist: {}", req.project_root),
             "code": "no_such_path",
         });
-        return Ok(vec![(
+        return Err(vec![(
             Frame::res(req_id, op::WORKSPACE_CREATE, payload),
             None,
         )]);
@@ -91,7 +74,7 @@ pub async fn handle_workspace_create(
             "error": format!("project_root is not a directory: {}", req.project_root),
             "code": "not_a_directory",
         });
-        return Ok(vec![(
+        return Err(vec![(
             Frame::res(req_id, op::WORKSPACE_CREATE, payload),
             None,
         )]);
@@ -126,7 +109,7 @@ pub async fn handle_workspace_create(
                         "label": existing.label,
                     },
                 });
-                return Ok(vec![(
+                return Err(vec![(
                     Frame::res(req_id, op::WORKSPACE_CREATE, payload),
                     None,
                 )]);
@@ -156,10 +139,36 @@ pub async fn handle_workspace_create(
                 "phase": phase,
             },
         });
-        return Ok(vec![(
+        return Err(vec![(
             Frame::res(req_id, op::WORKSPACE_CREATE, payload),
             None,
         )]);
+    }
+    Ok(())
+}
+
+pub async fn handle_workspace_create(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+    ws_events: &broadcast::Sender<WorkspaceChanged>,
+) -> Result<HandlerOutput> {
+    use sot_protocol::{WorkspaceCreateReq, WorkspaceCreateRes};
+    // ADR 0023 §3 daemon-boot trigger — read off the raw payload (it is not a
+    // `WorkspaceCreateReq` struct field: adding one would force the frozen FE's
+    // struct literal to set it). serde ignores it on the typed deserialize below.
+    let boot = payload_json
+        .get("boot")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let req: WorkspaceCreateReq =
+        serde_json::from_value(payload_json).context("workspace.create payload")?;
+    tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
+
+    let project_root = std::path::PathBuf::from(&req.project_root);
+    if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
+        return Ok(out);
     }
 
     // Name validation (security review): `agent_name` is persisted and later
