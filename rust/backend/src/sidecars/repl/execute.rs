@@ -229,7 +229,7 @@ fn read_exec_res(res_payload: Option<serde_json::Value>)
     (res_code_error, error_out, project_dir, project_source)
 }
 
-/// Splits the collected frames into text, values, images and the strongest error kind; the first error frame fills `error_out`.
+/// Splits the collected frames into text, values, images and the strongest error kind; the first error frame fills `error_out` if still empty.
 fn split_exec_frames(frames: Vec<serde_json::Value>, error_out: &mut Option<ReplErrorOut>)
     -> (String, String, Vec<ReplValueOut>, Vec<(String, String)>, Option<&'static str>) {
     let mut stdout = String::new();
