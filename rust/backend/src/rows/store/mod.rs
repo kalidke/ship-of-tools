@@ -240,7 +240,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
 
 /// Write `~/.config/sot/workspaces/<slug>.toml`. Frontend-managed
 /// sections (`[nav_state]`, `[layout]`, …) that the file already
-/// contains are preserved — same approach as `session_state.rs`.
+/// contains are preserved.
 pub fn save(ws: &Workspace) -> Result<PathBuf> {
     let target = workspaces_dir().join(format!("{}.toml", ws.slug));
     if let Some(parent) = target.parent() {
@@ -336,10 +336,6 @@ pub fn toml_path_for(slug: &str) -> PathBuf {
 /// tmux repeatedly and re-created from its legacy toml each time).
 pub fn legacy_toml_path_for(slug: &str) -> PathBuf {
     sessions_dir().join(format!("{slug}.toml"))
-}
-
-pub(crate) fn sessions_state_dir() -> PathBuf {
-    sessions_dir()
 }
 
 fn sessions_dir() -> PathBuf {

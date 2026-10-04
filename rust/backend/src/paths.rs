@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 /// `XDG_STATE_HOME`, `HOME`, `LOCALAPPDATA`, `USERPROFILE`, `SystemDrive`,
 /// `SOT_SELF_HOST`, ...) — `cargo test` runs tests in parallel within one
 /// process by default, and several DIFFERENT modules
-/// (`paths::state_dir_tests`, `workspaces::tests`, `session_state::tests`)
+/// (`paths::state_dir_tests`, `workspaces::tests`)
 /// each exercise resolvers that read the SAME vars. One shared lock, not
 /// one per module (Codex review, PR #175: two separate mutexes — this
 /// file's own and `workspaces.rs`'s — meant a test in one module could

@@ -237,26 +237,6 @@ pub async fn run(opts: Opts) -> Result<()> {
     }
 
 
-    // When the backend is launched with `--label`, stamp our identity into
-    // `~/.config/sot/sessions/<slug>.toml` so Sessions mode (frontend)
-    // can discover us — including direct shell launches that bypassed
-    // tmux.create_session. Frontend-managed sections are preserved.
-    if let Some(label) = opts.label.as_deref() {
-        match crate::session_state::write_backend_identity(
-            label,
-            &sid,
-            files_mode.root_path(),
-            opts.socket.as_deref(),
-        ) {
-            Ok(path) => {
-                tracing::info!(toml = ?path, "wrote backend identity toml");
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "could not write backend identity toml; Sessions mode discovery may need help");
-            }
-        }
-    }
-
     // Lazily-spawned MathJax sidecar. Cheap to construct (no child process
     // until the first math.render call); cloning the handle is cheap.
     let mathjax = MathJax::new(MathJax::default_script_path());

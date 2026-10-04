@@ -4,7 +4,7 @@
 // migration off the old HOME-derived root. Serialized under the
 // crate-wide `paths::ENV_TEST_LOCK` (Codex review, PR #175: a
 // module-local mutex here couldn't stop a test in THIS module from
-// racing a `paths.rs`/`session_state.rs` test over the same env vars).
+// racing a `paths.rs` test over the same env vars).
 
 pub(super) struct EnvGuard {
     _serial: std::sync::MutexGuard<'static, ()>,

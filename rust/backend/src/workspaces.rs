@@ -27,4 +27,4 @@ pub(crate) use crate::rows::workspace::{Observation, SupervisorIdentity};
 pub use crate::rows::{Workspace, WorkspaceChanged, Workspaces};
 pub(crate) use crate::comm::mail::bus::{AgentMessage, AgentReceipt};
 pub use crate::rows::store::{legacy_toml_path_for, save, scan_disk, toml_path_for};
-pub(crate) use crate::rows::store::{app_config_dir, check_config_dir, declared_host, sessions_state_dir};
+pub(crate) use crate::rows::store::{app_config_dir, check_config_dir, declared_host};
