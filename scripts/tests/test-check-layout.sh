@@ -185,6 +185,10 @@ violations: 0"; check "named-path fenced ignored" 0 d
 np 'an untracked top-level word `nothere/x.jl` and a folder `d`'
 WANT="named-path: 1 tokens checked
 violations: 0"; check "named-path unknown top-level skipped" 0 d
+np 'a page'; printf '%s\n' 'a missing `d/gone.jl`' > docs/integration.md; printf '%s\n' 'a missing `d/gone.jl`' > CLAUDE.md; commit
+WANT="VIOLATION named-path docs/integration.md d/gone.jl
+VIOLATION named-path CLAUDE.md d/gone.jl
+named-path: 2 tokens checked in 3 files"; check "named-path lists the integration page and the root page" 1 d
 
 # report
 newrepo; mkdir d; { lines 5 'x='; } > d/small.rs; { lines 30 'x='; echo '#[cfg(test)]'; echo 'mod t {'; echo '}'; } > d/big.rs; commit
