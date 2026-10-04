@@ -14,13 +14,15 @@ scope. This page and the design pages define structure.
 - **Rust is for plumbing** — rendering, IPC, file watching, process supervision.
   Keep it boring and predictable.
 - **Plotting is CairoMakie** when generating plots in Julia.
-- **Eat dogfood.** Core handlers ship as plugins to themselves; the core modes and
-  standard file types are methods on the same abstract types a third-party plugin
-  extends. If core seems to want privileged access, the rule is to *fix the ABI*,
+- **Eat dogfood.** Core handlers ship as plugins to themselves; the standard
+  file types are methods on the same abstract type a third-party plugin
+  extends (the core modes are native Rust views, since `Mode` is not built). If core seems to want privileged access, the rule is to *fix the ABI*,
   not to special-case core. This keeps the extension surface honest.
 - **Boundaries are serialization seams.** `TreeNode` and `PreviewPayload` carry
   opaque, kernel-defined payloads. Rust never learns about new entity kinds —
-  adding a `FileType` (and, by design, a `Mode`) requires zero Rust changes. See
+  adding a `FileType` needs no Rust change unless its output must be bounded,
+  which also names its extensions in the daemon's preview gates; `Mode` is not
+  built. See
   [Line Protocol](design/protocol.md).
 - **Reactive over eager** for staleness, refresh, and indexing. Visible drift
   (e.g., a stale-annotation badge) is a feature, not a bug.

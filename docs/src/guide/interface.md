@@ -267,7 +267,8 @@ depth, see [The REPL](repl.md).
 
 A Julia process **supervised by the backend daemon**, distinct from the kernel
 that does project introspection. They are separate on purpose: the kernel owns
-dispatch tables, mode trees, indexing, and AST hashing; the REPL owns your
+the file-type dispatch table, previews, project scans, and the file content hash;
+the REPL owns your
 interactive state. Because they are different processes, **killing the REPL does
 not kill the kernel** — you can restart your interactive session to clear state or
 recover from a wedged computation without losing the project view.

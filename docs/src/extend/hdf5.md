@@ -8,8 +8,9 @@ CurrentModule = ConceptExplorerCore
 `examples/plugins/HDF5Preview/`. It adds metadata-only previews for `.h5` /
 `.hdf5` / `.hdf` files. Its purpose is to **validate the dispatch ABI from
 outside core** — it is a separate package, depends only on
-`ConceptExplorerCore` and `HDF5`, and requires **zero Rust changes** to light up
-HDF5 previews in the frontend.
+`ConceptExplorerCore` and `HDF5`, and needs no frontend change to light up HDF5
+previews. Because its output is bounded however large the file is, the daemon's
+preview gates also name `.h5` / `.hdf5` / `.hdf` so its input-size cap does not skip it.
 
 Read it alongside the generic build in [Writing a FileType Plugin](filetype.md);
 this page walks the actual code top to bottom.
@@ -167,7 +168,8 @@ ConceptExplorerCore.parse_entities(::Type{HDF5File}, path::AbstractString) =
     ConceptExplorerCore.ConceptEntity[]
 ```
 
-No concept entities yet. The docstring notes the future option: one
+No concept entities yet, and nothing calls `parse_entities` or `ast_hash` today
+(both NOT BUILT). The docstring notes the future option: one
 [`ConceptEntity`](@ref) per group/dataset, for annotation in the concept nav.
 
 ## Enabling it
@@ -197,4 +199,4 @@ itself, and a plugin from outside core travels the identical path.
 
 - [Writing a FileType Plugin](filetype.md) — the generic build this example follows.
 - [Discovery & Configuration](discovery.md) — the `[sot].extensions` mechanism.
-- [The Dispatch ABI](abi.md) — why zero Rust changes are needed.
+- [The Dispatch ABI](abi.md) — why a plugin needs no frontend change.

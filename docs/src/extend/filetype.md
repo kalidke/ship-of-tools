@@ -24,8 +24,9 @@ Two things, both dispatched on your subtype:
 | [`preview`](@ref)`(::Type{T}, path)` | [`PreviewPayload`](@ref) | render it for the preview pane |
 
 [`parse_entities`](@ref)`(::Type{T}, path)` is optional — it yields the
-[`ConceptEntity`](@ref) values a file declares, for the concept layer. Phase-1
-plugins return an empty vector; see [below](#Optional:-parse_entities).
+[`ConceptEntity`](@ref) values a file declares, for the concept layer. Nothing calls
+it today (NOT BUILT), and the phase-1 plugins return an empty vector; see
+[below](#Optional:-parse_entities).
 
 At runtime the kernel finds every loaded subtype with [`file_types`](@ref) (a
 `subtypes(FileType)` scan) and picks the first one whose `matches` returns `true`
@@ -115,7 +116,8 @@ end
 
 The MIME you choose decides which frontend renderer draws the preview — this is
 the only contract the frontend cares about, and it is why a new `FileType` needs
-zero Rust changes.
+no Rust change — unless its output must be bounded, in which case the daemon's
+preview gates (`is_bounded_output_plugin` in the backend) also name its extensions.
 
 ### Choosing a MIME
 
@@ -155,9 +157,12 @@ ConceptExplorerCore.parse_entities(::Type{MyKind}, path::AbstractString) =
     ConceptExplorerCore.ConceptEntity[]
 ```
 
-A later revision can yield one [`ConceptEntity`](@ref) per logical unit (the
-Markdown plugin notes heading-hierarchy entities as the obvious next step), each
-carrying an [`ast_hash`](@ref) for staleness provenance.
+Nothing calls `parse_entities` today: the concept layer does not read it, so
+whatever a plugin returns is unused (NOT BUILT). A later revision could yield one
+[`ConceptEntity`](@ref) per logical unit (the Markdown plugin notes
+heading-hierarchy entities as the obvious next step), each carrying an
+[`ast_hash`](@ref) for staleness provenance; `ast_hash` has no method or caller
+today either.
 
 ## Step 5 — Enable it
 

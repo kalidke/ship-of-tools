@@ -4,17 +4,18 @@
 CurrentModule = ConceptExplorerCore
 ```
 
-A [`Mode`](@ref) is a switchable root for the collapsible nav tree. Files,
-Modules, Sessions, and Hosts are modes; a hotkey swaps which mode's tree fills
-the navigation pane, and cursor position is preserved per mode across switches.
-A mode plugin supplies a new such root.
+A [`Mode`](@ref) is, by design, a switchable root for the collapsible nav tree. The
+built modes (Files, Modules, Sessions, and Hosts) are native Rust views, not
+`Mode` subtypes: `Mode` is declared in core and NOT BUILT. A hotkey swaps which
+mode's tree fills the navigation pane, and cursor position is preserved per mode
+across switches. A mode plugin would supply a new such root.
 
 This page documents the mode contract. For the conceptual overview see
 [The Dispatch ABI](abi.md); for the symbol reference see
 [API — ConceptExplorerCore](../ref/api-core.md).
 
-!!! note "Status: modes are built into the frontend and backend today"
-    The mode contract is part of the ABI, but in phase 1 the core modes are
+!!! note "Status: NOT BUILT; modes are built into the frontend and backend today"
+    The mode contract is part of the declared ABI, but in phase 1 the core modes are
     implemented in the Rust frontend and backend, not in plugin packages. The packages under
     `julia/plugins/` are all `FileType` plugins (Julia source, Markdown, JSON,
     plain text, PDF, video) — there is **no** mode-plugin package in the tree
@@ -26,8 +27,8 @@ This page documents the mode contract. For the conceptual overview see
 
 ## The Mode contract
 
-A mode is a singleton subtype of [`Mode`](@ref) plus three dispatched methods.
-The same three-column shape applies to every mode; the methods supply the tree
+In the design (NOT BUILT), a mode is a singleton subtype of [`Mode`](@ref) plus three
+dispatched methods. The same three-column shape applies to every mode; the methods supply the tree
 and its previews:
 
 | Method | Returns | Role |
@@ -58,9 +59,10 @@ frontend renders any mode without learning its internals:
   bytes, and an `extras` dictionary. The frontend dispatches on `mime` to pick a
   renderer, exactly as it does for file previews.
 
-Because the payloads are opaque, **adding a `Mode` requires zero Rust changes** —
-the frontend draws whatever tree the kernel sends and renders whatever the
-preview's MIME names.
+Because the payloads are opaque, a `Mode` plugin would need no Rust change —
+the frontend would draw whatever tree the kernel sends and render whatever the
+preview's MIME names. That is the design; it is not built, since nothing sends a
+mode's tree from a `Mode` subtype today.
 
 ## How a third-party mode would dispatch
 
@@ -82,8 +84,9 @@ startup — see [Discovery & Configuration](discovery.md).
 
 ## The current core modes
 
-For reference, the modes the kernel hosts today (the ones a hotkey switches
-between in the running app):
+For reference, the modes the window has today, each a native Rust view (the ones a
+hotkey switches between in the running app; the Modules tree is filled from the
+kernel's project scan):
 
 | Mode | Column 1 → 2 → 3 | Preview |
 |------|------------------|---------|
@@ -93,7 +96,7 @@ between in the running app):
 | Hosts | configured hosts → endpoint detail | host endpoint summary |
 
 Types, Math, and Outputs modes are designed but not yet built; Agents mode is
-pinned for later (single orchestrator only in phase 1). The mode table in the
+not built (pinned for later). The mode table in the
 [root design overview](../index.md) and `CLAUDE.md` lists the full intended set.
 
 ## Why modes aren't packaged yet

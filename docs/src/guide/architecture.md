@@ -14,7 +14,7 @@ how the same architecture runs a remote project with almost no extra plumbing.
 |---------|----------|------|
 | Frontend | Rust (winit + wgpu) | the native window, chrome, preview rendering, keystrokes. Stateless about the project — it renders what the backend sends and forwards input. |
 | Backend daemon | Rust (tokio) | project state, file watching, process supervision of the kernels, the REPL and the agent sessions, the comm relay. Exposes a JSON line protocol to the frontend. |
-| Julia kernel | Julia | dispatch tables, mode-tree computation, file-type-aware indexing, AST hashing, Julia-aware previews. Loads the project's `Project.toml` environment. |
+| Julia kernel | Julia | the `FileType` dispatch table and Julia-aware previews, project scans (the Modules tree), the file content hash behind the drift check. Loads the project's `Project.toml` environment. |
 | REPL | Julia | your interactive session, supervised by the backend, with a display shim that emits structured frames (stdout, stderr, value, image, error) over stdio. |
 
 The frontend holds no project knowledge. The backend is the single owner of
@@ -64,7 +64,7 @@ struct TreeNode
     label::String
     kind::Symbol              # :module, :function, :pngfile, ...
     has_children::Bool
-    badges::Vector{Symbol}    # :stale, :user_edited, :immutable, ...
+    badges::Vector{Symbol}    # design of the unbuilt per-entity layer: :stale, :user_edited, :immutable, ...
     payload::Dict{String,Any} # opaque, kernel-defined per kind
 end
 
@@ -75,10 +75,15 @@ struct PreviewPayload
 end
 ```
 
+Of the two, `PreviewPayload` is built (file-type previews return it). Core's Julia
+`TreeNode` is declared but not built: no Julia code constructs one today. The
+window's trees are built by the daemon and from the kernel's project scan, and
+travel as the Rust wire type `TreeNode` with the same fields.
+
 The frontend draws whatever tree the kernel sends and dispatches on `PreviewPayload`'s
 `mime` to pick a renderer. It never inspects `id` or `payload`; it never learns
 what a `:pngfile` *is*. The consequence is the load-bearing property of the whole
-design: **adding a new `FileType` requires zero Rust changes** (and a `Mode` too, once the mode-plugin seam is wired — modes are built into the frontend and backend today). A plugin
+design: **adding a new `FileType` needs no Rust change** unless its output must be bounded, in which case the daemon's preview gates also name its extensions (`Mode` is not built: the modes are native Rust views today). A plugin
 that teaches the kernel to preview a new file format ships entirely in Julia, and
 the frontend renders it because the MIME type tells it how. See
 [`TreeNode`](@ref) and [`PreviewPayload`](@ref) in the API reference.

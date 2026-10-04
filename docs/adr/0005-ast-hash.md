@@ -1,6 +1,6 @@
 # ADR 0005: AST hash algorithm
 
-**Status:** current — accepted.
+**Status:** current — accepted; the per-entity contract is NOT BUILT: today an annotation is stale when its file's content hash (the kernel's file.parse hash, a SHA-256 of the file's bytes) differs from its synced_against.
 **Date:** 2026-05-07
 
 ## Context

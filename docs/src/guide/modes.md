@@ -13,9 +13,10 @@ you left each one.
 Modes are a **planned** plugin surface: the design is a [`Mode`](@ref) subtype
 with `tree_root` / `tree_children` / `preview_for` methods adding a new root, and
 the core modes shipping as methods on that same type with no privileged path.
-Today the nav roots are fixed in the frontend (Files, Modules, Sessions, Hosts):
-Files, Sessions and Hosts are built in Rust, and only the Modules tree comes
-from the Julia kernel. The mode-plugin seam is not yet wired.
+`Mode` is declared in core and NOT BUILT. Today the nav roots are fixed native
+Rust views in the frontend (Files, Modules, Sessions, Hosts), not `Mode`
+subtypes: Files, Sessions and Hosts are built in Rust, and only the Modules tree
+comes from the Julia kernel. The mode-plugin seam is not wired.
 See [The Dispatch ABI](../extend/abi.md) and [Writing a Mode Plugin](../extend/mode.md).
 
 ## The same shape everywhere

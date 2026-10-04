@@ -51,9 +51,9 @@ it describes and records when it was last reconciled:
 ```yaml
 target: MyModule.MyType
 target_kind: type
-synced_against: <ast_hash>
+synced_against: <file hash>
 synced_at: 2026-01-15T14:30Z
-authored_by: orchestrator | user
+authored_by: an agent | the user
 references:
   - MyModule.method1
   - math/geometry/rotation
@@ -63,48 +63,58 @@ references:
 |-------|---------|
 | `target` | the entity this annotation describes |
 | `target_kind` | what kind of entity (`type`, `function`, `module`, …) |
-| `synced_against` | the AST hash of `target` at the last reconciliation |
+| `synced_against` | the content hash of the target's file at the last reconciliation |
 | `synced_at` | timestamp of that reconciliation |
-| `authored_by` | `orchestrator` or `user` — provenance feeds [Color Coding](color-coding.md) |
+| `authored_by` | free text, an agent or the user; nothing reads it today (the provenance colouring it is meant to feed is not built — see [Color Coding](color-coding.md)) |
 | `references` | links to other entities or annotations (verification is planned — see below) |
 
-The load-bearing field is `synced_against`. It is the AST hash of the target as
+The load-bearing field is `synced_against`. It is the hash of the target's file as
 of the last time the annotation was confirmed accurate. Staleness is just a
-comparison: recompute the target's hash now, and if it differs from
-`synced_against`, the prose was written against an older version of the code.
+comparison: take the file's hash now, and if it differs from `synced_against`,
+the prose was written against an older version of the code.
 Today `synced_against` is the only field the backend parses; the rest of the
 frontmatter is preserved verbatim across edits and shown above the editor, but is
 not otherwise acted on.
 
-## The AST hash
+## The staleness hash
 
-The hash is computed from the parsed AST of the targeted entity, not its raw
-text, so it ignores changes that don't matter and catches changes that do:
+What is built is a **file-level** hash. The kernel's `file.parse` reply carries
+an `ast_hash` field that is the SHA-256 of the file's bytes, rendered as the full
+64-character hex digest. Despite the field name, nothing is parsed to make it, so
+any change to the file — a reformat, a comment, a docstring — changes the hash,
+and one hash covers the whole file, however many entities it declares.
 
-- Reformatting and whitespace **outside** string literals → same hash. Running a
-  formatter does not mark anything stale.
-- Whitespace **inside** docstrings or string literals → different hash. A
-  meaningful docstring edit is a meaningful change.
-- Variable renames → different hash.
+The window keeps that hash per file and compares it with the `synced_against` of
+the annotation for the file (target `files/<path>`). The daemon parses only
+`synced_against` out of the frontmatter, and gates a concept write on it: a save
+carries the `synced_against` the editor opened with, and the daemon refuses the
+write if the annotation on disk has moved on.
 
-The algorithm walks the `JuliaSyntax.SyntaxNode` tree depth-first — `SyntaxNode`
-already excludes trivia (whitespace and comments) — emitting each node's `kind`
-and, for leaf nodes, the node's source text. That byte stream is hashed with
-SHA-256 and rendered as the full 64-character hex digest (no truncation, no
-version prefix).
+!!! warning "NOT BUILT: the per-entity hash"
+    ADR 0005 (`docs/adr/0005-ast-hash.md`) specifies a hash of the *targeted entity's*
+    parsed syntax tree, with trivia skipped, so that reformatting does not mark an
+    annotation stale while a structural edit does, and so that an edit elsewhere in
+    the file leaves it alone. That contract is not built. The kernel does compute a
+    per-definition `ast_hash` of that shape in its definition lists (`file.parse`
+    definitions, project scans), but nothing compares those values with
+    `synced_against` and no annotation is keyed to a single definition.
 
 ## Update lifecycle
 
 Drift detection is reactive — Ship of Tools surfaces it, you fix it when you choose to:
 
-1. **You save a file.** (Either you edited it, or the orchestrator did.)
-2. **The kernel re-parses the affected files** and recomputes AST hashes for the
-   entities in them.
-3. **Annotations whose target's hash changed are marked stale.** The comparison
-   is `current_hash != synced_against`.
-4. **Stale annotations render with a yellowed / wilting badge** — and they render
-   that way in *every* mode, because staleness is a property of the entity's
-   provenance, not of any one view. See [Color Coding](color-coding.md).
+1. **You save a file.** (Either you edited it, or an agent did.)
+2. **The window asks the kernel for the file's hash** (`file.parse`) when the
+   cursor reaches the file's row in Files mode, once per file, and keeps it. No
+   save event re-hashes a file today.
+3. **The annotation is marked stale when the hashes differ.** The comparison is
+   `file_hash != synced_against`, made for the annotation of the file under the
+   cursor.
+4. **The stale annotation renders yellowed** on that file's row and in the
+   annotation status line. See [Color Coding](color-coding.md).
+
+Not built: per-entity staleness (a changed entity marking only its own annotation
+stale) and the badge in every mode. Both rest on the per-entity hash above.
 
 There is no background sweep in phase 1. Nothing recomputes annotations on a
 timer or refreshes them behind your back. Visible drift is the feature: a
@@ -114,7 +124,7 @@ yellowed badge tells you the prose may no longer match the code.
 
 The intended model is reactive: navigate to the stale annotation and trigger a
 refresh with a single keypress that re-stamps `synced_against` (and `synced_at`)
-to the target's current hash, marking the prose as reconciled against the present
+to the file's current hash, marking the prose as reconciled against the present
 code. You stay in control of *when* — a refresh asserts the annotation is still
 accurate, so it is a deliberate act, not an automatic one.
 
