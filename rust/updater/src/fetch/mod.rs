@@ -101,7 +101,7 @@ impl Fetcher {
                 let sums_text = tokio::fs::read_to_string(dir.join("SHA256SUMS"))
                     .await
                     .with_context(|| format!("reading {}/SHA256SUMS", dir.display()))?;
-                let entries = crate::sums::parse_sums(&sums_text)?;
+                let entries = sums::parse_sums(&sums_text)?;
                 let version = entries
                     .iter()
                     .find_map(|e| crate::platform::parse_asset_name(&e.name).map(|(v, _)| v))

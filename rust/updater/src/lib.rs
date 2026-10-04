@@ -31,8 +31,6 @@ pub mod select;
 pub mod semver;
 pub mod unique;
 
-pub use fetch::{archive, hash, sums};
-
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -129,11 +127,11 @@ pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher)
         }
         Err(e) => return outcome_err(format!("check unavailable: {e}")),
     };
-    let entries = match sums::parse_sums(&latest.sums_text) {
+    let entries = match fetch::sums::parse_sums(&latest.sums_text) {
         Ok(v) => v,
         Err(e) => return outcome_err(format!("bad SHA256SUMS: {e}")),
     };
-    let identity = match sums::discover(&entries, repo, target) {
+    let identity = match fetch::sums::discover(&entries, repo, target) {
         Ok(id) => id,
         Err(e) => return outcome_err(format!("{e}")),
     };
@@ -252,7 +250,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         // a truncated download can never be mistaken for a complete one —
         // this is the same gate the fresh-download path goes through, asked
         // first so it can skip the download instead of only confirming it.
-        if hash::sha256_file(&archive_path).await.ok().as_deref() == Some(want.as_str()) {
+        if fetch::hash::sha256_file(&archive_path).await.ok().as_deref() == Some(want.as_str()) {
             tracing::info!(tag = %id.tag, asset = %id.asset, "reusing the verified asset from an interrupted stage");
         } else {
             let _ = tokio::fs::remove_file(&archive_path).await;
@@ -260,7 +258,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
                 .download(&id.repo, &id.tag, &id.asset, &archive_path)
                 .await
                 .context("downloading release asset")?;
-            let got = hash::sha256_file(&archive_path).await?;
+            let got = fetch::hash::sha256_file(&archive_path).await?;
             if got != want {
                 bail!(
                     "sha256 mismatch for {}: expected {}, got {got}",
@@ -275,7 +273,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         // carries no digest of its own, so nothing could tell it apart from a
         // complete one.
         let _ = tokio::fs::remove_dir_all(tmp.join(&top)).await;
-        archive::extract_validated(&archive_path, &tmp, &top)
+        fetch::archive::extract_validated(&archive_path, &tmp, &top)
             .await
             .context("extracting release archive")?;
 
@@ -287,7 +285,7 @@ async fn stage_locked(cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<bool>
         let mut rd = tokio::fs::read_dir(tmp.join(&top)).await?;
         while let Some(entry) = rd.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let digest = hash::sha256_file(&entry.path()).await?;
+            let digest = fetch::hash::sha256_file(&entry.path()).await?;
             sums_lines.push_str(&format!("{digest}  {top}/{name}\n"));
         }
         tokio::fs::write(tmp.join("files.sha256"), sums_lines)
@@ -347,17 +345,17 @@ async fn fetch_source_commit(
         .await
         .context("downloading tag-pinned SHA256SUMS")?;
     let sums_text = tokio::fs::read_to_string(&sums_path).await?;
-    let entries = sums::parse_sums(&sums_text)?;
+    let entries = fetch::sums::parse_sums(&sums_text)?;
     // Cross-check: the tag-pinned sums must agree with the discovery-time
     // digest for our asset (a half-moved release dies here).
-    let pinned = sums::lookup(&entries, &id.asset)?;
+    let pinned = fetch::sums::lookup(&entries, &id.asset)?;
     if pinned != id.asset_sha256.to_ascii_lowercase() {
         bail!(
             "tag-pinned SHA256SUMS digest for {} disagrees with discovery — refusing",
             id.asset
         );
     }
-    let Ok(commit_digest) = sums::lookup(&entries, "COMMIT") else {
+    let Ok(commit_digest) = fetch::sums::lookup(&entries, "COMMIT") else {
         tracing::warn!(tag = %id.tag, "release publishes no COMMIT file — source-commit binding unavailable (legacy release)");
         return Ok(None);
     };
@@ -366,7 +364,7 @@ async fn fetch_source_commit(
         .download(&id.repo, &id.tag, "COMMIT", &commit_path)
         .await
         .context("downloading COMMIT")?;
-    let got = hash::sha256_file(&commit_path).await?;
+    let got = fetch::hash::sha256_file(&commit_path).await?;
     if got != commit_digest {
         bail!("COMMIT file digest mismatch — refusing");
     }
@@ -534,7 +532,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(st.success());
-        let digest = hash::sha256_file(&archive).await.unwrap();
+        let digest = fetch::hash::sha256_file(&archive).await.unwrap();
         tokio::fs::write(
             release.join("SHA256SUMS"),
             format!("{digest}  {asset}\n"),
