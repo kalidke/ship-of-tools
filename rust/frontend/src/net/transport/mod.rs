@@ -190,7 +190,6 @@ pub struct WorkspaceInfo {
     /// has ever run for it), or `"unreachable"` (the lane could not be
     /// queried at all) — `Some` only for `runtime == "capsule"` rows.
     /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
-    #[allow(dead_code)]
     pub phase: Option<String>,
     /// Per-session accounts (owner-simplified brief, 2026-09-15): the
     /// login directory this row's agent runs under. `""` = the agent's

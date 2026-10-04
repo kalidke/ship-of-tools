@@ -218,7 +218,6 @@ pub enum IncomingEvt {
     },
     /// `file.read` reply — a source file's full text + content `version` for
     /// the editor (distinct from `preview.get`, which is kernel-rendered).
-    #[allow(dead_code)] // editor consumer (gpu.rs) lands in the next commit
     FileRead {
         node_id: String,
         exists: bool,
@@ -227,7 +226,6 @@ pub enum IncomingEvt {
     },
     /// `file.write` reply: happy path, optimistic-concurrency conflict, or
     /// error — see `FileWriteResult`.
-    #[allow(dead_code)] // editor consumer (gpu.rs) lands in the next commit
     FileWriteDone {
         node_id: String,
         result: FileWriteResult,
@@ -430,7 +428,6 @@ pub enum IncomingEvt {
     /// Raw event we don't handle in the spike yet — kept for visibility.
     Event {
         op: String,
-        #[allow(dead_code)]
         payload: Value,
     },
     /// `tmux.list_panes` reply for the queried session (or for the whole

@@ -16,8 +16,6 @@ pub enum OutgoingReq {
     /// Re-request the root of a named mode tree. Used by the m/f mode-switch
     /// in the chrome to swap the left pane between modes. Today the backend
     /// only knows "files"; other modes are routed via `ModulesList` etc.
-    #[allow(dead_code)] // constructed by the m/f keyboard handler in the
-    // mode-switch commit; transport plumbing ships first.
     TreeRoot {
         mode: String,
         /// ADR 0014 workspace routing. Same shape as TreeChildren.
@@ -86,7 +84,6 @@ pub enum OutgoingReq {
     /// (`<project_root>/src/<PkgName>.jl` + everything it `include`s)
     /// and return a nested {modules → types/functions/submodules}
     /// view. Drives the unified Modules+Types nav mode.
-    #[allow(dead_code)] // consumer lands in the unified-tree commit
     ProjectScan { workspace_id: Option<String>, generation: u64 },
     /// Fetch the `.concept/<target>.md` annotation for `target`. Response
     /// surfaces as `IncomingEvt::ConceptRead`.
@@ -107,7 +104,6 @@ pub enum OutgoingReq {
     /// returns a `stale_write` error otherwise. The chrome should always
     /// send `expected_ast_hash` for an edit-then-save flow so the gate
     /// is engaged.
-    #[allow(dead_code)] // edit-mode UI fires this in the next commit
     ConceptWrite {
         target: String,
         content: String,
@@ -116,7 +112,6 @@ pub enum OutgoingReq {
     },
     /// Read a source file's full text for the editor. Reply →
     /// `IncomingEvt::FileRead`. Distinct from `preview.get` (kernel-rendered).
-    #[allow(dead_code)] // editor (gpu.rs) fires this in the next commit
     FileRead {
         node_id: String,
         workspace_id: Option<String>,
@@ -124,7 +119,6 @@ pub enum OutgoingReq {
     /// Persist editor content. `expected_version` (from the matching
     /// `FileRead`) engages the optimistic-concurrency gate; `None` forces.
     /// Reply → `IncomingEvt::FileWriteDone`.
-    #[allow(dead_code)] // editor (gpu.rs) fires this in the next commit
     FileWrite {
         node_id: String,
         content: String,
