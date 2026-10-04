@@ -4,3 +4,4 @@ pub mod client;
 pub mod rules;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub mod supervisor_client;
+pub mod worker;

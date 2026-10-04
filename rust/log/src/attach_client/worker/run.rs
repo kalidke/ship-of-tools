@@ -1,0 +1,602 @@
+//! The worker thread: `run_worker`, its held-input bookkeeping and the retry and link-pause waits.
+
+use crate::challenge::PeerAuthOutcome;
+use crate::client::{Client, Endpoint};
+use crate::fe_client::{
+    self, FeDownBaseline, OutstandingSlot, QuitDispatcher,
+    ReconnectDecision, ReconnectState, Role, TakeTransaction,
+};
+use crate::wire::{self};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use super::*;
+
+
+// -----------------------------------------------------------------------
+// The worker thread
+// -----------------------------------------------------------------------
+
+/// What triggered the take-on-first-input `take` currently in flight (or
+/// about to be), so the post-`take_ok`/`resize_ok` flush knows what to
+/// send once it is safe to. `Ordinary` covers the common case (a real
+/// keystroke); the other two exist ONLY to correctly discharge ruling
+/// (c)'s exactly-once contract (Codex review round, finding 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TakeIntent {
+    /// Flush whatever `TakeTransaction::take_queued` returns, minting a
+    /// FRESH idem key.
+    Ordinary,
+    /// Resend the retained `OutstandingInput` under the SAME key, once
+    /// the fresh epoch is known (ruling (c): "resends THE SAME KEY").
+    ReconnectResend,
+    /// `input_refused_stale`'s own retry: mint a NEW key under the fresh
+    /// epoch now that it is known (ruling (c): "re-sent under the new
+    /// epoch with a NEW key").
+    StaleRetry,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_worker<E: Endpoint>(
+    endpoint: E,
+    lane: String,
+    controller_id: String,
+    fe_down_to_handle: String,
+    mut fe_down: FeDownBaseline,
+    initial_cols: u16,
+    initial_rows: u16,
+    cmd_rx: Receiver<WorkerMsg>,
+    msg_tx: Sender<WorkerMsg>,
+    sink: impl Fn(WorkerEvent) + Send + 'static,
+    queued_bytes: Arc<QueuedBytes>,
+    recorded_bytes: Arc<AtomicU64>,
+    last_input_outcome: Arc<Mutex<Option<InputOutcome>>>,
+    take_epoch_pub: Arc<AtomicU64>,
+    discarded: Arc<AtomicUsize>,
+    attach_gen: Arc<AtomicU64>,
+    viewed: Arc<AtomicBool>,
+    headless: bool,
+) where
+    E: Send + Sync + 'static,
+    E::Client: 'static,
+{
+    let mut reconnect = ReconnectState::new();
+    let mut take = if headless { TakeTransaction::new_headless() } else { TakeTransaction::new() };
+    let mut outstanding = OutstandingSlot::new();
+    let mut quit = QuitDispatcher::new();
+    let mut take_intent = TakeIntent::Ordinary;
+    let mut cols = initial_cols;
+    let mut rows = initial_rows;
+    let mut voyage_uuid: Option<String> = None;
+    // Owned by the worker, not re-derived per call: a rendering client
+    // gets a deadline once; headless never tolerates EndedNoRespawn.
+    let mut first_attach_deadline =
+        (!headless).then(|| Instant::now() + FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND);
+    let mut take_epoch: u64 = 0;
+    let mut shutdown = false;
+    // ADR 0041 "attach proto v2 bound to checkpoint v2" (Codex round on
+    // #194): the version THIS episode's `hello` asks for. Starts at the
+    // newest this build speaks; a `hello_refused` naming a version this
+    // client ALSO speaks (only ever `ATTACH_PROTO_V1`, an older capsule)
+    // downgrades this and retries the whole episode immediately, rather
+    // than failing outright -- survives across `continue 'episodes` on
+    // purpose, unlike the per-episode locals above it.
+    let mut preferred_attach_proto = wire::ATTACH_PROTO_V2;
+    // Ruling (a), Codex review round finding 2: a `Quit` requested
+    // while no supervisor connection is currently open (mid-backoff, or
+    // before the first one ever connects) is LATCHED here rather than
+    // dropped — applied the instant a fresh supervisor connection
+    // exists, since `end_run` needs only that lane, never the attach
+    // lane.
+    let mut held = Held { quit: None, resize: None, discarded: Arc::clone(&discarded) };
+
+    let emit = |e: WorkerEvent| sink(e);
+
+    'episodes: while !shutdown {
+        emit(WorkerEvent::Status("connecting\u{2026}".to_string()));
+
+        // --- supervisor lane: hello (build identity) once, then converge
+        // on Ready (ADR 0043 decision 28) -------------------------------
+        let supervisor_ready = match connect_supervisor_lane::<E>(&endpoint, &lane) {
+            Ok((conn, _proven)) => {
+                match converge_on_ready::<E>(
+                    &endpoint,
+                    conn,
+                    FrameReader::new(),
+                    &lane,
+                    &cmd_rx,
+                    &mut reconnect,
+                    &mut held,
+                    &mut quit,
+                    &mut outstanding,
+                    first_attach_deadline,
+                    &viewed,
+                    &emit,
+                ) {
+                    ReadyOutcome::Ready { conn, sup_reader, voyage_id, voyage_conn } => {
+                        Some((conn, sup_reader, voyage_id, voyage_conn))
+                    }
+                    ReadyOutcome::Terminal(msg) => {
+                        emit(WorkerEvent::Terminal(msg));
+                        return;
+                    }
+                    ReadyOutcome::ShouldExit => {
+                        emit(WorkerEvent::ShouldExit);
+                        return;
+                    }
+                    ReadyOutcome::Shutdown => break 'episodes,
+                    ReadyOutcome::LaneDown => None,
+                }
+            }
+            Err(LaneError::Protocol(p)) if p.contains("version_skew") => {
+                // `classify_hello_refused_version_skew` is always `Terminal`
+                // (no `Retry` arm exists to discard it into) -- emit and
+                // return directly rather than matching a foregone answer.
+                reconnect.classify_hello_refused_version_skew();
+                emit(WorkerEvent::Terminal(
+                    "the row's supervisor refused this client (another lane protocol, or a supervisor from before the protocol-only gate); end the row and recreate it".to_string(),
+                ));
+                return;
+            }
+            Err(LaneError::Protocol(p)) if p.contains("foreign") => {
+                match reconnect.classify_foreign() {
+                    ReconnectDecision::Terminal(reason) => {
+                        emit(WorkerEvent::Terminal(format!("supervisor lane: {reason:?}")));
+                        return;
+                    }
+                    ReconnectDecision::Retry => unreachable!("classify_foreign is always terminal"),
+                }
+            }
+            Err(LaneError::Io(e)) if is_access_denied(&e) => {
+                emit(WorkerEvent::Terminal("supervisor lane: access denied".to_string()));
+                return;
+            }
+            // ADR 0045 decision 4: the two bridge-only outcomes beyond
+            // an ordinary `Io` — a refusal is terminal, its code named
+            // in the pane line; the two uncertain arms retry, clearing
+            // the health window's clock first so transport uncertainty
+            // is never charged to it.
+            Err(LaneError::Refused { code, detail }) => {
+                let msg = if code == "no_bridge" {
+                    "this daemon has no bridge — it predates the lane bridge (ADR 0045)".to_string()
+                } else {
+                    format!("daemon refused the lane ({code}): {detail}")
+                };
+                emit(WorkerEvent::Terminal(msg));
+                return;
+            }
+            Err(LaneError::LinkDown) => {
+                reconnect.clear_unresponsive();
+                match pause_for_link(&endpoint, &cmd_rx, &mut held, &viewed, &emit) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
+                }
+            }
+            Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_))) => {
+                reconnect.clear_unresponsive();
+                let msg = match &e {
+                    LaneError::Unreachable(d) => format!("daemon unreachable — retrying ({d})"),
+                    LaneError::Undetermined(_) => "daemon could not identify the lane — retrying".to_string(),
+                    _ => unreachable!("matched above"),
+                };
+                emit(WorkerEvent::Status(msg));
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
+                }
+            }
+            Err(_) => None,
+        };
+
+        // Ruling (d), Codex review round finding 8: only when the
+        // supervisor lane is ALSO absent/unresponsive this round does the
+        // health window even get consulted -- a reachable voyage pipe
+        // (the capsule surviving headless) clears it unconditionally.
+        let (supervisor_conn, sup_reader, voyage, voyage_conn) = match supervisor_ready {
+            Some(v) => v,
+            None => {
+                // Finding 2: resolved FRESH here, not cached from the top
+                // of the episode -- `converge_on_ready` may have polled
+                // for a long while before reporting `LaneDown`/failing to
+                // connect at all. Decision 6: the probe uses `voyage_uuid`
+                // -- the voyage id the supervisor last reported to THIS
+                // client, carried across episodes -- never a pointer file.
+                match on_supervisor_absent_or_unresponsive::<E>(&endpoint, &mut reconnect, &lane, voyage_uuid.as_deref(), Instant::now()) {
+                    ReconnectDecision::Terminal(reason) => {
+                        emit(WorkerEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
+                        return;
+                    }
+                    ReconnectDecision::Retry => {
+                        emit(WorkerEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
+                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
+                            WaitOutcome::Shutdown => break 'episodes,
+                            WaitOutcome::Continue => continue 'episodes,
+                        }
+                    }
+                }
+            }
+        };
+
+        // A resize read while not attached is applied before this attach's
+        // hello, so the capsule sees the size the pane has now.
+        if let Some((c, r)) = held.resize.take() {
+            cols = c;
+            rows = r;
+        }
+
+        if voyage_uuid.as_deref() != Some(voyage.as_str()) {
+            // A reset landed underneath us: any outstanding input from
+            // the OLD voyage is canceled, never replayed into the new
+            // one -- and reported, never silently (finding 6). Keyed on
+            // the id `converge_on_ready` confirmed against the
+            // supervisor's own `Status` reply, not a locally cached
+            // pointer read.
+            let mut canceled_input = false;
+            if let fe_client::ReconnectResendDecision::Cancel { canceled } =
+                outstanding.resend_after_reconnect(&voyage, take_epoch)
+            {
+                canceled_input = true;
+                emit(WorkerEvent::Status(format!(
+                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
+                    canceled.bytes.len()
+                )));
+            }
+            let mut lost = take.reset_to_watching();
+            if canceled_input {
+                lost += 1;
+            }
+            if lost > 0 {
+                discarded.fetch_add(lost, Ordering::AcqRel);
+                emit(WorkerEvent::InputsDiscarded);
+            }
+            take_intent = TakeIntent::Ordinary;
+            voyage_uuid = Some(voyage.clone());
+        }
+
+        // --- attach lane: the voyage pipe is already connected --
+        // `converge_on_ready` made that ONE attempt itself (finding 1),
+        // folded into its own Status-polling loop rather than an
+        // independent retry here.
+        let attach_identity = match endpoint.authenticate_server(&voyage_conn) {
+            PeerAuthOutcome::Authenticated(a) => (a.pid, a.created),
+            PeerAuthOutcome::Foreign => {
+                emit(WorkerEvent::Terminal("voyage pipe: foreign".to_string()));
+                return;
+            }
+            PeerAuthOutcome::Undetermined => {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
+                    WaitOutcome::Shutdown => break 'episodes,
+                    WaitOutcome::Continue => continue 'episodes,
+                }
+            }
+        };
+
+        let mut attach_reader = FrameReader::new();
+        match attach_lane_hello::<E>(&voyage_conn, &mut attach_reader, preferred_attach_proto) {
+            Ok(HelloOutcome::Accepted) => {}
+            Ok(HelloOutcome::RetryAt(fallback)) => {
+                // The capsule does not speak `preferred_attach_proto` (an
+                // older build, predating attach proto v2 / the
+                // scrollback ring) but DOES speak a version this client
+                // also understands. Retry the whole episode immediately
+                // -- a fresh connection, since the refused one is already
+                // closed server-side -- at that version rather than
+                // failing outright: v1 still works, just without
+                // history.
+                preferred_attach_proto = fallback;
+                continue 'episodes;
+            }
+            Err(e) => match e {
+                LaneError::Protocol(p) if p.contains("version_skew") => {
+                    emit(WorkerEvent::Terminal(
+                        "attach hello: version_skew".to_string(),
+                    ));
+                    return;
+                }
+                _ => {
+                    match wait_for_retry_or_shutdown(
+                        &cmd_rx,
+                        reconnect.retry_with_backoff(),
+                        &mut held,
+                    ) {
+                        WaitOutcome::Shutdown => break 'episodes,
+                        WaitOutcome::Continue => continue 'episodes,
+                    }
+                }
+            },
+        }
+        let checkpoint =
+            match attach_and_collect_checkpoint::<E>(&voyage_conn, &mut attach_reader, &controller_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    // A refusal the capsule NAMED is the one failure here
+                    // a user can act on, so it reaches the row's status
+                    // line (the same `WorkerEvent::Status` path every
+                    // other retrying lane failure uses). Every other
+                    // error keeps the silent retry: the pane's own
+                    // "connecting..." already says what is happening.
+                    if let LaneError::AttachRefused(reason) = e {
+                        emit(WorkerEvent::Status(attach_refused_text(reason).to_string()));
+                    }
+                    match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
+                        WaitOutcome::Shutdown => break 'episodes,
+                        WaitOutcome::Continue => continue 'episodes,
+                    }
+                }
+            };
+
+        // switch-latency Phase 1: the checkpoint (and the "attached"
+        // status right behind it) now land BEFORE the mgmt-identity
+        // round trip below, not after. That round trip is a THROWAWAY
+        // connection + full challenge purely to word the attach notice —
+        // best-effort commentary on an already-attached client, never a
+        // precondition for showing one — and it used to sit ahead of the
+        // checkpoint emit, delaying first paint by a whole extra
+        // connection + challenge for no reason the client's own state
+        // needed.
+        // First completed attach: never tolerate EndedNoRespawn again.
+        first_attach_deadline = None;
+        // Stamped BEFORE the checkpoint is emitted: a headless caller may
+        // send as soon as it applies the checkpoint, and that input must
+        // read as current. An input sent earlier read the older value.
+        let attached_gen = attach_gen.fetch_add(1, Ordering::AcqRel) + 1;
+        emit(WorkerEvent::Checkpoint(checkpoint));
+        emit(WorkerEvent::Status("attached".to_string()));
+        reconnect.attached();
+
+        // The attach notice names the leg from the attach connection's own
+        // daemon-authenticated identity (ADR 0045: the daemon's OS-level
+        // observation of the voyage process, bound to this connection).
+        // A second, throwaway mgmt-lane dial used to re-prove the same
+        // (pid, created) here and blocked input until it finished.
+        emit(WorkerEvent::Notice(fe_client::attach_notice_text(&format!("{}", attach_identity.1))));
+
+        // Anything still queued was typed before this attach: discarded
+        // and counted, never delivered.
+        let lost = take.reset_to_watching();
+        if lost > 0 {
+            discarded.fetch_add(lost, Ordering::AcqRel);
+            emit(WorkerEvent::InputsDiscarded);
+        }
+
+        // Ruling (f): fe_down marker on every attach after the first.
+        let now_iso = iso_now();
+        if let Some(marker) = fe_down.marker_for_attach(&fe_down_to_handle, &now_iso) {
+            emit(WorkerEvent::FeDownMarker(marker));
+        }
+
+        // Ruling (c), Codex review round finding 6: resume any input
+        // left outstanding from a prior connection, within this same
+        // voyage -- kick off the SAME take-on-first-input transaction
+        // that a real keystroke would, so `resize` then the retained
+        // frame flow through the identical lockstep-respecting path.
+        match outstanding.resend_after_reconnect(&voyage, take_epoch) {
+            fe_client::ReconnectResendDecision::Resend { .. } => {
+                take_intent = TakeIntent::ReconnectResend;
+                if take.role() == Role::Watching {
+                    let actions = take.on_input_while_watching(&[]);
+                    for action in actions {
+                        apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
+                    }
+                }
+            }
+            fe_client::ReconnectResendDecision::Cancel { canceled } => {
+                emit(WorkerEvent::Status(format!(
+                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
+                    canceled.bytes.len()
+                )));
+            }
+            fe_client::ReconnectResendDecision::None => {}
+        }
+
+        // Spawn the episode-scoped reader thread for the attach
+        // connection's steady-state stream.
+        let shared_conn = Arc::new(voyage_conn);
+        let reader_tx = msg_tx.clone();
+        let reader_conn = Arc::clone(&shared_conn);
+        let episode_stop = Arc::new(AtomicBool::new(false));
+        let reader_stop = Arc::clone(&episode_stop);
+        let reader_queued_bytes = Arc::clone(&queued_bytes);
+        let reader_thread = match thread::Builder::new()
+            .name("sot-fe-attach-reader".to_string())
+            .spawn(move || run_attach_reader::<E>(reader_conn, attach_reader, reader_tx, reader_queued_bytes, reader_stop))
+        {
+            Ok(jh) => jh,
+            Err(e) => {
+                // Codex review round, finding 13: a reader that could
+                // not even be spawned must never look "attached" -- no
+                // thread exists to ever deliver TakeOk, output, or input
+                // acknowledgements.
+                emit(WorkerEvent::Terminal(format!("failed to start the attach reader thread: {e}")));
+                return;
+            }
+        };
+        let mut last_liveness_poll = Instant::now();
+
+        // --- steady state ------------------------------------------
+        let episode_result = run_steady_state::<E>(
+            &endpoint,
+            &cmd_rx,
+            &emit,
+            &lane,
+            &shared_conn,
+            supervisor_conn,
+            sup_reader,
+            &mut take,
+            &mut take_intent,
+            &mut outstanding,
+            &mut quit,
+            &mut reconnect,
+            &mut cols,
+            &mut rows,
+            &mut take_epoch,
+            &controller_id,
+            &voyage,
+            &mut last_liveness_poll,
+            &recorded_bytes,
+            &last_input_outcome,
+            &take_epoch_pub,
+            attached_gen,
+            &discarded,
+        );
+
+        // Tear down this episode's connections before deciding what's
+        // next. The stop flag interrupts the reader's OWN backpressure
+        // wait (a `QueuedBytes` condvar wait, not a blocked read --
+        // `cancel()` alone cannot reach it); `notify_stop` wakes it
+        // promptly since the plain `store` above has nothing else to
+        // make a parked `Condvar::wait` notice it. `cancel()` then
+        // unblocks a blocked read so the thread observes an error, sends
+        // the now-moot `ReaderDone` (harmlessly ignored; a fresh reader
+        // is not spawned until the next successful attach), and exits;
+        // only then do both `Arc` clones drop and the pipe handle
+        // actually closes.
+        episode_stop.store(true, Ordering::Release);
+        queued_bytes.notify_stop();
+        shared_conn.cancel();
+        let _ = reader_thread.join();
+        drop(shared_conn);
+
+        match episode_result {
+            SteadyOutcome::Shutdown => {
+                shutdown = true;
+            }
+            SteadyOutcome::QuitEnded => {
+                emit(WorkerEvent::ShouldExit);
+                shutdown = true;
+            }
+            SteadyOutcome::Terminal(reason) => {
+                emit(WorkerEvent::Terminal(reason));
+                return;
+            }
+            SteadyOutcome::Reconnect => {
+                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
+                    WaitOutcome::Shutdown => shutdown = true,
+                    WaitOutcome::Continue => {}
+                }
+            }
+        }
+    }
+}
+
+pub(super) enum SteadyOutcome {
+    Shutdown,
+    QuitEnded,
+    Terminal(String),
+    /// An episode end -- the NEXT episode resets the take transaction to
+    /// Watching, counting any queued input as discarded.
+    Reconnect,
+}
+
+
+
+/// The one reader of a command read while not attached. `Shutdown` is the
+/// only message that ends the wait; a `Quit` is latched (applied the moment
+/// a supervisor connection exists), a `Resize` is held for the next attach,
+/// an `Input` is counted and dropped (its reservation drops with it), and
+/// frames the worker's own reader sent are moot.
+pub(super) fn hold(msg: WorkerMsg, held: &mut Held) -> Option<WaitOutcome> {
+    match msg {
+        WorkerMsg::Shutdown => return Some(WaitOutcome::Shutdown),
+        WorkerMsg::Quit(reason) => {
+            held.quit.get_or_insert(reason);
+        }
+        WorkerMsg::Resize(c, r) => held.resize = Some((c, r)),
+        WorkerMsg::Input(..) => {
+            held.discarded.fetch_add(1, Ordering::AcqRel);
+        }
+        _ => {}
+    }
+    None
+}
+
+pub(super) enum WaitOutcome {
+    Continue,
+    Shutdown,
+}
+
+/// Blocks up to `wait` for a `Shutdown` command, otherwise returns after
+/// the backoff elapses so the next episode can start. Every other command
+/// read during the wait goes through [`hold`]: a `Quit` is LATCHED rather
+/// than dropped (Codex review round, finding 2) — the top of the next
+/// episode applies it the moment a supervisor connection exists, since
+/// `end_run` needs only that lane — and an `Input` has no live connection
+/// to be sent on, so it is counted and dropped.
+pub(super) fn wait_for_retry_or_shutdown(cmd_rx: &Receiver<WorkerMsg>, wait: Duration, held: &mut Held) -> WaitOutcome {
+    let deadline = Instant::now() + wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return WaitOutcome::Continue;
+        }
+        match cmd_rx.recv_timeout(remaining.min(WORKER_TICK)) {
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return outcome;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
+        }
+    }
+}
+
+/// The pause for a down link: one status line, then a tick-by-tick
+/// wait that reads the channel through [`hold`] (a `Resize` is kept for the
+/// next attach, an `Input` is counted) until the endpoint's link is up AND
+/// the client is viewed. A tick always passes first, so an endpoint that
+/// reports `LinkDown` while `link_up()` is true cannot spin.
+pub(super) fn pause_for_link<E: Endpoint>(
+    endpoint: &E,
+    cmd_rx: &Receiver<WorkerMsg>,
+    held: &mut Held,
+    viewed: &AtomicBool,
+    emit: &dyn Fn(WorkerEvent),
+) -> WaitOutcome {
+    emit(WorkerEvent::Status("host offline, waiting for the link".to_string()));
+    loop {
+        match cmd_rx.recv_timeout(WORKER_TICK) {
+            Ok(msg) => {
+                if let Some(outcome) = hold(msg, held) {
+                    return outcome;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return WaitOutcome::Shutdown,
+        }
+        if endpoint.link_up() && viewed.load(Ordering::Acquire) {
+            return WaitOutcome::Continue;
+        }
+    }
+}
+
+pub(super) fn iso_now() -> String {
+    // No chrono dependency in this crate; a plain RFC-3339-shaped UTC
+    // stamp built from `SystemTime` is sufficient here since this string
+    // is carried opaquely (fe_client::build_fe_down_marker never parses
+    // it) and only ever compared/read by a human or a future durable
+    // reader that already tolerates the daemon's own ISO-8601 strings.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Civil-from-days (Howard Hinnant's algorithm) -- avoids a chrono
+    // dependency for one timestamp string.
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m2 = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m2 <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m2:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}

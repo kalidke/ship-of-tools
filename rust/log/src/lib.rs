@@ -187,7 +187,7 @@ pub use attach_client::client as fe_client_io;
 // sink and bounded ingress — see that module's own top doc. Ungated for
 // the same reason `fe_client_io` is: a state machine over an `Endpoint`,
 // not a platform primitive itself.
-pub mod attach_worker;
+pub use attach_client::worker as attach_worker;
 // ADR 0041 step 6, unit U2: the supervisor's own durable operation
 // journal (`operation_id`/`.active`/`.terminal`, recovery-first
 // reconciliation) — portable, like `pointer`/`rollout`, since it reuses
