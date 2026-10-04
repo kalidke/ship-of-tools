@@ -7,9 +7,12 @@ daemon's page serving; charter: rust/backend/src/pages/CLAUDE.md.
 
 ## Files
 - `mod.rs`: the grant tables (prefix nonces, pool ports), the prefix and pool listeners, and `handle_conn` for one request.
+- `links.rs`: `Site` and what a request path may open: the git link set, the data-roots file, the R0-R6 rules.
+- `links_tests.rs`: tests of the follow rule over a real git repo and symlinked data roots (unix).
+- `tests.rs`: tests of pool assignment, bind fallback and serving a prefix site.
 
 ## Start here
-`mod.rs` `handle_conn` for one request; `resolve_and_open` (in `mod.rs` until the links split) for what may be served.
+`links.rs` `resolve_and_open` for what may be served; `mod.rs` `handle_conn` for one request.
 
 ## Rules
 - A connection holds one prefix site, named by a fresh nonce at every open; a re-open drops the old nonce, so a stale
