@@ -21,8 +21,7 @@ resolved to a [`FileType`](@ref) at runtime once the right packages are loaded.
     (`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/ShipToolsKernel.jl`). A
     third-party plugin loads only from a source checkout: add it to
     `julia/kernel`'s environment, then either add it to the kernel's `using`
-    list or map its file extension in `LAZY_PLUGIN_FOR_EXT`. The kernel has a
-    `plugins.load` op, but no client sends it. On a release install the kernel
+    list or map its file extension in `LAZY_PLUGIN_FOR_EXT`. On a release install the kernel
     lives inside the pinned release checkout, and local changes there make the
     next update refuse to run.
 

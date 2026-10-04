@@ -53,10 +53,6 @@ Binary payloads are base64-encoded inline (`payload.blob_base64`); text
 mimes also get a UTF-8 `text` field for convenience. If no plugin matches
 the path, returns `{matched: false}` so callers can fall back to the
 backend's bytes-level preview.
-
-This is the runtime counterpart to `plugins.list`: it actually invokes
-the dispatch surface, proving plugin extensions function end-to-end —
-not just that the methods are defined.
 """
 function handle_file_preview(io::IO, state::KernelState, id, payload)
     path = String(get(payload, :path, ""))

@@ -8,7 +8,7 @@ module HDF5Preview
 #   would be a fresh-box-breaks failure mode. `HDF5_jll` is self-contained and
 #   cross-platform — the only no-system-install path.
 # - **Lazy:** the kernel does NOT eagerly `using HDF5Preview`; it's loaded
-#   on-demand (auto-load on first `.h5` preview, or `plugins.load`), so
+#   on-demand (auto-load on first `.h5` preview), so
 #   `using HDF5` here pulls `HDF5_jll` only when a user actually opens an HDF5
 #   file — never at kernel startup.
 # - **Metadata-only:** we walk groups/datasets and report name · shape · eltype

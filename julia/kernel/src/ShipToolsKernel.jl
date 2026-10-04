@@ -3,8 +3,7 @@ module ShipToolsKernel
 using Base64
 using ConceptExplorerCore
 # Built-in "core ships as plugins to itself" plugins. Loaded eagerly so
-# the standard FileType subtypes are present from the first request —
-# third-party plugins still come in via `plugins.load`. If a kernel
+# the standard FileType subtypes are present from the first request. If a kernel
 # image ever wants to start without these (e.g. a minimal sandbox), the
 # `using` here is the only thing to drop.
 using ShipToolsJsonDoc
@@ -61,9 +60,8 @@ function serve(io_in::IO, io_out::IO; project_root::AbstractString = pwd())
         payload = get(req, :payload, Dict{Symbol,Any}())
 
         try
-            # invokelatest so methods added by a prior `plugins.load` (which
-            # mutates the world via `using`) are visible to subsequent ops in
-            # the same serve loop.
+            # invokelatest so methods added at runtime are visible to
+            # subsequent ops in the same serve loop.
             Base.invokelatest(dispatch, io_out, state, id, op, payload)
         catch e
             bt = sprint(showerror, e, catch_backtrace())
@@ -99,10 +97,6 @@ function dispatch(io::IO, state::KernelState, id, op, payload)
         handle_modules_list(io, state, id, payload)
     elseif op == "file.parse"
         handle_file_parse(io, state, id, payload)
-    elseif op == "plugins.list"
-        handle_plugins_list(io, state, id, payload)
-    elseif op == "plugins.load"
-        handle_plugins_load(io, state, id, payload)
     elseif op == "file.preview"
         handle_file_preview(io, state, id, payload)
     elseif op == "function.methods"
@@ -135,52 +129,6 @@ function handle_hello(io::IO, state::KernelState, id, _payload)
         :project_root => state.project_root,
     )
     write_envelope(io, "res", id, "kernel.hello", res)
-end
-
-"""
-    handle_plugins_list
-
-Walk `subtypes(ConceptExplorerCore.FileType)` and report each plugin's
-`FileType` subtype. Loaded plugins automatically appear here once their
-module has been `using`-ed — no registration call required. Validates the
-plugin ABI per the project's "core ships as plugins to itself" rule.
-"""
-function handle_plugins_list(io::IO, state::KernelState, id, _payload)
-    types = ConceptExplorerCore.file_types()
-    entries = [Dict(
-        :name => string(nameof(T)),
-        :module => string(parentmodule(T)),
-        :matches_defined => hasmethod(ConceptExplorerCore.matches,
-                                       Tuple{Type{T}, AbstractString}),
-        :preview_defined => hasmethod(ConceptExplorerCore.preview,
-                                       Tuple{Type{T}, AbstractString}),
-    ) for T in types]
-    write_envelope(io, "res", id, "plugins.list", Dict(:file_types => entries))
-end
-
-"""
-    handle_plugins_load
-
-Load a Julia package by name from the kernel's environment so its
-`FileType` extensions register. Phase-1 only loads packages that are
-already on the kernel's load path (added via Pkg.develop / Pkg.add); a
-future revision can spawn a fresh Pkg sandbox for untrusted plugins.
-"""
-function handle_plugins_load(io::IO, state::KernelState, id, payload)
-    name = String(get(payload, :name, ""))
-    if isempty(name)
-        write_envelope(io, "res", id, "plugins.load",
-            Dict(:error => "missing name", :code => "bad_request"))
-        return
-    end
-    try
-        Core.eval(Main, Meta.parse("using $name"))
-        write_envelope(io, "res", id, "plugins.load",
-            Dict(:loaded => name, :file_types_count => length(ConceptExplorerCore.file_types())))
-    catch e
-        write_envelope(io, "res", id, "plugins.load",
-            Dict(:error => sprint(showerror, e), :code => "load_failed", :name => name))
-    end
 end
 
 """

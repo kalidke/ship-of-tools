@@ -155,8 +155,7 @@ function applicable_annotations end
     file_types() -> Vector{Type{<:FileType}}
 
 Every loaded `FileType` subtype. Computed via `subtypes(FileType)` so the
-list grows automatically when an extension package is `using`-ed. Used by
-plugin-discovery callers (e.g. the kernel's `plugins.list` op).
+list grows automatically when an extension package is `using`-ed.
 """
 file_types() = subtypes(FileType)
 
