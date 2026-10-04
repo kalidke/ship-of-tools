@@ -1,13 +1,42 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! A control session's replies, pinned through a real `sotd`: the op table's unknown-op answer, the
 //! `monitor.*` and `pty.open` arms that answer inline, the four off-loop ops, `workspace.activate`,
-//! the evt-frame skip, the no-hello-needed `ping` and the protocol-gated roster entry.
+//! the evt-frame skip, the no-hello-needed `ping` and the protocol-gated roster entry. Every request is read
+//! strictly: its reply is the next non-evt frame and no second reply follows it.
 
 mod support;
 
 use serde_json::json;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
-use support::{call, connect_and_hello, poll_until, try_connect, Env, BOUND};
+use std::time::Duration;
+use support::{connect_and_hello, poll_until, try_connect, Conn, Env, BOUND};
+
+/// How long a request's connection must stay silent after its one reply: a second reply, for the same
+/// request, would arrive within it.
+const QUIET: Duration = Duration::from_millis(100);
+
+/// Writes one request, reads the next frame that is not an evt, which must carry that request's id, and
+/// then requires nothing but evt frames for `QUIET`. (`support::call` skips other ids, so it cannot see
+/// a second reply.)
+async fn strict(conn: &mut Conn, id: u64, name: &str, payload: serde_json::Value) -> Frame {
+    codec::write_frame(conn, &Frame::req(id, name, payload), None).await.expect("write request");
+    let reply = loop {
+        let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(conn))
+            .await
+            .unwrap_or_else(|_| panic!("{name} (id {id}) did not reply within {BOUND:?}"))
+            .expect("read_frame");
+        if frame.kind != Kind::Evt {
+            break frame;
+        }
+    };
+    assert_eq!((reply.id, reply.kind), (id, Kind::Res), "the next reply to {name} (id {id}) is not its own: {reply:?}");
+    let until = tokio::time::Instant::now() + QUIET;
+    while let Ok(read) = tokio::time::timeout_at(until, codec::read_frame(conn)).await {
+        let (frame, _blob) = read.expect("read_frame");
+        assert_eq!(frame.kind, Kind::Evt, "a second reply after {name}'s (id {id}): {frame:?}");
+    }
+    reply
+}
 
 #[tokio::test]
 async fn control_session_replies_are_pinned() {
@@ -22,62 +51,53 @@ async fn control_session_replies_are_pinned() {
     // 1. A frame of kind evt is skipped without a reply; ping needs no hello.
     codec::write_frame(&mut conn, &Frame::evt("probe.evt", json!({})), None).await.expect("write evt");
     let ping_id = next();
-    codec::write_frame(&mut conn, &Frame::req(ping_id, op::PING, json!({})), None).await.expect("write ping");
-    let reply = loop {
-        let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
-            .await
-            .expect("ping reply within BOUND")
-            .expect("read_frame");
-        if frame.kind != Kind::Evt {
-            break frame;
-        }
-    };
-    assert_eq!((reply.id, reply.op.as_str(), reply.kind), (ping_id, op::PING, Kind::Res));
+    let reply = strict(&mut conn, ping_id, op::PING, json!({})).await;
+    assert_eq!((reply.op.as_str(), reply.kind), (op::PING, Kind::Res));
     assert_eq!(reply.payload, json!({"ok": true}));
     let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a second connection").await;
     let mut bare = tokio::io::BufReader::new(stream);
-    let reply = call(&mut bare, 1, op::PING, json!({})).await;
+    let reply = strict(&mut bare, 1, op::PING, json!({})).await;
     assert_eq!(reply.payload, json!({"ok": true}), "a request before any hello is answered");
 
     // 2. An op nobody owns.
-    let reply = call(&mut conn, next(), "no.such.op", json!({})).await;
+    let reply = strict(&mut conn, next(), "no.such.op", json!({})).await;
     assert_eq!(reply.op, "no.such.op");
     assert_eq!(reply.payload, json!({"error": "unknown op: no.such.op"}));
 
     // 3. monitor.*
-    let reply = call(&mut conn, next(), op::MONITOR_SUBSCRIBE, json!({})).await;
+    let reply = strict(&mut conn, next(), op::MONITOR_SUBSCRIBE, json!({})).await;
     assert_eq!(reply.payload["interval_s"], json!(1.0), "{:?}", reply.payload);
     assert!(reply.payload["hosts"].is_array(), "{:?}", reply.payload);
-    let reply = call(&mut conn, next(), op::MONITOR_HISTORY, json!({"window_s": 60})).await;
+    let reply = strict(&mut conn, next(), op::MONITOR_HISTORY, json!({"window_s": 60})).await;
     assert!(reply.payload["hosts"].is_array(), "{:?}", reply.payload);
-    let reply = call(&mut conn, next(), op::MONITOR_HISTORY, json!({"window_s": "x"})).await;
+    let reply = strict(&mut conn, next(), op::MONITOR_HISTORY, json!({"window_s": "x"})).await;
     assert_eq!(reply.payload["code"], "handler_error", "{:?}", reply.payload);
     assert!(
         reply.payload["error"].as_str().is_some_and(|e| e.starts_with("monitor.history payload")),
         "{:?}",
         reply.payload
     );
-    let reply = call(&mut conn, next(), op::MONITOR_UNSUBSCRIBE, json!({})).await;
+    let reply = strict(&mut conn, next(), op::MONITOR_UNSUBSCRIBE, json!({})).await;
     assert_eq!(reply.payload, json!({}));
 
     // 4. pty.open's refusals.
-    let reply = call(&mut conn, next(), op::PTY_OPEN, json!({"rows": 24})).await;
+    let reply = strict(&mut conn, next(), op::PTY_OPEN, json!({"rows": 24})).await;
     assert_eq!(reply.payload["code"], "bad_request", "{:?}", reply.payload);
     assert!(
         reply.payload["error"].as_str().is_some_and(|e| e.starts_with("pty.open payload: ")),
         "{:?}",
         reply.payload
     );
-    let reply = call(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "a|b"})).await;
+    let reply = strict(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "a|b"})).await;
     assert_eq!(
         reply.payload,
         json!({"error": "invalid target \"a|b\" (want 1-64 chars of [A-Za-z0-9._-])", "code": "bad_target"})
     );
-    let reply = call(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "nosuch"})).await;
+    let reply = strict(&mut conn, next(), op::PTY_OPEN, json!({"cols": 80, "rows": 24, "target": "nosuch"})).await;
     assert_eq!(reply.payload, json!({"error": "no workspace owns session \"nosuch\"", "code": "no_workspace"}));
 
     // 5. The four off-loop ops, on an unknown row and on the default row.
-    let list = call(&mut conn, next(), op::WORKSPACE_LIST, json!({})).await.payload;
+    let list = strict(&mut conn, next(), op::WORKSPACE_LIST, json!({})).await.payload;
     let default_id = list["workspaces"]
         .as_array()
         .expect("workspaces array")
@@ -93,14 +113,14 @@ async fn control_session_replies_are_pinned() {
         (op::CONCEPT_READ, "concept.read payload: missing field `target`"),
     ];
     for (name, default_row_error) in ops {
-        let reply = call(&mut conn, next(), name, json!({"workspace_id": "ws-nosuch"})).await;
+        let reply = strict(&mut conn, next(), name, json!({"workspace_id": "ws-nosuch"})).await;
         assert_eq!(reply.op, name);
         assert_eq!(
             reply.payload,
             json!({"error": "unknown workspace: Some(\"ws-nosuch\")", "code": "unknown_workspace"}),
             "{name}"
         );
-        let reply = call(&mut conn, next(), name, json!({"workspace_id": default_id})).await;
+        let reply = strict(&mut conn, next(), name, json!({"workspace_id": default_id})).await;
         assert_eq!(reply.op, name);
         assert_eq!(
             reply.payload,
@@ -110,7 +130,7 @@ async fn control_session_replies_are_pinned() {
     }
 
     // 6. workspace.activate on an unknown row.
-    let reply = call(&mut conn, next(), op::WORKSPACE_ACTIVATE, json!({"workspace_id": "ws-nosuch"})).await;
+    let reply = strict(&mut conn, next(), op::WORKSPACE_ACTIVATE, json!({"workspace_id": "ws-nosuch"})).await;
     assert_eq!(reply.payload, json!({}));
 
     // 7. A hello on another protocol is refused and never enters the roster.
@@ -128,9 +148,9 @@ async fn control_session_replies_are_pinned() {
         instance: None,
         name: None,
     };
-    let reply = call(&mut probe, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
+    let reply = strict(&mut probe, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert_eq!(reply.payload["code"], "protocol_mismatch", "{:?}", reply.payload);
-    let reply = call(&mut conn, next(), op::VERSION_QUERY, json!({})).await;
+    let reply = strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await;
     let ids: Vec<&str> = reply.payload["clients"]
         .as_array()
         .expect("clients array")
