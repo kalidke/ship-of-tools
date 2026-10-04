@@ -1,6 +1,34 @@
 //! `run`: the capsule writer loop, one producer from spawn to sealed voyage.
 use super::*;
 
+struct ShutdownGuard<'a>(&'a mut dyn Transport);
+impl Drop for ShutdownGuard<'_> {
+    fn drop(&mut self) {
+        // This Drop is the FALLBACK path only (an early `?` return
+        // before the designed, explicit call at real teardown time
+        // ever runs, or that call's own redundant second pass) -- it
+        // has no outer aggregate deadline to share, so it computes a
+        // fresh one. `run` has ALREADY returned by the time this
+        // executes (it is dropping `run`'s own locals during
+        // unwind/return), so a `false` here can only be reported
+        // loudly (stderr), never turned into `run`'s result.
+        if !self.0.shutdown_all(Instant::now() + TEARDOWN_AGGREGATE_DEADLINE) {
+            eprintln!(
+                "sot-capsule: ShutdownGuard's fallback teardown did not complete within its \
+                 aggregate deadline; a worker thread may still be running"
+            );
+        }
+    }
+}
+
+// Per-pass event quota: a client flood can refill the bounded transport
+// channel as fast as this loop drains it, and an UNBOUNDED while-let
+// would then starve output commits, tick, and the exit checks
+// indefinitely (review finding). The quota bounds one pass; the next
+// loop iteration resumes immediately, so nothing is dropped -- only
+// interleaved.
+const TRANSPORT_EVENTS_PER_PASS: usize = 64;
+
 /// Run one producer under a capsule, generic over `P: Producer` (ADR 0043
 /// "Decisions for LU2"). Blocks until the run ends — either the producer
 /// exits on its own, `commands` delivers [`Command::Kill`], or the mgmt
@@ -92,25 +120,6 @@ pub fn run<P: Producer>(
     // disarming this guard with a boolean flag would be the OTHER way to
     // make the double call safe, but it is strictly more machinery for the
     // same guarantee an idempotent method already gives for free.
-    struct ShutdownGuard<'a>(&'a mut dyn Transport);
-    impl Drop for ShutdownGuard<'_> {
-        fn drop(&mut self) {
-            // This Drop is the FALLBACK path only (an early `?` return
-            // before the designed, explicit call at real teardown time
-            // ever runs, or that call's own redundant second pass) -- it
-            // has no outer aggregate deadline to share, so it computes a
-            // fresh one. `run` has ALREADY returned by the time this
-            // executes (it is dropping `run`'s own locals during
-            // unwind/return), so a `false` here can only be reported
-            // loudly (stderr), never turned into `run`'s result.
-            if !self.0.shutdown_all(Instant::now() + TEARDOWN_AGGREGATE_DEADLINE) {
-                eprintln!(
-                    "sot-capsule: ShutdownGuard's fallback teardown did not complete within its \
-                     aggregate deadline; a worker thread may still be running"
-                );
-            }
-        }
-    }
     let transport = ShutdownGuard(transport);
 
     // Switch-latency Phase 1 (c): ONE channel for producer output, the
@@ -783,13 +792,6 @@ pub fn run<P: Producer>(
     // the SAME boundary `commands` already is (`pty` is also moved into the
     // Phase-B closer thread by then, so a wire-triggered resize could not
     // run even if admitted).
-    // Per-pass event quota: a client flood can refill the bounded transport
-    // channel as fast as this loop drains it, and an UNBOUNDED while-let
-    // would then starve output commits, tick, and the exit checks
-    // indefinitely (review finding). The quota bounds one pass; the next
-    // loop iteration resumes immediately, so nothing is dropped -- only
-    // interleaved.
-    const TRANSPORT_EVENTS_PER_PASS: usize = 64;
     macro_rules! service_transport_events {
         () => {
             let mut quota = TRANSPORT_EVENTS_PER_PASS;
