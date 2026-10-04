@@ -108,6 +108,7 @@ while IFS= read -r f; do
     esac
 done < <(git -C "$REPO" ls-files)
 [ "${#files[@]}" -gt 0 ] || { echo "FATAL: no shell files found" >&2; exit 1; }
+[ "${#suites[@]}" -ge 29 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 29" >&2; exit 1; }
 
 sites="$(perl -e "$RM_SCAN" "${files[@]}")"
 

@@ -72,7 +72,6 @@ done
     echo "usage: test-inbox-lock-twohost.sh --peer HOST --expect local|wire  (a second box that mounts this home)" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
 WAIT=10
 
@@ -86,6 +85,7 @@ cleanup() {
     rm -rf "${DIR:?}" "${LOCAL:?}"
 }
 trap cleanup EXIT
+SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 mkdir -p "$DIR/lib" "$DIR/inbox"
 cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"
 # The wire, stubbed on both sides: each frame is one line in the case's

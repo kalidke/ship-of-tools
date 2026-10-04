@@ -39,9 +39,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-# shellcheck source=../scripts/comm-lib.sh
-source "$SCRIPTS_DIR/comm-lib.sh"   # sot_host / INBOX_DIR
+source "$SCRIPT_DIR/../scripts/comm-lib.sh" || exit 2   # sot_host / INBOX_DIR
 
 MATRIX_WAIT="${SOT_MATRIX_WAIT:-25}"     # seconds to wait for the echoes
 MATRIX_POLL="${SOT_MATRIX_POLL:-0.5}"    # inbox re-read interval
@@ -273,6 +271,7 @@ MY_ROOT="$(sed -n '3p' "$SELF_FILE_PATH" 2>/dev/null)"; MY_ROOT="${MY_ROOT#root=
 }
 MATRIX_PRIV_DIR="$(mktemp -d)" || { echo "FATAL: mktemp failed" >&2; exit 2; }
 trap 'rm -rf "${MATRIX_PRIV_DIR:?}"' EXIT
+SCRIPTS_DIR="$MATRIX_PRIV_DIR/bin"; bash "$SCRIPT_DIR/stage-bin.sh" "$SCRIPTS_DIR" || exit 2
 SOT_COMM_SELF_FILE="$(matrix_private_self "$SELF_FILE_PATH" "$MATRIX_PRIV_DIR")" || {
     echo "FATAL: cannot copy @$ME's self file ($SELF_FILE_PATH)" >&2
     exit 2

@@ -53,7 +53,6 @@ done
     echo "usage: test-comm-e2e-readers.sh --peer HOST --v3-host HOST  (a v4 peer and a v3 host that mount this home)" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 HOOK="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)/comm-status-idle.sh"
 HERE="$(hostname -s)"
 PACED="${E2E_PACED:-30}"; BURST="${E2E_BURST:-30}"; QUIET="${E2E_QUIET_SECS:-60}"
@@ -90,6 +89,7 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+SCRIPTS_DIR="$(guard_stage_bin "$D")" || exit 2
 mkdir -p "$D/bin" "$D/proj" "$D/self" "$D/inbox" "$E" "$L"
 cp -r "$SCRIPTS_DIR/." "$D/bin/"
 cp "$HOOK" "$D/bin/comm-status-idle.sh"

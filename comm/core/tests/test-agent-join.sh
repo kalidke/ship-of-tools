@@ -14,8 +14,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-JOIN="$SCRIPTS_DIR/comm-join.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-agent-join-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
@@ -25,6 +23,8 @@ fi
 
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+JOIN="$SCRIPTS_DIR/comm-join.sh"
 mkdir -p "$SOT_COMM_HOME"
 # Hermetic host: comm-context.sh reads $SOT_COMM_TEST_HOST exactly as
 # every other comm test does (manager review: no on-disk namespace or

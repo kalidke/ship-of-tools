@@ -35,6 +35,10 @@
 #   guard_refuse_live_home HOME_DIR  FATAL and exit 2 when HOME_DIR, the
 #                                    suite's comm home, is empty, or equals or
 #                                    lies under a recorded live home
+#   guard_stage_bin DIR              stage-bin.sh lays the comm scripts flat in
+#                                    DIR/staged-bin, as the installer lays out
+#                                    ~/.sot-comm/bin, and prints that path; the
+#                                    suite runs its scripts from there
 # Paths compare physically (cd -P); the part of a path that does not exist yet
 # is kept as written, so a live home that does not exist (as on CI) compares as
 # its literal path.
@@ -123,6 +127,12 @@ guard_refuse_live_home() {  # HOME_DIR
                 exit 2 ;;
         esac
     done
+}
+
+guard_stage_bin() {  # DIR : prints DIR/staged-bin, the comm scripts laid out flat
+    local out
+    out="$(bash "$(dirname "${BASH_SOURCE[0]}")/stage-bin.sh" "$1/staged-bin" 2>&1)" || _guard_fatal "$out"
+    printf '%s\n' "$1/staged-bin"
 }
 
 in_row() {  # ID CMD... : run CMD beneath a stand-in for row ID's capsule

@@ -46,7 +46,6 @@ done
 [ -n "$PEER" ] || { echo "usage: test-registry-twohost.sh --peer HOST [--v3-host HOST]  (boxes that mount this home)" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 SECS="${SOT_TWOHOST_SECS:-40}"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=5)
 
@@ -69,6 +68,7 @@ stop_all() {  # ask every helper to stop, wait for each, then kill any left
 }
 cleanup() { stop_all; rm -rf "${DIR:?}"; }
 trap cleanup EXIT
+SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 
 mkdir -p "$DIR/lib"
 cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"

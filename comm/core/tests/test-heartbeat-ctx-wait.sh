@@ -10,7 +10,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 HOOKS_DIR="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-hbctx-test-XXXXXX")"
@@ -24,6 +23,7 @@ trap cleanup EXIT
 
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
 unset SOT_COMM_NAME SOT_COMM_SELF_FILE CLAUDE_CODE_SESSION_ID
 mkdir -p "$SOT_COMM_HOME/state"
 ln -s "$SCRIPTS_DIR" "$SOT_COMM_HOME/bin"

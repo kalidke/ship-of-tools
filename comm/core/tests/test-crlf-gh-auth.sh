@@ -45,7 +45,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GH_AUTH="$SCRIPT_DIR/../scripts/sot-gh-auth.sh"
 REAL_JQ="$(command -v jq)"
 FAKE_TOKEN='FAKE-TOKEN-not-a-real-credential'
 PASS=0; FAIL=0
@@ -66,6 +65,7 @@ has_cr() { LC_ALL=C grep -q $'\r' "$@"; }
 setup() {
     TMP="$(mktemp -d "${TMPDIR:-/tmp}/sot-gh-crlf.XXXXXX")"
     guard_fresh_home "$TMP"
+    GH_AUTH="$(guard_stage_bin "$TMP")/sot-gh-auth.sh" || exit 2
     STUB="$TMP/stub"; mkdir -p "$STUB" "$TMP/comm" "$TMP/gh"
 
     # jq: the real one, with every \n rewritten to \r\n. Streamed, and the real

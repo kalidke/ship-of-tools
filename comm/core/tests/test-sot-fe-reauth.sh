@@ -16,8 +16,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-SOT_FE="$SCRIPTS_DIR/sot-fe"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-fe-reauth-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
@@ -27,6 +25,8 @@ fi
 
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+SOT_FE="$SCRIPTS_DIR/sot-fe"
 mkdir -p "$SOT_COMM_HOME"
 
 STUB_NC_PID=""

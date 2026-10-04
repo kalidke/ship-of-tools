@@ -22,8 +22,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-spawn-remote-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
@@ -32,6 +30,8 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
 fi
 export SOT_COMM_HOME="$WORK/home"   # each spawn names its own; nothing falls back to a live one
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 # THIS box, for both resolvers: SOT_COMM_TEST_HOST pins comm-context.sh's
 # own HOST (registry `host` field, handle derivation), SOT_SELF_HOST pins

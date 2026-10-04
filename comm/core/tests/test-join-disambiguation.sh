@@ -40,19 +40,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-# Re-point SCRIPT_DIR at the real scripts dir (it starts out as THIS test
-# file's own dir, comm/core/tests) — LU6e's pipe: cases below call
-# sot_oneshot_request directly, and that function looks up
-# comm-pipe-request.ps1 next to it via ${SCRIPT_DIR:-.}, exactly like every
-# real caller (sot-fe, comm-relay.sh) does after their own
-# `SCRIPT_DIR="$(cd "$(dirname ...)" && pwd)"`. Not read again after this
-# point for anything else in this file.
-SCRIPT_DIR="$SCRIPTS_DIR"
-JOIN="$SCRIPTS_DIR/comm-join.sh"
-SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
-CONTEXT="$SCRIPTS_DIR/comm-context.sh"
-SEND="$SCRIPTS_DIR/comm-send.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-test-XXXXXX")"
 # Codex review (PR #148, test notes): an unchecked mktemp failure leaves
@@ -67,6 +54,19 @@ fi
 
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+# Re-point SCRIPT_DIR at the real scripts dir (it starts out as THIS test
+# file's own dir, comm/core/tests) — LU6e's pipe: cases below call
+# sot_oneshot_request directly, and that function looks up
+# comm-pipe-request.ps1 next to it via ${SCRIPT_DIR:-.}, exactly like every
+# real caller (sot-fe, comm-relay.sh) does after their own
+# `SCRIPT_DIR="$(cd "$(dirname ...)" && pwd)"`. Not read again after this
+# point for anything else in this file.
+SCRIPT_DIR="$SCRIPTS_DIR"
+JOIN="$SCRIPTS_DIR/comm-join.sh"
+SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
+CONTEXT="$SCRIPTS_DIR/comm-context.sh"
+SEND="$SCRIPTS_DIR/comm-send.sh"
 # 0031 B1: the record a daemon writes at startup. Without it no script
 # appends locally, and every filing here would go to a daemon instead.
 mkdir -p "$SOT_COMM_HOME/inbox"

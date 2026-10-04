@@ -12,8 +12,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
-SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-spawn-capsule-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
@@ -22,6 +20,8 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
 fi
 
 guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 export SOT_COMM_TEST_HOST="test-host"
 unset SOT_WORKSPACE_ID   # never let an ambient row leak into the self-file slot

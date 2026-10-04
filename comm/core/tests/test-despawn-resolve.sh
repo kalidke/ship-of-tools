@@ -12,7 +12,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-despawn-resolve-test-XXXXXX")"
 if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
@@ -21,6 +20,7 @@ if [ -z "$WORK" ] || [ ! -d "$WORK" ]; then
 fi
 
 guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
 
 export SOT_COMM_TEST_HOST="test-host"
 unset SOT_WORKSPACE_ID

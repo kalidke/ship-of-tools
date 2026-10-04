@@ -67,9 +67,9 @@ case_jq_arg_names_are_allowlisted_against_slash_prone_values() {
     # `one` = sot_registry_read's "a row was asked for" flag, `${1+1}`: "1"
     # or "", never "/".
     local allow=" n t ts from to repo me w h b host tmux pane an s id f st u m c l nonce ws p ag o acc cur i one "
-    local bad="" dir file name line match comment_lines
-    dir="$(cd "$SCRIPTS_DIR/../../adapters/claude/hooks" && pwd)"
-    for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe" "$dir"/*.sh; do
+    local bad="" file name line match comment_lines
+    [ -f "$SCRIPTS_DIR/comm-status-idle.sh" ] || { echo "  the staged bin holds no hooks"; return 1; }
+    for file in "$SCRIPTS_DIR"/*.sh "$SCRIPTS_DIR/sot-fe"; do
         [ -f "$file" ] || continue
         # Line numbers that are FULL comment lines (first non-blank char
         # '#') — a prose mention of `--arg NAME` in a comment (this

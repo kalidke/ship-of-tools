@@ -64,13 +64,13 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_SCRIPTS="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 SRC_HOOKS="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-registry-io-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
 export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
+SRC_SCRIPTS="$(guard_stage_bin "$WORK")" || exit 2
 trap 'rm -rf "${WORK:?}"' EXIT
 
 BIN="$WORK/bin"

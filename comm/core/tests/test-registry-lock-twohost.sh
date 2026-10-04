@@ -53,7 +53,6 @@ if ! [[ "$ROUNDS" =~ ^[1-9][0-9]*$ ]] || { [ "$ONLY" != a-v3 ] && { [ -n "$ONLY"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
 DIR="$(mktemp -d "$HOME/.sot-registry-lock-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 guard_refuse_live_home "$DIR"
@@ -66,6 +65,7 @@ cleanup() {
     rm -rf "${DIR:?}"
 }
 trap cleanup EXIT
+SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 mkdir -p "$DIR/lib"
 cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"
 LIB="$DIR/lib/comm-lib.sh"
