@@ -1,8 +1,7 @@
 //! Daemon TCP proxy (ADR 0035).
 //!
 //! A remote frontend can reach ANY backend-served loopback HTTP/WebSocket
-//! port through the ONE control tunnel it already holds (`-L 18743` → the
-//! daemon Unix socket), instead of a static per-port ssh `-L` forward per
+//! port through the ONE control tunnel it already holds, instead of a static per-port ssh `-L` forward per
 //! service (Pluto 1234, video 1235, docs 1236, docs pool 1237-1240,
 //! WGLMakie/Bonito 1241). This retires the launcher `-L` sprawl and the
 //! recurring "box's launcher predates a port → dead page until relaunch"

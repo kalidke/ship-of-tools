@@ -3,7 +3,7 @@
 // One shared Pluto server per backend, lazy-spawned on the first
 // `pluto.open` call and re-used across calls. The Julia child runs
 // `julia --project=<repo>/julia/pluto <repo>/julia/pluto/start.jl`;
-// the script starts a `Pluto.ServerSession` on 127.0.0.1:1234 (access-secret
+// the script starts a `Pluto.ServerSession` on 127.0.0.1 (access-secret
 // required, no auto-browser — security review: this is otherwise a second
 // unauthenticated RCE on a shared host), prints `READY <base_url>` once the
 // HTTP listener is bound, then services `OPEN <abspath>` requests on

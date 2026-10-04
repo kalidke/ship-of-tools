@@ -1,9 +1,7 @@
 // http_serve.rs — a tiny loopback HTTP/1.1 static file server with byte-range
 // support, used to stream video files to the OS browser's native HTML5 <video>
 // player (ADR 0018, revised). The frontend's `o` key asks the backend for a
-// `video.open` URL; the backend returns `http://127.0.0.1:<port><abs-path>`,
-// which the launcher SSH-forwards to the local machine so the browser can
-// reach it.
+// `video.open` URL.
 //
 // Why hand-rolled rather than axum/tower-http: the backend otherwise has no
 // HTTP stack, and the need is narrow — GET one file, honour a single
@@ -13,8 +11,7 @@
 // `parse_range`, `serve_file` and `write_simple` are shared with `site_serve`,
 // so the two servers cannot disagree about Range or an empty file.
 //
-// Scope/security: binds 127.0.0.1 only (then SSH-forwarded, loopback on both
-// ends). Serves only files whose extension is a known video type, and only
+// Scope/security: binds 127.0.0.1 only. Serves only files whose extension is a known video type, and only
 // real regular files. This port has no auth of its own, though — any local
 // user on a shared host can reach it — so it must never accept a raw
 // filesystem path from the request itself (that turned "video files the
@@ -94,7 +91,7 @@ fn random_token() -> Option<String> {
 }
 
 /// Video extensions this server will serve. Mirrors `ShipToolsVideoFile`'s
-/// `VIDEO_EXTENSIONS` and `files_mode::mime_for_path`'s video arm.
+/// `VIDEO_EXTENSIONS`.
 const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v"];
 
 /// PREFERRED loopback port for the video server (env-overridable, default

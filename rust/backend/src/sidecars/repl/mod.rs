@@ -2,11 +2,7 @@
 //
 // Per ADR 0009 the REPL is a separate `julia` process the backend keeps
 // alive. The frontend sends code to evaluate; the REPL responds with a
-// list of frames (stdout / stderr / value / error / done). Phase-1
-// implementation is synchronous-collect — one response carries all frames
-// for that eval. Streamed event-frame delivery (so the chrome can show
-// stdout as it arrives) is phase 2; the protocol surface is the same
-// either way, just the timing changes.
+// list of frames (stdout / stderr / value / error / done).
 //
 // Lifecycle pattern mirrors `kernel.rs` and `mathjax.rs`: long-lived
 // child, mpsc submit channel, oneshot replies, drain on death + relaunch

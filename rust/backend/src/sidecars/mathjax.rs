@@ -6,7 +6,7 @@
 // child, multiplexes Rust callers onto its single stdin/stdout, routes
 // responses back by request id.
 //
-// API: `MathJax::start(...)` returns a cheap clone-able handle. Callers
+// API: Callers
 // `.render(latex, display).await` for SVG bytes. On child death the
 // supervisor drains in-flight oneshots with an error, then lazily
 // relaunches on the next request.

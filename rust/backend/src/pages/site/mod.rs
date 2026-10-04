@@ -31,8 +31,7 @@
 // lies inside a `.git` directory below the folder it is served from (the site
 // or the data root) is served.
 //
-// Scope/security: binds 127.0.0.1 only (then SSH-forwarded, loopback on both
-// ends), but neither port has auth of its own — any local user on a shared
+// Scope/security: binds 127.0.0.1 only, but neither port has auth of its own — any local user on a shared
 // host can reach them once something is being served. Guards (security
 // review): `docs.open` confines the servable root to a KNOWN workspace's
 // project root (rejects anything canonicalizing outside every one of them,
@@ -93,8 +92,7 @@ static SERIAL_NONCE: RwLock<BTreeMap<u64, String>> = RwLock::new(BTreeMap::new()
 /// at most one pool port (re-opens repoint it AND mint a new secret,
 /// invalidating the old one); the port is freed by `remove_root` on
 /// disconnect, same hook as the prefix map. The range is fixed and contiguous
-/// (`site_port()+1 ..= site_port()+POOL_SIZE`) so the launchers can
-/// SSH-forward it statically.
+/// (`site_port()+1 ..= site_port()+POOL_SIZE`).
 pub const POOL_SIZE: u16 = 4;
 static POOL: RwLock<BTreeMap<u16, (u64, Arc<Site>, String)>> = RwLock::new(BTreeMap::new());
 
@@ -191,10 +189,7 @@ fn pool_entry_for(port: u16) -> Option<(Arc<Site>, String)> {
         .map(|(_, r, s)| (r.clone(), s.clone()))
 }
 
-/// Loopback port the static-site server listens on. Fixed (env-overridable) so
-/// the launcher can SSH-forward it without negotiation. The env var keeps its
-/// historical `SOT_DOCS_PORT` name so the existing launcher `-L` forward needs
-/// no change. Resolved identically at spawn time and when building open URLs.
+/// The env var keeps its historical `SOT_DOCS_PORT` name.
 pub fn site_port() -> u16 {
     std::env::var("SOT_DOCS_PORT")
         .ok()
@@ -378,7 +373,7 @@ enum ServeMode {
 
 /// Spawn the Option-B pool listeners: `POOL_SIZE` of them, each serving
 /// whichever root `assign_pool_port` has bound to it (404 until one is). The
-/// `pool_ports()` range is only a PREFERENCE (stable, launcher-forwardable);
+/// `pool_ports()` range is only a PREFERENCE (stable);
 /// a range port that's taken (another user's daemon on a shared host — the
 /// 2026-07-23 shared-host collision took the entire 1237-1240 range) falls back to
 /// an OS-assigned ephemeral port instead of shrinking the pool. Everything
@@ -436,7 +431,7 @@ pub async fn spawn_pool() {
 }
 
 /// Minimal percent-decode for request-target paths (`%20` etc.). Good enough for
-/// filesystem paths; not a general URL decoder. (Mirrors http_serve's.)
+/// filesystem paths; not a general URL decoder.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
