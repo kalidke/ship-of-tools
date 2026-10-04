@@ -46,12 +46,9 @@ mod session_state;
 mod shutdown;
 mod site_serve;
 mod startup;
-mod status_cli;
-mod stdio_bridge;
+mod topology;
 mod topology_cli;
-mod topology_dial;
-mod topology_set;
-mod topology_store;
+use topology::{dial as topology_dial, set as topology_set, status as status_cli, stdio_bridge, store as topology_store};
 mod update;
 mod workspaces;
 
