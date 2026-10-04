@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # comm-probe.sh — the per-box responder for the cross-machine comm acceptance
-# matrix (comm/core/tests/comm-matrix.sh). Every box keeps two rows that run no
+# matrix (comm/tests/comm-matrix.sh). Every box keeps two rows that run no
 # agent, `probe-<host>` and `probe2-<host>`; the second exists only so a
 # same-box send has a separate sender and receiver, which is where the Windows
 # two-inbox fault lives.

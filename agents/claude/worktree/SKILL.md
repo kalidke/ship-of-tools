@@ -6,7 +6,7 @@ description: Create a git worktree with a parallel sot-comm session bound to it;
 # worktree
 
 Four deterministic scripts in `~/.sot-comm/bin/` (installed from
-`comm/core/scripts/` via `ShipTools.update_comm()`):
+`agents/worktree/` via `ShipTools.update_comm()`):
 
 - `comm-worktree-new.sh` — create the worktree + spawn its session.
 - `comm-worktree-status.sh` — show the family's state + cleanup-readiness.

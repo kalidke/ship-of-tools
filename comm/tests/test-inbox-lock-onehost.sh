@@ -45,7 +45,7 @@
 # under it. Sourcing lib-home-guard.sh drops the host's comm identity and
 # daemon route.
 #
-# Usage: comm/core/tests/test-inbox-lock-onehost.sh --host HOST
+# Usage: comm/tests/test-inbox-lock-onehost.sh --host HOST
 # Exit: 0 all pass, 1 any fail, 2 usage.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// Environment variables scrubbed from the spawned supervisor's (and
 /// hence its capsule leg's) environment before launch — the exact list
-/// `comm/adapters/claude/bin/ccb` unsets, for the identical reason: a
+/// `agents/claude/bin/ccb` unsets, for the identical reason: a
 /// spawning parent's own Claude Code nesting markers make a fresh
 /// `claude` mis-detect itself as nested/forked and exit silently.
 /// `CLAUDECODE`/`AI_AGENT`/`CLAUDE_CODE_SESSION_ID` make it think it is
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn nesting_env_scrub_list_matches_ccb() {
-        // Mirrors comm/adapters/claude/bin/ccb's own `unset` line
+        // Mirrors agents/claude/bin/ccb's own `unset` line
         // exactly -- see that file for the reasoning per variable.
         assert_eq!(
             NESTING_ENV_VARS_TO_SCRUB,

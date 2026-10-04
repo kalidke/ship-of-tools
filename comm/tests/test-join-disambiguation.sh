@@ -34,7 +34,7 @@
 # first mkdir attempt) rather than a sleep, with bounded waits throughout so
 # a genuinely stuck child fails the test instead of hanging it.
 #
-# Usage: comm/core/tests/test-join-disambiguation.sh
+# Usage: comm/tests/test-join-disambiguation.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
@@ -56,7 +56,7 @@ export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
 # Re-point SCRIPT_DIR at the real scripts dir (it starts out as THIS test
-# file's own dir, comm/core/tests) — LU6e's pipe: cases below call
+# file's own dir, comm/tests) — LU6e's pipe: cases below call
 # sot_oneshot_request directly, and that function looks up
 # comm-pipe-request.ps1 next to it via ${SCRIPT_DIR:-.}, exactly like every
 # real caller (sot-fe, comm-relay.sh) does after their own

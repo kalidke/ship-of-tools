@@ -22,7 +22,7 @@
 # fresh) is a couple of jq reads; the registry write happens at most once a
 # minute. Always exits 0 — a hook must never wedge a turn.
 #
-# Source of truth: comm/adapters/claude/hooks/comm-status-heartbeat.sh in
+# Source of truth: comm/work_state/hooks/comm-status-heartbeat.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
 set -uo pipefail
 # A headless claude launched BY comm tooling (the turn auditor's tier-2 call)

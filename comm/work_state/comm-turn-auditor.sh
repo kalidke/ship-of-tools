@@ -38,7 +38,7 @@
 # every check, exactly as before (2026-09-14, the marker-turn artifact audit
 # in comm-status-idle.sh calls this scoped).
 #
-# Source of truth: comm/core/scripts/comm-turn-auditor.sh in Ship of Tools,
+# Source of truth: comm/work_state/comm-turn-auditor.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
 set -uo pipefail
 

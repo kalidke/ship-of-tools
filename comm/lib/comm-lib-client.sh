@@ -129,7 +129,7 @@ _sot_sotd_bin() {
     # fell through this whole ladder to nothing before this line existed,
     # and this ladder's own caller (`_sot_planned_relay_endpoint`) no
     # longer falls through further to `sot_daemon_endpoint` (main's ruling,
-    # pinned at test-join-disambiguation.sh:2023-2053: never the local
+    # pinned at join_disambiguation/pipe_endpoint.sh: never the local
     # daemon for a question about the hub's endpoint) -- finding the
     # BINARY here and asking IT `topology relay-endpoint` is still a
     # planned answer, not the local daemon's own socket, so that ruling
@@ -280,7 +280,8 @@ sot_ssh_bridge() {
 # NEVER falls through to `sot_daemon_endpoint`: that would silently
 # resolve THIS box's own daemon for a question about the hub's, which is
 # the 2026-09-08 cross-host regression pinned at
-# `comm/core/tests/test-join-disambiguation.sh:2023-2053` -- a failed
+# `case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed` in
+# `comm/tests/join_disambiguation/pipe_endpoint.sh` -- a failed
 # resolution is no endpoint, never the local daemon, on either platform.
 sot_relay_endpoint() {
     _sot_emit_endpoint "${1:-}" && return 0

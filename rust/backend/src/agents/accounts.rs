@@ -48,7 +48,7 @@ use std::path::{Path, PathBuf};
 /// Claude's own config dir basename (`CLAUDE_CONFIG_DIR`'s default).
 const CLAUDE_DIR_PREFIX: &str = ".claude";
 /// Codex's own config dir basename — `ccx`'s own resolution
-/// (`CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"`, `comm/adapters/codex/bin/ccx`).
+/// (`CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"`, `agents/codex/bin/ccx`).
 const CODEX_DIR_PREFIX: &str = ".codex";
 /// The one dedicated parent directory named accounts live under, directly
 /// in the home — `~/.claude-auth/<name>`. Never a sibling `.claude-<name>`

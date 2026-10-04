@@ -6,7 +6,7 @@
 # win the same slug between a list and a create). Stub unix-socket daemon
 # (nc -klU + FIFO + tail -F, as test-agent-join.sh uses).
 #
-# Usage: comm/core/tests/test-spawn-capsule-workspace.sh
+# Usage: agents/tests/test-spawn-capsule-workspace.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home

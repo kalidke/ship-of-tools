@@ -5,7 +5,7 @@
 //! Both are `flock(2)` on the same sidecar, so a mixed run is the proof they
 //! take the SAME lock, not two that merely look alike.
 //!
-//! The `#[ignore]`d cases are driven by `comm/core/tests/
+//! The `#[ignore]`d cases are driven by `comm/tests/
 //! test-inbox-lock-twohost.sh` against the directory named in
 //! `SOT_TEST_INBOX_DIR` — a folder on the shared home, which is where
 //! in-process and cross-box exclusion have to be proved rather than assumed.

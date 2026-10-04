@@ -14,7 +14,7 @@ runs instead of this one.
 
 > **Canonical copy:** this file and its payload scripts (repo
 > `.claude/skills/`). The install payload
-> `comm/adapters/claude/sot-statusline-setup/` is a byte-for-byte copy —
+> `agents/claude/sot-statusline-setup/` is a byte-for-byte copy —
 > edit HERE, then sync the payload and re-run `/sot-install` to close skew.
 
 ## 1. Detect OS

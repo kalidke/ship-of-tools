@@ -3,7 +3,7 @@
 # `--capsule` ARGV flag alone, never an inherited env var. Runs the REAL
 # ccx as a subprocess with a stub `codex` on PATH recording its argv.
 #
-# Usage: comm/core/tests/test-ccx-resume-default.sh
+# Usage: agents/tests/test-ccx-resume-default.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home

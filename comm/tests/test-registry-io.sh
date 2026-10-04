@@ -58,7 +58,7 @@
 # comm-session-start.sh are recording stubs, so no relay, bridge or watcher is
 # ever started. Never the real ~/.sot-comm.
 #
-# Usage: comm/core/tests/test-registry-io.sh
+# Usage: comm/tests/test-registry-io.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

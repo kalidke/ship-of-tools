@@ -12,7 +12,7 @@
 # Then exec codex, which reads AGENTS.md (identity, comm CLI usage, state
 # discipline) from the repo/checkout natively.
 #
-# Source of truth: comm/adapters/codex/bin/ccx in Ship of Tools, deployed to
+# Source of truth: agents/codex/bin/ccx in Ship of Tools, deployed to
 # ~/.local/bin by `ShipTools.update_comm()`. Edit it there.
 
 # Same env scrub as ccb: a daemon-spawned row inherits the daemon's env,

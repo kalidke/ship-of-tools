@@ -25,7 +25,7 @@
 # check first proves it flags a copy of test-hub-files.sh without its source
 # line.
 #
-# Usage: comm/core/tests/test-rm-guard.sh
+# Usage: comm/tests/test-rm-guard.sh
 # Exit: 0 if no unguarded site or suite, 1 naming each one.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

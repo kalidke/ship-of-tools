@@ -38,7 +38,7 @@
 # confined to a PATH prefix, and no network. One `request` and one `poll` per
 # run, with every assertion made against those two runs' artifacts.
 #
-# Usage: comm/core/tests/test-crlf-gh-auth.sh
+# Usage: agents/tests/test-crlf-gh-auth.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 
 set -uo pipefail

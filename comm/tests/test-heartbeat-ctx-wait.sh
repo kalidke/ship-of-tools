@@ -4,7 +4,7 @@
 # wait, kills a stalled child, removes its temp file, and keeps a finished
 # child's output. A stub comm-context.sh sits in a scratch copy of the hooks dir.
 #
-# Usage: comm/core/tests/test-heartbeat-ctx-wait.sh
+# Usage: comm/tests/test-heartbeat-ctx-wait.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

@@ -12,7 +12,7 @@ Everything installs **user-level** (no system-wide writes) wherever the platform
 allows.
 
 > **Canonical copy:** this file (repo `.claude/skills/`). The install payload
-> `comm/adapters/claude/sot-setup/SKILL.md` is a byte-for-byte copy —
+> `agents/claude/sot-setup/SKILL.md` is a byte-for-byte copy —
 > edit HERE, then sync the payload and re-run `/sot-install` to close skew.
 
 **Golden rules**

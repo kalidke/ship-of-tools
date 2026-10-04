@@ -23,7 +23,7 @@
 # HERMETIC: a temp $SOT_COMM_HOME, a pinned $SOT_COMM_TEST_HOST, per-handle
 # $SOT_COMM_SELF_FILEs — never the real ~/.sot-comm.
 #
-# Usage: comm/core/tests/test-agent-layers.sh
+# Usage: comm/tests/test-agent-layers.sh
 # Exit: 0 if every case PASSes; 1 if any FAILs. On a host that is not Linux the cases that
 # read the live process table (the badawk case, section 2 on, SIMWIN) are skipped, with one SKIP line.
 set -uo pipefail

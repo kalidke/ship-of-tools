@@ -21,7 +21,7 @@
 # No bats dependency. HERMETIC, same seams as test-comm-poll-cursor.sh: a temp
 # $SOT_COMM_HOME, never the real ~/.sot-comm, no daemon, nothing sent.
 #
-# Usage: comm/core/tests/test-comm-matrix-verdict.sh
+# Usage: comm/tests/test-comm-matrix-verdict.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

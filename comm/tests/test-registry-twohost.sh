@@ -30,7 +30,7 @@
 # design (the scratch home must be on the shared mount); sourcing
 # lib-home-guard.sh drops the host's comm identity and daemon route.
 #
-# Usage: comm/core/tests/test-registry-twohost.sh --peer HOST [--v3-host HOST]
+# Usage: comm/tests/test-registry-twohost.sh --peer HOST [--v3-host HOST]
 # Exit: 0 every pair passes, 1 any fails, 2 usage.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

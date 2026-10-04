@@ -29,8 +29,8 @@
 # this tree's comm-lib.sh, and is removed on exit; it never touches ~/.sot-comm
 # or a live daemon. Needs real boxes, so it runs in no workflow. Requires cargo.
 #
-# Usage: comm/core/tests/test-registry-lock-twohost.sh --peer HOST [--v3-host HOST] [--rounds N]
-#        comm/core/tests/test-registry-lock-twohost.sh --v3-host HOST --only a-v3 [--rounds N]
+# Usage: comm/tests/test-registry-lock-twohost.sh --peer HOST [--v3-host HOST] [--rounds N]
+#        comm/tests/test-registry-lock-twohost.sh --v3-host HOST --only a-v3 [--rounds N]
 # Exit: 0 all pass, 1 any fail, 2 usage.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

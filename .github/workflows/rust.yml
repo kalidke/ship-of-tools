@@ -231,8 +231,7 @@ jobs:
           bash test-rm-guard.sh
           # 0031 B1's caller: a registry miss goes to the wire and one lap ends
           # in one verdict; the acceptance matrix's classifier keys on that
-          # verdict; and a spawn onto another box writes no row here, so a
-          # folder that lists a handle is one whose own box can file for it.
+          # verdict.
           bash test-send-routes-to-relay.sh
           bash test-comm-matrix-verdict.sh
           bash test-status-floor.sh
@@ -246,11 +245,12 @@ jobs:
           # now covers let every hermetic run rewrite the handle of whichever
           # live row happened to be running the tests.
           bash test-agent-join.sh
-          # The carriage-return suites. A native jq on Windows rewrites every
+          # The carriage-return suite for jq. A native jq on Windows rewrites every
           # \n to \r\n and command substitution keeps the \r on the value;
-          # until these ran here, the only thing standing between that and a
-          # false "no such handle" -- or a token GitHub rejects -- was a human
-          # remembering to run them. Both are hermetic and take under a second.
+          # until this ran here, the only thing standing between that and a
+          # false "no such handle" was a human remembering to run it. Its
+          # sibling for a token GitHub rejects runs in the agents step below.
+          # Hermetic, under a second.
           bash test-crlf-jq-output.sh
           # A missing jq, flock or perl is named to the session by poll, session
           # start and the Stop hook, never passed silently.
@@ -267,12 +267,16 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         working-directory: agents/tests
         run: |
+          # A spawn onto another box writes no row here, so a folder that lists
+          # a handle is one whose own box can file for it.
           bash test-spawn-remote-no-local-row.sh
           bash test-spawn-capsule-workspace.sh
           bash test-despawn-resolve.sh
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          # The carriage-return rule for the token: a \r kept on it is a token
+          # GitHub rejects. Hermetic, under a second.
           bash test-crlf-gh-auth.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a

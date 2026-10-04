@@ -2,7 +2,7 @@
 # comm-status-working.sh — Claude Code `UserPromptSubmit` hook: tell
 # comm-status.sh a turn is starting, and WHO started it.
 #
-# Wired as a global UserPromptSubmit hook in ~/.claude/settings.json (see comm.jl
+# Wired as a global UserPromptSubmit hook in ~/.claude/settings.json (see src/claude_hooks.jl
 # / update_comm). It fires the INSTANT a turn starts — automatic, deterministic,
 # zero model cooperation. This is the event-driven work-state signal that
 # replaces pane-scraping: a turn starting IS the agent beginning to work, known
@@ -13,7 +13,7 @@
 # event is a silent no-op with rc 0. We swallow output and always exit 0 so
 # the hook can never block or delay a turn.
 #
-# Source of truth: comm/adapters/claude/hooks/comm-status-working.sh in Ship of Tools,
+# Source of truth: comm/work_state/hooks/comm-status-working.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
 #
 # TURN ORIGIN (ADR 0044): this hook is the ONE writer that can tell a genuine

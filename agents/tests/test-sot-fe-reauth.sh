@@ -10,7 +10,7 @@
 # logs every request line, so each case can count what was sent. Never touches
 # a real ~/.sot-comm (a temp $SOT_COMM_HOME) or any real daemon socket.
 #
-# Usage: comm/core/tests/test-sot-fe-reauth.sh
+# Usage: agents/tests/test-sot-fe-reauth.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home

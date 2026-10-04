@@ -9,7 +9,7 @@
 # No bats dependency. Runs against a temp $SOT_COMM_HOME with a pinned
 # self-file ($SOT_COMM_SELF_FILE) — never touches the real ~/.sot-comm.
 #
-# Usage: comm/core/tests/test-status-floor.sh
+# Usage: comm/tests/test-status-floor.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
@@ -47,7 +47,8 @@ ST="$SCRIPTS_DIR/comm-status.sh"
 # resolve a sibling script next to THEMSELVES ($SELF_DIR/comm-context.sh,
 # $SELF_DIR/comm-turn-auditor.sh) — that only lines up once hooks and
 # scripts are deployed flat into one ~/.sot-comm/bin/ (update_comm), not in
-# this checkout where hooks/ and core/scripts/ are separate directories.
+# this checkout where the hooks (comm/work_state/hooks/) and the scripts are in
+# separate folders.
 # Flatten a symlink dir once, up front, so every helper below can use it.
 FLAT_BIN_DIR="$WORK/flat-bin"; mkdir -p "$FLAT_BIN_DIR"
 ln -s "$HOOKS_DIR/comm-status-heartbeat.sh" "$FLAT_BIN_DIR/comm-status-heartbeat.sh"

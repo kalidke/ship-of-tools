@@ -15,8 +15,8 @@
 
 # Managed bin/ files retired before the install kept a record of what it wrote
 # (`COMM_MANIFEST`). Seeded from
-#   git log --diff-filter=D --name-only --format= -- comm/core/scripts \
-#       comm/adapters/claude/hooks comm/adapters/codex/hooks
+#   git log --diff-filter=D --name-only --format= -- $(cat comm/bin-folders.txt)
+# over the folders that held these scripts and hooks before they moved there
 # (and --diff-filter=R --name-status, which found no rename), keeping basenames
 # not shipped today. Append every retirement here while an upgrade can start
 # from a record-less install (0.6.5 or older); the manifest diff covers only

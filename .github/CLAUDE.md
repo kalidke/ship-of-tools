@@ -9,7 +9,7 @@ scripts/CLAUDE.md.
 - `workflows/`: the four workflows below.
 
 ## Workflows
-- `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `adapters/**`, `comm/**` and the file
+- `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
   itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the PowerShell 5.1 parse and the
   `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag

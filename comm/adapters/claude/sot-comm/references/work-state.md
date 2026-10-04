@@ -143,7 +143,7 @@ lose writes racing against other hook writers on shared filesystems.
 
 ## The turn-end auditor
 
-The `Stop` hook runs a tiered auditor (`comm/core/scripts/comm-turn-auditor.sh`):
+The `Stop` hook runs a tiered auditor (`comm/work_state/comm-turn-auditor.sh`):
 cheap deterministic filters first, then **one** conservative `claude -p`
 Haiku judgment only when a filter trips. It checks the ending turn for three
 misses:

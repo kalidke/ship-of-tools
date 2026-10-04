@@ -11,8 +11,8 @@
 # the code. A candidate carrying a comm change with no matrix run is not ready.
 #
 # Usage:
-#   comm/core/tests/comm-matrix.sh --boxes kitt,asus2024,quickbeam [--expect 0.6.6-rc9.4]
-#                                  [--wait SECS] [--self HOST]
+#   comm/tests/comm-matrix.sh --boxes <a,b,c> [--expect 0.6.6-rc9.4]
+#                              [--wait SECS] [--self HOST]
 #
 # It runs as `probe2-<self>` and reads that row's inbox FILE directly. It starts
 # no processes, holds no connection and advances no read cursor — a session's

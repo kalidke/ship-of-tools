@@ -22,7 +22,7 @@
 # and a COPY of the scripts dir whose comm-relay.sh is a stub that records its
 # argv — never the real ~/.sot-comm, never a real daemon, never the real relay.
 #
-# Usage: comm/core/tests/test-send-routes-to-relay.sh
+# Usage: comm/tests/test-send-routes-to-relay.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

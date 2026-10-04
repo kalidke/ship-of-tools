@@ -38,7 +38,7 @@
 # confined to a PATH prefix used only for the send under test — setup runs
 # on the real jq so it is not itself a variable in this test's verdict.
 #
-# Usage: comm/core/tests/test-crlf-jq-output.sh
+# Usage: comm/tests/test-crlf-jq-output.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

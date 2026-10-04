@@ -21,7 +21,7 @@
 # non-SoT codex sessions are untouched. Always exits 0 — a hook must never
 # wedge the permission flow (advisory only; it does not answer the request).
 #
-# Source of truth: comm/adapters/codex/hooks/codex-status-blocked.sh in
+# Source of truth: comm/work_state/hooks/codex-status-blocked.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
 set -uo pipefail
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"

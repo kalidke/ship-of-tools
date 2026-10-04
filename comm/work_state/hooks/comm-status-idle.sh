@@ -65,7 +65,7 @@
 #       this hook) decides blue/gray/red/purple from whatever facts remain
 #       (ADR 0044 amendment 2026-09-19).
 #
-# Wired as a global Stop hook in ~/.claude/settings.json (comm.jl / update_comm).
+# Wired as a global Stop hook in ~/.claude/settings.json (src/claude_hooks.jl / update_comm).
 # It fires at every turn-end in EVERY session. CRITICAL SAFETY: the nudge (which
 # BLOCKS the stop / forces a continuation) fires ONLY for a joined comm agent — a
 # non-comm session (human shell, etc.) takes the plain idle-floor path and is
@@ -73,7 +73,7 @@
 # the hook can never wedge a turn; the one exception is a refused marker stamp
 # (rc 2), which exits 0 and leaves the running floor in place.
 #
-# Source of truth: comm/adapters/claude/hooks/comm-status-idle.sh in Ship of Tools,
+# Source of truth: comm/work_state/hooks/comm-status-idle.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
 set -uo pipefail
 # A headless claude launched BY comm tooling (the turn auditor's tier-2 call)

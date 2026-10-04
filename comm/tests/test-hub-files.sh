@@ -43,7 +43,7 @@
 # definitions win) so no real daemon is ever dialled and the route does not
 # depend on this box's disks. Never the real ~/.sot-comm.
 #
-# Usage: comm/core/tests/test-hub-files.sh
+# Usage: comm/tests/test-hub-files.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

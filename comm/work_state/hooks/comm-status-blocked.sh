@@ -2,7 +2,7 @@
 # comm-status-blocked.sh — Claude Code `PreToolUse` hook (matcher: AskUserQuestion):
 # mark this comm agent blocked — it just opened a question for the user.
 #
-# Wired as a PreToolUse hook matched to the AskUserQuestion tool (see comm.jl /
+# Wired as a PreToolUse hook matched to the AskUserQuestion tool (see src/claude_hooks.jl /
 # update_comm). It fires the instant the agent opens a structured question, so
 # `blocked` (red) ALWAYS means a real pending question — never the idle-nudge
 # false-positive the old `Notification` wiring produced (Notification also fires
@@ -37,7 +37,7 @@
 # Safety rests on comm-status.sh's self-gating: a non-comm session is a silent
 # no-op (rc 0). Output swallowed, always exit 0 so the hook can never block.
 #
-# Source of truth: comm/adapters/claude/hooks/comm-status-blocked.sh in Ship of Tools,
+# Source of truth: comm/work_state/hooks/comm-status-blocked.sh in Ship of Tools,
 # deployed to ~/.sot-comm/bin by ShipTools.update_comm(). Edit it there.
 # A headless claude launched BY comm tooling (the turn auditor's tier-2 call)
 # runs these same hooks under the parent's identity: its prompt hook painted

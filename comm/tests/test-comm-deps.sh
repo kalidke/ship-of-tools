@@ -5,7 +5,7 @@
 # prefixes every later block, and clears when the tool is back. Runs against a
 # temp $SOT_COMM_HOME; never touches the real ~/.sot-comm.
 #
-# Usage: comm/core/tests/test-comm-deps.sh     Exit: 0 if every case PASSes.
+# Usage: comm/tests/test-comm-deps.sh     Exit: 0 if every case PASSes.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 

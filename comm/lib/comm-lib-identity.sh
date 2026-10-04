@@ -494,7 +494,7 @@ sot_derive_handle() {
 # assignment survives past its return — capturing it via command
 # substitution would fork a subshell and lose CLAIMED_NAME exactly the way
 # the test harness's own next_self_file() lost its counter (see
-# comm/core/tests/test-join-disambiguation.sh) — the same lesson, twice.
+# comm/tests/test-join-disambiguation.sh) — the same lesson, twice.
 _sot_claim_derived_handle() {  # MODE ROOT HOST OBJ_JSON — call only via with_lock
     local mode="$1" root="$2" host="$3" obj="$4" line
     CLAIMED_NAME=""

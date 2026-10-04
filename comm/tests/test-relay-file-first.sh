@@ -31,7 +31,7 @@
 # that answers each connection — never the real ~/.sot-comm and never the real
 # daemon.
 #
-# Usage: comm/core/tests/test-relay-file-first.sh
+# Usage: comm/tests/test-relay-file-first.sh
 # Exit: 0 if every case PASSes or SKIPs cleanly, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home

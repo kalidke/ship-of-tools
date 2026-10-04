@@ -16,7 +16,7 @@
 # test-spawn-capsule-workspace.sh uses), extended to answer version.query
 # with a settable declared host.
 #
-# Usage: comm/core/tests/test-spawn-remote-no-local-row.sh
+# Usage: agents/tests/test-spawn-remote-no-local-row.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home

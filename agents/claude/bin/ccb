@@ -20,7 +20,7 @@
 #
 # `sotd agent-exec` places the skill LAST (after every flag given here), so
 # it lands as claude's first-turn prompt AFTER any --continue / flags.
-# Source of truth: comm/adapters/claude/bin/ccb in Ship of Tools, deployed to
+# Source of truth: agents/claude/bin/ccb in Ship of Tools, deployed to
 # ~/.local/bin by `ShipTools.update_comm()`. Edit it there, not in ~/.local/bin.
 sotd_bin="${SOTD_BIN:-}"
 [ -n "$sotd_bin" ] && [ -x "$sotd_bin" ] || sotd_bin="$(command -v sotd 2>/dev/null || true)"

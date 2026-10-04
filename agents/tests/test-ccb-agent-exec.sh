@@ -9,7 +9,7 @@
 # this suite (the "no sotd found" case pins a scratch $HOME so the install-
 # path fallback can't accidentally find a REAL install there).
 #
-# Usage: comm/core/tests/test-ccb-agent-exec.sh
+# Usage: agents/tests/test-ccb-agent-exec.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
