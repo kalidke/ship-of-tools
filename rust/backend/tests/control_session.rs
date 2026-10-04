@@ -1,8 +1,8 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! A control session's replies, pinned through a real `sotd`: the op table's unknown-op answer, the
 //! `monitor.*` and `pty.open` arms that answer inline, the four off-loop ops, `workspace.activate`,
-//! the evt-frame skip, the no-hello-needed `ping` and the protocol-gated roster entry. Every request is read
-//! strictly: its reply is the next non-evt frame and no second reply follows it.
+//! the evt-frame skip, the no-hello-needed `ping`, the protocol-gated roster entry and the hello that does not
+//! parse. Every request is read strictly: its reply is the next non-evt frame and no second reply follows it.
 
 mod support;
 
@@ -160,5 +160,46 @@ async fn control_session_replies_are_pinned() {
     assert!(ids.contains(&"capsule-workspaces-test"), "the helloed connection is listed: {ids:?}");
     assert!(!ids.contains(&"mismatch-probe"), "a refused hello never enters the roster: {ids:?}");
     drop(probe);
+
+    // 8. A hello whose payload does not parse is one handler_error reply and never enters the roster; a valid
+    // hello on the same connection then does.
+    let listed = |reply: &Frame| -> Vec<String> {
+        reply.payload["clients"]
+            .as_array()
+            .expect("clients array")
+            .iter()
+            .filter_map(|c| c["client_id"].as_str().map(str::to_string))
+            .collect()
+    };
+    let before = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
+    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a fourth connection").await;
+    let mut bad = tokio::io::BufReader::new(stream);
+    let reply = strict(&mut bad, 1, op::HELLO, json!({"client_id": 5})).await;
+    assert_eq!(reply.payload["code"], "handler_error", "{:?}", reply.payload);
+    assert!(
+        reply.payload["error"].as_str().is_some_and(|e| e.starts_with("hello payload")),
+        "{:?}",
+        reply.payload
+    );
+    let after_bad = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
+    assert_eq!(after_bad, before, "an unparsable hello never enters the roster");
+    let hello = HelloReq {
+        client_id: "mw18-after-bad".to_string(),
+        session_id: None,
+        last_seen_revision: 0,
+        token: None,
+        protocol: sot_protocol::PROTOCOL_VERSION,
+        app_version: sot_protocol::app_version(),
+        host: None,
+        role: String::new(),
+        instance: None,
+        name: None,
+    };
+    let reply = strict(&mut bad, 2, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
+    assert!(reply.payload.get("code").is_none(), "a valid hello on the same connection is answered: {:?}", reply.payload);
+    assert!(reply.payload["session_id"].is_string(), "{:?}", reply.payload);
+    let after_good = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
+    assert!(after_good.iter().any(|i| i == "mw18-after-bad"), "the valid hello is listed: {after_good:?}");
+    drop(bad);
     env.kill_daemon_bounded().await;
 }
