@@ -113,18 +113,7 @@ impl State {
         // value while each cell paints at the new (bigger) size, and
         // content extends past the wgpu surface edge. The window
         // doesn't resize; the grid does.
-        let (cols, rows) = cell_grid_for(
-            self.config.width,
-            self.config.height,
-            self.cell_w,
-            self.cell_h,
-            self.chrome_origin_x,
-            self.chrome_origin_y,
-        );
-        self.terminal.backend_mut().resize(cols, rows);
-        let _ = self
-            .terminal
-            .resize(ratatui::layout::Rect::new(0, 0, cols, rows));
+        self.rederive_chrome_grid();
         // Replay the cached preview source — without this the open
         // file would stay at its original scale until the user
         // navigated to a different file.
@@ -143,6 +132,11 @@ impl State {
         self.text
             .resize(&self.queue, self.config.width, self.config.height);
 
+        self.rederive_chrome_grid();
+    }
+
+    /// Recompute the chrome grid from the surface size and cell metrics and tell ratatui.
+    fn rederive_chrome_grid(&mut self) {
         let (cols, rows) = cell_grid_for(
             self.config.width,
             self.config.height,
