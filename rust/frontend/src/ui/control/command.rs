@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn file_channel_error_texts_are_pinned() {
-        let text = |json: &str| serde_json::from_str::<FeCommand>(json).unwrap_err().to_string();
+        let text = |json: &str| serde_json::from_slice::<FeCommand>(json.as_bytes()).unwrap_err().to_string();
         assert_eq!(text(r#"{"cmd":"nope"}"#), "unknown variant `nope`, expected one of `workspace`, `cycle_ws`, `reload_keybindings`, `notify`, `open_url`, `mode`, `nav`, `capture_roi`, `preview`, `reveal`, `docs`, `relaunch` at line 1 column 13");
         assert_eq!(text(r#"{"cmd":"reveal","workspace":"w"}"#), "missing field `path`");
     }

@@ -87,8 +87,6 @@ mod prune_write_tests {
         assert!(removed.is_empty());
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
-        let _ = std::fs::remove_file(dir.join("registry.json.tmp"));
-        let _ = std::fs::remove_dir(dir.join("registry.json.tmp"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -190,8 +188,6 @@ mod clear_write_tests {
         clear_comm_unread(&ws, "host-4");
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
-        let _ = std::fs::remove_file(dir.join("registry.json.tmp"));
-        let _ = std::fs::remove_dir(dir.join("registry.json.tmp"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

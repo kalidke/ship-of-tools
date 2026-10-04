@@ -318,12 +318,10 @@ mod config_tests {
     /// means, it does not touch the no-declaration case.
     #[test]
     fn a_box_with_no_hub_declaration_samples_itself() {
-        // Env is process-global: this test holds `ENV_TEST_LOCK`, points
-        // `SOT_HOSTS` at a file that does not exist, and removes the variable after.
         let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = crate::paths::EnvGuard::capture("SOT_HOSTS");
         std::env::set_var("SOT_HOSTS", "/nowhere/hosts.toml");
         let hosts = load_hosts();
-        std::env::remove_var("SOT_HOSTS");
         if !cfg!(target_os = "linux") {
             // The fallback single-host roster is still local-only, and
             // load_hosts() strips the local sampler off Linux same as any
