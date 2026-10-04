@@ -3523,492 +3523,17 @@ impl State {
         // of the cascade by default; it comes back when inline math
         // placement is wired through the markdown buffer.
         let preview_rect = cells_to_px(preview_cells);
-        // ADR 0030 §2: the protocol-mismatch overlay is a hard block — it takes
-        // the preview pane over EVERYTHING (help included) until a clean
-        // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
-        let show_fatal = self.protocol_mismatch.contains_key(&self.active_host);
-        let show_png = self.preview_png.is_some() && !show_fatal;
-        let show_svg = false;
-        // Edit mode owns the preview pane: the file viewer hides so
-        // the editable annotation body has the whole rect.
-        let show_edit =
-            !show_fatal && self.edit_state.is_some() && self.preview_edit.is_some();
-        let show_md = !show_fatal && !show_png && !show_edit;
-
-        // Figure caption (agent-supplied, ADR 0025): a band RESERVED at the
-        // bottom of the preview pane. Computed here, before `png_rect`, because
-        // every piece of image geometry downstream — letterbox fit, the zoom
-        // ceiling, pan slack, the ROI solve and its inverse, the scissor — keys
-        // off the pane rect, and reserving space only works if they all agree on
-        // the SAME reduced rect. `image_rect` is that rect; `preview_rect`
-        // continues to mean the whole pane for text/media/overlay draws.
-        let caption_draw = if show_png {
-            self.build_caption(preview_rect)
-        } else {
-            // No raster on screen (help, edit modal, markdown, fatal overlay):
-            // nothing to caption, and the text pane keeps the full rect.
-            self.caption_label = None;
-            None
-        };
-        // Publish the band height BEFORE deriving image_rect, so the keyboard
-        // zoom/pan handler (which runs outside the render pass) derives its pane
-        // from the same number this frame drew with.
-        self.caption_band_px = caption_draw.as_ref().map_or(0.0, |c| c.backing.h);
-        let image_rect = image_rect_for_caption(preview_rect, self.caption_band_px);
-
-        let png_rect = if show_png {
-            self.preview_png
-                .as_ref()
-                .map(|q| letterbox(image_rect, q.size_px))
-        } else {
-            None
-        };
-        let svg_rect = if show_svg {
-            self.preview_svg
-                .as_ref()
-                .map(|q| letterbox(preview_rect, q.size_px))
-        } else {
-            None
-        };
-
-        // Inset the markdown content from the pane edge so text isn't flush
-        // against the border — GitHub (`.markdown-body` padding) and VSCode
-        // (~26px body padding) both gutter their rendered markdown. We translate
-        // that to cell units: ~1 char each side + a half-line top/bottom. Tune
-        // PREVIEW_PAD_X/Y to taste. Images keep the full `preview_rect` (the PNG
-        // path above letterboxes into it) — only flowed text gets the gutter.
-        const PREVIEW_PAD_X: f32 = 1.0; // cells, each side
-        const PREVIEW_PAD_Y: f32 = 0.5; // cells, top & bottom
-        let pad_x = PREVIEW_PAD_X * cell_w;
-        let pad_y = PREVIEW_PAD_Y * cell_h;
-        // Re-shape the markdown buffer if the pane rect changed shape.
-        let md_rect = ScreenRect {
-            x: preview_rect.x + pad_x,
-            y: preview_rect.y + pad_y,
-            w: (preview_rect.w - 2.0 * pad_x).max(1.0),
-            h: (preview_rect.h - 2.0 * pad_y).max(1.0),
-        };
-        let size_changed = (md_rect.w - self.md_rect_px.w).abs() > 0.5
-            || (md_rect.h - self.md_rect_px.h).abs() > 0.5;
-        if size_changed {
-            self.preview_md
-                .resize(self.text.font_system_mut(), md_rect.w, md_rect.h);
-        }
-        self.md_rect_px = md_rect;
-        // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
-        // Regenerate the SVG → wgpu quad whenever data or size changed
-        // (`monitor_dirty`), mirroring the math-SVG rasterise path. Build into
-        // a local first so the immutable `&self.device/queue/quad_pipeline`
-        // borrows don't collide with the `self.monitor_quad` write.
-        self.repl_scrollback_px = cells_to_px(repl_scrollback_cells);
-        self.repl_window = repl_window;
-        self.monitor_rect_px = cells_to_px(repl_cells);
-        if self.drawer == DrawerContent::Monitor {
-            let mw = self.monitor_rect_px.w.max(1.0) as u32;
-            let mh = self.monitor_rect_px.h.max(1.0) as u32;
-            if self.monitor_dirty && mw > 1 && mh > 1 {
-                // Scale the chart's text + gutters to match the chrome's
-                // effective text size (cell_h is BASE_CELL_H * scale), so the
-                // SVG's logical-px labels aren't tiny on a hi-DPI window.
-                let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
-                let svg = self.monitor_view.render_svg(mw, mh, mon_scale);
-                let quad = quad_from_svg_bytes(
-                    &self.device,
-                    &self.queue,
-                    &self.quad_pipeline,
-                    svg.as_bytes(),
-                    mw,
-                    mh,
-                )
-                .ok();
-                self.monitor_quad = quad;
-                self.monitor_dirty = false;
-            }
-        } else {
-            self.monitor_quad = None;
-        }
-        // ADR 0030 §2: same lazy build for the protocol-mismatch overlay, once
-        // md_rect_px reflects the real preview width so the message wraps right.
-        if show_fatal && self.preview_fatal.is_none() {
-            self.rebuild_fatal_overlay();
-        }
-
-        // Same dance for the concept pane. Shares the same rect now that
-        // it's a single preview slot.
-        let concept_rect = preview_rect;
-        let concept_size_changed = (concept_rect.w - self.concept_rect_px.w).abs() > 0.5
-            || (concept_rect.h - self.concept_rect_px.h).abs() > 0.5;
-        if concept_size_changed {
-            if let Some(pc) = self.preview_concept.as_mut() {
-                pc.resize(self.text.font_system_mut(), concept_rect.w, concept_rect.h);
-            }
-        }
-        self.concept_rect_px = concept_rect;
-
-        // Clamp `preview_scroll` so the user can't walk past the end
-        // of the document. Pixel-summing per LayoutLine accounts for
-        // per-line `line_height_opt` overrides emitted by tall
-        // placeholder spans (display math, embedded figures) — using
-        // a body-line count alone undercounts the document height by
-        // (figure_height - body_line_h) for every embedded media row.
-        // Clamp by the one buffer on screen, in the rect it is drawn in, so a
-        // hidden buffer never scrolls the pane into blank space.
-        let line_h = self.preview_md.line_height().max(1.0);
-        // The extras paint with `EXTRA_TOP_PAD_PX` of headroom, so each
-        // frame only renders `the drawn rect's height - pad` pixels of content. Subtract
-        // the pad from `visible_px` so max_scroll lets the user reach the
-        // actual bottom of the document without losing the tail to the
-        // padding.
-        let (shown, shown_h) = preview_scroll_target(
-            show_edit,
-            &self.preview_md,
-            md_rect.h,
-            self.preview_edit.as_ref(),
-            preview_rect.h,
-        );
-        let visible_px = (shown_h - crate::text::EXTRA_TOP_PAD_PX).max(line_h);
-        // `preview_scroll` is body-line units; convert the pixel slack
-        // back via ceil so the final body-line step always lands the
-        // bottom of the document on screen (no off-by-fraction clip).
-        let max_scroll = preview_max_scroll(line_h, visible_px, shown);
-        self.preview_scroll = self.preview_scroll.min(max_scroll);
-        let preview_scroll_px = self.preview_scroll as f32 * line_h;
-
-        // Walk the laid-out markdown buffer for FFFC placeholders, zip
-        // with `preview_md.media_blocks` by appearance order, and
-        // pre-rasterise any math SVGs we have that haven't been
-        // rasterised yet at the current pane width. Painting happens
-        // inside the rpass below; do the side-effecty rasterise here
-        // while we have &mut self.
-        let media_paint_targets: Vec<(usize, ScreenRect)> = if show_md {
-            self.collect_media_paint_targets(md_rect, preview_scroll_px)
-        } else {
-            Vec::new()
-        };
-        // Build / refresh per-table cosmic-text buffers — must run
-        // before the extras are assembled below because the extras
-        // borrow `&self.table_buffers[i].buffer`. The fn is a no-op
-        // when the buffer set already matches `preview_md.media_blocks`
-        // (typical steady-state across redraws). It also resets
-        // `md_table_scroll_px` to 0 whenever buffers are rebuilt, so
-        // navigating to a different doc starts at scroll-left.
-        if show_md {
-            self.ensure_table_buffers();
-        } else {
-            self.table_buffers.clear();
-        }
-        // Clamp the shared horizontal scroll so the user can't walk
-        // past the right edge of the widest table on the current doc.
-        // Uses the widest natural width across all tables — single
-        // scroll var means the clamp has to cover them all (the
-        // narrower tables just go past their own right edge into
-        // empty space, which TextBounds clips invisibly).
-        let widest_table_w = self
-            .table_buffers
-            .iter()
-            .map(|e| e.natural_w_px)
-            .fold(0.0_f32, f32::max);
-        let table_max_scroll = (widest_table_w - md_rect.w).max(0.0);
-        self.md_table_scroll_px = self.md_table_scroll_px.clamp(0.0, table_max_scroll);
-        let body_em_px = self.preview_md.body_em().max(1.0);
-        for (block_idx, rect) in &media_paint_targets {
-            let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
-                continue;
-            };
-            let crate::preview::markdown::MediaBlock::Math { latex, display } = block else {
-                continue;
-            };
-            let key = (latex.clone(), *display);
-            let Some(entry) = self.math_cache.get_mut(&key) else {
-                continue;
-            };
-            if entry.rasterised.is_some() {
-                continue;
-            }
-            // Natural pixel size, derived from the SVG's ex-unit
-            // dimensions and the body font. Clamped to the row
-            // reservation so a malformed `<svg>` tag (or an
-            // exceptionally tall `aligned` block) can't overflow the
-            // letterbox and trample neighbouring paragraphs. The fit-
-            // scale used to happen inside `quad_from_svg_bytes`; doing
-            // it here lets short equations rasterise at their actual
-            // size (e.g. ~3ex tall) instead of being stretched to fill
-            // the slab.
-            let (target_w, target_h) = match (entry.width_ex, entry.height_ex) {
-                (Some(w_ex), Some(h_ex)) => {
-                    let nat_w = (w_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
-                    let nat_h = (h_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
-                    let max_w = rect.w.max(1.0);
-                    let max_h = rect.h.max(1.0);
-                    // Uniform downscale only — never enlarge past natural.
-                    let s = (max_w / nat_w).min(max_h / nat_h).min(1.0).max(0.001);
-                    (
-                        (nat_w * s).ceil().max(1.0) as u32,
-                        (nat_h * s).ceil().max(1.0) as u32,
-                    )
-                }
-                _ => {
-                    // Pre-fix fallback: no parsed dims, letterbox into
-                    // the row reservation. Should be rare — the SVG's
-                    // root tag is well-formed in every observed case.
-                    ((rect.w as u32).max(1), (rect.h as u32).max(1))
-                }
-            };
-            match quad_from_svg_bytes(
-                &self.device,
-                &self.queue,
-                &self.quad_pipeline,
-                &entry.svg_bytes,
-                target_w,
-                target_h,
-            ) {
-                Ok(q) => entry.rasterised = Some(q),
-                Err(e) => tracing::warn!(error = %e,
-                    latex_len = entry.svg_bytes.len(),
-                    "math svg rasterise failed"),
-            }
-        }
-
-        // ADR 0034: compute the scalebar geometry + shape its label BEFORE the
-        // `extras` borrows and `text.prepare` — the label is pushed as an
-        // ExtraArea below, and the bar rects are drawn inside the pass. `&mut
-        // self` here (font_system + scalebar_label); done before the shared
-        // buffer borrows the `extras` Vec takes.
-        // `image_rect`, not `preview_rect`: the bar belongs to the figure, so
-        // when a caption reserves the bottom band the bar rides above it with
-        // no inset arithmetic of its own.
-        let scalebar_draw = self.build_scalebar(png_rect, image_rect);
-
-        // The preview text is laid out at its own line pitch, so the cell-grid
-        // bottom rarely lands on a line boundary; clip at the last whole line.
-        let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| {
-            r.y + crate::text::EXTRA_TOP_PAD_PX
-                + p.whole_line_bottom(scroll_px, r.h - crate::text::EXTRA_TOP_PAD_PX)
-        };
-        let md_clip_bottom = whole_line_clip(&self.preview_md, md_rect, preview_scroll_px);
-        let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
-        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
-            extras.push(crate::text::ExtraArea {
-                buffer: &lbl.buffer,
-                x: sb.label_x,
-                y: sb.label_y,
-                right: image_rect.x + image_rect.w,
-                bottom: image_rect.y + image_rect.h,
-                clip_left: Some(image_rect.x),
-                clip_top: Some(image_rect.y),
-                // Near-white on the dark backing box drawn under it.
-                color: (245, 245, 245),
-                scroll_y_px: 0.0,
-            });
-        }
-        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.caption_label.as_ref()) {
-            extras.push(crate::text::ExtraArea {
-                buffer: &lbl.buffer,
-                x: cap.text_x,
-                y: cap.text_y,
-                right: cap.backing.x + cap.backing.w,
-                // `clip_bottom` (not the backing's edge) so a caption longer
-                // than CAPTION_MAX_LINES is cut at the band's text area instead
-                // of bleeding into the padding.
-                bottom: cap.clip_bottom,
-                clip_left: Some(cap.backing.x),
-                clip_top: Some(cap.backing.y),
-                color: (232, 232, 232),
-                scroll_y_px: 0.0,
-            });
-        }
-        if show_md {
-            extras.push(crate::text::ExtraArea {
-                buffer: &self.preview_md.buffer,
-                x: md_rect.x,
-                y: md_rect.y,
-                right: md_rect.x + md_rect.w,
-                bottom: md_clip_bottom,
-                clip_left: None,
-                clip_top: None,
-                color: (220, 220, 220),
-                scroll_y_px: preview_scroll_px,
-            });
-        }
-        if show_edit {
-            if let Some(pe) = self.preview_edit.as_ref() {
-                extras.push(crate::text::ExtraArea {
-                    buffer: &pe.buffer,
-                    x: preview_rect.x,
-                    y: preview_rect.y,
-                    right: preview_rect.x + preview_rect.w,
-                    bottom: whole_line_clip(pe, preview_rect, preview_scroll_px),
-                    clip_left: None,
-                    clip_top: None,
-                    // Warm gold tint so the user sees at a glance that
-                    // this is editable, not the read-only annotation.
-                    color: (235, 215, 160),
-                    scroll_y_px: preview_scroll_px,
-                });
-            }
-        }
-        // ADR 0030 §2: protocol-mismatch overlay, reusing the help overlay's
-        // paint path but with a warm red tint so it reads as an error, not a
-        // cheat sheet. Trumps everything (highest priority in the cascade).
-        if show_fatal {
-            if let Some(pf) = self.preview_fatal.as_ref() {
-                extras.push(crate::text::ExtraArea {
-                    buffer: &pf.buffer,
-                    x: preview_rect.x,
-                    y: preview_rect.y,
-                    right: preview_rect.x + preview_rect.w,
-                    bottom: whole_line_clip(pf, preview_rect, 0.0),
-                    clip_left: None,
-                    clip_top: None,
-                    color: (240, 160, 150),
-                    scroll_y_px: 0.0,
-                });
-            }
-        }
-        // Per-table extras — one ExtraArea per MediaBlock::Table, hosted
-        // at the FFFC's screen rect with a left-shift of
-        // `md_table_scroll_px` so the user can drag the table
-        // horizontally. TextBounds at preview-pane edges clip the
-        // overflow glyph-by-glyph — no wgpu scissor needed.
-        //
-        // We iterate `media_paint_targets` (in FFFC source order) and
-        // increment a `table_idx` counter on each Table encounter so it
-        // walks `table_buffers` parallel to the source-order TableBufferEntry
-        // build inside `ensure_table_buffers`.
-        if show_md && !self.table_buffers.is_empty() {
-            let mut table_idx: usize = 0;
-            for (block_idx, rect) in &media_paint_targets {
-                let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
-                    continue;
-                };
-                if !matches!(block, crate::preview::markdown::MediaBlock::Table { .. }) {
-                    continue;
-                }
-                let Some(entry) = self.table_buffers.get(table_idx) else {
-                    table_idx += 1;
-                    continue;
-                };
-                table_idx += 1;
-                // Cull tables fully scrolled off the vertical viewport
-                // — TextBounds would catch them anyway but the cheap
-                // skip saves a glyphon TextArea entry.
-                if rect.y + rect.h < preview_rect.y || rect.y > preview_rect.y + preview_rect.h {
-                    continue;
-                }
-                // `x` rides the shared horizontal scroll; `y` plants
-                // the table's first row exactly at the FFFC's screen
-                // y. The ExtraArea pipeline adds EXTRA_TOP_PAD_PX to
-                // the y, so we subtract it back here.
-                let table_x = rect.x - self.md_table_scroll_px;
-                let table_y = rect.y - crate::text::EXTRA_TOP_PAD_PX;
-                extras.push(crate::text::ExtraArea {
-                    buffer: &entry.buffer,
-                    x: table_x,
-                    y: table_y,
-                    // Bounds clip to the preview pane in BOTH axes so
-                    // the table's natural-width overflow gets glyph-
-                    // clipped at the pane right edge, and vertical
-                    // scroll past the pane edges is invisible. The bottom
-                    // stops at the last whole row.
-                    right: preview_rect.x + preview_rect.w,
-                    bottom: whole_row_bottom(
-                        rect.y,
-                        entry.buffer.metrics().line_height,
-                        preview_rect.y + preview_rect.h,
-                    ),
-                    // Pin the bounds.left to the pane edge — the
-                    // glyph origin (`x`) is shifted into negative
-                    // territory by `md_table_scroll_px` and would
-                    // otherwise let bounds.left follow it off-pane.
-                    clip_left: Some(preview_rect.x),
-                    clip_top: Some(preview_rect.y),
-                    color: (220, 220, 220),
-                    scroll_y_px: 0.0,
-                });
-            }
-        }
-
-        self.text.prepare(
-            &self.device,
-            &self.queue,
-            self.config.width,
-            self.config.height,
-            &lines,
-            &extras,
-        )?;
-
-        let mut help_overlay_rect = None;
-        let mut help_overlay_lines = Vec::new();
-        let mut help_opacity = 1.0;
-        if let Some(peek) = self.help.peek.clone() {
-            let now = std::time::Instant::now();
-            help_opacity = peek.opacity(now);
-            if help_opacity <= 0.0 || peek.context != self.help_context() {
-                self.help.peek = None;
-            } else {
-                let rect = match peek.context.pane {
-                    help::Pane::Nav => self.pane_rects.nav,
-                    help::Pane::Preview => self.pane_rects.preview,
-                    help::Pane::Agent => self.pane_rects.llm,
-                    _ => self.pane_rects.repl,
-                };
-                let content = help::peek_lines(&peek.context, &self.bindings);
-                let text_width = rect.width.saturating_sub(4) as usize;
-                let longest = content.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.as_str())).max().unwrap_or(0);
-                if text_width < longest || rect.height < content.len() as u16 + 2 {
-                    self.open_help_drawer(peek.context);
-                } else {
-                    self.nav_spill_segments.clear();
-                    let px = ScreenRect {
-                        x: self.chrome_origin_x + rect.x as f32 * self.cell_w,
-                        y: self.chrome_origin_y + rect.y as f32 * self.cell_h,
-                        w: rect.width as f32 * self.cell_w,
-                        h: (content.len() as f32 + 2.0) * self.cell_h,
-                    };
-                    help_overlay_rect = Some(px);
-                    help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::text::Line {
-                        text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
-                        color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
-                    }).collect();
-                    let alpha = (help_opacity * 245.0).round() as u8;
-                    if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
-                        self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
-                            &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
-                    }
-                }
-            }
-        }
-
-        // Nav-spill overlay text: the segments the draw closure just
-        // collected, converted cell→px with the SAME origin/cell math the
-        // chrome lines use so the overlay realigns pixel-identically over
-        // the row it covers. Prepared EVERY frame — an empty list is what
-        // clears the overlay renderer's retained geometry (see
-        // `prepare_overlay`'s doc), so no `if` around this call.
-        let mut overlay_lines: Vec<crate::text::Line> = self
-            .nav_spill_segments
-            .iter()
-            .map(|seg| crate::text::Line {
-                text: seg.text.clone(),
-                x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
-                y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
-                color: seg.color,
-                bold: seg.bold,
-                italic: false,
-                dim: seg.dim,
-            })
-            .collect();
-        let fade_start = overlay_lines.len();
-        overlay_lines.extend(help_overlay_lines);
-        self.text.prepare_overlay(
-            &self.device,
-            &self.queue,
-            self.config.width,
-            self.config.height,
-            &overlay_lines,
-            Some((fade_start, help_opacity)),
-        )?;
-
+        let (show_fatal, show_png, show_svg, show_edit, show_md) = self.preview_shows();
+        let (caption_draw, image_rect, png_rect, svg_rect) = self.layout_figure(preview_rect, show_png, show_svg);
+        let md_rect = self.layout_markdown(preview_rect, cell_w, cell_h);
+        self.layout_drawer_px(cells_to_px, repl_scrollback_cells, repl_window, repl_cells);
+        self.rebuild_fatal_if_shown(show_fatal);
+        self.layout_concept(preview_rect);
+        let preview_scroll_px = self.clamp_preview_scroll(show_edit, md_rect, preview_rect);
+        let media_paint_targets = self.prepare_media(show_md, md_rect, preview_scroll_px);
+        let (scalebar_draw, media_paint_targets) = self.prepare_preview_text(lines, media_paint_targets,
+            preview_rect, image_rect, png_rect, md_rect, preview_scroll_px, show_md, show_edit, show_fatal, &caption_draw)?;
+        let (help_overlay_rect, overlay_lines) = self.prepare_overlays()?;
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -5293,6 +4818,546 @@ impl State {
             self.text.render_overlay(&mut rpass)?;
         }
         Ok(())
+    }
+
+    fn preview_shows(&self) -> (bool, bool, bool, bool, bool) {
+        // ADR 0030 §2: the protocol-mismatch overlay is a hard block — it takes
+        // the preview pane over EVERYTHING (help included) until a clean
+        // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
+        let show_fatal = self.protocol_mismatch.contains_key(&self.active_host);
+        let show_png = self.preview_png.is_some() && !show_fatal;
+        let show_svg = false;
+        // Edit mode owns the preview pane: the file viewer hides so
+        // the editable annotation body has the whole rect.
+        let show_edit =
+            !show_fatal && self.edit_state.is_some() && self.preview_edit.is_some();
+        let show_md = !show_fatal && !show_png && !show_edit;
+        (show_fatal, show_png, show_svg, show_edit, show_md)
+    }
+
+    fn layout_figure(
+        &mut self,
+        preview_rect: ScreenRect,
+        show_png: bool,
+        show_svg: bool,
+    ) -> (Option<crate::ui::preview::image::overlay::CaptionDraw>, ScreenRect, Option<ScreenRect>, Option<ScreenRect>) {
+        // Figure caption (agent-supplied, ADR 0025): a band RESERVED at the
+        // bottom of the preview pane. Computed here, before `png_rect`, because
+        // every piece of image geometry downstream — letterbox fit, the zoom
+        // ceiling, pan slack, the ROI solve and its inverse, the scissor — keys
+        // off the pane rect, and reserving space only works if they all agree on
+        // the SAME reduced rect. `image_rect` is that rect; `preview_rect`
+        // continues to mean the whole pane for text/media/overlay draws.
+        let caption_draw = if show_png {
+            self.build_caption(preview_rect)
+        } else {
+            // No raster on screen (help, edit modal, markdown, fatal overlay):
+            // nothing to caption, and the text pane keeps the full rect.
+            self.caption_label = None;
+            None
+        };
+        // Publish the band height BEFORE deriving image_rect, so the keyboard
+        // zoom/pan handler (which runs outside the render pass) derives its pane
+        // from the same number this frame drew with.
+        self.caption_band_px = caption_draw.as_ref().map_or(0.0, |c| c.backing.h);
+        let image_rect = image_rect_for_caption(preview_rect, self.caption_band_px);
+
+        let png_rect = if show_png {
+            self.preview_png
+                .as_ref()
+                .map(|q| letterbox(image_rect, q.size_px))
+        } else {
+            None
+        };
+        let svg_rect = if show_svg {
+            self.preview_svg
+                .as_ref()
+                .map(|q| letterbox(preview_rect, q.size_px))
+        } else {
+            None
+        };
+        (caption_draw, image_rect, png_rect, svg_rect)
+    }
+
+    fn layout_markdown(&mut self, preview_rect: ScreenRect, cell_w: f32, cell_h: f32) -> ScreenRect {
+        // Inset the markdown content from the pane edge so text isn't flush
+        // against the border — GitHub (`.markdown-body` padding) and VSCode
+        // (~26px body padding) both gutter their rendered markdown. We translate
+        // that to cell units: ~1 char each side + a half-line top/bottom. Tune
+        // PREVIEW_PAD_X/Y to taste. Images keep the full `preview_rect` (the PNG
+        // path above letterboxes into it) — only flowed text gets the gutter.
+        const PREVIEW_PAD_X: f32 = 1.0; // cells, each side
+        const PREVIEW_PAD_Y: f32 = 0.5; // cells, top & bottom
+        let pad_x = PREVIEW_PAD_X * cell_w;
+        let pad_y = PREVIEW_PAD_Y * cell_h;
+        // Re-shape the markdown buffer if the pane rect changed shape.
+        let md_rect = ScreenRect {
+            x: preview_rect.x + pad_x,
+            y: preview_rect.y + pad_y,
+            w: (preview_rect.w - 2.0 * pad_x).max(1.0),
+            h: (preview_rect.h - 2.0 * pad_y).max(1.0),
+        };
+        let size_changed = (md_rect.w - self.md_rect_px.w).abs() > 0.5
+            || (md_rect.h - self.md_rect_px.h).abs() > 0.5;
+        if size_changed {
+            self.preview_md
+                .resize(self.text.font_system_mut(), md_rect.w, md_rect.h);
+        }
+        self.md_rect_px = md_rect;
+        md_rect
+    }
+
+    fn layout_drawer_px(
+        &mut self,
+        cells_to_px: impl Fn(ratatui::layout::Rect) -> ScreenRect,
+        repl_scrollback_cells: ratatui::layout::Rect,
+        repl_window: (usize, usize),
+        repl_cells: ratatui::layout::Rect,
+    ) {
+        // Ctrl+M monitor drawer (ADR 0020): the chart shares the drawer rect.
+        // Regenerate the SVG → wgpu quad whenever data or size changed
+        // (`monitor_dirty`), mirroring the math-SVG rasterise path. Build into
+        // a local first so the immutable `&self.device/queue/quad_pipeline`
+        // borrows don't collide with the `self.monitor_quad` write.
+        self.repl_scrollback_px = cells_to_px(repl_scrollback_cells);
+        self.repl_window = repl_window;
+        self.monitor_rect_px = cells_to_px(repl_cells);
+        if self.drawer == DrawerContent::Monitor {
+            let mw = self.monitor_rect_px.w.max(1.0) as u32;
+            let mh = self.monitor_rect_px.h.max(1.0) as u32;
+            if self.monitor_dirty && mw > 1 && mh > 1 {
+                // Scale the chart's text + gutters to match the chrome's
+                // effective text size (cell_h is BASE_CELL_H * scale), so the
+                // SVG's logical-px labels aren't tiny on a hi-DPI window.
+                let mon_scale = (self.cell_h / BASE_CELL_H) as f64;
+                let svg = self.monitor_view.render_svg(mw, mh, mon_scale);
+                let quad = quad_from_svg_bytes(
+                    &self.device,
+                    &self.queue,
+                    &self.quad_pipeline,
+                    svg.as_bytes(),
+                    mw,
+                    mh,
+                )
+                .ok();
+                self.monitor_quad = quad;
+                self.monitor_dirty = false;
+            }
+        } else {
+            self.monitor_quad = None;
+        }
+    }
+
+    fn rebuild_fatal_if_shown(&mut self, show_fatal: bool) {
+        // ADR 0030 §2: same lazy build for the protocol-mismatch overlay, once
+        // md_rect_px reflects the real preview width so the message wraps right.
+        if show_fatal && self.preview_fatal.is_none() {
+            self.rebuild_fatal_overlay();
+        }
+    }
+
+    fn layout_concept(&mut self, preview_rect: ScreenRect) {
+        // Same dance for the concept pane. Shares the same rect now that
+        // it's a single preview slot.
+        let concept_rect = preview_rect;
+        let concept_size_changed = (concept_rect.w - self.concept_rect_px.w).abs() > 0.5
+            || (concept_rect.h - self.concept_rect_px.h).abs() > 0.5;
+        if concept_size_changed {
+            if let Some(pc) = self.preview_concept.as_mut() {
+                pc.resize(self.text.font_system_mut(), concept_rect.w, concept_rect.h);
+            }
+        }
+        self.concept_rect_px = concept_rect;
+    }
+
+    fn clamp_preview_scroll(&mut self, show_edit: bool, md_rect: ScreenRect, preview_rect: ScreenRect) -> f32 {
+        // Clamp `preview_scroll` so the user can't walk past the end
+        // of the document. Pixel-summing per LayoutLine accounts for
+        // per-line `line_height_opt` overrides emitted by tall
+        // placeholder spans (display math, embedded figures) — using
+        // a body-line count alone undercounts the document height by
+        // (figure_height - body_line_h) for every embedded media row.
+        // Clamp by the one buffer on screen, in the rect it is drawn in, so a
+        // hidden buffer never scrolls the pane into blank space.
+        let line_h = self.preview_md.line_height().max(1.0);
+        // The extras paint with `EXTRA_TOP_PAD_PX` of headroom, so each
+        // frame only renders `the drawn rect's height - pad` pixels of content. Subtract
+        // the pad from `visible_px` so max_scroll lets the user reach the
+        // actual bottom of the document without losing the tail to the
+        // padding.
+        let (shown, shown_h) = preview_scroll_target(
+            show_edit,
+            &self.preview_md,
+            md_rect.h,
+            self.preview_edit.as_ref(),
+            preview_rect.h,
+        );
+        let visible_px = (shown_h - crate::text::EXTRA_TOP_PAD_PX).max(line_h);
+        // `preview_scroll` is body-line units; convert the pixel slack
+        // back via ceil so the final body-line step always lands the
+        // bottom of the document on screen (no off-by-fraction clip).
+        let max_scroll = preview_max_scroll(line_h, visible_px, shown);
+        self.preview_scroll = self.preview_scroll.min(max_scroll);
+        let preview_scroll_px = self.preview_scroll as f32 * line_h;
+        preview_scroll_px
+    }
+
+    fn prepare_media(&mut self, show_md: bool, md_rect: ScreenRect,
+                     preview_scroll_px: f32) -> Vec<(usize, ScreenRect)> {
+        // Walk the laid-out markdown buffer for FFFC placeholders, zip
+        // with `preview_md.media_blocks` by appearance order, and
+        // pre-rasterise any math SVGs we have that haven't been
+        // rasterised yet at the current pane width. Painting happens
+        // inside the rpass below; do the side-effecty rasterise here
+        // while we have &mut self.
+        let media_paint_targets: Vec<(usize, ScreenRect)> = if show_md {
+            self.collect_media_paint_targets(md_rect, preview_scroll_px)
+        } else {
+            Vec::new()
+        };
+        // Build / refresh per-table cosmic-text buffers — must run
+        // before the extras are assembled below because the extras
+        // borrow `&self.table_buffers[i].buffer`. The fn is a no-op
+        // when the buffer set already matches `preview_md.media_blocks`
+        // (typical steady-state across redraws). It also resets
+        // `md_table_scroll_px` to 0 whenever buffers are rebuilt, so
+        // navigating to a different doc starts at scroll-left.
+        if show_md {
+            self.ensure_table_buffers();
+        } else {
+            self.table_buffers.clear();
+        }
+        // Clamp the shared horizontal scroll so the user can't walk
+        // past the right edge of the widest table on the current doc.
+        // Uses the widest natural width across all tables — single
+        // scroll var means the clamp has to cover them all (the
+        // narrower tables just go past their own right edge into
+        // empty space, which TextBounds clips invisibly).
+        let widest_table_w = self
+            .table_buffers
+            .iter()
+            .map(|e| e.natural_w_px)
+            .fold(0.0_f32, f32::max);
+        let table_max_scroll = (widest_table_w - md_rect.w).max(0.0);
+        self.md_table_scroll_px = self.md_table_scroll_px.clamp(0.0, table_max_scroll);
+        let body_em_px = self.preview_md.body_em().max(1.0);
+        for (block_idx, rect) in &media_paint_targets {
+            let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
+                continue;
+            };
+            let crate::preview::markdown::MediaBlock::Math { latex, display } = block else {
+                continue;
+            };
+            let key = (latex.clone(), *display);
+            let Some(entry) = self.math_cache.get_mut(&key) else {
+                continue;
+            };
+            if entry.rasterised.is_some() {
+                continue;
+            }
+            // Natural pixel size, derived from the SVG's ex-unit
+            // dimensions and the body font. Clamped to the row
+            // reservation so a malformed `<svg>` tag (or an
+            // exceptionally tall `aligned` block) can't overflow the
+            // letterbox and trample neighbouring paragraphs. The fit-
+            // scale used to happen inside `quad_from_svg_bytes`; doing
+            // it here lets short equations rasterise at their actual
+            // size (e.g. ~3ex tall) instead of being stretched to fill
+            // the slab.
+            let (target_w, target_h) = match (entry.width_ex, entry.height_ex) {
+                (Some(w_ex), Some(h_ex)) => {
+                    let nat_w = (w_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
+                    let nat_h = (h_ex * MATHJAX_EX_FACTOR * body_em_px).max(1.0);
+                    let max_w = rect.w.max(1.0);
+                    let max_h = rect.h.max(1.0);
+                    // Uniform downscale only — never enlarge past natural.
+                    let s = (max_w / nat_w).min(max_h / nat_h).min(1.0).max(0.001);
+                    (
+                        (nat_w * s).ceil().max(1.0) as u32,
+                        (nat_h * s).ceil().max(1.0) as u32,
+                    )
+                }
+                _ => {
+                    // Pre-fix fallback: no parsed dims, letterbox into
+                    // the row reservation. Should be rare — the SVG's
+                    // root tag is well-formed in every observed case.
+                    ((rect.w as u32).max(1), (rect.h as u32).max(1))
+                }
+            };
+            match quad_from_svg_bytes(
+                &self.device,
+                &self.queue,
+                &self.quad_pipeline,
+                &entry.svg_bytes,
+                target_w,
+                target_h,
+            ) {
+                Ok(q) => entry.rasterised = Some(q),
+                Err(e) => tracing::warn!(error = %e,
+                    latex_len = entry.svg_bytes.len(),
+                    "math svg rasterise failed"),
+            }
+        }
+        media_paint_targets
+    }
+
+    fn prepare_preview_text(
+        &mut self,
+        lines: Vec<crate::text::Line>,
+        media_paint_targets: Vec<(usize, ScreenRect)>,
+        preview_rect: ScreenRect,
+        image_rect: ScreenRect,
+        png_rect: Option<ScreenRect>,
+        md_rect: ScreenRect,
+        preview_scroll_px: f32,
+        show_md: bool,
+        show_edit: bool,
+        show_fatal: bool,
+        caption_draw: &Option<crate::ui::preview::image::overlay::CaptionDraw>,
+    ) -> Result<(Option<crate::ui::preview::image::overlay::ScalebarDraw>, Vec<(usize, ScreenRect)>)> {
+        // ADR 0034: compute the scalebar geometry + shape its label BEFORE the
+        // `extras` borrows and `text.prepare` — the label is pushed as an
+        // ExtraArea below, and the bar rects are drawn inside the pass. `&mut
+        // self` here (font_system + scalebar_label); done before the shared
+        // buffer borrows the `extras` Vec takes.
+        // `image_rect`, not `preview_rect`: the bar belongs to the figure, so
+        // when a caption reserves the bottom band the bar rides above it with
+        // no inset arithmetic of its own.
+        let scalebar_draw = self.build_scalebar(png_rect, image_rect);
+
+        // The preview text is laid out at its own line pitch, so the cell-grid
+        // bottom rarely lands on a line boundary; clip at the last whole line.
+        let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| {
+            r.y + crate::text::EXTRA_TOP_PAD_PX
+                + p.whole_line_bottom(scroll_px, r.h - crate::text::EXTRA_TOP_PAD_PX)
+        };
+        let md_clip_bottom = whole_line_clip(&self.preview_md, md_rect, preview_scroll_px);
+        let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
+        if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
+            extras.push(crate::text::ExtraArea {
+                buffer: &lbl.buffer,
+                x: sb.label_x,
+                y: sb.label_y,
+                right: image_rect.x + image_rect.w,
+                bottom: image_rect.y + image_rect.h,
+                clip_left: Some(image_rect.x),
+                clip_top: Some(image_rect.y),
+                // Near-white on the dark backing box drawn under it.
+                color: (245, 245, 245),
+                scroll_y_px: 0.0,
+            });
+        }
+        if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.caption_label.as_ref()) {
+            extras.push(crate::text::ExtraArea {
+                buffer: &lbl.buffer,
+                x: cap.text_x,
+                y: cap.text_y,
+                right: cap.backing.x + cap.backing.w,
+                // `clip_bottom` (not the backing's edge) so a caption longer
+                // than CAPTION_MAX_LINES is cut at the band's text area instead
+                // of bleeding into the padding.
+                bottom: cap.clip_bottom,
+                clip_left: Some(cap.backing.x),
+                clip_top: Some(cap.backing.y),
+                color: (232, 232, 232),
+                scroll_y_px: 0.0,
+            });
+        }
+        if show_md {
+            extras.push(crate::text::ExtraArea {
+                buffer: &self.preview_md.buffer,
+                x: md_rect.x,
+                y: md_rect.y,
+                right: md_rect.x + md_rect.w,
+                bottom: md_clip_bottom,
+                clip_left: None,
+                clip_top: None,
+                color: (220, 220, 220),
+                scroll_y_px: preview_scroll_px,
+            });
+        }
+        if show_edit {
+            if let Some(pe) = self.preview_edit.as_ref() {
+                extras.push(crate::text::ExtraArea {
+                    buffer: &pe.buffer,
+                    x: preview_rect.x,
+                    y: preview_rect.y,
+                    right: preview_rect.x + preview_rect.w,
+                    bottom: whole_line_clip(pe, preview_rect, preview_scroll_px),
+                    clip_left: None,
+                    clip_top: None,
+                    // Warm gold tint so the user sees at a glance that
+                    // this is editable, not the read-only annotation.
+                    color: (235, 215, 160),
+                    scroll_y_px: preview_scroll_px,
+                });
+            }
+        }
+        // ADR 0030 §2: protocol-mismatch overlay, reusing the help overlay's
+        // paint path but with a warm red tint so it reads as an error, not a
+        // cheat sheet. Trumps everything (highest priority in the cascade).
+        if show_fatal {
+            if let Some(pf) = self.preview_fatal.as_ref() {
+                extras.push(crate::text::ExtraArea {
+                    buffer: &pf.buffer,
+                    x: preview_rect.x,
+                    y: preview_rect.y,
+                    right: preview_rect.x + preview_rect.w,
+                    bottom: whole_line_clip(pf, preview_rect, 0.0),
+                    clip_left: None,
+                    clip_top: None,
+                    color: (240, 160, 150),
+                    scroll_y_px: 0.0,
+                });
+            }
+        }
+        // Per-table extras — one ExtraArea per MediaBlock::Table, hosted
+        // at the FFFC's screen rect with a left-shift of
+        // `md_table_scroll_px` so the user can drag the table
+        // horizontally. TextBounds at preview-pane edges clip the
+        // overflow glyph-by-glyph — no wgpu scissor needed.
+        //
+        // We iterate `media_paint_targets` (in FFFC source order) and
+        // increment a `table_idx` counter on each Table encounter so it
+        // walks `table_buffers` parallel to the source-order TableBufferEntry
+        // build inside `ensure_table_buffers`.
+        if show_md && !self.table_buffers.is_empty() {
+            let mut table_idx: usize = 0;
+            for (block_idx, rect) in &media_paint_targets {
+                let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
+                    continue;
+                };
+                if !matches!(block, crate::preview::markdown::MediaBlock::Table { .. }) {
+                    continue;
+                }
+                let Some(entry) = self.table_buffers.get(table_idx) else {
+                    table_idx += 1;
+                    continue;
+                };
+                table_idx += 1;
+                // Cull tables fully scrolled off the vertical viewport
+                // — TextBounds would catch them anyway but the cheap
+                // skip saves a glyphon TextArea entry.
+                if rect.y + rect.h < preview_rect.y || rect.y > preview_rect.y + preview_rect.h {
+                    continue;
+                }
+                // `x` rides the shared horizontal scroll; `y` plants
+                // the table's first row exactly at the FFFC's screen
+                // y. The ExtraArea pipeline adds EXTRA_TOP_PAD_PX to
+                // the y, so we subtract it back here.
+                let table_x = rect.x - self.md_table_scroll_px;
+                let table_y = rect.y - crate::text::EXTRA_TOP_PAD_PX;
+                extras.push(crate::text::ExtraArea {
+                    buffer: &entry.buffer,
+                    x: table_x,
+                    y: table_y,
+                    // Bounds clip to the preview pane in BOTH axes so
+                    // the table's natural-width overflow gets glyph-
+                    // clipped at the pane right edge, and vertical
+                    // scroll past the pane edges is invisible. The bottom
+                    // stops at the last whole row.
+                    right: preview_rect.x + preview_rect.w,
+                    bottom: whole_row_bottom(
+                        rect.y,
+                        entry.buffer.metrics().line_height,
+                        preview_rect.y + preview_rect.h,
+                    ),
+                    // Pin the bounds.left to the pane edge — the
+                    // glyph origin (`x`) is shifted into negative
+                    // territory by `md_table_scroll_px` and would
+                    // otherwise let bounds.left follow it off-pane.
+                    clip_left: Some(preview_rect.x),
+                    clip_top: Some(preview_rect.y),
+                    color: (220, 220, 220),
+                    scroll_y_px: 0.0,
+                });
+            }
+        }
+
+        self.text.prepare(
+            &self.device,
+            &self.queue,
+            self.config.width,
+            self.config.height,
+            &lines,
+            &extras,
+        )?;
+        Ok((scalebar_draw, media_paint_targets))
+    }
+
+    fn prepare_overlays(&mut self) -> Result<(Option<ScreenRect>, Vec<crate::text::Line>)> {
+        let mut help_overlay_rect = None;
+        let mut help_overlay_lines = Vec::new();
+        let mut help_opacity = 1.0;
+        if let Some(peek) = self.help.peek.clone() {
+            let now = std::time::Instant::now();
+            help_opacity = peek.opacity(now);
+            if help_opacity <= 0.0 || peek.context != self.help_context() {
+                self.help.peek = None;
+            } else {
+                let rect = match peek.context.pane {
+                    help::Pane::Nav => self.pane_rects.nav,
+                    help::Pane::Preview => self.pane_rects.preview,
+                    help::Pane::Agent => self.pane_rects.llm,
+                    _ => self.pane_rects.repl,
+                };
+                let content = help::peek_lines(&peek.context, &self.bindings);
+                let text_width = rect.width.saturating_sub(4) as usize;
+                let longest = content.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.as_str())).max().unwrap_or(0);
+                if text_width < longest || rect.height < content.len() as u16 + 2 {
+                    self.open_help_drawer(peek.context);
+                } else {
+                    self.nav_spill_segments.clear();
+                    let px = ScreenRect {
+                        x: self.chrome_origin_x + rect.x as f32 * self.cell_w,
+                        y: self.chrome_origin_y + rect.y as f32 * self.cell_h,
+                        w: rect.width as f32 * self.cell_w,
+                        h: (content.len() as f32 + 2.0) * self.cell_h,
+                    };
+                    help_overlay_rect = Some(px);
+                    help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::text::Line {
+                        text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
+                        color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
+                    }).collect();
+                    let alpha = (help_opacity * 245.0).round() as u8;
+                    if self.help_back_quad.as_ref().map(|(a, _)| *a) != Some(alpha) {
+                        self.help_back_quad = Some((alpha, Quad::from_rgba8(&self.device, &self.queue,
+                            &self.quad_pipeline, &[14, 30, 46, alpha], 1, 1)?));
+                    }
+                }
+            }
+        }
+
+        // Nav-spill overlay text: the segments the draw closure just
+        // collected, converted cell→px with the SAME origin/cell math the
+        // chrome lines use so the overlay realigns pixel-identically over
+        // the row it covers. Prepared EVERY frame — an empty list is what
+        // clears the overlay renderer's retained geometry (see
+        // `prepare_overlay`'s doc), so no `if` around this call.
+        let mut overlay_lines: Vec<crate::text::Line> = self
+            .nav_spill_segments
+            .iter()
+            .map(|seg| crate::text::Line {
+                text: seg.text.clone(),
+                x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
+                y: self.chrome_origin_y + seg.row as f32 * self.cell_h,
+                color: seg.color,
+                bold: seg.bold,
+                italic: false,
+                dim: seg.dim,
+            })
+            .collect();
+        let fade_start = overlay_lines.len();
+        overlay_lines.extend(help_overlay_lines);
+        self.text.prepare_overlay(
+            &self.device,
+            &self.queue,
+            self.config.width,
+            self.config.height,
+            &overlay_lines,
+            Some((fade_start, help_opacity)),
+        )?;
+        Ok((help_overlay_rect, overlay_lines))
     }
 }
 
