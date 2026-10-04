@@ -33,12 +33,14 @@ pub mod producer_pty;
 // ADR 0041 step 6, unit U0: the same-connection challenge's
 // platform-neutral core (the outcome vocabulary, the connection trait,
 // the wire half). L1-unix LU1a: ungated -- see the module's own doc.
-pub mod challenge;
+mod identity;
+pub use identity::challenge;
 // L1-unix LU1a: the Windows half of the same-connection challenge --
 // steps 1-3, the retained process-handle wrapper, and the raw-handle
 // extension trait. `pub`, matching `pipe_win`/`capsule_win`: Windows-only,
 // self-gated (see the module's own `#![cfg(windows)]`).
-pub mod challenge_win;
+#[cfg(windows)]
+pub use identity::challenge_win;
 // L1-unix LU1c (ADR 0043 decision 8): the Linux half of the same-
 // connection challenge -- SO_PEERCRED same-user check, race-free pidfd
 // pinning, and the retained-pidfd process handle. `pub`, matching
@@ -46,7 +48,8 @@ pub mod challenge_win;
 // `#![cfg(target_os = "linux")]`); a non-Linux Unix with no half of its
 // own fails closed at `socket_unix::connect_voyage_socket`'s own stub
 // instead.
-pub mod challenge_unix;
+#[cfg(target_os = "linux")]
+pub use identity::challenge_unix;
 // M2 (ADR 0043 decision 8, the macOS lane): the macOS half of the same-
 // connection challenge -- ONE `LOCAL_PEERTOKEN` getsockopt, whose audit
 // token carries the peer's pid AND the kernel's own reuse generation
@@ -54,7 +57,8 @@ pub mod challenge_unix;
 // here. `pub`, matching its two siblings: macOS-only, self-gated (see
 // the module's own `#![cfg(target_os = "macos")]`); every OTHER
 // non-Linux Unix still fails closed at the stub.
-pub mod challenge_macos;
+#[cfg(target_os = "macos")]
+pub use identity::challenge_macos;
 // L1-unix LU3a (ADR 0043 decision 19): the three seam traits landed
 // before any consumer uses them -- `Client` (blanket-implements
 // `challenge::ChallengeableConnection`), `PeerProcess`, `Endpoint`.
@@ -140,7 +144,7 @@ mod host_handshake;
 // connect the identical way `exchange_identity`'s wire round trip
 // already bounds itself; `run_with_deadline_traced` stays `pub(crate)`
 // -- only the traced variant tests reach.
-pub mod deadline;
+pub use identity::deadline;
 mod store;
 pub use store::envelope;
 // ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
@@ -151,7 +155,7 @@ pub mod fence;
 // exchange (encode request, decode reply) -- the one thing every
 // platform's own `challenge()` delegates per-lane, via
 // `challenge::exchange_identity`. Portable, like `deadline`.
-pub mod exchange;
+pub use identity::exchange;
 // ADR 0041 step 6, unit U3: the FE attach-only client's PURE state
 // machines (the six FE rulings from "Step 6 as specified") -- portable,
 // like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
