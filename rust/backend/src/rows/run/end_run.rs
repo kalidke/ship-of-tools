@@ -299,7 +299,7 @@ pub fn end_run(
     // always populated here.
     let voyage = status
         .voyage
-        .expect("Ready/Ending implies a voyage_id (supervisor/'s own recovery transition)");
+        .expect("Ready/Ending implies a voyage_id (supervisor.rs's own recovery transition)");
     let outcome = sot_log::attach_client::supervisor_client::end_run(state_dir, &voyage, reason)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(match outcome {

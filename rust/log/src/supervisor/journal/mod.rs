@@ -470,7 +470,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     if envelope.schema_version != SCHEMA_VERSION {
         return Err(Error::Schema(format!(
             "{}: journal schema version {} is not the {SCHEMA_VERSION} this build understands \
-             (no migration exists — see supervisor/journal/'s own doc)",
+             (no migration exists — see journal.rs's own doc)",
             path.display(),
             envelope.schema_version
         )));
