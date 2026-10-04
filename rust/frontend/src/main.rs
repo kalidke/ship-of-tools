@@ -14,22 +14,21 @@ mod download;
 mod edit_buffer;
 mod gpu;
 mod help;
-mod dial;
 mod keybindings;
 mod layout;
 mod lease;
 mod monitor_view;
+mod net;
 mod paths;
 mod preview;
 mod proxy_listen;
 mod selfupdate;
 mod settings;
-mod state;
 mod state_persistence;
 mod term;
 mod text;
-mod transport;
 
+use net::{dial, state, transport};
 use std::sync::mpsc;
 
 use anyhow::Result;
