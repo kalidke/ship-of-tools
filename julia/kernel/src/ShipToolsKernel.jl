@@ -101,8 +101,6 @@ function dispatch(io::IO, state::KernelState, id, op, payload)
         handle_file_preview(io, state, id, payload)
     elseif op == "function.methods"
         handle_function_methods(io, state, id, payload)
-    elseif op == "project.discover"
-        handle_project_discover(io, state, id, payload)
     elseif op == "project.scan"
         handle_project_scan(io, state, id, payload)
     elseif op == "markdown.tokenize"
@@ -316,88 +314,6 @@ function handle_function_methods(io::IO, state::KernelState, id, payload)
         ))
     end
     write_envelope(io, "res", id, "function.methods", Dict(:methods => out))
-end
-
-"""
-    handle_project_discover
-
-Walk up from `payload.path` looking for the nearest `Project.toml`. The
-caller (a `repl.run_file` request, a "what's my project" diagnostic) wants
-to know which `--project=...` argument to use when running this file.
-
-Behaviour:
-- If `path` is a file, start from its parent directory.
-- If `path` is a directory, start from itself.
-- Walk parents until we hit a `Project.toml` (return its directory) or the
-  filesystem root (return the kernel's `project_root` as a fallback so the
-  caller has a usable env even when the source tree doesn't have its own).
-- `source` is `discovered` (found an own Project.toml), `fallback` (used
-  the kernel's `project_root`), or `none` (no path resolved).
-
-Wire shape:
-
-```
-req:  {kernel_op: "project.discover", kernel_payload: {path: "..."}}
-res:  {project_dir, project_toml | null, source, fallback, path}
-```
-"""
-function handle_project_discover(io::IO, state::KernelState, id, payload)
-    path = String(get(payload, :path, ""))
-    if isempty(path)
-        write_envelope(io, "res", id, "project.discover",
-            Dict(:error => "missing path", :code => "bad_request"))
-        return
-    end
-    dir, toml, source = discover_project(path; fallback = state.project_root)
-    write_envelope(io, "res", id, "project.discover", Dict(
-        :path         => abspath(path),
-        :project_dir  => dir,
-        :project_toml => toml,
-        :source       => string(source),
-        :fallback     => state.project_root,
-    ))
-end
-
-"""
-    discover_project(path; fallback=nothing) -> (dir, toml, source)
-
-Pure helper used both by `project.discover` directly and by any
-project-aware op that needs to resolve a `--project=...` from a file path
-(e.g. `repl.run_file`).
-
-- `dir` — absolute path of the directory to pass as `--project=`, or
-  `nothing` if neither a discovered `Project.toml` nor a fallback exists.
-- `toml` — absolute path to the discovered `Project.toml`, or `nothing`
-  when only the fallback applies.
-- `source` — `:discovered` / `:fallback` / `:none`.
-"""
-function discover_project(path::AbstractString;
-                          fallback::Union{AbstractString, Nothing} = nothing)
-    abs_in = isabspath(path) ? String(path) : abspath(String(path))
-    start_dir = if isdir(abs_in)
-        abs_in
-    elseif isfile(abs_in)
-        dirname(abs_in)
-    else
-        # Path doesn't exist on disk (frontend sent a stale path, etc.).
-        # Still try the textual walk — `dirname` of a nonexistent file is
-        # well-defined and may point at a real directory with a Project.toml.
-        dirname(abs_in)
-    end
-    dir = start_dir
-    while !isempty(dir)
-        toml = joinpath(dir, "Project.toml")
-        if isfile(toml)
-            return (dir, toml, :discovered)
-        end
-        parent = dirname(dir)
-        parent == dir && break
-        dir = parent
-    end
-    if fallback !== nothing && !isempty(String(fallback))
-        return (String(fallback), nothing, :fallback)
-    end
-    return (nothing, nothing, :none)
 end
 
 # ---- wire helpers ----
