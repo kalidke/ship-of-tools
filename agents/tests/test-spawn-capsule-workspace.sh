@@ -139,6 +139,10 @@ entry() {
 # unset SOT_TOKEN falls back to the REAL ~/.config/sot/token
 # (comm-lib.sh sot_hello_frame); this session's ambient sot-comm env
 # would otherwise leak past the SOT_COMM_HOME override below.
+# It runs beneath a stand-in capsule (in_row), so comm-spawn's agent check
+# ends at that capsule and never depends on the runner's process tree: on a
+# hosted runner the tree has no capsule, and an OS=Windows_NT case reads its
+# top as a Windows walk, which Linux's /proc cannot finish (no winpid).
 SPAWNN=0
 SPAWN_OUT=""; SPAWN_ERR=""; SPAWN_RC=0; SPAWN_HOME=""
 run_spawn() {
@@ -147,7 +151,7 @@ run_spawn() {
     SPAWN_HOME="$WORK/home-$SPAWNN"
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
-    SPAWN_OUT="$(cd "$WORK" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
+    SPAWN_OUT="$(cd "$WORK" && in_row spawn-test env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
         ${SPAWN_PATH:+PATH="$SPAWN_PATH"} SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
         timeout 30 "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
