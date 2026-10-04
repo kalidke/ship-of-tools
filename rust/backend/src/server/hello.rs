@@ -30,7 +30,6 @@ pub async fn handle_hello(
     req_id: u64,
     payload_json: serde_json::Value,
     session: &Session,
-    expected_token: &Option<String>,
     files_mode: &FilesMode,
     label: Option<&str>,
     clients: &crate::clients::Clients,
@@ -38,36 +37,7 @@ pub async fn handle_hello(
     let req: HelloReq = serde_json::from_value(payload_json).context("hello payload")?;
     let (session_id, revision) = session.snapshot().await;
 
-    // App-level token gate — vestigial since 0.4.0 removed the daemon TCP
-    // listener (the only transport that resolved a token): `expected_token`
-    // is always `None` now, so this gate never fires. Kept (with its
-    // constant-time compare and the empty-string filter) rather than ripped
-    // out because the hello `token` wire field survives for cross-version
-    // compat and the gate is the tested, safe shape if a gated transport
-    // ever returns. `.filter(|s| !s.is_empty())` guards the one place an
-    // empty expected token would matter (an unauthenticated client's
-    // `req.token` also defaults to `""` below, so `Some("")` would match
-    // trivially and authenticate with no real secret).
-    if let Some(expected) = expected_token.as_deref().filter(|s| !s.is_empty()) {
-        let presented = req.token.as_deref().unwrap_or("");
-        if !constant_time_eq(presented.as_bytes(), expected.as_bytes()) {
-            tracing::warn!(
-                client_id = %req.client_id,
-                "hello rejected: token mismatch"
-            );
-            let payload = serde_json::json!({
-                "error": "authentication failed",
-                "code": "token_mismatch",
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::HELLO, payload).with_rev(revision),
-                None,
-            )]);
-        }
-    }
-
-    // Protocol version gate (ADR 0030 §2). Mirrors the token-mismatch shape
-    // above: a structured `{error, code}` envelope that does NOT deserialize
+    // Protocol version gate (ADR 0030 §2): a structured `{error, code}` envelope that does NOT deserialize
     // as `HelloRes`, so the frontend surfaces a clear "update needed" screen
     // instead of failing on a later op with a cryptic frame-parse error.
     match protocol_gate(req.protocol) {

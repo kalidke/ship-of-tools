@@ -42,7 +42,6 @@ where
                 frame.id,
                 frame.payload,
                 &session,
-                &None,
                 &files_mode,
                 label.as_deref(),
                 &clients,
