@@ -492,6 +492,7 @@ pub(super) struct Held {
 
 
 mod converge;
+mod episode;
 mod lane_io;
 mod quit;
 mod run;
@@ -500,6 +501,7 @@ mod steady;
 pub(crate) use lane_io::FrameReader;
 pub(crate) use quit::run_end_run_and_wait;
 use converge::*;
+use episode::*;
 use lane_io::*;
 use quit::*;
 use run::*;

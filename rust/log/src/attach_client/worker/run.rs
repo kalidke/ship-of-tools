@@ -1,16 +1,15 @@
 //! The worker thread: `run_worker`, its held-input bookkeeping and the retry and link-pause waits.
 
 use crate::challenge::PeerAuthOutcome;
-use crate::client::{Client, Endpoint};
+use crate::client::Endpoint;
 use crate::fe_client::{
-    self, FeDownBaseline, OutstandingSlot, QuitDispatcher,
-    ReconnectDecision, ReconnectState, Role, TakeTransaction,
+    FeDownBaseline, OutstandingSlot, QuitDispatcher,
+    ReconnectDecision, ReconnectState, TakeTransaction,
 };
 use crate::wire::{self};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -228,30 +227,7 @@ pub(super) fn run_worker<E: Endpoint>(
         }
 
         if voyage_uuid.as_deref() != Some(voyage.as_str()) {
-            // A reset landed underneath us: any outstanding input from
-            // the OLD voyage is canceled, never replayed into the new
-            // one -- and reported, never silently (finding 6). Keyed on
-            // the id `converge_on_ready` confirmed against the
-            // supervisor's own `Status` reply, not a locally cached
-            // pointer read.
-            let mut canceled_input = false;
-            if let fe_client::ReconnectResendDecision::Cancel { canceled } =
-                outstanding.resend_after_reconnect(&voyage, take_epoch)
-            {
-                canceled_input = true;
-                emit(WorkerEvent::Status(format!(
-                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
-                    canceled.bytes.len()
-                )));
-            }
-            let mut lost = take.reset_to_watching();
-            if canceled_input {
-                lost += 1;
-            }
-            if lost > 0 {
-                discarded.fetch_add(lost, Ordering::AcqRel);
-                emit(WorkerEvent::InputsDiscarded);
-            }
+            cancel_input_for_new_voyage(&voyage, take_epoch, &mut outstanding, &mut take, &discarded, &emit);
             take_intent = TakeIntent::Ordinary;
             voyage_uuid = Some(voyage.clone());
         }
@@ -343,76 +319,12 @@ pub(super) fn run_worker<E: Endpoint>(
         // send as soon as it applies the checkpoint, and that input must
         // read as current. An input sent earlier read the older value.
         let attached_gen = attach_gen.fetch_add(1, Ordering::AcqRel) + 1;
-        emit(WorkerEvent::Checkpoint(checkpoint));
-        emit(WorkerEvent::Status("attached".to_string()));
-        reconnect.attached();
+        announce_attach(checkpoint, attach_identity, &mut reconnect, &mut take, &discarded, &mut fe_down, &fe_down_to_handle, &emit);
 
-        // The attach notice names the leg from the attach connection's own
-        // daemon-authenticated identity (ADR 0045: the daemon's OS-level
-        // observation of the voyage process, bound to this connection).
-        // A second, throwaway mgmt-lane dial used to re-prove the same
-        // (pid, created) here and blocked input until it finished.
-        emit(WorkerEvent::Notice(fe_client::attach_notice_text(&format!("{}", attach_identity.1))));
+        resume_outstanding_input::<E>(&voyage, take_epoch, &mut outstanding, &mut take, &mut take_intent, &voyage_conn, &controller_id, &emit);
 
-        // Anything still queued was typed before this attach: discarded
-        // and counted, never delivered.
-        let lost = take.reset_to_watching();
-        if lost > 0 {
-            discarded.fetch_add(lost, Ordering::AcqRel);
-            emit(WorkerEvent::InputsDiscarded);
-        }
-
-        // Ruling (f): fe_down marker on every attach after the first.
-        let now_iso = iso_now();
-        if let Some(marker) = fe_down.marker_for_attach(&fe_down_to_handle, &now_iso) {
-            emit(WorkerEvent::FeDownMarker(marker));
-        }
-
-        // Ruling (c), Codex review round finding 6: resume any input
-        // left outstanding from a prior connection, within this same
-        // voyage -- kick off the SAME take-on-first-input transaction
-        // that a real keystroke would, so `resize` then the retained
-        // frame flow through the identical lockstep-respecting path.
-        match outstanding.resend_after_reconnect(&voyage, take_epoch) {
-            fe_client::ReconnectResendDecision::Resend { .. } => {
-                take_intent = TakeIntent::ReconnectResend;
-                if take.role() == Role::Watching {
-                    let actions = take.on_input_while_watching(&[]);
-                    for action in actions {
-                        apply_single_take_action::<E>(action, &voyage_conn, &controller_id, &emit);
-                    }
-                }
-            }
-            fe_client::ReconnectResendDecision::Cancel { canceled } => {
-                emit(WorkerEvent::Status(format!(
-                    "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
-                    canceled.bytes.len()
-                )));
-            }
-            fe_client::ReconnectResendDecision::None => {}
-        }
-
-        // Spawn the episode-scoped reader thread for the attach
-        // connection's steady-state stream.
-        let shared_conn = Arc::new(voyage_conn);
-        let reader_tx = msg_tx.clone();
-        let reader_conn = Arc::clone(&shared_conn);
-        let episode_stop = Arc::new(AtomicBool::new(false));
-        let reader_stop = Arc::clone(&episode_stop);
-        let reader_queued_bytes = Arc::clone(&queued_bytes);
-        let reader_thread = match thread::Builder::new()
-            .name("sot-fe-attach-reader".to_string())
-            .spawn(move || run_attach_reader::<E>(reader_conn, attach_reader, reader_tx, reader_queued_bytes, reader_stop))
-        {
-            Ok(jh) => jh,
-            Err(e) => {
-                // Codex review round, finding 13: a reader that could
-                // not even be spawned must never look "attached" -- no
-                // thread exists to ever deliver TakeOk, output, or input
-                // acknowledgements.
-                emit(WorkerEvent::Terminal(format!("failed to start the attach reader thread: {e}")));
-                return;
-            }
+        let Some((shared_conn, episode_stop, reader_thread)) = spawn_episode_reader::<E>(voyage_conn, attach_reader, &msg_tx, &queued_bytes, &emit) else {
+            return;
         };
         let mut last_liveness_poll = Instant::now();
 
@@ -443,22 +355,7 @@ pub(super) fn run_worker<E: Endpoint>(
             &discarded,
         );
 
-        // Tear down this episode's connections before deciding what's
-        // next. The stop flag interrupts the reader's OWN backpressure
-        // wait (a `QueuedBytes` condvar wait, not a blocked read --
-        // `cancel()` alone cannot reach it); `notify_stop` wakes it
-        // promptly since the plain `store` above has nothing else to
-        // make a parked `Condvar::wait` notice it. `cancel()` then
-        // unblocks a blocked read so the thread observes an error, sends
-        // the now-moot `ReaderDone` (harmlessly ignored; a fresh reader
-        // is not spawned until the next successful attach), and exits;
-        // only then do both `Arc` clones drop and the pipe handle
-        // actually closes.
-        episode_stop.store(true, Ordering::Release);
-        queued_bytes.notify_stop();
-        shared_conn.cancel();
-        let _ = reader_thread.join();
-        drop(shared_conn);
+        stop_episode_reader::<E>(&episode_stop, &queued_bytes, shared_conn, reader_thread);
 
         match episode_result {
             SteadyOutcome::Shutdown => {

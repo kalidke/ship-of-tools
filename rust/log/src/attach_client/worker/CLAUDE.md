@@ -7,6 +7,7 @@ checkpoint and runs the steady state, reporting to the caller's event sink. Part
 - `mod.rs`: constants and budgets, the message types (`WorkerMsg`, `WorkerEvent`, `InputOutcome`, `IngressReservation`), `AttachWorker` (the caller's handle), `SupLane`, `Held`
 - `lane_io.rs`: bounded lane I/O: `LaneError`, `attach_refused_text`, `write_bounded`, `FrameReader`
 - `converge.rs`: supervisor-lane connect, probe and `converge_on_ready`; the attach-lane hello and checkpoint collection
+- `episode.rs`: the steps of one attach episode that `run_worker` calls in order
 - `run.rs`: the worker thread, `run_worker`, and its held-input, retry and link-pause waits
 - `quit.rs`: the quit path: `run_end_run_and_wait`, `run_quit`
 - `steady.rs`: `QueuedBytes`, the attach reader and the steady-state frame and input handlers
