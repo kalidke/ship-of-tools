@@ -6,6 +6,9 @@ relay's single verdict (lane M4) is not yet. The rest lands in stages, and the
 per-session watcher, listener and bridge machinery it replaces stays in place until
 each stage does.
 
+2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
+guarantees, this ADR the design.
+
 ## Context
 
 Messaging was redesigned repeatedly without removing the old parts, so several delivery
@@ -50,6 +53,51 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   the top of its process tree outside a row; an ancestry that cannot be read in full is
   refused. An agent that needs its own handle is started as its own row. The rule, and
   what the check does not see, are in `comm/PROTOCOL.md`.
+
+## User isolation
+
+Decision 0031's isolation guarantee (amended 2026-09-29) is the requirement, and this
+section is the design built to it; where the two differ, the guarantee wins.
+
+- **Users on one computer never see each other.** Nothing one OS user runs can reach,
+  or be reached by, another OS user's daemon, hub, tunnel, pipe, port, inbox or
+  staging folder. A process of another account that connects to a user's session
+  socket or pipe, a hub relay socket, a page server or the page proxy is refused
+  before anything is served to it, and a client never talks to a daemon pipe that
+  another account serves.
+- **The control plane uses no loopback ports.** The daemon, the hub, the relay and
+  the pipes listen and dial only through Unix sockets in a private directory,
+  owner-only named pipes and ssh logins, never a TCP port, so the operating system's
+  login decides who connects.
+- **Page servers and the page proxy serve only their own account.** A browser reaches
+  a page only over TCP, so each of these listeners asks the operating system which
+  account owns an accepted connection and drops it, before reading a byte, unless the
+  account is its own. The URL's secret stays as a second lock, because the owner check
+  admits every page the user's own browser loads.
+- **Two OS users on one hub account get a loud refusal.** When a second OS user's hello
+  reaches a hub for a host that a first OS user already holds through the same hub
+  account, the hub refuses it with an error reply and closes the connection; nothing is
+  ever filed for one user into the other's inbox, and the first user's connections are
+  left alone.
+
+The cost is one ssh login per frontend connection, attached lane and proxied page
+connection.
+
+**Status.** Built: the control plane listens on no TCP port. The daemon's one listener
+is its session socket, whose directory must be private, or on Windows a named pipe
+with an owner-only descriptor, and a hub's per-host relay sockets are owner-only Unix
+sockets. Not built: the daemon serves its ops and events, mail included, to a
+connection that has sent no hello; the hello names no OS account; and the peer read at
+accept refuses another account only for a lease, so a hub cannot tell two OS users on
+one hub account apart. Lane M1 builds the hello admission and that refusal, and deletes
+`LaneDial::Tcp`, a TCP lane dial that only tests construct. On Windows the frontend,
+its lease, `sotd stdio-bridge` and the lane client connect to whatever answers their
+pipe name, a name in the machine-wide pipe namespace, without checking which account
+serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept
+a connection from any account and rely on the URL's secret alone; lane S1 builds their
+owner check. The comm scripts create the comm folder and its inboxes with no mode of
+their own, so these are only as private as the creating shell's umask and the home
+folder above them; no lane is named for that yet.
 
 ## Why the daemon and not the frontend
 
