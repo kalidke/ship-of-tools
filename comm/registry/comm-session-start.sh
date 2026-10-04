@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# comm-session-start.sh — the deterministic sot-comm receive-bootstrap, split
-# into TWO phases (Codex review finding 5):
+# comm-session-start.sh — the deterministic sot-comm receive-bootstrap.
 #
-#   comm-session-start.sh             phase 1 ("arm"): resolve identity, join,
+#   comm-session-start.sh             resolve identity, join,
 #                                      print ONE BOOTSTRAP-ARM line and STOP.
 #                                      The daemon wakes the row; there is
 #                                      nothing to arm.
-#   comm-session-start.sh --catch-up  phase 2: poll the backlog and the sot
-#                                      layer. Prints the final verdict.
 #
 # IDENTITY PRECEDENCE (Codex review findings 1–3): pin ($SOT_COMM_NAME, or a
 # private $SOT_COMM_SELF_FILE whose file already exists and validates) →
@@ -30,8 +27,8 @@ set -uo pipefail
 # Any other argument is a mode this script does not have: fail before anything
 # runs or writes, never fall through to the joining default.
 case "${1:-}" in
-    ""|--catch-up) ;;
-    *) echo "usage: comm-session-start.sh [--catch-up]" >&2; exit 2 ;;
+    "") ;;
+    *) echo "usage: comm-session-start.sh" >&2; exit 2 ;;
 esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=comm-lib.sh
@@ -45,13 +42,10 @@ if ! _start_missing="$(sot_require_tools "start the comm session" $_start_tools 
     exit 1
 fi
 
-MODE="arm"
-if [ "${1:-}" = "--catch-up" ]; then MODE="catchup"; fi
-
-# The work-state rule, printed on EVERY bootstrap outcome (fresh,
-# catch-up): the nav row colour is derived from it, and a session that
-# launches a background job without stamping `waiting` shows green while the
-# job runs — the exact miss the one-script rewrite's terse hint allowed.
+# The work-state rule, printed on EVERY bootstrap outcome:
+# the nav row colour is derived from it, and a session that launches a
+# background job without stamping `waiting` shows green while the job runs — the exact miss the one-script
+# rewrite's terse hint allowed.
 _workstate_rule() {
     cat <<EOF
 Work-state (nav row colour) — stamp it yourself with comm-status.sh <working|waiting|blocked|done|idle> "why":
@@ -75,30 +69,7 @@ Julia: this workspace has a PERSISTENT REPL you can drive — sot-fe repl eval "
 CAPEOF
 }
 
-if [ "$MODE" = "catchup" ]; then
-    eval "$("$SCRIPT_DIR/comm-context.sh")"
-    H="${SOT_COMM_NAME:-${NAME:-}}"
-    if [ -z "$H" ]; then
-        echo "BOOTSTRAP handle=none poll=n/a identity=FAIL"
-        exit 0
-    fi
-
-    POLL_OUT="$("$SCRIPT_DIR/comm-poll.sh" 2>&1)"; poll_rc=$?
-    if [ "$poll_rc" -ne 0 ]; then
-        POLL_COUNT="ERR"
-        printf '%s\n' "$POLL_OUT" >&2
-    else
-        POLL_COUNT="$(printf '%s\n' "$POLL_OUT" | grep -c '^\[' || true)"
-        [ "${POLL_COUNT:-0}" -gt 0 ] 2>/dev/null && { echo "BACKLOG:"; printf '%s\n' "$POLL_OUT"; }
-    fi
-
-    echo "BOOTSTRAP handle=$H poll=${POLL_COUNT:-0} identity=ok"
-    _workstate_rule
-    _capability_lines
-    exit 0
-fi
-
-# --- MODE=arm (phase 1, default) --------------------------------------------
+# --- bootstrap -------------------------------------------------------------
 # Diagnostics NOT suppressed: an ownership conflict (a differently-rooted
 # self-file discarded here) must stay visible, because it changes what this
 # script is allowed to do next (Codex review finding 2).

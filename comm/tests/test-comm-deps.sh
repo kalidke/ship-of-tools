@@ -108,7 +108,7 @@ check "all tools: stop hook prints no block" "$out" ""
 before="$(cksum < "$REGISTRY")"
 err="$(PATH="$PATH" "$BASH_BIN" "$SCRIPTS_DIR/comm-session-start.sh" --context 2>&1 >/dev/null)"; rc=$?
 check "an unknown argument exits 2" "$rc" "2"
-check "an unknown argument prints the usage line" "$err" "usage: comm-session-start.sh [--catch-up]"
+check "an unknown argument prints the usage line" "$err" "usage: comm-session-start.sh"
 check "an unknown argument leaves registry.json byte-identical" "$(cksum < "$REGISTRY")" "$before"
 
 # The tool-fault block records its feedback (fb_file is set up before it), so
