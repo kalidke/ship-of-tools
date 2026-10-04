@@ -252,9 +252,7 @@ where
             // never hello itself. A peer that never pings (an old
             // frontend or comm bridge not yet converged from main)
             // stays permanently unarmed and keeps today's behaviour:
-            // never reaped by this path. Once armed, the generic bump
-            // above keeps pushing `read_deadline` out on every
-            // subsequent frame, `ping` included.
+            // never reaped by this path.
             if *is_long_lived_role && !*deadline_armed {
                 *deadline_armed = true;
                 *read_deadline = tokio::time::Instant::now() + ping_read_deadline();

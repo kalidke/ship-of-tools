@@ -88,23 +88,12 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
                 .map(|s| s.to_string())
         })
         .unwrap_or_else(|| "home".to_string());
-    // ADR 0042 slice L1a, Codex review finding 5: the default workspace's
-    // OWN `runtime` must survive this re-registration. `scan_disk`
-    // already loaded it correctly from its toml if one exists —
-    // read it back BEFORE constructing a fresh seed
-    // would otherwise silently
-    // clobber a scanned capsule default on every restart
-    // (`insert`'s own "new metadata wins" semantics, working exactly as
-    // designed, applied to the wrong source of truth). `None` means a
-    // genuinely first-ever launch on this machine.
-    //
-    // Rule G (shrink round): the SAME clobber risk applies to the launch
-    // fields — `insert`'s own doc ("the rest of the metadata is taken
+    // Rule G (shrink round): `insert`'s own doc ("the rest of the metadata is taken
     // from the new ws") means whatever `from_label` builds here REPLACES
     // the persisted row's `agent`/`agent_name`/`autostart_claude`/`task`
     // on EVERY restart, not just at create time. An existing default
-    // row's persisted launch fields must survive re-registration the
-    // same way its runtime does (below), computed here BEFORE
+    // row's persisted launch fields must survive re-registration,
+    // computed here BEFORE
     // construction rather than patched after, since `from_label` takes
     // them as constructor args.
     let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
@@ -160,14 +149,6 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
         seed_agent_name,
         seed_task,
     );
-    // ADR 0042 slice L1a: route through the ONE function that decides
-    // this row's runtime for this OS rather than re-deciding it here. On Windows
-    // this is unconditionally "capsule", correcting rather than
-    // preserving a stale on-disk "tmux" leftover — the field incident
-    // this fixes: the old preserve-verbatim behaviour never self-healed
-    // such a value, and the daemon then refused to start the row at all
-    // (`pty spawn failed error=tmux is not available on Windows`), a
-    // dead end (`default_workspace_not_destroyable`).
     if let Some(existing) = &existing_default {
         if cfg!(windows) && existing.runtime != "capsule" {
             tracing::info!(
@@ -182,7 +163,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
     }
     // Manager review (S16, Codex finding S16): carry the existing row's
     // declared `agent_handle` (ADR 0046 decision 1's `agent.join`)
-    // forward the same way `runtime` is above — `from_label` seeds a
+    // forward — `from_label` seeds a
     // fresh row with none at all, so without this every boot silently
     // wiped a default row's already-joined handle on the very next save.
     if let Some(existing) = &existing_default {

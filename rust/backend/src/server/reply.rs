@@ -168,7 +168,7 @@ pub(super) type OutTx = mpsc::Sender<(Frame, Option<Vec<u8>>)>;
 /// each spawned job, never before spawning, so request intake itself is
 /// never blocked by the cap — only how many jobs run at once, once already
 /// queued. `pty.*` ops never touch this semaphore at all — they dispatch
-/// INLINE (see the `op::PTY_*` arms below), which is what keeps them served
+/// INLINE, which is what keeps them served
 /// even while every slot here is busy (see `switch_latency.rs`'s
 /// `pty_not_starved::pty_screen_is_served_while_a_real_slow_kernel_request_is_pending`
 /// test).

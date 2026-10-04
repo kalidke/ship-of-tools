@@ -4,8 +4,7 @@
 // passed. Each accepted stream gets split into AsyncRead/AsyncWrite halves
 // and handed to a generic `handle_connection`. The daemon TCP listener (and
 // its app-token gate) was removed in 0.4.0 — see ADR 0010's update block;
-// the socket's boundary is OS ownership of its private parent path, and
-// remote access is an SSH local-forward terminating at the socket.
+// the socket's boundary is OS ownership of its private parent path.
 //
 // Conventional socket strings:
 //   Linux/Mac: filesystem path,  e.g. `/tmp/sot-spike.sock`

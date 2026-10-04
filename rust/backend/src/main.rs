@@ -4,9 +4,7 @@
 // runs on the remote as a user service and accepts frontend connections
 // over a single transport:
 //   --socket <path>   — local socket (AF_UNIX / Windows named pipe via
-//                       interprocess::local_socket). Cross-machine access
-//                       goes through an SSH local forward that terminates
-//                       at this socket — never a network listener.
+//                       interprocess::local_socket).
 //
 // The daemon TCP listener (and the app-level auth token that existed to
 // gate it) was removed in 0.4.0: every deployment rides the private local
@@ -468,9 +466,7 @@ pub struct Opts {
     /// working directory; `--project-root <path>` overrides.
     pub project_root: PathBuf,
     /// Optional human-friendly label for this backend. When set, `--socket`
-    /// defaults to `paths::session_socket_path(label)` per ADR 0013; goes
-    /// into the per-backend toml the frontend writes and helps Sessions
-    /// mode match the running daemon to its on-disk metadata.
+    /// defaults to `paths::session_socket_path(label)` per ADR 0013.
     pub label: Option<String>,
     /// `--adopt-legacy-registry` (`workspaces::scan_disk`'s own gate):
     /// `false` unless passed, so a scratch/test daemon can never steal a
