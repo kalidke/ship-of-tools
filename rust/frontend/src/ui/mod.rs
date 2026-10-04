@@ -358,15 +358,6 @@ fn slug_for_label(label: &str) -> String {
     }
 }
 
-/// Dark square-ish app logo, embedded at build time from the repo root.
-/// Drawn miniature flanking each session badge in the bottom strip. Cosmetic
-/// only — a decode failure leaves `State::logo_quad` None and the strip renders
-/// exactly as before.
-const LOGO_DARK_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo-dark.png"));
-/// Wide full-text "wordmark" logo, embedded at build time from the repo root.
-/// Drawn small at the top-left of the nav pane. Cosmetic only — a decode
-/// failure leaves `State::wordmark_quad` None.
-const LOGO_WORDMARK_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo-wordmark-dark.png"));
 
 /// Status-line text for a badged (pending) nav.preview result (ADR 0025 §1).
 /// Pure so the badge-floor entry point's user-facing string is unit-testable
@@ -651,20 +642,6 @@ fn activity_order(
 
 use crate::text::TextLayer;
 
-/// Base cell metrics in physical pixels at 1.0 scale. State multiplies these
-/// by the effective scale (`cli.scale * window.scale_factor()`) at startup.
-/// Monospace 14 px / 18 px line height yields roughly 8.4 advance for most
-/// fonts; we round to 9 so cells align cleanly with integer pixel positions.
-/// cosmic-text-derived metrics will replace these constants once the font
-/// system is queried directly.
-const BASE_CELL_W: f32 = 9.0;
-const BASE_CELL_H: f32 = 18.0;
-const BASE_CHROME_ORIGIN_X: f32 = 12.0;
-const BASE_CHROME_ORIGIN_Y: f32 = 12.0;
-/// Trigger frame for `--capture`. Big enough for the transport task to push
-/// connect → tree.root → preview.get back to the GPU thread, since each event
-/// schedules its own redraw. Tunable if reconnect grows slower.
-const CAPTURE_FRAME: u32 = 30;
 
 
 
@@ -2164,55 +2141,6 @@ struct State {
 
 
 
-/// Translate a "desired visible sRGB colour" into the `wgpu::Color` that
-/// `LoadOp::Clear` should carry, so the same painted bg appears the same
-/// across machines.
-///
-/// Why: wgpu interprets clear values per the surface format. On an sRGB
-/// target (`Bgra8UnormSrgb`) the value is treated as **linear-light** and
-/// the hardware sRGB-encodes it on write — so a `0.02` clear comes out
-/// at sRGB ≈ `#272727` (dark gray). On a non-sRGB target (`Bgra8Unorm`)
-/// the value is the literal pixel — same `0.02` lands as `#050505`
-/// (near-black). Without this conversion, two machines whose adapters
-/// happen to land on different swapchain formats render the chrome at
-/// different brightness levels.
-fn clear_color_for_surface(visible_srgb: (f64, f64, f64), is_srgb_target: bool) -> wgpu::Color {
-    let convert = |c: f64| {
-        if !is_srgb_target {
-            c
-        } else if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    wgpu::Color {
-        r: convert(visible_srgb.0),
-        g: convert(visible_srgb.1),
-        b: convert(visible_srgb.2),
-        a: 1.0,
-    }
-}
-
-/// Chrome grid (cols, rows) for a window, with the bottom session strip's
-/// band held back: `strip_reserved_rows` comes off `rows` HERE, once, because
-/// the strip floats off `config.height` while everything the chrome draws
-/// floats off this grid — including the FE/BE version stamp on the bottom
-/// border line, which the strip's names row otherwise lands on top of. The
-/// owner pre-authorised moving the bottom pane boundary up for exactly this.
-fn cell_grid_for(
-    width: u32,
-    height: u32,
-    cell_w: f32,
-    cell_h: f32,
-    ox: f32,
-    oy: f32,
-) -> (u16, u16) {
-    let cols = ((width as f32 - 2.0 * ox).max(0.0) / cell_w).floor() as u16;
-    let rows = ((height as f32 - 2.0 * oy).max(0.0) / cell_h).floor() as u16;
-    let rows = rows.saturating_sub(strip_reserved_rows(cell_h, oy));
-    (cols.max(1), rows.max(1))
-}
 
 /// Local-host fallback for the workspace picker's starting directory
 /// (`State::begin_create_session`), used only once every higher-priority
@@ -4911,48 +4839,6 @@ impl State {
 
 
 
-    /// Bump the runtime font-scale multiplier and propagate. Recomputes
-    /// chrome cell metrics, updates the TextLayer's per-line metrics,
-    /// and replays the cached preview source so an open .jl / .md
-    /// reflows at the new size. Clamped to a sane range so the user
-    /// can't soft-lock the chrome by zooming to 0.01.
-    fn apply_text_scale(&mut self, mult: f32) {
-        self.text_scale_mult = mult.clamp(0.5, 3.0);
-        let s = self.scale * self.text_scale_mult;
-        self.cell_h = BASE_CELL_H * s;
-        self.chrome_origin_x = BASE_CHROME_ORIGIN_X * s;
-        self.chrome_origin_y = BASE_CHROME_ORIGIN_Y * s;
-        self.text
-            .set_metrics(cosmic_text::Metrics::new(14.0 * s, 18.0 * s));
-        // Re-measure monospace advance at the new metrics so the cell
-        // grid still matches cosmic-text's actual glyph positioning
-        // after a runtime font-size change. Fall back to BASE_CELL_W * s
-        // if shape fails (no monospace font installed).
-        self.cell_w = self.text.monospace_advance().unwrap_or(BASE_CELL_W * s);
-        // Re-derive the chrome grid against the new cell metrics —
-        // without this the cell count (cols, rows) stays at the old
-        // value while each cell paints at the new (bigger) size, and
-        // content extends past the wgpu surface edge. The window
-        // doesn't resize; the grid does.
-        let (cols, rows) = cell_grid_for(
-            self.config.width,
-            self.config.height,
-            self.cell_w,
-            self.cell_h,
-            self.chrome_origin_x,
-            self.chrome_origin_y,
-        );
-        self.terminal.backend_mut().resize(cols, rows);
-        let _ = self
-            .terminal
-            .resize(ratatui::layout::Rect::new(0, 0, cols, rows));
-        // Replay the cached preview source — without this the open
-        // file would stay at its original scale until the user
-        // navigated to a different file.
-        if let Some((mime, bytes)) = self.preview_src.clone() {
-            self.render_preview_source(&mime, &bytes);
-        }
-    }
 
     fn drain_events(&mut self) {
         while let Ok((event_host, evt)) = self.evt_rx.try_recv() {
@@ -7873,31 +7759,6 @@ impl State {
         }
     }
 
-
-    fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        if new_size.width == 0 || new_size.height == 0 {
-            return;
-        }
-        self.config.width = new_size.width;
-        self.config.height = new_size.height;
-        self.surface.configure(&self.device, &self.config);
-        self.text
-            .resize(&self.queue, self.config.width, self.config.height);
-
-        let (cols, rows) = cell_grid_for(
-            self.config.width,
-            self.config.height,
-            self.cell_w,
-            self.cell_h,
-            self.chrome_origin_x,
-            self.chrome_origin_y,
-        );
-        self.terminal.backend_mut().resize(cols, rows);
-        // ratatui needs to know the grid changed so it reallocates its buffers.
-        let _ = self
-            .terminal
-            .resize(ratatui::layout::Rect::new(0, 0, cols, rows));
-    }
 
 
 
@@ -11408,117 +11269,6 @@ impl State {
     }
 }
 
-/// Destination for a Ctrl+Shift+S selfie: `<dir>/selfie-<YYYYMMDD-HHMMSS>.png`,
-/// where `dir` is `$SOT_SELFIE_DIR`, else `<$SOT_REPO_DIR>/selfies`, else the
-/// current working directory. Creates the directory if missing.
-fn selfie_path() -> PathBuf {
-    let dir = std::env::var_os("SOT_SELFIE_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("SOT_REPO_DIR").map(|r| PathBuf::from(r).join("selfies")))
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let _ = std::fs::create_dir_all(&dir);
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    dir.join(format!("selfie-{stamp}.png"))
-}
-
-/// Schedule a copy of `texture` into a freshly-allocated MAP_READ buffer.
-/// The buffer is returned so the caller can submit the encoder, present the
-/// frame, then map and decode the buffer once the GPU has finished.
-fn stage_capture(
-    device: &wgpu::Device,
-    encoder: &mut wgpu::CommandEncoder,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-) -> (wgpu::Buffer, u32, u32) {
-    let bpp = 4u32;
-    let unpadded_bpr = width * bpp;
-    let padded_bpr = (unpadded_bpr + wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1)
-        & !(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT - 1);
-    let buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("capture-readback"),
-        size: (padded_bpr as u64) * (height as u64),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::ImageCopyTexture {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::ImageCopyBuffer {
-            buffer: &buf,
-            layout: wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bpr),
-                rows_per_image: None,
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    (buf, padded_bpr, unpadded_bpr)
-}
-
-/// Map the readback buffer, compact padded rows, normalize channel order to
-/// RGBA8, and write a PNG. Synchronous: we block on `device.poll(Wait)` since
-/// the frontend is exiting after this anyway.
-fn finish_capture(
-    device: &wgpu::Device,
-    buf: wgpu::Buffer,
-    padded_bpr: u32,
-    unpadded_bpr: u32,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-    path: &std::path::Path,
-) -> Result<()> {
-    let slice = buf.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| {
-        let _ = tx.send(r);
-    });
-    device.poll(wgpu::Maintain::Wait);
-    rx.recv()
-        .context("readback channel closed")?
-        .context("map_async failed")?;
-
-    let data = slice.get_mapped_range();
-    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    let bgra = matches!(
-        format,
-        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-    );
-    for y in 0..height {
-        let row_start = (y * padded_bpr) as usize;
-        let row_end = row_start + unpadded_bpr as usize;
-        let row = &data[row_start..row_end];
-        for px in row.chunks_exact(4) {
-            if bgra {
-                pixels.push(px[2]);
-                pixels.push(px[1]);
-                pixels.push(px[0]);
-                pixels.push(px[3]);
-            } else {
-                pixels.push(px[0]);
-                pixels.push(px[1]);
-                pixels.push(px[2]);
-                pixels.push(px[3]);
-            }
-        }
-    }
-    drop(data);
-    buf.unmap();
-
-    image::save_buffer(path, &pixels, width, height, image::ColorType::Rgba8)
-        .with_context(|| format!("save PNG to {}", path.display()))?;
-    Ok(())
-}
 
 
 
@@ -11528,24 +11278,6 @@ fn finish_capture(
 
 
 
-
-
-/// Resolve a Sessions row's agent state from its node payload into the render
-/// tone plus a wilt flag (true = active state gone stale). `None` when there
-/// is no agent state to show, so the row renders exactly as it did before
-/// state-nav. `now` is injected so the staleness check stays unit-testable.
-/// Built-in monitor-width tier for the startup font-scale SEED — used only
-/// when no per-host persisted zoom and no `[font] scale` settings key exist.
-/// Wide displays read better a notch larger (maintainer note, 2026-07-03: 1.1 on a
-/// 4096×1728 @ 96 DPI ultrawide; 3440 catches the common ultrawide widths).
-/// Physical pixels, pre-DPR — DPR scaling is already applied separately.
-fn default_font_scale_for_width(width_px: u32) -> f32 {
-    if width_px >= 3440 {
-        1.1
-    } else {
-        1.0
-    }
-}
 
 
 
@@ -12820,6 +12552,7 @@ mod capsule_pane_tests {
 mod scan_tests;
 pub(crate) mod preview;
 pub(crate) mod render;
+use render::*;
 use self::preview::concept::{
     parse_synced_against, split_frontmatter, strip_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES,
 };
