@@ -13,7 +13,7 @@ fn preview_targets_active_ws(
     default_slug: Option<&str>,
     workspace: &str,
 ) -> bool {
-    let is_default = workspace.is_empty() || workspace == "default" || workspace == "<default>";
+    let is_default = is_default_workspace_name(workspace);
     let target = if is_default {
         default_slug
     } else {
@@ -66,7 +66,7 @@ impl State {
                 // `active_host`, exactly the single-connection behavior
                 // this command always had. Targeting another host is a
                 // later slice's protocol addition.
-                let slug = slug.filter(|s| !s.is_empty() && s != "default" && s != "<default>");
+                let slug = slug.filter(|s| !is_default_workspace_name(s));
                 if let Some(s) = slug.as_deref() {
                     if !self
                         .workspace_slugs
@@ -260,8 +260,7 @@ impl State {
                         workspace.clone(),
                         path.clone(),
                     );
-                    let is_default =
-                        workspace.is_empty() || workspace == "default" || workspace == "<default>";
+                    let is_default = is_default_workspace_name(&workspace);
                     let (slug, tmux) = if is_default {
                         (None, None)
                     } else {
