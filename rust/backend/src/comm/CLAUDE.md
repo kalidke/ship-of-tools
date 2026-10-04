@@ -5,7 +5,7 @@ delivery and of the address book. Part of the backend; design of record: docs/ad
 
 ## Files
 - `mail/`: delivery: the daemon's link to the hub that files relayed messages
-- `mod.rs`: declares the three folders
+- `mod.rs`: declares the three folders and holds the comm folder rule (`sot_comm_home`)
 - `registry/`: the address book: which handle names which session
 - `wake/`: the wake: types a line into a session's free prompt when mail is unread
 
