@@ -7,6 +7,7 @@ capsule; charter: rust/log/CLAUDE.md.
 ## Files
 - `mod.rs`: `run`, the leg's writer loop, and the state and guards it owns.
 - `start.rs`: Starting a leg: open the voyage, bind the transport, write the control preamble, spawn the producer and its reader, and hand `run` the loop state.
+- `lanes.rs`: Carrying out AttachProto's actions for the leg.
 
 ## Start here
 `run` in mod.rs, read top to bottom.

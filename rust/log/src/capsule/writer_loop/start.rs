@@ -60,7 +60,7 @@ pub(super) fn start<'t, P: Producer>(
     // ids are only ever meaningful scoped to the connection that issued
     // them (a real transport may recycle ids across connections), and
     // every entry for a connection is purged the moment it closes (see
-    // `execute_light_actions!`'s `Close` arm), so a canceled write can
+    // `execute_light_actions`'s `Close` arm), so a canceled write can
     // never leak an entry, nor can a stale/mismatched completion apply a
     // marker meant for a connection that no longer exists.
     let pending_sends: HashMap<(ConnId, u64), Option<SentMarker>> = HashMap::new();
