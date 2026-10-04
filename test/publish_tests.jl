@@ -301,3 +301,20 @@ if Sys.isunix()
         end
     end
 end
+
+@testset "_install_files with text: the text lands with the source's mode, and an equal text is current" begin
+    mktempdir() do d
+        src = joinpath(d, "s.sh")
+        write(src, "loader\n")
+        chmod(src, 0o755)
+        plain = joinpath(d, "plain.sh")
+        ShipTools.install_file(src, plain)
+        out = mkpath(joinpath(d, "out"))
+        ShipTools._install_files(d, out, ["s.sh"]; text = n -> "whole\n")
+        @test read(joinpath(out, "s.sh"), String) == "whole\n"
+        @test filemode(joinpath(out, "s.sh")) == filemode(plain)
+        ino = stat(joinpath(out, "s.sh")).inode
+        ShipTools._install_files(d, out, ["s.sh"]; text = n -> "whole\n")
+        @test stat(joinpath(out, "s.sh")).inode == ino
+    end
+end

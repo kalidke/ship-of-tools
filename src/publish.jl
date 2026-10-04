@@ -110,10 +110,11 @@ function _reap_markers(dst::AbstractString; keep::Union{Nothing,AbstractString} 
 end
 
 """
-    install_file(src, dst; rename = Base.Filesystem.rename)
+    install_file(src, dst; rename = Base.Filesystem.rename, text = nothing)
 
 Copy `src` to a temporary name beside `dst`, then rename it onto `dst`, so
-`dst` is never partially written. When the rename is refused because a running
+`dst` is never partially written. With `text`, the temporary then holds `text()`
+instead of `src`'s bytes, keeping `src`'s mode. When the rename is refused because a running
 process holds `dst` open (Windows), the old file is moved aside under a
 `.stale-` name rather than deleted — the process keeps its inode — the new file
 lands, and the aside copy is reaped by the next successful replace of that
@@ -121,11 +122,12 @@ name. Any failure removes the temporary and throws; if the second rename fails
 the old file is put back, so `dst` is never missing.
 """
 function install_file(src::AbstractString, dst::AbstractString;
-                      rename = Base.Filesystem.rename)
+                      rename = Base.Filesystem.rename, text = nothing)
     tmp = _tmp_name(dst)
     aside_made = Ref{Union{Nothing,String}}(nothing)
     try
         cp(src, tmp; force = true)
+        text === nothing || write(tmp, text())
         try
             rename(tmp, dst)
         catch first_err
@@ -188,14 +190,15 @@ function _check_installed(dstdir::AbstractString, files; executable = Returns(fa
 end
 
 """
-    _install_files(srcdir, dstdir, files; executable = Returns(false))
+    _install_files(srcdir, dstdir, files; executable = Returns(false), text = nothing, rename)
 
 Install `files` (names found under `srcdir`, may include subdirectory
 components) into `dstdir` one at a time via [`install_file`](@ref) —
 continuing past a single failure, so ONE destination a live process still
 has open (`comm-relay.sh`, observed live) cannot block updating the rest of
 a directory. `executable(name)` files get `chmod(0o755)` after a successful
-install.
+install. `text(name)`, when given, is what `name` installs as in place of its
+source's bytes (`_comm_bin_text`); `rename` goes to `install_file`.
 
 Raises ONE error at the end combining every file that could not be updated
 (old copy kept, if one existed — stale is an acceptable outcome; MISSING is
@@ -205,7 +208,8 @@ truncates a crash's stderr to its tail still needs the useful part to
 survive.
 """
 function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
-                         executable = Returns(false))
+                         executable = Returns(false), text = nothing,
+                         rename = Base.Filesystem.rename)
     problems = String[]
     for f in files
         dst = joinpath(dstdir, f)
@@ -214,7 +218,7 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
         # A destination that already holds these exact bytes is current: skip the
         # replace: on Windows a file another process holds open fails the
         # replace with EACCES even though nothing is stale.
-        if isfile(dst) && read(dst) == read(src)
+        if isfile(dst) && read(dst) == (text === nothing ? read(src) : codeunits(text(f)))
             try
                 executable(f) && chmod(dst, 0o755)
             catch
@@ -222,7 +226,7 @@ function _install_files(srcdir::AbstractString, dstdir::AbstractString, files;
             continue
         end
         try
-            install_file(src, dst)
+            install_file(src, dst; rename = rename, text = text === nothing ? nothing : () -> text(f))
             executable(f) && chmod(dst, 0o755)
         catch err
             push!(problems, "$f could not be updated, kept the previous copy ($(sprint(showerror, err)))")

@@ -58,11 +58,35 @@ function _comm_part_of(folder::AbstractString, line::AbstractString)
     return p != NEVER_INSTALLED && isfile(joinpath(folder, p)) ? p : nothing
 end
 
+# The path argument of each `source` or `.` command on a line, wherever the command stands: at the
+# line's start, after `;` `&` `|` `(` `{` or a backquote, or after `if then do else elif while until !`.
+# A double-quoted argument may hold `$(...)` with quoted words inside, as the loader's lines do.
+const COMM_SOURCE_ARG = r"(?:^|[;&|({`]|\b(?:if|then|do|else|elif|while|until)\s|!\s)\s*(?:source|\.)\s+((?:\"(?:[^\"\\$]|\\.|\$(?!\()|\$\((?:[^()\"']|\"[^\"]*\"|'[^']*')*\))*\"|'[^']*'|[^\s;&|()<>\"'`])+)"
+
+# The file names the `source` and `.` commands of `line` read: the last `/` part of each path argument,
+# quotes removed. A path built from a variable gives the variable, which names no file.
+_comm_sourced(line::AbstractString) =
+    [replace(String(last(split(m[1], '/'))), r"[\"']" => "") for m in eachmatch(COMM_SOURCE_ARG, line)]
+
+# The lines of `path`, or none when it cannot be read: such a file is judged when its folder is published,
+# which fails on it and keeps its old copy.
+function _comm_lines(path::AbstractString)
+    try
+        return readlines(path)
+    catch e
+        e isa SystemError || e isa Base.IOError || rethrow()
+        return String[]
+    end
+end
+
 # The `(folder, name)` pairs of the files that install flat into `<bin>`: list order, then `readdir`
-# order. A part, a file another file of its folder sources (`_comm_part_of`), installs only inside that
-# file (`_comm_bin_text`), so it is not one of them. Fails before anything is published on: two folders
-# shipping one name, a part two files source, and any other `source` or `.` line that names a file of
-# its own folder or a part, or that a part runs. So no file ships that sources a part the bin lacks.
+# order. A part, a file another file of its folder sources by a `COMM_PART_LINE`, installs only inside
+# the files that source it (`_comm_bin_text`), so it is not one of them. Fails, and then `install_comm`
+# publishes no comm script, on two folders shipping one name and on a `source` or `.` command whose path
+# (`_comm_sourced`) names a file of its own folder in another line, a part from another folder, or any
+# shipped file from a part: each would install a script that sources a file the bin lacks. It reads
+# lines, not bash: a path built from a variable, a part run by another command (`bash <part>`) and a
+# source line inside a here-document are not seen.
 function _comm_bin_files(folders = _comm_bin_folders())
     files = Tuple{String,String}[]
     owner = Dict{String,String}()
@@ -73,24 +97,20 @@ function _comm_bin_files(folders = _comm_bin_folders())
         owner[name] = dir
         push!(files, (dir, name))
     end
-    parts = Dict{String,String}()
-    for (dir, name) in files, line in eachline(joinpath(dir, name))
+    lines = Dict(p => _comm_lines(joinpath(p...)) for p in files)
+    parts = Set{String}()
+    for (dir, name) in files, line in lines[(dir, name)]
         p = _comm_part_of(dir, line)
-        p === nothing && continue
-        haskey(parts, p) && error("comm bin part \"$p\" is sourced by both $(parts[p]) and $name")
-        parts[p] = name
+        p === nothing || push!(parts, p)
     end
-    for (dir, name) in files, line in eachline(joinpath(dir, name))
-        occursin(r"^\s*(?:source|\.)\s", line) || continue
-        p = _comm_part_of(dir, line)
-        for (n, d) in owner
-            occursin(Regex("[\\s\"'/]\\Q$(n)\\E(?:[\"'\\s;)]|\$)"), line) || continue
-            !haskey(parts, name) && (d == dir ? n == p : !haskey(parts, n)) ||
-                error("comm bin file $(joinpath(dir, name)) sources $n in a form the installer " *
-                      "cannot install: $(strip(line))")
-        end
+    for (dir, name) in files, line in lines[(dir, name)], n in _comm_sourced(line)
+        d = get(owner, n, nothing)
+        d === nothing && continue
+        !(name in parts) && (d == dir ? _comm_part_of(dir, line) == n : !(n in parts)) ||
+            error("comm bin file $(joinpath(dir, name)) sources $n in a form the installer " *
+                  "cannot install: $(strip(line))")
     end
-    return [(d, n) for (d, n) in files if !haskey(parts, n)]
+    return [(d, n) for (d, n) in files if !(n in parts)]
 end
 
 # The text `name` installs as: its own bytes, with each line that sources a part (`_comm_part_of`)
@@ -108,12 +128,27 @@ function _comm_bin_text(folder::AbstractString, name::AbstractString)
     return String(take!(io))
 end
 
-# Write `name`'s installed text into `stage` with the source file's mode, for `_install_files` to publish.
-function _comm_bin_stage(folder::AbstractString, name::AbstractString, stage::AbstractString)
-    dst = joinpath(stage, name)
-    write(dst, _comm_bin_text(folder, name))
-    chmod(dst, filemode(joinpath(folder, name)) & 0o777)
-    return dst
+# Publish `files` into `bin` folder by folder, in their order, each part inside the files that source it
+# (`_comm_bin_text`), each folder one stage of `problems`. The first folder is the library's (it is listed
+# first): when it records a problem, no other folder is published, so no new script runs against the
+# previous library. `rename` is `install_file`'s.
+function _publish_comm_bin!(problems::Vector{String}, bin::AbstractString, files;
+                            rename = Base.Filesystem.rename)
+    folders = unique(first.(files))
+    for folder in folders
+        before = length(problems)
+        _stage!(problems, "comm scripts ($(relpath(folder, REPO_ROOT)))") do
+            _install_files(folder, bin, [n for (f, n) in files if f == folder];
+                           executable = endswith(".sh"), text = n -> _comm_bin_text(folder, n),
+                           rename = rename)
+        end
+        if folder == first(folders) && length(problems) > before
+            push!(problems, "comm scripts after $(relpath(folder, REPO_ROOT)) (not published: " *
+                            "the library did not install, and a new script needs it)")
+            break
+        end
+    end
+    return nothing
 end
 
 # Every name this release installs directly into `<bin>`: the files

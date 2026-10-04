@@ -53,20 +53,15 @@ function install_comm(; clis = [:claude, :codex])
     version_file = joinpath(comm_home(), "VERSION")
     rm(version_file; force = true)
 
-    files = _comm_bin_files()
     # Every stage runs; failures are collected and raised together at the
     # end, so one refused file (field report
     # 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
-    mktempdir() do stage
-        for folder in unique(first.(files))
-            names = [n for (f, n) in files if f == folder]
-            _stage!(problems, "comm scripts ($(relpath(folder, REPO_ROOT)))") do
-                foreach(n -> _comm_bin_stage(folder, n, stage), names)
-                _install_files(stage, bin, names; executable = endswith(".sh"))
-            end
-        end
+    files = Tuple{String,String}[]
+    _stage!(problems, "comm scripts") do
+        append!(files, _comm_bin_files())
     end
+    _publish_comm_bin!(problems, bin, files)
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 

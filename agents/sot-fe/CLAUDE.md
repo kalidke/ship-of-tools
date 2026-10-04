@@ -3,7 +3,7 @@
 The CLI a session uses to drive the frontend, its REPL and its sibling rows: one verb per request, sent to the daemon,
 never through the comm relay. Part of agents; charter: agents/CLAUDE.md. The installer puts `sot-fe`, each part's
 text in place of its `source` line, and `sot-nav.sh` flat into the comm bin (`comm/bin-folders.txt`), next to
-`comm-lib.sh`, which they source.
+`comm-lib.sh`, which `sot-fe` sources.
 
 ## Files
 - `sot-fe`: the entry: usage header, flags, the `source` lines of the four parts, and the verb dispatch
@@ -26,5 +26,4 @@ concept.
 - Free text reaches jq through `sot_jq_rawfile`, never as an argument.
 - An unknown flag is an error, never a positional.
 - A part defines functions only and is sourced before the dispatch runs; a new verb's function goes in the part of its
-  concept, and a new part gets a `source "$SCRIPT_DIR/<part>"`
-  line in the entry, the form the installer inlines.
+  concept, and a new part gets a `source "$SCRIPT_DIR/<part>"` line in the entry, the form the installer inlines.

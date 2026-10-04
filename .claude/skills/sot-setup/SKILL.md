@@ -321,8 +321,8 @@ Cross-machine messaging rides the relay over the backend tunnel at runtime, not 
 join-time endpoint.
 
 **No-Julia fallback (frontend-client machines):** `ShipTools.update_comm()` needs
-Julia, which FE clients don't install (§3). `update_comm()` is just a file copy —
-replicate it directly (idempotent), then join as above:
+Julia, which FE clients don't install (§3). `update_comm()` copies files, joining each
+library's parts into one; this copies the repo's files as they are (idempotent), then join as above:
 ```sh
 bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
 for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
