@@ -5,7 +5,7 @@ resolved. The code also calls it the "BL pane" and the "session pane". Part of t
 rust/frontend/src/ui/CLAUDE.md. Record: ADR 0042 and 0045.
 
 ## Files
-- `mod.rs`: declares the three files and re-exports their items to `ui`.
+- `mod.rs`: declares the four files and re-exports their items to `ui`.
 - `screen.rs`: which screen the pane paints (`PaneFeed`, `HeldPaneScreen`, `PaneScreen`, `pane_screen_choice`), the
   reason overlay and the discard notice.
 - `attach.rs`: the attach client (`PaneAttachClient`), `State::attach_session_to_bl`, its event pump, and the warm pool

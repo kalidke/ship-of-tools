@@ -5,7 +5,7 @@ history over it, and the projection of the log into display lines. Part of fe-ui
 rust/frontend/src/ui/CLAUDE.md.
 
 ## Files
-- `mod.rs`: declares the two files below.
+- `mod.rs`: declares the three files below.
 - `log.rs`: `ReplEntry`, `State::submit_repl_input` and the history walk (`State::history_step_back`, `State::history_step_forward`).
 - `lines.rs`: `build_repl_lines` (log to display lines and image slots), `ReplImage`, `ReplImageSlot` and `pinned_repl_scroll`.
 - `replies.rs`: repl.eval, repl.frame and repl.run_file replies
