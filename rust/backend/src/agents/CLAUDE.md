@@ -13,7 +13,7 @@ agents/CLAUDE.md at the repo root (lands with the repo-root agents/ folder).
 - `folder_trust.rs`: the declared trusted-root prefix and the write of claude's per-folder trust record.
 - `awareness.rs`: the `SOT_*` awareness env stamped on every capsule producer, and the daemon's own endpoint path.
 - `memory.rs`: the auto-memory settings flag claude gets, and the proof that one shared store exists.
-- `ops.rs`: accounts.list
+- `ops.rs`: accounts.list, and `sotd agent-exec`, the one owner of the launch recipe that `ccb` execs through
 - `support_tests.rs`: `touch_dir`, `touch_file`, `platform_spelling` and the env guard, shared by the tests of the other files.
 
 ## Start here
