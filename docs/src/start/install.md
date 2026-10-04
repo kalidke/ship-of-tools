@@ -135,7 +135,7 @@ installs the agent integration:
 | `~/.claude/settings.json` | hook entries for `UserPromptSubmit`, `PreToolUse` (on `AskUserQuestion`), `PostToolUse` and `Stop`, each calling a `comm-*.sh` script in `~/.sot-comm/bin`; merged in without removing existing hooks |
 | `~/.claude-auth/<name>/settings.json` | the same hook entries, merged the same way into each Claude account that has a `settings.json`; a link is followed and its target written once, and an account folder with none is skipped and none is created there (the backend links the shared one in at the account's first spawn) |
 | `~/.codex/skills/` | the Codex skills `sot-comm` and `sot-session-start` |
-| `~/.codex/AGENTS.md` | installed only if no `AGENTS.md` is there |
+| `~/.codex/AGENTS.md` | the repo's `AGENTS.md`, installed or replaced only while the installed file holds "Codex sessions in Ship of Tools"; any other file there is left alone and a warning says to merge by hand |
 | `~/.agents/plugins/sot-comm/`, `~/.agents/plugins/marketplace.json` | the Codex work-state hook plugin; written whether or not Codex is installed, and registered with `codex plugin add sot-comm@sot-local` when it is |
 
 `~/.claude` and `~/.codex` follow `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when

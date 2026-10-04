@@ -44,6 +44,10 @@ Who owns what: `docs/ownership.md`. How they connect: `docs/integration.md`.
 - Search finds the path. The first Read of a file in a folder loads that folder's page and every page above it; Grep and
   shell searches load none. So read the file, not only grep it.
 - Folders with no page of their own are listed, with their reason, in `scripts/tests/exempt.txt`.
+- Designed but unbuilt parts (the Project, Types, Math, Outputs and Agents modes; the concept layer's refresh and
+  reference checks; the plugin contract beyond `FileType`) are described, marked unbuilt, in `docs/src/guide/modes.md`,
+  `docs/src/guide/concept-layer.md`, `docs/src/guide/color-coding.md`, `docs/src/extend/abi.md` and
+  `docs/src/extend/mode.md`.
 
 ## Limits
 - A file holds one concept and at most 800 code lines. Tests sit inline, or in a sibling file of at most 800 lines.
