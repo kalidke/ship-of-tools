@@ -198,7 +198,7 @@ impl State {
             conns,
             leases,
             #[cfg(windows)]
-            own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::host::state_dir::state_dir_hash(&d)),
+            own_state_root: sot_log::host::state_dir::sot_state_dir().map(|d| sot_log::host::state_dir::state_dir_hash(&d)),
             not_ended_shown: None,
             leaving: None,
             last_declared_sessions: None,

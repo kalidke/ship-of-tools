@@ -1,6 +1,5 @@
 //! The per-machine Ship of Tools state directory (ADR 0041 step 6, unit
-//! U0 — promoted from the frontend's own `paths.rs`, build-order step 1's
-//! comment there): ONE resolution rule, owned here so every process that
+//! U0 — promoted from the frontend, build-order step 1's rule): ONE resolution rule, owned here so every process that
 //! needs it shares it rather than drifting copies. That drift already
 //! happened once — `ui/`'s old `sot_state_dir()` checked
 //! `%LOCALAPPDATA%` only on Windows while `state.rs`'s old `state_path()`
@@ -18,8 +17,7 @@
 //! authoritative.
 //!
 //! Pure refactor: this is a byte-for-byte port of the frontend's own
-//! resolution logic (no behavior change), which now DELEGATES to this
-//! function instead of carrying its own copy.
+//! resolution logic (no behavior change); the window calls it directly.
 
 /// Resolve the per-user CONFIG directory: `%LOCALAPPDATA%\sot\config` on
 /// Windows (a sibling of [`sot_state_dir`]'s `state` under the same root —

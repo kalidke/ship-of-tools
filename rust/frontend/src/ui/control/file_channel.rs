@@ -99,14 +99,14 @@ impl State {
 /// agent (or the user) drops one JSON object per file here; the FE's command
 /// watcher reads, deletes, and enqueues each for main-thread dispatch.
 pub(in crate::ui) fn fe_commands_dir() -> Option<std::path::PathBuf> {
-    crate::paths::sot_state_dir().map(|d| d.join("fe-commands"))
+    sot_log::host::state_dir::sot_state_dir().map(|d| d.join("fe-commands"))
 }
 
 /// Path of the FE state-readback file (ADR 0019). The FE rewrites it
 /// (atomic temp+rename) whenever the observable state changes, so an
 /// in-terminal agent can poll it instead of screenshotting.
 pub(in crate::ui) fn fe_state_path() -> Option<std::path::PathBuf> {
-    crate::paths::sot_state_dir().map(|d| d.join("fe-state.json"))
+    sot_log::host::state_dir::sot_state_dir().map(|d| d.join("fe-state.json"))
 }
 
 /// Starts the persistent fe-command watcher thread (ADR 0019): it parses and

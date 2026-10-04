@@ -12,7 +12,7 @@
 /// plain relaunch) to pick exit code 76 over 75; any other content
 /// (including the plain timestamp) is a normal relaunch.
 pub(crate) fn relaunch_sentinel_path() -> Option<std::path::PathBuf> {
-    crate::paths::sot_state_dir().map(|d| d.join("relaunch.request"))
+    sot_log::host::state_dir::sot_state_dir().map(|d| d.join("relaunch.request"))
 }
 
 /// Grant the next process the right to take the OS foreground (Windows only).

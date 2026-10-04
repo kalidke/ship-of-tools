@@ -21,7 +21,6 @@ each belong to one other subsystem, named below. Part of fe-ui; charter: rust/fr
 - `src/selfupdate.rs`: startup self-update staging and `--update-status` (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).
-- `src/paths.rs`: `sot_state_dir`, a one-line delegate to `sot_log::host::state_dir::sot_state_dir`.
 - `src/net/`: the window's connections to daemons (fe-net; charter rust/frontend/src/net/CLAUDE.md).
 - `src/ui/`: the window itself (fe-ui; charter rust/frontend/src/ui/CLAUDE.md).
 
@@ -34,4 +33,4 @@ charter in src/ui/; for a connection or a request, to src/net/.
   or 76 when the sentinel's content is `converge`, and the window exits with it.
 - `--ephemeral`, `--capture` and `--no-lease` never take a lease (`lease_exempt` in lease.rs).
 - Only `sot_protocol::is_release_build()` self-updates (`guard` in selfupdate.rs); a dev build never stages anything.
-- The state directory has one resolution rule, sot-log's; `paths::sot_state_dir` only forwards to it.
+- The state directory has one resolution rule, sot-log's, which the window calls directly.

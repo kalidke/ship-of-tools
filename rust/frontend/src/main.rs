@@ -12,7 +12,6 @@ mod cli;
 mod lease;
 mod net;
 mod pages;
-mod paths;
 mod relaunch;
 mod selfupdate;
 mod ui;

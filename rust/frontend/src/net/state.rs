@@ -68,12 +68,12 @@ fn sanitize_for_filename(host: &HostKey) -> String {
 }
 
 pub fn state_path(host: &HostKey) -> PathBuf {
-    // One shared rule, via `crate::paths` (ADR 0041 step 1). This copy used
+    // One shared rule, via sot-log's `sot_state_dir` (ADR 0041 step 1). This copy used
     // to resolve `$XDG_STATE_HOME` ahead of `%LOCALAPPDATA%`, which split
     // session state away from the relaunch sentinel on Windows whenever
     // XDG_STATE_HOME was set. The "." fallback is the pre-existing last
     // resort for when no env var resolves.
-    crate::paths::sot_state_dir()
+    sot_log::host::state_dir::sot_state_dir()
         .unwrap_or_else(|| PathBuf::from(".").join("sot"))
         .join(format!("session-{}.json", sanitize_for_filename(host)))
 }
@@ -83,7 +83,7 @@ pub fn state_path(host: &HostKey) -> PathBuf {
 /// held that connection's ENTIRE reconnect memory — there was no host
 /// concept to suffix it with.
 fn legacy_state_path() -> PathBuf {
-    crate::paths::sot_state_dir()
+    sot_log::host::state_dir::sot_state_dir()
         .unwrap_or_else(|| PathBuf::from(".").join("sot"))
         .join("session.json")
 }
