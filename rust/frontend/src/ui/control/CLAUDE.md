@@ -10,6 +10,7 @@ ends in `State::dispatch_fe_command`. Part of fe-ui; charter: rust/frontend/src/
 - `dispatch.rs`: `dispatch_fe_command` and `drain_fe_commands`, plus `preview_targets_active_ws` and `badge_host_key`.
 - `envelope.rs`: `parse_nav_envelope`, `NavEnvelope` and `handle_nav_envelope` (ADR 0025's same-workspace open).
 - `file_channel.rs`: `fe_commands_dir`, `fe_state_path` and `maybe_write_fe_state`.
+- `replies.rs`: the daemon's pushed events, by op (workspace.changed, agent.message, fe.command, preview.changed)
 
 ## Start here
 `route_fe_command` for what the wire accepts; `dispatch_fe_command` for what a command does to the window.

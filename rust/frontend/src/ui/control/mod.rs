@@ -7,6 +7,7 @@ mod command;
 mod dispatch;
 mod envelope;
 mod file_channel;
+mod replies;
 
 pub(in crate::ui) use command::*;
 pub(in crate::ui) use envelope::*;
