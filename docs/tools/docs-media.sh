@@ -430,7 +430,7 @@ clip_agent() {     # -> $AGENT_RAW/{hero,navigate,repl,crop,copy}.mkv, layout.pn
     # The session reads no user settings (--setting-sources project), so the
     # product's own skills go where a project's skills live.
     mkdir -p "$HOSTHOME/DemoProject/.claude/skills"
-    cp -r "$REPO/comm/adapters/claude/julia-repl" "$REPO/comm/adapters/claude/show-result" \
+    cp -r "$REPO/agents/claude/julia-repl" "$REPO/agents/claude/show-result" \
         "$HOSTHOME/DemoProject/.claude/skills/"
     rows_state analysis:working figures:waiting gpu-train:idle survey:idle
     write_layout "$AGENT_WIDTHS" "$AGENT_COLUMNS"

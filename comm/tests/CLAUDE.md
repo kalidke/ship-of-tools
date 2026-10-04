@@ -16,13 +16,10 @@ suite. Part of messaging; charter: comm/CLAUDE.md.
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
 - `test-agent-layers.sh`: a process acts as a handle only with at most one agent between it and its row's capsule
-- `test-ccb-agent-exec.sh`: `ccb` execs `sotd agent-exec claude` with the caller's flags in order
-- `test-ccx-resume-default.sh`: `ccx` resumes by default on its `--capsule` flag alone, never an inherited variable
 - `test-comm-deps.sh`: a missing jq, flock or perl is named by poll, session start and the Stop hook, never passed silently
 - `test-comm-e2e-readers.sh`: real readers on a real shared home lose no line (needs a v4 peer and a v3 host)
 - `test-comm-matrix-verdict.sh`: the acceptance matrix's verdict logic tells a false failure from a false success
 - `test-comm-poll-cursor.sh`: the read cursor is a line offset that survives a torn line, a cut-back file and a legacy stamp
-- `test-crlf-gh-auth.sh`: `sot-gh-auth.sh` reads JSON values correctly under a jq that writes CRLF
 - `test-crlf-jq-output.sh`: the comm scripts compare handles correctly under a jq that writes CRLF
 - `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip
 - `test-heartbeat-ctx-wait.sh`: the heartbeat hook's wait on `comm-context.sh` polls fast, is bounded and cleans up
@@ -53,6 +50,6 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
 - Five suites need peer hosts and are not hermetic: `test-comm-e2e-readers.sh`, `test-inbox-lock-onehost.sh`,
   `test-inbox-lock-twohost.sh`, `test-registry-twohost.sh` and `test-registry-lock-twohost.sh`.
 - CI runs the hermetic list in `.github/workflows/rust.yml`; `scripts/tests/rc-gate.sh` runs every `test-*.sh` here but
-  those five. The suites of the row-lifecycle CLIs are in `agents/tests/` and source this folder's guard.
+  those five. The suites of the row-lifecycle CLIs, the launchers and `sot-gh-auth.sh` are in `agents/tests/` and source this folder's guard.
 - A shell rule that has a Rust twin is checked by a text scan or a parity test here (`test-hub-files.sh` T13 over
   `inbox.rs`, `test-registry-lock.sh` t15 over `lock.rs`); change both arms in one commit.

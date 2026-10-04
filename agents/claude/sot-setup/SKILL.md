@@ -325,9 +325,9 @@ Julia, which FE clients don't install (§3). `update_comm()` is just a file copy
 replicate it directly (idempotent), then join as above:
 ```sh
 bash "$REPO/comm/tests/stage-bin.sh" ~/.sot-comm/bin
-for s in sot-comm sot-install; do
-  mkdir -p ~/.claude/skills/$s
-  cp -f "$REPO/comm/adapters/claude/$s/SKILL.md" ~/.claude/skills/$s/SKILL.md
+for d in comm/adapters/claude/sot-comm agents/claude/sot-install; do
+  mkdir -p ~/.claude/skills/"$(basename "$d")"
+  cp -f "$REPO/$d/SKILL.md" ~/.claude/skills/"$(basename "$d")"/SKILL.md
 done
 ```
 Note this XDG `$HOME` may be **per-machine**, so its registry is local to the

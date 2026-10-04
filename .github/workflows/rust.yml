@@ -252,7 +252,6 @@ jobs:
           # false "no such handle" -- or a token GitHub rejects -- was a human
           # remembering to run them. Both are hermetic and take under a second.
           bash test-crlf-jq-output.sh
-          bash test-crlf-gh-auth.sh
           # A missing jq, flock or perl is named to the session by poll, session
           # start and the Stop hook, never passed silently.
           bash test-comm-deps.sh
@@ -274,6 +273,7 @@ jobs:
           bash test-sot-fe-version.sh
           # reauth moves only the row it runs in; a second argument or a missing row id sends nothing.
           bash test-sot-fe-reauth.sh
+          bash test-crlf-gh-auth.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the

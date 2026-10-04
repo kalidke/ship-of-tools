@@ -12,10 +12,10 @@
 # Usage: comm/core/tests/test-ccb-agent-exec.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="$(cd "$SCRIPT_DIR/../adapters/claude/bin" && pwd)"
+BIN_DIR="$(cd "$SCRIPT_DIR/../claude/bin" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-ccb-agent-exec-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }
