@@ -67,11 +67,11 @@ pub fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
 /// The capsule executable's own file name for this platform — mirrors
-/// `rows::spawn::detach`'s own `CAPSULE_EXE` fork.
+/// `rows::spawn::detach`'s `CAPSULE_SIBLING_NAME`.
 #[cfg(windows)]
 pub const CAPSULE_EXE_NAME: &str = "sot-capsule.exe";
 /// macOS lane: `not(windows)`, matching `rows::spawn::detach`'s
-/// own `CAPSULE_EXE` — the extensionless name is a Unix fact, and a
+/// `CAPSULE_SIBLING_NAME` — the extensionless name is a Unix fact, and a
 /// Linux-only gate here failed the whole `--tests` build on macOS.
 #[cfg(not(windows))]
 // Dead on a host with no capsule runtime in the daemon yet (macOS, until

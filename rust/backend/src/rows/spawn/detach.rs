@@ -35,18 +35,20 @@ pub fn mode_flag(mode: StartMode) -> &'static str {
 /// The daemon's capsule runtime — spawning, watching, querying, and
 /// ending a supervisor over `sot_log::attach_client::supervisor_client`. Platform
 /// chosen by exactly TWO forks inside (ADR 0043 decision 22): the
-/// capsule executable's name ([`CAPSULE_EXE`]) and the detach mechanism
+/// capsule executable's name ([`CAPSULE_SIBLING_NAME`]) and the detach mechanism
 /// ([`spawn_detached`]'s two twins) — everything else below is
 /// byte-identical on both platforms. (A third fork, the adopted leg's
 /// exit-status read, existed here before decision 33 deleted the
 /// adopted-leg watch entirely — a watchdog now exists only for a
 /// `Child` this daemon itself spawned.)
-/// This platform's `sot-capsule` sibling file name — kept OUTSIDE `mod
-/// runtime` so the daemon-startup sanity check right below it compiles
-/// and runs even where that module does not (a Unix that is neither
-/// Linux nor macOS). Duplicates `mod runtime`'s own `CAPSULE_EXE` value
-/// rather than reaching across the cfg boundary — the two are pinned
-/// together by the test below.
+/// The `sot-capsule` file name next to the daemon's own executable, read
+/// by the startup check right below and by every launch
+/// ([`sot_capsule_exe`]). `not(windows)`, not `target_os = "linux"`: the
+/// extensionless name is a Unix fact, not a Linux one, and the release
+/// archive stages it next to `sotd` on the macOS leg exactly as it does
+/// on the Linux one — so this arm is already correct for the day `mod
+/// runtime`'s own gate widens, and gating it narrower would only make
+/// that day's diff bigger without naming an invariant of its own.
 #[cfg(windows)]
 const CAPSULE_SIBLING_NAME: &str = "sot-capsule.exe";
 #[cfg(not(windows))]
@@ -113,23 +115,12 @@ const ERROR_ACCESS_DENIED: i32 = 5;
 /// executable ("the `sot-capsule` binary path: next to the daemon's
 /// own executable (`current_exe().parent()`), which is where the
 /// install layout puts it", ADR 0042 L1a) on both platforms.
-#[cfg(windows)]
-const CAPSULE_EXE: &str = "sot-capsule.exe";
-/// `not(windows)`, not `target_os = "linux"`: the extensionless name
-/// is a Unix fact, not a Linux one, and the release archive stages it
-/// next to `sotd` on the macOS leg exactly as it does on the Linux
-/// one — so this arm is already correct for the day `mod runtime`'s
-/// own gate widens, and gating it narrower would only make that day's
-/// diff bigger without naming an invariant of its own.
-#[cfg(not(windows))]
-const CAPSULE_EXE: &str = "sot-capsule";
-
 pub fn sot_capsule_exe() -> std::io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or_else(|| {
         std::io::Error::new(ErrorKind::NotFound, "daemon executable has no parent directory")
     })?;
-    Ok(dir.join(CAPSULE_EXE))
+    Ok(dir.join(CAPSULE_SIBLING_NAME))
 }
 
 /// ADR 0043 decision 25: the supervisor's stderr is the daemon's OWN
