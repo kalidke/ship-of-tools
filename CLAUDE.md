@@ -39,7 +39,7 @@ Each line names the subsystem and the folder of its charter page (idea, owns, pr
 Who owns what: `docs/ownership.md`. How they connect: `docs/integration.md`.
 
 ## Finding your way
-- Pages come in three tiers: this root map; one charter per subsystem in its charter folder; and a 15-40 line module
+- Pages come in three tiers: this root map; one charter per subsystem in its charter folder; and a module
   page in every other source folder. No page repeats its parent.
 - Search finds the path. The first Read of a file in a folder loads that folder's page and every page above it; Grep and
   shell searches load none. So read the file, not only grep it.
