@@ -45,6 +45,7 @@ window's page proxy).
 
 ## Files
 
+- `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records, `pipe_bidirectional` and `reject`.
 - `video.rs`: the video listener, its token grants and the request handler.
