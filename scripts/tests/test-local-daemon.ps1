@@ -878,19 +878,7 @@ try {
     # ONE place for every cleanup this file owes, so a terminating error
     # anywhere above (not just a failed Check, which never throws) still
     # restores the environment and kills whatever got spawned.
-    if ($envSaved) {
-        foreach ($k in $envSaved.Keys) {
-            if ($null -eq $envSaved[$k]) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
-            else { Set-Item "Env:\$k" $envSaved[$k] }
-        }
-    }
-    if ($fakeSup -and -not $fakeSup.HasExited) {
-        try { Stop-Process -Id $fakeSup.Id -Force -ErrorAction SilentlyContinue } catch {}
-    }
-    Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($testPipePrefix) } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Complete-LocalDaemonTest
 }
 
 Write-Host "`n================ $pass passed, $fail failed ================" -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })

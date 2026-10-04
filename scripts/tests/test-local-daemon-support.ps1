@@ -90,3 +90,20 @@ $haveRealSotd = Test-Path $realSotd
 $fakeSup = $null
 $envSaved = $null
 $testPipePrefix = 'test-sot-ld-'
+
+# The outer finally's cleanup: restore the environment, stop the spawned processes, remove the test root.
+function Complete-LocalDaemonTest {
+    if ($envSaved) {
+        foreach ($k in $envSaved.Keys) {
+            if ($null -eq $envSaved[$k]) { Remove-Item "Env:\$k" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:\$k" $envSaved[$k] }
+        }
+    }
+    if ($fakeSup -and -not $fakeSup.HasExited) {
+        try { Stop-Process -Id $fakeSup.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($testPipePrefix) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+}
