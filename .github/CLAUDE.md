@@ -6,7 +6,7 @@ scripts/CLAUDE.md.
 
 ## Files
 - `dependabot.yml`: weekly version updates for the GitHub Actions and the Julia environments (`/`, `/docs`, `/test`).
-- `workflows/`: the five workflows below.
+- `workflows/`: the four workflows below.
 
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `adapters/**`, `comm/**` and the file
@@ -23,7 +23,6 @@ scripts/CLAUDE.md.
   smokes `smoke`, `smoke-windows` and `smoke-macos`, then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub
   Release).
 - `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
-- `workflows/TagBot.yml`: the Julia registry's TagBot, on issue comments and dispatch.
 
 ## Start here
 `workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
