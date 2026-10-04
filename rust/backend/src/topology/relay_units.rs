@@ -9,32 +9,32 @@ use std::path::{Path, PathBuf};
 
 /// `sotd topology apply` (plan §C, §F step 5): on the hub, converge both
 /// systemd --user unit families (plus each instance's ConditionHost
-/// drop-in, `topology::apply_dropin`) with the declared list —
+/// drop-in, `topology::relay_units::apply_dropin`) with the declared list —
 /// `sot-relay-tunnel@<host>` for the comm relay's reverse tunnels, and
 /// `sot-host-relay-<host>.socket` (plus the per-connection
 /// `sot-host-relay-<host>@.service`) for the hub's own socket per dialable
-/// host — files apply WRITES from `topology::relay_files`, since their text is per host.
-/// Refuses off the hub (`topology::require_hub`). `dry_run` prints every
+/// host — files apply WRITES from `topology::relay_units::relay_files`, since their text is per host.
+/// Refuses off the hub (`topology::relay_units::require_hub`). `dry_run` prints every
 /// action without touching systemd or the filesystem — the default (ADR
 /// 0028 units forward a live relay port; this box silently flipping which
 /// remotes it tunnels to is not something `apply` does on its own say-so).
 /// Pass `--yes` to actually run it.
 pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     let me = self_host()?;
-    topology::require_hub(topo, &me, "apply")?;
-    let plan = topology::apply_plan(topo, &enabled_hosts(TUNNEL_TEMPLATE)?, &enabled_hosts(RELAY_TEMPLATE)?);
+    topology::relay_units::require_hub(topo, &me, "apply")?;
+    let plan = topology::relay_units::apply_plan(topo, &enabled_hosts(TUNNEL_TEMPLATE)?, &enabled_hosts(RELAY_TEMPLATE)?);
     if plan.is_empty() {
         println!(
             "up to date: {} tunnel instance(s), {} relay instance(s)",
-            topology::tunnel_hosts(topo).len(),
-            topology::relay_hosts(topo).len()
+            topology::relay_units::tunnel_hosts(topo).len(),
+            topology::relay_units::relay_hosts(topo).len()
         );
         return Ok(());
     }
     let verb = if dry_run { "would " } else { "" };
     // `generated` is the difference between the two families: the reverse
     // tunnel rides ONE hand-installed `sot-relay-tunnel@.service` template,
-    // while the relay's unit text is per host (`topology::relay_unit` says
+    // while the relay's unit text is per host (`topology::relay_units::relay_unit` says
     // why systemd leaves no choice), so apply writes the pair before
     // enabling it and takes it away again on disable.
     // BEST EFFORT, not all-or-nothing: one host that is powered off or
@@ -46,8 +46,8 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
     // status is still honest.
     let mut failures: Vec<String> = Vec::new();
     for (diff, unit, generated) in [
-        (&plan.tunnels, topology::tunnel_unit as fn(&str) -> String, false),
-        (&plan.relays, topology::relay_unit as fn(&str) -> String, true),
+        (&plan.tunnels, topology::relay_units::tunnel_unit as fn(&str) -> String, false),
+        (&plan.relays, topology::relay_units::relay_unit as fn(&str) -> String, true),
     ] {
         for h in &diff.enable {
             println!("{verb}enable {}", unit(h));
@@ -100,13 +100,13 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
 /// `(prefix, suffix)` around the host name in each family's unit names —
 /// `sot-relay-tunnel@<host>.service` and `sot-host-relay-<host>.socket`.
 /// Both halves are needed because only one family is an `@` template
-/// (`topology::relay_unit`).
+/// (`topology::relay_units::relay_unit`).
 const TUNNEL_TEMPLATE: (&str, &str) = ("sot-relay-tunnel@", ".service");
 const RELAY_TEMPLATE: (&str, &str) = ("sot-host-relay-", ".socket");
 
 /// Host names of every unit in one family systemd --user currently
 /// reports `enabled`. The only I/O `apply` does to read state;
-/// `topology::apply_plan` is the pure decision made from its result.
+/// `topology::relay_units::apply_plan` is the pure decision made from its result.
 fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> {
     let pattern = format!("{prefix}*{suffix}");
     let out = std::process::Command::new("systemctl")
@@ -140,11 +140,11 @@ fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> 
         .collect())
 }
 
-/// Writes every file `topology::relay_files` names for one host, overwriting
+/// Writes every file `topology::relay_units::relay_files` names for one host, overwriting
 /// whatever was there: they are apply's, and the header in each says so.
 fn write_relay_units(host: &str) -> Result<(), String> {
     let dir = systemd_user_dir()?;
-    for (name, text) in topology::relay_files(host) {
+    for (name, text) in topology::relay_units::relay_files(host) {
         write_atomic(&dir.join(name), &text)?;
     }
     Ok(())
@@ -167,7 +167,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
 
 /// The hub keeps its generated relay units equal to this binary's text. For
 /// every host that is both a relay host and enabled: rewrite each of
-/// `topology::relay_files` whose text differs (the command drop-in comes last,
+/// `topology::relay_units::relay_files` whose text differs (the command drop-in comes last,
 /// so no other drop-in is read),
 /// `reset-failed` every host before any reload (accumulated failed
 /// instances are what wedges `daemon-reload`), then always reload and
@@ -186,14 +186,14 @@ fn refresh(
     systemctl: &mut dyn FnMut(&[&str]) -> Result<String, String>,
     say: &mut dyn FnMut(String),
 ) -> Result<(), String> {
-    topology::require_hub(topo, me, "refresh")?;
-    let hosts: Vec<&str> = topology::relay_hosts(topo).into_iter().filter(|h| enabled.iter().any(|e| e == h)).collect();
+    topology::relay_units::require_hub(topo, me, "refresh")?;
+    let hosts: Vec<&str> = topology::relay_units::relay_hosts(topo).into_iter().filter(|h| enabled.iter().any(|e| e == h)).collect();
     if hosts.is_empty() {
         return Ok(());
     }
     let mut failures: Vec<String> = Vec::new();
     for &h in &hosts {
-        for (name, text) in topology::relay_files(h) {
+        for (name, text) in topology::relay_units::relay_files(h) {
             let path = dir.join(&name);
             if std::fs::read_to_string(&path).is_ok_and(|now| now == text) {
                 continue;
@@ -205,12 +205,12 @@ fn refresh(
         }
     }
     for &h in &hosts {
-        let dd = dir.join(format!("{}.d", topology::relay_service_unit_file(h)));
+        let dd = dir.join(format!("{}.d", topology::relay_units::relay_service_unit_file(h)));
         let Ok(entries) = std::fs::read_dir(&dd) else { continue };
         let mut late: Vec<PathBuf> = entries
             .flatten()
             .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".conf") && n > topology::RELAY_COMMAND_DROPIN))
+            .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".conf") && n > topology::relay_units::RELAY_COMMAND_DROPIN))
             .map(|e| e.path())
             .collect();
         late.sort();
@@ -224,7 +224,7 @@ fn refresh(
         }
     }
     for &h in &hosts {
-        let (socket, instances) = (topology::relay_unit(h), format!("sot-host-relay-{h}@*.service"));
+        let (socket, instances) = (topology::relay_units::relay_unit(h), format!("sot-host-relay-{h}@*.service"));
         if let Err(e) = systemctl(&["--user", "reset-failed", &socket, &instances]) {
             failures.push(e);
         }
@@ -242,7 +242,7 @@ fn refresh(
         }
     }
     for &h in &hosts {
-        if let Err(e) = systemctl(&["--user", "restart", &topology::relay_unit(h)]) {
+        if let Err(e) = systemctl(&["--user", "restart", &topology::relay_units::relay_unit(h)]) {
             failures.push(e);
         }
     }
@@ -257,7 +257,7 @@ fn refresh(
 /// unit) prints each command as `ExecStart={ path=… ; argv[]=<as written, variables unexpanded> ; … }` on a line of
 /// its own, and a second command that a drop-in appends leaves a second record and `LoadState=bad-setting`.
 fn runs_generated_command(show: &str) -> bool {
-    let want = format!("argv[]={} ;", topology::relay_command_line());
+    let want = format!("argv[]={} ;", topology::relay_units::relay_command_line());
     let execs: Vec<&str> = show.lines().filter(|l| l.starts_with("ExecStart=")).collect();
     execs.len() == 1 && execs[0].contains(&want) && show.lines().any(|l| l.trim_end() == "LoadState=loaded")
 }
@@ -330,10 +330,10 @@ fn supervised_by_systemd() -> Result<bool, String> {
 /// — the disable that precedes this is the operation that mattered.
 fn remove_relay_units(host: &str) -> Result<(), String> {
     let dir = systemd_user_dir()?;
-    for (name, _) in topology::relay_files(host) {
+    for (name, _) in topology::relay_units::relay_files(host) {
         let _ = std::fs::remove_file(dir.join(name));
     }
-    let _ = std::fs::remove_dir(dir.join(format!("{}.d", topology::relay_service_unit_file(host))));
+    let _ = std::fs::remove_dir(dir.join(format!("{}.d", topology::relay_units::relay_service_unit_file(host))));
     Ok(())
 }
 
@@ -365,10 +365,10 @@ fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
 }
 
 fn dropin_path(unit: &str) -> Result<PathBuf, String> {
-    Ok(systemd_user_dir()?.join(format!("{unit}.d")).join(topology::APPLY_DROPIN_FILE))
+    Ok(systemd_user_dir()?.join(format!("{unit}.d")).join(topology::relay_units::APPLY_DROPIN_FILE))
 }
 
-/// Writes only apply's own fixed-named file (`topology::APPLY_DROPIN_FILE`)
+/// Writes only apply's own fixed-named file (`topology::relay_units::APPLY_DROPIN_FILE`)
 /// inside the instance's `.d/` directory — any other, hand-made drop-in
 /// beside it is never touched (mirrors `scripts/install.sh`'s own rule for
 /// `sotd.service.d`: it heals only the one drop-in name it knows).
@@ -391,7 +391,7 @@ fn write_dropin(unit: &str, hub: &str) -> Result<(), String> {
         .ok()
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| hub.to_string());
-    std::fs::write(&path, topology::apply_dropin(&condition_host))
+    std::fs::write(&path, topology::relay_units::apply_dropin(&condition_host))
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -419,7 +419,7 @@ mod tests {
 
     /// The stand-in answer to `show`: the generated command, as systemd prints it.
     fn shown(a: &[&str]) -> String {
-        if a[1] == "show" { format!("ExecStart={{ argv[]={} ; }}\nLoadState=loaded\n", topology::relay_command_line()) } else { String::new() }
+        if a[1] == "show" { format!("ExecStart={{ argv[]={} ; }}\nLoadState=loaded\n", topology::relay_units::relay_command_line()) } else { String::new() }
     }
 
     fn hub_topo() -> Topology {
@@ -435,9 +435,9 @@ mod tests {
 
     #[test]
     fn runs_generated_command_needs_one_record_that_is_ours_and_a_loaded_unit() {
-        let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; ignore_errors=no ; pid=0 }}", topology::relay_command_line());
+        let ours = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; ignore_errors=no ; pid=0 }}", topology::relay_units::relay_command_line());
         let old = "ExecStart={ path=/usr/bin/ssh ; argv[]=/usr/bin/ssh -T x sotd stdio-bridge --label local ; ignore_errors=no ; pid=0 }";
-        let longer = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} --label local ; ignore_errors=no ; pid=0 }}", topology::relay_command_line());
+        let longer = format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} --label local ; ignore_errors=no ; pid=0 }}", topology::relay_units::relay_command_line());
         assert!(runs_generated_command(&format!("{ours}\nLoadState=loaded\n")));
         for bad in [
             format!("{old}\nLoadState=loaded\n"),
@@ -458,7 +458,7 @@ mod tests {
         let topo = hub_topo();
         let dir = scratch("order");
         let dd = dir.join("sot-host-relay-remote-a@.service.d");
-        std::fs::write(dir.join("sot-host-relay-remote-a.socket"), topology::relay_socket_unit("remote-a")).unwrap();
+        std::fs::write(dir.join("sot-host-relay-remote-a.socket"), topology::relay_units::relay_socket_unit("remote-a")).unwrap();
         std::fs::write(dir.join("sot-host-relay-remote-a@.service"), STALE_SERVICE).unwrap();
         std::fs::write(dd.join("no-mux.conf"), NO_MUX).unwrap();
         std::fs::write(dd.join("override.conf"), OVERRIDE).unwrap();
@@ -478,7 +478,7 @@ mod tests {
                 format!("rewrote {}", dd.join("zz-sot-relay-command.conf").display())
             ]
         );
-        assert_eq!(std::fs::read_to_string(dir.join("sot-host-relay-remote-a@.service")).unwrap(), topology::relay_service_unit("remote-a"));
+        assert_eq!(std::fs::read_to_string(dir.join("sot-host-relay-remote-a@.service")).unwrap(), topology::relay_units::relay_service_unit("remote-a"));
         assert_eq!(std::fs::read_to_string(dd.join("no-mux.conf")).unwrap(), NO_MUX);
         assert_eq!(std::fs::read_dir(&dd).unwrap().count(), 3);
         assert_eq!(std::fs::read_to_string(dd.join("override.conf")).unwrap(), OVERRIDE);

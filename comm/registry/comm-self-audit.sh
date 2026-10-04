@@ -43,7 +43,7 @@ esac
 # A repo basename has to go through the daemon's label→slug rule before it can
 # be compared with a key's slug at all (`MyPackage.jl` keys a row as
 # `mypackage_jl`). That rule is `sot_slug` in the comm-lib.sh sourced above — a
-# char-by-char mirror of Rust `slug()` (rust/protocol/src/session_socket.rs)
+# char-by-char mirror of Rust `slug()` (rust/protocol/src/topology/endpoint.rs)
 # with its own tests. This script carried a second, sed-based copy, which agreed
 # with `sot_slug` over every real `repo=` on this box but not in general: a
 # literal repeated dash survives the daemon's keep-branch (`alpha- beta` →

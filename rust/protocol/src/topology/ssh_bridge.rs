@@ -6,7 +6,7 @@
 //! used by every Rust site that spawns one:
 //!
 //! - the frontend's control connection (`rust/frontend/src/transport.rs`);
-//! - its per-host lane attach (`crate::lane_client`, this crate);
+//! - its per-host lane attach (`crate::topology::lane_client`, this crate);
 //! - its per-browser-connection page-proxy leg
 //!   (`rust/frontend/src/proxy_listen.rs`).
 //!
@@ -17,7 +17,7 @@
 
 use std::process::Stdio;
 
-use crate::topology::is_plain_host_name;
+use crate::topology::endpoint::is_plain_host_name;
 
 /// Where an ssh child should connect, and — when that target is a hub
 /// relaying on another daemon's behalf — which daemon. `target` is an ssh

@@ -250,7 +250,7 @@ jobs:
           # Ask the binary what wire protocol it speaks rather than writing
           # the number into this script's own hello frame — a hard-coded
           # literal here is exactly the class of bug that broke this smoke
-          # when PROTOCOL_VERSION went 1 -> 2 (rust/protocol/src/lib.rs
+          # when PROTOCOL_VERSION went 1 -> 2 (rust/protocol/src/version.rs
           # documents the invariant on `version_line`).
           proto="$(echo "$got" | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+')"
           [ -n "$proto" ] || { echo "could not read a protocol version from: $got"; exit 1; }
@@ -364,7 +364,7 @@ jobs:
             # Ask sotd what wire protocol it speaks rather than writing the
             # number into this script's own hello frame below — see the
             # invariant documented on `version_line` in
-            # rust/protocol/src/lib.rs.
+            # rust/protocol/src/version.rs.
             if [ "$b" = "sotd" ]; then
               proto="$(echo "$got" | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+')"
             fi

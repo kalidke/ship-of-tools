@@ -38,9 +38,10 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 ## Folders
 - `rust/protocol/src/topology/`: this folder.
+- `rust/backend/src/topology/`: the daemon's half: the `sotd topology` verbs, `TopologyStore`, op `topology.set`, `sotd status`, `sotd stdio-bridge`, the hub's relay-unit apply and refresh.
 
 ## Files
-- `mod.rs`: the hosts.toml parser, search rule, derivations, edits and status table; re-exports below it are temporary.
+- `mod.rs`: the hosts.toml parser, search rule, derivations, edits and status table.
 - `endpoint.rs`: this box's own daemon endpoint, the label, the slug and the host-name grammar.
 - `ssh_bridge.rs`: the ssh recipe, its argv and `LinkGate`.
 - `lane_client.rs`: `DaemonLaneEndpoint`, the lane dial over ssh or a socket.

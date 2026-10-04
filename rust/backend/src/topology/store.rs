@@ -2,7 +2,7 @@
 // (`sot_protocol::topology`, grammar v2). ON-DEMAND re-read (mtime+size),
 // never a file watcher: plan §B "Editing the master list" is explicit that
 // `notify` misses writes on a network filesystem, exactly the reason
-// `topology.rs`'s own BOM-incident note already learned the hard way once
+// `topology/mod.rs`'s own BOM-incident note already learned the hard way once
 // for `[monitor]`.
 //
 // One `TopologyStore` per daemon (constructed once at startup, pointed at

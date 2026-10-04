@@ -44,7 +44,7 @@ ExecStartPre=-@SOT_APPLY@
 ExecStart=/bin/bash -c '[ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"; exec "@SOT_BIN@" --project-root "@SOT_PROJECT_ROOT@" --label sot'
 # Exit 0 is a requested shutdown (the last window on this computer closed):
 # stay down, and the next launch starts it. Exit 75 is an update restart
-# (ops.rs lease::EXIT_UPDATE_RESTART): come back through ExecStartPre's apply.
+# (ops/lease.rs EXIT_UPDATE_RESTART): come back through ExecStartPre's apply.
 # Any other exit is a failure and comes back too.
 Restart=on-failure
 RestartSec=2

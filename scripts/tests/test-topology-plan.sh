@@ -5,7 +5,7 @@
 #
 # Pure text processing against a FAKE sotd (a stub script on PATH that
 # echoes fixed lines) -- no real sotd binary, no ssh, no network.
-# rust/protocol/src/topology.rs's `plan` doc comment is the contract this
+# rust/protocol/src/topology/mod.rs's `plan` doc comment is the contract this
 # stub imitates; a reviewer may still adjust that format, so this parses
 # it in ONE function (sot_topology_plan) and nowhere else. Bash-side
 # sibling of scripts/tests/test-topology-plan.ps1, which exercises the same

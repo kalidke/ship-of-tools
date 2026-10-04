@@ -13,7 +13,7 @@ fn a_down_ssh_host_costs_the_hub_at_most_two_logins_a_minute() {
         }
         n
     };
-    let ssh = Dial::Ssh(sot_protocol::ssh_bridge::SshRecipe::new("hub", Some("gamma")).unwrap());
+    let ssh = Dial::Ssh(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", Some("gamma")).unwrap());
     let n = count(&ssh);
     assert!(n <= 130, "{n} logins per hour on the hub for one down host");
     let n = count(&Dial::Pipe(std::path::PathBuf::from("/x")));
@@ -35,7 +35,7 @@ async fn run_against_fake_daemon(
     host: &str,
     hello_reply: serde_json::Value,
     answer_preamble: bool,
-    gate: sot_protocol::ssh_bridge::LinkGate,
+    gate: sot_protocol::topology::ssh_bridge::LinkGate,
 ) -> (
     tokio::task::JoinHandle<Result<()>>,
     tokio::task::JoinHandle<()>,
@@ -89,7 +89,7 @@ fn hello_ok() -> serde_json::Value {
 #[tokio::test]
 async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
     let _env = crate::state::test_env::set_test_env();
-    let gate = sot_protocol::ssh_bridge::LinkGate::default();
+    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let (session, daemon, evt_rx, hold) =
         run_against_fake_daemon("gate-test-up-down", hello_ok(), true, gate.clone()).await;
@@ -109,7 +109,7 @@ async fn the_gate_is_up_after_the_hello_reply_and_down_when_the_session_ends() {
 #[tokio::test]
 async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
     let _env = crate::state::test_env::set_test_env();
-    let gate = sot_protocol::ssh_bridge::LinkGate::default();
+    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
     let reply = serde_json::json!({ "error": "protocol skew", "code": "protocol_mismatch" });
     let (session, _daemon, _evt_rx, _hold) =
@@ -122,7 +122,7 @@ async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
 #[tokio::test]
 async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _env = crate::state::test_env::set_test_env();
-    let gate = sot_protocol::ssh_bridge::LinkGate::default();
+    let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
     let (session, _daemon, _evt_rx, _hold) =
         run_against_fake_daemon("gate-test-tree-root", hello_ok(), true, gate.clone()).await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;

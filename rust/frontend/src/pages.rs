@@ -24,7 +24,7 @@
 
 use std::net::TcpListener as StdTcpListener;
 
-use sot_protocol::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
+use sot_protocol::topology::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
 use sot_protocol::{codec, op, Frame, ProxyConnectReq};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -199,7 +199,7 @@ async fn pipe_one(
     // login. The child's last stderr line is the diagnosis when it died
     // before or during the splice — beats a generic broken-pipe message.
     if result.is_err() {
-        if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+        if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             return Err(anyhow::anyhow!(line));
         }
     }
@@ -331,9 +331,9 @@ mod tests {
     #[tokio::test]
     async fn a_down_gate_closes_every_browser_connection_without_a_spawn() {
         use tokio::io::AsyncReadExt;
-        let gate = sot_protocol::ssh_bridge::LinkGate::default();
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
         gate.set_up(false);
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
         for _ in 0..5 {

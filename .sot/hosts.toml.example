@@ -1,5 +1,5 @@
 # Ship of Tools declared topology — TEMPLATE. Grammar v2 (one parser:
-# rust/protocol/src/topology.rs; one reader per box: `sotd topology`).
+# rust/protocol/src/topology/mod.rs; one reader per box: `sotd topology`).
 #
 # Where it lives: the hub's own ~/.config/sot/hosts.toml is the canonical
 # copy (written by the owner, on the hub). A box that shares the hub's home

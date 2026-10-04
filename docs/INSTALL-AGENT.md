@@ -420,7 +420,7 @@ sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
 # Ask the binary what wire protocol it speaks -- don't hard-code the
 # number here (the `protocol <N>` at the end of `sotd --version`'s
 # parenthetical exists exactly so out-of-tree probes like this one never
-# have to; see version_line's doc comment in rust/protocol/src/lib.rs).
+# have to; see version_line's doc comment in rust/protocol/src/version.rs).
 # Omit the field when the version line prints none; the backend defaults it.
 proto="$(~/.local/share/sot/bin/sotd --version | grep -oE 'protocol [0-9]+' | grep -oE '[0-9]+' || true)"
 proto_field=""

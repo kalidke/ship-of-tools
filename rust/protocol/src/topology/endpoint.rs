@@ -1,6 +1,6 @@
 //! How a process names this box's own daemon: the session socket or pipe path, the local label, the slug, the
 //! `unix:`/`pipe:` spelling, and the plain host-name grammar.
-// session_socket.rs — the ONE derivation of a Ship of Tools daemon's
+// endpoint.rs — the ONE derivation of a Ship of Tools daemon's
 // per-user session endpoint (ADR 0042 L2b design A).
 //
 // Moved here from `rust/backend/src/paths.rs` (ADR 0013's original home)

@@ -12,7 +12,7 @@ use super::*;
 pub(in crate::ui) enum ProxyTarget {
     NotNeeded,
     Refused(String),
-    Dial(sot_protocol::ssh_bridge::SshRecipe, Option<String>),
+    Dial(sot_protocol::topology::ssh_bridge::SshRecipe, Option<String>),
 }
 
 impl State {
@@ -201,7 +201,7 @@ mod tests {
         let host = "gpu-box".to_string();
         let mut proxy_capable_hosts = std::collections::HashSet::new();
         proxy_capable_hosts.insert(host.clone());
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", Some(&host)).unwrap();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", Some(&host)).unwrap();
         let mut host_resolved_dial = HashMap::new();
         host_resolved_dial.insert(host.clone(), ResolvedDial::Ssh(recipe.clone()));
         let mut host_transports = HashMap::new();
@@ -209,7 +209,7 @@ mod tests {
             host.clone(),
             crate::transport::TransportConfig {
                 dial: crate::transport::Dial::Ssh(
-                    sot_protocol::ssh_bridge::SshRecipe::new("ignored", None).unwrap(),
+                    sot_protocol::topology::ssh_bridge::SshRecipe::new("ignored", None).unwrap(),
                 ),
                 token: Some("tok-gpu".to_string()),
             },
@@ -231,7 +231,7 @@ mod tests {
         let host = "hub".to_string();
         let mut proxy_capable_hosts = std::collections::HashSet::new();
         proxy_capable_hosts.insert(host.clone());
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let mut host_resolved_dial = HashMap::new();
         host_resolved_dial.insert(host.clone(), ResolvedDial::Ssh(recipe.clone()));
         let host_transports = HashMap::new();
@@ -294,7 +294,7 @@ mod tests {
             bind.as_ref().err().map(std::io::Error::kind),
             Some(std::io::ErrorKind::AddrInUse)
         ));
-        let target = ProxyTarget::Dial(sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
+        let target = ProxyTarget::Dial(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
         assert!(!State::proxy_open_permitted(&target, Some(&bind)));
     }
 
@@ -304,7 +304,7 @@ mod tests {
     fn proxy_open_permitted_allows_a_successful_dial_bind() {
         let bind = std::net::TcpListener::bind(("127.0.0.1", 0));
         assert!(bind.is_ok());
-        let target = ProxyTarget::Dial(sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
+        let target = ProxyTarget::Dial(sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap(), None);
         assert!(State::proxy_open_permitted(&target, Some(&bind)));
     }
 

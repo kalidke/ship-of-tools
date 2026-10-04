@@ -146,7 +146,7 @@ pub struct KernelRequestReq {
     #[serde(default)]
     pub kernel_payload: serde_json::Value,
     /// ADR 0014 workspace routing. Resolved to the per-workspace
-    /// kernel handle so `modules.list` / `file.parse` etc. see the
+    /// kernel handle so `file.parse` etc. see the
     /// right project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,

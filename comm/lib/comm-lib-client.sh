@@ -226,8 +226,8 @@ _sot_ssh_sharing_ok() {
 # replies → stdout. The one child every `ssh:` scheme switch spawns
 # (C10): `ssh <target> '<PATH prelude>; sotd stdio-bridge
 # [--host <host>]'`, the option set and prelude literally the ones the
-# hub's own relay unit runs (`rust/protocol/src/topology.rs`) and C3
-# spawns identically from Rust (`rust/protocol/src/ssh_bridge.rs`) -- kept
+# hub's own relay unit runs (`rust/protocol/src/topology/mod.rs`) and C3
+# spawns identically from Rust (`rust/protocol/src/topology/ssh_bridge.rs`) -- kept
 # as this file's own implementation, not shared code, because shell
 # cannot call into that crate. The connection-sharing trio is part of THIS
 # helper, not an optional extra: without it "one authentication per host"

@@ -142,7 +142,7 @@ launcher parses `hosts.toml` itself any more: the launcher runs
 frontend spawns itself, or a local socket/pipe) and `SOT_RELAY_ENDPOINT`;
 the frontend reads no config file for hosts at all
 (see `--dial` under [CLI flags](../start/setup.md), and
-`rust/protocol/src/topology.rs`'s `plan` doc comment for the exact
+`rust/protocol/src/topology/mod.rs`'s `plan` doc comment for the exact
 line-oriented contract).
 
 The format is deliberately simple — a section per host, scalar
@@ -239,7 +239,7 @@ host-c = "host-c"
 ```
 
 `sotd topology plan --self laptop` on the laptop above renders as (see
-`rust/protocol/src/topology.rs`'s `plan` doc comment for the exact grammar):
+`rust/protocol/src/topology/mod.rs`'s `plan` doc comment for the exact grammar):
 
 ```text
 self laptop

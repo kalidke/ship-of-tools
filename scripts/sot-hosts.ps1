@@ -12,7 +12,7 @@
 # it shells out to (no ssh, no other side effects) -- easy to fake in a
 # test by pointing -SotdPath at a stub script that prints fixed lines.
 #
-# Contract (rust/protocol/src/topology.rs's `plan` doc comment -- read it
+# Contract (rust/protocol/src/topology/mod.rs's `plan` doc comment -- read it
 # there before changing this; a reviewer may still adjust the format, so
 # this parses it in ONE place and nowhere else): one fact per line, first
 # word a keyword, then either one value (self/hub/relay-endpoint) or a host

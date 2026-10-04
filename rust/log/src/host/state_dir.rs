@@ -164,14 +164,14 @@ mod state_dir_hash_tests {
 // ---------------------------------------------------------------------
 // L1-unix LU1b (ADR 0043 decision 1): the per-user RUNTIME dir — where
 // live sockets/pipes go, as opposed to `sot_state_dir`'s durable-state
-// tree above. Moved DOWN here from `sot-protocol`'s `session_socket`
+// tree above. Moved DOWN here from `sot-protocol`'s `topology::endpoint`
 // module (ADR 0042 L2b's original home): the daemon's own session
 // sockets and the Ship's Log Unix transport (`socket_unix.rs`) both need
 // the identical derivation, and `sot-log` is the lower crate in the
 // dependency graph (the frontend and backend already depend on both;
 // `sot-protocol` gains a dependency on `sot-log`, never the reverse).
-// `session_socket.rs` now re-exports these three names verbatim so every
-// existing `sot_protocol::runtime_sot_dir()` / `session_socket::
+// `topology/endpoint.rs` now re-exports these three names verbatim so every
+// existing `sot_protocol::runtime_sot_dir()` / `topology::endpoint::
 // is_private_dir(...)` / `current_uid()` call site keeps compiling
 // unchanged.
 // ---------------------------------------------------------------------
@@ -487,7 +487,7 @@ mod tests {
     }
 }
 
-/// Moved verbatim from `sot-protocol`'s `session_socket` module (ADR 0043
+/// Moved verbatim from `sot-protocol`'s `topology::endpoint` module (ADR 0043
 /// decision 1, L1-unix LU1b) with `is_private_dir` itself — deliberately
 /// NOT via `$XDG_RUNTIME_DIR` mutation, for the same env-var-race reason
 /// noted on `private_xdg_runtime_dir`'s doc comment.

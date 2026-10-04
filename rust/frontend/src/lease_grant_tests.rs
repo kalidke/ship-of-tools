@@ -44,7 +44,7 @@ fn harness_never_leases() {
         let (e, c, n) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
         assert_eq!(lease_exempt(e, c, n), bits != 0, "row {bits}");
     }
-    let ssh = sot_protocol::ssh_bridge::SshRecipe::new("somehost", None).unwrap();
+    let ssh = sot_protocol::topology::ssh_bridge::SshRecipe::new("somehost", None).unwrap();
     let conns = vec![
         ("local".to_string(), pipe_config(Path::new("/x"))),
         ("far".to_string(), TransportConfig { dial: Dial::Ssh(ssh), token: None }),

@@ -16,7 +16,7 @@ mod support;
 use support::*;
 
 use sot_log::fe_client_io::FeAttachClient;
-use sot_protocol::lane_client::{DaemonLaneEndpoint, LaneDial};
+use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{codec, op, Frame, HelloReq};
 
 use std::io::{BufReader, Write};

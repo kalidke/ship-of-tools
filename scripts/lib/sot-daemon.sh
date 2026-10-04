@@ -1,4 +1,4 @@
-SOT_LAUNCH_WAIT_S=160  # = rust/protocol/src/ops.rs lease::LAUNCH_WAIT; scripts/tests/installer-state.sh compares them
+SOT_LAUNCH_WAIT_S=160  # = rust/protocol/src/ops/lease.rs LAUNCH_WAIT; scripts/tests/installer-state.sh compares them
 SOT_LOG_KEEP=5               # a start leaves at most this many nohup daemon logs (sot_prune_logs)
 SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes down to (sot_prune_logs)
 

@@ -17,7 +17,7 @@ use support::*;
 
 use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
 use sot_log::segment::SegmentReader;
-use sot_protocol::lane_client::{DaemonLaneEndpoint, LaneDial};
+use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{op, Frame};
 
 use std::io::{Read, Write};

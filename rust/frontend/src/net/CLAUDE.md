@@ -14,7 +14,7 @@ through the channel types below.
 - Request ids and reply matching (`PendingKind`); the typed edges `OutgoingReq` (UI to daemon) and `IncomingEvt`
   (daemon to UI).
 - The reconnect memory, `session-<host>.json` (`state::state_path`, `load`, `save`).
-- The only writes of `sot_protocol::ssh_bridge::LinkGate`: up at any hello reply (`run_session`), down when the session
+- The only writes of `sot_protocol::topology::ssh_bridge::LinkGate`: up at any hello reply (`run_session`), down when the session
   ends (`run_protocol`).
 - The window's identity (`identity::FrontendIdentity`, `identity::frontend_identity`) and the per-host helpers
   (`hosts::resolve_default_host`, `hosts::lane_dial`) live here; the per-host table is `hosts::HostTable`, held by the
@@ -32,7 +32,7 @@ through the channel types below.
 ## Connections
 - In: `main.rs` makes one `outgoing_channel` per host and keeps the sender; it holds the `(HostKey, IncomingEvt)`
   fan-in receiver and calls `transport::spawn`.
-- Out: `Leases::before_data_connection` (`lease.rs`) before a pipe connection; `sot_protocol::ssh_bridge` (`SshRecipe`,
+- Out: `Leases::before_data_connection` (`lease.rs`) before a pipe connection; `sot_protocol::topology::ssh_bridge` (`SshRecipe`,
   `LinkGate`) for ssh hosts; the wire codec in `sot_protocol` (`codec::read_frame`, frame writes).
 
 ## Folders

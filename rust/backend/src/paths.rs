@@ -194,7 +194,7 @@ mod non_windows_noop_tests {
 ///
 /// ADR 0042 L2b: `slug`, `session_socket_path` and the private-runtime-dir
 /// resolution it needs (`runtime_sot_dir`, `is_private_dir`, `current_uid`)
-/// moved to `sot_protocol::session_socket` — the ONE derivation of a
+/// moved to `sot_protocol::topology::endpoint` — the ONE derivation of a
 /// daemon's per-user endpoint, so the frontend can call the exact same
 /// function for its implicit "local" connection (`hosts::resolve_connections`)
 /// instead of guessing. Re-exported here (except `is_private_dir`, which
@@ -409,7 +409,7 @@ pub(crate) fn valid_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
-/// `is_private_dir`'s own tests moved to `sot_protocol::session_socket`
+/// `is_private_dir`'s own tests moved to `sot_protocol::topology::endpoint`
 /// with the function (ADR 0042 L2b) — see that module's
 /// `is_private_dir_tests`. `secure_private_dir`'s tests (below) still
 /// exercise `current_uid` (re-exported above) directly.

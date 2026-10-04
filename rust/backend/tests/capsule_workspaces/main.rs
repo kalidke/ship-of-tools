@@ -12,7 +12,7 @@
 //! `workspace.create` in this file requests `"runtime": "capsule"`
 //! explicitly for clarity — since ADR 0042 L6 (this repo's B6 lane) it
 //! is also this host's own default on Linux, same as Windows, but every
-//! fixture here stays explicit so it reads on its own (see `ops.rs`'s
+//! fixture here stays explicit so it reads on its own (see `ops/workspace.rs`'s
 //! own doc on the field).
 //!
 //! Every wait below is a BOUNDED poll or `tokio::time::timeout` for an

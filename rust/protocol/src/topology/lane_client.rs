@@ -85,7 +85,7 @@ pub enum LaneDial {
     Local(PathBuf),
     /// The recipe and its host's link gate: a down gate makes the dial
     /// fail with `TransportError::LinkDown` and start no ssh.
-    Ssh(crate::ssh_bridge::SshRecipe, crate::ssh_bridge::LinkGate),
+    Ssh(crate::topology::ssh_bridge::SshRecipe, crate::topology::ssh_bridge::LinkGate),
 }
 
 /// An `Endpoint` value naming one daemon connection, never a row. `token`
@@ -257,11 +257,11 @@ struct BridgedClient {
 }
 
 impl BridgedClient {
-    fn spawn(recipe: &crate::ssh_bridge::SshRecipe, gate: &crate::ssh_bridge::LinkGate) -> Result<Self, TransportError> {
+    fn spawn(recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<Self, TransportError> {
         match gate.spawn_sync(recipe) {
             Ok(child) => Self::wrap(child).map_err(TransportError::Unreachable),
-            Err(crate::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
-            Err(crate::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
+            Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
+            Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
         }
     }
 

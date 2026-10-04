@@ -10,7 +10,7 @@
 #
 # Sections 1+ exercise Get-SotTopologyPlan against a FAKE `sotd` -- a
 # batch stub that echoes fixed lines, so this is pure text processing, no
-# real sotd binary, no ssh, no network. rust/protocol/src/topology.rs's
+# real sotd binary, no ssh, no network. rust/protocol/src/topology/mod.rs's
 # `plan` doc comment is the contract this stub imitates; a reviewer may
 # still adjust that format, so this parses it in ONE function
 # (Get-SotTopologyPlan) and nowhere else.

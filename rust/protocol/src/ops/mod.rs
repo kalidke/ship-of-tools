@@ -1,4 +1,4 @@
-// ops.rs — typed payloads for the M1-spike ops.
+// ops/ — typed payloads for the M1-spike ops.
 //
 // Each `*Req` / `*Res` struct serializes into the `payload` field of a Frame.
 // The codec doesn't know about these types; senders construct a Frame whose
@@ -39,7 +39,7 @@ pub mod op {
     pub const MATH_RENDER: &str = "math.render";
     /// Generic Julia-kernel proxy. Payload `{kernel_op, kernel_payload}`;
     /// response payload is the kernel's response payload verbatim. Lets the
-    /// frontend exercise kernel features (`modules.list`, `file.parse`, …)
+    /// frontend exercise kernel features (`file.parse`, …)
     /// without adding a wire op per kernel verb.
     pub const KERNEL_REQUEST: &str = "kernel.request";
     pub const CONCEPT_READ: &str = "concept.read";

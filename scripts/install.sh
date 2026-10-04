@@ -214,8 +214,8 @@ installer_self_host() {
 }
 
 # "daemon:0|1 frontend:0|1" — what this box installs for <self>'s entry in
-# `sotd topology status`'s output, the one parser (rust/protocol/src/
-# topology.rs); this reads its plain-line table, not hosts.toml itself, so it
+# `sotd topology status`'s output, the one parser (rust/protocol/src/topology/
+# mod.rs); this reads its plain-line table, not hosts.toml itself, so it
 # stays a consumer, not a second parser. A `frontend` entry installs a daemon
 # too, `daemon` declared or not: every box that runs a window runs its own
 # private local daemon, as on Windows. `daemon = true` adds only that other
@@ -597,7 +597,7 @@ DEFAULT_SOCKET="$("$PREFIX/bin/sotd" session-socket-path sot)"
 
 # ---- heal a pre-0.6 hosts.toml (finding 3a, v0.6.5 macOS field report) -----------
 # The old grammar (`default_host` at top level) is a loud parse error under
-# the current one (rust/protocol/src/topology.rs), not a silently-kept
+# the current one (rust/protocol/src/topology/mod.rs), not a silently-kept
 # file -- an installer that preserved one across an upgrade left the box
 # with NO topology plan at all, which is what then walked
 # `scripts/launch-sot.sh` into the bash-3.2 unbound-array crash (finding

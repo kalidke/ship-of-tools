@@ -22,7 +22,7 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   (`one_copy_helper` in `scripts/tests/installer-apply.sh`). `sot_unit_owner_path` and `sot_wrapper_owner_prefix` are
   copies of `installer_unit_owner_path` and `installer_wrapper_owner_prefix` in `install.sh`, pinned equal by
   `owner_helpers_agree`.
-- `SOT_LAUNCH_WAIT_S` equals `lease::LAUNCH_WAIT` in `rust/protocol/src/ops.rs` (`launcher_bounds_match_ops`). The
+- `SOT_LAUNCH_WAIT_S` equals `lease::LAUNCH_WAIT` in `rust/protocol/src/ops/lease.rs` (`launcher_bounds_match_ops`). The
   ensure's wait stays longer than the daemon's own lock wait, so `sot_daemon_ensure` never kills a daemon it started
   and never removes the socket.
 - A rendered unit or wrapper is the install's own only when `sot_service_owned` or `sot_wrapper_owned` says so (the

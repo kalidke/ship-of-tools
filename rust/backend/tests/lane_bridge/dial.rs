@@ -371,7 +371,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     stub_ssh_relaying_to(stub_dir.path(), relay.addr);
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
-    let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
     let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
@@ -428,7 +428,7 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     stub_ssh_dying_with(stub_dir.path(), "Permission denied (publickey).");
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
-    let recipe = sot_protocol::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
     let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,

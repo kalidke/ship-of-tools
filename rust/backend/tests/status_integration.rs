@@ -6,7 +6,7 @@
 //! dirs and bounded teardown; the daemon itself is spawned BY HAND here
 //! (not `Env::spawn_sotd`) because it must listen on the socket the box's
 //! OWN daemon label derives — the exact endpoint `sotd status`'s own
-//! `topology::local_endpoint()` dials, and the reason both spell that label
+//! `topology::endpoint::local_endpoint()` dials, and the reason both spell that label
 //! `local_daemon_label()` rather than a literal — rather than
 //! `spawn_sotd`'s arbitrary per-test `--socket` path.
 

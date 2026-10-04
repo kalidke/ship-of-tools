@@ -162,9 +162,9 @@ param(
     [switch]$FrontendKilled
 )
 
-# Bounds the launcher and the daemon agree on (rust/protocol/src/ops.rs;
+# Bounds the launcher and the daemon agree on (rust/protocol/src/ops/lease.rs;
 # scripts/tests/installer-state.sh checks both values against it).
-$LaunchWaitSeconds = 160        # = ops.rs lease::LAUNCH_WAIT
+$LaunchWaitSeconds = 160        # = ops/lease.rs LAUNCH_WAIT
 $DaemonLockWaitSeconds = 150    # = DAEMON_LOCK_WAIT
 
 # Daemon stdout/stderr log bounds, per stream (see "Spawn hygiene" above).

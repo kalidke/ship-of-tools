@@ -104,7 +104,7 @@ pub(super) async fn send_hello<W: AsyncWrite + Unpin>(
 pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
     mut rx: R,
     hello_id: u64,
-    gate: Option<&sot_protocol::ssh_bridge::LinkGate>,
+    gate: Option<&sot_protocol::topology::ssh_bridge::LinkGate>,
     session: &mut SessionState,
     emit: &impl Fn(IncomingEvt),
     window: &Wn,

@@ -93,9 +93,9 @@ fn an_old_daemons_control_loop_unauthenticated_is_no_bridge() {
 /// down fails at once with `LinkDown` and starts no child.
 #[test]
 fn an_ssh_dial_with_a_down_gate_is_link_down_at_once() {
-    let gate = crate::ssh_bridge::LinkGate::default();
+    let gate = crate::topology::ssh_bridge::LinkGate::default();
     gate.set_up(false);
-    let recipe = crate::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+    let recipe = crate::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
     let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, gate), token: None };
     let t0 = Instant::now();
     let result = endpoint.dial("row", "supervisor", None);

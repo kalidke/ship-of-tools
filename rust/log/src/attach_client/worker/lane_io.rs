@@ -104,7 +104,7 @@ impl std::fmt::Display for LaneError {
 /// `Endpoint::connect_*_unchallenged` call — keeps going through
 /// [`transport_error_to_io`] exactly as before this decision landed.
 /// `Refused{code: "unauthenticated", ..}` reaching here is ALWAYS a
-/// bridge-speaking daemon's own bad-token refusal — `sot_protocol::
+/// bridge-speaking daemon's own bad-token refusal — `sot_protocol::topology::
 /// lane_client::classify_reply` already renames an old daemon's
 /// coincidentally-`unauthenticated`-coded control-loop gate to
 /// `no_bridge` at the source, so this function never has to re-guess it

@@ -28,7 +28,7 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - `sotd status` bounds each probe by `PROBE_TIMEOUT`.
 - `sotd stdio-bridge` writes nothing of its own to stdout and exits 0 only on a clean EOF (`stdio_bridge::run`).
 - `sotd status` and `sotd stdio-bridge` are answered in main's early argv match, before the umask, log or state dir.
-- `apply`, `relay-sockets` and `refresh` act only on the hub (`topology::require_hub`).
+- `apply`, `relay-sockets` and `refresh` act only on the hub (`topology::relay_units::require_hub`).
 - `apply` is a dry run unless given `--yes`, and one failing unit does not stop the others.
 - `refresh_at_start` acts only when this process is sotd.service's MainPID (`supervised_by_systemd`), and the daemon
   never waits on it (main spawns it on its own thread).

@@ -7,21 +7,7 @@
 
 pub mod codec;
 pub mod ir;
-// ADR 0045 decision 3: `DaemonLaneEndpoint` — the attach client's own
-// `sot_log::client::Endpoint` for the lane bridge (`lane.connect`),
-// alongside the platform pipe/socket endpoints `sot-log` itself owns.
-// Lives here, not in `sot-log`, because it is a WIRE client of this
-// crate's own `LaneConnectReq`/`LaneConnectRes` op — `sot-log` has no
-// dependency on `sot-protocol` to build against.
-pub use topology::lane_client;
 pub mod ops;
-pub use topology::endpoint as session_socket;
-// C3 (isolation-plan.md §3, as amended by dev/output/c3-second-connection-
-// amendment.md): the ssh child every non-local dial spawns -- one recipe
-// type and one argv builder, shared by the control connection
-// (`rust/frontend/src/transport.rs`), the lane attach (`lane_client.rs`
-// above) and the page-proxy leg (`rust/frontend/src/proxy_listen.rs`).
-pub use topology::ssh_bridge;
 // The declared topology (`hosts.toml`, grammar v2): the ONE parser and the
 // ONE search rule for the daemon, `sotd topology`, and the frontend.
 pub mod topology;
@@ -53,11 +39,11 @@ pub use ops::{
     WorkspaceListEntry, WorkspaceListReq, WorkspaceListRes, WorkspaceReauthReq,
     WorkspaceReauthRes,
 };
-// `is_private_dir` stays module-private to `session_socket` (not
+// `is_private_dir` stays module-private to `topology::endpoint` (not
 // re-exported here): nothing outside that module calls it directly
 // (`runtime_sot_dir` is its only caller), so a crate-root re-export would
 // be dead weight -- codex follow-up, ADR 0042 L2b.
-pub use session_socket::{current_uid, local_daemon_label, runtime_sot_dir, session_socket_path, slug};
+pub use topology::endpoint::{current_uid, local_daemon_label, runtime_sot_dir, session_socket_path, slug};
 
 use serde::{Deserialize, Serialize};
 

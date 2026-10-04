@@ -9,12 +9,12 @@
 // (scripts/launch-sot.ps1 / relaunch-sot.ps1 / scripts/sot-hosts.ps1).
 //
 // `<endpoint>` carries the same `unix:`/`pipe:`/`ssh:` scheme
-// `sot_protocol::topology::local_endpoint`/`relay_endpoint` already speak —
+// `sot_protocol::topology::endpoint::local_endpoint`/`relay_endpoint` already speak —
 // a path after `unix:`/`pipe:`, `<target>[/<host>]` after `ssh:` (C3 as
 // amended, isolation-plan.md §3).
 //
 // We don't manage tunnels from Rust — reaching a daemon that isn't this
-// box's own means spawning an ssh child directly (`sot_protocol::
+// box's own means spawning an ssh child directly (`sot_protocol::topology::
 // ssh_bridge`), never a forward to dial afterward. A host with no reachable
 // endpoint just isn't in the list; there is nothing here to mark
 // "unreachable but configured" the way hosts.toml entries with no
@@ -75,12 +75,12 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::Transport
         }
         // `ssh:<target>` for that box's own daemon, `ssh:<target>/<host>`
         // for a daemon `<target>` (always the hub) relays to on `<host>`'s
-        // behalf — `sotd topology plan`'s own two forms (`topology.rs`).
+        // behalf — `sotd topology plan`'s own two forms (`topology/mod.rs`).
         let (target, ssh_host) = match rest.split_once('/') {
             Some((t, h)) => (t, Some(h)),
             None => (rest, None),
         };
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new(target, ssh_host)
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, ssh_host)
             .map_err(|e| format!("`--dial {arg}`: {e}"))?;
         crate::transport::TransportConfig {
             dial: crate::transport::Dial::Ssh(recipe),
@@ -94,7 +94,7 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::transport::Transport
     Ok((host.to_string(), config))
 }
 
-/// Same grammar `sot_protocol::topology`'s (private) `is_plain_host_name`
+/// Same grammar `sot_protocol::topology::endpoint`'s (private) `is_plain_host_name`
 /// checks a listed host against — kept as its own copy here because that
 /// one isn't `pub`, and a `--dial` host name is the frontend's own CLI
 /// surface, not a re-parse of `sotd topology plan`'s output (that parsing

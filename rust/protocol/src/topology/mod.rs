@@ -46,14 +46,6 @@ pub mod lane_client;
 pub mod relay_units;
 pub mod ssh_bridge;
 
-pub use endpoint::local_endpoint;
-pub(crate) use endpoint::is_plain_host_name;
-pub use relay_units::{
-    APPLY_DROPIN_FILE, ApplyPlan, RELAY_COMMAND_DROPIN, UnitDiff, apply_dropin, apply_plan, relay_command_line,
-    relay_files, relay_hosts, relay_service_unit, relay_service_unit_file, relay_socket_unit, relay_unit, require_hub,
-    tunnel_hosts, tunnel_unit,
-};
-
 #[cfg(test)]
 mod tests;
 
@@ -155,7 +147,7 @@ pub fn parse(text: &str) -> Result<Topology, String> {
                 Section::Monitor
             } else if let Some(h) = name.strip_prefix("host.") {
                 let h = h.trim();
-                if !is_plain_host_name(h) {
+                if !endpoint::is_plain_host_name(h) {
                     return Err(format!(
                         "line {n}: `[host.{h}]` is not a plain host name (expected [a-z0-9][a-z0-9._-]*)"
                     ));
@@ -275,7 +267,7 @@ fn strip_comment(raw: &str) -> &str {
 pub fn relay_endpoint(topo: &Topology, self_host: &str) -> Result<String, String> {
     let host = topo.host(self_host).ok_or_else(|| format!("`{self_host}` is not a listed host"))?;
     Ok(if self_host == topo.hub {
-        local_endpoint()
+        endpoint::local_endpoint()
     } else if host.frontend {
         format!("ssh:{}", topo.hub)
     } else {
@@ -294,7 +286,7 @@ fn runtime_relay_dir() -> PathBuf {
 
 /// The hub's own socket for `host` — `<runtime base>/sot-host-<host>.sock`,
 /// a sibling of the comm relay's `sot-relay.sock`. The hub binds one per
-/// host it serves ([`relay_hosts`], unit [`relay_unit`]) and every peer
+/// host it serves ([`relay_units::relay_hosts`], unit [`relay_units::relay_unit`]) and every peer
 /// forwards to it; the last inch beyond it is a `sotd stdio-bridge` on the
 /// box that owns the endpoint, so no caller ever learns that box's
 /// endpoint shape. A host name is already restricted to the characters a
@@ -353,7 +345,7 @@ pub fn plan(topo: &Topology, self_host: &str) -> Result<String, String> {
 /// `daemon` means what it says: this box runs a daemon, so it can be
 /// dialled, screen or no screen.
 ///
-/// [`tunnel_hosts`] is a SEPARATE list and still skips `frontend` boxes —
+/// [`relay_units::tunnel_hosts`] is a SEPARATE list and still skips `frontend` boxes —
 /// the comm relay's reverse tunnels are not this.
 pub fn dialable_hosts(topo: &Topology) -> impl Iterator<Item = &HostDecl> {
     topo.hosts.iter().filter(|h| h.daemon)
@@ -375,7 +367,7 @@ pub fn dial_endpoints(topo: &Topology, self_host: &str) -> Vec<(String, String)>
     dialable_hosts(topo)
         .map(|h| {
             let endpoint = if h.name == self_host {
-                local_endpoint()
+                endpoint::local_endpoint()
             } else if self_host == topo.hub {
                 format!("unix:{}", relay_socket_path(&h.name).display())
             } else if h.name == topo.hub {
@@ -479,7 +471,7 @@ pub fn apply(topo: &Topology, edit: &TopologyEdit) -> Result<Topology, String> {
     let mut t = topo.clone();
     match edit {
         TopologyEdit::AddHost { name, daemon, frontend } => {
-            if !is_plain_host_name(name) {
+            if !endpoint::is_plain_host_name(name) {
                 return Err(format!("`{name}` is not a plain host name (expected [a-z0-9][a-z0-9._-]*)"));
             }
             if t.hosts.iter().any(|h| h.name == *name) {

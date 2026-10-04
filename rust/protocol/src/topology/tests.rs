@@ -135,7 +135,7 @@ fn duplicate_keys_and_labels_fail() {
 #[test]
 fn plan_lines_are_stable() {
     let t = parse(V2).unwrap();
-    let own = local_endpoint();
+    let own = endpoint::local_endpoint();
     // gamma is daemon AND frontend: dialable all the same, and on its
     // own box that dial is the implicit local connection. Reaching the
     // hub (alpha) is `ssh:<hub>` with no `--host` — a no-argument

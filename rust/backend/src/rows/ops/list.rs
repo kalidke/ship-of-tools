@@ -130,7 +130,7 @@ pub async fn handle_workspace_list(
 /// `req.workspace_id` (again; the caller does the same resolve to learn
 /// what to store, mirroring how the `HELLO` arm computes the auth flag
 /// inline before calling `handle_hello`) and echoes back the canonical id,
-/// or `None` when it didn't resolve. See `op::WORKSPACE_ACTIVATE` (ops.rs)
+/// or `None` when it didn't resolve. See `op::WORKSPACE_ACTIVATE` (ops/mod.rs)
 /// for the full design.
 pub async fn handle_workspace_activate(
     req_id: u64,

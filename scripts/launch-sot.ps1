@@ -849,7 +849,7 @@ $RelaunchExitCode = 75
 $ConvergeExitCode = 76
 # The supervisor holds a lease on the local daemon across every window-less
 # stretch of a relaunch (contract 1.8): LEASE_REPLY_WAIT and HANDOVER_BOUND in
-# rust/protocol/src/ops.rs.
+# rust/protocol/src/ops/lease.rs.
 $LeaseReplyWaitMs = 5000
 $HandoverBoundSeconds = 60
 # Every lease this supervisor PROCESS holds, as open pipe streams. Global, not

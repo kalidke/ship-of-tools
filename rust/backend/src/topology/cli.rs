@@ -88,8 +88,8 @@ pub fn run(args: &[String]) -> i32 {
         // `no hosts.toml` error verbatim.
         "relay-endpoint" => report(relay_endpoint_cmd()),
         "relay-sockets" => with_topology(|t| {
-            topology::require_hub(t, &self_host()?, "relay-sockets")?;
-            for h in topology::relay_hosts(t) {
+            topology::relay_units::require_hub(t, &self_host()?, "relay-sockets")?;
+            for h in topology::relay_units::relay_hosts(t) {
                 println!("{h} {}", topology::relay_socket_path(h).display());
             }
             Ok(())
@@ -132,7 +132,7 @@ fn relay_endpoint_cmd() -> Result<(), String> {
     match topology::load()? {
         Some((_, t)) => topology::relay_endpoint(&t, &me).map(|e| println!("{e}")),
         None => {
-            println!("{}", topology::local_endpoint());
+            println!("{}", topology::endpoint::local_endpoint());
             Ok(())
         }
     }
@@ -271,7 +271,7 @@ fn set(words: &[String]) -> Result<(), String> {
 /// argument (its own daemon, which IS the hub's).
 fn hub_endpoint(topo: &Topology, me: &str) -> String {
     if me == topo.hub {
-        topology::local_endpoint()
+        topology::endpoint::local_endpoint()
     } else {
         format!("ssh:{}", topo.hub)
     }
@@ -283,7 +283,7 @@ fn hub_endpoint(topo: &Topology, me: &str) -> String {
 /// no daemon at all — this is a local safety pre-check, not a source of
 /// truth the hub relies on.
 fn local_has_running_rows(me: &str) -> bool {
-    let endpoint = topology::local_endpoint();
+    let endpoint = topology::endpoint::local_endpoint();
     let res = match crate::topology_dial::dial_and_call(&endpoint, me, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({})) {
         Ok(v) => v,
         Err(_) => return false,
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn hub_endpoint_is_local_on_the_hub_else_an_ssh_child_into_it() {
         let t = topology::parse("hub = \"alpha\"\n[host.alpha]\ndaemon = true\n").unwrap();
-        assert_eq!(hub_endpoint(&t, "alpha"), topology::local_endpoint());
+        assert_eq!(hub_endpoint(&t, "alpha"), topology::endpoint::local_endpoint());
         assert_eq!(hub_endpoint(&t, "beta"), "ssh:alpha");
     }
 

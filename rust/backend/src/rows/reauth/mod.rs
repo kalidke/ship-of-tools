@@ -283,7 +283,7 @@ pub(crate) fn check(
 
 /// The ONE refusal frame this op builds — one constructor, so the
 /// discovered accounts ride on every refusal as both the module doc above
-/// and `ops.rs`'s wire doc promise. The only refusals that answer with an
+/// and `ops/workspace.rs`'s wire doc promise. The only refusals that answer with an
 /// empty list are the two that genuinely precede discovery (a payload that
 /// will not parse, a home that will not resolve); a second bare
 /// constructor for them is exactly how the promise stopped being true.

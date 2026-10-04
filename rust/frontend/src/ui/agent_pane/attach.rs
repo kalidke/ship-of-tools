@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::ui) type PaneAttachClient = sot_log::fe_client_io::FeAttachClient<sot_protocol::lane_client::DaemonLaneEndpoint>;
+pub(in crate::ui) type PaneAttachClient = sot_log::fe_client_io::FeAttachClient<sot_protocol::topology::lane_client::DaemonLaneEndpoint>;
 
 /// Attach clients parked when the session pane leaves their row, so a
 /// switch back reuses the live lane instead of dialing again (a remote
@@ -293,7 +293,7 @@ impl State {
             self.pane_hold = None;
             return false;
         };
-        let endpoint = sot_protocol::lane_client::DaemonLaneEndpoint { dial, token };
+        let endpoint = sot_protocol::topology::lane_client::DaemonLaneEndpoint { dial, token };
         // Invariant: the record names the frontend that typed —
         // `fe_instance_component`'s own doc.
         let controller_id = format!("{}#{}", self_comm_handle(), frontend_identity().instance);

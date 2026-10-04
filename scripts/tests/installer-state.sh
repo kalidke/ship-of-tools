@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 case_start "deriving role from the declared topology (installer_topology_role)"
-# Plain-line `sotd topology status` output (rust/protocol/src/topology.rs
+# Plain-line `sotd topology status` output (rust/protocol/src/topology/mod.rs
 # status_table) — this reads THAT table, not hosts.toml itself; the one
 # parser stays the one parser.
 STATUS_TABLE="$(printf 'HOST DECLARED\nhub-box hub,daemon\nhost-4 daemon,frontend\nhost-2 daemon\nhost-3 shell\nlaptop frontend\n')"
@@ -681,13 +681,13 @@ dev_row "$WORK/dev-stale" 1 "a stale socket file is not a live daemon: the dev l
 case_start "launcher_bounds_match_ops"
 OPS_WAIT="$(sed -n 's/.*pub const LAUNCH_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops/lease.rs")"
 LIB_WAIT="$(sed -n 's/^SOT_LAUNCH_WAIT_S=\([0-9]*\).*/\1/p' "$LIB")"
-check "the library's launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$LIB_WAIT"
+check "the library's launch wait is ops/lease.rs LAUNCH_WAIT" "$OPS_WAIT" "$LIB_WAIT"
 PS_DAEMON="$(dirname "$0")/../sot-local-daemon.ps1"
 OPS_LOCK="$(sed -n 's/.*pub const DAEMON_LOCK_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops/lease.rs")"
 PS_WAIT="$(sed -n 's/^\$LaunchWaitSeconds = \([0-9]*\).*/\1/p' "$PS_DAEMON")"
 PS_LOCK="$(sed -n 's/^\$DaemonLockWaitSeconds = \([0-9]*\).*/\1/p' "$PS_DAEMON")"
-check "sot-local-daemon.ps1 launch wait is ops.rs lease::LAUNCH_WAIT" "$OPS_WAIT" "$PS_WAIT"
-check "sot-local-daemon.ps1 daemon-lock wait is ops.rs DAEMON_LOCK_WAIT" "$OPS_LOCK" "$PS_LOCK"
+check "sot-local-daemon.ps1 launch wait is ops/lease.rs LAUNCH_WAIT" "$OPS_WAIT" "$PS_WAIT"
+check "sot-local-daemon.ps1 daemon-lock wait is ops/lease.rs DAEMON_LOCK_WAIT" "$OPS_LOCK" "$PS_LOCK"
 OPS_RS="$(dirname "$0")/../../rust/protocol/src/ops/lease.rs"
 OPS_NAMES="$(dirname "$0")/../../rust/protocol/src/ops/mod.rs"
 PS_LAUNCH="$(dirname "$0")/../launch-sot.ps1"
@@ -696,13 +696,13 @@ OPS_LEASE_MS="$(sed -n 's/.*pub const LEASE_REPLY_WAIT: Duration = Duration::fro
 OPS_HANDOVER="$(sed -n 's/.*pub const HANDOVER_BOUND: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$OPS_RS")"
 PS_LEASE_MS="$(sed -n 's/^\$LeaseReplyWaitMs = \([0-9]*\).*/\1/p' "$PS_LAUNCH")"
 PS_HANDOVER="$(sed -n 's/^\$HandoverBoundSeconds = \([0-9]*\).*/\1/p' "$PS_LAUNCH")"
-check "launch-sot.ps1 lease reply wait is ops.rs LEASE_REPLY_WAIT in ms" "$((OPS_LEASE_MS * 1000))" "$PS_LEASE_MS"
-check "launch-sot.ps1 handover bound is ops.rs HANDOVER_BOUND" "$OPS_HANDOVER" "$PS_HANDOVER"
+check "launch-sot.ps1 lease reply wait is ops/lease.rs LEASE_REPLY_WAIT in ms" "$((OPS_LEASE_MS * 1000))" "$PS_LEASE_MS"
+check "launch-sot.ps1 handover bound is ops/lease.rs HANDOVER_BOUND" "$OPS_HANDOVER" "$PS_HANDOVER"
 OPS_FE_LEASE="$(sed -n 's/.*pub const FE_LEASE: &str = "\([^"]*\)".*/\1/p' "$OPS_NAMES")"
 OPS_FE_LEAVING="$(sed -n 's/.*pub const FE_LEAVING: &str = "\([^"]*\)".*/\1/p' "$OPS_NAMES")"
 check "sot-lease.ps1 names the fe.lease op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEASE\"" "$PS_LEASE" && echo yes || echo no)"
 check "sot-lease.ps1 names the fe.leaving op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEAVING\"" "$PS_LEASE" && echo yes || echo no)"
-# The golden lease line: the launcher's literal and ops.rs's test line (backslashes stripped)
+# The golden lease line: the launcher's literal and ops/lease.rs's test line (backslashes stripped)
 # share the prefix and the sorted payload keys, in order.
 LEASE_PREFIX='{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"'
 in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then ,"pid": on one line
@@ -712,7 +712,7 @@ in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then 
         printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | sed 's/.*","created":/","created":/' | grep -qF ',"pid":' && echo yes || echo no
 }
 check "sot-lease.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LEASE" 0)"
-check "ops.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
+check "ops/lease.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

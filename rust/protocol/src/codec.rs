@@ -134,7 +134,7 @@ pub fn buffered<R: AsyncRead + Unpin>(r: R) -> tokio::io::BufReader<R> {
 
 /// The blocking twin of [`write_frame`], for a connection with no Tokio
 /// runtime behind it — ADR 0045 decision 3's lane-bridge dial
-/// (`sot-protocol::lane_client`) runs on a plain blocking thread, exactly
+/// (`sot-protocol::topology::lane_client`) runs on a plain blocking thread, exactly
 /// like the rest of `sot-log`'s own client machinery it composes with.
 /// One `\n`-terminated JSON envelope, same [`MAX_ENVELOPE_BYTES`] cap as
 /// the async path — NO blob support: `lane.connect`'s request/response

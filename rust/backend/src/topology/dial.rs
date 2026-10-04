@@ -1,7 +1,7 @@
 // topology_dial.rs — the one-shot blocking client `sotd topology set` (and
 // `status`'s "cache diverged" line) use to reach a daemon over its
 // already-established endpoint spelling (`unix:`/`tcp:`/`pipe:`/`ssh:`, per
-// `topology::local_endpoint`/`relay_endpoint`). No new credential: per
+// `topology::endpoint::local_endpoint`/`relay_endpoint`). No new credential: per
 // `op::TOPOLOGY_SET`'s own doc, the dial itself IS the authorisation, so
 // this sends a plain unauthenticated `hello` (role `cli`) the same way any
 // other one-shot shell caller would.
@@ -20,7 +20,7 @@ enum Conn {
     #[cfg(windows)]
     Pipe(std::fs::File),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
-    /// `sot_protocol::ssh_bridge`) -- there is no separate "connect" step
+    /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
     /// `Child` rather than a stream.
     Bridged(std::process::Child),
@@ -207,8 +207,8 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
             Some((t, h)) => (t, Some(h)),
             None => (rest, None),
         };
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
-        let child = sot_protocol::ssh_bridge::LinkGate::default().spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
+        let child = sot_protocol::topology::ssh_bridge::LinkGate::default().spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
         return Ok(Conn::Bridged(child));
     }
     Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))
@@ -359,7 +359,7 @@ pub(crate) mod tests {
     }
 
     /// BLOCKER 2, as amended by round-2 item 4: `connect` must dispatch
-    /// `ssh:` through `sot_protocol::ssh_bridge`, and `split()` must hand
+    /// `ssh:` through `sot_protocol::topology::ssh_bridge`, and `split()` must hand
     /// `dial_and_call` a `ChildGuard` for that arm so an early return
     /// cannot leak the spawned process -- proved here against a STUB
     /// `ssh` put FIRST on `PATH`, never the real one. The original

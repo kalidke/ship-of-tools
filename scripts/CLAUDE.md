@@ -108,7 +108,7 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-apply.sh` pin it.
 - Socket and pipe paths come from `sotd session-socket-path`; no script builds one.
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and
-  the handover bound, all in `rust/protocol/src/ops.rs`) are pinned by `launcher_bounds_match_ops` in
+  the handover bound, all in `rust/protocol/src/ops/lease.rs`) are pinned by `launcher_bounds_match_ops` in
   `tests/installer-state.sh`; change both sides together.
 - `sot_install_copy` has three byte-equal copies (`lib/sot-daemon.sh`, `install.sh`, `sot-apply.sh`), pinned by
   `one_copy_helper` in `tests/installer-apply.sh`; edit all three.

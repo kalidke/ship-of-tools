@@ -44,7 +44,7 @@ pub async fn run(workspaces: Workspaces) {
 
 /// Keep the link up until `sig` fires; it never reconnects after.
 async fn hold_link(
-    recipe: &sot_protocol::ssh_bridge::SshRecipe,
+    recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
     workspaces: &Workspaces,
@@ -73,7 +73,7 @@ async fn hold_link(
 
 /// The ssh child's recipe, or `None` when this box has no link to hold: no
 /// topology, it is the hub, or its relay endpoint is not an `ssh:` one.
-fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::ssh_bridge::SshRecipe>, String> {
+fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::topology::ssh_bridge::SshRecipe>, String> {
     let Some((_, topo)) = sot_protocol::topology::load()? else {
         return Ok(None);
     };
@@ -84,11 +84,11 @@ fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::ssh_bridge::SshRec
     let Some(target) = endpoint.strip_prefix("ssh:") else {
         return Ok(None);
     };
-    sot_protocol::ssh_bridge::SshRecipe::new(target, None).map(Some)
+    sot_protocol::topology::ssh_bridge::SshRecipe::new(target, None).map(Some)
 }
 
 /// The ssh child. Tests swap the program for a stub, nothing else.
-fn spawn_link(recipe: &sot_protocol::ssh_bridge::SshRecipe) -> Result<tokio::process::Child, String> {
+fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Child, String> {
     #[cfg(test)]
     if let Some(program) = tests::STUB_PROGRAM.lock().unwrap().as_ref() {
         return tokio::process::Command::new(program)
@@ -99,12 +99,12 @@ fn spawn_link(recipe: &sot_protocol::ssh_bridge::SshRecipe) -> Result<tokio::pro
             .spawn()
             .map_err(|e| format!("spawn {recipe}: {e}"));
     }
-    sot_protocol::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))
+    sot_protocol::topology::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))
 }
 
 /// One connection, from spawn to the first failure. The child dies with `child`.
 async fn link_once(
-    recipe: &sot_protocol::ssh_bridge::SshRecipe,
+    recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
     workspaces: &Workspaces,
@@ -141,7 +141,7 @@ async fn link_once(
         }
     };
     if result.is_err() {
-        if let Some(line) = sot_protocol::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+        if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
             return Err(format!("{}: {line}", result.unwrap_err()));
         }
     }
@@ -327,7 +327,7 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
         let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let workspaces = Workspaces::new();
         let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", &workspaces, sig).await });
         let began = Instant::now();

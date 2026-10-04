@@ -67,18 +67,18 @@ pub(crate) type PendingTransport = (
 pub(crate) fn lane_dial(
     config: &crate::transport::TransportConfig,
     resolved: ResolvedDial,
-    gate: &sot_protocol::ssh_bridge::LinkGate,
-) -> Option<(sot_protocol::lane_client::LaneDial, Option<String>)> {
+    gate: &sot_protocol::topology::ssh_bridge::LinkGate,
+) -> Option<(sot_protocol::topology::lane_client::LaneDial, Option<String>)> {
     match resolved {
         ResolvedDial::Local => match &config.dial {
             crate::transport::Dial::Pipe(path) => Some((
-                sot_protocol::lane_client::LaneDial::Local(path.clone()),
+                sot_protocol::topology::lane_client::LaneDial::Local(path.clone()),
                 config.token.clone(),
             )),
             crate::transport::Dial::Ssh(_) => None,
         },
         ResolvedDial::Ssh(recipe) => {
-            Some((sot_protocol::lane_client::LaneDial::Ssh(recipe, gate.clone()), config.token.clone()))
+            Some((sot_protocol::topology::lane_client::LaneDial::Ssh(recipe, gate.clone()), config.token.clone()))
         }
     }
 }
@@ -107,11 +107,11 @@ pub(crate) struct HostTable {
     /// lane dials the SAME endpoint, never a second independent guess.
     /// Absent for a host that hasn't connected yet.
     pub(crate) host_resolved_dial: HashMap<crate::dial::HostKey, ResolvedDial>,
-    /// One link gate per host (`sot_protocol::ssh_bridge::LinkGate`): the
+    /// One link gate per host (`sot_protocol::topology::ssh_bridge::LinkGate`): the
     /// host's control transport writes it, and every other site that starts
     /// an ssh login to the host (lane dials, the page proxy) asks it.
     /// Always taken through `entry().or_default()`, so there is exactly one.
-    pub(crate) link_gates: HashMap<crate::dial::HostKey, sot_protocol::ssh_bridge::LinkGate>,
+    pub(crate) link_gates: HashMap<crate::dial::HostKey, sot_protocol::topology::ssh_bridge::LinkGate>,
     /// ADR 0046 decision 1 (revised): the daemon's own declared identity
     /// for each dial — `HostKey` stays the stable dial label. Read by
     /// `host_label` (display: Hosts mode, Sessions labels, the status
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn lane_dial_matches_the_resolved_control_transport_selection() {
-        let recipe = sot_protocol::ssh_bridge::SshRecipe::new("hub", None).unwrap();
+        let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let pipe_config = crate::transport::TransportConfig {
             dial: crate::transport::Dial::Pipe(std::path::PathBuf::from("/tmp/sock")),
             token: Some("tok".to_string()),
@@ -178,14 +178,14 @@ mod tests {
         // A pipe-configured host whose control connection resolved LOCAL —
         // the lane dial follows.
         match lane_dial(&pipe_config, ResolvedDial::Local, &Default::default()) {
-            Some((sot_protocol::lane_client::LaneDial::Local(path), token)) => {
+            Some((sot_protocol::topology::lane_client::LaneDial::Local(path), token)) => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/sock"));
                 assert_eq!(token.as_deref(), Some("tok"));
             }
-            Some((sot_protocol::lane_client::LaneDial::Ssh(..), _)) => {
+            Some((sot_protocol::topology::lane_client::LaneDial::Ssh(..), _)) => {
                 panic!("must follow the resolved Local selection, not guess ssh")
             }
-            Some((sot_protocol::lane_client::LaneDial::Tcp(_), _)) => {
+            Some((sot_protocol::topology::lane_client::LaneDial::Tcp(_), _)) => {
                 panic!("lane_dial never produces Tcp (C3 as amended)")
             }
             None => panic!("a resolved+configured pipe must dial, got None"),
@@ -198,14 +198,14 @@ mod tests {
             token: Some("tok".to_string()),
         };
         match lane_dial(&ssh_config, ResolvedDial::Ssh(recipe.clone()), &Default::default()) {
-            Some((sot_protocol::lane_client::LaneDial::Ssh(got, _), token)) => {
+            Some((sot_protocol::topology::lane_client::LaneDial::Ssh(got, _), token)) => {
                 assert_eq!(got, recipe);
                 assert_eq!(token.as_deref(), Some("tok"));
             }
-            Some((sot_protocol::lane_client::LaneDial::Local(_), _)) => {
+            Some((sot_protocol::topology::lane_client::LaneDial::Local(_), _)) => {
                 panic!("must follow the resolved Ssh selection, not guess local")
             }
-            Some((sot_protocol::lane_client::LaneDial::Tcp(_), _)) => {
+            Some((sot_protocol::topology::lane_client::LaneDial::Tcp(_), _)) => {
                 panic!("lane_dial never produces Tcp (C3 as amended)")
             }
             None => panic!("a resolved ssh connection must dial, got None"),
