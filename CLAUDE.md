@@ -4,11 +4,7 @@ An agentic Julia development environment: AI agents drive the interface, REPL, a
 
 `requirements.md` is the source of truth for **what** this system does. This document captures the design decisions for **how** it does it.
 
-**Operational handoff** — the working-session handoff docs and durable Claude context live in the **PRIVATE ops sidecar** (repo `ship-of-tools-ops`, sibling checkout `../ship-of-tools-ops`, override `$SOT_OPS_DIR`), relocated out of this repo pre-public-flip (ADR 0030 §7):
-
-- `<ops>/STATUS.md` — what's *done* (current at the last working session); `<ops>/TODO.md` — what's *next*. **Read TODO on session start if the user asks "what should we do" or pulls into a fresh machine** — find the first unchecked item and either do it or confirm with the user before proceeding.
-- `<ops>/claude-memory/` — durable cross-OS Claude context (project memories). See "Cross-OS Claude memory" below.
-- `<ops>/claude-bus/` — durable cross-machine notes; no longer a messaging route (see "Messaging between sessions" below for that). See its README.
+**Operational handoff** — a session's current state is its handoff, `dev/output/handoff-<handle>.md` (gitignored), written at milestones. The private ops sidecar (`../ship-of-tools-ops`, override `$SOT_OPS_DIR`) holds the publish guard's denylist.
 
 ## Architecture at a glance
 
@@ -199,11 +195,10 @@ Some deployments use a shared `$HOME`; others are per-machine.
 **Do not rely on per-machine Claude auto-memory.** It is *not* seeded on every box, and a session that depends on it having been seeded will run on stale or absent context — this has caused real failures (a Windows session followed a deleted memory rule and broke a working flow). The fix is not to seed harder; it is to treat the **repo itself as the single source of truth** and read it on any machine:
 
 - **Operational procedures live in repo docs and are authoritative there** — read them in-repo, no copy step:
-  - `requirements.md` (scope), this `CLAUDE.md` (design + conventions), `<ops>/STATUS.md` / `<ops>/TODO.md` (handoff, in the private ops sidecar).
+  - `requirements.md` (scope), this `CLAUDE.md` (design + conventions), `dev/output/handoff-<handle>.md` (each session's handoff).
   - `docs/adr/` for design decisions. **Frontend rebuild/restart is `docs/adr/0017-frontend-self-relaunch.md`** plus the header comments in `scripts/launch-sot.ps1` and `scripts/relaunch-sot.ps1`. **Read ADR 0017 before attempting any frontend restart** — the dev `claude` runs *inside* the frontend's Terminal drawer, so killing the frontend kills your own session; use `scripts/relaunch-sot.ps1` (sentinel → exit-75 respawn), never a process kill.
   - **Session spawn / daemon boot is `docs/adr/0023-daemon-fe-commands-and-spawn.md`** (its top Update) and **ADR 0046** (declared identity, daemon-owned rows). A session is a capsule row whose agent is claude, codex or bash; `workspace.create` with `autostart_claude` makes the daemon start the agent's launcher (`ccb`/`ccx`) in the row's capsule, and the frontend attaches directly. **Gotcha: launchers the daemon spawns must full-path their binaries** — the capsule inherits the daemon's env, whose `PATH` lacks `~/.local/bin` (a bare `exec claude` → not found → silent <1s boot death). The daemon→FE command channel is **ADR 0025**.
-- **`claude-memory/` (in the PRIVATE ops sidecar `../ship-of-tools-ops`) is a committed mirror of auto-memory, safe to *read* — but never a prerequisite to copy anywhere.** If a fact is load-bearing for operating the project, it belongs in (or is pointed to from) the durable repo docs above, not only in auto-memory.
-- When a Claude session does update an auto-memory file, mirror it into the ops sidecar's `claude-memory/` and commit THERE (the product repo no longer carries it — public-flip hygiene).
+- Session memory holds working practices only; a fact about the code belongs in the CLAUDE.md of the folder that owns it.
 
 ## Decisions explicitly deferred
 
