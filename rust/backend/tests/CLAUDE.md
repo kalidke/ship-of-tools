@@ -16,6 +16,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `hub_link.rs`: messaging; a hub `sotd` and a guest `sotd` joined by a stub `ssh`, broadcast filed on the guest
 - `keystroke_latency.rs`: rows; keystroke timing against a private daemon, every test `#[ignore]`
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
+- `old_watcher.rs`: messaging; a pre-0.6.6 wake watcher's hello and `pty.input`, byte for byte as its library wrote them, refused at hello and closed
 - `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
