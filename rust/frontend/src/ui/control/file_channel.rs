@@ -108,3 +108,60 @@ pub(in crate::ui) fn fe_commands_dir() -> Option<std::path::PathBuf> {
 pub(in crate::ui) fn fe_state_path() -> Option<std::path::PathBuf> {
     crate::paths::sot_state_dir().map(|d| d.join("fe-state.json"))
 }
+
+/// Starts the persistent fe-command watcher thread (ADR 0019): it parses and
+/// queues each JSON file dropped in `cmd_dir`, then wakes the window. `resumed`
+/// calls it.
+pub(in crate::ui) fn spawn_command_watcher(
+    cmd_dir: std::path::PathBuf,
+    queue: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<FeCommand>>>,
+    waker: std::sync::Arc<winit::window::Window>,
+) {
+    if let Err(e) = std::thread::Builder::new()
+        .name("sot-fe-command-watch".to_string())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let entries = match std::fs::read_dir(&cmd_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            // Sort by filename so a burst is processed roughly
+            // FIFO (writers can prefix a counter/timestamp).
+            let mut paths: Vec<std::path::PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+                .collect();
+            paths.sort();
+            let mut woke = false;
+            for path in paths {
+                let bytes = match std::fs::read(&path) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                // Delete first so a malformed file can't loop
+                // forever on the next tick.
+                let _ = std::fs::remove_file(&path);
+                match serde_json::from_slice::<FeCommand>(&bytes) {
+                    Ok(cmd) => {
+                        if let Ok(mut q) = queue.lock() {
+                            q.push_back(cmd);
+                            woke = true;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            path = %path.display(),
+                            "bad fe-command file dropped"
+                        );
+                    }
+                }
+            }
+            if woke {
+                waker.request_redraw();
+            }
+        })
+    {
+        tracing::warn!(error = %e, "failed to spawn fe-command watcher");
+    }
+}

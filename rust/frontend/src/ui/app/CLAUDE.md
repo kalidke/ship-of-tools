@@ -20,7 +20,7 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - Every user quit goes through `request_quit`: `exit_intent` asks on Ctrl+Q and leaves at once on the close button.
 - `leave` never ends the drawer's session and sets `should_exit` before it polls (test `leave_never_ends_the_drawer`).
 - A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`).
-- A harness instance (`ephemeral`) starts neither watcher thread (`resumed`).
+- A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.

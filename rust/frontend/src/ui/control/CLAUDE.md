@@ -9,7 +9,7 @@ ends in `State::dispatch_fe_command`. Part of fe-ui; charter: rust/frontend/src/
 - `command.rs`: `route_fe_command` (an fe.command evt to an `FeCommand`) and the `FeCommand` enum, with their tests.
 - `dispatch.rs`: `dispatch_fe_command` and `drain_fe_commands`, plus `preview_targets_active_ws` and `badge_host_key`.
 - `envelope.rs`: `parse_nav_envelope`, `NavEnvelope` and `handle_nav_envelope` (ADR 0025's same-workspace open).
-- `file_channel.rs`: `fe_commands_dir`, `fe_state_path` and `maybe_write_fe_state`.
+- `file_channel.rs`: `fe_commands_dir`, `fe_state_path`, `maybe_write_fe_state` and `spawn_command_watcher`, the thread that reads dropped command files.
 - `replies.rs`: the daemon's pushed events, by op (workspace.changed, agent.message, fe.command, preview.changed)
 
 ## Start here
@@ -22,5 +22,6 @@ ends in `State::dispatch_fe_command`. Part of fe-ui; charter: rust/frontend/src/
   (`route_fe_command`).
 - Showing a result never steals the user's view: a preview for another workspace badges that workspace's row, and only an
   urgent one switches to it (`dispatch_fe_command`).
+- A harness instance (`ephemeral`) starts no command watcher: `resumed` skips `spawn_command_watcher` for it, since the watcher deletes the files it reads.
 - Present limit: the file channel deserializes `FeCommand` directly, so `route_fe_command`'s checks do not apply to it.
 - Present limit: a `Preview` command compares the workspace slug without its host (`preview_targets_active_ws`).
