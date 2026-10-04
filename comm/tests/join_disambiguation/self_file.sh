@@ -516,3 +516,20 @@ case_nopane_selffile_from_non_repo_cwd_not_healed_and_send_refuses() {
     return 0
 }
 
+
+case_context_host_part_follows_the_raw_host_rule() {
+    # The self file's host part: SOT_COMM_TEST_HOST when non-empty, else
+    # `hostname -s` (case kept), else a plain `hostname`.
+    local bin="$WORK/rawhost-bin" self="$WORK/rawhost-self.txt" out
+    mkdir -p "$bin" "$WORK/rawhost-cwd"
+    printf '#!/bin/sh\nif [ "${1:-}" = "-s" ]; then echo Raw-Host; else echo plain-host; fi\n' > "$bin/hostname"
+    chmod +x "$bin/hostname"
+    out="$(cd "$WORK/rawhost-cwd" && env -u SOT_COMM_TEST_HOST PATH="$bin:$PATH" SOT_COMM_SELF_FILE="$self" "$CONTEXT" 2>/dev/null | sed -n 's/^HOST=//p')"
+    [ "$out" = "Raw-Host" ] || { echo "  unset: HOST=$out, want Raw-Host"; return 1; }
+    printf '#!/bin/sh\nif [ "${1:-}" = "-s" ]; then exit 1; else echo plain-host; fi\n' > "$bin/hostname"
+    out="$(cd "$WORK/rawhost-cwd" && env -u SOT_COMM_TEST_HOST PATH="$bin:$PATH" SOT_COMM_SELF_FILE="$self" "$CONTEXT" 2>/dev/null | sed -n 's/^HOST=//p')"
+    [ "$out" = "plain-host" ] || { echo "  failing -s: HOST=$out, want plain-host"; return 1; }
+    out="$(cd "$WORK/rawhost-cwd" && env PATH="$bin:$PATH" SOT_COMM_TEST_HOST=pinned SOT_COMM_SELF_FILE="$self" "$CONTEXT" 2>/dev/null | sed -n 's/^HOST=//p')"
+    [ "$out" = "pinned" ] || { echo "  pinned: HOST=$out, want pinned"; return 1; }
+    return 0
+}

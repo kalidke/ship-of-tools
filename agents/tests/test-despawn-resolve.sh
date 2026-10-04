@@ -161,6 +161,30 @@ case_row_without_workspace_id() {
     contains "$DESPAWN_ERR" "comm-leave.sh --name orphan" || { echo "  no comm-leave hint: $DESPAWN_ERR"; return 1; }
 }
 
+# LOCAL_HOST names the same self-file host part as comm-context.sh: raw
+# `hostname -s`, case kept. With the pin unset, a row from "test-host" is this
+# host's only when the fake prints exactly that.
+case_local_host_rule_keeps_case() {
+    local bin="$WORK/fakehost-bin" saved="$SOT_COMM_TEST_HOST" name rc=0
+    mkdir -p "$bin"
+    unset SOT_COMM_TEST_HOST
+    for name in test-host Test-Host; do
+        printf '#!/bin/sh\nif [ "${1:-}" = "-s" ]; then echo %s; else echo %s; fi\n' "$name" "$name" > "$bin/hostname"
+        chmod +x "$bin/hostname"
+        new_home; seed_row orphan ""
+        local before; before="$(reg_hash)"
+        start_stub_daemon; DESPAWN_PATH="$bin:$PATH" run_despawn orphan; stop_stub_daemon
+        assert_unresolved orphan "its registry row records no workspace_id" "$before" || rc=1
+        if [ "$name" = test-host ]; then
+            contains "$DESPAWN_ERR" "comm-leave.sh --name orphan" || { echo "  no comm-leave hint for $name: $DESPAWN_ERR"; rc=1; }
+        else
+            ! contains "$DESPAWN_ERR" "comm-leave" || { echo "  comm-leave hint for $name (case must be kept): $DESPAWN_ERR"; rc=1; }
+        fi
+    done
+    export SOT_COMM_TEST_HOST="$saved"
+    return "$rc"
+}
+
 case_row_names_unlisted_workspace() {
     new_home; seed_row gone ws-gone
     local before; before="$(reg_hash)"
@@ -357,6 +381,7 @@ case_worktree_clean_dirty_keeps_the_session() {
 }
 
 check "D1 registry row without a workspace_id: refused, row kept, comm-leave hint" case_row_without_workspace_id
+check "D1b LOCAL_HOST is raw hostname -s with case kept: the comm-leave hint follows it" case_local_host_rule_keeps_case
 check "D2 registry row names an unlisted workspace: refused, row kept" case_row_names_unlisted_workspace
 check "D3 no row and no workspace: refused, no comm-leave hint" case_no_row_no_workspace
 check "D4 workspace.list is not a workspace list: refused, row kept, no comm-leave hint" case_list_is_not_a_workspace_list
