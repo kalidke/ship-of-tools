@@ -44,6 +44,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `pluto.rs`: the per-daemon Pluto child.
 - `mathjax.rs`: the per-daemon MathJax child.
 - `monitor.rs`: the host monitor, one sampler per host.
+- `monitor_tests.rs`: the monitor's unit tests and roster-config tests.
 
 ## Start here
 kernel.rs `run_one_generation` for a kernel's life; julia.rs `resolve_bin` for which julia runs; monitor.rs `supervise`
