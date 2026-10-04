@@ -6,8 +6,8 @@ process-wide signal, every exit is bounded on the OS clock, and the last window 
 lease, whether that computer's sessions end (ADR 0050).
 
 ## Owns
-- The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lease`, still the
-  file rust/backend/src/lease.rs; it joins this folder in a later unit).
+- The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lease`, the file
+  `lease.rs` here).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
@@ -35,8 +35,9 @@ lease, whether that computer's sessions end (ADR 0050).
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections
-- In from the server: `server::run` calls `startup::begin` before the listener binds, spawns `lease::ticker`, hands a
-  connection whose first frame is `fe.lease` to `lease::hold`, and on `Leases::gone` calls `shutdown::run`.
+- In from the server: `server::run` calls `startup::begin` before the listener binds, spawns `lease::ticker`; the peer
+  read at accept is the server's (`server::listen::accepted_peer`) and is handed, with a connection whose first frame
+  is `fe.lease`, to `lease::hold`. On `Leases::gone` the server calls `shutdown::run`.
 - Out to rows: `shutdown::end_row` and `end_drawer` call `handlers::destroy_capsule_workspace`,
   `handlers::end_default_row_run`, `handlers::remove_comm_agents_for_workspace`; `startup::forget_rows` calls
   `handlers::remove_row_files`; the plan calls `capsule_workspace::resume_all`; the drawer's end goes through
@@ -53,7 +54,9 @@ lease, whether that computer's sessions end (ADR 0050).
 
 ## Files
 - `child_signal.rs`: the process-wide `fired` flag and the live-child count.
-- `mod.rs`: declares the three modules.
+- `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
+- `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
+- `mod.rs`: declares the four modules.
 - `shutdown.rs`: the close, its backstop and the row ends.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 

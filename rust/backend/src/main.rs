@@ -29,7 +29,6 @@ use files::io as file_io;
 use files::tree as files_mode;
 mod handlers;
 mod lane_bridge;
-mod lease;
 mod lifecycle;
 mod pages;
 mod paths;
@@ -54,7 +53,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use lifecycle::{shutdown, startup};
+use lifecycle::{lease, shutdown, startup};
 
 use pages::proxy;
 use pages::video as http_serve;
