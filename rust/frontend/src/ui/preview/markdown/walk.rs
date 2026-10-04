@@ -47,11 +47,6 @@ pub(super) fn walk<'a, 'b>(
             push_break(out, if ctx.inside_item { "\n" } else { "\n\n" }, ctx.scale);
         }
         NodeValue::Text(s) => {
-            // Strike is rendered as a 1-px overlay quad in the chrome
-            // (paint_strike_rects in gpu.rs); the text itself stays
-            // untouched so the combining-char fallbacks (U+0335 / U+0336)
-            // are gone and the strike sits at a font-metric-correct
-            // y-position regardless of which font fontdb picks.
             out.push((s, attrs_for(ctx)));
         }
         NodeValue::Emph => {
