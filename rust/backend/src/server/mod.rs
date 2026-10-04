@@ -17,8 +17,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use sot_protocol::{
-    codec, op, FeCommandEvt, Frame, HostLatest, Kind, MonitorHistoryReq, MonitorHistoryRes,
-    MonitorSubscribeRes, MonitorTickEvt,
+    codec, op, FeCommandEvt, Frame, HostLatest, Kind, MonitorTickEvt,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 

@@ -3,6 +3,7 @@
 use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person_input};
 use crate::rows::ops::pty::handle_pty_open;
 use crate::rows::reauth::answer_workspace_reauth;
+use crate::sidecars::ops::{handle_monitor_history, handle_monitor_subscribe, handle_monitor_unsubscribe};
 use super::hello::admit_hello;
 use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
 use super::*;
@@ -319,39 +320,13 @@ where
             // already running). Reply with the host roster + base cadence
             // so the frontend can lay out panels before the first tick.
             *monitor_subscribed = true;
-            let hosts = workspaces
-                .monitor_hub()
-                .map(|h| h.host_names())
-                .unwrap_or_default();
-            let res = MonitorSubscribeRes {
-                interval_s: 1.0,
-                hosts,
-            };
-            Ok(vec![(
-                Frame::res(frame.id, op::MONITOR_SUBSCRIBE, serde_json::to_value(res)?),
-                None,
-            )])
+            Ok(handle_monitor_subscribe(frame.id, workspaces)?)
         }
         op::MONITOR_UNSUBSCRIBE => {
             *monitor_subscribed = false;
-            Ok(vec![(
-                Frame::res(frame.id, op::MONITOR_UNSUBSCRIBE, serde_json::json!({})),
-                None,
-            )])
+            handle_monitor_unsubscribe(frame.id)
         }
-        op::MONITOR_HISTORY => serde_json::from_value::<MonitorHistoryReq>(frame.payload)
-            .context("monitor.history payload")
-            .and_then(|req| {
-                let hosts = workspaces
-                    .monitor_hub()
-                    .map(|h| h.history(&req))
-                    .unwrap_or_default();
-                let res = MonitorHistoryRes { hosts };
-                Ok(vec![(
-                    Frame::res(frame.id, op::MONITOR_HISTORY, serde_json::to_value(res)?),
-                    None,
-                )])
-            }),
+        op::MONITOR_HISTORY => handle_monitor_history(frame.id, frame.payload, workspaces),
         other => {
             tracing::warn!(op = %other, "unknown op");
             let payload = serde_json::json!({ "error": format!("unknown op: {other}") });

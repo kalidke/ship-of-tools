@@ -1,4 +1,5 @@
-//! Sidecar ops: `kernel.request` (the row's Julia kernel), `math.render` (MathJax), `pluto.open` (Pluto, for a notebook inside a registered row).
+//! Sidecar ops: `kernel.request` (the row's Julia kernel), `math.render` (MathJax), `pluto.open` (Pluto, for a notebook inside a registered row)
+//! and `monitor.subscribe`, `monitor.unsubscribe` and `monitor.history` (the host monitor).
 
 use anyhow::Context;
 use anyhow::Result;
@@ -9,6 +10,9 @@ use sot_protocol::Frame;
 use sot_protocol::KernelRequestReq;
 use sot_protocol::MathRenderReq;
 use sot_protocol::MathRenderRes;
+use sot_protocol::MonitorHistoryReq;
+use sot_protocol::MonitorHistoryRes;
+use sot_protocol::MonitorSubscribeRes;
 use sot_protocol::PlutoOpenReq;
 use sot_protocol::PlutoOpenRes;
 use crate::mathjax::MathJax;
@@ -191,4 +195,45 @@ pub async fn handle_pluto_open(
             Ok(vec![(Frame::res(req_id, op::PLUTO_OPEN, payload), None)])
         }
     }
+}
+
+/// Answers `monitor.subscribe` with the host roster and the base cadence.
+pub(crate) fn handle_monitor_subscribe(req_id: u64, workspaces: &Workspaces) -> Result<HandlerOutput> {
+    let hosts = workspaces
+        .monitor_hub()
+        .map(|h| h.host_names())
+        .unwrap_or_default();
+    let res = MonitorSubscribeRes {
+        interval_s: 1.0,
+        hosts,
+    };
+    Ok(vec![(
+        Frame::res(req_id, op::MONITOR_SUBSCRIBE, serde_json::to_value(res)?),
+        None,
+    )])
+}
+
+/// Answers `monitor.unsubscribe` with a bare ack.
+pub(crate) fn handle_monitor_unsubscribe(req_id: u64) -> Result<HandlerOutput> {
+    Ok(vec![(
+        Frame::res(req_id, op::MONITOR_UNSUBSCRIBE, serde_json::json!({})),
+        None,
+    )])
+}
+
+/// Answers `monitor.history` with the sampled history of every host in the window.
+pub(crate) fn handle_monitor_history(req_id: u64, payload_json: serde_json::Value, workspaces: &Workspaces) -> Result<HandlerOutput> {
+    serde_json::from_value::<MonitorHistoryReq>(payload_json)
+        .context("monitor.history payload")
+        .and_then(|req| {
+            let hosts = workspaces
+                .monitor_hub()
+                .map(|h| h.history(&req))
+                .unwrap_or_default();
+            let res = MonitorHistoryRes { hosts };
+            Ok(vec![(
+                Frame::res(req_id, op::MONITOR_HISTORY, serde_json::to_value(res)?),
+                None,
+            )])
+        })
 }
