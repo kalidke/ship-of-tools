@@ -137,7 +137,7 @@ fn touch_person_input(clients: &Clients, guard: &Option<ClientGuard>) {
 
 pub(super) async fn handle_connection<R, W>(
     rx: R,
-    mut tx: W,
+    tx: W,
     session: Session,
     mathjax: MathJax,
     pluto: Pluto,
@@ -183,7 +183,7 @@ where
     // pipe and return. Otherwise, remember the frame and feed it to the loop
     // as its first dispatched frame (`pending_first`), so the peek costs the
     // control path nothing.
-    let mut pending_first: Option<(Frame, Option<Vec<u8>>)> = match codec::read_frame(&mut buffered)
+    let pending_first: Option<(Frame, Option<Vec<u8>>)> = match codec::read_frame(&mut buffered)
         .await
     {
         Ok((f, blob)) => {
@@ -237,6 +237,29 @@ where
         }
     };
 
+    serve_control(
+        tx, buffered, pending_first, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
+        ws_events_tx, agent_events_tx, agent_receipt_tx, fe_command_tx, repl_frame_tx, clients, topology_store,
+        topo_changed_tx, leases,
+    )
+    .await
+}
+
+/// Runs one control session: the per-connection state, then the frame loop and its op table.
+async fn serve_control<R, W>(
+    mut tx: W, buffered: tokio::io::BufReader<R>, mut pending_first: Option<(Frame, Option<Vec<u8>>)>,
+    session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
+    preview_changed_tx: broadcast::Sender<PreviewChanged>, label: Arc<Option<String>>, workspaces: Workspaces,
+    ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
+    agent_receipt_tx: broadcast::Sender<AgentReceipt>, fe_command_tx: broadcast::Sender<FeCommandEvt>,
+    repl_frame_tx: broadcast::Sender<ReplFrameMsg>, clients: Clients,
+    topology_store: Arc<crate::topology_store::TopologyStore>,
+    topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>, leases: Arc<crate::lease::Leases>,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut read_fut = Some(Box::pin(read_owned(buffered)));
     tracing::debug!("connection ready");
 
