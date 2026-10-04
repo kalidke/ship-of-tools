@@ -6,10 +6,13 @@ the leg's runtime; its types, constants and `run` are re-exported as `sot_log::c
 subsystem; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: the leg's public types, limits and self status, and the whole writer loop `run`
+- `mod.rs`: the leg's public types, limits and self status; re-exports `run`
+- `output.rs`: commit pacing (`should_flush_output`, `output_wait`) and the bounded output budget (`OutputBudget`)
+- `frame.rs`: the frame factory `FrameCtx`, the run-end marker and the input WAL, with their tests
+- `writer_loop.rs`: `run`, the writer loop, one producer from spawn to sealed voyage
 
 ## Start here
-`run` in `mod.rs` for any change to what the leg records or when it commits; `CapsuleConfig` for what a caller
+`run` in `writer_loop.rs` for any change to what the leg records or when it commits; `CapsuleConfig` for what a caller
 sets.
 
 ## Rules
