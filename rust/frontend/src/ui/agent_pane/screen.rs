@@ -1,5 +1,7 @@
 //! Which screen the agent pane paints: the held, client and blank choice, the reason overlay and the discard notice.
 
+use super::*;
+
 /// ADR 0042 slice L1b fix 2, narrowed post-notmux: which state the
 /// session pane's input routes to RIGHT NOW — tracked independently of
 /// `Option<FeAttachClient>` because "no client yet" is genuinely
@@ -167,6 +169,152 @@ pub(in crate::ui) fn pane_discard_notice(pane: usize, client: usize) -> Option<S
     }
 }
 
+
+impl State {
+    pub(in crate::ui) fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>) {
+        // Borrow the LLM terminal screen for the duration of the draw.
+        // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
+        // tied to the client; since `terminal.draw` borrows a different
+        // field (self.terminal), Rust's split-borrow rules let us hold
+        // both at once. The local terminal's screen is borrowed the same
+        // way when the Terminal drawer is active. Unconditional on every
+        // platform since ADR 0045 decision 1 (a capsule row attaches
+        // through its own daemon everywhere).
+        //
+        // LU6a: which source actually wins is `pane_screen_choice`'s
+        // call, not an unconditional `pane_attach_term`-if-present — a
+        // live but not-yet-checkpointed client (or a still-`Pending`
+        // feed) defers to `pane_hold` so a capsule switch never paints
+        // the new client's empty parser. Coordinator amendment: a client
+        // that went terminal before ever checkpointing falls all the way
+        // through to blank instead (`pane_screen_choice`'s own doc) —
+        // three separate `let`s (rather than inlining each as a call
+        // argument) so the one `&mut` read (`is_dead`) never overlaps
+        // the `&ref` reads around it.
+        let pane_attach_has_client = self.pane_attach_term.is_some();
+        let pane_attach_checkpointed =
+            self.pane_attach_term.as_ref().is_some_and(|t| t.is_checkpointed());
+        let pane_attach_is_dead = self.pane_attach_term.as_mut().is_some_and(|t| t.is_dead());
+        let pane_screen = pane_screen_choice(
+            pane_attach_has_client,
+            pane_attach_checkpointed,
+            pane_attach_is_dead,
+            self.pane_feed,
+            self.pane_hold.is_some(),
+        );
+        // ADR 0030 §8 "Where it is shown", widened by ADR 0045 decision 1
+        // (Codex review): paints whenever the client is alive but not
+        // honestly attached — dead-uncheckpointed (the original case),
+        // a mid-outage `Unreachable` retry, a refusal, or a failure AFTER
+        // checkpointing (the frozen screen underneath is real, but
+        // stale). Codex review: reads the RETAINED client's own
+        // `status_line()` directly, never `self.status` — that field is
+        // shared with every other status-bar message in the whole event
+        // loop and a later, unrelated write (autostart, a daemon
+        // reconnect, a drawer switch) would silently retitle this pane's
+        // own explanation to whatever last touched the status bar.
+        let pane_attach_status = self.pane_attach_term.as_ref().map(|t| t.status_line());
+        let pane_attach_is_attached = pane_attach_status == Some("attached");
+        // A daemon that refused this frontend's protocol is the root cause of
+        // whatever the client or the dial reports, so its line leads.
+        let pane_host = self
+            .bl_pane_target
+            .as_ref()
+            .map(|(h, _)| h)
+            .unwrap_or(&self.active_host);
+        let pane_terminal_reason: Option<String> = pane_reason_line(
+            self.protocol_mismatch
+                .get(pane_host)
+                .and_then(|m| m.lines().next()),
+            pane_terminal_reason_text(
+                pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
+                pane_attach_status,
+            ),
+        // SHOULD-FIX (Codex review, lane B5 discharge): no live client at
+        // all (a dial that never got to attach in the first place) still
+        // needs a persistent, non-clobberable reason when this row's
+        // host has a known-broken dial — same priority tier as a live
+        // client's own failure.
+            self.pane_dial_error.as_deref(),
+        );
+        let pane_overlay = pane_overlay_lines(
+            pane_terminal_reason,
+            pane_discard_notice(
+                self.pane_inputs_discarded,
+                self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
+            ),
+        );
+        // Switch-latency Phase 1, item 3: the acceptance metric itself
+        // (keypress → current screen visible), not merely the client's
+        // own parser being ready (`pump_pane_attach_term`'s "checkpoint
+        // applied") — this is the first REDRAW that actually paints the
+        // new client's own screen (`PaneScreen::Client`) rather than the
+        // held prior content or the tmux fallback. One-shot per attach,
+        // same edge-triggered pattern as the other attach-outcome lines.
+        if pane_screen == PaneScreen::Client && !self.pane_attach_presented {
+            self.pane_attach_presented = true;
+            let since_request_ms = self
+                .pane_attach_requested_at
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            tracing::info!(since_request_ms, "session pane: capsule screen presented");
+        }
+        (pane_screen, pane_overlay)
+    }
+
+    pub(in crate::ui) fn sync_pane_pty_size(&mut self, pty_size_observed: (u16, u16)) {
+        // Track the LLM-pane's size once the first redraw has a real BL
+        // content rect, and keep an already-live capsule client's
+        // viewport in sync when the rect grows/shrinks — the actual
+        // attach/open wire request is `attach_session_to_bl`'s, not
+        // this redraw's.
+        let (cols, rows) = pty_size_observed;
+        if cols >= 2 && rows >= 2 {
+            let need_open = self.pty_size.is_none();
+            let need_resize = self
+                .pty_size
+                .map(|prev| prev != (cols, rows))
+                .unwrap_or(false);
+            // ADR 0042 slice L1b fix 2: `pane_feed`, not the 2-way
+            // `pane_is_capsule` this used to branch on — `Pending` must
+            // send NOTHING to either backend (a resize routed by
+            // guesswork would be indistinguishable from the exact bug
+            // finding 2 fixed for input) while still tracking the
+            // latest size locally, since whichever backend eventually
+            // resolves reads its start/resize from `self.pty_size`.
+            match self.pane_feed {
+                PaneFeed::Capsule => {
+                    // The capsule client's connection is owned entirely
+                    // by the `PtyAttachDirect` handler's own
+                    // `spawn_pane_attach_term` call (the daemon's own
+                    // reply to the `pty.open` `attach_session_to_bl`
+                    // always sends) — there is no `pty.open`/`pty.resize` wire
+                    // request for a capsule row (the daemon refuses both
+                    // with `attach_direct`). This arm only keeps an
+                    // ALREADY-LIVE client's viewport in sync with the pane
+                    // rect, mirroring the drawer's own attach-client
+                    // resize below (`term_size_observed`).
+                    if need_open || need_resize {
+                        if let Some(t) = self.pane_attach_term.as_mut() {
+                            t.resize(cols, rows);
+                            if need_resize {
+                                // A resize reshapes the row map, so the old
+                                // offset means nothing: snap to live.
+                                t.screen_mut().set_scrollback(0);
+                            }
+                        }
+                        self.pty_size = Some((cols, rows));
+                    }
+                }
+                PaneFeed::Pending => {
+                    if need_open || need_resize {
+                        self.pty_size = Some((cols, rows));
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod pane_input_tests {
