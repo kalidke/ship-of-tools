@@ -25,15 +25,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 
+use sot_updater::identity::repo_from_env;
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
 use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
-
-/// Default release repo. Overridable via `SOT_UPDATE_REPO` for testing against
-/// a fork.
-const DEFAULT_REPO: &str = "kalidke/ship-of-tools";
 
 /// Delay before the first automatic check after boot, then the steady cadence.
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
@@ -65,14 +62,6 @@ fn mode_from_env() -> Mode {
             Mode::Notify
         }
     }
-}
-
-fn repo_from_env() -> String {
-    std::env::var("SOT_UPDATE_REPO")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_REPO.to_string())
 }
 
 /// Backend updater policy. Cheap to construct from env (config is
@@ -589,6 +578,7 @@ fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sot_updater::identity::DEFAULT_REPO;
 
     /// The daemon's release repo: the default when the variable is unset, empty
     /// or blank, the trimmed value otherwise; the prior value is restored.

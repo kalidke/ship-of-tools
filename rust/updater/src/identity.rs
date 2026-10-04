@@ -8,11 +8,26 @@
 //! Also home to the strict-validation helpers for the two untrusted strings
 //! that get joined into filesystem paths and URLs: the release tag and the
 //! `owner/repo` slug (MUST-FIX 11).
+//!
+//! Also the one place that decides which release repo a box watches
+//! (`DEFAULT_REPO`, `repo_from_env`), so the daemon and the window agree.
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::semver::{parse_semver, strip_v};
+
+/// Default release repo. Overridable via `SOT_UPDATE_REPO` for testing against
+/// a fork.
+pub const DEFAULT_REPO: &str = "kalidke/ship-of-tools";
+
+pub fn repo_from_env() -> String {
+    std::env::var("SOT_UPDATE_REPO")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_REPO.to_string())
+}
 
 /// One release for one platform, pinned by digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

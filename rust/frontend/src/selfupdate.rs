@@ -34,8 +34,6 @@ use sot_protocol::app_version;
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
 
-const DEFAULT_REPO: &str = "kalidke/ship-of-tools";
-
 /// The guard chain, as a value: the install to act on, or the one sentence
 /// saying why this box does nothing. A value rather than four early returns
 /// because `--update-status` has to answer the same question, and a guard
@@ -140,11 +138,7 @@ fn backend_owns_updates_here(install: &InstallManifest) -> bool {
 /// the startup pipeline and `--update-status` so the status reads the state of
 /// the pipeline that actually runs here, not of a second one derived alike.
 fn config(current: String) -> std::result::Result<UpdaterConfig, String> {
-    let repo = std::env::var("SOT_UPDATE_REPO")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_REPO.to_string());
+    let repo = sot_updater::identity::repo_from_env();
     let updates_root = sot_updater::resolve_updates_root().map_err(|e| format!("no updates root: {e}"))?;
     Ok(UpdaterConfig {
         repo,
@@ -356,6 +350,7 @@ fn phase_lines(id: &sot_updater::ReleaseIdentity, at: &Phase) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sot_updater::identity::DEFAULT_REPO;
 
     fn topo(text: &str) -> sot_protocol::topology::Topology {
         sot_protocol::topology::parse(text).expect("fixture must parse")

@@ -8,7 +8,7 @@ never because a marker file exists. Part of distribution; charter: scripts/CLAUD
 - `Cargo.toml`: the sot-updater package manifest.
 - `examples/`: `vercmp`, a command-line check that a candidate tag sorts above the existing tags of its line.
 - `src/fetch/`: the release bytes: download backends, SHA256SUMS, sha256 and archive extraction.
-- `src/identity.rs`: `ReleaseIdentity`, the one release for one platform that every stage must agree on.
+- `src/identity.rs`: `ReleaseIdentity`, the one release for one platform that every stage must agree on, and the release repo a box watches (`DEFAULT_REPO`, `repo_from_env`).
 - `src/lib.rs`: discovery (`check`) and staging (`stage`), the crate's public surface.
 - `src/lock.rs`: the cross-process mkdir lock on `updates/.lock`, shared with sot-apply.
 - `src/manifest.rs`: `InstallManifest` (`$PREFIX/install.json`, a schema shared with scripts/install.sh and
