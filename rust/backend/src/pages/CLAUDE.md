@@ -31,7 +31,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 ## Connections
 
 - ops.rs serves `video.open`, `docs.open` and `quarto.open`; handlers.rs re-exports them.
-- `server::run` binds the listeners at boot (`start_page_servers`) and hands a connection whose first frame is `proxy.connect` to
+- `server::run` binds the listeners at boot (`start_page_servers`); `handle_connection` hands a connection whose first frame is `proxy.connect` to
   `handle_proxy_connect`.
 - lane_bridge.rs and lease.rs call `reject`, and lane_bridge.rs calls `pipe_bidirectional`, both through proxy.rs's re-export of server/pipe.rs.
 - The REPL supervisor (repl.rs) records and revokes browser ports (`record_browser_port`, `revoke_browser_ports`).
