@@ -83,6 +83,89 @@ fn exec_err_frame(req_id: u64, run_id: &str, ws_id: &str, outcome: &str, msg: St
     )]
 }
 
+/// Builds the inner REPL op, its payload and the drawer display, refusing a `run_file` path outside the root.
+fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::workspaces::Workspace, eval_id: u64,
+    run_id: &str, ws_id: &str) -> std::result::Result<(&'static str, serde_json::Value, String), HandlerOutput> {
+    Ok(match &req.input {
+        ReplExecuteInput::RunFile { path } => {
+            let joined = {
+                let pb = std::path::PathBuf::from(path);
+                if pb.is_absolute() {
+                    pb
+                } else {
+                    ws.project_root.join(pb)
+                }
+            };
+            let abs = match joined.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    return Err(exec_err_frame(
+                        req_id,
+                        &run_id,
+                        &ws_id,
+                        "error",
+                        format!("cannot resolve path {path:?}: {e}"),
+                    ))
+                }
+            };
+            let root = ws.project_root.canonicalize().unwrap_or_else(|_| ws.project_root.clone());
+            if !abs.starts_with(&root) {
+                return Err(exec_err_frame(
+                    req_id,
+                    &run_id,
+                    &ws_id,
+                    "error",
+                    format!(
+                        "repl run is confined to the workspace root ({}); {} is outside it — \
+                         use `repl eval --code 'include(\"{}\")'` for files elsewhere",
+                        root.display(),
+                        abs.display(),
+                        abs.display(),
+                    ),
+                ));
+            }
+            if !abs.is_file() || abs.extension().and_then(|s| s.to_str()) != Some("jl") {
+                return Err(exec_err_frame(
+                    req_id,
+                    &run_id,
+                    &ws_id,
+                    "error",
+                    format!("not an existing .jl file: {}", abs.display()),
+                ));
+            }
+            let disp = format!(
+                "run {}",
+                abs.file_name().and_then(|s| s.to_str()).unwrap_or("?.jl")
+            );
+            (
+                op::REPL_RUN_FILE,
+                json!({
+                    "eval_id": eval_id,
+                    "path": abs.to_string_lossy(),
+                    "fresh": false,
+                    "workspace_id": ws_id,
+                }),
+                disp,
+            )
+        }
+        ReplExecuteInput::Eval { code, mode } => {
+            let mut p = json!({ "eval_id": eval_id, "code": code, "workspace_id": ws_id });
+            if let Some(m) = mode {
+                if let Some(obj) = p.as_object_mut() {
+                    obj.insert("mode".to_string(), json!(m));
+                }
+            }
+            let first = code.lines().next().unwrap_or("").trim();
+            let disp = if first.chars().count() > 60 {
+                format!("{}…", first.chars().take(60).collect::<String>())
+            } else {
+                first.to_string()
+            };
+            (op::REPL_EVAL, p, disp)
+        }
+    })
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -127,83 +210,9 @@ pub async fn handle_repl_execute(
     };
 
     // Build the inner op + payload + drawer display; validate a run_file path.
-    let (inner_op, inner_payload, display) = match &req.input {
-        ReplExecuteInput::RunFile { path } => {
-            let joined = {
-                let pb = std::path::PathBuf::from(path);
-                if pb.is_absolute() {
-                    pb
-                } else {
-                    ws.project_root.join(pb)
-                }
-            };
-            let abs = match joined.canonicalize() {
-                Ok(p) => p,
-                Err(e) => {
-                    return Ok(exec_err_frame(
-                        req_id,
-                        &run_id,
-                        &ws_id,
-                        "error",
-                        format!("cannot resolve path {path:?}: {e}"),
-                    ))
-                }
-            };
-            let root = ws.project_root.canonicalize().unwrap_or_else(|_| ws.project_root.clone());
-            if !abs.starts_with(&root) {
-                return Ok(exec_err_frame(
-                    req_id,
-                    &run_id,
-                    &ws_id,
-                    "error",
-                    format!(
-                        "repl run is confined to the workspace root ({}); {} is outside it — \
-                         use `repl eval --code 'include(\"{}\")'` for files elsewhere",
-                        root.display(),
-                        abs.display(),
-                        abs.display(),
-                    ),
-                ));
-            }
-            if !abs.is_file() || abs.extension().and_then(|s| s.to_str()) != Some("jl") {
-                return Ok(exec_err_frame(
-                    req_id,
-                    &run_id,
-                    &ws_id,
-                    "error",
-                    format!("not an existing .jl file: {}", abs.display()),
-                ));
-            }
-            let disp = format!(
-                "run {}",
-                abs.file_name().and_then(|s| s.to_str()).unwrap_or("?.jl")
-            );
-            (
-                op::REPL_RUN_FILE,
-                json!({
-                    "eval_id": eval_id,
-                    "path": abs.to_string_lossy(),
-                    "fresh": false,
-                    "workspace_id": ws_id,
-                }),
-                disp,
-            )
-        }
-        ReplExecuteInput::Eval { code, mode } => {
-            let mut p = json!({ "eval_id": eval_id, "code": code, "workspace_id": ws_id });
-            if let Some(m) = mode {
-                if let Some(obj) = p.as_object_mut() {
-                    obj.insert("mode".to_string(), json!(m));
-                }
-            }
-            let first = code.lines().next().unwrap_or("").trim();
-            let disp = if first.chars().count() > 60 {
-                format!("{}…", first.chars().take(60).collect::<String>())
-            } else {
-                first.to_string()
-            };
-            (op::REPL_EVAL, p, disp)
-        }
+    let (inner_op, inner_payload, display) = match build_exec_request(req_id, &req, &ws, eval_id, &run_id, &ws_id) {
+        Ok(request) => request,
+        Err(out) => return Ok(out),
     };
 
     // Phase 2 (ADR 0033): broadcast a `started` control frame so an attached
