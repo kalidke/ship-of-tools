@@ -24,5 +24,6 @@ backend; charter: comm/CLAUDE.md.
 - `prompt_glyphs` knows claude only, so a Codex row is never typed into.
 - `wake_if_free` makes one attach. A free first frame must hold still through the box's lower rule (`held_rows`) for
   STILL_FOR (1.5 s), and the live screen must read free again.
-- Enter goes only when `typed_refusal` sees the line alone in main's input box.
+- After typing, `wake_if_free` waits up to OP_BUDGET (3 s) for `typed_refusal` to see the line alone in main's input
+  box (`type_then_enter`); Enter goes only then.
 - A typed line counts as the wake whether or not Enter followed (`step_of`), so a batch is never typed twice.

@@ -42,7 +42,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `destroy_capsule_workspace`,
 `end_default_row_run`, `resume_all`, `close_gate_and_settle`, `remove_row_files`, `workspace.create`,
 `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`,
-`lane.connect`, `Workspace::agent_handle`, `set_agent_handle`, `attach`, `type_and_pace`, `send_enter`,
+`lane.connect`, `Workspace::agent_handle`, `set_agent_handle`, `attach`, `send_text`, `send_enter`,
 `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`,
 `set_repl_frame_tx`, `set_watch_bus`, `set_monitor_hub`. Uses: `lane.connect`, `handle_connection`,
 `handle_lane_connect`, `pipe_bidirectional`, `reject`, `dispatch`, `write_frame_within`, `write_frame_to`,

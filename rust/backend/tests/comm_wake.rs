@@ -27,6 +27,19 @@ const WAKE_WITHIN: Duration = Duration::from_secs(30);
 /// (2 x 1.5 s) apart.
 const MAX_SPREAD: Duration = Duration::from_secs(3);
 
+/// The stub's `echo-after` reader: `$1` seconds, `$2` the file the line goes to. No echo and no line editing, so the
+/// first byte is seen when it arrives; what has arrived by then plus `$1` seconds is printed in one go.
+const READ_SLOW_ECHO: &str = r#"stty -echo -icanon min 1 time 0
+IFS= read -r -N1 first
+sleep "$1"
+if IFS= read -r -t 0.3 -n 4096 rest; then ended=1; else ended=0; fi
+printf '%s%s' "$first" "$rest"
+[ $ended = 1 ] || IFS= read -r more
+printf '%s%s' "$first" "$rest$more" > "$2"
+stty echo icanon
+printf '\r\n'
+"#;
+
 /// A stub `claude`: banner, then the real input box and one line read at a time:
 /// a rule line, `❯` and a no-break space, a second rule line, the cursor back
 /// on the prompt line just after `❯ `. While `dialog` exists it shows a dialog
@@ -43,11 +56,16 @@ const MAX_SPREAD: Duration = Duration::from_secs(3);
 /// redraws it focused (`❯ ● main`, the hint gone) once the daemon's hold has begun (`marks/hold`), and
 /// `focus-after` does the same once its final check has passed (`marks/final-ok`) and then leaves the cursor on
 /// the panel's first line. Rows through the box, and for `focus-hold` the cursor, stay as they were. The stub
-/// writes `marks/focus-moved` at the moment it redraws for either of them.
+/// writes `marks/focus-moved` at the moment it redraws for either of them. `echo-after` (its content, the seconds)
+/// reads typed input without the tty's echo and prints it where the cursor is that many seconds after its first
+/// byte (`READ_SLOW_ECHO`), then ends the line at Enter as usual. The stub logs `ping` for exactly the wake line
+/// and `other` for anything else, so a line typed twice shows.
 fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
+    let slow = dir.join("read-slow-echo.sh");
+    std::fs::write(&slow, READ_SLOW_ECHO).expect("write slow-echo reader");
     let script = format!(
         "#!/bin/sh\n\
          [ -f '{dialog}.down' ] && exit 1\n\
@@ -66,15 +84,16 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
            fi\n\
            ( n=0; fh=0; fa=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{ctl}/marks/hold' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; : > '{ctl}/marks/focus-moved'; fi; if [ $fa = 0 ] && [ -f '{ctl}/marks/final-ok' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; : > '{ctl}/marks/focus-moved'; fi; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
-           IFS= read -r line\n\
+           if [ -f '{ctl}/echo-after' ]; then bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line'; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
            kill $spid\n\
            case \"$line\" in\n\
              quit) exit 0 ;;
-             '[sot-comm] you have mail'*) echo \"$(date +%s%3N) ping\" >> '{log}' ;;\n\
+             '[sot-comm] you have mail: run comm-poll.sh') echo \"$(date +%s%3N) ping\" >> '{log}' ;;\n\
              *) echo \"$(date +%s%3N) other\" >> '{log}' ;;\n\
            esac\n\
          done\n",
         dialog = dialog.display(),
+        slow = slow.display(),
         spin = spin.display(),
         foot = foot.display(),
         ctl = ctl.display(),
@@ -87,6 +106,11 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
 
 fn pings(log: &Path) -> usize {
     std::fs::read_to_string(log).map(|s| s.lines().filter(|l| l.ends_with(" ping")).count()).unwrap_or(0)
+}
+
+/// Lines the stub read that were not the wake line.
+fn others(log: &Path) -> usize {
+    std::fs::read_to_string(log).map(|s| s.lines().filter(|l| l.ends_with(" other")).count()).unwrap_or(0)
 }
 
 /// Appends `n` complete inbox lines to `HANDLE` in ONE write, as one batch.
@@ -173,7 +197,7 @@ async fn start(tag: &str, log: Option<PathBuf>, in_dialog: bool) -> Row {
     start_with(tag, log, in_dialog, &[], &[]).await
 }
 
-/// [`start`], with `ctl` control files (see [`write_stub_claude`]) created before the row starts, and `extra`
+/// [`start`], with `ctl` control files (see [`write_stub_claude`], `name` or `name=content`) created before the row starts, and `extra`
 /// env vars on the daemon. `SOT_TEST_WAKE_MARKS` is always set, to `ctl/marks`.
 async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&str], extra: &[(&str, &str)]) -> Row {
     assert!(sot_capsule_exe().is_file(), "{CAPSULE_EXE_NAME} not found next to sotd — build it first (cargo build -p sot-log --bin sot-capsule)");
@@ -184,8 +208,9 @@ async fn start_with(tag: &str, log: Option<PathBuf>, in_dialog: bool, ctl: &[&st
     let foot = env._tmp.path().join("foot");
     let ctl_dir = env._tmp.path().join("ctl");
     std::fs::create_dir_all(&ctl_dir).unwrap();
-    for name in ctl {
-        std::fs::write(ctl_dir.join(name), b"").unwrap();
+    for entry in ctl {
+        let (name, content) = entry.split_once('=').unwrap_or((entry, ""));
+        std::fs::write(ctl_dir.join(name), content).unwrap();
     }
     let stub_dir = write_stub_claude(&env._tmp.path().join("stubbin"), &log, &dialog, &spin, &foot, &ctl_dir);
     if in_dialog {
@@ -508,7 +533,7 @@ async fn panel_focus_arriving_during_the_hold_is_refused() {
 #[tokio::test]
 async fn focus_moving_after_the_final_check_gets_no_enter() {
     let _serial = SERIAL.lock().await;
-    let mut row = start_with("cwfa", None, false, &["panel", "focus-after"], &[("SOT_TEST_PACING_HOLD", "1")]).await;
+    let mut row = start_with("cwfa", None, false, &["panel", "focus-after", "echo-after=1"], &[]).await;
     wait_for_panel(&mut row).await;
     append_mail(&row.env, 1);
     let m = marks(&row);
@@ -517,5 +542,20 @@ async fn focus_moving_after_the_final_check_gets_no_enter() {
     wait_for("the warn line in the daemon log", || daemon_log(&row.env).contains("did not show in main's input box")).await;
     assert!(daemon_log(&row.env).contains("no Enter sent"), "the warn line does not say no Enter was sent");
     assert_eq!(pings(&row.log), 0, "sent Enter with focus off main's box");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// The typed line shows a second after the write, past the old 0.3 s quiet read: the wake waits for it, then sends
+/// Enter in the same attempt. One ping, the line typed once, and no "left unsent" warning.
+#[tokio::test]
+async fn a_slow_echo_is_entered_in_the_same_attempt() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwse", None, false, &["echo-after=1"], &[]).await;
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(pings(&row.log), 1);
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    assert!(!daemon_log(&row.env).contains("did not show in main's input box"), "the wake gave up on the line");
     row.env.kill_daemon_bounded().await;
 }
