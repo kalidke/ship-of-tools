@@ -10,6 +10,7 @@ use sot_protocol::ReplExecuteReq;
 use sot_protocol::ReplExecuteRes;
 use sot_protocol::ReplValueOut;
 use sot_protocol::StackFrame;
+use tokio::sync::broadcast;
 use crate::repl::ReplFrameMsg;
 use crate::session::Session;
 use crate::workspaces::Workspaces;
@@ -166,6 +167,25 @@ fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::workspaces:
     })
 }
 
+/// Broadcasts the `started` control frame that pre-registers the run in the drawer.
+fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::workspaces::Workspace, workspaces: &Workspaces,
+    eval_id: u64, run_id: &str, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
+    let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
+    let frame_ws = ws.slug.clone();
+    let frame_tx = workspaces.repl_frame_tx();
+    let _ = frame_tx.send(ReplFrameMsg {
+        eval_id,
+        workspace_id: Some(frame_ws.clone()),
+        frame: json!({
+            "kind": "started",
+            "run_id": run_id.clone(),
+            "origin": origin,
+            "display": display,
+        }),
+    });
+    (frame_ws, frame_tx)
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -226,19 +246,7 @@ pub async fn handle_repl_execute(
     // same entry. Stamping the canonical id here made that compare never match →
     // the entry was dropped down the "no snapshot" path and every session run
     // orphaned as "repl.frame dropped: no in-flight entry".
-    let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
-    let frame_ws = ws.slug.clone();
-    let frame_tx = workspaces.repl_frame_tx();
-    let _ = frame_tx.send(ReplFrameMsg {
-        eval_id,
-        workspace_id: Some(frame_ws.clone()),
-        frame: json!({
-            "kind": "started",
-            "run_id": run_id.clone(),
-            "origin": origin,
-            "display": display,
-        }),
-    });
+    let (frame_ws, frame_tx) = announce_exec_started(&req, &ws, workspaces, eval_id, &run_id, display);
 
     let repl = ws.repl(workspaces.repl_frame_tx());
     let (reply_rx, collector) = match repl.execute(inner_op, inner_payload).await {
