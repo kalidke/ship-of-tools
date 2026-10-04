@@ -1,10 +1,7 @@
 //! The checklist pass: `verify_voyage_mode` walks every segment of a voyage and applies each rule.
 
 use super::*;
-use super::lifecycle::{check_input_fact, check_lifecycle_fields, check_producer_spawn, check_take_state};
-use super::frame::{check_actor, check_attachment, check_blobs, check_control_exchange};
-use super::frame::{check_frame_position, check_input, check_producer_attached};
-use super::frame::{check_producer_numbers, check_turn_close};
+use super::frame::{check_frame, WalkState};
 
 pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Result<()> {
     let seg_dir = root.join("seg");
@@ -13,36 +10,7 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
 
     let mut prev_digest: Option<String> = None;
     let mut prev_epoch: u64 = 0;
-    // Every committed frame's class, keyed by seq — doubles as both the
-    // ref-resolution existence set and the class lookup turn_close needs.
-    let mut seen: HashMap<(u64, u64), Class> = HashMap::new();
-    let mut last_n_by_epoch: HashMap<u64, u64> = HashMap::new();
-    let mut capture_enabled = false;
-
-    // Exactly one non-duplicate_of turn_close per turn: turn_open seq ->
-    // the winning close's seq.
-    let mut turn_close_winner: HashMap<(u64, u64), (u64, u64)> = HashMap::new();
-    let mut turn_opens: HashSet<(u64, u64)> = HashSet::new();
-
-    // input_fact chain lattice, all keyed by idem_key.
-    let mut idem_state: HashMap<String, FactState> = HashMap::new();
-    let mut idem_owner: HashMap<String, (u64, u64)> = HashMap::new(); // -> input frame seq
-    let mut input_idem: HashMap<(u64, u64), String> = HashMap::new(); // input frame seq -> idem_key
-    let mut intent_owner: HashMap<(u64, u64), String> = HashMap::new(); // forward_intent seq -> idem_key
-
-    // Stream prev-chains, keyed by (attached_to seq, cell).
-    let mut stream_head: HashMap<((u64, u64), String), (u64, u64)> = HashMap::new();
-
-    // take_epoch ordering.
-    let mut committed_take_epoch: u64 = 0;
-    let mut take_state_seen_epochs: HashSet<u64> = HashSet::new();
-
-    // Codex round-1 Major 7: at most one `run_end_requested` per writer
-    // epoch — a marker governs only its own epoch (ADR 0041), and the
-    // capsule's own first-commit-wins latch is a promise about ITS
-    // process lifetime, not a proof a crafted or corrupted voyage can't
-    // carry two. The verifier must refuse what the writer never would.
-    let mut run_end_seen_epochs: HashSet<u64> = HashSet::new();
+    let mut walk = WalkState::default();
 
     for (expected_index, (idx, epoch, state)) in entries.iter().enumerate() {
         if *idx != expected_index as u64 {
@@ -84,70 +52,11 @@ pub fn verify_voyage_mode(root: &Path, voyage_id: &str, mode: VerifyMode) -> Res
         // rule, cross-field matrix, WAL lattice, stream chains, take
         // ordering, blob presence + length.
         for env in &reader.frames {
-            check_frame_position(env, epoch, &mut last_n_by_epoch, &seen)?;
-
-            let attached_to: Vec<Seq> = env
-                .refs
-                .iter()
-                .filter(|r| r.kind == RefKind::AttachedTo)
-                .map(|r| r.frame)
-                .collect();
-
-            check_actor(env, committed_take_epoch)?;
-
-            check_attachment(env, epoch, &attached_to, &mut stream_head)?;
-
-            // Redact-by-default as a wire property, plus lifecycle's
-            // cross-field matrix and the input_fact / take_state processing.
-            if env.class == Class::Lifecycle {
-                if let Some(payload) = &env.payload {
-                    let kind = payload
-                        .get("kind")
-                        .and_then(|k| serde_json::from_value::<LifecycleKind>(k.clone()).ok())
-                        .ok_or_else(|| {
-                            Error::Schema(format!("lifecycle {:?}: invalid/missing kind", env.seq))
-                        })?;
-                    let has_take = payload.get("take").is_some();
-                    let has_fact = payload.get("fact").is_some();
-                    check_lifecycle_fields(env, payload, kind, has_take, has_fact, &mut run_end_seen_epochs)?;
-                    if kind == LifecycleKind::CaptureOptin {
-                        capture_enabled = true;
-                    }
-                    if kind == LifecycleKind::RunEndRequested && !run_end_requested_ok {
-                        // ADR 0039 registry (bidirectional, like
-                        // cgroup-fence-v1's locator-must-declare): the
-                        // frame is only legal in a segment that declared
-                        // the feature at creation.
-                        return Err(Error::Schema(format!(
-                            "lifecycle {:?}: run_end_requested in a segment that does not declare sot.capsule.run-end-requested-v1",
-                            env.seq
-                        )));
-                    }
-                    check_producer_spawn(env, payload, kind, fence_ok)?;
-                    committed_take_epoch = check_take_state(env, payload, kind, committed_take_epoch, &mut take_state_seen_epochs)?;
-                    check_input_fact(env, payload, kind, &input_idem, &mut idem_state, &mut intent_owner)?;
-                }
-            }
-
-            check_producer_attached(env)?;
-
-            check_control_exchange(env)?;
-
-            check_turn_close(env, &seen, &mut turn_close_winner)?;
-
-            check_input(env, capture_enabled, &mut idem_owner, &mut idem_state, &mut input_idem)?;
-
-            check_blobs(root, env)?;
-
-            if env.class == Class::TurnOpen {
-                turn_opens.insert((env.seq.epoch, env.seq.n));
-            }
-            check_producer_numbers(root, env, f64_ok)?;
-            seen.insert((env.seq.epoch, env.seq.n), env.class);
+            check_frame(root, epoch, f64_ok, fence_ok, run_end_requested_ok, env, &mut walk)?;
         }
     }
 
-    check_turn_closure(&entries, &turn_opens, &turn_close_winner, mode)
+    check_turn_closure(&entries, &walk.turn_opens, &walk.turn_close_winner, mode)
 }
 
 fn list_segments(seg_dir: &Path) -> Result<Vec<(u64, u64, SegmentState)>> {

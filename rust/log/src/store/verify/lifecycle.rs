@@ -3,8 +3,50 @@
 
 use super::*;
 use crate::envelope::Envelope;
+use super::frame::WalkState;
 
-pub(super) fn check_lifecycle_fields(
+pub(super) fn check_lifecycle(
+    env: &Envelope,
+    fence_ok: bool,
+    run_end_requested_ok: bool,
+    walk: &mut WalkState,
+) -> Result<()> {
+    // Redact-by-default as a wire property, plus lifecycle's
+    // cross-field matrix and the input_fact / take_state processing.
+    if env.class == Class::Lifecycle {
+        if let Some(payload) = &env.payload {
+            let kind = payload
+                .get("kind")
+                .and_then(|k| serde_json::from_value::<LifecycleKind>(k.clone()).ok())
+                .ok_or_else(|| {
+                    Error::Schema(format!("lifecycle {:?}: invalid/missing kind", env.seq))
+                })?;
+            let has_take = payload.get("take").is_some();
+            let has_fact = payload.get("fact").is_some();
+            check_lifecycle_fields(env, payload, kind, has_take, has_fact, &mut walk.run_end_seen_epochs)?;
+            if kind == LifecycleKind::CaptureOptin {
+                walk.capture_enabled = true;
+            }
+            if kind == LifecycleKind::RunEndRequested && !run_end_requested_ok {
+                // ADR 0039 registry (bidirectional, like
+                // cgroup-fence-v1's locator-must-declare): the
+                // frame is only legal in a segment that declared
+                // the feature at creation.
+                return Err(Error::Schema(format!(
+                    "lifecycle {:?}: run_end_requested in a segment that does not declare sot.capsule.run-end-requested-v1",
+                    env.seq
+                )));
+            }
+            check_producer_spawn(env, payload, kind, fence_ok)?;
+            walk.committed_take_epoch =
+                check_take_state(env, payload, kind, walk.committed_take_epoch, &mut walk.take_state_seen_epochs)?;
+            check_input_fact(env, payload, kind, &walk.input_idem, &mut walk.idem_state, &mut walk.intent_owner)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_lifecycle_fields(
     env: &Envelope,
     payload: &serde_json::Value,
     kind: LifecycleKind,
@@ -72,7 +114,7 @@ pub(super) fn check_lifecycle_fields(
     Ok(())
 }
 
-pub(super) fn check_producer_spawn(env: &Envelope, payload: &serde_json::Value, kind: LifecycleKind, fence_ok: bool) -> Result<()> {
+fn check_producer_spawn(env: &Envelope, payload: &serde_json::Value, kind: LifecycleKind, fence_ok: bool) -> Result<()> {
     if kind == LifecycleKind::ProducerSpawn {
         // Locator-must-declare (ADR 0039 registry): an
         // authority-bearing kill-domain locator is only
@@ -118,7 +160,7 @@ pub(super) fn check_producer_spawn(env: &Envelope, payload: &serde_json::Value, 
     Ok(())
 }
 
-pub(super) fn check_take_state(
+fn check_take_state(
     env: &Envelope,
     payload: &serde_json::Value,
     kind: LifecycleKind,
@@ -154,7 +196,7 @@ pub(super) fn check_take_state(
     Ok(committed_take_epoch)
 }
 
-pub(super) fn check_input_fact(
+fn check_input_fact(
     env: &Envelope,
     payload: &serde_json::Value,
     kind: LifecycleKind,

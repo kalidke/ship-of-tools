@@ -1,9 +1,81 @@
-//! The voyage walk's per-frame rules: refs, actor, attachment, producer, control exchange, turn close, input, blobs and numbers.
+//! The voyage walk's per-frame rules, in the order check_frame calls them, and WalkState: what the frames before
+//! the current one established.
 
 use super::*;
 use crate::envelope::Envelope;
+use super::lifecycle::check_lifecycle;
 
-pub(super) fn check_frame_position(
+/// What the walk has established about the frames before the one it checks.
+#[derive(Default)]
+pub(super) struct WalkState {
+    // Every committed frame's class, keyed by seq — doubles as both the
+    // ref-resolution existence set and the class lookup turn_close needs.
+    pub(super) seen: HashMap<(u64, u64), Class>,
+    pub(super) last_n_by_epoch: HashMap<u64, u64>, // per writer epoch, the last n: n is contiguous
+    pub(super) capture_enabled: bool, // capture_optin seen: an input may carry bytes from here on
+
+    // Exactly one non-duplicate_of turn_close per turn: turn_open seq ->
+    // the winning close's seq.
+    pub(super) turn_close_winner: HashMap<(u64, u64), (u64, u64)>,
+    pub(super) turn_opens: HashSet<(u64, u64)>,
+
+    // input_fact chain lattice, all keyed by idem_key.
+    pub(super) idem_state: HashMap<String, FactState>,
+    pub(super) idem_owner: HashMap<String, (u64, u64)>, // -> input frame seq
+    pub(super) input_idem: HashMap<(u64, u64), String>, // input frame seq -> idem_key
+    pub(super) intent_owner: HashMap<(u64, u64), String>, // forward_intent seq -> idem_key
+
+    // Stream prev-chains, keyed by (attached_to seq, cell).
+    pub(super) stream_head: HashMap<((u64, u64), String), (u64, u64)>,
+
+    // take_epoch ordering.
+    pub(super) committed_take_epoch: u64,
+    pub(super) take_state_seen_epochs: HashSet<u64>,
+
+    // Codex round-1 Major 7: at most one `run_end_requested` per writer
+    // epoch — a marker governs only its own epoch (ADR 0041), and the
+    // capsule's own first-commit-wins latch is a promise about ITS
+    // process lifetime, not a proof a crafted or corrupted voyage can't
+    // carry two. The verifier must refuse what the writer never would.
+    pub(super) run_end_seen_epochs: HashSet<u64>,
+}
+
+pub(super) fn check_frame(
+    root: &Path,
+    epoch: &u64,
+    f64_ok: bool,
+    fence_ok: bool,
+    run_end_requested_ok: bool,
+    env: &Envelope,
+    walk: &mut WalkState,
+) -> Result<()> {
+    check_frame_position(env, epoch, &mut walk.last_n_by_epoch, &walk.seen)?;
+
+    let attached_to: Vec<Seq> = env
+        .refs
+        .iter()
+        .filter(|r| r.kind == RefKind::AttachedTo)
+        .map(|r| r.frame)
+        .collect();
+
+    check_actor(env, walk.committed_take_epoch)?;
+    check_attachment(env, epoch, &attached_to, &mut walk.stream_head)?;
+    check_lifecycle(env, fence_ok, run_end_requested_ok, walk)?;
+    check_producer_attached(env)?;
+    check_control_exchange(env)?;
+    check_turn_close(env, &walk.seen, &mut walk.turn_close_winner)?;
+    check_input(env, walk.capture_enabled, &mut walk.idem_owner, &mut walk.idem_state, &mut walk.input_idem)?;
+    check_blobs(root, env)?;
+
+    if env.class == Class::TurnOpen {
+        walk.turn_opens.insert((env.seq.epoch, env.seq.n));
+    }
+    check_producer_numbers(root, env, f64_ok)?;
+    walk.seen.insert((env.seq.epoch, env.seq.n), env.class);
+    Ok(())
+}
+
+fn check_frame_position(
     env: &Envelope,
     epoch: &u64,
     last_n_by_epoch: &mut HashMap<u64, u64>,
@@ -45,7 +117,7 @@ pub(super) fn check_frame_position(
     Ok(())
 }
 
-pub(super) fn check_actor(env: &Envelope, committed_take_epoch: u64) -> Result<()> {
+fn check_actor(env: &Envelope, committed_take_epoch: u64) -> Result<()> {
     // Cross-field: Actor.kind=controller <=> controller_id + take_epoch.
     let actor = &env.source.actor;
     let actor_fields_present = actor.controller_id.is_some() || actor.take_epoch.is_some();
@@ -76,7 +148,7 @@ pub(super) fn check_actor(env: &Envelope, committed_take_epoch: u64) -> Result<(
     Ok(())
 }
 
-pub(super) fn check_attachment(
+fn check_attachment(
     env: &Envelope,
     epoch: &u64,
     attached_to: &[Seq],
@@ -137,7 +209,7 @@ pub(super) fn check_attachment(
     Ok(())
 }
 
-pub(super) fn check_producer_attached(env: &Envelope) -> Result<()> {
+fn check_producer_attached(env: &Envelope) -> Result<()> {
     // Codex round-1 Minor 10: `profile_def.id`'s str128 bound —
     // one of the four shared-validator sites. Only checked when
     // present as a string (the inline `profile_def` shape);
@@ -153,7 +225,7 @@ pub(super) fn check_producer_attached(env: &Envelope) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check_control_exchange(env: &Envelope) -> Result<()> {
+fn check_control_exchange(env: &Envelope) -> Result<()> {
     // control_exchange's cross-field matrix.
     if env.class == Class::ControlExchange {
         if let Some(payload) = &env.payload {
@@ -201,7 +273,7 @@ pub(super) fn check_control_exchange(env: &Envelope) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check_turn_close(
+fn check_turn_close(
     env: &Envelope,
     seen: &HashMap<(u64, u64), Class>,
     turn_close_winner: &mut HashMap<(u64, u64), (u64, u64)>,
@@ -270,7 +342,7 @@ pub(super) fn check_turn_close(
     Ok(())
 }
 
-pub(super) fn check_input(
+fn check_input(
     env: &Envelope,
     capture_enabled: bool,
     idem_owner: &mut HashMap<String, (u64, u64)>,
@@ -340,7 +412,7 @@ pub(super) fn check_input(
     Ok(())
 }
 
-pub(super) fn check_blobs(root: &Path, env: &Envelope) -> Result<()> {
+fn check_blobs(root: &Path, env: &Envelope) -> Result<()> {
     // Blob presence + length: artifact_ref's embedded blob, and any
     // frame's payload_ref (digest shape is checked by
     // `validate_blob_ref`, called from `check_blob_on_disk`).
@@ -373,7 +445,7 @@ pub(super) fn check_blobs(root: &Path, env: &Envelope) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn check_producer_numbers(root: &Path, env: &Envelope, f64_ok: bool) -> Result<()> {
+fn check_producer_numbers(root: &Path, env: &Envelope, f64_ok: bool) -> Result<()> {
     // Producer-payload numbers: integer atoms unless the segment
     // declares sot.producer.json-f64-v1 (ADR 0039 registry). Covers
     // BOTH carriers (review F1): the inline payload AND a
