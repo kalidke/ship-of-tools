@@ -12,9 +12,9 @@
 //! Linux only (`#![cfg(target_os = "linux")]`): other Unix has no
 //! portable equivalent of `SO_PEERCRED`'s pid field (a peer in a
 //! different pid namespace, or a non-Linux kernel, may not report one at
-//! all) and no `pidfd_open`/`SO_PEERPIDFD` at all -- it fails closed at
-//! `socket_unix::connect_voyage_socket`'s own stub
-//! (`TransportError::Unsupported`), never here (ADR 0043 decision 8).
+//! all) and no `pidfd_open`/`SO_PEERPIDFD` at all -- other Unix does not
+//! build this crate (`host::durable::rename_noreplace_raw` has no arm
+//! there), so nothing here runs on it (ADR 0043 decision 8).
 //!
 //! # Why `SO_PEERCRED` on the CLIENT's own fd works (verified empirically)
 //!

@@ -12,10 +12,10 @@ resolve_endpoint() {
 # nc -U. The exec lives in a subshell: a redirect-only exec whose redirect fails
 # would otherwise EXIT a non-interactive shell outright (same class as the
 # comm-relay.sh /dev/tcp fix).
-# App-level auth (ADR 0010 hardening): the daemon requires a token-valid hello
-# before serving any op — `sot_oneshot_request` prepends `sot_hello_frame`
-# (comm-lib.sh, ADR 0046 decision 1) to every connection. Empty token = open
-# mode (gate off). The hello reply is ignored — sot_send greps by op.
+# Hello: the daemon reads each connection's first frame for the protocol
+# version and ignores its token field — `sot_oneshot_request` prepends
+# `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1) to every connection.
+# The hello reply is ignored — sot_send greps by op.
 sot_send() {
     # Delegates to comm-lib's hardened one-shot (poll-file read, writer
     # linger) — the old inline `writer | nc | grep -m1` raced the response

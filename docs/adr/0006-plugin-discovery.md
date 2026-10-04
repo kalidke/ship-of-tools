@@ -11,6 +11,9 @@
 > first preview, and (c) the `plugins.load` kernel op loads any package already
 > on the kernel's load path by name. Implementing this ADR replaces (b)'s
 > hardcoded table and gives third-party plugins a declarative path in.
+>
+> 2026-10 amendment (0.6.6): (c) is gone. The `plugins.load` op was removed, so a
+> package loads only through (a) or (b).
 
 ## Context
 

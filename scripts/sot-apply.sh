@@ -344,7 +344,7 @@ if command -v sot_rerender_owned >/dev/null 2>&1; then
         || restore_previous "re-rendering the unit or wrapper failed"
 fi
 
-# ---- rewrite install.json (preserve role/prefix/config/service) --------------
+# ---- rewrite install.json (preserve prefix/config/service) --------------
 # The atomic mv names the new tag only once everything it describes is in
 # place.
 VERSION="${TAG#v}"

@@ -69,8 +69,8 @@ pub(super) fn lifecycle_begin_starting(
 }
 
 /// Key for the per-workspace browser-served-port grants (`crate::pages::proxy`).
-/// The legacy singleton REPL has no workspace id; give it a fixed key so its
-/// grants are still tracked and revoked.
+/// A REPL with no workspace id gets a fixed key so its grants are still
+/// tracked and revoked.
 pub(super) fn browser_ports_key(workspace_id: &Option<String>) -> &str {
     workspace_id.as_deref().unwrap_or("<legacy>")
 }

@@ -6,6 +6,8 @@ pub(super) fn start<'t, P: Producer>(
     config: &CapsuleConfig,
     transport: &'t mut dyn Transport,
 ) -> Result<ControlFlow<ExitSummary, (Leg<'t, P>, std::thread::JoinHandle<()>, Instant)>> {
+    // Fail before any durable side effect: `self_status` can fail on Linux and
+    // macOS, and `open_store` below bootstraps the voyage.
     #[cfg(not(windows))]
     let _ = self_status(config.survival)?;
     let mut store = open_store(config)?;

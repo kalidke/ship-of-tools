@@ -95,10 +95,9 @@ case "$ENDPOINT" in
     *) echo "ERROR: bad endpoint '$ENDPOINT'" >&2; exit 1 ;;
 esac
 
-# App-level auth (ADR 0010 hardening). The daemon now requires a token-valid
-# `hello` before serving ANY op, so every connection below sends one first.
-# Token source: $SOT_TOKEN, else the 0600 token file in the (700) home. Empty in
-# open-config mode — an empty token still authenticates there (gate is off). The
+# Hello: the daemon reads each connection's first frame for the protocol version
+# and ignores its token field, so every connection below sends one first.
+# Token source: $SOT_TOKEN, else the 0600 token file in the (700) home. The
 # hello reply is an extra line on the wire, but every caller greps by op, so it
 # is ignored. client_id "sot-comm" so the roster/logs show what it is. The
 # frame itself is `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1),

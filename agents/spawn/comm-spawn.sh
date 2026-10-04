@@ -292,8 +292,9 @@ resolve_endpoint() {
 }
 
 # Send a frame to the daemon, return the first response line matching op $2.
-# App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Every
+# Hello: the daemon reads each connection's first frame for the protocol
+# version and ignores its token field — `sot_hello_frame` (comm-lib.sh,
+# ADR 0046 decision 1). Every
 # scheme (unix, ssh, pipe) is handled by sot_oneshot_request (comm-lib.sh),
 # which refuses any other, so there is no scheme list to keep here. A
 # second, hand-rolled `nc`/`ssh` here would be a second implementation of
@@ -470,7 +471,7 @@ BIN="$COMM_HOME/bin"
 # re-injected it on every workspace re-attach. The workspace `task` field is left
 # EMPTY so the FE has nothing to deliver. If --task was given it is sent AFTER
 # spawn as an ordinary durable comm message to the agent's inbox — the normal
-# channel, read on the agent's /sot-session-start backlog poll.
+# channel, read with comm-poll once the daemon tells the agent of mail.
 TASKMSG=""
 [ -n "$TASK" ] && TASKMSG="Task from @${SPAWNER}: ${TASK} — reply to @${SPAWNER} via ${BIN}/comm-send.sh when done or blocked (your local text is invisible to peers)."
 
@@ -487,8 +488,8 @@ _row_left_running() {  # reason
 # comm-send refuses unregistered handles, and without this the spawner had to
 # sit out the agent's whole boot before its first message. With the row + inbox
 # in place, anyone can comm-send @<name> immediately — the line queues durably,
-# and the agent's /sot-session-start bootstrap reads the backlog (comm-poll,
-# step 4) and replies once it's up (~1 min). The real join later overwrites
+# and the agent reads the backlog with comm-poll once it is up and told of
+# mail, and replies (~1 min). The real join later overwrites
 # this row with full pane/expertise info; comm-leave.sh --name <handle> removes it if the
 # spawn never boots. For a DERIVED name, PROV_OBJ was already written atomically
 # above (claim_derived_handle) — only an EXPLICIT name still needs the
@@ -671,7 +672,8 @@ else
     echo "The daemon/FE auto-starts $([ "$AGENT" = codex ] && echo ccx || echo ccb) on first attach; the agent joins comm (~1 min). This spawning session has no resolved identity of its own, so give the agent an explicit reply target if one is needed."
 fi
 # Deliver any --task as an ordinary durable comm message (NOT a startup brief):
-# it queues in the agent's inbox now and is read on its /sot-session-start poll.
+# it queues in the agent's inbox now and is read with comm-poll once the daemon
+# tells the agent of mail.
 if [ -n "$TASKMSG" ]; then
     if "$BIN/comm-send.sh" @"$NAME" "$TASKMSG" >/dev/null 2>&1; then
         echo "Task queued to @${NAME}'s inbox (durable; read on bootstrap)."
@@ -689,6 +691,6 @@ if [ -n "$TASKMSG" ]; then
 fi
 if [ "$SPAWN_IS_LOCAL" = true ]; then
     echo "@${NAME} is addressable NOW: ${BIN}/comm-send.sh @${NAME} \"...\" queues durably in its inbox,"
-    echo "and the agent reads the backlog + replies once its comm bootstrap finishes (~1 min after first attach)."
+    echo "and the agent reads it with comm-poll once the daemon tells it of mail, and replies (~1 min after first attach)."
 fi
 echo "Watch: ${BIN}/comm-list.sh  /  ${BIN}/comm-poll.sh"

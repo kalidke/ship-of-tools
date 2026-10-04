@@ -1,6 +1,7 @@
 # ADR 0050: the window close ends this computer's sessions
 
 **Status:** current — Accepted; daemon half lane A, window half lane B, launchers lane C.
+2026-10 amendment (0.6.6): the grant order has no token step and a bad token no longer counts as `Foreign`; the daemon's lease check reads no token.
 **Date:** 2026-10-02
 
 ## Decision

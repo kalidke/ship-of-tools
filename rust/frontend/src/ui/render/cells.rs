@@ -8,6 +8,8 @@
 // Limitations of this step (deliberate — keep the spike scope tight):
 //   - Foreground color is honoured (per-cell, projected into runs of
 //     same-colour cells so each run becomes a coloured TextArea).
+//   - Background colour is dropped: the grid records it, but `project_lines`
+//     emits the foreground and four modifiers only (`run_signature`).
 //   - Per-cell glyph width is approximated as a constant; we trust monospace
 //     metrics from cosmic-text rather than per-cell measuring.
 //   - The cursor position is tracked but not rendered.

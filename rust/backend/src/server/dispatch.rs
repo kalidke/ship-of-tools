@@ -59,6 +59,8 @@ where
             offload_preview_get(tx, frame, session, workspaces, jobs, job_sem, out_tx).await?;
             return Ok(());
         }
+        // Inline: it writes the `.scale.json` sidecar, and a `preview.get`
+        // sent after it on this connection must see the new scale.
         op::PREVIEW_SET_SCALE => {
             crate::files::preview::scale::handle_preview_set_scale(frame.id, frame.payload, &session, &workspaces)
                 .await

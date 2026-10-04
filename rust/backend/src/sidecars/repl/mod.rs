@@ -34,7 +34,7 @@ use supervisor::{spawn_supervisor, spawn_supervisor_with_project};
 /// Julia child's stdout and fans it out here; every connection subscribes and
 /// writes a `repl.frame` evt frame. Mirrors `comm::mail::bus::AgentMessage` — a
 /// small Clone+Debug payload type over a `broadcast::channel`. `workspace_id`
-/// is the originating workspace (None = the legacy singleton REPL). `frame` is
+/// is the originating workspace. `frame` is
 /// the opaque `{kind, ...}` object the Julia shim emitted, passed through
 /// verbatim so the protocol surface stays kernel-defined.
 #[derive(Clone, Debug)]
@@ -95,7 +95,7 @@ struct ReplInner {
     /// DEFAULT env for the persistent REPL so user code runs in the session
     /// package's environment — not the `ShipToolsRepl` shim project. `None`
     /// when the workspace has no `Project.toml` (fall back to the shim-only
-    /// spawn) or for the legacy singleton REPL. `ShipToolsRepl` stays reachable
+    /// spawn). `ShipToolsRepl` stays reachable
     /// via `JULIA_LOAD_PATH` (see `spawn_supervisor_with_project`).
     user_project: Option<PathBuf>,
     submit: Mutex<Option<mpsc::Sender<Submission>>>,
@@ -104,8 +104,7 @@ struct ReplInner {
     /// from a fresh child still reach subscribers.
     frame_tx: broadcast::Sender<ReplFrameMsg>,
     /// The originating workspace id, stamped onto every `ReplFrameMsg` so the
-    /// frontend can route frames to the right REPL drawer. None for the legacy
-    /// singleton REPL.
+    /// frontend can route frames to the right REPL drawer.
     workspace_id: Option<String>,
     /// Child lifecycle (`not_started`/`starting`/`ready`/`dead`), written by
     /// the supervisor under a spawn-generation guard and read by

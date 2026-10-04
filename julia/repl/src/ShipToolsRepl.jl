@@ -352,9 +352,8 @@ end
 """
     discover_project(path; fallback=nothing) -> (dir, toml, source)
 
-Walk up from `path` looking for the nearest `Project.toml`. Mirrors the
-kernel's `discover_project` so a fresh `julia --project=...` subprocess started
-by `repl.run_file` picks up the same env the frontend would see.
+Walk up from `path` looking for the nearest `Project.toml`; the fresh
+`julia --project=...` subprocess `repl.run_file` starts runs in that env.
 """
 function discover_project(path::AbstractString;
                           fallback::Union{AbstractString, Nothing} = nothing)

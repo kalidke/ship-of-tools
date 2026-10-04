@@ -358,7 +358,7 @@ Test-Path ($sc.IconLocation -replace ',0$')       # must be True
 
 # 3. The install manifest exists — WITHOUT it the frontend never checks for
 #    updates (it bails at its "not a release install" guard).
-Get-Content "$env:LOCALAPPDATA\sot\install.json"  # role must be "remote"
+Get-Content "$env:LOCALAPPDATA\sot\install.json"  # carries schema, prefix, version, tag, hub
 
 # 4. The update applier is present and loads under Windows PowerShell 5.1.
 $e = $null
@@ -391,7 +391,7 @@ and needs no manifest.
 ```bash
 ~/.local/share/sot/bin/sotd --version        # must print the release version
 git -C ~/.local/share/sot/repo/current describe --tags   # must equal the tag
-cat ~/.local/share/sot/install.json          # schema 1; role matches step 2
+cat ~/.local/share/sot/install.json          # schema 1; version and tag equal the release
 ```
 
 For backend roles, prove the daemon answers a hello. Two branches:

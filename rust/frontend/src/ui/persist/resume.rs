@@ -1,17 +1,12 @@
 // ui/persist/resume.rs — frontend-side "where we left off" durable state
 // per ADR 0013 §"Startup — resume, don't land".
 //
-// Two files live under `$XDG_CONFIG_HOME/sot/` (or `$HOME/.config/sot/`):
+// One file lives under `$XDG_CONFIG_HOME/sot/` (or `$HOME/.config/sot/`):
 //
 //   state-<hostname>.toml — this file. Global, frontend-local: last mode,
 //   last-attached backend session. Hostname-suffixed because Linux
 //   $HOME is shared across the Linux cohort and three
 //   frontends would otherwise stomp each other's resume state.
-//
-//   sessions/<id>.toml — owned mostly by the backend (the [backend]
-//   section is stamped by `session_state` over there); the frontend
-//   will layer [nav_state] / [layout] / [bl_pane] sections on top in
-//   later commits. v1 here only touches the global file.
 //
 // Read is fail-soft: a missing or malformed file resolves to "no
 // prior state" and the chrome lands on defaults. Write is best-effort:

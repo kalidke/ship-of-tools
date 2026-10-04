@@ -492,7 +492,7 @@ if ($flipped -ne $wanted) {
 if (-not (Set-Junction (Join-Path $Prefix 'julia\current') $checkout)) { Restore-Previous 'flipping julia\current failed' }
 if ($script:applyFailed) { Exit-Apply 0 }
 
-# ---- rewrite install.json (preserve role/prefix/config/service) -------------
+# ---- rewrite install.json (preserve prefix/config/service) -------------
 if ($installText) {
     try {
         $t = Set-JsonField $installText 'version' ($tag -replace '^v', '')

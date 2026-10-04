@@ -89,8 +89,8 @@ pub enum LaneDial {
 }
 
 /// An `Endpoint` value naming one daemon connection, never a row. `token`
-/// mirrors `ProxyConnectReq::token` / `LaneConnectReq::token` — present
-/// only on a token-configured daemon.
+/// mirrors `ProxyConnectReq::token` / `LaneConnectReq::token` — ignored by
+/// the daemon.
 ///
 /// **Trust limitation**: this endpoint holds NO kernel handle on the
 /// lane's actual peer process and can run no OS-level identity check of
@@ -531,15 +531,12 @@ fn absent_kind_from_wire(s: Option<&str>) -> std::io::ErrorKind {
     }
 }
 
-/// `true` iff a wire `unauthenticated` refusal is actually an OLD
-/// daemon's ordinary control-loop auth gate (`server/`'s exact "...
-/// send a token-valid hello first" text) answering a `lane.connect` it
-/// never recognized as a first-frame op — rather than the BRIDGE's own
-/// token check (`lane_bridge.rs`'s "bad or missing token", a daemon
-/// that DOES speak `lane.connect` but rejected THIS dial's `token`).
-/// There is no wire `code` for "predates the bridge" — `unauthenticated`
-/// is genuinely shared between the two cases — so the daemon's own
-/// message text is the only thing that tells them apart.
+/// `true` iff a wire `unauthenticated` refusal is an OLD daemon's ordinary
+/// control-loop auth gate (its "... send a token-valid hello first" text)
+/// answering a `lane.connect` it never recognized as a first-frame op. No
+/// daemon in this tree sends `unauthenticated`. There is no wire `code`
+/// for "predates the bridge", so the daemon's own message text is the only
+/// thing that marks the old gate.
 fn unauthenticated_is_actually_no_bridge(detail: &str) -> bool {
     detail.contains("token-valid hello")
 }

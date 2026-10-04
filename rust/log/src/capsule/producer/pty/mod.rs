@@ -352,7 +352,7 @@ impl Drop for PtyProducer {
         // signal was already handled by the time the syscall returned)
         // and treating `ECHILD` as "already reaped" (harmless: something
         // else — this same call, on a rare double-drop-adjacent race, or
-        // a genuinely foreign reaper after R2's own `SIGCHLD` fix rules
+        // a genuinely foreign reaper after `spawn`'s own `SIGCHLD` fix rules
         // out routine auto-reaping — already collected it), bounded by
         // `REAP_BOUND`. Past that bound, this destructor simply returns:
         // nothing ever addresses this pgid again after `Drop`, and the

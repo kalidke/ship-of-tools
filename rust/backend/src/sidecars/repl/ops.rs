@@ -243,8 +243,7 @@ pub async fn handle_repl_run_file(
 
 /// Walk up from `path`'s parent looking for the nearest `Project.toml`.
 /// Returns `(dir, "discovered")` if found, `None` to let the caller
-/// fall back. Mirrors the kernel's `discover_project` shape so behavior
-/// matches what the frontend sees from `kernel.request project.discover`.
+/// fall back.
 fn closest_project_dir(path: &std::path::Path) -> Option<(std::path::PathBuf, &'static str)> {
     let mut dir = path.parent()?.to_path_buf();
     loop {

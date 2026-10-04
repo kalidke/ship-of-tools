@@ -27,8 +27,9 @@ done
 resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
-# App-level auth (ADR 0010 hardening): daemon requires a token-valid hello
-# first — `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1). Every
+# Hello: the daemon reads each connection's first frame for the protocol
+# version and ignores its token field — `sot_hello_frame` (comm-lib.sh,
+# ADR 0046 decision 1). Every
 # scheme (unix, ssh, pipe) is handled by sot_oneshot_request (comm-lib.sh),
 # which refuses any other, so there is no scheme list to keep here.
 sot_send() {

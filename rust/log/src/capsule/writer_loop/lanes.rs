@@ -37,7 +37,7 @@ pub(super) fn execute_light_actions<P: Producer>(seed: Vec<AttachAction>, leg: &
             AttachAction::Close(conn) => {
                 leg.transport.0.close(conn);
                 leg.splitters.remove(&conn);
-                // Finding 11: purge every pending send this
+                // Purge every pending send this
                 // connection still had outstanding -- a canceled
                 // write's completion, if the transport ever
                 // reported one anyway, must find nothing to apply
@@ -246,13 +246,13 @@ pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> 
                 if err.is_some() {
                     leg.transport.0.close(conn);
                     leg.splitters.remove(&conn);
-                    leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
+                    leg.pending_sends.retain(|&(c, _), _| c != conn);
                     leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
                 }
             }
             TransportEvent::ConnectionClosed(conn) => {
                 leg.splitters.remove(&conn);
-                leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
+                leg.pending_sends.retain(|&(c, _), _| c != conn);
                 leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
             }
             TransportEvent::Sent(conn, id) => {
@@ -291,7 +291,7 @@ pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> 
 }
 
 
-// Finding 7: producer-bound admission is revoked once EndRun begins
+// Producer-bound admission is revoked once EndRun begins
 // (`AttachProto::begin_teardown`), but mgmt (`probe`/`status`) and
 // `Sent` completions must keep being serviced through BOTH teardown
 // phases, until the pipe is explicitly closed -- step 6's adoption
@@ -395,7 +395,7 @@ pub(super) fn service_transport_events_teardown<P: Producer>(leg: &mut Leg<'_, P
             TransportEvent::Sent(conn, id) => {
                 match leg.pending_sends.remove(&(conn, id)) {
                     Some(marker) => execute_teardown_actions(leg.attach_proto.sent(conn, marker, Instant::now()), leg)?,
-                    // Finding 7, same reasoning as the main loop's
+                    // Same reasoning as the main loop's
                     // identical arm: tolerated only for a
                     // connection already closed.
                     None => assert!(

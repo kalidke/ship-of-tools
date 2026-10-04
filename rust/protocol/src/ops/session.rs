@@ -12,12 +12,10 @@ pub struct HelloReq {
     pub session_id: Option<String>,
     #[serde(default)]
     pub last_seen_revision: u64,
-    /// App-level token. Backend resolution order: `--token` (compat) else
-    /// `$SOT_TOKEN` else the canonical `${XDG_CONFIG_HOME:-~/.config}/sot/token`
-    /// file (a single value, not a `tokens.toml` — that path is stale).
-    /// Required on TCP transport whenever the backend has one configured.
-    /// Local Unix-socket transport relies on SSH user identity and private
-    /// filesystem permissions instead of an app token.
+    /// Ignored by the daemon: the app-level token was removed in 0.4.0, and
+    /// the field stays on the wire so older clients and daemons still parse
+    /// each other's hello. Local transports rely on SSH user identity and
+    /// private filesystem permissions instead.
     #[serde(default)]
     pub token: Option<String>,
     /// Wire-contract protocol version the client speaks (ADR 0030 §2). The

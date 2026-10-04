@@ -14,8 +14,9 @@ use super::*;
 /// `ProxyConnectReq::token`.
 ///
 /// Error codes on refusal (standard error payload, connection closes):
-/// `bad_request` (payload didn't parse), `unauthenticated` (bad/missing
-/// token on a token-configured daemon, checked before any row lookup),
+/// `bad_request` (payload didn't parse), `unauthenticated` (no daemon
+/// in this tree sends it; only a daemon from before the token was
+/// removed in 0.4.0 answers `lane.connect` with it),
 /// `unknown_workspace` (`target` names no row), `bad_lane` (as
 /// above), `voyage_mismatch` (`voyage_id` is not the TARGET row's own
 /// current voyage — checked against its durable pointer BEFORE any
