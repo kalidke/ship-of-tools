@@ -4753,709 +4753,28 @@ impl State {
         // fails the borrow check on the platform that has them.
         let help_state = &self.help;
         let help_bindings = &self.bindings;
+        let mut view = ChromeView {
+            layout_preset: &layout_preset, drawer_open, maximize_slot, nav_logo_row, focus, mode,
+            nav_prompt_line: &nav_prompt_line, lease_notice, nav_line: &nav_line, owed_line: &owed_line,
+            status: &status, nav_cursor_body_pos, tree_empty, contrast_dim, concept_status: &concept_status,
+            last_key: &last_key, nav_has_cursor, nav_spill_active, preview_name: &preview_name,
+            pinned_preview_node_id: &self.pinned_preview_node_id, drawer, monitor_host_connected,
+            monitor_host_label: &monitor_host_label, repl_input: &repl_input, repl_lines: &repl_lines,
+            repl_pkg_mode, help_state, help_bindings, help_context: &help_context, clock_now,
+            battery: &battery, version_stamp: &version_stamp, version_skew, pty_screen,
+            pane_overlay: &pane_overlay, term_screen, owed_drawn, leaving_drawn, nav_scroll, preview_cells,
+            repl_cells, new_pane_rects, new_repl_scroll, repl_scrollback_cells, repl_window,
+            pty_size_observed, term_size_observed,
+        };
         self.terminal
             .draw(|frame| {
-                let area = frame.area();
-                // Inner divisions positioned by the user-configurable
-                // settings (defaults 50/50, see settings.toml). Range
-                // clamped to [10, 90] at parse time so the math here
-                // can't degenerate.
-                // Pane geometry — pure integer math, no Block borders.
-                // Borders are drawn by us into the buffer below so every
-                // shared edge is exactly one cell wide and junctions are
-                // proper line-drawing characters. The "content" rects
-                // are the interior of each quadrant (no border cells).
-                //
-                //   col 0 = outer left   col mid_col = inner vertical   col last = outer right
-                //   row 0 = outer top    row mid_row = inner horizontal row last = outer bottom
-                // Preset-driven geometry (ADR 0014 layout rework).
-                // Each named slot gets a rect; vlines/hlines drive the
-                // wireframe + title positioning. Maximisation collapses
-                // every other slot + every inner border so the focused
-                // pane absorbs the area; zero-sized siblings' paint
-                // paths no-op (the pty.open/resize guard at
-                // `cols >= 2 && rows >= 2` similarly keeps the BL
-                // backend safe). Toggle: Ctrl+z. A leave's line restores the
-                // panes (`maximize_slot`).
-                let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
-                // Names preserved so the rest of the closure reads
-                // unchanged: nav = old TL (left column), preview = old
-                // TR (middle column), llm = old BL (rightmost column
-                // in the 3-col layout), repl = old BR (bottom drawer).
-                // `nav_frame_rect` is the pane as laid out (title and focus border
-                // hang off it); `nav_rect` is what the tree body may use -- one
-                // row shorter when the wordmark owns the first row.
-                let nav_frame_rect = geom.rect_for(crate::settings::Slot::Nav);
-                let nav_rect = if nav_logo_row && nav_frame_rect.height > 1 {
-                    ratatui::layout::Rect {
-                        y: nav_frame_rect.y + 1,
-                        height: nav_frame_rect.height - 1,
-                        ..nav_frame_rect
-                    }
-                } else {
-                    nav_frame_rect
-                };
-                let preview_rect = geom.rect_for(crate::settings::Slot::Preview);
-                let llm_rect = geom.rect_for(crate::settings::Slot::Llm);
-                let repl_rect = geom.rect_for(crate::settings::Slot::Repl);
-
-                // Style palette: borders are uniform gray; focus is
-                // signalled only through title colour (cyan when the
-                // pane has focus, gray otherwise). No per-pane border
-                // colour means the wireframe stays internally
-                // consistent.
-                let border_style = Style::default().fg(Color::DarkGray);
-                let focus_title_style = Style::default().fg(Color::LightCyan);
-                let idle_title_style = Style::default().fg(Color::DarkGray);
-
-                let nav_focus = focus == PaneFocus::NavTree;
-                let nav_title = format!(
-                    " nav · mode: {} {} ",
-                    mode.label(),
-                    if nav_focus { "· [FOCUS]" } else { "" }
-                );
-                // Help lives on the focused border; keep the nav header compact.
-                // The status text wraps at the pane's width (a toast is a
-                // sentence): "status: " heads the first line only. Everything
-                // below counts from body_lines.len(), and the cursor's body
-                // position (a header of one status line and a spacer, computed
-                // before the draw) shifts by the extra lines here.
-                let nav_w = nav_rect.width as usize;
-                let (nav_list_h, nav_pinned, line_whole) = nav_pinned_rows(
-                    nav_prompt_line.as_ref().map(|(t, c)| (t.as_str(), c.as_str())),
-                    lease_notice,
-                    nav_line.as_deref(),
-                    nav_w,
-                    nav_rect.height as usize,
-                );
-                let nav_list_rect = ratatui::layout::Rect { height: nav_list_h as u16, ..nav_rect };
-                // Only a line drawn whole is acked: a grant's count here, the
-                // leaving line once presented (`Leaving::presented`).
-                owed_drawn = line_whole && owed_line.is_some() && nav_line == owed_line;
-                leaving_drawn = line_whole;
-                let mut body_lines = status_spans(&status, nav_w);
-                let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
-                body_lines.push(RtLine::from(""));
-                if tree_empty {
-                    body_lines.push(RtLine::from(vec![Span::styled(
-                        "  (no tree yet)",
-                        Style::default().add_modifier(Modifier::DIM),
-                    )]));
-                }
-                // Exact tree-row span of body_lines, captured AT ASSEMBLY
-                // (codex round 4: the header is not a constant — Files/
-                // Modules carry 4 chrome lines, Sessions 5, the picker 3 —
-                // so any fixed offset either spills chrome or misses bottom
-                // rows). The picker's own header row lives inside
-                // tree_lines and stays spill-eligible on purpose: floating
-                // the full picker path is exactly what the spill is for.
-                let tree_rows_body_start = body_lines.len();
-                for (
-                    text,
-                    is_selected,
-                    is_stale,
-                    is_pinned,
-                    agent,
-                    flash,
-                    is_pending,
-                    is_attention,
-                ) in
-                    &tree_lines
-                {
-                    let mut style = Style::default();
-                    // Cross-cutting colour layer. `is_stale` (annotation
-                    // drift OR, since ADR 0030 §8 decision 31c, a foreign-
-                    // build capsule row) is loudest and checked FIRST — a
-                    // row that is drifted or unusable must read that way
-                    // regardless of any work-state tone it also carries.
-                    // Below that, state-nav agent tone (ADR 0023) owns the
-                    // colour of a Sessions row that has one: working/idle/
-                    // blocked/done each get a hue, a stale "working" wilts
-                    // (DIM), and selection still reads through the `>`
-                    // caret + bold so the cursor stays visible over the
-                    // state colour. Without an agent tone either, the
-                    // original layer applies: the pinned accent (bright
-                    // cyan, distinct from the yellow stale/selected hues),
-                    // then selection (light yellow), then dim.
-                    if *is_attention {
-                        // Attention row: yellow + BOLD. Scoped to rows that
-                        // announce a key the user must press BEFORE the
-                        // default commits, so it never competes with the
-                        // cross-cutting stale hue below (which stays plain
-                        // yellow — drift is noticed, not shouted).
-                        style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
-                    } else if *is_stale {
-                        style = style.fg(Color::Yellow);
-                    } else if let Some((tone, aged)) = agent {
-                        // Resolve the tone to RGB through the shared contrast
-                        // helper so the nav row and the bottom strip render
-                        // the same pixels. `Color::Rgb` (not the named tone
-                        // colour) is required because the "bright"/"dim"
-                        // levers and the status-change flash scale/lerp the
-                        // channels — ratatui can't lerp a named colour. Bold
-                        // still composes with the colour, and the
-                        // stale-"working" wilt still DIMs.
-                        let (rgb, bold, dim) =
-                            contrast_tone_rgb(*tone, *aged, *is_selected, contrast_dim, *flash);
-                        if let Some((r, g, b)) = rgb {
-                            style = style.fg(Color::Rgb(r, g, b));
-                        }
-                        if dim {
-                            style = style.add_modifier(Modifier::DIM);
-                        }
-                        if bold {
-                            style = style.add_modifier(Modifier::BOLD);
-                        }
-                    } else if *is_pinned {
-                        style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
-                    } else if *flash > 0.0 {
-                        // Tone-less Sessions row that just changed state:
-                        // resolve the base fg + flash toward white so the
-                        // blink reads even without a state colour.
-                        let base = if *is_selected {
-                            (245, 245, 67)
-                        } else {
-                            (204, 204, 204)
-                        };
-                        let (r, g, b) = lerp_to_white(base, *flash);
-                        style = style.fg(Color::Rgb(r, g, b));
-                        if *is_selected {
-                            style = style.add_modifier(Modifier::BOLD);
-                        }
-                    } else if *is_selected {
-                        style = style.fg(Color::LightYellow);
-                    } else if contrast_dim && mode == Mode::Sessions {
-                        // "dim" lever: fade non-selected Sessions rows that
-                        // carry no tone so the selection pops by contrast.
-                        // Scoped to Sessions so Files/Modules nav is untouched.
-                        let (r, g, b) = scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR);
-                        style = style.fg(Color::Rgb(r, g, b));
-                    } else {
-                        style = style.add_modifier(Modifier::DIM);
-                    }
-                    // Badge floor (ADR 0025 §1): a workspace with a pending
-                    // nav.preview result gets a non-disruptive "result waiting"
-                    // badge — a leading `● ` sigil in bright white + bold,
-                    // and the row fg pulled to the same accent (clearing DIM) so
-                    // it reads distinctly from the work-state tones (green
-                    // working / purple waiting / red blocked / etc.) and the
-                    // cyan pin, without adding another hue to the palette. The
-                    // view is never switched; only the colour/sigil changes.
-                    if *is_pending {
-                        const PENDING_ACCENT: Color = Color::Rgb(255, 255, 255);
-                        style = style.fg(PENDING_ACCENT).remove_modifier(Modifier::DIM);
-                        if *is_selected {
-                            style = style.add_modifier(Modifier::BOLD);
-                        }
-                        body_lines.push(RtLine::from(vec![
-                            Span::styled(
-                                "● ",
-                                Style::default()
-                                    .fg(PENDING_ACCENT)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(text.clone(), style),
-                        ]));
-                    } else {
-                        body_lines.push(RtLine::from(vec![Span::styled(text.clone(), style)]));
-                    }
-                }
-                let tree_rows_body_end = body_lines.len();
-                body_lines.push(RtLine::from(""));
-                body_lines.push(RtLine::from(vec![Span::styled(
-                    concept_status.clone(),
-                    Style::default().fg(Color::LightMagenta),
-                )]));
-                body_lines.push(RtLine::from(""));
-                body_lines.push(RtLine::from(vec![
-                    Span::styled("key: ", Style::default().fg(Color::DarkGray)),
-                    Span::raw(last_key.clone().unwrap_or_else(|| "(none)".to_string())),
-                ]));
-                // Scroll the nav body so the selected tree row stays in
-                // the comfort zone — the middle 1/3 of the pane. Going
-                // down: once cursor crosses the bottom-third boundary,
-                // the scroll advances so the cursor stays planted at
-                // that boundary, no big jumps. Going up: same on the
-                // top boundary. At the actual top/bottom of the body
-                // the cursor falls through to the real first/last row,
-                // since clamping `nav_scroll` to [0, max_scroll]
-                // releases it. Header lines scroll off the top as a
-                // simple trade; sub-paneled header/footer is a later
-                // refinement.
-                let nav_inner_h = nav_list_h;
-                let body_len = body_lines.len();
-                if !nav_has_cursor || body_len <= nav_inner_h {
-                    nav_scroll = 0;
-                } else {
-                    let scrolloff = (nav_inner_h / 3).max(1);
-                    let min_view = scrolloff;
-                    // last comfort row in the viewport (inclusive)
-                    let max_view = nav_inner_h.saturating_sub(scrolloff).saturating_sub(1);
-                    let view_pos = nav_cursor_body_pos.saturating_sub(nav_scroll as usize);
-                    if view_pos < min_view {
-                        nav_scroll = (nav_cursor_body_pos.saturating_sub(min_view)) as u16;
-                    } else if view_pos > max_view {
-                        nav_scroll = (nav_cursor_body_pos.saturating_sub(max_view)) as u16;
-                    }
-                    let max_scroll = body_len.saturating_sub(nav_inner_h) as u16;
-                    if nav_scroll > max_scroll {
-                        nav_scroll = max_scroll;
-                    }
-                }
-                // Nav-spill segment collection: for each visible TREE row
-                // whose text is wider than the nav column, record the full
-                // row (truncated to the overlay's reach cap) so the render-
-                // pass tail can float it over the preview's left edge.
-                // TREE rows only — the assembly-captured span above: header
-                // and trailing chrome lines (status/help/concept/key) never
-                // spill (codex review). Widths are terminal
-                // CELLS via unicode-width, so CJK/emoji names measure and
-                // truncate exactly (codex review).
-                if nav_spill_active && nav_rect.width > 0 && preview_rect.width > 0 {
-                    use unicode_width::UnicodeWidthStr;
-                    // Reach: from the nav left edge to 2 cells short of the
-                    // preview's right edge, in cells.
-                    let max_cells = (preview_rect.x + preview_rect.width)
-                        .saturating_sub(2)
-                        .saturating_sub(nav_rect.x) as usize;
-                    let first = nav_scroll as usize;
-                    let tree_span = tree_rows_body_start..tree_rows_body_end;
-                    let visible = body_lines.iter().skip(first).take(nav_list_h);
-                    for (vis_idx, line) in visible.enumerate() {
-                        if !tree_span.contains(&(first + vis_idx)) {
-                            continue;
-                        }
-                        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                        let cell_w = UnicodeWidthStr::width(text.as_str());
-                        let Some(take) = nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
-                        else {
-                            continue;
-                        };
-                        // Style of the widest span — rows are one span, or
-                        // sigil + text where the text span dominates (and
-                        // the pending sigil shares the text's accent
-                        // anyway), so a single-run overlay is colour-
-                        // faithful in practice.
-                        let style = line
-                            .spans
-                            .iter()
-                            .max_by_key(|s| UnicodeWidthStr::width(s.content.as_ref()))
-                            .map(|s| s.style)
-                            .unwrap_or_default();
-                        let (shown, shown_cells) = if take < cell_w {
-                            truncate_to_cells(&text, take)
-                        } else {
-                            let w = UnicodeWidthStr::width(text.as_str());
-                            (text, w)
-                        };
-                        let width_cells = shown_cells as u16;
-                        nav_spill_segs_out.push(NavSpillSeg {
-                            x: nav_rect.x,
-                            row: nav_rect.y + vis_idx as u16,
-                            text: shown,
-                            width_cells,
-                            color: crate::chrome::ratatui_color_to_rgb(style.fg),
-                            bold: style.add_modifier.contains(Modifier::BOLD),
-                            dim: style.add_modifier.contains(Modifier::DIM),
-                        });
-                    }
-                }
-                let nav_body = Paragraph::new(body_lines).scroll((nav_scroll, 0));
-
-                // Other pane titles + body widgets. No Block / borders
-                // — we paint the frame ourselves below so the math is
-                // exact and there are no double walls.
-                let preview_focus = focus == PaneFocus::Preview;
-                let preview_pinned = self.pinned_preview_node_id.is_some();
-                // T1: surface the full path of the file the preview is showing
-                // (clipped in the narrow nav column) here in the wide title.
-                // Markers go after the name so middle-truncating the name to
-                // fit never drops [FOCUS]/[pinned *].
-                let preview_title = {
-                    let mut markers = String::new();
-                    if preview_focus {
-                        markers.push_str(" · [FOCUS]");
-                    }
-                    if preview_pinned {
-                        markers.push_str(" · [pinned *]");
-                    }
-                    match preview_name.clone() {
-                        Some(name) => {
-                            // Budget the name against the pane width so even an
-                            // over-long title keeps its basename + the markers.
-                            let avail = preview_rect.width.saturating_sub(2) as usize;
-                            let fixed = " preview · ".chars().count() + markers.chars().count() + 1; // trailing space
-                            let name_budget = avail.saturating_sub(fixed).max(1);
-                            let shown = middle_truncate(&name, name_budget);
-                            format!(" preview · {shown}{markers} ")
-                        }
-                        None => format!(" preview{markers} "),
-                    }
-                };
-                // The preview slot still needs its content cell rect
-                // exported for the wgpu preview-layer surface.
-                preview_cells = preview_rect;
-                // Drawer cell rect, exported for the Ctrl+M monitor chart quad.
-                repl_cells = repl_rect;
-                // Cache the four pane content rects for between-frame
-                // hit-testing (mouse wheel → which pane scrolls).
-                new_pane_rects = PaneRects {
-                    nav: nav_frame_rect,
-                    preview: preview_rect,
-                    llm: llm_rect,
-                    repl: repl_rect,
-                };
-
-                let llm_focus = focus == PaneFocus::Llm;
-                let llm_title = if llm_focus {
-                    " llm · [FOCUS] ".to_string()
-                } else {
-                    " llm ".to_string()
-                };
-
-                let repl_focus = focus == PaneFocus::Repl;
-                // G6: the drawer title reflects which content it's showing —
-                // the Julia REPL (Ctrl+J) or the local terminal (Ctrl+T).
-                let repl_title = match (drawer, repl_focus) {
-                    (DrawerContent::Terminal, true) => " terminal · [FOCUS] ".to_string(),
-                    (DrawerContent::Terminal, false) => " terminal ".to_string(),
-                    // 4.3, option (a): names whose record this is — the
-                    // resolved host (the hub when it's connected, else the
-                    // `default_host` fallback), flagged when that host
-                    // isn't actually among today's connections.
-                    (DrawerContent::Monitor, _) => {
-                        if monitor_host_connected {
-                            format!(" monitor · {monitor_host_label} ")
-                        } else {
-                            format!(" monitor · {monitor_host_label} [not connected] ")
-                        }
-                    }
-                    (DrawerContent::Help, _) => " help ".to_string(),
-                    (_, true) => " repl · julia · [FOCUS] ".to_string(),
-                    (_, false) => " repl · julia ".to_string(),
-                };
-                // Input pane height tracks the number of newline-separated
-                // lines in `repl_input` so a multi-line buffer (built up
-                // via Shift+Enter) is fully visible while editing. Capped
-                // at `repl_rect.height - 1` so at least one row of
-                // scrollback is always on screen — a runaway buffer
-                // narrows scrollback but is still recoverable via Enter
-                // or Backspace.
-                let input_line_count = (repl_input.matches('\n').count() + 1) as u16;
-                let max_input_rows = repl_rect.height.saturating_sub(1).max(1);
-                let input_rows = input_line_count.min(max_input_rows).max(1);
-                let repl_split = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(0), Constraint::Length(input_rows)])
-                    .split(repl_rect);
-                let scroll_h = repl_split[0].height as usize;
-                // Scrollback window: `repl_scroll` is the number of rows
-                // *back from the tail*. 0 = live; positive = older. Clamp
-                // so the user can't scroll past the top of the log, and
-                // write the clamped value back to State so the wheel
-                // handler doesn't accumulate dead range.
-                let total = repl_lines.len();
-                let max_scroll = total.saturating_sub(scroll_h) as u16;
-                let clamped = new_repl_scroll.min(max_scroll);
-                new_repl_scroll = clamped;
-                let end = total.saturating_sub(clamped as usize);
-                let start = end.saturating_sub(scroll_h);
-                // Export for the inline-image paint pass: which absolute
-                // lines are on screen, and the sub-rect they render into.
-                repl_scrollback_cells = repl_split[0];
-                repl_window = (start, end);
-                let scroll_para = Paragraph::new(repl_lines[start..end].to_vec());
-                // Mode-aware prompt: `julia> ` in cyan vs `pkg> ` in
-                // blue (matches the standard Julia REPL palette). Dim
-                // both when the REPL pane isn't focused — same
-                // attention-direction trick as before.
-                // Match the stdlib `REPL.jl` / VSCode Julia-ext palette:
-                // `julia>` green, `pkg>` blue. Light* variants pop on the
-                // near-black surface fg.
-                let prompt_text = if repl_pkg_mode { "pkg> " } else { "julia> " };
-                let prompt_focus_color = if repl_pkg_mode {
-                    Color::LightBlue
-                } else {
-                    Color::LightGreen
-                };
-                let prompt_color = if repl_focus {
-                    prompt_focus_color
-                } else {
-                    Color::DarkGray
-                };
-                // Multi-line input: first segment carries the live prompt,
-                // continuation segments get a same-width filler so the
-                // text column stays aligned under the prompt. Cursor
-                // block lives at the end of the last segment regardless
-                // of how many lines deep we are.
-                let cont_pad: String = " ".repeat(prompt_text.len());
-                let segments: Vec<&str> = repl_input.split('\n').collect();
-                let last_idx = segments.len().saturating_sub(1);
-                let input_rt_lines: Vec<RtLine> = segments
-                    .iter()
-                    .enumerate()
-                    .map(|(i, seg)| {
-                        let mut spans: Vec<Span> = Vec::with_capacity(3);
-                        if i == 0 {
-                            spans
-                                .push(Span::styled(prompt_text, Style::default().fg(prompt_color)));
-                        } else {
-                            spans.push(Span::raw(cont_pad.clone()));
-                        }
-                        spans.push(Span::raw(seg.to_string()));
-                        if repl_focus && i == last_idx {
-                            spans.push(Span::styled(
-                                "\u{2588}",
-                                Style::default().fg(prompt_focus_color),
-                            ));
-                        }
-                        RtLine::from(spans)
-                    })
-                    .collect();
-                let input_para = Paragraph::new(input_rt_lines);
-
-                // Render content widgets into the interior content
-                // rects (no borders). The drawer's REPL scrollback + input
-                // only render when the drawer is actually showing the REPL;
-                // when it shows the Terminal (G3) the vt100 grid is painted
-                // into `repl_rect` after the wireframe instead.
-                frame.render_widget(nav_body, nav_list_rect);
-                frame.render_widget(
-                    Paragraph::new(
-                        nav_pinned
-                            .iter()
-                            .map(|r| RtLine::from(Span::styled(r.clone(), Style::default().fg(Color::LightGreen))))
-                            .collect::<Vec<_>>(),
-                    ),
-                    ratatui::layout::Rect {
-                        y: nav_rect.y + nav_list_h as u16,
-                        height: nav_pinned.len() as u16,
-                        ..nav_rect
-                    },
-                );
-                if drawer == DrawerContent::Help {
-                    help::render(frame, repl_rect, help_state, help_bindings);
-                }
-                if drawer == DrawerContent::Repl {
-                    frame.render_widget(scroll_para, repl_split[0]);
-                    frame.render_widget(input_para, repl_split[1]);
-                }
-
-                // Paint the wireframe directly into the buffer.
-                // vlines/hlines drive the inner borders + corner
-                // junctions; outer perimeter is always drawn. Each
-                // border cell is written exactly once.
-                let buf = frame.buffer_mut();
-                draw_wireframe(
-                    buf,
-                    area,
-                    &geom.vlines,
-                    &geom.hlines,
-                    geom.drawer_x_end,
-                    geom.llm_left_vline,
-                    border_style,
-                );
-                // Titles overlay the top wireframe edge of each
-                // column (and the drawer's top edge when open). Each
-                // title is clamped to its column's interior width so
-                // it can't smear over a divider or the neighbour's
-                // title.
-                let title_style_for = |focused: bool| {
-                    if focused {
-                        focus_title_style
-                    } else {
-                        idle_title_style
-                    }
-                };
-                let title_w = |rect: ratatui::layout::Rect| rect.width.saturating_sub(2);
-                if nav_frame_rect.width > 0 {
-                    write_title(
-                        buf,
-                        nav_frame_rect.x + 1,
-                        nav_frame_rect.y.saturating_sub(1),
-                        &nav_title,
-                        title_w(nav_frame_rect),
-                        title_style_for(nav_focus),
-                    );
-                }
-                if preview_rect.width > 0 {
-                    write_title(
-                        buf,
-                        preview_rect.x + 1,
-                        preview_rect.y.saturating_sub(1),
-                        &preview_title,
-                        title_w(preview_rect),
-                        title_style_for(preview_focus),
-                    );
-                }
-                if llm_rect.width > 0 {
-                    write_title(
-                        buf,
-                        llm_rect.x + 1,
-                        llm_rect.y.saturating_sub(1),
-                        &llm_title,
-                        title_w(llm_rect),
-                        title_style_for(llm_focus),
-                    );
-                }
-                if repl_rect.width > 0 {
-                    write_title(
-                        buf,
-                        repl_rect.x + 1,
-                        repl_rect.y.saturating_sub(1),
-                        &repl_title,
-                        title_w(repl_rect),
-                        title_style_for(repl_focus),
-                    );
-                }
-
-                let focused_rect = match focus {
-                    PaneFocus::NavTree => nav_frame_rect, PaneFocus::Preview => preview_rect,
-                    PaneFocus::Llm => llm_rect, PaneFocus::Repl => repl_rect,
-                };
-                if focused_rect.width > 2 {
-                    let width = focused_rect.width.saturating_sub(2) as usize;
-                    let title = format!(" {} · ", help_context.title());
-                    let title_width = unicode_width::UnicodeWidthStr::width(title.as_str());
-                    let hint = help::border(&help_context, help_bindings, width.saturating_sub(title_width));
-                    let title = help::truncate(&format!("{title}{hint}"), width);
-                    // Clear old title glyphs before writing the shorter dynamic title.
-                    for x in focused_rect.x..focused_rect.x + focused_rect.width {
-                        buf[(x, focused_rect.y.saturating_sub(1))].set_symbol("─").set_style(border_style);
-                    }
-                    write_title(buf, focused_rect.x + 1, focused_rect.y.saturating_sub(1),
-                        &title, width as u16, focus_title_style);
-                }
-
-                // Live local-time clock, right-aligned on the top edge just
-                // inside the outer-right corner glyph. Same chrome text style
-                // as an idle pane title. Repaints ~1×/second via the
-                // `about_to_wait` WaitUntil scheduling below.
-                {
-                    let clock_label = format!(" {} ", clock_label(clock_now, area.width));
-                    let clock_cells = clock_label.chars().count() as u16;
-                    // Keep the ┐ corner; sit one cell to its left, then back
-                    // off by the label width. No-op if the window is too
-                    // narrow to fit the clock without colliding with a title.
-                    if area.width > clock_cells + 2 {
-                        let clock_x = area.x + area.width - 1 - clock_cells;
-                        write_title(
-                            buf,
-                            clock_x,
-                            area.y,
-                            &clock_label,
-                            clock_cells,
-                            idle_title_style,
-                        );
-
-                        // Battery indicator sits immediately left of the clock
-                        // with a one-cell gap, same dim chrome style. Painted
-                        // only if a battery is present (cached label is `Some`)
-                        // AND the window is wide enough to fit it left of the
-                        // clock without colliding with the left border. When
-                        // it's too narrow we drop the battery and keep the
-                        // clock.
-                        if let Some(batt) = battery.as_deref() {
-                            let batt_label = format!(" {batt} ");
-                            let batt_cells = batt_label.chars().count() as u16;
-                            // Need: left border (x) + at least one cell, then
-                            // the battery, then the clock. Guard with the same
-                            // ">" slack the clock uses.
-                            if clock_x > area.x + batt_cells + 1 {
-                                let batt_x = clock_x - batt_cells;
-                                write_title(
-                                    buf,
-                                    batt_x,
-                                    area.y,
-                                    &batt_label,
-                                    batt_cells,
-                                    idle_title_style,
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // FE/BE version stamp, left-aligned on the BOTTOM outer edge
-                // — the mirror of the `nav · mode:` title on the top edge,
-                // same `write_title` treatment and the same two-cell inset
-                // from the corner glyph. Sits ON the border line; the session
-                // strip is a pixel overlay one row lower, so the two don't
-                // fight for the same cells.
-                //
-                // Dark gray when FE and BE agree, yellow when they don't:
-                // the halves drift independently (rebuild one, forget the
-                // other), and a skew you have to read character-by-character
-                // to notice isn't surfaced at all.
-                {
-                    let stamp_cells = version_stamp.chars().count() as u16;
-                    let bot_y = area.y + area.height - 1;
-                    // Same guard shape as the clock: skip entirely rather
-                    // than smear a truncated version across the corner when
-                    // the window is too narrow to hold it.
-                    if area.width > stamp_cells + 2 {
-                        write_title(
-                            buf,
-                            area.x + 2,
-                            bot_y,
-                            &version_stamp,
-                            stamp_cells,
-                            if version_skew {
-                                Style::default().fg(Color::Yellow)
-                            } else {
-                                idle_title_style
-                            },
-                        );
-                    }
-                }
-
-                // LLM pane: paint the vt100 terminal grid into the
-                // BL content rect. Walk every cell of the emulator
-                // screen at (row, col), look up its glyph + colour,
-                // and write into the chrome buffer at the matching
-                // (llm_rect.x + col, llm_rect.y + row). The emulator
-                // was sized to llm_rect earlier, so the grid fits
-                // exactly.
-                paint_terminal(buf, llm_rect, &pty_screen);
-                // ADR 0030 §8 "Where it is shown", widened by ADR 0045
-                // decision 1 (Codex review): overlays the persistent reason
-                // line, and under it the discarded-input count, whenever
-                // either is set —
-                // whatever `pty_screen` actually painted underneath,
-                // including a checkpointed client's own now-STALE frozen
-                // content (a live failure/retry must never hide behind
-                // real-but-old output), not only the dead-uncheckpointed
-                // fallback to the (usually blank, unrelated) tmux screen
-                // this originally covered.
-                if llm_rect.width > 2 {
-                    for (row, line) in pane_overlay.iter().enumerate().take(llm_rect.height as usize) {
-                        write_title(
-                            buf,
-                            llm_rect.x + 1,
-                            llm_rect.y + row as u16,
-                            line,
-                            llm_rect.width - 2,
-                            Style::default().fg(Color::Yellow),
-                        );
-                    }
-                }
-                pty_size_observed = (llm_rect.width, llm_rect.height);
-                // G3: local terminal drawer — paint its vt100 grid into the
-                // drawer rect (same renderer as the LLM pane). Record the
-                // rect so the PTY can be resized to match after the closure.
-                if drawer == DrawerContent::Terminal && repl_rect.width > 0 {
-                    if let Some(scr) = term_screen {
-                        paint_terminal(buf, repl_rect, scr);
-                    }
-                    term_size_observed = (repl_rect.width, repl_rect.height);
-                }
-                // (The active-workspace indicator is now the bottom session
-                // strip — all sessions, active centered + bold — drawn as a
-                // pixel-positioned overlay after this ratatui pass via
-                // `session_strip_lines`. It supersedes the old single
-                // centered marker that used to paint here.)
+                view.paint(frame, tree_lines, &mut nav_spill_segs_out);
             })
             .context("ratatui draw failed")?;
+        ChromeView {
+            owed_drawn, leaving_drawn, nav_scroll, preview_cells, repl_cells, new_pane_rects, new_repl_scroll,
+            repl_scrollback_cells, repl_window, pty_size_observed, term_size_observed, ..
+        } = view;
         // Persist the scroll the draw closure landed on so the next
         // frame starts from the same offset (sticky behaviour); the
         // closure can't write to self.tree_scroll directly because the
@@ -5509,6 +4828,945 @@ type NavRow = (
 );
 
 const BLOCK_PAD_Y: f32 = 4.0;
+
+/// What one frame's chrome draw reads and writes. The ratatui draw closure
+/// cannot borrow `self` (`terminal.draw` holds it), so `draw_chrome` lends it
+/// this view of its own locals; fields below `// written by the draw` are the
+/// closure's results, copied back into `draw_chrome`'s locals after the draw.
+struct ChromeView<'a> {
+    layout_preset: &'a crate::settings::LayoutPreset,
+    drawer_open: bool,
+    maximize_slot: Option<crate::settings::Slot>,
+    nav_logo_row: bool,
+    focus: PaneFocus,
+    mode: Mode,
+    nav_prompt_line: &'a Option<(String, String)>,
+    lease_notice: Option<&'static str>,
+    nav_line: &'a Option<String>,
+    owed_line: &'a Option<String>,
+    status: &'a String,
+    nav_cursor_body_pos: usize,
+    tree_empty: bool,
+    contrast_dim: bool,
+    concept_status: &'a String,
+    last_key: &'a Option<String>,
+    nav_has_cursor: bool,
+    nav_spill_active: bool,
+    preview_name: &'a Option<String>,
+    pinned_preview_node_id: &'a Option<String>,
+    drawer: DrawerContent,
+    monitor_host_connected: bool,
+    monitor_host_label: &'a HostKey,
+    repl_input: &'a String,
+    repl_lines: &'a Vec<RtLine<'static>>,
+    repl_pkg_mode: bool,
+    help_state: &'a help::Help,
+    help_bindings: &'a KeyBindings,
+    help_context: &'a help::Context,
+    clock_now: chrono::NaiveDateTime,
+    battery: &'a Option<String>,
+    version_stamp: &'a String,
+    version_skew: bool,
+    pty_screen: &'a vt100::Screen,
+    pane_overlay: &'a Vec<String>,
+    term_screen: Option<&'a vt100::Screen>,
+    // written by the draw
+    owed_drawn: bool,
+    leaving_drawn: bool,
+    nav_scroll: u16,
+    preview_cells: ratatui::layout::Rect,
+    repl_cells: ratatui::layout::Rect,
+    new_pane_rects: PaneRects,
+    new_repl_scroll: u16,
+    repl_scrollback_cells: ratatui::layout::Rect,
+    repl_window: (usize, usize),
+    pty_size_observed: (u16, u16),
+    term_size_observed: (u16, u16),
+}
+
+impl ChromeView<'_> {
+    fn paint(
+        &mut self,
+        frame: &mut ratatui::Frame<'_>,
+        tree_lines: Vec<NavRow>,
+        nav_spill_segs_out: &mut Vec<NavSpillSeg>,
+    ) {
+        let ChromeView { focus, mode, .. } = *self;
+        let area = frame.area();
+        let (geom, nav_frame_rect, nav_rect, preview_rect, llm_rect, repl_rect) = self.pane_rects(area);
+
+        // Style palette: borders are uniform gray; focus is
+        // signalled only through title colour (cyan when the
+        // pane has focus, gray otherwise). No per-pane border
+        // colour means the wireframe stays internally
+        // consistent.
+        let border_style = Style::default().fg(Color::DarkGray);
+        let focus_title_style = Style::default().fg(Color::LightCyan);
+        let idle_title_style = Style::default().fg(Color::DarkGray);
+
+        let nav_focus = focus == PaneFocus::NavTree;
+        let nav_title = format!(
+            " nav · mode: {} {} ",
+            mode.label(),
+            if nav_focus { "· [FOCUS]" } else { "" }
+        );
+        let (nav_list_h, nav_pinned, nav_list_rect, nav_body) = self.nav_body(nav_rect, preview_rect, tree_lines, nav_spill_segs_out);
+
+        // Other pane titles + body widgets. No Block / borders
+        // — we paint the frame ourselves below so the math is
+        // exact and there are no double walls.
+        let preview_focus = focus == PaneFocus::Preview;
+        let preview_pinned = self.pinned_preview_node_id.is_some();
+        let preview_title = self.preview_title(preview_focus, preview_pinned, preview_rect);
+        self.export_pane_rects(nav_frame_rect, preview_rect, llm_rect, repl_rect);
+
+        let llm_focus = focus == PaneFocus::Llm;
+        let llm_title = if llm_focus {
+            " llm · [FOCUS] ".to_string()
+        } else {
+            " llm ".to_string()
+        };
+
+        let repl_focus = focus == PaneFocus::Repl;
+        let repl_title = self.drawer_title(repl_focus);
+        let (repl_split, scroll_para, input_para) = self.repl_drawer_body(repl_rect, repl_focus);
+
+        render_nav_widgets(frame, nav_body, nav_list_rect, nav_pinned, nav_rect, nav_list_h);
+        self.render_drawer_widgets(frame, repl_rect, scroll_para, input_para, repl_split);
+
+        // Paint the wireframe directly into the buffer.
+        // vlines/hlines drive the inner borders + corner
+        // junctions; outer perimeter is always drawn. Each
+        // border cell is written exactly once.
+        let buf = frame.buffer_mut();
+        draw_wireframe(
+            buf,
+            area,
+            &geom.vlines,
+            &geom.hlines,
+            geom.drawer_x_end,
+            geom.llm_left_vline,
+            border_style,
+        );
+        // Titles overlay the top wireframe edge of each
+        // column (and the drawer's top edge when open). Each
+        // title is clamped to its column's interior width so
+        // it can't smear over a divider or the neighbour's
+        // title.
+        let title_style_for = |focused: bool| {
+            if focused {
+                focus_title_style
+            } else {
+                idle_title_style
+            }
+        };
+        let title_w = |rect: ratatui::layout::Rect| rect.width.saturating_sub(2);
+        if nav_frame_rect.width > 0 {
+            write_title(
+                buf,
+                nav_frame_rect.x + 1,
+                nav_frame_rect.y.saturating_sub(1),
+                &nav_title,
+                title_w(nav_frame_rect),
+                title_style_for(nav_focus),
+            );
+        }
+        if preview_rect.width > 0 {
+            write_title(
+                buf,
+                preview_rect.x + 1,
+                preview_rect.y.saturating_sub(1),
+                &preview_title,
+                title_w(preview_rect),
+                title_style_for(preview_focus),
+            );
+        }
+        if llm_rect.width > 0 {
+            write_title(
+                buf,
+                llm_rect.x + 1,
+                llm_rect.y.saturating_sub(1),
+                &llm_title,
+                title_w(llm_rect),
+                title_style_for(llm_focus),
+            );
+        }
+        if repl_rect.width > 0 {
+            write_title(
+                buf,
+                repl_rect.x + 1,
+                repl_rect.y.saturating_sub(1),
+                &repl_title,
+                title_w(repl_rect),
+                title_style_for(repl_focus),
+            );
+        }
+
+        self.paint_focus_hint(buf, nav_frame_rect, preview_rect, llm_rect, repl_rect, border_style, focus_title_style);
+
+        self.paint_clock(buf, area, idle_title_style);
+
+        self.paint_version_stamp(buf, area, idle_title_style);
+
+        self.paint_pane_terminals(buf, llm_rect, repl_rect);
+    }
+
+    fn pane_rects(
+        &self,
+        area: ratatui::layout::Rect,
+    ) -> (crate::layout::LayoutGeom, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect) {
+        let ChromeView { layout_preset, drawer_open, maximize_slot, nav_logo_row, .. } = *self;
+        // Inner divisions positioned by the user-configurable
+        // settings (defaults 50/50, see settings.toml). Range
+        // clamped to [10, 90] at parse time so the math here
+        // can't degenerate.
+        // Pane geometry — pure integer math, no Block borders.
+        // Borders are drawn by us into the buffer below so every
+        // shared edge is exactly one cell wide and junctions are
+        // proper line-drawing characters. The "content" rects
+        // are the interior of each quadrant (no border cells).
+        //
+        //   col 0 = outer left   col mid_col = inner vertical   col last = outer right
+        //   row 0 = outer top    row mid_row = inner horizontal row last = outer bottom
+        // Preset-driven geometry (ADR 0014 layout rework).
+        // Each named slot gets a rect; vlines/hlines drive the
+        // wireframe + title positioning. Maximisation collapses
+        // every other slot + every inner border so the focused
+        // pane absorbs the area; zero-sized siblings' paint
+        // paths no-op (the pty.open/resize guard at
+        // `cols >= 2 && rows >= 2` similarly keeps the BL
+        // backend safe). Toggle: Ctrl+z. A leave's line restores the
+        // panes (`maximize_slot`).
+        let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+        // Names preserved so the rest of the closure reads
+        // unchanged: nav = old TL (left column), preview = old
+        // TR (middle column), llm = old BL (rightmost column
+        // in the 3-col layout), repl = old BR (bottom drawer).
+        // `nav_frame_rect` is the pane as laid out (title and focus border
+        // hang off it); `nav_rect` is what the tree body may use -- one
+        // row shorter when the wordmark owns the first row.
+        let nav_frame_rect = geom.rect_for(crate::settings::Slot::Nav);
+        let nav_rect = if nav_logo_row && nav_frame_rect.height > 1 {
+            ratatui::layout::Rect {
+                y: nav_frame_rect.y + 1,
+                height: nav_frame_rect.height - 1,
+                ..nav_frame_rect
+            }
+        } else {
+            nav_frame_rect
+        };
+        let preview_rect = geom.rect_for(crate::settings::Slot::Preview);
+        let llm_rect = geom.rect_for(crate::settings::Slot::Llm);
+        let repl_rect = geom.rect_for(crate::settings::Slot::Repl);
+        (geom, nav_frame_rect, nav_rect, preview_rect, llm_rect, repl_rect)
+    }
+
+    fn nav_row_style(
+        &self,
+        is_attention: &bool,
+        is_stale: &bool,
+        agent: &Option<(AgentTone, bool)>,
+        is_pinned: &bool,
+        flash: &f32,
+        is_selected: &bool,
+    ) -> Style {
+        let ChromeView { contrast_dim, mode, .. } = *self;
+        let mut style = Style::default();
+        // Cross-cutting colour layer. `is_stale` (annotation
+        // drift OR, since ADR 0030 §8 decision 31c, a foreign-
+        // build capsule row) is loudest and checked FIRST — a
+        // row that is drifted or unusable must read that way
+        // regardless of any work-state tone it also carries.
+        // Below that, state-nav agent tone (ADR 0023) owns the
+        // colour of a Sessions row that has one: working/idle/
+        // blocked/done each get a hue, a stale "working" wilts
+        // (DIM), and selection still reads through the `>`
+        // caret + bold so the cursor stays visible over the
+        // state colour. Without an agent tone either, the
+        // original layer applies: the pinned accent (bright
+        // cyan, distinct from the yellow stale/selected hues),
+        // then selection (light yellow), then dim.
+        if *is_attention {
+            // Attention row: yellow + BOLD. Scoped to rows that
+            // announce a key the user must press BEFORE the
+            // default commits, so it never competes with the
+            // cross-cutting stale hue below (which stays plain
+            // yellow — drift is noticed, not shouted).
+            style = style.fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        } else if *is_stale {
+            style = style.fg(Color::Yellow);
+        } else if let Some((tone, aged)) = agent {
+            // Resolve the tone to RGB through the shared contrast
+            // helper so the nav row and the bottom strip render
+            // the same pixels. `Color::Rgb` (not the named tone
+            // colour) is required because the "bright"/"dim"
+            // levers and the status-change flash scale/lerp the
+            // channels — ratatui can't lerp a named colour. Bold
+            // still composes with the colour, and the
+            // stale-"working" wilt still DIMs.
+            let (rgb, bold, dim) =
+                contrast_tone_rgb(*tone, *aged, *is_selected, contrast_dim, *flash);
+            if let Some((r, g, b)) = rgb {
+                style = style.fg(Color::Rgb(r, g, b));
+            }
+            if dim {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            if bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+        } else if *is_pinned {
+            style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        } else if *flash > 0.0 {
+            // Tone-less Sessions row that just changed state:
+            // resolve the base fg + flash toward white so the
+            // blink reads even without a state colour.
+            let base = if *is_selected {
+                (245, 245, 67)
+            } else {
+                (204, 204, 204)
+            };
+            let (r, g, b) = lerp_to_white(base, *flash);
+            style = style.fg(Color::Rgb(r, g, b));
+            if *is_selected {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+        } else if *is_selected {
+            style = style.fg(Color::LightYellow);
+        } else if contrast_dim && mode == Mode::Sessions {
+            // "dim" lever: fade non-selected Sessions rows that
+            // carry no tone so the selection pops by contrast.
+            // Scoped to Sessions so Files/Modules nav is untouched.
+            let (r, g, b) = scale_rgb((204, 204, 204), CONTRAST_DIM_FACTOR);
+            style = style.fg(Color::Rgb(r, g, b));
+        } else {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        style
+    }
+
+    fn nav_tree_rows(&self, body_lines: &mut Vec<RtLine<'static>>, tree_lines: Vec<NavRow>) -> (usize, usize) {
+        let ChromeView { concept_status, last_key, .. } = *self;
+        // Exact tree-row span of body_lines, captured AT ASSEMBLY
+        // (codex round 4: the header is not a constant — Files/
+        // Modules carry 4 chrome lines, Sessions 5, the picker 3 —
+        // so any fixed offset either spills chrome or misses bottom
+        // rows). The picker's own header row lives inside
+        // tree_lines and stays spill-eligible on purpose: floating
+        // the full picker path is exactly what the spill is for.
+        let tree_rows_body_start = body_lines.len();
+        for (
+            text,
+            is_selected,
+            is_stale,
+            is_pinned,
+            agent,
+            flash,
+            is_pending,
+            is_attention,
+        ) in
+            &tree_lines
+        {
+            let mut style = self.nav_row_style(is_attention, is_stale, agent, is_pinned, flash, is_selected);
+            // Badge floor (ADR 0025 §1): a workspace with a pending
+            // nav.preview result gets a non-disruptive "result waiting"
+            // badge — a leading `● ` sigil in bright white + bold,
+            // and the row fg pulled to the same accent (clearing DIM) so
+            // it reads distinctly from the work-state tones (green
+            // working / purple waiting / red blocked / etc.) and the
+            // cyan pin, without adding another hue to the palette. The
+            // view is never switched; only the colour/sigil changes.
+            if *is_pending {
+                const PENDING_ACCENT: Color = Color::Rgb(255, 255, 255);
+                style = style.fg(PENDING_ACCENT).remove_modifier(Modifier::DIM);
+                if *is_selected {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                body_lines.push(RtLine::from(vec![
+                    Span::styled(
+                        "● ",
+                        Style::default()
+                            .fg(PENDING_ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(text.clone(), style),
+                ]));
+            } else {
+                body_lines.push(RtLine::from(vec![Span::styled(text.clone(), style)]));
+            }
+        }
+        let tree_rows_body_end = body_lines.len();
+        body_lines.push(RtLine::from(""));
+        body_lines.push(RtLine::from(vec![Span::styled(
+            concept_status.clone(),
+            Style::default().fg(Color::LightMagenta),
+        )]));
+        body_lines.push(RtLine::from(""));
+        body_lines.push(RtLine::from(vec![
+            Span::styled("key: ", Style::default().fg(Color::DarkGray)),
+            Span::raw(last_key.clone().unwrap_or_else(|| "(none)".to_string())),
+        ]));
+        (tree_rows_body_start, tree_rows_body_end)
+    }
+
+    fn collect_nav_spill(
+        &self,
+        nav_rect: ratatui::layout::Rect,
+        preview_rect: ratatui::layout::Rect,
+        nav_scroll: u16,
+        tree_rows_body_start: usize,
+        tree_rows_body_end: usize,
+        body_lines: &[RtLine<'static>],
+        nav_list_h: usize,
+        nav_spill_segs_out: &mut Vec<NavSpillSeg>,
+    ) {
+        let ChromeView { nav_spill_active, .. } = *self;
+        // Nav-spill segment collection: for each visible TREE row
+        // whose text is wider than the nav column, record the full
+        // row (truncated to the overlay's reach cap) so the render-
+        // pass tail can float it over the preview's left edge.
+        // TREE rows only — the assembly-captured span above: header
+        // and trailing chrome lines (status/help/concept/key) never
+        // spill (codex review). Widths are terminal
+        // CELLS via unicode-width, so CJK/emoji names measure and
+        // truncate exactly (codex review).
+        if nav_spill_active && nav_rect.width > 0 && preview_rect.width > 0 {
+            use unicode_width::UnicodeWidthStr;
+            // Reach: from the nav left edge to 2 cells short of the
+            // preview's right edge, in cells.
+            let max_cells = (preview_rect.x + preview_rect.width)
+                .saturating_sub(2)
+                .saturating_sub(nav_rect.x) as usize;
+            let first = nav_scroll as usize;
+            let tree_span = tree_rows_body_start..tree_rows_body_end;
+            let visible = body_lines.iter().skip(first).take(nav_list_h);
+            for (vis_idx, line) in visible.enumerate() {
+                if !tree_span.contains(&(first + vis_idx)) {
+                    continue;
+                }
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                let cell_w = UnicodeWidthStr::width(text.as_str());
+                let Some(take) = nav_spill_take(cell_w, nav_rect.width as usize, max_cells)
+                else {
+                    continue;
+                };
+                // Style of the widest span — rows are one span, or
+                // sigil + text where the text span dominates (and
+                // the pending sigil shares the text's accent
+                // anyway), so a single-run overlay is colour-
+                // faithful in practice.
+                let style = line
+                    .spans
+                    .iter()
+                    .max_by_key(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                    .map(|s| s.style)
+                    .unwrap_or_default();
+                let (shown, shown_cells) = if take < cell_w {
+                    truncate_to_cells(&text, take)
+                } else {
+                    let w = UnicodeWidthStr::width(text.as_str());
+                    (text, w)
+                };
+                let width_cells = shown_cells as u16;
+                nav_spill_segs_out.push(NavSpillSeg {
+                    x: nav_rect.x,
+                    row: nav_rect.y + vis_idx as u16,
+                    text: shown,
+                    width_cells,
+                    color: crate::chrome::ratatui_color_to_rgb(style.fg),
+                    bold: style.add_modifier.contains(Modifier::BOLD),
+                    dim: style.add_modifier.contains(Modifier::DIM),
+                });
+            }
+        }
+    }
+
+    fn nav_body(
+        &mut self,
+        nav_rect: ratatui::layout::Rect,
+        preview_rect: ratatui::layout::Rect,
+        tree_lines: Vec<NavRow>,
+        nav_spill_segs_out: &mut Vec<NavSpillSeg>,
+    ) -> (usize, Vec<String>, ratatui::layout::Rect, Paragraph<'static>) {
+        let ChromeView { nav_prompt_line, lease_notice, nav_line, owed_line, status, nav_cursor_body_pos, tree_empty, nav_has_cursor, mut nav_scroll, .. } = *self;
+        let owed_drawn;
+        let leaving_drawn;
+        // Help lives on the focused border; keep the nav header compact.
+        // The status text wraps at the pane's width (a toast is a
+        // sentence): "status: " heads the first line only. Everything
+        // below counts from body_lines.len(), and the cursor's body
+        // position (a header of one status line and a spacer, computed
+        // before the draw) shifts by the extra lines here.
+        let nav_w = nav_rect.width as usize;
+        let (nav_list_h, nav_pinned, line_whole) = nav_pinned_rows(
+            nav_prompt_line.as_ref().map(|(t, c)| (t.as_str(), c.as_str())),
+            lease_notice,
+            nav_line.as_deref(),
+            nav_w,
+            nav_rect.height as usize,
+        );
+        let nav_list_rect = ratatui::layout::Rect { height: nav_list_h as u16, ..nav_rect };
+        // Only a line drawn whole is acked: a grant's count here, the
+        // leaving line once presented (`Leaving::presented`).
+        owed_drawn = line_whole && owed_line.is_some() && nav_line == owed_line;
+        leaving_drawn = line_whole;
+        let mut body_lines = status_spans(&status, nav_w);
+        let nav_cursor_body_pos = nav_cursor_body_pos + body_lines.len() - 1;
+        body_lines.push(RtLine::from(""));
+        if tree_empty {
+            body_lines.push(RtLine::from(vec![Span::styled(
+                "  (no tree yet)",
+                Style::default().add_modifier(Modifier::DIM),
+            )]));
+        }
+        let (tree_rows_body_start, tree_rows_body_end) = self.nav_tree_rows(&mut body_lines, tree_lines);
+        // Scroll the nav body so the selected tree row stays in
+        // the comfort zone — the middle 1/3 of the pane. Going
+        // down: once cursor crosses the bottom-third boundary,
+        // the scroll advances so the cursor stays planted at
+        // that boundary, no big jumps. Going up: same on the
+        // top boundary. At the actual top/bottom of the body
+        // the cursor falls through to the real first/last row,
+        // since clamping `nav_scroll` to [0, max_scroll]
+        // releases it. Header lines scroll off the top as a
+        // simple trade; sub-paneled header/footer is a later
+        // refinement.
+        let nav_inner_h = nav_list_h;
+        let body_len = body_lines.len();
+        if !nav_has_cursor || body_len <= nav_inner_h {
+            nav_scroll = 0;
+        } else {
+            let scrolloff = (nav_inner_h / 3).max(1);
+            let min_view = scrolloff;
+            // last comfort row in the viewport (inclusive)
+            let max_view = nav_inner_h.saturating_sub(scrolloff).saturating_sub(1);
+            let view_pos = nav_cursor_body_pos.saturating_sub(nav_scroll as usize);
+            if view_pos < min_view {
+                nav_scroll = (nav_cursor_body_pos.saturating_sub(min_view)) as u16;
+            } else if view_pos > max_view {
+                nav_scroll = (nav_cursor_body_pos.saturating_sub(max_view)) as u16;
+            }
+            let max_scroll = body_len.saturating_sub(nav_inner_h) as u16;
+            if nav_scroll > max_scroll {
+                nav_scroll = max_scroll;
+            }
+        }
+        self.collect_nav_spill(nav_rect, preview_rect, nav_scroll, tree_rows_body_start, tree_rows_body_end, &body_lines, nav_list_h, nav_spill_segs_out);
+        let nav_body = Paragraph::new(body_lines).scroll((nav_scroll, 0));
+        self.owed_drawn = owed_drawn;
+        self.leaving_drawn = leaving_drawn;
+        self.nav_scroll = nav_scroll;
+        (nav_list_h, nav_pinned, nav_list_rect, nav_body)
+    }
+
+    fn preview_title(
+        &self,
+        preview_focus: bool,
+        preview_pinned: bool,
+        preview_rect: ratatui::layout::Rect,
+    ) -> String {
+        let ChromeView { preview_name, .. } = *self;
+        // T1: surface the full path of the file the preview is showing
+        // (clipped in the narrow nav column) here in the wide title.
+        // Markers go after the name so middle-truncating the name to
+        // fit never drops [FOCUS]/[pinned *].
+        let preview_title = {
+            let mut markers = String::new();
+            if preview_focus {
+                markers.push_str(" · [FOCUS]");
+            }
+            if preview_pinned {
+                markers.push_str(" · [pinned *]");
+            }
+            match preview_name.clone() {
+                Some(name) => {
+                    // Budget the name against the pane width so even an
+                    // over-long title keeps its basename + the markers.
+                    let avail = preview_rect.width.saturating_sub(2) as usize;
+                    let fixed = " preview · ".chars().count() + markers.chars().count() + 1; // trailing space
+                    let name_budget = avail.saturating_sub(fixed).max(1);
+                    let shown = middle_truncate(&name, name_budget);
+                    format!(" preview · {shown}{markers} ")
+                }
+                None => format!(" preview{markers} "),
+            }
+        };
+        preview_title
+    }
+
+    fn export_pane_rects(
+        &mut self,
+        nav_frame_rect: ratatui::layout::Rect,
+        preview_rect: ratatui::layout::Rect,
+        llm_rect: ratatui::layout::Rect,
+        repl_rect: ratatui::layout::Rect,
+    ) {
+        let preview_cells;
+        let repl_cells;
+        let new_pane_rects;
+        // The preview slot still needs its content cell rect
+        // exported for the wgpu preview-layer surface.
+        preview_cells = preview_rect;
+        // Drawer cell rect, exported for the Ctrl+M monitor chart quad.
+        repl_cells = repl_rect;
+        // Cache the four pane content rects for between-frame
+        // hit-testing (mouse wheel → which pane scrolls).
+        new_pane_rects = PaneRects {
+            nav: nav_frame_rect,
+            preview: preview_rect,
+            llm: llm_rect,
+            repl: repl_rect,
+        };
+        self.preview_cells = preview_cells;
+        self.repl_cells = repl_cells;
+        self.new_pane_rects = new_pane_rects;
+    }
+
+    fn drawer_title(&self, repl_focus: bool) -> String {
+        let ChromeView { drawer, monitor_host_connected, monitor_host_label, .. } = *self;
+        // G6: the drawer title reflects which content it's showing —
+        // the Julia REPL (Ctrl+J) or the local terminal (Ctrl+T).
+        let repl_title = match (drawer, repl_focus) {
+            (DrawerContent::Terminal, true) => " terminal · [FOCUS] ".to_string(),
+            (DrawerContent::Terminal, false) => " terminal ".to_string(),
+            // 4.3, option (a): names whose record this is — the
+            // resolved host (the hub when it's connected, else the
+            // `default_host` fallback), flagged when that host
+            // isn't actually among today's connections.
+            (DrawerContent::Monitor, _) => {
+                if monitor_host_connected {
+                    format!(" monitor · {monitor_host_label} ")
+                } else {
+                    format!(" monitor · {monitor_host_label} [not connected] ")
+                }
+            }
+            (DrawerContent::Help, _) => " help ".to_string(),
+            (_, true) => " repl · julia · [FOCUS] ".to_string(),
+            (_, false) => " repl · julia ".to_string(),
+        };
+        repl_title
+    }
+
+    fn repl_drawer_body(
+        &mut self,
+        repl_rect: ratatui::layout::Rect,
+        repl_focus: bool,
+    ) -> (std::rc::Rc<[ratatui::layout::Rect]>, Paragraph<'static>, Paragraph<'static>) {
+        let ChromeView { repl_input, repl_lines, repl_pkg_mode, mut new_repl_scroll, .. } = *self;
+        let repl_scrollback_cells;
+        let repl_window;
+        // Input pane height tracks the number of newline-separated
+        // lines in `repl_input` so a multi-line buffer (built up
+        // via Shift+Enter) is fully visible while editing. Capped
+        // at `repl_rect.height - 1` so at least one row of
+        // scrollback is always on screen — a runaway buffer
+        // narrows scrollback but is still recoverable via Enter
+        // or Backspace.
+        let input_line_count = (repl_input.matches('\n').count() + 1) as u16;
+        let max_input_rows = repl_rect.height.saturating_sub(1).max(1);
+        let input_rows = input_line_count.min(max_input_rows).max(1);
+        let repl_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(input_rows)])
+            .split(repl_rect);
+        let scroll_h = repl_split[0].height as usize;
+        // Scrollback window: `repl_scroll` is the number of rows
+        // *back from the tail*. 0 = live; positive = older. Clamp
+        // so the user can't scroll past the top of the log, and
+        // write the clamped value back to State so the wheel
+        // handler doesn't accumulate dead range.
+        let total = repl_lines.len();
+        let max_scroll = total.saturating_sub(scroll_h) as u16;
+        let clamped = new_repl_scroll.min(max_scroll);
+        new_repl_scroll = clamped;
+        let end = total.saturating_sub(clamped as usize);
+        let start = end.saturating_sub(scroll_h);
+        // Export for the inline-image paint pass: which absolute
+        // lines are on screen, and the sub-rect they render into.
+        repl_scrollback_cells = repl_split[0];
+        repl_window = (start, end);
+        let scroll_para = Paragraph::new(repl_lines[start..end].to_vec());
+        // Mode-aware prompt: `julia> ` in cyan vs `pkg> ` in
+        // blue (matches the standard Julia REPL palette). Dim
+        // both when the REPL pane isn't focused — same
+        // attention-direction trick as before.
+        // Match the stdlib `REPL.jl` / VSCode Julia-ext palette:
+        // `julia>` green, `pkg>` blue. Light* variants pop on the
+        // near-black surface fg.
+        let prompt_text = if repl_pkg_mode { "pkg> " } else { "julia> " };
+        let prompt_focus_color = if repl_pkg_mode {
+            Color::LightBlue
+        } else {
+            Color::LightGreen
+        };
+        let prompt_color = if repl_focus {
+            prompt_focus_color
+        } else {
+            Color::DarkGray
+        };
+        // Multi-line input: first segment carries the live prompt,
+        // continuation segments get a same-width filler so the
+        // text column stays aligned under the prompt. Cursor
+        // block lives at the end of the last segment regardless
+        // of how many lines deep we are.
+        let cont_pad: String = " ".repeat(prompt_text.len());
+        let segments: Vec<&str> = repl_input.split('\n').collect();
+        let last_idx = segments.len().saturating_sub(1);
+        let input_rt_lines: Vec<RtLine> = segments
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| {
+                let mut spans: Vec<Span> = Vec::with_capacity(3);
+                if i == 0 {
+                    spans
+                        .push(Span::styled(prompt_text, Style::default().fg(prompt_color)));
+                } else {
+                    spans.push(Span::raw(cont_pad.clone()));
+                }
+                spans.push(Span::raw(seg.to_string()));
+                if repl_focus && i == last_idx {
+                    spans.push(Span::styled(
+                        "\u{2588}",
+                        Style::default().fg(prompt_focus_color),
+                    ));
+                }
+                RtLine::from(spans)
+            })
+            .collect();
+        let input_para = Paragraph::new(input_rt_lines);
+        self.new_repl_scroll = new_repl_scroll;
+        self.repl_scrollback_cells = repl_scrollback_cells;
+        self.repl_window = repl_window;
+        (repl_split, scroll_para, input_para)
+    }
+
+    fn render_drawer_widgets(
+        &self,
+        frame: &mut ratatui::Frame<'_>,
+        repl_rect: ratatui::layout::Rect,
+        scroll_para: Paragraph<'static>,
+        input_para: Paragraph<'static>,
+        repl_split: std::rc::Rc<[ratatui::layout::Rect]>,
+    ) {
+        let ChromeView { drawer, help_state, help_bindings, .. } = *self;
+        if drawer == DrawerContent::Help {
+            help::render(frame, repl_rect, help_state, help_bindings);
+        }
+        if drawer == DrawerContent::Repl {
+            frame.render_widget(scroll_para, repl_split[0]);
+            frame.render_widget(input_para, repl_split[1]);
+        }
+    }
+
+    fn paint_focus_hint(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        nav_frame_rect: ratatui::layout::Rect,
+        preview_rect: ratatui::layout::Rect,
+        llm_rect: ratatui::layout::Rect,
+        repl_rect: ratatui::layout::Rect,
+        border_style: Style,
+        focus_title_style: Style,
+    ) {
+        let ChromeView { focus, help_context, help_bindings, .. } = *self;
+        let focused_rect = match focus {
+            PaneFocus::NavTree => nav_frame_rect, PaneFocus::Preview => preview_rect,
+            PaneFocus::Llm => llm_rect, PaneFocus::Repl => repl_rect,
+        };
+        if focused_rect.width > 2 {
+            let width = focused_rect.width.saturating_sub(2) as usize;
+            let title = format!(" {} · ", help_context.title());
+            let title_width = unicode_width::UnicodeWidthStr::width(title.as_str());
+            let hint = help::border(&help_context, help_bindings, width.saturating_sub(title_width));
+            let title = help::truncate(&format!("{title}{hint}"), width);
+            // Clear old title glyphs before writing the shorter dynamic title.
+            for x in focused_rect.x..focused_rect.x + focused_rect.width {
+                buf[(x, focused_rect.y.saturating_sub(1))].set_symbol("─").set_style(border_style);
+            }
+            write_title(buf, focused_rect.x + 1, focused_rect.y.saturating_sub(1),
+                &title, width as u16, focus_title_style);
+        }
+    }
+
+    fn paint_clock(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect, idle_title_style: Style) {
+        let ChromeView { clock_now, battery, .. } = *self;
+        // Live local-time clock, right-aligned on the top edge just
+        // inside the outer-right corner glyph. Same chrome text style
+        // as an idle pane title. Repaints ~1×/second via the
+        // `about_to_wait` WaitUntil scheduling below.
+        {
+            let clock_label = format!(" {} ", clock_label(clock_now, area.width));
+            let clock_cells = clock_label.chars().count() as u16;
+            // Keep the ┐ corner; sit one cell to its left, then back
+            // off by the label width. No-op if the window is too
+            // narrow to fit the clock without colliding with a title.
+            if area.width > clock_cells + 2 {
+                let clock_x = area.x + area.width - 1 - clock_cells;
+                write_title(
+                    buf,
+                    clock_x,
+                    area.y,
+                    &clock_label,
+                    clock_cells,
+                    idle_title_style,
+                );
+
+                // Battery indicator sits immediately left of the clock
+                // with a one-cell gap, same dim chrome style. Painted
+                // only if a battery is present (cached label is `Some`)
+                // AND the window is wide enough to fit it left of the
+                // clock without colliding with the left border. When
+                // it's too narrow we drop the battery and keep the
+                // clock.
+                if let Some(batt) = battery.as_deref() {
+                    let batt_label = format!(" {batt} ");
+                    let batt_cells = batt_label.chars().count() as u16;
+                    // Need: left border (x) + at least one cell, then
+                    // the battery, then the clock. Guard with the same
+                    // ">" slack the clock uses.
+                    if clock_x > area.x + batt_cells + 1 {
+                        let batt_x = clock_x - batt_cells;
+                        write_title(
+                            buf,
+                            batt_x,
+                            area.y,
+                            &batt_label,
+                            batt_cells,
+                            idle_title_style,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn paint_version_stamp(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        area: ratatui::layout::Rect,
+        idle_title_style: Style,
+    ) {
+        let ChromeView { version_stamp, version_skew, .. } = *self;
+        // FE/BE version stamp, left-aligned on the BOTTOM outer edge
+        // — the mirror of the `nav · mode:` title on the top edge,
+        // same `write_title` treatment and the same two-cell inset
+        // from the corner glyph. Sits ON the border line; the session
+        // strip is a pixel overlay one row lower, so the two don't
+        // fight for the same cells.
+        //
+        // Dark gray when FE and BE agree, yellow when they don't:
+        // the halves drift independently (rebuild one, forget the
+        // other), and a skew you have to read character-by-character
+        // to notice isn't surfaced at all.
+        {
+            let stamp_cells = version_stamp.chars().count() as u16;
+            let bot_y = area.y + area.height - 1;
+            // Same guard shape as the clock: skip entirely rather
+            // than smear a truncated version across the corner when
+            // the window is too narrow to hold it.
+            if area.width > stamp_cells + 2 {
+                write_title(
+                    buf,
+                    area.x + 2,
+                    bot_y,
+                    &version_stamp,
+                    stamp_cells,
+                    if version_skew {
+                        Style::default().fg(Color::Yellow)
+                    } else {
+                        idle_title_style
+                    },
+                );
+            }
+        }
+    }
+
+    fn paint_pane_terminals(
+        &mut self,
+        buf: &mut ratatui::buffer::Buffer,
+        llm_rect: ratatui::layout::Rect,
+        repl_rect: ratatui::layout::Rect,
+    ) {
+        let ChromeView { pty_screen, pane_overlay, drawer, term_screen, mut term_size_observed, .. } = *self;
+        let pty_size_observed;
+        // LLM pane: paint the vt100 terminal grid into the
+        // BL content rect. Walk every cell of the emulator
+        // screen at (row, col), look up its glyph + colour,
+        // and write into the chrome buffer at the matching
+        // (llm_rect.x + col, llm_rect.y + row). The emulator
+        // was sized to llm_rect earlier, so the grid fits
+        // exactly.
+        paint_terminal(buf, llm_rect, &pty_screen);
+        // ADR 0030 §8 "Where it is shown", widened by ADR 0045
+        // decision 1 (Codex review): overlays the persistent reason
+        // line, and under it the discarded-input count, whenever
+        // either is set —
+        // whatever `pty_screen` actually painted underneath,
+        // including a checkpointed client's own now-STALE frozen
+        // content (a live failure/retry must never hide behind
+        // real-but-old output), not only the dead-uncheckpointed
+        // fallback to the (usually blank, unrelated) tmux screen
+        // this originally covered.
+        if llm_rect.width > 2 {
+            for (row, line) in pane_overlay.iter().enumerate().take(llm_rect.height as usize) {
+                write_title(
+                    buf,
+                    llm_rect.x + 1,
+                    llm_rect.y + row as u16,
+                    line,
+                    llm_rect.width - 2,
+                    Style::default().fg(Color::Yellow),
+                );
+            }
+        }
+        pty_size_observed = (llm_rect.width, llm_rect.height);
+        // G3: local terminal drawer — paint its vt100 grid into the
+        // drawer rect (same renderer as the LLM pane). Record the
+        // rect so the PTY can be resized to match after the closure.
+        if drawer == DrawerContent::Terminal && repl_rect.width > 0 {
+            if let Some(scr) = term_screen {
+                paint_terminal(buf, repl_rect, scr);
+            }
+            term_size_observed = (repl_rect.width, repl_rect.height);
+        }
+        // (The active-workspace indicator is now the bottom session
+        // strip — all sessions, active centered + bold — drawn as a
+        // pixel-positioned overlay after this ratatui pass via
+        // `session_strip_lines`. It supersedes the old single
+        // centered marker that used to paint here.)
+        self.pty_size_observed = pty_size_observed;
+        self.term_size_observed = term_size_observed;
+    }
+}
+
+fn render_nav_widgets(
+    frame: &mut ratatui::Frame<'_>,
+    nav_body: Paragraph<'static>,
+    nav_list_rect: ratatui::layout::Rect,
+    nav_pinned: Vec<String>,
+    nav_rect: ratatui::layout::Rect,
+    nav_list_h: usize,
+) {
+        // Render content widgets into the interior content
+        // rects (no borders). The drawer's REPL scrollback + input
+        // only render when the drawer is actually showing the REPL;
+        // when it shows the Terminal (G3) the vt100 grid is painted
+        // into `repl_rect` after the wireframe instead.
+        frame.render_widget(nav_body, nav_list_rect);
+        frame.render_widget(
+            Paragraph::new(
+                nav_pinned
+                    .iter()
+                    .map(|r| RtLine::from(Span::styled(r.clone(), Style::default().fg(Color::LightGreen))))
+                    .collect::<Vec<_>>(),
+            ),
+            ratatui::layout::Rect {
+                y: nav_rect.y + nav_list_h as u16,
+                height: nav_pinned.len() as u16,
+                ..nav_rect
+            },
+        );
+}
 
 
 
