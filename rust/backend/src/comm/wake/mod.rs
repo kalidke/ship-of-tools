@@ -55,8 +55,8 @@
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
 //! or a focus off the input that drew no panel would read free (every captured view draws the panel); with agent view on, a
 //! focus on the panel that draws nothing reads free ([`panel_refusal`]).
-//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]);
-//! otherwise no Enter goes, the
+//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]), which the
+//! wake waits up to [`OP_BUDGET`] for after typing; otherwise no Enter goes, the
 //! attempt counts as the wake (the line is not typed again before new mail or [`REPEAT_AFTER`]), and a warning names
 //! it. That gate withholds Enter after a stray key between the
 //! final read and the typing; the line itself has then gone, without Enter, wherever that key put focus (the
@@ -95,8 +95,6 @@ const STOP_HOOK_BOUND: Duration = Duration::from_secs(60);
 const WAKE_LINE: &str = "[sot-comm] you have mail: run comm-poll.sh";
 const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
-const QUIET_BUDGET: Duration = Duration::from_millis(300);
-const PACING_BUDGET: Duration = Duration::from_secs(1);
 /// A turn whose only change is a once-a-second counter must change inside the hold even when the screen reaches the daemon ~100 ms late.
 const STILL_FOR: Duration = Duration::from_millis(1500);
 
@@ -282,7 +280,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         *seen.borrow_mut() = (reason, border);
         reason.is_none()
     };
-    let out = wake_if_free(state_dir, CONTROLLER_ID, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET, QUIET_BUDGET, PACING_BUDGET);
+    let out = wake_if_free(state_dir, CONTROLLER_ID, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET);
     step_of(handle, out, seen.take(), s.total, Instant::now())
 }
 

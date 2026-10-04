@@ -1,8 +1,8 @@
-//! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, then Enter.
+//! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, wait for it, then Enter.
 
 use super::*;
 use super::screen::{free_test_lines, held_rows, wake_lines};
-use crate::rows::run::headless::{attach, checkpointed, send_enter, type_and_pace, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
+use crate::rows::run::headless::{attach, checkpointed, send_enter, send_text, Client, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
 #[derive(Debug, PartialEq, Eq)]
@@ -35,8 +35,8 @@ pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
 /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
 /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
 /// [`free_test_lines`] reads them), and
-/// only then type `line` and, if the typed-line gate (asked of the live screen after the pacing wait) says
-/// the line sits alone in main's input box, Enter, as [`write_and_enter`] does. A screen
+/// only then type `line` and, once the typed-line gate says it sits alone in main's input box (asked of the live
+/// screen until `op_budget` after the write), Enter ([`type_then_enter`]). A screen
 /// that is not free gets no hold (it still costs the attach); one that is
 /// must then hold identical (the cursor, and every row through the line
 /// under it) for `still_for`, else it is a working row and nothing is
@@ -51,8 +51,6 @@ pub fn wake_if_free(
     agent: &str,
     still_for: Duration,
     op_budget: Duration,
-    quiet_budget: Duration,
-    pacing_budget: Duration,
 ) -> Result<WakeOutcome, HeadlessError> {
     let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
     let cursor = client.screen().cursor_position();
@@ -86,21 +84,7 @@ pub fn wake_if_free(
         // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
         if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
             mark("final-ok");
-            Ok(match type_and_pace(&mut client, line.as_bytes(), op_budget, quiet_budget, pacing_budget) {
-                Err(e) => unconfirmed("text", e),
-                Ok(_) => {
-                    client.pump();
-                    let lines = free_test_lines(client.screen());
-                    let cursor = Some(client.screen().cursor_position());
-                    match super::screen::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
-                        Some(reason) => {
-                            let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
-                            WakeOutcome::TypedNoEnter { reason, border }
-                        }
-                        None => wake_outcome(send_enter(&mut client, op_budget)),
-                    }
-                }
-            })
+            Ok(type_then_enter(&mut client, line, agent, op_budget))
         } else {
             Ok(WakeOutcome::NotFree)
         }
@@ -108,6 +92,28 @@ pub fn wake_if_free(
     client.shutdown(SHUTDOWN_WAIT);
     mark("done");
     out
+}
+
+/// Types `line`, pumps until the typed-line gate passes or `op_budget` has passed since the write returned, then
+/// writes Enter. A line that never shows alone gets no Enter ([`WakeOutcome::TypedNoEnter`]).
+fn type_then_enter(client: &mut Client, line: &str, agent: &str, op_budget: Duration) -> WakeOutcome {
+    if let Err(e) = send_text(client, line.as_bytes(), op_budget) {
+        return unconfirmed("text", e);
+    }
+    let deadline = Instant::now() + op_budget;
+    loop {
+        client.pump();
+        let lines = free_test_lines(client.screen());
+        let cursor = Some(client.screen().cursor_position());
+        match super::screen::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
+            None => return wake_outcome(send_enter(client, op_budget)),
+            Some(reason) if Instant::now() >= deadline => {
+                let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
+                return WakeOutcome::TypedNoEnter { reason, border };
+            }
+            Some(_) => std::thread::sleep(POLL_INTERVAL),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -123,7 +129,7 @@ mod tests {
 
     #[test]
     fn text_write_failure_is_unconfirmed_not_skipped() {
-        // The mapping `wake_if_free` applies to a `type_and_pace` error; a real text-write failure needs a stub
+        // The mapping `wake_if_free` applies to a `send_text` error; a real text-write failure needs a stub
         // supervisor with no seam here, so the mapping is tested directly.
         let failed = HeadlessError { phase: "write", detail: "broken pipe".to_string(), submitted: true };
         let out = unconfirmed("text", failed);
@@ -136,7 +142,7 @@ mod tests {
     fn a_wake_without_a_lane_is_a_checkpoint_error() {
         let free = |_: &[String], _: Option<(u16, u16)>, _: &str| true;
         let d = Duration::from_secs(5);
-        let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "x", &free, "claude", d, d, d, d)
+        let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "x", &free, "claude", d, d)
             .expect_err("no lane to wake");
         assert_eq!(err.phase, "checkpoint");
         assert!(!err.submitted);

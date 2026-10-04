@@ -45,7 +45,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
 `agents/spawn/comm-bootstrap.sh`. Uses: `SshRecipe`, `recipe_for`, `dial_and_call_tracked`, `dispatch`, `ChildGuard`,
 `Signal`, `child_signal::fired`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
-`type_and_pace`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
+`send_text`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
 `capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
 `sot_pty_input`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot_state_dir`,
 `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`, `install_comm`,
