@@ -40,7 +40,7 @@ this folder serve the same idea.
 
 ## Connections
 - In: `main` calls `run` and `refuse_live_socket`; the lease and reauth code write through `write_frame_within` and
-  `write_frame_to`; `capsule_workspace` calls `record_test_activation_marker`.
+  `write_frame_to`; `rows/run/activation.rs` calls `record_test_activation_marker`.
 - Out: `startup::begin` before bind, `shutdown::run` when accepting ends, each op's handler, `proxy`'s
   `handle_proxy_connect`, `lane_bridge`'s `handle_lane_connect`, `lease::hold`, and `accepted_peer` (in `listen.rs`) at accept.
   Frames are read by `codec::read_frame`, which allocates a blob of its declared length with no cap (a known defect).
