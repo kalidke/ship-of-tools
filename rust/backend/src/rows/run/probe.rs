@@ -182,6 +182,27 @@ mod tests {
     }
 
     #[test]
+    fn wire_constants_and_phase_str_are_the_phases_strings() {
+        use crate::rows::workspace::Phase;
+        use sot_log::lane::wire::SupervisorPhase;
+        assert_eq!(UNREACHABLE_PHASE, "unreachable");
+        assert_eq!(FOREIGN_PHASE, "foreign");
+        assert_eq!(NEVER_STARTED_PHASE, "stopped");
+        assert_eq!(UNREACHABLE_PHASE, Phase::Unreachable.as_wire_str());
+        assert_eq!(FOREIGN_PHASE, Phase::Foreign.as_wire_str());
+        assert_eq!(NEVER_STARTED_PHASE, Phase::Stopped.as_wire_str());
+        for p in [
+            SupervisorPhase::Starting,
+            SupervisorPhase::Ready,
+            SupervisorPhase::Ending,
+            SupervisorPhase::EndedNoRespawn,
+            SupervisorPhase::Terminal,
+        ] {
+            assert_eq!(phase_str(p), local_phase(p).as_wire_str());
+        }
+    }
+
+    #[test]
     fn never_started_phase_is_distinct_from_unreachable_and_every_answered_phase() {
         // First live shakedown fix: a capsule workspace nobody has ever
         // started must read as quietly "stopped", not as the loud
