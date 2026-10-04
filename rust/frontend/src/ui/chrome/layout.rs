@@ -269,21 +269,6 @@ pub fn compute(
     geom
 }
 
-/// Resolve an aspect ratio (width / height of the primary monitor)
-/// into the descriptive label used by `Settings::resolve_preset`'s
-/// auto path. Exposed so the chrome's status line can mention which
-/// preset was chosen.
-#[allow(dead_code)] // exported for the status-line label; not yet wired
-pub fn aspect_to_label(aspect: f32) -> &'static str {
-    if aspect > 1.9 {
-        "ultrawide"
-    } else if aspect >= 1.5 {
-        "laptop"
-    } else {
-        "portrait"
-    }
-}
-
 /// Paint a unified box-drawing wireframe over `area`, using `vlines`
 /// as the x-positions of inner vertical dividers and `hlines` as the
 /// y-positions of inner horizontal dividers (today: at most one — the
@@ -508,13 +493,6 @@ mod tests {
         let r = g.rect_for(Slot::Llm);
         assert_eq!(r.width, 0);
         assert_eq!(r.height, 0);
-    }
-
-    #[test]
-    fn aspect_label_buckets() {
-        assert_eq!(aspect_to_label(2.4), "ultrawide");
-        assert_eq!(aspect_to_label(1.6), "laptop");
-        assert_eq!(aspect_to_label(1.3), "portrait");
     }
 
     #[test]
