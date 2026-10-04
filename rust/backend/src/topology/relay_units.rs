@@ -469,11 +469,12 @@ mod tests {
             Ok(shown(a))
         }, &mut |l| said.push(l))
         .unwrap();
+        // Each path as refresh joins it: dir plus relay_files' name, whose '/' a Windows join keeps.
         assert_eq!(
             said,
             [
                 format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service").display()),
-                format!("rewrote {}", dd.join("zz-sot-relay-command.conf").display())
+                format!("rewrote {}", dir.join("sot-host-relay-remote-a@.service.d/zz-sot-relay-command.conf").display())
             ]
         );
         assert_eq!(std::fs::read_to_string(dir.join("sot-host-relay-remote-a@.service")).unwrap(), topology::relay_units::relay_service_unit("remote-a"));
