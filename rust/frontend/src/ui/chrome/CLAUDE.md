@@ -12,6 +12,8 @@ the wireframe that frames the panes. Part of fe-ui; charter: rust/frontend/src/u
 - `theme.rs`: RGB scaling, the contrast levers and the status-change flash.
 - `strip/`: the session strip at the bottom: its items, the ships drawn on the band, and the band's rows and text.
 - `replies.rs`: the status-line fields set by the active host's Connected event
+- `draw.rs`: `State::draw_chrome`, which snapshots the chrome's inputs and runs the ratatui draw, and the snapshot
+  pieces it calls.
 
 ## Start here
 `panes.rs` for who has focus and which slot is shown; `status.rs` for what the bottom line and the nav pane's pinned

@@ -3,6 +3,7 @@
 use super::*;
 
 pub(crate) mod layout;
+mod draw;
 mod panes;
 mod replies;
 mod spill;
