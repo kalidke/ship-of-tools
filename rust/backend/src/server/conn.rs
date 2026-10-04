@@ -3,8 +3,7 @@
 
 use super::dispatch::dispatch;
 use super::events::{
-    recv_agent_msg, recv_agent_receipt, recv_fe_command, recv_monitor, recv_repl_frame, recv_topo_changed,
-    recv_watcher, recv_ws_events, write_agent_message, write_agent_receipt, write_fe_command, write_monitor_tick,
+    recv_or_pending, write_agent_message, write_agent_receipt, write_fe_command, write_monitor_tick,
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
 use super::reply::{write_reply, HandlerOutput, OutTx, OFFLOOP_CONCURRENCY};
@@ -454,7 +453,7 @@ where
             Ok(Woke::Again)
         }
         done = read_fut.as_mut().expect("read_fut is always Some at loop top") => Ok(Woke::Read(done)),
-        change = recv_watcher(watcher_rx) => {
+        change = recv_or_pending(watcher_rx) => {
             write_preview_changed(
                 tx,
                 change,
@@ -464,31 +463,31 @@ where
             .await?;
             Ok(Woke::Again)
         }
-        wsc = recv_ws_events(ws_events_rx) => {
+        wsc = ws_events_rx.recv() => {
             write_workspace_changed(tx, wsc).await?;
             Ok(Woke::Again)
         }
-        tpc = recv_topo_changed(topo_changed_rx) => {
+        tpc = topo_changed_rx.recv() => {
             write_topology_changed(tx, tpc).await?;
             Ok(Woke::Again)
         }
-        msg = recv_agent_msg(agent_events_rx) => {
+        msg = agent_events_rx.recv() => {
             write_agent_message(tx, msg).await?;
             Ok(Woke::Again)
         }
-        rcp = recv_agent_receipt(agent_receipt_rx) => {
+        rcp = agent_receipt_rx.recv() => {
             write_agent_receipt(tx, rcp).await?;
             Ok(Woke::Again)
         }
-        fc = recv_fe_command(fe_command_rx) => {
+        fc = fe_command_rx.recv() => {
             write_fe_command(tx, fc, client_guard.as_ref().map(|g| g.serial())).await?;
             Ok(Woke::Again)
         }
-        rf = recv_repl_frame(repl_frame_rx) => {
+        rf = repl_frame_rx.recv() => {
             write_repl_frame(tx, rf).await?;
             Ok(Woke::Again)
         }
-        tick = recv_monitor(monitor_rx) => {
+        tick = recv_or_pending(monitor_rx) => {
             if monitor_subscribed {
                 write_monitor_tick(tx, tick).await?;
             }

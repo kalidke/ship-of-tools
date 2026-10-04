@@ -1,13 +1,13 @@
-//! The per-bus event pairs: each awaits one broadcast receiver (`recv_*`) and writes its evt frame (`write_*`).
+//! The per-bus evt writers (`write_*`), each turning one broadcast item into its evt frame, and `recv_or_pending` for
+//! the two buses a connection may lack.
 
 use super::*;
 
-/// Awaits the next file-change from the watcher subscription. When the
-/// connection has no watcher (Watcher::spawn failed at startup) this future
-/// stays pending forever, leaving the `tokio::select!` arm inactive.
-pub(super) async fn recv_watcher(
-    rx: &mut Option<broadcast::Receiver<PreviewChanged>>,
-) -> Result<PreviewChanged, broadcast::error::RecvError> {
+/// The next item of a bus this connection may lack; pending forever when `rx`
+/// is `None`, so its arm never fires.
+pub(super) async fn recv_or_pending<T: Clone>(
+    rx: &mut Option<broadcast::Receiver<T>>,
+) -> Result<T, broadcast::error::RecvError> {
     match rx {
         Some(r) => r.recv().await,
         None => std::future::pending().await,
@@ -129,15 +129,6 @@ where
     }
 }
 
-/// Awaits the next workspace lifecycle event. The channel is always present
-/// (created unconditionally in `run`), so unlike `recv_watcher` this takes a
-/// plain receiver rather than an `Option`.
-pub(super) async fn recv_ws_events(
-    rx: &mut broadcast::Receiver<WorkspaceChanged>,
-) -> Result<WorkspaceChanged, broadcast::error::RecvError> {
-    rx.recv().await
-}
-
 /// Translates one workspace lifecycle event into a `workspace.changed` evt
 /// frame on the wire. Returns `Ok(true)` if a frame was written, `Ok(false)`
 /// if the receiver was lagged or closed (skip and keep the connection alive).
@@ -173,14 +164,6 @@ where
     }
 }
 
-/// Awaits the next topology write (plan §B). Same shape as `recv_ws_events`
-/// — the channel is always present (created unconditionally in `run`).
-pub(super) async fn recv_topo_changed(
-    rx: &mut broadcast::Receiver<crate::topology::store::TopologyChanged>,
-) -> Result<crate::topology::store::TopologyChanged, broadcast::error::RecvError> {
-    rx.recv().await
-}
-
 /// Translates one topology write into a `topology.changed` evt frame.
 /// Mirrors `write_workspace_changed`.
 pub(super) async fn write_topology_changed<W>(
@@ -209,15 +192,6 @@ where
             Ok(false)
         }
     }
-}
-
-/// Awaits the next relayed agent message. The channel is always present
-/// (created unconditionally in `run`), so like `recv_ws_events` this takes a
-/// plain receiver rather than an `Option`.
-pub(super) async fn recv_agent_msg(
-    rx: &mut broadcast::Receiver<AgentMessage>,
-) -> Result<AgentMessage, broadcast::error::RecvError> {
-    rx.recv().await
 }
 
 /// Translates one relayed agent message into an `agent.message` evt frame on
@@ -264,15 +238,6 @@ where
     }
 }
 
-/// Awaits the next filer receipt (ADR 0048). The channel is always present
-/// (created unconditionally in `run`), so like `recv_agent_msg` this takes a
-/// plain receiver rather than an `Option`.
-pub(super) async fn recv_agent_receipt(
-    rx: &mut broadcast::Receiver<AgentReceipt>,
-) -> Result<AgentReceipt, broadcast::error::RecvError> {
-    rx.recv().await
-}
-
 /// Translates one filer receipt into an `agent.receipt` evt frame on the
 /// wire. Mirrors `write_agent_message`. Two fields, both always present:
 /// the frame's arrival is the claim, so there is nothing optional to omit.
@@ -304,15 +269,6 @@ where
             Ok(false)
         }
     }
-}
-
-/// Awaits the next FE command (ADR 0025). The channel is always present
-/// (created unconditionally in `run`), so like `recv_agent_msg` this takes a
-/// plain receiver rather than an `Option`.
-pub(super) async fn recv_fe_command(
-    rx: &mut broadcast::Receiver<FeCommandEvt>,
-) -> Result<FeCommandEvt, broadcast::error::RecvError> {
-    rx.recv().await
 }
 
 /// Translates one FE command into an `fe.command` evt frame on the wire
@@ -360,15 +316,6 @@ where
     }
 }
 
-/// Awaits the next streamed REPL frame. The channel is always present (created
-/// unconditionally in `run`), so like `recv_agent_msg` this takes a plain
-/// receiver rather than an `Option`.
-pub(super) async fn recv_repl_frame(
-    rx: &mut broadcast::Receiver<ReplFrameMsg>,
-) -> Result<ReplFrameMsg, broadcast::error::RecvError> {
-    rx.recv().await
-}
-
 /// Translates one streamed REPL frame into a `repl.frame` evt frame on the
 /// wire. Returns `Ok(true)` if a frame was written, `Ok(false)` if the
 /// receiver was lagged or closed (skip and keep the connection alive). The
@@ -403,18 +350,6 @@ where
             tracing::debug!("repl frame bus channel closed");
             Ok(false)
         }
-    }
-}
-
-/// Awaits the next monitor tick. Mirrors `recv_watcher`: when the hub wasn't
-/// installed the receiver is `None` and this stays pending, leaving the
-/// select! arm inactive.
-pub(super) async fn recv_monitor(
-    rx: &mut Option<broadcast::Receiver<HostLatest>>,
-) -> Result<HostLatest, broadcast::error::RecvError> {
-    match rx {
-        Some(r) => r.recv().await,
-        None => std::future::pending().await,
     }
 }
 
