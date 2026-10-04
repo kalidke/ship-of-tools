@@ -1228,11 +1228,11 @@ fn looks_binary(bytes: &[u8]) -> bool {
 /// Drawn miniature flanking each session badge in the bottom strip. Cosmetic
 /// only — a decode failure leaves `State::logo_quad` None and the strip renders
 /// exactly as before.
-const LOGO_DARK_PNG: &[u8] = include_bytes!("../../../../logo-dark.png");
+const LOGO_DARK_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo-dark.png"));
 /// Wide full-text "wordmark" logo, embedded at build time from the repo root.
 /// Drawn small at the top-left of the nav pane. Cosmetic only — a decode
 /// failure leaves `State::wordmark_quad` None.
-const LOGO_WORDMARK_PNG: &[u8] = include_bytes!("../../../../logo-wordmark-dark.png");
+const LOGO_WORDMARK_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo-wordmark-dark.png"));
 
 /// Max characters shown for one session label in the bottom strip before
 /// truncating with an ellipsis — keeps a long workspace name from dominating.
@@ -6441,7 +6441,7 @@ impl State {
         // the icon of the running window, which the shortcut never controls.)
         // Non-fatal on decode failure: we just launch without a custom icon.
         fn load_window_icon() -> Option<Icon> {
-            const LOGO_PNG: &[u8] = include_bytes!("../../../../logo.png");
+            const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png"));
             let rgba = image::load_from_memory(LOGO_PNG).ok()?.to_rgba8();
             // 512² source → a tidy 256² icon; the OS rescales per surface. Area-
             // averaging `thumbnail` matches the preview/png.rs downscale idiom.
@@ -24545,7 +24545,7 @@ mod tests {
 
     #[test]
     fn focus_written_only_by_set_focus() {
-        let src = include_str!("mod.rs").replace("\r\n", "\n");
+        let src = super::scan_tests::crate_source().replace("\r\n", "\n");
         // The one spaced write is `set_focus`'s (the field assigned, not compared).
         let pat = [".focus", " = "].concat();
         assert_eq!(src.matches(pat.as_str()).count(), 1);
@@ -24572,7 +24572,7 @@ mod tests {
         // `leave` serves every intent alike: no early return, and no end of
         // the drawer's session from the window (the daemon's Close ends it,
         // a Keep keeps it).
-        let src = include_str!("mod.rs").replace("\r\n", "\n");
+        let src = super::scan_tests::crate_source().replace("\r\n", "\n");
         let start = src.find(&["fn leave(&mut self, event_loop: &ActiveEventLoop, ", "intent"].concat()).unwrap();
         let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
         for banned in ["attach_term", "request_quit", "return"] {
@@ -24589,7 +24589,7 @@ mod tests {
     fn roi_paste_dismisses_the_prompt_first() {
         // An open quit prompt is dismissed (`set_focus`) before the agent
         // pane takes the ROI paste's bytes.
-        let src = include_str!("mod.rs").replace("\r\n", "\n");
+        let src = super::scan_tests::crate_source().replace("\r\n", "\n");
         let at = src.find(&["\"ROI {w}", "×{h} of {name}"].concat()).unwrap();
         let arm = &src[at.saturating_sub(4000)..at];
         let focus = arm.rfind(&["self.set_focus(", "PaneFocus::Llm);"].concat()).unwrap();
@@ -31207,3 +31207,5 @@ mod capsule_pane_tests {
         assert_eq!(pane_reason_line(None, None, None), None);
     }
 }
+#[cfg(test)]
+mod scan_tests;

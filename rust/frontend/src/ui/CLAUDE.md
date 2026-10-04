@@ -22,6 +22,7 @@ None yet.
 
 ## Files
 - `mod.rs`: `State`, `App` and the rest of the window's code (over 800 lines under standing exemption E11).
+- `scan_tests.rs`: the crate's own source for the tests that scan it.
 
 ## Start here
 `State` in mod.rs for view state; `impl ApplicationHandler for App` for the event loop.
