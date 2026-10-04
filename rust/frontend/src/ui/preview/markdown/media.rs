@@ -48,10 +48,7 @@ pub(in crate::ui) struct MathSvg {
     /// SVG root `height="N ex"` — same parse path as `width_ex`.
     pub(in crate::ui) height_ex: Option<f32>,
     /// SVG root `style="vertical-align: N ex"`. Negative (the SVG
-    /// hangs `N ex` below the text baseline). Reserved for the A4
-    /// inline-placement pass; display blocks paint centred and don't
-    /// consume this yet.
-    #[allow(dead_code)]
+    /// hangs `N ex` below the text baseline).
     pub(in crate::ui) vertical_align_ex: Option<f32>,
     /// Lazily-rasterised quad. Populated on first paint inside the
     /// markdown pane; reset to None when the cache entry is replaced

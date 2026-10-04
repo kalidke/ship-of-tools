@@ -8,7 +8,6 @@ use crate::ui::*;
 pub(in crate::ui) struct ConceptInfo {
     pub(in crate::ui) target: String,
     pub(in crate::ui) exists: bool,
-    #[allow(dead_code)] // body markdown is shaped into preview_concept on arrival
     pub(in crate::ui) content: String,
     /// `synced_against` AST hash parsed out of the annotation's YAML
     /// frontmatter. `None` when no annotation exists, no frontmatter, or
