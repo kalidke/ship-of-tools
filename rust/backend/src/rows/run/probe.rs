@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// lane that DID answer, and from [`FOREIGN_PHASE`] (ADR 0030 §8 decision
 /// 31c) below — a challenge that specifically proves foreign now gets its
 /// own phase rather than folding in here.
-pub const UNREACHABLE_PHASE: &str = "unreachable";
+pub const UNREACHABLE_PHASE: &str = crate::rows::workspace::Phase::Unreachable.as_wire_str();
 
 /// The wire phase string for a capsule workspace whose supervisor lane
 /// DID answer — but with `version_skew`: it is held by a supervisor
@@ -30,7 +30,7 @@ pub const UNREACHABLE_PHASE: &str = "unreachable";
 /// `note_if_foreign` already recognizes by text-matching "foreign" in
 /// `query_status`'s error — no new detection, only a new destination for
 /// a fact this daemon already had.
-pub const FOREIGN_PHASE: &str = "foreign";
+pub const FOREIGN_PHASE: &str = crate::rows::workspace::Phase::Foreign.as_wire_str();
 
 /// The wire phase string for a capsule workspace with no published
 /// voyage pointer (`<state_dir>/drawer.voyage`, `sot_log::supervisor::journal::pointer` —
@@ -53,7 +53,7 @@ pub const FOREIGN_PHASE: &str = "foreign";
 /// reads "stopped" too — bounded by the spawn call itself and
 /// self-correcting on the very next list once the pointer (and the
 /// supervisor behind it) exists.
-pub const NEVER_STARTED_PHASE: &str = "stopped";
+pub const NEVER_STARTED_PHASE: &str = crate::rows::workspace::Phase::Stopped.as_wire_str();
 
 /// Whether a capsule workspace's supervisor lane is even worth querying,
 /// given whether its voyage pointer exists — pure, no I/O itself (the
@@ -78,14 +78,7 @@ pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
 /// module doc), so this needs no `#[cfg(windows)]` either, and the pure
 /// unit tests below exercise it directly on Linux.
 pub fn phase_str(phase: sot_log::lane::wire::SupervisorPhase) -> &'static str {
-    use sot_log::lane::wire::SupervisorPhase;
-    match phase {
-        SupervisorPhase::Starting => "starting",
-        SupervisorPhase::Ready => "ready",
-        SupervisorPhase::Ending => "ending",
-        SupervisorPhase::EndedNoRespawn => "ended_no_respawn",
-        SupervisorPhase::Terminal => "terminal",
-    }
+    local_phase(phase).as_wire_str()
 }
 
 /// Converts to the local `Phase` (R10); [`phase_str`] stays for the wire mapping.

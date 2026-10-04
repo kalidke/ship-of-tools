@@ -23,6 +23,7 @@ destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `h
 `write_and_enter` for the ops that type into a sibling row (`pty.input` in `rows/ops/pty.rs`).
 
 ## Rules
+- A phase's wire string is written once, in `Phase::as_wire_str`; `probe.rs`'s constants and `phase_str` read it.
 - `observer::observe` is the one call that feeds a row's phase cell, through `Workspace::apply_phase_observation`.
 - One observer task runs per row; `observer::ensure_running` starts it and `Workspaces::insert` never does.
 - The headless client never resizes the pane and takes the pen only to deliver one input (`headless::type_into`).

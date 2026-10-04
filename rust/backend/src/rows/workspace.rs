@@ -22,7 +22,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub fn as_wire_str(self) -> &'static str {
+    pub const fn as_wire_str(self) -> &'static str {
         match self {
             Phase::Stopped => "stopped",
             Phase::Starting => "starting",
