@@ -146,3 +146,29 @@ end
         end
     end
 end
+
+@testset "a CLAUDE.md in a skill or launcher folder is never installed" begin
+    mktempdir() do home
+        skills = joinpath(home, "src", "skills")
+        mkpath(joinpath(skills, "demo", "sub"))
+        write(joinpath(skills, "demo", "SKILL.md"), "---\nname: demo\n---\n")
+        write(joinpath(skills, "demo", "CLAUDE.md"), "page")
+        write(joinpath(skills, "demo", "sub", "CLAUDE.md"), "page")
+        write(joinpath(skills, "demo", "sub", "ref.md"), "ref")
+        launchers = joinpath(home, "src", "bin")
+        mkpath(launchers)
+        write(joinpath(launchers, "ccdemo"), "#!/bin/sh\n")
+        write(joinpath(launchers, "CLAUDE.md"), "page")
+        dst = joinpath(home, "dst", "skills")
+        withenv("HOME" => home) do
+            ShipTools._install_skills(skills, dst)
+            ShipTools._install_launchers(launchers)
+        end
+        @test isfile(joinpath(dst, "demo", "SKILL.md"))
+        @test isfile(joinpath(dst, "demo", "sub", "ref.md"))
+        @test !ispath(joinpath(dst, "demo", "CLAUDE.md"))
+        @test !ispath(joinpath(dst, "demo", "sub", "CLAUDE.md"))
+        @test isfile(joinpath(home, ".local", "bin", "ccdemo"))
+        @test !ispath(joinpath(home, ".local", "bin", "CLAUDE.md"))
+    end
+end

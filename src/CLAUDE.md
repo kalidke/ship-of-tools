@@ -26,6 +26,8 @@ scripts/CLAUDE.md.
 - Prune only names recorded or listed (`_prune_comm_bin`).
 - The bin gets every folder listed in comm/bin-folders.txt, whatever `clis` (`_comm_bin_files`); a missing folder or a
   name shipped by two folders fails the install.
+- No file named CLAUDE.md is installed from any source folder (`NEVER_INSTALLED`: `_comm_bin_files`, `_install_skills`,
+  `_install_launchers`).
 - A move under comm/ edits only comm/bin-folders.txt and src/sources.jl, never src/ code or test/.
 - Remove `VERSION` first and write it last (`install_comm`).
 - Never drop a hook that is not ours, and never create a settings.json under ~/.claude-auth

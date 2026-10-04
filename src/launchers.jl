@@ -18,7 +18,7 @@ commands won't resolve.
 function _install_launchers(srcbin::AbstractString)
     isdir(srcbin) || return nothing
     bindir = joinpath(homedir(), ".local", "bin")
-    installed = [f for f in readdir(srcbin) if isfile(joinpath(srcbin, f))]
+    installed = [f for f in readdir(srcbin) if isfile(joinpath(srcbin, f)) && f != NEVER_INSTALLED]
     isempty(installed) || _install_files(srcbin, bindir, installed; executable = Returns(true))
     for f in COMM_DEPRECATED_LAUNCHERS
         p = joinpath(bindir, f)

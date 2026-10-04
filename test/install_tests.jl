@@ -119,6 +119,7 @@ end
         mkpath(joinpath(root, "a", "sub"))
         mkpath(joinpath(root, "b"))
         write(joinpath(root, "a", "x.sh"), "x")
+        write(joinpath(root, "a", "CLAUDE.md"), "page")
         write(joinpath(root, "b", "y.sh"), "y")
         list = joinpath(root, "list.txt")
         # A CRLF list with a blank line: CR is stripped, blanks skipped.
@@ -141,5 +142,17 @@ end
         @test err isa ErrorException
         @test occursin("x.sh", err.msg)
         @test occursin(joinpath(root, "a"), err.msg) && occursin(joinpath(root, "b"), err.msg)
+    end
+end
+
+@testset "update_comm installs no CLAUDE.md" begin
+    mktempdir() do home
+        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+            ShipTools.update_comm(clis = [:claude, :codex])
+        end
+        @test isfile(joinpath(home, ".sot-comm", "bin", "comm-poll.sh"))
+        found = [joinpath(r, f) for (r, _, fs) in walkdir(home) for f in fs if f == ShipTools.NEVER_INSTALLED]
+        @test isempty(found)
     end
 end

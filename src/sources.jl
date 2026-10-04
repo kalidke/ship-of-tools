@@ -20,5 +20,7 @@ const CODEX_LAUNCHER_SRC = joinpath(CODEX_ADAPTER_SRC, "bin")
 const CODEX_HOOKS_JSON_SRC = joinpath(CODEX_ADAPTER_SRC, "hooks.json")
 # The sot-comm plugin folder (its .codex-plugin/plugin.json manifest).
 const CODEX_PLUGIN_SRC = joinpath(CODEX_ADAPTER_SRC, "plugin")
+# The one file name no install ever copies, from any source folder.
+const NEVER_INSTALLED = "CLAUDE.md"
 # The conventions file that also installs as $CODEX_HOME/AGENTS.md.
 const AGENTS_MD_SRC = joinpath(REPO_ROOT, "AGENTS.md")

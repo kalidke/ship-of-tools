@@ -52,7 +52,7 @@ function _comm_bin_files(folders = _comm_bin_folders())
     files = Tuple{String,String}[]
     owner = Dict{String,String}()
     for dir in folders, name in readdir(dir)
-        isfile(joinpath(dir, name)) || continue
+        isfile(joinpath(dir, name)) && name != NEVER_INSTALLED || continue
         haskey(owner, name) &&
             error("comm bin name \"$name\" is shipped by both $(owner[name]) and $dir")
         owner[name] = dir

@@ -69,7 +69,7 @@ function _install_skills(srcdir::AbstractString, skillsroot::AbstractString)
     for name in names
         skillsrc = joinpath(srcdir, name)
         rel = sort([relpath(joinpath(r, f), skillsrc)
-                    for (r, _, fs) in walkdir(skillsrc) for f in fs])
+                    for (r, _, fs) in walkdir(skillsrc) for f in fs if f != NEVER_INSTALLED])
         before = length(problems)
         _stage!(problems, "/$name") do
             _install_files(srcdir, skillsroot, [joinpath(name, r) for r in rel])
