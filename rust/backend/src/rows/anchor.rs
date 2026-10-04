@@ -78,8 +78,8 @@ pub(crate) fn default_row_launch_seed(
     }
 }
 
-/// Seeds the default row from the persisted one, or as the inert anchor on a first launch, and saves it.
-pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, workspaces: &Workspaces) {
+/// Seeds the default row from the persisted one, or as the inert anchor on a first launch, saves it and returns it.
+pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, workspaces: &Workspaces) -> Arc<Workspace> {
     let default_label = opts
         .label
         .clone()
@@ -206,6 +206,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
             "default workspace ready"
         );
     }
+    default_ws
 }
 
 /// After a default row's run is CONFIRMED ended (`confirmed_ended` from
