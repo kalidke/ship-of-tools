@@ -55,12 +55,13 @@ use std::time::{Duration, Instant};
 /// `hello`'s own reply budget (ADR 0041 Lifecycle "Every op has one
 /// budget: connect 2 s, request write 2 s..." — hello is a fixed,
 /// single-round-trip request, so it shares the 2 s figure rather than
-/// the slower `status` budget below).
-const HELLO_BUDGET: Duration = Duration::from_secs(2);
+/// the slower `status` budget below). The supervisor client's connect and
+/// challenge use it too.
+pub(super) const HELLO_BUDGET: Duration = Duration::from_secs(2);
 /// "Every client's first act, after the identity check above, is a
 /// `status` with a 5 s budget; a lane that accepts but does not answer
 /// within it is treated exactly as an absent lane."
-const STATUS_BUDGET: Duration = Duration::from_secs(5);
+pub(super) const STATUS_BUDGET: Duration = Duration::from_secs(5);
 /// Absolute deadline for an ENTIRE checkpoint transfer, not merely each
 /// frame within it (Codex round on #194, finding 3): `STATUS_BUDGET`
 /// alone re-arms every loop iteration in

@@ -16,4 +16,4 @@ own supervisor-lane calls live here too. Part of capsule; charter: rust/log/CLAU
 
 ## Rules
 - `FeAttachClient` owns only the parser and UI state and drains its worker's events in `pump`.
-- Every supervisor-lane call connects through `connect_and_challenge` (hello with the build identity, then the challenge) before any request, each bounded: `CONNECT_AND_HELLO_BUDGET` 2 s, `STATUS_BUDGET` 5 s, `RESET_BUDGET` 30 s.
+- Every supervisor-lane call connects through `connect_and_challenge` (hello with the build identity, then the challenge) before any request, each bounded: `HELLO_BUDGET` 2 s and `STATUS_BUDGET` 5 s (the worker's), `RESET_BUDGET` 30 s.

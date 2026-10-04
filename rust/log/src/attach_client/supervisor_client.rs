@@ -39,7 +39,7 @@
 //! `Endpoint::challenge`, `exchange::{SupervisorLaneExchange,
 //! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
 
-use crate::attach_client::worker::{run_end_run_and_wait, FrameReader};
+use crate::attach_client::worker::{run_end_run_and_wait, FrameReader, HELLO_BUDGET, STATUS_BUDGET};
 use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
 use crate::attach_client::rules::{QuitDispatcher, QuitState};
 use crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE;
@@ -58,19 +58,6 @@ use std::time::{Duration, Instant};
 /// `PlatformEndpoint = PipeEndpoint` there) — zero backend edits
 /// expected.
 pub type ChallengedProcess = <PlatformEndpoint as Endpoint>::Process;
-
-/// ADR 0041 Lifecycle "Every op has one budget: connect 2 s, request
-/// write 2 s..." — the same figure `attach_client/client.rs`'s own
-/// `HELLO_BUDGET`/`WRITE_BUDGET` pin, reused here as this module's own
-/// connect+challenge deadline for the same reason: hello doubles as the
-/// challenge's own steps 4-5 exchange (`SupervisorRequest::Hello`'s own
-/// doc), so one fixed, single-round-trip budget covers both.
-const CONNECT_AND_HELLO_BUDGET: Duration = Duration::from_secs(2);
-/// "Every client's first act, after the identity check above, is a
-/// `status` with a 5 s budget; a lane that accepts but does not answer
-/// within it is treated exactly as an absent lane." Matches
-/// `attach_client/worker/mod.rs`'s own `STATUS_BUDGET`.
-const STATUS_BUDGET: Duration = Duration::from_secs(5);
 
 /// What a `status` round trip reports. `pid`/`created` are the reporting
 /// supervisor's own identity, off the same reply.
@@ -148,7 +135,7 @@ fn connect(
 /// (most callers) simply drops the second element; dropping closes the
 /// handle.
 pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, ChallengedProcess)> {
-    let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let deadline = Instant::now() + HELLO_BUDGET;
     let (conn, process) = connect(state_dir, deadline)?;
     match send_and_read(&conn, &SupervisorRequest::Status, Instant::now() + STATUS_BUDGET)? {
         SupervisorReply::StatusOk { pid, created, voyage, leg, phase } => {
@@ -184,7 +171,7 @@ pub fn query_status(state_dir: &Path) -> crate::Result<(StatusReport, Challenged
 /// and still sees no exit has a genuine, reportable problem, not mere
 /// impatience.
 pub fn stop(state_dir: &Path) -> crate::Result<()> {
-    let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let deadline = Instant::now() + HELLO_BUDGET;
     let (conn, process) = connect(state_dir, deadline)?;
     let operation_id = format!("sot-backend-stop-{}", uuid::Uuid::now_v7());
     let request = SupervisorRequest::Command { operation_id, op: SupervisorOp::Stop };
@@ -214,7 +201,7 @@ pub fn stop(state_dir: &Path) -> crate::Result<()> {
 /// Lifecycle), so a stale value is safely refused rather than mutated
 /// against.
 pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<EndRunOutcome> {
-    let hello_deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let hello_deadline = Instant::now() + HELLO_BUDGET;
     let (mut conn, _process) = connect(state_dir, hello_deadline)?;
     let mut reader = FrameReader::new();
     let h = crate::host::state_dir::state_dir_hash(state_dir);
@@ -234,7 +221,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
                 &PlatformEndpoint::default(),
                 &h,
                 crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
-                Instant::now() + CONNECT_AND_HELLO_BUDGET,
+                Instant::now() + HELLO_BUDGET,
             ) {
                 *c = new_conn;
                 *r = FrameReader::new();
@@ -284,7 +271,7 @@ const RESET_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// `ResetDone { new_voyage }`, bounded by [`RESET_BUDGET`]. Returns the
 /// new voyage id.
 pub fn reset(state_dir: &Path) -> crate::Result<String> {
-    let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+    let deadline = Instant::now() + HELLO_BUDGET;
     let (conn, _process) = connect(state_dir, deadline)?;
     let voyage = match send_and_read(
         &conn,
@@ -454,7 +441,7 @@ impl Persistent {
     }
 
     fn fresh_connection(&self) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
-        let deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
+        let deadline = Instant::now() + HELLO_BUDGET;
         connect(&self.state_dir, deadline)
     }
 
