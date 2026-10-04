@@ -16,7 +16,7 @@ this folder serve the same idea.
 - Each connection's task and state, in `serve_control`: roster guard, declared host and name, active workspace,
   monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
 - The op table: the `match` in `dispatch`, which hands each op to its owner's handler (four through the off-loop
-  pool) and keeps inline only the arms that touch connection state.
+  pool) and keeps inline only the arms that touch connection state, and the unknown-op reply.
 - sotd's entry (argv, umask 077, boot refusals, the log tee to `<state>/sotd.log`, which follows `XDG_STATE_HOME` and
   has no size bound or rotation), the client roster (`clients.rs`) and the revision ring (`session.rs`), all in the
   crate root.
@@ -28,7 +28,8 @@ this folder serve the same idea.
 - A connection has one writer. Off-loop jobs hand their reply back over `OutTx` and the loop writes it with
   `write_reply`.
 - A handler `Err` is one `handler_error` frame and the connection stays (`finish_dispatch`); an over-cap envelope
-  degrades to an error frame for that request (`write_reply`); only a write failure ends the connection.
+  degrades to an error frame for that request (`write_reply`); only a write failure ends the connection, or a file
+  download's read error once its chunks are on the wire (`stream_file_download`).
 - A peer that cannot drain a frame within 10 s plus 1 s per MiB of blob is dropped (`write_frame_to`,
   `write_deadline`, ADR 0027).
 - A pinged `fe` or `bridge` connection silent for 90 s is reaped (the reaper arm in `select_once`,
