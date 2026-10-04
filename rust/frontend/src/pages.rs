@@ -277,6 +277,53 @@ pub fn proxy_port_from_url(url: &str) -> Option<u16> {
     port.parse::<u16>().ok()
 }
 
+/// Hand `url` (any browser-openable address — `http://…`, `file:///…`, or
+/// a local filesystem path) off to the OS default handler. Fire-and-
+/// forget — we don't wait for the browser to exit.
+pub(crate) fn open_url_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        // Avoid `cmd /c start`: shell metacharacters in URLs, especially
+        // `&secret=...` on Pluto links, are otherwise parsed by cmd.exe.
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn()
+            .map(|_| ())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map(|_| ())?;
+    }
+    tracing::info!(%url, "opened in browser");
+    Ok(())
+}
+
+/// Write `html_bytes` to a unique temp file and hand it off to the OS
+/// default browser via `open_url_in_browser`. We don't delete the temp
+/// file (the OS cleans temp on its own schedule; a fresh path per call
+/// also prevents the browser from showing a stale cached version).
+pub(crate) fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut path = std::env::temp_dir();
+    path.push(format!("sot-preview-{now}.html"));
+    std::fs::write(&path, html_bytes)?;
+    let path_str = path.to_string_lossy().to_string();
+    open_url_in_browser(&path_str)
+}
+
 #[cfg(test)]
 mod tests {
     /// ADR 0045 decision 4: with the host's link down a browser connection
