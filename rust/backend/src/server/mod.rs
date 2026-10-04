@@ -33,7 +33,7 @@ use crate::session::Session;
 use crate::watcher::PreviewChanged;
 use crate::workspaces::{AgentMessage, AgentReceipt};
 use crate::workspaces::WorkspaceChanged;
-use crate::workspaces::{self, Workspace, Workspaces};
+use crate::workspaces::{self, Workspaces};
 use crate::Opts;
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinSet;
@@ -51,6 +51,7 @@ pub(crate) use listen::refuse_live_socket;
 pub(crate) use reply::{write_frame_to, write_frame_within};
 use listen::{run_local, take_daemon_lock};
 use crate::comm::registry::poll::project_comm_registry;
+use crate::rows::anchor::seed_default_row;
 
 pub async fn run(opts: Opts) -> Result<()> {
     // Lock first: one daemon per state root, held until this process ends
@@ -99,132 +100,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // The daemon holds the link to the hub and files for its own comm folder
     // (0031 Part 3); a box with no such link returns at once.
     tokio::spawn(crate::hub_link::run(workspaces.clone()));
-    let default_label = opts
-        .label
-        .clone()
-        .or_else(|| {
-            files_mode
-                .root_path()
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "home".to_string());
-    // ADR 0042 slice L1a, Codex review finding 5: the default workspace's
-    // OWN `runtime` must survive this re-registration. `scan_disk` (just
-    // above) already loaded it correctly from its toml if one exists —
-    // read it back BEFORE constructing a fresh seed, whose own
-    // `Workspace::from_label` default ("tmux") would otherwise silently
-    // clobber a scanned capsule default back to tmux on every restart
-    // (`insert`'s own "new metadata wins" semantics, working exactly as
-    // designed, applied to the wrong source of truth). `None` means a
-    // genuinely first-ever launch on this machine.
-    //
-    // Rule G (shrink round): the SAME clobber risk applies to the launch
-    // fields — `insert`'s own doc ("the rest of the metadata is taken
-    // from the new ws") means whatever `from_label` builds here REPLACES
-    // the persisted row's `agent`/`agent_name`/`autostart_claude`/`task`
-    // on EVERY restart, not just at create time. An existing default
-    // row's persisted launch fields must survive re-registration the
-    // same way its runtime does (below), computed here BEFORE
-    // construction rather than patched after, since `from_label` takes
-    // them as constructor args.
-    let existing_default = workspaces.resolve(Some(&paths::slug(&default_label)));
-    // ADR 0042 amendment (2026-09-04) governs a FIRST-EVER row only: the
-    // preserve arm below keeps an existing default row's launch fields
-    // verbatim, so a box whose row a pre-amendment daemon had already
-    // stamped with an agent keeps behaving as before — a visible, startable
-    // session at the home root — with no signal that a one-time cleanup is
-    // owed (field day 2026-09-05: found by forensics on a Windows box). Say
-    // so at boot, once, naming the remedy; never rewrite the row (it may be
-    // a session the user is relying on).
-    if let Some(existing) = &existing_default {
-        if existing.runtime == "capsule" && existing.agent() != "none" {
-            tracing::warn!(
-                workspace_id = %existing.workspace_id,
-                agent = %existing.agent(),
-                toml = %workspaces::toml_path_for(&existing.slug).display(),
-                "default workspace carries an agent, so it lists and starts as an ordinary session \
-                 (a pre-2026-09-04 seed, or a deliberate choice); to make it the inert anchor: stop \
-                 the daemon, set agent = \"none\" and autostart_claude = false in that toml, start again"
-            );
-        }
-    }
-    // 2026-09-04 amendment (owner ruling): the daemon's own home/default
-    // row is an INERT ANCHOR — the workspace it falls back to and the
-    // way to browse this machine's files, not a session — so a
-    // genuinely first-ever launch seeds no agent and no autostart on
-    // every host alike (before this amendment, Windows seeded
-    // `agent = "claude"`, `autostart_claude = true` here, so pressing
-    // Enter on it silently started a claude capsule and the row looked
-    // like every other session — the exact confusion this amendment
-    // removes). `default_row_launch_seed` (workspaces.rs, the launch-field
-    // counterpart of `default_row_runtime` below) is the one place this
-    // decision — and the Windows corrupted-row re-seed's OWN identical
-    // fallback — is made, so it stays unit-testable without a live
-    // registry.
-    let existing_agent = existing_default.as_ref().map(|e| e.agent());
-    let existing_agent_name = existing_default.as_ref().map(|e| e.agent_name());
-    let (seed_autostart, seed_agent, seed_agent_name, seed_task) =
-        workspaces::default_row_launch_seed(existing_default.as_deref().map(|e| {
-            (
-                e.autostart_claude,
-                existing_agent.as_deref().unwrap_or_default(),
-                existing_agent_name.as_deref().unwrap_or_default(),
-                e.task.as_str(),
-            )
-        }));
-    let mut default_ws_seed = Workspace::from_label(
-        &default_label,
-        files_mode.root_path().to_path_buf(),
-        seed_autostart,
-        seed_agent,
-        seed_agent_name,
-        seed_task,
-    );
-    // ADR 0042 slice L1a: route through the ONE function that decides
-    // this row's runtime for this OS (`workspaces::default_row_runtime`
-    // — see its own doc) rather than re-deciding it here. On Windows
-    // this is unconditionally "capsule", correcting rather than
-    // preserving a stale on-disk "tmux" leftover — the field incident
-    // this fixes: the old preserve-verbatim behaviour never self-healed
-    // such a value, and the daemon then refused to start the row at all
-    // (`pty spawn failed error=tmux is not available on Windows`), a
-    // dead end (`default_workspace_not_destroyable`, below).
-    if let Some(existing) = &existing_default {
-        if cfg!(windows) && existing.runtime != "capsule" {
-            tracing::info!(
-                workspace_id = %existing.workspace_id,
-                on_disk_runtime = %existing.runtime,
-                "default workspace runtime on Windows must be capsule (ADR 0042 L1a); \
-                 correcting a stale on-disk value and re-seeding its agent/autostart \
-                 to the inert anchor defaults (a corrupted row's launch fields, not \
-                 just its runtime)"
-            );
-        }
-    }
-    // Manager review (S16, Codex finding S16): carry the existing row's
-    // declared `agent_handle` (ADR 0046 decision 1's `agent.join`)
-    // forward the same way `runtime` is above — `from_label` seeds a
-    // fresh row with none at all, so without this every boot silently
-    // wiped a default row's already-joined handle on the very next save.
-    if let Some(existing) = &existing_default {
-        default_ws_seed.agent_handle = std::sync::Mutex::new(existing.agent_handle());
-    }
-    workspaces.insert(default_ws_seed);
-    let default_ws = workspaces
-        .resolve(Some(&paths::slug(&default_label)))
-        .expect("default workspace just inserted");
-    workspaces.set_default(&default_ws.workspace_id);
-    if let Err(e) = workspaces::save(&default_ws) {
-        tracing::warn!(error = %e, "could not persist default workspace toml");
-    } else {
-        tracing::info!(
-            workspace_id = %default_ws.workspace_id,
-            slug = %default_ws.slug,
-            "default workspace ready"
-        );
-    }
+    seed_default_row(&opts, &files_mode, &workspaces);
 
 
     // Lazily-spawned MathJax sidecar. Cheap to construct (no child process

@@ -14,8 +14,8 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   (`workspace.rs`, the struct in `mod.rs`).
 - One lifecycle guard per row: `Workspaces::capsule_guard`.
 - The run gate: `Workspaces::begin_start` and `close_gate_and_settle`, `StartPermit` (`gate.rs`).
-- The default row's inert-anchor rule, `is_inert_default_anchor`, `reset_agent_to_none` and
-  `default_row_launch_seed` (`anchor.rs`).
+- The default row's inert-anchor rule, `is_inert_default_anchor`, `reset_agent_to_none`, `default_row_launch_seed` and
+  the boot seed `seed_default_row` (`anchor.rs`).
 - Three daemon-wide handles kept beside the rows: the `repl.frame` sender, the watch bus and the monitor hub
   (`set_repl_frame_tx`, `set_watch_bus`, `set_monitor_hub`), and each row's lifecycle observer task
   (`install_observer`, `has_observer`).
@@ -40,8 +40,8 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Connections
 - In: every op finds its row through `Workspaces::resolve`; `ops/` creates, lists and destroys rows
-  (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` inserts the default
-  row.
+  (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` calls `anchor::seed_default_row`,
+  which inserts the default row.
 - Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),
   writes observations (`run::observer::observe`) and installs the observer (`install_observer`); the lifecycle close calls
   `close_gate_and_settle`.
@@ -60,7 +60,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
-- `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`
+- `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`, `seed_default_row`
 - `ops/`: the row ops clients call
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: a row's run as the daemon sees it: phase strings, observer, headless client, start, end, activation, watchdog, boot resume

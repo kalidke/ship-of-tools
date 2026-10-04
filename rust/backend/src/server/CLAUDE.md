@@ -8,7 +8,7 @@ its own loop (`handle_connection`). Part of the daemon's server subsystem; the s
 this folder serve the same idea.
 
 ## Owns
-- `<state>/daemon.lock`: taken by `lock_daemon` at the top of `run`, held for the process's life.
+- `<state>/daemon.lock`: taken by `take_daemon_lock` (which calls `lock_daemon`) at the top of `run`, held for the process's life.
 - The session socket or pipe: `run_local` secures its private directory, refuses a socket a live daemon answers on
   (`refuse_live_socket`), builds the owner-only pipe descriptor on Windows, accepts, and unlinks at shutdown.
 - The eight buses `run` creates: repl frames, preview changes, workspace events, topology writes, agent messages, agent
@@ -52,7 +52,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster, the registry-watch projection, and the re-exports
 - `hello.rs`: the hello handshake (protocol gate, hello reply and its replay)
-- `listen.rs`: the daemon lock, the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
+- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek and the control loop with the op table
 - `events.rs`: one `recv_*`/`write_*` pair per bus, turning a broadcast event into its evt frame
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
