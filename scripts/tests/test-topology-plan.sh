@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-tunnel-plan.sh -- regression harness for scripts/sot-hosts.sh's
+# test-topology-plan.sh -- regression harness for scripts/sot-hosts.sh's
 # sot_topology_plan (topology plan, lane D: `sotd topology plan [--self
 # <host>]` is the one parser now; this reads its plain-line stdout).
 #
@@ -8,10 +8,10 @@
 # rust/protocol/src/topology.rs's `plan` doc comment is the contract this
 # stub imitates; a reviewer may still adjust that format, so this parses
 # it in ONE function (sot_topology_plan) and nowhere else. Bash-side
-# sibling of scripts/tests/test-tunnel-plan.ps1, which exercises the same
+# sibling of scripts/tests/test-topology-plan.ps1, which exercises the same
 # fixtures through Get-SotTopologyPlan.
 #
-# Run: scripts/tests/test-tunnel-plan.sh
+# Run: scripts/tests/test-topology-plan.sh
 
 set -euo pipefail
 
@@ -172,8 +172,8 @@ fi
 
 echo
 if [ "$fails" -eq 0 ]; then
-    echo "test-tunnel-plan: all checks passed"
+    echo "test-topology-plan: all checks passed"
 else
-    echo "test-tunnel-plan: $fails check(s) FAILED"
+    echo "test-topology-plan: $fails check(s) FAILED"
     exit 1
 fi

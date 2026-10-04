@@ -16,10 +16,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   ensure and lease order in launch-sot.ps1. Runs in the `rust.yml` step "Test local daemon launcher".
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
   already applied, wrong target, lock held. Runs in the `rust.yml` step "Test sot-apply.ps1".
-- `test-tunnel-plan.ps1`: `Get-SotTopologyPlan` and `Invoke-SotTopologySync` (scripts/sot-hosts.ps1) against a fake
-  `sotd`. Runs in the `rust.yml` step "Test tunnel plan".
-- `test-tunnel-plan.sh`: `sot_topology_plan` (scripts/sot-hosts.sh) against a fake `sotd`. Runs in the `rust.yml` step
-  "Test tunnel plan (bash)" (ubuntu leg) and in `rc-gate.sh`.
+- `test-topology-plan.ps1`: `Get-SotTopologyPlan` and `Invoke-SotTopologySync` (scripts/sot-hosts.ps1) against a fake
+  `sotd`. Runs in the `rust.yml` step "Test topology plan".
+- `test-topology-plan.sh`: `sot_topology_plan` (scripts/lib/sot-hosts.sh) against a fake `sotd`. Runs in the `rust.yml` step
+  "Test topology plan (bash)" (ubuntu leg) and in `rc-gate.sh`.
 
 ## Start here
 `installer-state.sh` for a change to install.sh, sot-apply.sh or lib/sot-daemon.sh: each `case_start` names the

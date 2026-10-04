@@ -1,4 +1,4 @@
-# test-tunnel-plan.ps1 -- regression harness for scripts/sot-hosts.ps1's
+# test-topology-plan.ps1 -- regression harness for scripts/sot-hosts.ps1's
 # Get-SotTopologyPlan (topology plan, lane D: `sotd topology plan --self
 # <host>` is the one parser now; this reads its plain-line stdout).
 #
@@ -17,7 +17,7 @@
 #
 # ASCII ONLY (see the same note in sot-hosts.ps1 / launch-sot.ps1).
 #
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-tunnel-plan.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\tests\test-topology-plan.ps1
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -49,7 +49,7 @@ try {
             (Join-Path $repo 'scripts\sot-hosts.ps1'),
             (Join-Path $repo 'scripts\launch-sot.ps1'),
             (Join-Path $repo 'scripts\shutdown-sot.ps1'),
-            (Join-Path $repo 'scripts\tests\test-tunnel-plan.ps1')
+            (Join-Path $repo 'scripts\tests\test-topology-plan.ps1')
         )) {
         $errs = $null
         [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errs)

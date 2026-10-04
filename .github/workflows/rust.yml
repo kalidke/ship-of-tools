@@ -140,16 +140,14 @@ jobs:
         run: .\scripts\tests\test-local-daemon.ps1
         working-directory: .
 
-      # ADR 0042 L2b design E: Read-SotHosts/Get-TunnelPlan (scripts/
-      # sot-hosts.ps1), the one-tunnel-per-remote plan both launchers open,
-      # against a fixture hosts.toml -- pure text processing, no ssh, no
-      # network, so this needs neither a built sotd.exe nor CI's own
-      # $env:CI-gated real-daemon sections. Same 5.1 host as the steps above.
-      - name: Test tunnel plan
+      # scripts/sot-hosts.ps1's Get-SotTopologyPlan against a fake sotd that prints fixed plan lines -- pure text
+      # processing, no ssh, no network, so this needs neither a built sotd.exe nor CI's $env:CI-gated real-daemon
+      # sections. Same 5.1 host as the steps above.
+      - name: Test topology plan
         if: matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
-        run: .\scripts\tests\test-tunnel-plan.ps1
+        run: .\scripts\tests\test-topology-plan.ps1
         working-directory: .
 
       - name: Parse shell launchers
@@ -158,13 +156,12 @@ jobs:
         run: |
           for f in *.sh; do bash -n "$f" && echo "ok: $f"; done
 
-      # ADR 0042 L2b design E: the bash-side sibling of the PowerShell tunnel
-      # plan test above -- scripts/sot-hosts.sh's sot_tunnel_plan against a
-      # fixture hosts.toml, pure text processing, hermetic and fast.
-      - name: Test tunnel plan (bash)
+      # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
+      # against the same fake sotd, pure text processing, hermetic and fast.
+      - name: Test topology plan (bash)
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
-        run: bash scripts/tests/test-tunnel-plan.sh
+        run: bash scripts/tests/test-topology-plan.sh
         working-directory: .
 
       # The installer's pure decisions and the sot-launch socket probe, run

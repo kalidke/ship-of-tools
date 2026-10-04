@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # sot-hosts.sh -- shared `sotd topology plan` reader (topology plan, lane
 # D). Sourced by launch-sot.sh (which spawns the ssh child a plan's `dial`
-# line names) and scripts/tests/test-tunnel-plan.sh.
+# line names) and scripts/tests/test-topology-plan.sh.
 #
 # The old hosts.toml TOML parsing (sot_hosts_default_host / sot_hosts_table
 # / sot_tunnel_plan) is DELETED -- `sot_protocol::topology` (Rust) is the

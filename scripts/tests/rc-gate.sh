@@ -143,7 +143,7 @@ producer() {
       *) SHELL_ALL+=("$f") ;;
     esac
   done
-  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/test-tunnel-plan.sh")
+  SHELL_ALL+=("$D/scripts/tests/installer-state.sh" "$D/scripts/tests/test-topology-plan.sh")
 
   for s in julia-root "${JULIA_PKGS[@]/#/julia-}"; do echo unrun > "$L/steps/${s//\//-}.rc"; done
   emit julia julia
