@@ -6,6 +6,7 @@ design of record: docs/adr/0049-messaging-on-one-page.md.
 ## Files
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
 - `mod.rs`: declares the files
+- `poll.rs`: the registry poll's change detection
 
 ## Start here
 `ancestors.rs` `run` (`sotd ancestors [--from <pid>]`, Windows only). comm-lib.sh's `_sot_ancestor_chain` reads it to
