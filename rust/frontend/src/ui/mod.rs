@@ -1680,53 +1680,11 @@ impl State {
         // `self.nav_spill_segments` after `draw` returns for the render-
         // pass tail to paint.
         let mut nav_spill_segs_out: Vec<NavSpillSeg> = Vec::new();
-
-        // A NavTree prompt, the not-ended count or `closing…`, and the lease
-        // notice are pinned under the nav list (`nav_pinned_rows`), so no
-        // scroll hides what Enter would confirm. A text prompt is the
-        // input field the user types into; a block cursor (▏) marks the
-        // insertion point.
-        let status = self.status.clone();
-        let nav_prompt_line = match &self.nav_prompt {
-            Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
-            Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),
-            Some(NavPrompt::ScaleEntry { input, .. }) => Some((format!("pixel size (nm): {input}▏"), String::new())),
-            Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
-            None => None,
-        };
-        // The counts owed, read once: this frame draws their sum, and the frame that
-        // presents it whole acks exactly these; then the line holds as `not_ended_shown`.
-        let owed = self.leases.owed();
-        let owed_line = crate::lease::not_ended_line(owed.iter().map(|(_, n)| n).sum());
-        let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| owed_line.clone()).or_else(|| {
-            let now = std::time::Instant::now();
-            self.not_ended_shown.as_ref().filter(|(_, until)| now < *until).map(|(l, _)| l.clone())
-        });
+        let (status, nav_prompt_line, owed, owed_line, nav_line) = self.nav_pinned_text();
         let mut owed_drawn = false;
         let mut leaving_drawn = false;
         let lease_notice = self.leases.notice();
-        // Local wall-clock of the machine running the frontend, sampled once
-        // per frame and turned into the top-right chrome clock text at the
-        // paint site below (`clock_label`, which also prefixes the date
-        // when there's room). `chrono::Local` is cross-platform (same
-        // behaviour on Windows/macOS/Linux); the once-per-second repaint is
-        // scheduled in `about_to_wait`, which also covers the date rolling
-        // over at midnight — no separate timer needed.
-        let clock_now = chrono::Local::now().naive_local();
-        // Battery readout painted just left of the clock. The OS query isn't
-        // free, so refresh the cache at most once per `BATTERY_QUERY_INTERVAL`
-        // (the clock repaints ~1×/s and reuses the cached value between
-        // refreshes). `None` => no battery / query failed => paint nothing.
-        self.refresh_battery_label();
-        let battery = self.battery_label.clone();
-        let last_key = self.last_key.clone();
-        // FE/BE version stamp for the bottom chrome edge. Snapshotted here
-        // with the other draw locals because the draw closure can't borrow
-        // `self` again.
-        let (version_stamp, version_skew) = version_label(
-            &sot_protocol::app_version(),
-            self.backend_version.as_deref(),
-        );
+        let (clock_now, battery, last_key, version_stamp, version_skew) = self.chrome_labels();
         let mode = self.mode;
         let focus = self.focus;
         let help_context = self.help_context();
@@ -1740,99 +1698,12 @@ impl State {
         // text on every non-ultrawide. Snapshotted here: the draw closure must
         // not borrow `self`.
         let nav_logo_row = self.wordmark_quad.is_some();
-        // Inline REPL figures, pass 1: decode any Image frame that has no
-        // quad yet (base64 → RGBA → texture) and prune entries that aged
-        // out of the log. Runs here, outside the draw closure, so texture
-        // upload never contends with the frame's borrows.
-        {
-            let mut new_quads: Vec<((u64, usize), ReplImage)> = Vec::new();
-            for entry in &self.repl_log {
-                for (fi, fr) in entry.frames.iter().enumerate() {
-                    if let sot_protocol::ReplFrame::Image { data_base64, .. } = fr {
-                        let key = (entry.eval_id, fi);
-                        if self.repl_images.contains_key(&key) {
-                            continue;
-                        }
-                        use base64::Engine as _;
-                        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data_base64)
-                        else {
-                            continue;
-                        };
-                        let Ok(img) = image::load_from_memory(&raw) else {
-                            continue;
-                        };
-                        let rgba = img.to_rgba8();
-                        let (w, h) = rgba.dimensions();
-                        if let Ok(quad) = Quad::from_rgba8(
-                            &self.device,
-                            &self.queue,
-                            &self.quad_pipeline,
-                            &rgba,
-                            w,
-                            h,
-                        ) {
-                            new_quads.push((key, ReplImage { quad, w, h }));
-                        }
-                    }
-                }
-            }
-            for (k, v) in new_quads {
-                self.repl_images.insert(k, v);
-            }
-            if !self.repl_images.is_empty() {
-                let log = &self.repl_log;
-                self.repl_images
-                    .retain(|k, _| log.iter().any(|e| e.eval_id == k.0));
-            }
-        }
-        // Pass 2: build the drawer lines, reserving rows for decoded
-        // figures. Fit width comes from LAST frame's scrollback sub-rect —
-        // the natural answer to the build-before-layout chicken-egg (review
-        // note: NOT monitor_rect_px, which is the Ctrl+M drawer's rect).
-        // One frame of lag on a resize, self-corrects; 0 before the
-        // drawer's first draw, where the caption fallback covers the gap.
-        let (repl_lines, repl_slots, repl_starts) = build_repl_lines(
-            &self.repl_log,
-            &self.repl_images,
-            self.repl_scrollback_px.w,
-            self.repl_scrollback_px.h,
-            self.cell_w,
-            self.cell_h,
-            self.active_repl_starting(),
-        );
-        self.repl_image_slots = repl_slots;
-        let build_key = (
-            self.repl_scrollback_px.w.to_bits(),
-            self.repl_scrollback_px.h.to_bits(),
-            self.cell_w.to_bits(),
-            self.cell_h.to_bits(),
-        );
-        if let Some((prev_key, anchor_id, anchor_span)) = self.repl_build_anchor {
-            if prev_key == build_key {
-                new_repl_scroll = pinned_repl_scroll(
-                    new_repl_scroll,
-                    anchor_id,
-                    anchor_span,
-                    repl_lines.len(),
-                    &repl_starts,
-                );
-            }
-        }
-        self.repl_build_anchor = repl_starts
-            .last()
-            .map(|&(id, start)| (build_key, id, repl_lines.len().saturating_sub(start)));
+        self.decode_repl_images();
+        let repl_lines;
+        (repl_lines, new_repl_scroll) = self.build_repl_view(new_repl_scroll);
         let repl_input = self.repl_input.clone();
         let repl_pkg_mode = self.repl_pkg_mode;
-        // The navigation body begins with status + spacer. The picker adds
-        // two path/header rows before its entries. Keep scroll and hit testing
-        // aligned when the help legend moves from the body to the border.
-        let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
-            Some(p) => (4usize.saturating_add(p.selected), !p.entries.is_empty()),
-            None => (
-                2usize.saturating_add(self.tree.selected),
-                !self.tree.rows.is_empty(),
-            ),
-        };
+        let (nav_cursor_body_pos, nav_has_cursor) = self.nav_cursor_row();
         // Mutable copy of the persistent scroll. The draw closure updates
         // this in place based on the cursor's viewport position; the
         // result is written back to self.tree_scroll after the draw.
@@ -1841,193 +1712,11 @@ impl State {
         if self.pane_attach_term.is_some() {
             self.pump_pane_attach_term();
         }
-        // Local terminal drawer (G2/G3): lazily spawn the OS shell the
-        // first time the Terminal drawer is shown, then drain any pending
-        // output into its parser before we borrow its screen for the draw.
-        // All mutation happens here, before the `self.terminal.draw`
-        // borrow and the immutable `local_term` screen borrow below.
-        // ADR 0041 step 6 U3: `drawer.attach_only` picks the Terminal
-        // drawer's BACKEND, once, the first time the drawer opens this
-        // session. Off (the default) or off-Windows: `use_attach_only`
-        // is always `false` and every line below behaves exactly as it
-        // did before this unit — "When off, NOTHING the FE does today
-        // changes."
-        #[cfg(windows)]
-        let use_attach_only = drawer_uses_attach(
-            self.settings.attach_only,
-            self.attach_term.is_some(),
-            self.local_term.is_some(),
-            &self.leases.granted_state_roots(),
-            self.own_state_root.as_deref(),
-        );
-        #[cfg(not(windows))]
-        let use_attach_only = false;
-
-        // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
-        // spawn (gated on the drawer being open) is separate from pump
-        // (which runs on EVERY redraw regardless of drawer visibility).
-        #[cfg(windows)]
-        if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
-            self.spawn_attach_term();
-        }
-        #[cfg(windows)]
-        if self.attach_term.is_some() {
-            self.pump_attach_term();
-        }
-
-        if self.drawer == DrawerContent::Terminal && !use_attach_only {
-            if self.local_term.is_none() {
-                #[cfg(windows)]
-                if self.settings.attach_only {
-                    self.status =
-                        "attach-only terminal needs this computer's backend to hold this window; opened a plain terminal"
-                            .to_string();
-                }
-                let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
-                let waker = self.window.clone();
-                // cwd = repo root, so the plain shell starts in the
-                // project directory. ADR 0017.
-                let cwd = self.repo_dir.clone();
-                match crate::term::LocalTerminal::spawn(
-                    &shell,
-                    80,
-                    24,
-                    cwd.as_deref(),
-                    Box::new(move || waker.request_redraw()),
-                ) {
-                    Ok(t) => {
-                        tracing::info!(program = %shell.program, "local terminal spawned");
-                        self.local_term = Some(t);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to spawn local terminal");
-                        self.status = format!("terminal spawn failed: {e}");
-                        // Fall back to closing the drawer so the user isn't
-                        // staring at an empty pane with no explanation.
-                        self.drawer = DrawerContent::Closed;
-                    }
-                }
-            }
-            if let Some(t) = self.local_term.as_mut() {
-                let processed = t.pump();
-                // Diagnostic surfaced on the status line so a blank pane is
-                // debuggable without RUST_LOG: parser size, dead flag, and
-                // whether the screen currently holds any non-blank cell.
-                // Only overwrite the status line when the pane actually looks
-                // wrong (dead / no content) — otherwise it fires every frame
-                // the drawer is open and clobbers real status messages
-                // (connection line, pin/unpin, ADR-0019 `notify`).
-                let dead = t.is_dead();
-                let screen = t.screen();
-                let (srows, scols) = screen.size();
-                let mut has_content = false;
-                'scan: for r in 0..srows {
-                    for c in 0..scols {
-                        if let Some(cell) = screen.cell(r, c) {
-                            if !cell.contents().is_empty() {
-                                has_content = true;
-                                break 'scan;
-                            }
-                        }
-                    }
-                }
-                if dead || !has_content {
-                    self.status = format!(
-                        "term: {scols}x{srows} content={has_content} dead={dead} pumped={processed}"
-                    );
-                }
-            }
-        }
+        self.pump_drawer_terminals();
         // Re-read after a possible spawn-failure close above; this is the
         // value the renderer branches on.
         let drawer = self.drawer;
-        // Borrow the LLM terminal screen for the duration of the draw.
-        // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
-        // tied to the client; since `terminal.draw` borrows a different
-        // field (self.terminal), Rust's split-borrow rules let us hold
-        // both at once. The local terminal's screen is borrowed the same
-        // way when the Terminal drawer is active. Unconditional on every
-        // platform since ADR 0045 decision 1 (a capsule row attaches
-        // through its own daemon everywhere).
-        //
-        // LU6a: which source actually wins is `pane_screen_choice`'s
-        // call, not an unconditional `pane_attach_term`-if-present — a
-        // live but not-yet-checkpointed client (or a still-`Pending`
-        // feed) defers to `pane_hold` so a capsule switch never paints
-        // the new client's empty parser. Coordinator amendment: a client
-        // that went terminal before ever checkpointing falls all the way
-        // through to blank instead (`pane_screen_choice`'s own doc) —
-        // three separate `let`s (rather than inlining each as a call
-        // argument) so the one `&mut` read (`is_dead`) never overlaps
-        // the `&ref` reads around it.
-        let pane_attach_has_client = self.pane_attach_term.is_some();
-        let pane_attach_checkpointed =
-            self.pane_attach_term.as_ref().is_some_and(|t| t.is_checkpointed());
-        let pane_attach_is_dead = self.pane_attach_term.as_mut().is_some_and(|t| t.is_dead());
-        let pane_screen = pane_screen_choice(
-            pane_attach_has_client,
-            pane_attach_checkpointed,
-            pane_attach_is_dead,
-            self.pane_feed,
-            self.pane_hold.is_some(),
-        );
-        // ADR 0030 §8 "Where it is shown", widened by ADR 0045 decision 1
-        // (Codex review): paints whenever the client is alive but not
-        // honestly attached — dead-uncheckpointed (the original case),
-        // a mid-outage `Unreachable` retry, a refusal, or a failure AFTER
-        // checkpointing (the frozen screen underneath is real, but
-        // stale). Codex review: reads the RETAINED client's own
-        // `status_line()` directly, never `self.status` — that field is
-        // shared with every other status-bar message in the whole event
-        // loop and a later, unrelated write (autostart, a daemon
-        // reconnect, a drawer switch) would silently retitle this pane's
-        // own explanation to whatever last touched the status bar.
-        let pane_attach_status = self.pane_attach_term.as_ref().map(|t| t.status_line());
-        let pane_attach_is_attached = pane_attach_status == Some("attached");
-        // A daemon that refused this frontend's protocol is the root cause of
-        // whatever the client or the dial reports, so its line leads.
-        let pane_host = self
-            .bl_pane_target
-            .as_ref()
-            .map(|(h, _)| h)
-            .unwrap_or(&self.active_host);
-        let pane_terminal_reason: Option<String> = pane_reason_line(
-            self.protocol_mismatch
-                .get(pane_host)
-                .and_then(|m| m.lines().next()),
-            pane_terminal_reason_text(
-                pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
-                pane_attach_status,
-            ),
-        // SHOULD-FIX (Codex review, lane B5 discharge): no live client at
-        // all (a dial that never got to attach in the first place) still
-        // needs a persistent, non-clobberable reason when this row's
-        // host has a known-broken dial — same priority tier as a live
-        // client's own failure.
-            self.pane_dial_error.as_deref(),
-        );
-        let pane_overlay = pane_overlay_lines(
-            pane_terminal_reason,
-            pane_discard_notice(
-                self.pane_inputs_discarded,
-                self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
-            ),
-        );
-        // Switch-latency Phase 1, item 3: the acceptance metric itself
-        // (keypress → current screen visible), not merely the client's
-        // own parser being ready (`pump_pane_attach_term`'s "checkpoint
-        // applied") — this is the first REDRAW that actually paints the
-        // new client's own screen (`PaneScreen::Client`) rather than the
-        // held prior content or the tmux fallback. One-shot per attach,
-        // same edge-triggered pattern as the other attach-outcome lines.
-        if pane_screen == PaneScreen::Client && !self.pane_attach_presented {
-            self.pane_attach_presented = true;
-            let since_request_ms = self
-                .pane_attach_requested_at
-                .map(|s| s.elapsed().as_millis() as u64)
-                .unwrap_or(0);
-            tracing::info!(since_request_ms, "session pane: capsule screen presented");
-        }
+        let (pane_screen, pane_overlay) = self.session_pane_view();
         let blank_pty_screen;
         let pty_screen = match match pane_screen {
             PaneScreen::Client => self.pane_attach_term.as_ref().map(|t| t.screen()),
@@ -2061,248 +1750,13 @@ impl State {
         // Same idea for the local terminal drawer: capture the final
         // drawer rect in the closure, resize the PTY to match after.
         let mut term_size_observed: (u16, u16) = (0, 0);
-        // Annotation snapshot for the chrome status line. `fired` is what
-        // we asked the backend about; `cached` matches when the response
-        // is in hand for the current cursor. Three states: no target
-        // (None/None), loading (Some/None or mismatched), and ready
-        // (Some/Some with the same target).
-        let concept_target = self.concept_target_fired.clone();
-        let concept_status: String = match (&concept_target, &self.concept) {
-            (None, _) => "annotation: (no target for this row)".to_string(),
-            (Some(t), Some(info)) if info.target == *t => {
-                if info.exists {
-                    let drift = match (
-                        info.synced_against.as_deref(),
-                        info.target.strip_prefix("files/"),
-                    ) {
-                        (Some(synced), Some(path)) => match self.file_ast_hashes.get(path) {
-                            Some(h) if h == synced => " · in sync",
-                            Some(_) => " · STALE (file ast_hash differs from synced_against)",
-                            None => match self.file_parse_retry.get(path) {
-                                Some(&(_, n)) if n >= FILE_PARSE_MAX_RETRIES => {
-                                    " · drift check unavailable (file.parse failing)"
-                                }
-                                _ => " · checking…",
-                            },
-                        },
-                        (Some(_), None) => " · sync check N/A",
-                        (None, _) => " · no synced_against frontmatter",
-                    };
-                    format!("annotation: present — {t}{drift}")
-                } else {
-                    format!("annotation: (none) — {t}")
-                }
-            }
-            (Some(t), _) => format!("annotation: loading — {t}"),
-        };
-        // Drift detection for the cursored row: we have both pieces of
-        // information cached only for the selection (concept.read fires on
-        // cursor move; file.parse fires once per visited path). Stale when
-        // the annotation parses a `synced_against` AND the file's
-        // `ast_hash` differs. Expanding to non-cursored rows needs a
-        // per-row concept cache — phase 2.
-        let selected_stale: bool = match (self.tree.rows.get(self.tree.selected), &self.concept) {
-            (Some(row), Some(info)) if info.exists => {
-                if let (Some(synced), Some(path)) = (
-                    info.synced_against.as_ref(),
-                    row.node.id.strip_prefix("files:"),
-                ) {
-                    self.file_ast_hashes
-                        .get(path)
-                        .map(|h| h != synced)
-                        .unwrap_or(false)
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
-        // Snapshot per-row chrome strings up-front so the ratatui closure
-        // doesn't need to borrow `self.tree` (the closure captures `frame`
-        // mutably elsewhere and the borrow checker dislikes mixing).
-        //
-        // When the workspace picker is active we render *its* directory
-        // listing in the NavTree pane instead of `self.tree.rows`, so
-        // Sessions mode flow visibly transitions to the picker without
-        // having to introduce a second pane region. A title row at the
-        // top shows `current_path` so the user always knows where they
-        // are; below it, each subdirectory is one row, plus a `[..]`
-        // ascend row at the very top of the list for one-key parent
-        // navigation.
-        // Each tuple: (line text, selected, stale-annotation, pinned, agent
-        // tone, flash). The 5th element is the state-nav agent work-state (ADR
-        // 0023), present only on Sessions rows that carry one — `None`
-        // everywhere else, so every other mode renders unchanged. The 6th is
-        // the status-change flash factor (0.0 = no flash), also Sessions-only.
-        // (text, is_selected, is_stale, is_pinned, agent_tone, flash,
-        //  is_pending, is_attention)
-        // `is_attention` (2026-09-15, field report) marks a row that
-        // names an action the user must take before the default is
-        // committed: yellow + bold, ahead of every other colour layer.
-        // `is_pending` (ADR 0025 §1 badge floor) flags a Sessions row whose
-        // workspace has a pending nav.preview result waiting — rendered as a
-        // non-disruptive indicator distinct from the work-state colours.
-        type NavRow = (
-            String,
-            bool,
-            bool,
-            bool,
-            Option<(AgentTone, bool)>,
-            f32,
-            bool,
-            bool,
-        );
+        let concept_status = self.concept_status_line();
+        let selected_stale = self.selected_row_stale();
         let (tree_lines, tree_empty): (Vec<NavRow>, bool) = if let Some(p) = &self.workspace_picker
         {
-            let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 4);
-            rows.push((
-                format!("workspace picker · {}", p.current_path),
-                false,
-                false,
-                false,
-                None,
-                0.0,
-                false,
-                false,
-            ));
-            // Two footer rows: NAVIGATION first (→ is how you descend into
-            // a folder — Enter does NOT, it creates), then the create keys.
-            // Splitting them stops the common muscle-memory error of hitting
-            // Enter to open a folder and instead spawning a session.
-            rows.push((
-                format!("  {} into · {} up · {} move · {} cancel",
-                    self.bindings.first_label(Action::NavExpand), self.bindings.first_label(Action::NavCollapse),
-                    self.bindings.first_label(Action::NavDown), self.bindings.first_label(Action::Cancel)),
-                false,
-                false,
-                false,
-                None,
-                0.0,
-                false,
-                false,
-            ));
-            rows.push((
-                format!("  {} Claude · {} bare · {} Codex", self.bindings.first_label(Action::SessionCreate),
-                    self.bindings.first_label(Action::SessionCreateBare), self.bindings.first_label(Action::SessionCreateCodex)),
-                false,
-                false,
-                false,
-                None,
-                0.0,
-                false,
-                false,
-            ));
-            // Per-session accounts (owner-simplified brief, 2026-09-15):
-            // hidden entirely when the daemon reports only "default" (or
-            // never answered `accounts.list` — same empty state). A
-            // never-logged-in folder is a NORMAL choice, not an error —
-            // the row's own pane runs the login on first start — so it's
-            // still selectable, just marked; this row renders with the
-            // same dim treatment as the two footer rows above (no
-            // agent/pinned/stale/selected tone applies to it).
-            if p.account_choice_visible() {
-                let acct = &p.accounts[p.account_selected];
-                let marker = if acct.any_logged_in() { "" } else { " (not logged in)" };
-                rows.push((
-                    format!("  account: {}{marker} · {} next", acct.name,
-                        self.bindings.first_label(Action::SessionAccountNext)),
-                    false,
-                    false,
-                    false,
-                    None,
-                    0.0,
-                    false,
-                    // The only picker row naming a key you must press
-                    // BEFORE Enter: Enter commits the default account
-                    // immediately, so a dim hint here is one a user reads
-                    // past — reported from the field, 2026-09-15.
-                    true,
-                ));
-            }
-            for (i, e) in p.entries.iter().enumerate() {
-                let selected = i == p.selected;
-                let caret = if selected { ">" } else { " " };
-                let disclosure = if e.has_children { "▸" } else { "·" };
-                rows.push((
-                    format!("{caret} {disclosure} {}/", e.name),
-                    selected,
-                    false,
-                    false,
-                    None,
-                    0.0,
-                    false,
-                    false,
-                ));
-            }
-            let empty = p.entries.is_empty();
-            (rows, empty)
+            self.picker_nav_rows(p)
         } else {
-            let pinned_id = self.pinned_preview_node_id.as_deref();
-            let now = chrono::Utc::now();
-            let flash_now = std::time::Instant::now();
-            let rows: Vec<NavRow> = self
-                .tree
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(i, r)| {
-                    let selected = i == self.tree.selected;
-                    // ADR 0030 §8 decision 31c: a capsule row held by a
-                    // foreign build folds into the SAME "stale" colour
-                    // slot as annotation drift (both are cross-cutting
-                    // yellow, never mode-specific) — these two conditions
-                    // never both hold in practice (concept-annotation
-                    // staleness is computed only for `files:`-prefixed
-                    // rows, `is_foreign` only for `kind == "session"`
-                    // ones), so sharing the flag adds no new ambiguity.
-                    let is_foreign = capsule_row_is_foreign(
-                        &r.node.kind,
-                        r.node.payload.get("phase").and_then(|v| v.as_str()),
-                    );
-                    let stale = (selected && selected_stale) || is_foreign;
-                    let pinned = pinned_id == Some(r.node.id.as_str());
-                    // Agent tone + status-change flash only on Sessions
-                    // rows (kind "session"), keyed by the row's slug so it
-                    // matches the bottom strip. `pending` (badge floor, ADR
-                    // 0025 §1) is set when that workspace has a pending
-                    // nav.preview result waiting, keyed by the row's own
-                    // (host, slug) — ADR 0042 L2a codex review item E: a
-                    // slug-only check couldn't tell this host's row apart
-                    // from another host's same-slug pending badge.
-                    let (agent, flash, pending) = if r.node.kind == "session" {
-                        let slug = r.node.payload.get("slug").and_then(|v| v.as_str());
-                        let host = r.node.payload.get("host").and_then(|v| v.as_str());
-                        let flash = host
-                            .zip(slug)
-                            .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
-                            .unwrap_or(0.0);
-                        let pending = host
-                            .zip(slug)
-                            .map(|(h, s)| {
-                                self.pending_nav
-                                    .contains_key(&(h.to_string(), s.to_string()))
-                            })
-                            .unwrap_or(false);
-                        (agent_tone_for(&r.node.payload, now), flash, pending)
-                    } else {
-                        (None, 0.0, false)
-                    };
-                    (
-                        format_tree_row(r, selected, pinned),
-                        selected,
-                        stale,
-                        pinned,
-                        agent,
-                        flash,
-                        pending,
-                        // No nav tree row is an attention row: the slot
-                        // exists for picker affordances, not for content.
-                        false,
-                    )
-                })
-                .collect();
-            let empty = self.tree.rows.is_empty();
-            (rows, empty)
+            self.tree_nav_rows(selected_stale)
         };
         // Transient nav spill: a nav-cursor move (re)arms the timer; while
         // it runs, nav rows whose text overflows the nav column render
@@ -2347,40 +1801,10 @@ impl State {
             .nav_spill_until
             .map(|u| std::time::Instant::now() < u)
             .unwrap_or(false);
-        // Layout proportions from the user's settings file (or
-        // defaults). Snapshotted here so the ratatui closure doesn't
-        // borrow `self`. Maximisation overrides the geom inside the
-        // closure by passing a `maximize_slot`. Wide-preview rewrites
-        // the preset itself (Llm column dropped, width to Preview) so
-        // layout::compute needs no new inputs — the Llm-less path is
-        // the same one the portrait preset already exercises.
-        let mut layout_preset = {
-            let p = self.settings.resolve_preset(self.monitor_aspect);
-            if self.wide_preview {
-                p.wide_preview()
-            } else {
-                p.clone()
-            }
-        };
-        if drawer == DrawerContent::Help && layout_preset.drawer.is_none() {
-            layout_preset.drawer = Some(crate::settings::Slot::Repl);
-        }
+        let layout_preset = self.layout_preset_for(drawer);
         // `drawer` was bound above (after the terminal lazy-spawn/close).
         let drawer_open = drawer.is_open();
-        // T1: full path of the file the preview is showing, snapshotted here
-        // so the draw closure doesn't borrow `self`.
-        let preview_name = self.preview_pane_name();
-        // 4.3: the monitor tab label's source, snapshotted here (String +
-        // bool) for the same reason as `preview_name` above — the draw
-        // closure must not borrow `self`.
-        let monitor_host_label = self.monitor_host();
-        let monitor_host_connected = self.conns.iter().any(|(h, _)| h == &monitor_host_label);
-        // Sessions create-legend gate: is the workspace picker open? Snapshotted
-        // here (Copy bool) so the header inside the draw closure can decide
-        // whether to show the standalone three-key create legend without
-        // borrowing `self`. Suppressed while the picker is open — the picker's
-        // own footer already carries the legend inline.
-
+        let (preview_name, monitor_host_label, monitor_host_connected) = self.pane_title_inputs();
         // Borrowed LAST, after every `&mut self` pump above (the Windows-only
         // attach-term pumps included): the draw closure captures these two
         // references, so taking them any earlier spans those mutations and
@@ -3098,79 +2522,8 @@ impl State {
         self.repl_scroll = new_repl_scroll;
         self.pane_rects = new_pane_rects;
         self.nav_spill_segments = nav_spill_segs_out;
-
-        // Track the LLM-pane's size once the first redraw has a real BL
-        // content rect, and keep an already-live capsule client's
-        // viewport in sync when the rect grows/shrinks — the actual
-        // attach/open wire request is `attach_session_to_bl`'s, not
-        // this redraw's.
-        let (cols, rows) = pty_size_observed;
-        if cols >= 2 && rows >= 2 {
-            let need_open = self.pty_size.is_none();
-            let need_resize = self
-                .pty_size
-                .map(|prev| prev != (cols, rows))
-                .unwrap_or(false);
-            // ADR 0042 slice L1b fix 2: `pane_feed`, not the 2-way
-            // `pane_is_capsule` this used to branch on — `Pending` must
-            // send NOTHING to either backend (a resize routed by
-            // guesswork would be indistinguishable from the exact bug
-            // finding 2 fixed for input) while still tracking the
-            // latest size locally, since whichever backend eventually
-            // resolves reads its start/resize from `self.pty_size`.
-            match self.pane_feed {
-                PaneFeed::Capsule => {
-                    // The capsule client's connection is owned entirely
-                    // by the `PtyAttachDirect` handler's own
-                    // `spawn_pane_attach_term` call (the daemon's own
-                    // reply to the `pty.open` `attach_session_to_bl`
-                    // always sends) — there is no `pty.open`/`pty.resize` wire
-                    // request for a capsule row (the daemon refuses both
-                    // with `attach_direct`). This arm only keeps an
-                    // ALREADY-LIVE client's viewport in sync with the pane
-                    // rect, mirroring the drawer's own attach-client
-                    // resize below (`term_size_observed`).
-                    if need_open || need_resize {
-                        if let Some(t) = self.pane_attach_term.as_mut() {
-                            t.resize(cols, rows);
-                            if need_resize {
-                                // A resize reshapes the row map, so the old
-                                // offset means nothing: snap to live.
-                                t.screen_mut().set_scrollback(0);
-                            }
-                        }
-                        self.pty_size = Some((cols, rows));
-                    }
-                }
-                PaneFeed::Pending => {
-                    if need_open || need_resize {
-                        self.pty_size = Some((cols, rows));
-                    }
-                }
-            }
-        }
-
-        // Resize the local terminal's PTY to the drawer rect once it's
-        // known (G3). Spawned at a default 80x24; this snaps it to the
-        // real drawer size on the first frame it's visible, and on any
-        // later drawer geometry change.
-        let (tcols, trows) = term_size_observed;
-        if tcols >= 2 && trows >= 2 {
-            let changed = self
-                .term_size
-                .map(|prev| prev != (tcols, trows))
-                .unwrap_or(true);
-            if changed {
-                if let Some(t) = self.local_term.as_mut() {
-                    t.resize(tcols, trows);
-                }
-                #[cfg(windows)]
-                if let Some(t) = self.attach_term.as_mut() {
-                    t.resize(tcols, trows);
-                }
-                self.term_size = Some((tcols, trows));
-            }
-        }
+        self.sync_pane_pty_size(pty_size_observed);
+        self.sync_terminal_drawer_size(term_size_observed);
         let (lines, border_rects_by_color, strip_logo_rects) = self.project_chrome()?;
         // Compute pixel rects from ratatui's cell rects, then letterbox each
         // image inside its rect.
@@ -5415,7 +4768,724 @@ impl State {
             }
         }
     }
+
+    fn nav_pinned_text(
+        &self,
+    ) -> (String, Option<(String, String)>, Vec<(HostKey, u32)>, Option<String>, Option<String>) {
+        // A NavTree prompt, the not-ended count or `closing…`, and the lease
+        // notice are pinned under the nav list (`nav_pinned_rows`), so no
+        // scroll hides what Enter would confirm. A text prompt is the
+        // input field the user types into; a block cursor (▏) marks the
+        // insertion point.
+        let status = self.status.clone();
+        let nav_prompt_line = match &self.nav_prompt {
+            Some(NavPrompt::CreateFile { input, .. }) => Some((format!("new file or dir/: {input}▏"), String::new())),
+            Some(NavPrompt::ConfirmDelete { label, .. }) => Some((format!("delete {label}? [y/N]"), String::new())),
+            Some(NavPrompt::ScaleEntry { input, .. }) => Some((format!("pixel size (nm): {input}▏"), String::new())),
+            Some(NavPrompt::ConfirmQuit { keep }) => Some(quit_prompt_line(*keep)),
+            None => None,
+        };
+        // The counts owed, read once: this frame draws their sum, and the frame that
+        // presents it whole acks exactly these; then the line holds as `not_ended_shown`.
+        let owed = self.leases.owed();
+        let owed_line = crate::lease::not_ended_line(owed.iter().map(|(_, n)| n).sum());
+        let nav_line = self.leaving.as_ref().and_then(|l| l.line()).or_else(|| owed_line.clone()).or_else(|| {
+            let now = std::time::Instant::now();
+            self.not_ended_shown.as_ref().filter(|(_, until)| now < *until).map(|(l, _)| l.clone())
+        });
+        (status, nav_prompt_line, owed, owed_line, nav_line)
+    }
+
+    fn chrome_labels(&mut self) -> (chrono::NaiveDateTime, Option<String>, Option<String>, String, bool) {
+        // Local wall-clock of the machine running the frontend, sampled once
+        // per frame and turned into the top-right chrome clock text at the
+        // paint site below (`clock_label`, which also prefixes the date
+        // when there's room). `chrono::Local` is cross-platform (same
+        // behaviour on Windows/macOS/Linux); the once-per-second repaint is
+        // scheduled in `about_to_wait`, which also covers the date rolling
+        // over at midnight — no separate timer needed.
+        let clock_now = chrono::Local::now().naive_local();
+        // Battery readout painted just left of the clock. The OS query isn't
+        // free, so refresh the cache at most once per `BATTERY_QUERY_INTERVAL`
+        // (the clock repaints ~1×/s and reuses the cached value between
+        // refreshes). `None` => no battery / query failed => paint nothing.
+        self.refresh_battery_label();
+        let battery = self.battery_label.clone();
+        let last_key = self.last_key.clone();
+        // FE/BE version stamp for the bottom chrome edge. Snapshotted here
+        // with the other draw locals because the draw closure can't borrow
+        // `self` again.
+        let (version_stamp, version_skew) = version_label(
+            &sot_protocol::app_version(),
+            self.backend_version.as_deref(),
+        );
+        (clock_now, battery, last_key, version_stamp, version_skew)
+    }
+
+    fn decode_repl_images(&mut self) {
+        // Inline REPL figures, pass 1: decode any Image frame that has no
+        // quad yet (base64 → RGBA → texture) and prune entries that aged
+        // out of the log. Runs here, outside the draw closure, so texture
+        // upload never contends with the frame's borrows.
+        {
+            let mut new_quads: Vec<((u64, usize), ReplImage)> = Vec::new();
+            for entry in &self.repl_log {
+                for (fi, fr) in entry.frames.iter().enumerate() {
+                    if let sot_protocol::ReplFrame::Image { data_base64, .. } = fr {
+                        let key = (entry.eval_id, fi);
+                        if self.repl_images.contains_key(&key) {
+                            continue;
+                        }
+                        use base64::Engine as _;
+                        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(data_base64)
+                        else {
+                            continue;
+                        };
+                        let Ok(img) = image::load_from_memory(&raw) else {
+                            continue;
+                        };
+                        let rgba = img.to_rgba8();
+                        let (w, h) = rgba.dimensions();
+                        if let Ok(quad) = Quad::from_rgba8(
+                            &self.device,
+                            &self.queue,
+                            &self.quad_pipeline,
+                            &rgba,
+                            w,
+                            h,
+                        ) {
+                            new_quads.push((key, ReplImage { quad, w, h }));
+                        }
+                    }
+                }
+            }
+            for (k, v) in new_quads {
+                self.repl_images.insert(k, v);
+            }
+            if !self.repl_images.is_empty() {
+                let log = &self.repl_log;
+                self.repl_images
+                    .retain(|k, _| log.iter().any(|e| e.eval_id == k.0));
+            }
+        }
+    }
+
+    fn build_repl_view(&mut self, mut new_repl_scroll: u16) -> (Vec<RtLine<'static>>, u16) {
+        // Pass 2: build the drawer lines, reserving rows for decoded
+        // figures. Fit width comes from LAST frame's scrollback sub-rect —
+        // the natural answer to the build-before-layout chicken-egg (review
+        // note: NOT monitor_rect_px, which is the Ctrl+M drawer's rect).
+        // One frame of lag on a resize, self-corrects; 0 before the
+        // drawer's first draw, where the caption fallback covers the gap.
+        let (repl_lines, repl_slots, repl_starts) = build_repl_lines(
+            &self.repl_log,
+            &self.repl_images,
+            self.repl_scrollback_px.w,
+            self.repl_scrollback_px.h,
+            self.cell_w,
+            self.cell_h,
+            self.active_repl_starting(),
+        );
+        self.repl_image_slots = repl_slots;
+        let build_key = (
+            self.repl_scrollback_px.w.to_bits(),
+            self.repl_scrollback_px.h.to_bits(),
+            self.cell_w.to_bits(),
+            self.cell_h.to_bits(),
+        );
+        if let Some((prev_key, anchor_id, anchor_span)) = self.repl_build_anchor {
+            if prev_key == build_key {
+                new_repl_scroll = pinned_repl_scroll(
+                    new_repl_scroll,
+                    anchor_id,
+                    anchor_span,
+                    repl_lines.len(),
+                    &repl_starts,
+                );
+            }
+        }
+        self.repl_build_anchor = repl_starts
+            .last()
+            .map(|&(id, start)| (build_key, id, repl_lines.len().saturating_sub(start)));
+        (repl_lines, new_repl_scroll)
+    }
+
+    fn nav_cursor_row(&self) -> (usize, bool) {
+        // The navigation body begins with status + spacer. The picker adds
+        // two path/header rows before its entries. Keep scroll and hit testing
+        // aligned when the help legend moves from the body to the border.
+        let (nav_cursor_body_pos, nav_has_cursor) = match &self.workspace_picker {
+            Some(p) => (4usize.saturating_add(p.selected), !p.entries.is_empty()),
+            None => (
+                2usize.saturating_add(self.tree.selected),
+                !self.tree.rows.is_empty(),
+            ),
+        };
+        (nav_cursor_body_pos, nav_has_cursor)
+    }
+
+    fn pump_drawer_terminals(&mut self) {
+        // Local terminal drawer (G2/G3): lazily spawn the OS shell the
+        // first time the Terminal drawer is shown, then drain any pending
+        // output into its parser before we borrow its screen for the draw.
+        // All mutation happens here, before the `self.terminal.draw`
+        // borrow and the immutable `local_term` screen borrow below.
+        // ADR 0041 step 6 U3: `drawer.attach_only` picks the Terminal
+        // drawer's BACKEND, once, the first time the drawer opens this
+        // session. Off (the default) or off-Windows: `use_attach_only`
+        // is always `false` and every line below behaves exactly as it
+        // did before this unit — "When off, NOTHING the FE does today
+        // changes."
+        #[cfg(windows)]
+        let use_attach_only = drawer_uses_attach(
+            self.settings.attach_only,
+            self.attach_term.is_some(),
+            self.local_term.is_some(),
+            &self.leases.granted_state_roots(),
+            self.own_state_root.as_deref(),
+        );
+        #[cfg(not(windows))]
+        let use_attach_only = false;
+
+        // ADR 0041 step 6 U3 ruling (a), Codex review round finding 2:
+        // spawn (gated on the drawer being open) is separate from pump
+        // (which runs on EVERY redraw regardless of drawer visibility).
+        #[cfg(windows)]
+        if self.drawer == DrawerContent::Terminal && use_attach_only && self.attach_term.is_none() {
+            self.spawn_attach_term();
+        }
+        #[cfg(windows)]
+        if self.attach_term.is_some() {
+            self.pump_attach_term();
+        }
+
+        if self.drawer == DrawerContent::Terminal && !use_attach_only {
+            if self.local_term.is_none() {
+                #[cfg(windows)]
+                if self.settings.attach_only {
+                    self.status =
+                        "attach-only terminal needs this computer's backend to hold this window; opened a plain terminal"
+                            .to_string();
+                }
+                let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
+                let waker = self.window.clone();
+                // cwd = repo root, so the plain shell starts in the
+                // project directory. ADR 0017.
+                let cwd = self.repo_dir.clone();
+                match crate::term::LocalTerminal::spawn(
+                    &shell,
+                    80,
+                    24,
+                    cwd.as_deref(),
+                    Box::new(move || waker.request_redraw()),
+                ) {
+                    Ok(t) => {
+                        tracing::info!(program = %shell.program, "local terminal spawned");
+                        self.local_term = Some(t);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to spawn local terminal");
+                        self.status = format!("terminal spawn failed: {e}");
+                        // Fall back to closing the drawer so the user isn't
+                        // staring at an empty pane with no explanation.
+                        self.drawer = DrawerContent::Closed;
+                    }
+                }
+            }
+            if let Some(t) = self.local_term.as_mut() {
+                let processed = t.pump();
+                // Diagnostic surfaced on the status line so a blank pane is
+                // debuggable without RUST_LOG: parser size, dead flag, and
+                // whether the screen currently holds any non-blank cell.
+                // Only overwrite the status line when the pane actually looks
+                // wrong (dead / no content) — otherwise it fires every frame
+                // the drawer is open and clobbers real status messages
+                // (connection line, pin/unpin, ADR-0019 `notify`).
+                let dead = t.is_dead();
+                let screen = t.screen();
+                let (srows, scols) = screen.size();
+                let mut has_content = false;
+                'scan: for r in 0..srows {
+                    for c in 0..scols {
+                        if let Some(cell) = screen.cell(r, c) {
+                            if !cell.contents().is_empty() {
+                                has_content = true;
+                                break 'scan;
+                            }
+                        }
+                    }
+                }
+                if dead || !has_content {
+                    self.status = format!(
+                        "term: {scols}x{srows} content={has_content} dead={dead} pumped={processed}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn session_pane_view(&mut self) -> (PaneScreen, Vec<String>) {
+        // Borrow the LLM terminal screen for the duration of the draw.
+        // `pane_attach_term`'s `vt100-ctt` `screen()` returns a `&Screen`
+        // tied to the client; since `terminal.draw` borrows a different
+        // field (self.terminal), Rust's split-borrow rules let us hold
+        // both at once. The local terminal's screen is borrowed the same
+        // way when the Terminal drawer is active. Unconditional on every
+        // platform since ADR 0045 decision 1 (a capsule row attaches
+        // through its own daemon everywhere).
+        //
+        // LU6a: which source actually wins is `pane_screen_choice`'s
+        // call, not an unconditional `pane_attach_term`-if-present — a
+        // live but not-yet-checkpointed client (or a still-`Pending`
+        // feed) defers to `pane_hold` so a capsule switch never paints
+        // the new client's empty parser. Coordinator amendment: a client
+        // that went terminal before ever checkpointing falls all the way
+        // through to blank instead (`pane_screen_choice`'s own doc) —
+        // three separate `let`s (rather than inlining each as a call
+        // argument) so the one `&mut` read (`is_dead`) never overlaps
+        // the `&ref` reads around it.
+        let pane_attach_has_client = self.pane_attach_term.is_some();
+        let pane_attach_checkpointed =
+            self.pane_attach_term.as_ref().is_some_and(|t| t.is_checkpointed());
+        let pane_attach_is_dead = self.pane_attach_term.as_mut().is_some_and(|t| t.is_dead());
+        let pane_screen = pane_screen_choice(
+            pane_attach_has_client,
+            pane_attach_checkpointed,
+            pane_attach_is_dead,
+            self.pane_feed,
+            self.pane_hold.is_some(),
+        );
+        // ADR 0030 §8 "Where it is shown", widened by ADR 0045 decision 1
+        // (Codex review): paints whenever the client is alive but not
+        // honestly attached — dead-uncheckpointed (the original case),
+        // a mid-outage `Unreachable` retry, a refusal, or a failure AFTER
+        // checkpointing (the frozen screen underneath is real, but
+        // stale). Codex review: reads the RETAINED client's own
+        // `status_line()` directly, never `self.status` — that field is
+        // shared with every other status-bar message in the whole event
+        // loop and a later, unrelated write (autostart, a daemon
+        // reconnect, a drawer switch) would silently retitle this pane's
+        // own explanation to whatever last touched the status bar.
+        let pane_attach_status = self.pane_attach_term.as_ref().map(|t| t.status_line());
+        let pane_attach_is_attached = pane_attach_status == Some("attached");
+        // A daemon that refused this frontend's protocol is the root cause of
+        // whatever the client or the dial reports, so its line leads.
+        let pane_host = self
+            .bl_pane_target
+            .as_ref()
+            .map(|(h, _)| h)
+            .unwrap_or(&self.active_host);
+        let pane_terminal_reason: Option<String> = pane_reason_line(
+            self.protocol_mismatch
+                .get(pane_host)
+                .and_then(|m| m.lines().next()),
+            pane_terminal_reason_text(
+                pane_shows_terminal_reason(pane_attach_has_client, pane_attach_is_attached),
+                pane_attach_status,
+            ),
+        // SHOULD-FIX (Codex review, lane B5 discharge): no live client at
+        // all (a dial that never got to attach in the first place) still
+        // needs a persistent, non-clobberable reason when this row's
+        // host has a known-broken dial — same priority tier as a live
+        // client's own failure.
+            self.pane_dial_error.as_deref(),
+        );
+        let pane_overlay = pane_overlay_lines(
+            pane_terminal_reason,
+            pane_discard_notice(
+                self.pane_inputs_discarded,
+                self.pane_attach_term.as_ref().map_or(0, |t| t.inputs_discarded()),
+            ),
+        );
+        // Switch-latency Phase 1, item 3: the acceptance metric itself
+        // (keypress → current screen visible), not merely the client's
+        // own parser being ready (`pump_pane_attach_term`'s "checkpoint
+        // applied") — this is the first REDRAW that actually paints the
+        // new client's own screen (`PaneScreen::Client`) rather than the
+        // held prior content or the tmux fallback. One-shot per attach,
+        // same edge-triggered pattern as the other attach-outcome lines.
+        if pane_screen == PaneScreen::Client && !self.pane_attach_presented {
+            self.pane_attach_presented = true;
+            let since_request_ms = self
+                .pane_attach_requested_at
+                .map(|s| s.elapsed().as_millis() as u64)
+                .unwrap_or(0);
+            tracing::info!(since_request_ms, "session pane: capsule screen presented");
+        }
+        (pane_screen, pane_overlay)
+    }
+
+    fn concept_status_line(&self) -> String {
+        // Annotation snapshot for the chrome status line. `fired` is what
+        // we asked the backend about; `cached` matches when the response
+        // is in hand for the current cursor. Three states: no target
+        // (None/None), loading (Some/None or mismatched), and ready
+        // (Some/Some with the same target).
+        let concept_target = self.concept_target_fired.clone();
+        let concept_status: String = match (&concept_target, &self.concept) {
+            (None, _) => "annotation: (no target for this row)".to_string(),
+            (Some(t), Some(info)) if info.target == *t => {
+                if info.exists {
+                    let drift = match (
+                        info.synced_against.as_deref(),
+                        info.target.strip_prefix("files/"),
+                    ) {
+                        (Some(synced), Some(path)) => match self.file_ast_hashes.get(path) {
+                            Some(h) if h == synced => " · in sync",
+                            Some(_) => " · STALE (file ast_hash differs from synced_against)",
+                            None => match self.file_parse_retry.get(path) {
+                                Some(&(_, n)) if n >= FILE_PARSE_MAX_RETRIES => {
+                                    " · drift check unavailable (file.parse failing)"
+                                }
+                                _ => " · checking…",
+                            },
+                        },
+                        (Some(_), None) => " · sync check N/A",
+                        (None, _) => " · no synced_against frontmatter",
+                    };
+                    format!("annotation: present — {t}{drift}")
+                } else {
+                    format!("annotation: (none) — {t}")
+                }
+            }
+            (Some(t), _) => format!("annotation: loading — {t}"),
+        };
+        concept_status
+    }
+
+    fn selected_row_stale(&self) -> bool {
+        // Drift detection for the cursored row: we have both pieces of
+        // information cached only for the selection (concept.read fires on
+        // cursor move; file.parse fires once per visited path). Stale when
+        // the annotation parses a `synced_against` AND the file's
+        // `ast_hash` differs. Expanding to non-cursored rows needs a
+        // per-row concept cache — phase 2.
+        let selected_stale: bool = match (self.tree.rows.get(self.tree.selected), &self.concept) {
+            (Some(row), Some(info)) if info.exists => {
+                if let (Some(synced), Some(path)) = (
+                    info.synced_against.as_ref(),
+                    row.node.id.strip_prefix("files:"),
+                ) {
+                    self.file_ast_hashes
+                        .get(path)
+                        .map(|h| h != synced)
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        selected_stale
+    }
+
+    fn picker_nav_rows(&self, p: &WorkspacePicker) -> (Vec<NavRow>, bool) {
+        let mut rows: Vec<NavRow> = Vec::with_capacity(p.entries.len() + 4);
+        rows.push((
+            format!("workspace picker · {}", p.current_path),
+            false,
+            false,
+            false,
+            None,
+            0.0,
+            false,
+            false,
+        ));
+        // Two footer rows: NAVIGATION first (→ is how you descend into
+        // a folder — Enter does NOT, it creates), then the create keys.
+        // Splitting them stops the common muscle-memory error of hitting
+        // Enter to open a folder and instead spawning a session.
+        rows.push((
+            format!("  {} into · {} up · {} move · {} cancel",
+                self.bindings.first_label(Action::NavExpand), self.bindings.first_label(Action::NavCollapse),
+                self.bindings.first_label(Action::NavDown), self.bindings.first_label(Action::Cancel)),
+            false,
+            false,
+            false,
+            None,
+            0.0,
+            false,
+            false,
+        ));
+        rows.push((
+            format!("  {} Claude · {} bare · {} Codex", self.bindings.first_label(Action::SessionCreate),
+                self.bindings.first_label(Action::SessionCreateBare), self.bindings.first_label(Action::SessionCreateCodex)),
+            false,
+            false,
+            false,
+            None,
+            0.0,
+            false,
+            false,
+        ));
+        // Per-session accounts (owner-simplified brief, 2026-09-15):
+        // hidden entirely when the daemon reports only "default" (or
+        // never answered `accounts.list` — same empty state). A
+        // never-logged-in folder is a NORMAL choice, not an error —
+        // the row's own pane runs the login on first start — so it's
+        // still selectable, just marked; this row renders with the
+        // same dim treatment as the two footer rows above (no
+        // agent/pinned/stale/selected tone applies to it).
+        if p.account_choice_visible() {
+            let acct = &p.accounts[p.account_selected];
+            let marker = if acct.any_logged_in() { "" } else { " (not logged in)" };
+            rows.push((
+                format!("  account: {}{marker} · {} next", acct.name,
+                    self.bindings.first_label(Action::SessionAccountNext)),
+                false,
+                false,
+                false,
+                None,
+                0.0,
+                false,
+                // The only picker row naming a key you must press
+                // BEFORE Enter: Enter commits the default account
+                // immediately, so a dim hint here is one a user reads
+                // past — reported from the field, 2026-09-15.
+                true,
+            ));
+        }
+        for (i, e) in p.entries.iter().enumerate() {
+            let selected = i == p.selected;
+            let caret = if selected { ">" } else { " " };
+            let disclosure = if e.has_children { "▸" } else { "·" };
+            rows.push((
+                format!("{caret} {disclosure} {}/", e.name),
+                selected,
+                false,
+                false,
+                None,
+                0.0,
+                false,
+                false,
+            ));
+        }
+        let empty = p.entries.is_empty();
+        (rows, empty)
+    }
+
+    fn tree_nav_rows(&self, selected_stale: bool) -> (Vec<NavRow>, bool) {
+        let pinned_id = self.pinned_preview_node_id.as_deref();
+        let now = chrono::Utc::now();
+        let flash_now = std::time::Instant::now();
+        let rows: Vec<NavRow> = self
+            .tree
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let selected = i == self.tree.selected;
+                // ADR 0030 §8 decision 31c: a capsule row held by a
+                // foreign build folds into the SAME "stale" colour
+                // slot as annotation drift (both are cross-cutting
+                // yellow, never mode-specific) — these two conditions
+                // never both hold in practice (concept-annotation
+                // staleness is computed only for `files:`-prefixed
+                // rows, `is_foreign` only for `kind == "session"`
+                // ones), so sharing the flag adds no new ambiguity.
+                let is_foreign = capsule_row_is_foreign(
+                    &r.node.kind,
+                    r.node.payload.get("phase").and_then(|v| v.as_str()),
+                );
+                let stale = (selected && selected_stale) || is_foreign;
+                let pinned = pinned_id == Some(r.node.id.as_str());
+                // Agent tone + status-change flash only on Sessions
+                // rows (kind "session"), keyed by the row's slug so it
+                // matches the bottom strip. `pending` (badge floor, ADR
+                // 0025 §1) is set when that workspace has a pending
+                // nav.preview result waiting, keyed by the row's own
+                // (host, slug) — ADR 0042 L2a codex review item E: a
+                // slug-only check couldn't tell this host's row apart
+                // from another host's same-slug pending badge.
+                let (agent, flash, pending) = if r.node.kind == "session" {
+                    let slug = r.node.payload.get("slug").and_then(|v| v.as_str());
+                    let host = r.node.payload.get("host").and_then(|v| v.as_str());
+                    let flash = host
+                        .zip(slug)
+                        .map(|(h, s)| self.flash_factor_for(h, s, flash_now))
+                        .unwrap_or(0.0);
+                    let pending = host
+                        .zip(slug)
+                        .map(|(h, s)| {
+                            self.pending_nav
+                                .contains_key(&(h.to_string(), s.to_string()))
+                        })
+                        .unwrap_or(false);
+                    (agent_tone_for(&r.node.payload, now), flash, pending)
+                } else {
+                    (None, 0.0, false)
+                };
+                (
+                    format_tree_row(r, selected, pinned),
+                    selected,
+                    stale,
+                    pinned,
+                    agent,
+                    flash,
+                    pending,
+                    // No nav tree row is an attention row: the slot
+                    // exists for picker affordances, not for content.
+                    false,
+                )
+            })
+            .collect();
+        let empty = self.tree.rows.is_empty();
+        (rows, empty)
+    }
+
+    fn layout_preset_for(&self, drawer: DrawerContent) -> crate::settings::LayoutPreset {
+        // Layout proportions from the user's settings file (or
+        // defaults). Snapshotted here so the ratatui closure doesn't
+        // borrow `self`. Maximisation overrides the geom inside the
+        // closure by passing a `maximize_slot`. Wide-preview rewrites
+        // the preset itself (Llm column dropped, width to Preview) so
+        // layout::compute needs no new inputs — the Llm-less path is
+        // the same one the portrait preset already exercises.
+        let mut layout_preset = {
+            let p = self.settings.resolve_preset(self.monitor_aspect);
+            if self.wide_preview {
+                p.wide_preview()
+            } else {
+                p.clone()
+            }
+        };
+        if drawer == DrawerContent::Help && layout_preset.drawer.is_none() {
+            layout_preset.drawer = Some(crate::settings::Slot::Repl);
+        }
+        layout_preset
+    }
+
+    fn pane_title_inputs(&self) -> (Option<String>, HostKey, bool) {
+        // T1: full path of the file the preview is showing, snapshotted here
+        // so the draw closure doesn't borrow `self`.
+        let preview_name = self.preview_pane_name();
+        // 4.3: the monitor tab label's source, snapshotted here (String +
+        // bool) for the same reason as `preview_name` above — the draw
+        // closure must not borrow `self`.
+        let monitor_host_label = self.monitor_host();
+        let monitor_host_connected = self.conns.iter().any(|(h, _)| h == &monitor_host_label);
+        // Sessions create-legend gate: is the workspace picker open? Snapshotted
+        // here (Copy bool) so the header inside the draw closure can decide
+        // whether to show the standalone three-key create legend without
+        // borrowing `self`. Suppressed while the picker is open — the picker's
+        // own footer already carries the legend inline.
+
+        (preview_name, monitor_host_label, monitor_host_connected)
+    }
+
+    fn sync_pane_pty_size(&mut self, pty_size_observed: (u16, u16)) {
+        // Track the LLM-pane's size once the first redraw has a real BL
+        // content rect, and keep an already-live capsule client's
+        // viewport in sync when the rect grows/shrinks — the actual
+        // attach/open wire request is `attach_session_to_bl`'s, not
+        // this redraw's.
+        let (cols, rows) = pty_size_observed;
+        if cols >= 2 && rows >= 2 {
+            let need_open = self.pty_size.is_none();
+            let need_resize = self
+                .pty_size
+                .map(|prev| prev != (cols, rows))
+                .unwrap_or(false);
+            // ADR 0042 slice L1b fix 2: `pane_feed`, not the 2-way
+            // `pane_is_capsule` this used to branch on — `Pending` must
+            // send NOTHING to either backend (a resize routed by
+            // guesswork would be indistinguishable from the exact bug
+            // finding 2 fixed for input) while still tracking the
+            // latest size locally, since whichever backend eventually
+            // resolves reads its start/resize from `self.pty_size`.
+            match self.pane_feed {
+                PaneFeed::Capsule => {
+                    // The capsule client's connection is owned entirely
+                    // by the `PtyAttachDirect` handler's own
+                    // `spawn_pane_attach_term` call (the daemon's own
+                    // reply to the `pty.open` `attach_session_to_bl`
+                    // always sends) — there is no `pty.open`/`pty.resize` wire
+                    // request for a capsule row (the daemon refuses both
+                    // with `attach_direct`). This arm only keeps an
+                    // ALREADY-LIVE client's viewport in sync with the pane
+                    // rect, mirroring the drawer's own attach-client
+                    // resize below (`term_size_observed`).
+                    if need_open || need_resize {
+                        if let Some(t) = self.pane_attach_term.as_mut() {
+                            t.resize(cols, rows);
+                            if need_resize {
+                                // A resize reshapes the row map, so the old
+                                // offset means nothing: snap to live.
+                                t.screen_mut().set_scrollback(0);
+                            }
+                        }
+                        self.pty_size = Some((cols, rows));
+                    }
+                }
+                PaneFeed::Pending => {
+                    if need_open || need_resize {
+                        self.pty_size = Some((cols, rows));
+                    }
+                }
+            }
+        }
+    }
+
+    fn sync_terminal_drawer_size(&mut self, term_size_observed: (u16, u16)) {
+        // Resize the local terminal's PTY to the drawer rect once it's
+        // known (G3). Spawned at a default 80x24; this snaps it to the
+        // real drawer size on the first frame it's visible, and on any
+        // later drawer geometry change.
+        let (tcols, trows) = term_size_observed;
+        if tcols >= 2 && trows >= 2 {
+            let changed = self
+                .term_size
+                .map(|prev| prev != (tcols, trows))
+                .unwrap_or(true);
+            if changed {
+                if let Some(t) = self.local_term.as_mut() {
+                    t.resize(tcols, trows);
+                }
+                #[cfg(windows)]
+                if let Some(t) = self.attach_term.as_mut() {
+                    t.resize(tcols, trows);
+                }
+                self.term_size = Some((tcols, trows));
+            }
+        }
+    }
 }
+
+// Snapshot per-row chrome strings up-front so the ratatui closure
+// doesn't need to borrow `self.tree` (the closure captures `frame`
+// mutably elsewhere and the borrow checker dislikes mixing).
+//
+// When the workspace picker is active we render *its* directory
+// listing in the NavTree pane instead of `self.tree.rows`, so
+// Sessions mode flow visibly transitions to the picker without
+// having to introduce a second pane region. A title row at the
+// top shows `current_path` so the user always knows where they
+// are; below it, each subdirectory is one row, plus a `[..]`
+// ascend row at the very top of the list for one-key parent
+// navigation.
+// Each tuple: (line text, selected, stale-annotation, pinned, agent
+// tone, flash). The 5th element is the state-nav agent work-state (ADR
+// 0023), present only on Sessions rows that carry one — `None`
+// everywhere else, so every other mode renders unchanged. The 6th is
+// the status-change flash factor (0.0 = no flash), also Sessions-only.
+// (text, is_selected, is_stale, is_pinned, agent_tone, flash,
+//  is_pending, is_attention)
+// `is_attention` (2026-09-15, field report) marks a row that
+// names an action the user must take before the default is
+// committed: yellow + bold, ahead of every other colour layer.
+// `is_pending` (ADR 0025 §1 badge floor) flags a Sessions row whose
+// workspace has a pending nav.preview result waiting — rendered as a
+// non-disruptive indicator distinct from the work-state colours.
+type NavRow = (
+    String,
+    bool,
+    bool,
+    bool,
+    Option<(AgentTone, bool)>,
+    f32,
+    bool,
+    bool,
+);
 
 const BLOCK_PAD_Y: f32 = 4.0;
 
