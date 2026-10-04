@@ -17,6 +17,16 @@ pub(crate) fn observe(ws: &Workspace, observation: Observation) {
     }
 }
 
+/// Adopts the observation's supervisor as this row's epoch if it differs, then feeds it (guarded callers only).
+pub(super) fn observe_with_adoption(ws: &crate::workspaces::Workspace, observation: crate::workspaces::Observation) {
+    if let crate::workspaces::Observation::Phase { supervisor, .. } = &observation {
+        if ws.current_supervisor() != Some(*supervisor) {
+            ws.begin_supervisor_epoch(*supervisor);
+        }
+    }
+    super::observer::observe(ws, observation);
+}
+
 /// Idempotent: ensures a lifecycle-observer task runs for `ws`, never from `Workspaces::insert`.
 pub fn ensure_running(workspaces: &Workspaces, ws: &Arc<Workspace>) {
     if workspaces.has_observer(&ws.workspace_id) {

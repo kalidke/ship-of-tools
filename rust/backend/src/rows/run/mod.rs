@@ -1,4 +1,4 @@
-//! The daemon's view of a capsule row's run: its phase vocabulary, lifecycle observer and headless client.
+//! The daemon's view of a capsule row's run: its phase vocabulary, lifecycle observer, headless client, and the start, end, watchdog and resume paths.
 
 pub(crate) mod end;
 pub(crate) mod probe;
@@ -21,3 +21,15 @@ pub(crate) mod observer;
 /// its `PlatformEndpoint`-typed default is cfg'd. The reason was solely
 /// `mod runtime`'s own gate, and that gate is gone — so is this one.)
 pub(crate) mod headless;
+
+pub(crate) mod activation;
+pub(crate) mod end_run;
+pub(crate) mod resume;
+pub(crate) mod start;
+pub(crate) mod watchdog;
+
+#[cfg(target_os = "linux")]
+use crate::rows::spawn::row_scope;
+use crate::rows::spawn::state_root::state_dir_for;
+use end_run::EndRunOutcome;
+use probe::{local_phase, phase_for_missing_pointer, phase_str, FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};

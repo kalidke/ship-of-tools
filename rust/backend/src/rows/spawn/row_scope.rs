@@ -349,7 +349,7 @@ mod tests {
         // The supervisor-outcome arms: the file lists the scope when
         // the stop runs, and the kill comes only after it.
         let mut at_stop = None;
-        crate::capsule_workspace::runtime::stop_then_end_scope(state.path(), Some(&rel), root.path(), &crate::capsule_workspace::row_scope::own_rel().unwrap_or_default(), || {
+        crate::rows::run::end_run::stop_then_end_scope(state.path(), Some(&rel), root.path(), &crate::rows::spawn::row_scope::own_rel().unwrap_or_default(), || {
             at_stop = Some((listed(state.path()), kill()))
         })
         .expect("end an empty scope");

@@ -1,4 +1,6 @@
-//! The row-phase vocabulary the daemon reports and the pure mappings from a supervisor lane's own phase.
+//! The row-phase vocabulary the daemon reports, the pure mappings from a supervisor lane's own phase, and `probe`, the one status round trip.
+
+use std::path::{Path, PathBuf};
 
 /// The wire phase string `workspace.list` reports (`WorkspaceListEntry.phase`)
 /// for a capsule workspace whose supervisor lane could not be reached at
@@ -100,6 +102,72 @@ pub(crate) fn local_phase(phase: sot_log::wire::SupervisorPhase) -> crate::works
         SP::Ending => Phase::Ending,
         SP::EndedNoRespawn => Phase::EndedNoRespawn,
         SP::Terminal => Phase::Terminal,
+    }
+}
+
+/// One status round trip: wire string plus the identity-carrying `Observation` it implies. BLOCKING.
+pub fn probe(state_dir: &Path) -> (&'static str, crate::workspaces::Observation) {
+    use crate::workspaces::{Observation, SupervisorIdentity};
+    if let Some(phase) =
+        super::phase_for_missing_pointer(sot_log::pointer::pointer_path(state_dir).is_file())
+    {
+        return (phase, Observation::Stopped);
+    }
+    match sot_log::supervisor_client::query_status(state_dir) {
+        // The retained process handle (the second element) is not
+        // this caller's concern -- a one-shot phase probe, dropped
+        // (closing the handle) the instant this returns.
+        Ok((report, _process)) => {
+            let observation = Observation::Phase {
+                phase: super::local_phase(report.phase),
+                supervisor: SupervisorIdentity { pid: report.pid, created: report.created },
+                voyage: report.voyage.as_deref().and_then(|v| v.parse().ok()),
+            };
+            (super::phase_str(report.phase), observation)
+        }
+        // Typed, not text (ADR 0030 §8 decision 31c): `VersionSkew`
+        // is the ONLY `sot_log::Error` variant `query_status` returns
+        // for a lane that answered but refused this build. Every
+        // other error -- a malformed reply, a timeout, connect
+        // refused -- stays `UNREACHABLE_PHASE`.
+        Err(sot_log::Error::VersionSkew) => {
+            note_version_skew(state_dir);
+            (super::FOREIGN_PHASE, Observation::Foreign)
+        }
+        Err(e) => {
+            tracing::debug!(state_dir = ?state_dir, error = %e, "capsule workspace: supervisor lane unreachable");
+            (super::UNREACHABLE_PHASE, Observation::Failed)
+        }
+    }
+}
+
+/// [`probe`]'s wire string alone, for a caller with no row to observe into (`watchdog_may_act`).
+pub fn phase_of(state_dir: &Path) -> &'static str {
+    probe(state_dir).0
+}
+
+/// Log ONCE per row per daemon lifetime that a capsule row's
+/// supervisor refused this daemon's hello (ADR 0030 §8 decision 31c;
+/// the gate itself is superseded by ADR 0045 decision 7) — called
+/// only once the caller has ALREADY typed-matched
+/// `sot_log::Error::VersionSkew`, so this never fires on a merely
+/// unreachable lane. Wording covers BOTH migration-window causes
+/// (Codex review, 2026-09-11): a genuine lane-protocol mismatch, or
+/// an OLD (pre-ADR-0045) supervisor still refusing on build — this
+/// daemon cannot tell which from the wire alone, so it never claims
+/// to. `phase_of` is also the list poll's own probe, so this dedupes
+/// on `state_dir` rather than logging every poll.
+fn note_version_skew(state_dir: &Path) {
+    use std::sync::{Mutex, OnceLock};
+    static NOTED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    let mut noted = NOTED.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    if noted.insert(state_dir.to_path_buf()) {
+        tracing::warn!(
+            state_dir = ?state_dir,
+            "the row's supervisor refused this client (another lane protocol, or a supervisor from before \
+             the protocol-only gate); end the row and recreate it, or kill only its `sot-capsule supervise` \
+             process and attach the row again (the run leg and its agent survive and are adopted)"
+        );
     }
 }
 

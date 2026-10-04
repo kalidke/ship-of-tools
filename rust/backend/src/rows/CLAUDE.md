@@ -3,7 +3,7 @@
 ## Idea
 A row is one project directory on this host running one agent: the daemon registers it, its id survives restarts, and
 every change to its supervisor goes through one guard. This folder holds the in-memory registry of rows and the row toml store
-(`store/`); the capsule start and end functions are still in `capsule_workspace.rs`; the launch of a supervisor is in `spawn/`.
+(`store/`); the launch of a supervisor is in `spawn/`, and its start, end, watchdog and boot resume are in `run/`.
 Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Owns
@@ -42,7 +42,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - In: every op finds its row through `Workspaces::resolve`; `handlers.rs` creates, lists and destroys rows
   (`handle_workspace_create`, `handle_workspace_destroy`); `server::run` inserts the default
   row.
-- Out: `capsule_workspace` takes the guard and a `StartPermit` (`runtime::start_supervisor`, `runtime::reset_run`),
+- Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),
   writes observations (`run::observer::observe`) and installs the observer (`install_observer`); the lifecycle close calls
   `close_gate_and_settle`.
 - Persistence: `store/` (`scan_disk`, `save`, `toml_path_for`) reads and writes the row toml; `workspaces.rs`
@@ -50,7 +50,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Folders
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
-- `run/`: the phase strings, the lifecycle observer and the headless attach client
+- `run/`: a row's run as the daemon sees it: phase strings, observer, headless client, start, end, activation, watchdog, boot resume
 - `spawn/`: launching a row's supervisor: state-root checks, the detached spawn per OS, the Linux row scope
 - `store/`: the row toml store, its codec and the boot migrations
 
@@ -61,7 +61,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
-- `run/`: the phase strings, the lifecycle observer and the headless attach client
+- `run/`: a row's run as the daemon sees it: phase strings, observer, headless client, start, end, activation, watchdog, boot resume
 - `spawn/`: launching a row's `sot-capsule supervise`: state-root checks, the detached spawn per OS, the Linux row scope
 - `store/`: the row toml store, its codec and the boot migrations
 
