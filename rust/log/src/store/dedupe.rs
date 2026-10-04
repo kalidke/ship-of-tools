@@ -474,4 +474,56 @@ mod tests {
         let Err(err) = VoyageStore::open_for_writing(&root, "voybadintent") else { panic!("expected open_for_writing to fail") };
         assert!(matches!(err, Error::Schema(_)), "expected a Schema error, got: {err}");
     }
+
+    /// The fold and the verifier parse an `input_fact`'s `fact` object alike:
+    /// both accept or both reject it, and a rejection names the same cause.
+    #[test]
+    fn fact_object_parses_alike_in_the_fold_and_the_verifier() {
+        use crate::store::envelope::{FrameRef, RefKind};
+        let input = serde_json::json!({"epoch": 1, "n": 3});
+        let cases: Vec<(serde_json::Value, Option<&str>)> = vec![
+            (serde_json::json!({"input": input, "fact": "forward_intent"}), None),
+            (serde_json::json!({"input": input, "fact": "forward_intent", "extra": 1}), None),
+            (serde_json::json!({"input": input, "fact": "bogus"}), Some("fact malformed")),
+            (serde_json::json!({"fact": "forward_intent"}), Some("fact malformed")),
+            (serde_json::json!("x"), Some("expected struct FactObj")),
+        ];
+        for (i, (case, want)) in cases.into_iter().enumerate() {
+            let dir = tempfile::tempdir().unwrap();
+            let id = format!("voyfact{i}");
+            let root = dir.path().join(&id);
+            VoyageStore::bootstrap(&root, &id, RetentionClass::Discard).unwrap();
+            {
+                let mut store = VoyageStore::open_for_writing(&root, &id).unwrap();
+                let mut w = store.open_segment(0).unwrap();
+                w.append(&lc_take(1, 1, 1, None), Commit::Immediate).unwrap();
+                w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
+                w.append(&input_env(1, 3, &"9".repeat(32)), Commit::Immediate).unwrap();
+                let fact = ctrl_env(
+                    1,
+                    4,
+                    Class::Lifecycle,
+                    serde_json::json!({"kind": "input_fact", "fact": case}),
+                    vec![FrameRef { kind: RefKind::CausedBy, frame: Seq { epoch: 1, n: 3 } }],
+                );
+                w.append(&fact, Commit::Immediate).unwrap();
+                let d = w.seal(None).unwrap();
+                store.advance_chain(d);
+            }
+            let verified = crate::store::verify::verify_voyage(&root, &id);
+            let folded = VoyageStore::open_for_writing(&root, &id).map(|_| ());
+            match want {
+                None => {
+                    assert!(verified.is_ok(), "case {i}: verifier: {verified:?}");
+                    assert!(folded.is_ok(), "case {i}: fold: {folded:?}");
+                }
+                Some(text) => {
+                    let v = verified.expect_err("verifier must reject").to_string();
+                    let f = folded.expect_err("fold must reject").to_string();
+                    assert!(v.contains(text), "case {i}: verifier said: {v}");
+                    assert!(f.contains(text), "case {i}: fold said: {f}");
+                }
+            }
+        }
+    }
 }
