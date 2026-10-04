@@ -1,0 +1,42 @@
+# .github/: CI and the tag gate (distribution)
+
+The workflows that verify a push to `main` and turn a `v*` tag into published release artifacts. CI is the tag gate, not
+a pull-request gate: nothing here runs on a pull request except the secret scan. Part of distribution; charter:
+scripts/CLAUDE.md.
+
+## Files
+- `dependabot.yml`: weekly version updates for the GitHub Actions and the Julia environments (`/`, `/docs`, `/test`).
+- `workflows/`: the five workflows below.
+
+## Workflows
+- `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `adapters/**`, `comm/**` and the file
+  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the PowerShell 5.1 parse and the
+  `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu), `conpty-windows-2022` (ConPTY and capsule
+  tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
+  into a clean container).
+- `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
+  `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
+  `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
+  `docs/make.jl`; a push to `main` deploys it).
+- `workflows/release.yml` ("Release"): a `v*` tag or dispatch (`publish` runs only when the ref is a tag). Jobs: `build`
+  (linux, windows and macos targets; the Linux `sotd` and `sot-capsule` are built musl static), `julia-check`, the three
+  smokes `smoke`, `smoke-windows` and `smoke-macos`, then `publish` (`SHA256SUMS`, `COMMIT`, git-cliff notes, the GitHub
+  Release).
+- `workflows/gitleaks.yml`: a full-history secret scan on push to `main` and on pull requests.
+- `workflows/TagBot.yml`: the Julia registry's TagBot, on issue comments and dispatch.
+
+## Start here
+`workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
+
+## Rules
+- CI is the tag gate: `scripts/release.sh` refuses a cut unless the latest non-skipped `rust.yml` and `CI.yml` runs on
+  the branch being cut are green and in HEAD's history; a `fixes/*` or `rc/*` branch has runs only if they are
+  dispatched there (`gh workflow run <workflow> --ref <branch>`).
+- A suite runs only if a step names it: add a new suite to `rust.yml` (or `CI.yml` for Julia) by name, in the commit
+  that adds it.
+- The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of
+  the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
+- Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's
+  trust root (`workflows/release.yml`).
+- `publish` needs `build`, the three smokes and `julia-check`; the Linux smoke boots the artifact in an ubuntu 20.04
+  container to prove the old-glibc floor.
