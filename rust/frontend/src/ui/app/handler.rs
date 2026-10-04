@@ -29,28 +29,7 @@ impl ApplicationHandler for App {
                     self.evt_tx.take(),
                     self.pending_transports.take(),
                 ) {
-                    // ADR 0045 decision 1: captured BEFORE the loop below
-                    // consumes `transports` — the session pane's capsule
-                    // attach (`spawn_pane_attach_term`) reads this to build
-                    // that row's own daemon dial.
-                    state.hosts.host_transports = transports
-                        .iter()
-                        .map(|(host, config, _)| (host.clone(), config.clone()))
-                        .collect();
-                    for (host, config, req_rx) in transports {
-                        let gate = state.hosts.link_gates.entry(host.clone()).or_default().clone();
-                        crate::transport::spawn(
-                            rt,
-                            host,
-                            config,
-                            evt_tx.clone(),
-                            req_rx,
-                            state.window.clone(),
-                            state.hosts.reconnect_now.clone(),
-                            gate,
-                            state.leases.clone(),
-                        );
-                    }
+                    crate::net::hosts::spawn_transports(rt, transports, &evt_tx, &state.window, &state.leases, &mut state.hosts);
                     // ADR 0035: spawn the proxy manager whenever there's a
                     // runtime at all (i.e. at least one host connection is
                     // configured) — the manager just waits for listeners and

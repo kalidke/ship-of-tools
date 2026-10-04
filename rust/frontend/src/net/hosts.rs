@@ -129,6 +129,41 @@ pub(crate) struct HostTable {
     pub(crate) reconnect_now: Arc<tokio::sync::Notify>,
 }
 
+/// Starts one transport task per host once the window exists (ADR 0042 L2a):
+/// records each host's `TransportConfig` in `hosts`, then spawns the tasks, all
+/// fanning in to the one `evt_tx`. `resumed` calls it.
+pub(crate) fn spawn_transports(
+    rt: &tokio::runtime::Runtime,
+    transports: Vec<PendingTransport>,
+    evt_tx: &std::sync::mpsc::Sender<(HostKey, crate::transport::IncomingEvt)>,
+    window: &std::sync::Arc<winit::window::Window>,
+    leases: &std::sync::Arc<crate::lease::Leases>,
+    hosts: &mut HostTable,
+) {
+    // ADR 0045 decision 1: captured BEFORE the loop below
+    // consumes `transports` — the session pane's capsule
+    // attach (`spawn_pane_attach_term`) reads this to build
+    // that row's own daemon dial.
+    hosts.host_transports = transports
+        .iter()
+        .map(|(host, config, _)| (host.clone(), config.clone()))
+        .collect();
+    for (host, config, req_rx) in transports {
+        let gate = hosts.link_gates.entry(host.clone()).or_default().clone();
+        crate::transport::spawn(
+            rt,
+            host,
+            config,
+            evt_tx.clone(),
+            req_rx,
+            window.clone(),
+            hosts.reconnect_now.clone(),
+            gate,
+            leases.clone(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

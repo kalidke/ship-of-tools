@@ -40,7 +40,7 @@ through the channel types below.
 
 ## Files
 - `dial.rs`: the connection set from `--dial` and `--socket`.
-- `hosts.rs`: per-host connection helpers: the default and monitor host, a not-yet-spawned transport, the lane dial, and `HostTable`, the per-host connection table.
+- `hosts.rs`: per-host connection helpers: the default and monitor host, a not-yet-spawned transport, the lane dial, `HostTable`, the per-host connection table, and `spawn_transports`, which starts one transport task per host from `resumed`.
 - `identity.rs`: this frontend's one declared identity and its `fe@<host>` address.
 - `mod.rs`: declares the five parts.
 - `state.rs`: the persisted reconnect memory, one `session-<host>.json` per host.
