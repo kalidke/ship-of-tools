@@ -173,7 +173,7 @@ pub use identity::exchange;
 // `DaemonLaneEndpoint`) lives in `fe_client_io` (L1-unix LU3b: renamed
 // from `fe_client_win`, generic over `client::Endpoint` -- no platform
 // name in this module's own name anymore).
-pub mod fe_client;
+pub use attach_client::rules as fe_client;
 // ADR 0045 decision 1: ungated. `FeAttachClient` is a state machine OVER
 // an `Endpoint` (decision 3), not a Windows/Linux primitive itself, so a
 // macOS frontend attaching through a caller-named `Endpoint` (e.g.

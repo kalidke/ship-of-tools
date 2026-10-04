@@ -7,6 +7,7 @@ own supervisor-lane calls live here too. Part of capsule; charter: rust/log/CLAU
 - `client.rs`: `FeAttachClient`, the vt100 parser and pane bookkeeping over an `AttachWorker`
 - `client_tests.rs`: its unit tests (pump and checkpoint bookkeeping)
 - `mod.rs`: declares the two modules; `supervisor_client` is gated to Windows, Linux and macOS
+- `rules/`: the six attach-client rulings as pure state machines
 - `supervisor_client.rs`: the daemon's SOSV client: `query_status`, `stop`, `end_run`, `reset`, `Persistent`, and `connect_and_challenge`, which the supervisor shares
 
 ## Start here
