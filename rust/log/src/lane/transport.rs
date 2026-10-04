@@ -5,10 +5,6 @@
 //!
 //! Deliberately ungated — no `#![cfg(windows)]` here, unlike most of this
 //! crate's siblings: this is the CONTRACT, not an implementation.
-//! Implementers: Windows — `crate::pipe_transport::PipeTransport`
-//! (bridging `crate::pipe_win`'s real named pipe); tests — the
-//! in-memory synthetic transports in `tests/capsule_win.rs`; Unix — a
-//! domain-socket implementation lands in L1-unix's LU1.
 //!
 //! [`ConnId`] lives in [`crate::attach_proto`], not here — this module
 //! only uses it. [`TEARDOWN_AGGREGATE_DEADLINE`]/`join_within` are the
