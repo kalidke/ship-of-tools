@@ -11,6 +11,7 @@ platform; charter: rust/log/src/host/CLAUDE.md (written by a later unit, not yet
 - `challenge_macos.rs`: macOS steps 1-3: one `LOCAL_PEERTOKEN` read (pid and pidversion), `ChallengedProcess`.
 - `exit_watch_macos.rs`: the macOS kqueue `NOTE_EXIT` death watch, shared with `supervisor/probe/macos.rs`.
 - `challenge_win.rs`: Windows steps 1-3: the pipe server's token SID and process handle.
+- `connect_own.rs`: the one rule for a local endpoint reached by name: `own_socket`, `own_pipe`, `connect_own`.
 - `exchange.rs`: the identity request and reply codec for the wire round trip (`feed`).
 - `deadline.rs`: the three-state deadline race that bounds a blocking call (`run_with_deadline`).
 
@@ -26,3 +27,4 @@ Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the pl
 - `created` is compared for equality only, in each OS's own unit: FILETIME bits, `/proc` start ticks, pidversion.
 - The macOS kernel fact the challenge rests on (a client reading `LOCAL_PEERTOKEN` on its own fd sees the server's pid
   and a nonzero pidversion) is pinned by `rust/log/tests/macos_kernel_facts/`.
+- A client that reaches this box's daemon or a relay socket by name speaks to it only after `connect_own`'s rule passes: on Unix before the connect, on Windows before the first byte.

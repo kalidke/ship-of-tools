@@ -5,6 +5,7 @@ pub mod challenge;
 pub mod challenge_macos;
 pub mod challenge_unix;
 pub mod challenge_win;
+pub mod connect_own;
 pub mod deadline;
 pub mod exchange;
 pub(crate) mod exit_watch_macos;
