@@ -590,6 +590,25 @@ fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
 mod tests {
     use super::*;
 
+    /// The daemon's release repo: the default when the variable is unset, empty
+    /// or blank, the trimmed value otherwise; the prior value is restored.
+    #[test]
+    fn repo_from_env_trims_and_defaults() {
+        let prior = std::env::var("SOT_UPDATE_REPO").ok();
+        std::env::remove_var("SOT_UPDATE_REPO");
+        assert_eq!(repo_from_env(), DEFAULT_REPO);
+        std::env::set_var("SOT_UPDATE_REPO", "");
+        assert_eq!(repo_from_env(), DEFAULT_REPO);
+        std::env::set_var("SOT_UPDATE_REPO", "   ");
+        assert_eq!(repo_from_env(), DEFAULT_REPO);
+        std::env::set_var("SOT_UPDATE_REPO", "  fork/x  ");
+        assert_eq!(repo_from_env(), "fork/x");
+        match prior {
+            Some(v) => std::env::set_var("SOT_UPDATE_REPO", v),
+            None => std::env::remove_var("SOT_UPDATE_REPO"),
+        }
+    }
+
     /// An update's exit is a restart (75), never a requested shutdown (0),
     /// which the launchers read as "stay down".
     #[test]
