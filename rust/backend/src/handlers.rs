@@ -8,29 +8,174 @@
 // path replaces these stubs with calls into ShipToolsKernel over its own pipe;
 // the on-the-wire Frame shape stays the same.
 
-use anyhow::{Context, Result};
-use serde_json::json;
-use sot_protocol::{
-    op, AgentFiledReq, AgentFiledRes, CommFileReq, CommFileRes, AgentJoinReq, AgentJoinRes, AgentSendReq, AgentSendRes, BlobDescriptor, ConceptListRes, ConceptReadReq, ConceptReadRes,
-    ConceptWriteReq, ConceptWriteRes, DirCreateReq, DirCreateRes, DocsOpenReq, DocsOpenRes, FeCommandEvt, FeCommandSendReq,
-    FeCommandSendRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq, FileReadReq,
-    FileReadRes, FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, Frame, HelloReq,
-    HelloRes, ImageCropReq, ImageCropRes, KernelRequestReq, MathRenderReq, MathRenderRes,
-    PlutoOpenReq, PlutoOpenRes, PreviewGetReq, PreviewGetRes, PreviewSetScaleReq, PtyCursor,
-    PtyEnter, PtyInputReq, PtyInputRes, PtyScreenReq, PtyScreenRes, QuartoOpenReq, QuartoOpenRes,
-    ReplErrorOut, ReplExecuteInput, ReplExecuteReq, ReplExecuteRes, ReplValueOut, StackFrame,
-    ToggleHiddenReq, ToggleHiddenRes, TreeChildrenReq, TreeChildrenRes, TreeRootReq, TreeRootRes,
-    VideoOpenReq, VideoOpenRes,
-};
+use anyhow::Context;
 
-use crate::file_io::{self, WriteResult};
-use crate::files_mode::{mime_for_path, FilesMode};
+use anyhow::Result;
+
+use serde_json::json;
+
+use sot_protocol::op;
+
+use sot_protocol::AgentFiledReq;
+
+use sot_protocol::AgentFiledRes;
+
+use sot_protocol::CommFileReq;
+
+use sot_protocol::CommFileRes;
+
+use sot_protocol::AgentJoinReq;
+
+use sot_protocol::AgentJoinRes;
+
+use sot_protocol::AgentSendReq;
+
+use sot_protocol::AgentSendRes;
+
+use sot_protocol::BlobDescriptor;
+
+use sot_protocol::ConceptListRes;
+
+use sot_protocol::ConceptReadReq;
+
+use sot_protocol::ConceptReadRes;
+
+use sot_protocol::ConceptWriteReq;
+
+use sot_protocol::ConceptWriteRes;
+
+use sot_protocol::DirCreateReq;
+
+use sot_protocol::DirCreateRes;
+
+use sot_protocol::DocsOpenReq;
+
+use sot_protocol::DocsOpenRes;
+
+use sot_protocol::FeCommandEvt;
+
+use sot_protocol::FeCommandSendReq;
+
+use sot_protocol::FeCommandSendRes;
+
+use sot_protocol::FileChunk;
+
+use sot_protocol::FileDeleteReq;
+
+use sot_protocol::FileDeleteRes;
+
+use sot_protocol::FileDownloadReq;
+
+use sot_protocol::FileReadReq;
+
+use sot_protocol::FileReadRes;
+
+use sot_protocol::FileUploadAck;
+
+use sot_protocol::FileUploadReq;
+
+use sot_protocol::FileWriteReq;
+
+use sot_protocol::FileWriteRes;
+
+use sot_protocol::Frame;
+
+use sot_protocol::HelloReq;
+
+use sot_protocol::HelloRes;
+
+use sot_protocol::ImageCropReq;
+
+use sot_protocol::ImageCropRes;
+
+use sot_protocol::KernelRequestReq;
+
+use sot_protocol::MathRenderReq;
+
+use sot_protocol::MathRenderRes;
+
+use sot_protocol::PlutoOpenReq;
+
+use sot_protocol::PlutoOpenRes;
+
+use sot_protocol::PreviewGetReq;
+
+use sot_protocol::PreviewGetRes;
+
+use sot_protocol::PreviewSetScaleReq;
+
+use sot_protocol::PtyCursor;
+
+use sot_protocol::PtyEnter;
+
+use sot_protocol::PtyInputReq;
+
+use sot_protocol::PtyInputRes;
+
+use sot_protocol::PtyScreenReq;
+
+use sot_protocol::PtyScreenRes;
+
+use sot_protocol::QuartoOpenReq;
+
+use sot_protocol::QuartoOpenRes;
+
+use sot_protocol::ReplErrorOut;
+
+use sot_protocol::ReplExecuteInput;
+
+use sot_protocol::ReplExecuteReq;
+
+use sot_protocol::ReplExecuteRes;
+
+use sot_protocol::ReplValueOut;
+
+use sot_protocol::StackFrame;
+
+use sot_protocol::ToggleHiddenReq;
+
+use sot_protocol::ToggleHiddenRes;
+
+use sot_protocol::TreeChildrenReq;
+
+use sot_protocol::TreeChildrenRes;
+
+use sot_protocol::TreeRootReq;
+
+use sot_protocol::TreeRootRes;
+
+use sot_protocol::VideoOpenReq;
+
+use sot_protocol::VideoOpenRes;
+
+use crate::file_io;
+
+use crate::file_io::WriteResult;
+
+use crate::files_mode::mime_for_path;
+
+use crate::files_mode::FilesMode;
+
 use crate::kernel::Kernel;
+
 use crate::mathjax::MathJax;
+
 use crate::repl::ReplFrameMsg;
+
 use crate::pluto::Pluto;
+
 use crate::session::Session;
-use crate::workspaces::{AgentMessage, Phase, Workspace, WorkspaceChanged, Workspaces};
+
+use crate::workspaces::AgentMessage;
+
+use crate::workspaces::Phase;
+
+use crate::workspaces::Workspace;
+
+use crate::workspaces::WorkspaceChanged;
+
+use crate::workspaces::Workspaces;
+
 use tokio::sync::broadcast;
 
 /// Output of an op handler. The first frame is the response to the request;
@@ -2997,7 +3142,7 @@ fn canonical_under_root(
 /// review). Returns the canonical path; callers MUST use this value for
 /// everything downstream rather than re-deriving from the raw input, so the
 /// checked path and the acted-upon path can't diverge (TOCTOU).
-fn canonicalize_within_any_workspace(
+pub(crate) fn canonicalize_within_any_workspace(
     path: &std::path::Path,
     workspaces: &Workspaces,
 ) -> Option<std::path::PathBuf> {
@@ -3011,7 +3156,7 @@ fn canonicalize_within_any_workspace(
 /// back the matching workspace's own canonical root — `docs.open`'s
 /// site-root walk (its only caller) needs that bound to climb toward without
 /// running a second, possibly-disagreeing confinement check of its own.
-fn canonicalize_and_workspace_root(
+pub(crate) fn canonicalize_and_workspace_root(
     path: &std::path::Path,
     workspaces: &Workspaces,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
@@ -7363,7 +7508,7 @@ fn capsule_comm_handle(workspace_id: &str) -> String {
 /// FE can't read the registry (separate HOME), so we surface it here. The
 /// bytes are `read_registry_fresh`'s, whose retry sleeps: call it on a
 /// blocking thread.
-fn read_comm_agents() -> Option<serde_json::Value> {
+pub(crate) fn read_comm_agents() -> Option<serde_json::Value> {
     let bytes = read_registry_fresh(&comm_registry_path()?).ok()?;
     let root: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     root.get("agents").cloned()
@@ -7430,7 +7575,7 @@ fn read_registry_fresh_with(path: &std::path::Path, mut pause: impl FnMut(std::t
 /// `remove_comm_agents_for_workspace` and the plain field reads in
 /// `handle_workspace_list`'s `agent_str` apply the same strict rule as the
 /// tmux-based match below.
-fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
+pub(crate) fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
     entry
         .get("host")
         .and_then(|v| v.as_str())
@@ -7457,7 +7602,7 @@ fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
 ///   `agent.join` — deleted only with family H once every row has cycled.
 /// - every other runtime: the live tmux occupant (`resolve_comm_handle`
 ///   above), same fallback.
-fn comm_handle_for_workspace(ws: &Workspace) -> String {
+pub(crate) fn comm_handle_for_workspace(ws: &Workspace) -> String {
     let declared = ws.agent_handle();
     if !declared.is_empty() {
         return declared;
@@ -7655,7 +7800,7 @@ fn remove_comm_agents_for_workspace_bounded(
 /// Best-effort throughout: a missing registry, malformed JSON, or any I/O
 /// failure is a silent no-op — the activate's ack is unaffected either
 /// way (the caller sends it regardless of what this does).
-fn clear_comm_unread(ws: &Workspace, host: &str) {
+pub(crate) fn clear_comm_unread(ws: &Workspace, host: &str) {
     // --- Unlocked pre-check ---
     let pre_agents = read_comm_agents();
     let handle = comm_handle_for_workspace(ws);
