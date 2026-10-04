@@ -229,7 +229,7 @@ pub mod supervisor;
 // too, and `sot-backend` (a separate crate) needs to reach it.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub use attach_client::supervisor_client;
-pub mod verify;
+pub use store::verify;
 pub use store::voyage;
 pub mod wire;
 // Field-proven defect fix: hardens a process's own inherited stdio handles

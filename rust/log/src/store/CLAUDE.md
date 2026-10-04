@@ -14,6 +14,7 @@ charter: rust/log/CLAUDE.md (a forward reference: that page is not yet at this c
 - `recovery.rs`: startup reconciliation and tear recovery, idempotent at every crash point.
 - `rollout.rs`: the ADR 0041 reader-first rollout gate for a feature-bearing segment.
 - `support_tests.rs`: frame builders shared by the voyage and dedupe tests.
+- `verify/`: the `sot-log verify` checklist and the per-leg readers.
 - `voyage.rs`: the store that opens a voyage for its one writer and publishes its blobs.
 - `voyage_tests.rs`: the voyage store's tests: bootstrap, reopen, fence, lease, blob CAS, root pin, Windows arms.
 
