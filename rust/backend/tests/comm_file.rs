@@ -24,7 +24,7 @@ use comm_inbox::{
 };
 
 fn comm_lib() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/core/scripts/comm-lib.sh")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/lib/comm-lib.sh")
 }
 
 /// Every line one JSON object, LF-terminated; returns each line's `msg`.

@@ -69,7 +69,7 @@ _guard_fatal() { echo "lib-home-guard: FATAL $*" >&2; [ -z "${_GUARD_BOOT:-}" ] 
 # _guard_self_test DIR — the tree's own comm-lib.sh must find no daemon and no hub.
 _guard_self_test() {
     local lib fn out rc
-    lib="$(dirname "${BASH_SOURCE[0]}")/../core/scripts/comm-lib.sh"
+    lib="$(dirname "${BASH_SOURCE[0]}")/../lib/comm-lib.sh"
     [ -r "$lib" ] || _guard_fatal "daemon discovery cannot be checked: no $lib"
     for fn in sot_daemon_endpoint sot_relay_endpoint _sot_windows_local_pipe; do
         out="$( export SOT_COMM_HOME="$1/comm"; . "$lib" >/dev/null 2>&1 || exit 99; "$fn" 2>/dev/null )" && rc=0 || rc=$?

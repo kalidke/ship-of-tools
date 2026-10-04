@@ -2,7 +2,7 @@
 
 One standalone bash suite per `test-*.sh`, each against its own temporary comm home, daemon stand-ins and process
 stand-ins, never the live comm home. The scripts under test run from a staged flat copy laid out as the installer lays
-out `~/.sot-comm/bin`, so a script can move between `comm/core/scripts` and the other bin folders without editing a
+out `~/.sot-comm/bin`, so a script can move between `comm/lib` and the other bin folders without editing a
 suite. Part of messaging; charter: comm/CLAUDE.md.
 
 ## Files

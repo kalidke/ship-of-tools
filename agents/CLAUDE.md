@@ -18,7 +18,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   (the Windows request a `pipe:` endpoint makes, called by `comm-lib.sh` and `comm-relay.sh`).
 - Their suites: `tests/`.
 - Still elsewhere, listed so a reader finds them:
-  - the shell daemon client in `comm/core/scripts/comm-lib.sh` (`sot_daemon_endpoint`, `sot_relay_endpoint`,
+  - the shell daemon client in `comm/lib/comm-lib.sh` (`sot_daemon_endpoint`, `sot_relay_endpoint`,
     `sot_oneshot_request`, `sot_pty_input`);
   - the hooks, the Codex skills and plugin, and the two messaging skills (`sot-comm`, `sot-session-start`) in
     `comm/adapters/claude/` and `comm/adapters/codex/`: messaging's.
@@ -63,7 +63,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - `codex/`: the Codex launcher (installer-shaped, no page).
 - `tests/`: the hermetic suites of those CLIs (see its page).
 - `rust/backend/src/agents/`: the daemon's launch recipe, accounts and folder trust.
-- `comm/core/scripts/`, `comm/adapters/`: where the rest of the agent edge still lives (see Owns).
+- `comm/lib/`, `comm/adapters/`: where the rest of the agent edge still lives (see Owns).
 
 ## Files
 - `claude/`: the Claude launcher `bin/ccb`, the wrappers `bin/show-result`, `bin/sot-fe`, `bin/sot-gh-auth`, and the skills.
@@ -78,4 +78,4 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 ## Start here
 For a change to how a row and its agent start, `spawn/comm-spawn.sh`, then `agent_argv` in
 `rust/backend/src/agents/argv.rs`. For how a shell tool reaches the daemon, `sot_daemon_endpoint` in
-`comm/core/scripts/comm-lib.sh`.
+`comm/lib/comm-lib.sh`.

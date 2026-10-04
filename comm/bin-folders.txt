@@ -2,7 +2,7 @@ agents
 agents/sot-fe
 agents/spawn
 agents/worktree
-comm/core/scripts
+comm/lib
 comm/registry
 comm/work_state
 comm/work_state/hooks

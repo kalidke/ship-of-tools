@@ -113,7 +113,7 @@ fn a_tail_longer_than_a_block_is_cut_at_the_last_newline() {
 
 #[cfg(target_os = "linux")]
 fn scripts_lib() -> String {
-    format!("{}/../../comm/core/scripts/comm-lib.sh", env!("CARGO_MANIFEST_DIR"))
+    format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR"))
 }
 
 #[cfg(target_os = "linux")]

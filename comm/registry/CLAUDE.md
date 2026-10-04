@@ -16,7 +16,7 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 
 ## Start here
 `comm-join.sh`'s precedence (`--name` > `$SOT_COMM_NAME` > self-file > derive), then `claim_derived_handle` in
-`../core/scripts/comm-lib.sh`.
+`../lib/comm-lib.sh`.
 
 ## Rules
 - A derived handle is decided and written in one critical section (`claim_derived_handle`); a pin is kept verbatim.

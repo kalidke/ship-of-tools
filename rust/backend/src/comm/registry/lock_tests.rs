@@ -22,7 +22,7 @@ pub(super) static GONE_IN_SETTLE: AtomicBool = AtomicBool::new(false);
 /// Set, the lock is removed after the next failed retake, before its fresh read.
 pub(super) static GONE_AFTER_RETAKE: AtomicBool = AtomicBool::new(false);
 
-const LIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/core/scripts/comm-lib.sh");
+const LIB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/lib/comm-lib.sh");
 
 /// Held by every test here: the records read `SOT_SELF_HOST`, which other
 /// tests in this binary set, and the shell children inherit the env.

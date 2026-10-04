@@ -232,7 +232,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn agrees_with_the_shell() {
-        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/core/scripts/comm-lib.sh");
+        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/lib/comm-lib.sh");
         let ib = MINE.repeat(3);
         let ts = ts_inbox(&["1T00:00:01", "1T00:00:02", "1T00:00:03"]);
         let torn = format!("{}not json\n{}", ts_inbox(&["1T00:00:01"]), ts_inbox(&["1T00:00:09"]));
