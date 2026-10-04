@@ -106,23 +106,30 @@ fn run_file_payload(id: &str, path: &str) -> Value {
     json!({ "workspace_id": id, "input": { "kind": "run_file", "path": path } })
 }
 
-/// The frames the bus carried for `eval_id` since the last drain, in order.
-fn drain(rx: &mut tokio::sync::broadcast::Receiver<ReplFrameMsg>, eval_id: u64) -> Vec<ReplFrameMsg> {
+/// Every `repl.execute` frame on the bus since the last drain, in order (lifecycle frames carry a small eval id and are left out).
+fn drain_exec(rx: &mut tokio::sync::broadcast::Receiver<ReplFrameMsg>) -> Vec<ReplFrameMsg> {
     let mut got = Vec::new();
     while let Ok(m) = rx.try_recv() {
-        if m.eval_id == eval_id {
+        if m.eval_id >= 1 << 40 {
             got.push(m);
         }
     }
     got
 }
 
-/// The refusal reply `exec_err_frame` writes, as JSON without `elapsed_ms` and `run_id`.
-fn refusal(id: &str, outcome: &str, message: &str) -> Value {
+/// A report with nothing in it, as `exec_err_frame` and an empty run write it (no `error`, no project fields), without `elapsed_ms` and `run_id`.
+fn empty_report(id: &str, outcome: &str) -> Value {
     json!({
         "workspace_id": id, "outcome": outcome, "stdout": "", "stderr": "", "values": [],
-        "error": { "message": message, "stacktrace": [] }, "figures": [], "truncated": false,
+        "figures": [], "truncated": false,
     })
+}
+
+/// The refusal reply `exec_err_frame` writes, as JSON without `elapsed_ms` and `run_id`.
+fn refusal(id: &str, outcome: &str, message: &str) -> Value {
+    let mut r = empty_report(id, outcome);
+    r["error"] = json!({ "message": message, "stacktrace": [] });
+    r
 }
 
 fn logged_request(log: &Path, eval_id: u64) -> Value {
@@ -134,10 +141,33 @@ fn logged_request(log: &Path, eval_id: u64) -> Value {
         .unwrap_or_else(|| panic!("no request logged for eval {eval_id}"))
 }
 
-fn assert_started_first(frames: &[ReplFrameMsg], run_id: &str, slug: &str, display: &str) {
-    let first = frames.first().expect("a started frame");
-    assert_eq!(first.workspace_id.as_deref(), Some(slug));
-    assert_eq!(first.frame, json!({ "kind": "started", "run_id": run_id, "origin": "session", "display": display }));
+fn started(run_id: &str, display: &str) -> Value {
+    json!({ "kind": "started", "run_id": run_id, "origin": "session", "display": display })
+}
+
+/// One run: the reply (without `elapsed_ms`, `run_id`), those two, the eval id and every frame the bus carried for it.
+struct Ran {
+    reply: Value,
+    elapsed: u64,
+    run_id: String,
+    eval_id: u64,
+    frames: Vec<Value>,
+}
+
+async fn run_case(
+    workspaces: &Workspaces,
+    session: &Session,
+    bus: &mut tokio::sync::broadcast::Receiver<ReplFrameMsg>,
+    slug: &str,
+    payload: Value,
+) -> Ran {
+    let mut reply = execute(workspaces, session, payload).await;
+    let (elapsed, run_id) = strip_run(&mut reply);
+    let eval_id: u64 = run_id.strip_prefix("exec-").unwrap().parse().unwrap();
+    let msgs = drain_exec(bus);
+    assert!(msgs.iter().all(|m| m.eval_id == eval_id), "frames of another eval on the bus");
+    assert_eq!(msgs.first().expect("a started frame").workspace_id.as_deref(), Some(slug));
+    Ran { reply, elapsed, run_id, eval_id, frames: msgs.into_iter().map(|m| m.frame).collect() }
 }
 
 #[tokio::test]
@@ -155,15 +185,14 @@ async fn repl_execute_reports_are_unchanged() {
     let workspaces = Workspaces::new();
     workspaces.set_repl_frame_tx(frame_tx);
     let session = Session::new();
+    let done = json!({ "kind": "done" });
 
     // ok: every frame kind, a figure, the project the shim reported.
     let (id, root) = add_row(&workspaces, &dir, "okrow");
-    let mut reply = execute(&workspaces, &session, eval_payload(&id, "case-ok", None)).await;
-    let (_, run_id) = strip_run(&mut reply);
-    let eval_id: u64 = run_id.strip_prefix("exec-").unwrap().parse().unwrap();
-    let fig = root.join(".sot").join("runs").join(&run_id).join("fig-0.png");
+    let r = run_case(&workspaces, &session, &mut bus, "okrow", eval_payload(&id, "case-ok", None)).await;
+    let fig = root.join(".sot").join("runs").join(&r.run_id).join("fig-0.png");
     assert_eq!(
-        reply,
+        r.reply,
         json!({
             "workspace_id": id, "outcome": "ok", "stdout": "hi", "stderr": "warn",
             "values": [{ "mime": "text/plain", "text": "42" }], "figures": [fig.to_string_lossy()],
@@ -171,101 +200,115 @@ async fn repl_execute_reports_are_unchanged() {
         })
     );
     assert_eq!(std::fs::read(&fig).unwrap(), [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
-    assert_started_first(&drain(&mut bus, eval_id), &run_id, "okrow", "case-ok");
-    let logged = logged_request(&log, eval_id);
-    assert_eq!(logged["op"], "repl.eval");
-    assert_eq!(logged["payload"], json!({ "code": "case-ok", "eval_id": eval_id, "workspace_id": id }));
-
-    // error: the first error frame becomes the report's error.
-    let (id, _) = add_row(&workspaces, &dir, "errrow");
-    let mut reply = execute(&workspaces, &session, eval_payload(&id, "case-error", None)).await;
-    strip_run(&mut reply);
     assert_eq!(
-        reply,
-        json!({
-            "workspace_id": id, "outcome": "error", "stdout": "", "stderr": "", "values": [],
-            "error": { "message": "boom", "stacktrace": [] }, "figures": [], "truncated": false,
-        })
+        r.frames,
+        [
+            started(&r.run_id, "case-ok"),
+            json!({ "kind": "stdout", "text": "hi" }),
+            json!({ "kind": "stderr", "text": "warn" }),
+            json!({ "kind": "value", "mime": "text/plain", "text": "42" }),
+            json!({ "kind": "image", "mime": "image/png", "data_base64": "iVBORw0KGgo=" }),
+            done.clone(),
+        ]
     );
+    let logged = logged_request(&log, r.eval_id);
+    assert_eq!(logged["op"], "repl.eval");
+    assert_eq!(logged["payload"], json!({ "code": "case-ok", "eval_id": r.eval_id, "workspace_id": id }));
+
+    // error: the first error frame becomes the report's error; the shim's own done is the only one.
+    let (id, _) = add_row(&workspaces, &dir, "errrow");
+    let r = run_case(&workspaces, &session, &mut bus, "errrow", eval_payload(&id, "case-error", None)).await;
+    assert_eq!(r.reply, refusal(&id, "error", "boom"));
+    assert_eq!(r.frames, [started(&r.run_id, "case-error"), json!({ "kind": "error", "message": "boom" }), done.clone()]);
 
     // busy.
     let (id, _) = add_row(&workspaces, &dir, "busyrow");
-    let mut reply = execute(&workspaces, &session, eval_payload(&id, "case-busy", None)).await;
-    strip_run(&mut reply);
-    assert_eq!(reply["outcome"], "busy");
-    assert_eq!(reply["error"], json!({ "message": "REPL busy", "stacktrace": [] }));
+    let r = run_case(&workspaces, &session, &mut bus, "busyrow", eval_payload(&id, "case-busy", None)).await;
+    assert_eq!(r.reply, refusal(&id, "busy", "REPL busy"));
+    assert_eq!(r.frames, [started(&r.run_id, "case-busy"), json!({ "kind": "error", "message": "REPL busy" }), done.clone()]);
 
-    // a res carrying a code is an error whatever the frames said.
+    // a res carrying a code is an error whatever the frames said; the shim sent no frame, and the handler adds no done.
     let (id, _) = add_row(&workspaces, &dir, "coderow");
-    let mut reply = execute(&workspaces, &session, eval_payload(&id, "case-rescode", None)).await;
-    strip_run(&mut reply);
-    assert_eq!(reply, refusal(&id, "error", "nope"));
+    let r = run_case(&workspaces, &session, &mut bus, "coderow", eval_payload(&id, "case-rescode", None)).await;
+    assert_eq!(r.reply, refusal(&id, "error", "nope"));
+    assert_eq!(r.frames, [started(&r.run_id, "case-rescode")]);
 
     // timeout: the run is left going, the drawer entry is closed by a done frame.
     let (id, _) = add_row(&workspaces, &dir, "hangrow");
-    let mut reply = execute(&workspaces, &session, eval_payload(&id, "case-hang", Some(1000))).await;
-    let (elapsed, run_id) = strip_run(&mut reply);
-    let eval_id: u64 = run_id.strip_prefix("exec-").unwrap().parse().unwrap();
-    assert!(elapsed >= 1000);
-    assert_eq!(reply["outcome"], "timeout");
-    assert!(reply.get("error").is_none());
-    let frames = drain(&mut bus, eval_id);
-    assert_started_first(&frames, &run_id, "hangrow", "case-hang");
-    assert_eq!(frames.last().unwrap().frame, json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed }));
+    let r = run_case(&workspaces, &session, &mut bus, "hangrow", eval_payload(&id, "case-hang", Some(1000))).await;
+    assert!(r.elapsed >= 1000);
+    assert_eq!(r.reply, empty_report(&id, "timeout"));
+    let closed = json!({ "kind": "done", "eval_id": r.eval_id, "elapsed_ms": r.elapsed });
+    assert_eq!(r.frames, [started(&r.run_id, "case-hang"), closed]);
 
     // repl_died: the child exits without answering.
     let (id, _) = add_row(&workspaces, &dir, "diedrow");
-    let mut reply = execute(&workspaces, &session, eval_payload(&id, "case-die", None)).await;
-    let (elapsed, run_id) = strip_run(&mut reply);
-    let eval_id: u64 = run_id.strip_prefix("exec-").unwrap().parse().unwrap();
-    assert_eq!(reply["outcome"], "repl_died");
-    let frames = drain(&mut bus, eval_id);
-    assert_started_first(&frames, &run_id, "diedrow", "case-die");
-    assert_eq!(frames.last().unwrap().frame, json!({ "kind": "done", "eval_id": eval_id, "elapsed_ms": elapsed }));
+    let r = run_case(&workspaces, &session, &mut bus, "diedrow", eval_payload(&id, "case-die", None)).await;
+    assert_eq!(r.reply, empty_report(&id, "repl_died"));
+    let closed = json!({ "kind": "done", "eval_id": r.eval_id, "elapsed_ms": r.elapsed });
+    assert_eq!(r.frames, [started(&r.run_id, "case-die"), closed]);
 
     // run_file: the canonical path is what the REPL is asked to run.
     let (id, root) = add_row(&workspaces, &dir, "filerow");
     std::fs::write(root.join("x.jl"), "1\n").unwrap();
     std::fs::write(root.join("notes.txt"), "n\n").unwrap();
-    let mut reply = execute(&workspaces, &session, run_file_payload(&id, "x.jl")).await;
-    let (_, run_id) = strip_run(&mut reply);
-    let eval_id: u64 = run_id.strip_prefix("exec-").unwrap().parse().unwrap();
-    assert_eq!(reply["outcome"], "ok");
-    assert_started_first(&drain(&mut bus, eval_id), &run_id, "filerow", "run x.jl");
-    let logged = logged_request(&log, eval_id);
+    let r = run_case(&workspaces, &session, &mut bus, "filerow", run_file_payload(&id, "x.jl")).await;
+    assert_eq!(r.reply, empty_report(&id, "ok"));
+    assert_eq!(r.frames, [started(&r.run_id, "run x.jl"), done.clone()]);
+    let logged = logged_request(&log, r.eval_id);
     assert_eq!(logged["op"], "repl.run_file");
     assert_eq!(
         logged["payload"],
-        json!({ "eval_id": eval_id, "fresh": false, "path": root.join("x.jl").to_string_lossy(), "workspace_id": id })
+        json!({ "eval_id": r.eval_id, "fresh": false, "path": root.join("x.jl").to_string_lossy(), "workspace_id": id })
     );
 
-    // Refusals before the REPL is asked anything.
+    // Refusals before the REPL is asked anything: no frame at all goes on the bus.
     let reply = execute(&workspaces, &session, json!({ "workspace_id": id })).await;
     assert_eq!(reply["code"], "bad_request");
     assert!(reply["error"].as_str().unwrap().starts_with("bad repl.execute payload: "));
+    assert!(drain_exec(&mut bus).is_empty());
     let reply = execute(&workspaces, &session, eval_payload("nope", "1", None)).await;
     assert_eq!(reply, json!({ "error": "unknown workspace: nope", "code": "unknown_workspace" }));
+    assert!(drain_exec(&mut bus).is_empty());
 
+    // A file outside the root is refused as outside even when it is not a .jl file: the confinement check comes first.
     let outside = dir.join("outside.jl");
+    let outside_txt = dir.join("outside.txt");
     std::fs::write(&outside, "1\n").unwrap();
-    let abs = outside.to_string_lossy().to_string();
-    let mut reply = execute(&workspaces, &session, run_file_payload(&id, &abs)).await;
-    strip_run(&mut reply);
-    let message = format!(
-        "repl run is confined to the workspace root ({}); {abs} is outside it — use `repl eval --code 'include(\"{abs}\")'` for files elsewhere",
-        root.display()
-    );
-    assert_eq!(reply, refusal(&id, "error", &message));
+    std::fs::write(&outside_txt, "1\n").unwrap();
+    for abs in [outside.to_string_lossy().to_string(), outside_txt.to_string_lossy().to_string()] {
+        let mut reply = execute(&workspaces, &session, run_file_payload(&id, &abs)).await;
+        strip_run(&mut reply);
+        let message = format!(
+            "repl run is confined to the workspace root ({}); {abs} is outside it — use `repl eval --code 'include(\"{abs}\")'` for files elsewhere",
+            root.display()
+        );
+        assert_eq!(reply, refusal(&id, "error", &message));
+        assert!(drain_exec(&mut bus).is_empty());
+    }
 
     let mut reply = execute(&workspaces, &session, run_file_payload(&id, "notes.txt")).await;
     strip_run(&mut reply);
     let message = format!("not an existing .jl file: {}", root.join("notes.txt").display());
     assert_eq!(reply, refusal(&id, "error", &message));
+    assert!(drain_exec(&mut bus).is_empty());
 
     let mut reply = execute(&workspaces, &session, run_file_payload(&id, "gone.jl")).await;
     strip_run(&mut reply);
     let message = "cannot resolve path \"gone.jl\": No such file or directory (os error 2)";
     assert_eq!(reply, refusal(&id, "error", message));
+    assert!(drain_exec(&mut bus).is_empty());
+
+    // A submit that fails (no julia to start): repl_died with the error, the drawer entry announced and never closed.
+    let (id, _) = add_row(&workspaces, &dir, "nojulia");
+    std::env::set_var("SOT_JULIA_BIN", dir.join("no-such-julia"));
+    let mut r = run_case(&workspaces, &session, &mut bus, "nojulia", eval_payload(&id, "case-ok", None)).await;
+    std::env::set_var("SOT_JULIA_BIN", &julia);
+    let message = r.reply["error"]["message"].as_str().unwrap().to_string();
+    assert!(message.starts_with("repl submit failed: "), "{message}");
+    r.reply["error"]["message"] = json!("repl submit failed: ...");
+    assert_eq!(r.reply, refusal(&id, "repl_died", "repl submit failed: ..."));
+    assert_eq!(r.frames, [started(&r.run_id, "case-ok")]);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
