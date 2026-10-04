@@ -85,6 +85,7 @@ pub enum VerifyMode {
     AllowOpenTip,
 }
 
+mod frame;
 mod leg;
 mod lifecycle;
 mod pass;
