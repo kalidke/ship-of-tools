@@ -147,8 +147,11 @@ end
 
 @testset "update_comm installs no CLAUDE.md" begin
     mktempdir() do home
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
+        # On Windows Julia's `homedir()` reads USERPROFILE, so the home is set there as well.
+        withenv("HOME" => home, "USERPROFILE" => home, "HOMEDRIVE" => splitdrive(home)[1],
+                "HOMEPATH" => splitdrive(home)[2], "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
                 "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+            @test homedir() == home
             ShipTools.update_comm(clis = [:claude, :codex])
         end
         @test isfile(joinpath(home, ".sot-comm", "bin", "comm-poll.sh"))
