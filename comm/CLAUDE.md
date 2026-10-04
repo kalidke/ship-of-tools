@@ -11,10 +11,10 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - The comm folder's data: `inbox/<h>.jsonl` and `.lock`, `read/<h>.cursor`, `registry.json` and `.registry.lock`,
   `self/`, `state/`, and `inbox-lock-manager` (written only by the folder's hub, at its start).
 - Mail scripts: `comm-send.sh`, `comm-relay.sh`, `comm-poll.sh` (the only cursor writer), and the inbox half of
-  `comm-lib.sh` (`sot_inbox_append`, `sot_comm_file`).
+  `lib/comm-lib-inbox.sh` (`sot_inbox_append`, `sot_comm_file`).
 - Address book scripts: `comm-context.sh`, `comm-join.sh`, `comm-leave.sh`, `comm-list.sh`, `comm-self-audit.sh`,
-  `comm-registry-lock-clear.sh`, `comm-session-start.sh`, and `comm-lib.sh`'s registry half (`registry_replace`, `sot_registry_read`, `with_lock`,
-  `sot_require_agent`).
+  `comm-registry-lock-clear.sh`, `comm-session-start.sh`, and the registry half of the library (`registry_replace`, `sot_registry_read` in `lib/comm-lib-registry.sh`, `with_lock` in `lib/comm-lib-registry-lock.sh`,
+  `sot_require_agent` in `lib/comm-lib-agent-layers.sh`).
 - Work-state: `comm-status.sh`, `comm-turn-auditor.sh`, the four Claude status hooks and the Codex blocked hook (the row
   colour is a reduction of the facts they stamp).
 - Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
@@ -72,6 +72,6 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - `work_state/`: the work-state scripts and hooks (see Folders).
 
 ## Start here
-For mail, `mail/comm-send.sh` then `sot_inbox_append` in `comm-lib.sh`, and `rust/backend/src/comm/mail/inbox.rs`
+For mail, `mail/comm-send.sh` then `sot_inbox_append` in `lib/comm-lib-inbox.sh`, and `rust/backend/src/comm/mail/inbox.rs`
 `file_frame` for the daemon's twin. For the address book, `comm-join.sh` and `registry_replace`. For work-state,
 `comm-status.sh`. For a change to where a script lives, `bin-folders.txt` and `tests/stage-bin.sh`.

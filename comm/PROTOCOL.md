@@ -70,7 +70,7 @@ renders `summary` as the per-session glance, colored by `state` and aged off
 `status_at`.
 
 **One writer, one reader.** Every script write goes through `registry_replace`
-(`comm-lib.sh`), under the registry lock (below). jq writes a tmp, and the tmp is
+(`comm-lib-registry.sh`), under the registry lock (below). jq writes a tmp, and the tmp is
 renamed over `registry.json` only if it is one JSON document with an object
 `.agents` and its data has been flushed to the server; otherwise nothing is
 written and the writer prints `FAILED: the registry could not be read or

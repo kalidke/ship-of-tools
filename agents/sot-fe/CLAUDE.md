@@ -19,7 +19,7 @@ concept.
 ## Rules
 - The usage text is the entry's header comment: `usage` prints it from `$0`, from line 10 on, so the header stays in
   the entry.
-- Every request is one `sot_send`, which is one `sot_oneshot_request` (comm-lib.sh) that prepends the hello frame
+- Every request is one `sot_send`, which is one `sot_oneshot_request` (comm-lib-client.sh) that prepends the hello frame
   (`sot_hello_frame`).
 - `--timeout` is validated once, at flag parse.
 - Free text reaches jq through `sot_jq_rawfile`, never as an argument.

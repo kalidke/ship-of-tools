@@ -20,7 +20,7 @@ backend; charter: comm/CLAUDE.md.
 - Every TICK (2 s), `run` checks each capsule row with a declared handle; two rows declaring one handle: neither is woken.
 - `check_row` wakes only a Ready row with fresh mail, or mail unread past REPEAT_AFTER (600 s) (`decide`). It skips a row
   whose registry `stop_at` mark is under STOP_HOOK_BOUND (60 s) old (`stop_hook_running`).
-- `cursor_offset` ports comm-lib.sh's `sot_cursor_offset`, which is the spec; `agrees_with_the_shell` runs both (Linux).
+- `cursor_offset` ports comm-lib-inbox.sh's `sot_cursor_offset`, which is the spec; `agrees_with_the_shell` runs both (Linux).
 - `prompt_glyphs` knows claude only, so a Codex row is never typed into.
 - `wake_if_free` makes one attach. A free first frame must hold still through the box's lower rule (`held_rows`) for
   STILL_FOR (1.5 s), and the live screen must read free again.

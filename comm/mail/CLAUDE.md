@@ -14,7 +14,7 @@ comm/CLAUDE.md.
 `comm-send.sh` for what a send prints and why (`filed -> @h` or `FAILED -> @h: <reason>`); `comm-poll.sh` for reading.
 
 ## Rules
-- `filed -> @h` is printed only on the appender's word (`sot_inbox_append`, `sot_comm_file` in comm-lib.sh); the
+- `filed -> @h` is printed only on the appender's word (`sot_inbox_append`, `sot_comm_file` in comm-lib-inbox.sh); the
   `agent.send` leg of `comm-relay.sh` still ends in `NOT CONFIRMED` when no filer claims the send within 5 seconds.
 - Only `comm-poll.sh` moves `read/<h>.cursor`.
 - Readers count newline-terminated lines only.

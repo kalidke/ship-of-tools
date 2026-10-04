@@ -19,7 +19,7 @@ messaging; charter: comm/CLAUDE.md.
 files each `agent.message` whose `to` this box's registry lists through `file_comm`, answering `agent.filed {id}`.
 
 ## Rules
-- `file_frame` appends one line to `inbox/<h>.jsonl` under flock on `inbox/<h>.lock`, the lock comm-lib.sh's
+- `file_frame` appends one line to `inbox/<h>.jsonl` under flock on `inbox/<h>.lock`, the lock comm-lib-inbox.sh's
   `sot_inbox_append` takes, waiting at most `inbox_lock_wait` (`SOT_INBOX_LOCK_WAIT_SECS`, 10 by default in both
   languages). `append_line` first cuts an unterminated tail back, syncs the line (`File::sync_data`) before `Ok`, and
   cuts the file back on any error. An `Err` is the sentence printed after `FAILED -> @h: `: nothing was appended.

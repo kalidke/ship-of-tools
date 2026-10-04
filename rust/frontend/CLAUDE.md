@@ -21,7 +21,7 @@ each belong to one other subsystem, named below. Part of fe-ui; charter: rust/fr
 - `src/selfupdate.rs`: startup self-update staging and `--update-status` (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).
-- `src/paths.rs`: `sot_state_dir`, a one-line delegate to `sot_log::state_dir::sot_state_dir`.
+- `src/paths.rs`: `sot_state_dir`, a one-line delegate to `sot_log::host::state_dir::sot_state_dir`.
 - `src/net/`: the window's connections to daemons (fe-net; charter rust/frontend/src/net/CLAUDE.md).
 - `src/ui/`: the window itself (fe-ui; charter rust/frontend/src/ui/CLAUDE.md).
 

@@ -15,7 +15,7 @@ comm/CLAUDE.md.
 
 ## Start here
 `registry.rs` `with_comm_registry_lock` for any registry write; `lock.rs` `acquire` for how the lock is taken.
-`ancestors.rs` `run` (`sotd ancestors [--from <pid>]`, Windows only), read by comm-lib.sh's `_sot_ancestor_chain`. It
+`ancestors.rs` `run` (`sotd ancestors [--from <pid>]`, Windows only), read by comm-lib-agent-layers.sh's `_sot_ancestor_chain`. It
 prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LINES` (64) it ends `!truncated`, exit 3.
 
 ## Rules
@@ -30,7 +30,7 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
   (`set_agent_handle`); `ok` only after the row is persisted.
 - `spawn_registry_poll`, started by the server's `run`, publishes `agent_state` on the workspace bus when
   `project_comm_registry` changes between polls; `last_seen` is not in the projection.
-- `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib.sh's `with_lock` takes. Both write the same one-line
+- `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib-registry-lock.sh's `with_lock` takes. Both write the same one-line
   record, `name:machine:boot:pidns:pid:start`, by `link(2)` of a temp file that already holds it (`take`); a test
   holds them byte-equal (`the_shell_and_rust_records_are_byte_equal_and_judged_alike`, Linux).
 - A holder is proved dead on Linux only, and only from its own machine (`judge`). A waiter that proves holder D dead
