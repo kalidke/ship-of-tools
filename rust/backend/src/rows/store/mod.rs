@@ -299,7 +299,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     Ok(target)
 }
 
-/// This daemon's host — `sot_log::state_dir::host_name()` (`SOT_SELF_HOST`
+/// This daemon's host — `sot_log::host::state_dir::host_name()` (`SOT_SELF_HOST`
 /// else the hostname's first label, lowercased), the ONE resolver (ADR
 /// 0046 decision 1; topology plan §D folded the daemon's second resolver,
 /// the old `state_host()`, into it). It names the `workspaces-<host>` /
@@ -312,7 +312,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 /// calls it once at boot so an unresolvable host fails the daemon
 /// immediately instead of surfacing as a per-hello error.
 pub(crate) fn declared_host() -> String {
-    sot_log::state_dir::host_name().unwrap_or_else(|e| {
+    sot_log::host::state_dir::host_name().unwrap_or_else(|e| {
         tracing::error!(error = %e, "cannot start: no declared host (ADR 0046 decision 1)");
         std::process::exit(1);
     })
@@ -361,7 +361,7 @@ fn sessions_dir() -> PathBuf {
 /// `%LOCALAPPDATA%\sot` root, chosen so neither collides with the capsule
 /// runtime's own `workspaces\<id>` subtree
 /// (`capsule_workspace::state_dir_for`). Mirrors
-/// `sot_log::state_dir::sot_state_dir`'s own precedent of ignoring
+/// `sot_log::host::state_dir::sot_state_dir`'s own precedent of ignoring
 /// `XDG_*` on Windows in favour of `%LOCALAPPDATA%` (its module doc:
 /// letting a second env var win on Windows is exactly how the FE/capsule
 /// state dirs drifted apart once already) — `$XDG_CONFIG_HOME` keeps
@@ -370,7 +370,7 @@ fn sessions_dir() -> PathBuf {
 /// PR #175): `windows_state_root()` panics with a clear message instead
 /// of silently landing on a `$HOME`-shaped path there.
 ///
-/// The derivation itself is `sot_log::state_dir::sot_config_dir` (one
+/// The derivation itself is `sot_log::host::state_dir::sot_config_dir` (one
 /// resolver, shared with `sot-protocol`'s `topology` reader so the daemon
 /// and `sotd topology` read `hosts.toml` from the same place); this wrapper
 /// keeps the Windows panic; on Unix a process with neither
@@ -382,7 +382,7 @@ pub(crate) fn app_config_dir() -> PathBuf {
     #[cfg(windows)]
     return crate::paths::windows_state_root().join("config");
     #[cfg(not(windows))]
-    sot_log::state_dir::sot_config_dir().expect(CONFIG_DIR_UNDERIVABLE)
+    sot_log::host::state_dir::sot_config_dir().expect(CONFIG_DIR_UNDERIVABLE)
 }
 
 /// The refusal text for a config dir that cannot be derived.
@@ -393,7 +393,7 @@ pub(crate) const CONFIG_DIR_UNDERIVABLE: &str = "the daemon's config dir cannot 
 /// which has its own check (`paths::windows_state_root`).
 pub(crate) fn check_config_dir() -> Result<(), String> {
     #[cfg(not(windows))]
-    if sot_log::state_dir::sot_config_dir().is_none() {
+    if sot_log::host::state_dir::sot_config_dir().is_none() {
         return Err(CONFIG_DIR_UNDERIVABLE.to_string());
     }
     Ok(())

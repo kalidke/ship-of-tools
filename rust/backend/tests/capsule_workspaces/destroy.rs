@@ -58,7 +58,7 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
     let leg_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart")
                 .0
                 .leg
@@ -115,7 +115,7 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
     }
 
     // The fence is freely acquirable — no lingering authority holds it.
-    let fence = sot_log::fence::lock_supervisor(&state_dir_path);
+    let fence = sot_log::supervisor::journal::fence::lock_supervisor(&state_dir_path);
     assert!(fence.is_ok(), "the fence must be acquirable after a clean destroy — something still holds it");
     drop(fence);
 
@@ -199,7 +199,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
     let leg_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart")
                 .0
                 .leg
@@ -293,7 +293,7 @@ async fn capsule_destroy_resumes_then_ends_a_leg_whose_supervisor_died() {
 /// could otherwise race to recover it first, and this test could pass
 /// even with that resume call deleted. The "no end marker" precondition
 /// this test's own name claims is checked directly
-/// (`sot_log::verify::leg_carries_run_end_marker`) right after both
+/// (`sot_log::store::verify::leg_carries_run_end_marker`) right after both
 /// SIGKILLs, rather than only inferred from the recovery behaviour
 /// afterward — destroy's own success proves nothing about markerlessness
 /// on its own; an adopted-but-cleanly-ended leg would also let destroy
@@ -343,7 +343,7 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     let (leg_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+            let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before the daemon restart");
             (
                 report.leg.expect("a ready capsule has a leg"),
@@ -379,7 +379,7 @@ async fn capsule_destroy_after_a_markerless_leg_death_leaves_nothing() {
     let carries_marker = tokio::task::spawn_blocking({
         let seg_dir = seg_dir.clone();
         let voyage = voyage_before.clone();
-        move || sot_log::verify::leg_carries_run_end_marker(&seg_dir, &voyage, leg_before)
+        move || sot_log::store::verify::leg_carries_run_end_marker(&seg_dir, &voyage, leg_before)
     })
     .await
     .unwrap()
@@ -504,7 +504,7 @@ async fn capsule_destroy_on_a_missing_state_dir_with_no_listener_removes_the_row
     let voyage = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before ending the run")
                 .0
                 .voyage
@@ -515,14 +515,14 @@ async fn capsule_destroy_on_a_missing_state_dir_with_no_listener_removes_the_row
     .unwrap();
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::end_run(&dir, &voyage, "test: state_dir_missing proof")
+        move || sot_log::attach_client::supervisor_client::end_run(&dir, &voyage, "test: state_dir_missing proof")
     })
     .await
     .unwrap()
     .expect("end_run must succeed on a ready row");
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await
     .unwrap()

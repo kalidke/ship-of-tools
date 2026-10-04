@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 //! End-to-end test for the Unix socket transport (ADR 0043 "Decisions for
 //! LU2" LU2b) — the twin of `tests/e2e_pipe.rs`, over a REAL Unix domain
-//! socket instead of a REAL named pipe. `tests/capsule.rs` proves the
+//! socket instead of a REAL named pipe. `tests/capsule/` proves the
 //! writer loop and `AttachProto` against a synthetic `TestTransport` (now
 //! against `PtyProducer` too, on Linux); this file is the one place both
 //! are proven together with a REAL transport:
@@ -16,12 +16,12 @@
 //! `tests/challenge_unix.rs`'s own gate.
 
 use sot_log::capsule::{self, CapsuleConfig, ExitKind};
-use sot_log::producer_pty::PtyProducer;
-use sot_log::segment::{RetentionClass, SegmentReader};
-use sot_log::socket_transport::SocketTransport;
-use sot_log::socket_unix::{connect_voyage_socket, SocketClient};
-use sot_log::verify::verify_voyage;
-use sot_log::wire::{self, Survival};
+use sot_log::capsule::producer::pty::PtyProducer;
+use sot_log::store::segment::{RetentionClass, SegmentReader};
+use sot_log::lane::socket_transport::SocketTransport;
+use sot_log::lane::socket_unix::{connect_voyage_socket, SocketClient};
+use sot_log::store::verify::verify_voyage;
+use sot_log::lane::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
 use std::collections::VecDeque;
 #[path = "../support/capsule_guard.rs"]
@@ -34,9 +34,9 @@ use std::time::{Duration, Instant};
 /// Serializes every test in this file. Two independent reasons, both
 /// already precedented elsewhere in this crate: every test here mutates
 /// the shared, process-global `SOT_RUNTIME_DIR` env var (see
-/// `isolated_runtime_dir` below, copied from `tests/socket_unix.rs`'s and
+/// `isolated_runtime_dir` below, copied from `tests/socket_unix/`'s and
 /// `tests/challenge_unix.rs`'s identical helper) — unsafe to interleave
-/// across threads in the SAME process — and, like `tests/capsule.rs`'s
+/// across threads in the SAME process — and, like `tests/capsule/`'s
 /// own `SERIAL`, two real-pty-plus-real-socket tests could otherwise
 /// starve each other on a loaded CI runner.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -45,7 +45,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir under `/tmp` for
-/// the lifetime of the returned guard — mirrors `tests/socket_unix.rs`'s
+/// the lifetime of the returned guard — mirrors `tests/socket_unix/`'s
 /// and `tests/challenge_unix.rs`'s identical helper (never the default
 /// `$TMPDIR`: same rationale, one copy-paste source of truth). Every test
 /// in this file holds `serial()` for its own whole duration before
@@ -91,7 +91,7 @@ fn config(dir: &std::path::Path, voyage_id: &str, argv: Vec<String>, cols: u16, 
         survival: Survival::Normal,
         // Codex round-1 Major 9 (same reasoning as `tests/e2e_pipe.rs`'s
         // identical field): typed evidence, not `None`.
-        rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
+        rollout_evidence: sot_log::store::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this end-to-end harness.
         parent_lease: None,
     }
@@ -155,7 +155,7 @@ fn wait_for_join<T: Send + 'static>(handle: std::thread::JoinHandle<T>, timeout:
 /// until it succeeds or `deadline` — a GENEROUS bound, evidence of a
 /// genuinely broken startup, never a tight race — expires, at which
 /// point the LAST error fails the test loudly. Identical helper in
-/// `tests/e2e_pipe.rs` and `tests/pipe_win.rs` (no shared test module
+/// `tests/e2e_pipe.rs` and `tests/pipe_win/` (no shared test module
 /// spans Windows-only and Linux-only files).
 fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>, deadline: Duration) -> T {
     let started = Instant::now();
@@ -385,7 +385,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
     // proves the IDENTICAL property -- a watcher receives live output
     // after its checkpoint, on a REAL producer over a REAL transport --
     // with no property lost: raw output VOLUME under budget is already
-    // `tests/capsule.rs`'s own `--flood`-driven job (a dedicated backpressure
+    // `tests/capsule/`'s own `--flood`-driven job (a dedicated backpressure
     // test), not this end-to-end wiring proof's.
     let argv = vec![helper, "--script".to_string(), "5".to_string(), "--drip".to_string()];
     let voyage_id = fresh_voyage_id();
@@ -397,7 +397,7 @@ fn full_socket_e2e_two_clients_and_mgmt() {
     let handle = std::thread::spawn(move || capsule::run::<PtyProducer>(cfg, cmd_rx, &mut transport));
 
     // The socket is created INSIDE `run` (`Transport::bind` runs right
-    // after `open_for_writing` — see `capsule.rs`'s own doc at that call
+    // after `open_for_writing` — see `capsule/`'s own doc at that call
     // site). ADR 0043 decision 27: `connect_voyage_socket` no longer
     // retries an absent endpoint (`ENOENT`/`ECONNREFUSED` now fail on the
     // first attempt) — this test owns the ordinary race of connecting

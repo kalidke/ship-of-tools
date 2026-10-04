@@ -1,7 +1,7 @@
 //! The ADR 0041 step-5 attach protocol: a platform-neutral connection/role
-//! state machine over the [`crate::wire`] frames. No I/O, no OS types, no
+//! state machine over the [`crate::lane::wire`] frames. No I/O, no OS types, no
 //! clocks read directly (every timing-relevant method is fed a monotonic
-//! `now: Instant`) — the `host_handshake.rs`/`wire.rs` precedent this crate
+//! `now: Instant`) — the `host_handshake.rs`/`lane/wire/` precedent this crate
 //! already follows for a byte/state machine that must run and be tested on
 //! every CI leg, not just Windows. THIS module decides; `capsule_win.rs`'s
 //! writer loop (the U3 seam: a real named pipe on Windows) executes the
@@ -34,7 +34,7 @@
 //!
 //! A connection starts [`Role::Unclassified`] the instant it opens — lane
 //! and identity are unknown until its first frame arrives (a single named
-//! pipe carries both lanes; [`crate::wire::FrameSplitter`] latches which one
+//! pipe carries both lanes; [`crate::lane::wire::FrameSplitter`] latches which one
 //! from the first frame's magic, so by the time a `frame` event reaches this
 //! module every later frame from that connection is guaranteed the same
 //! lane). The first decoded frame reclassifies it:
@@ -76,7 +76,7 @@
 //! real transport can buffer several already-decoded client frames ahead of
 //! any reply physically leaving, and never by an unrelated marker's
 //! completion (finding 4). For `attach`, that means the flag can stay set
-//! through the whole ground-pend + checkpoint transfer; wire.rs's own "the
+//! through the whole ground-pend + checkpoint transfer; lane/wire/'s own "the
 //! first `checkpoint_chunk` IS the attach success signal" is exactly when
 //! it clears (the FIRST chunk's `clears_request`), not when the LAST chunk
 //! goes out — a client is free to send `take` while its own checkpoint is
@@ -113,7 +113,7 @@
 //! it a second time -- finding 9) and streams them ONE CHUNK AT A TIME —
 //! each chunk's `sent`-completion requests the next
 //! (`advance_checkpoint_stream`) — at
-//! [`crate::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`] per chunk, marking the
+//! [`crate::lane::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`] per chunk, marking the
 //! first `clears_request: Some(_)` and the last `is_last: true` (one chunk
 //! carries both when there is only one). A [`GROUND_TIMEOUT`] (5 s) with no
 //! `ground_reached` DEMOTES the connection back to `PostHello` (subject to
@@ -121,7 +121,7 @@
 //! slot, which then advances the queue) and replies `attach_refused
 //! {GroundTimeout}` — explicitly retryable, per the ADR.
 //!
-//! `take`'s own [`crate::wire::TakeRefusedReason::CheckpointInFlight`] is a
+//! `take`'s own [`crate::lane::wire::TakeRefusedReason::CheckpointInFlight`] is a
 //! DIFFERENT rule from the slot: it fires only when the REQUESTING
 //! connection's OWN checkpoint has not yet finished (i.e. it is not yet
 //! `CheckpointProgress::Done`) — "refused until the taker's final chunk is
@@ -207,7 +207,7 @@
 //! [`Action::RecordRefusal`]. This is a MEMORY bound, independent of the
 //! `outstanding_sends` TIME bound above.
 
-use crate::wire::{
+use crate::lane::wire::{
     self, AttachClient, AttachRefusedReason, AttachServer, DecodedFrame, MgmtReply, MgmtRequest,
     ResizeRefusedReason, Survival, TakeRefusedReason,
 };

@@ -69,7 +69,7 @@ fn a_different_build_id_with_the_same_proto_is_proven() {
         "the supervisor lane to accept a connection",
     );
     assert!(
-        matches!(outcome, sot_log::challenge::ChallengeOutcome::Proven(_)),
+        matches!(outcome, sot_log::identity::challenge::ChallengeOutcome::Proven(_)),
         "a different build id (same proto) must be Proven -- ADR 0045 decision 7: the gate is proto alone, got {outcome:?}"
     );
 
@@ -107,7 +107,7 @@ fn a_mismatched_lane_proto_is_refused_and_the_connection_closes() {
         "the supervisor lane to accept a connection",
     );
     assert!(
-        matches!(outcome, sot_log::challenge::ChallengeOutcome::Foreign),
+        matches!(outcome, sot_log::identity::challenge::ChallengeOutcome::Foreign),
         "a wrong lane proto must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
     expect_connection_closes(conn, Duration::from_secs(5));
@@ -148,8 +148,8 @@ fn endrun_and_reset_without_a_running_supervisor() {
     assert_eq!(sot_log::supervisor::endrun(&state_dir, None, "no drawer yet".into()), sot_log::supervisor::EXIT_TERMINAL);
 
     assert_eq!(sot_log::supervisor::reset(&state_dir, None), sot_log::supervisor::EXIT_CLEAN);
-    let minted = match sot_log::pointer::validate(&state_dir) {
-        sot_log::pointer::PointerState::Valid(id) => id,
+    let minted = match sot_log::supervisor::journal::pointer::validate(&state_dir) {
+        sot_log::supervisor::journal::pointer::PointerState::Valid(id) => id,
         other => panic!("expected a valid pointer after reset, got {other:?}"),
     };
 
@@ -164,8 +164,8 @@ fn endrun_and_reset_without_a_running_supervisor() {
     );
 
     assert_eq!(sot_log::supervisor::reset(&state_dir, Some(minted.clone())), sot_log::supervisor::EXIT_CLEAN);
-    match sot_log::pointer::validate(&state_dir) {
-        sot_log::pointer::PointerState::Valid(id) => assert_ne!(id, minted, "reset must mint a NEW identity, never reuse the old one"),
+    match sot_log::supervisor::journal::pointer::validate(&state_dir) {
+        sot_log::supervisor::journal::pointer::PointerState::Valid(id) => assert_ne!(id, minted, "reset must mint a NEW identity, never reuse the old one"),
         other => panic!("expected a valid pointer after the second reset, got {other:?}"),
     }
 }
@@ -186,9 +186,9 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     wait_for_ready(&conn, Duration::from_secs(90));
 
-    let second_hello = sot_log::wire::encode_supervisor_request(&SupervisorRequest::Hello {
-        proto: sot_log::wire::SUPERVISOR_PROTO_V1,
-        build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+    let second_hello = sot_log::lane::wire::encode_supervisor_request(&SupervisorRequest::Hello {
+        proto: sot_log::lane::wire::SUPERVISOR_PROTO_V1,
+        build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     })
     .unwrap();
     conn.write_all(&second_hello).unwrap();
@@ -265,7 +265,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
     first_guard.child_mut().wait().unwrap();
 
     // Hand-journal the SAME `ActiveOp::EndRun` record a live admission
-    // would have written (`supervisor.rs`'s own `handle_command`:
+    // would have written (`supervisor/authority/mod.rs`'s own `handle_command`:
     // `ActiveOp::EndRun { voyage: voyage_id, epoch: leg_epoch_of(...) }`
     // — `leg` here IS that epoch, per `status_ok`'s own `leg` field),
     // via the crate's own public `journal::begin` — the exact API a
@@ -304,7 +304,7 @@ fn a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one() {
 
     // The orphaned capsule's own mgmt lane is gone -- its teardown
     // removes the endpoint NAME before final writes/seal/writer-lock
-    // release (`capsule.rs`), so this proves the capsule this test
+    // release (`capsule/`), so this proves the capsule this test
     // started is no longer serving, external to and independent of
     // whatever the supervisor's own recovery believes.
     let mgmt_gone = matches!(connect_voyage_mgmt(&voyage), Err(e) if e.is_endpoint_absent());
@@ -350,7 +350,7 @@ fn a_command_naming_the_wrong_voyage_is_refused_stale_voyage() {
     let wrong_voyage = "00000000-0000-0000-0000-000000000000".to_string();
     assert_ne!(wrong_voyage, voyage);
     let reply = command(&conn, "stale-1", SupervisorOp::EndRun { reason: "test".into(), voyage: wrong_voyage });
-    assert_eq!(reply, SupervisorOperationState::Refused { reason: sot_log::wire::SupervisorRefusedReason::StaleVoyage });
+    assert_eq!(reply, SupervisorOperationState::Refused { reason: sot_log::lane::wire::SupervisorRefusedReason::StaleVoyage });
 
     end_run_and_expect_record_closed(&conn, "stale-1", "test", voyage);
     let _ = poll_to_terminal(&conn, "stale-1", Duration::from_secs(60));
@@ -385,10 +385,10 @@ fn reset_is_refused_while_a_leg_is_live() {
     }
 
     let reply2 = command(&conn, "reset-none-while-live", SupervisorOp::Reset { voyage: None });
-    assert_eq!(reply2, SupervisorOperationState::Refused { reason: sot_log::wire::SupervisorRefusedReason::StaleVoyage });
+    assert_eq!(reply2, SupervisorOperationState::Refused { reason: sot_log::lane::wire::SupervisorRefusedReason::StaleVoyage });
 
-    match sot_log::pointer::validate(&state_dir) {
-        sot_log::pointer::PointerState::Valid(id) => assert_eq!(id, voyage, "the pointer must be unchanged after both refusals"),
+    match sot_log::supervisor::journal::pointer::validate(&state_dir) {
+        sot_log::supervisor::journal::pointer::PointerState::Valid(id) => assert_eq!(id, voyage, "the pointer must be unchanged after both refusals"),
         other => panic!("expected the pointer to still be valid and unchanged, got {other:?}"),
     }
 

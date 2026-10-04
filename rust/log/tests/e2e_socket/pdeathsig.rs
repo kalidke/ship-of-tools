@@ -5,7 +5,7 @@ use super::*;
 /// The direct children of `pid`, via `/proc/<pid>/task/<pid>/children`
 /// (Linux 3.5+) — the capsule's fork of its producer happens on its own
 /// main thread, before any of its own extra threads exist (the reader
-/// thread starts only AFTER a successful spawn — see `capsule.rs`'s own
+/// thread starts only AFTER a successful spawn — see `capsule/`'s own
 /// `run`), so at fork time this thread's own tid still equals the
 /// process's own pid, making this exactly the producer's own pid with no
 /// name-matching needed (a shared CI runner may have unrelated `sleep`

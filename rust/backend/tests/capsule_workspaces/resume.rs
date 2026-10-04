@@ -62,7 +62,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     let leg_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing the supervisor")
                 .0
                 .leg
@@ -116,7 +116,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
     let leg_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the resume")
                 .0
                 .leg
@@ -132,7 +132,7 @@ async fn capsule_headless_input_resumes_a_row_whose_supervisor_died() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -194,18 +194,18 @@ async fn capsule_resume_never_resets_an_ended_row() {
     };
     let state_dir_path = PathBuf::from(&state_dir);
 
-    let (original_status, _process) = sot_log::supervisor_client::query_status(&state_dir_path)
+    let (original_status, _process) = sot_log::attach_client::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
     let voyage = original_status.voyage.expect("a ready capsule has a voyage");
 
-    sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
 
     poll_until(
         || {
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+                (report.phase == sot_log::lane::wire::SupervisorPhase::EndedNoRespawn).then_some(())
             }
         },
         BOUND,
@@ -213,7 +213,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
     )
     .await;
 
-    let pointer_path = sot_log::pointer::pointer_path(&state_dir_path);
+    let pointer_path = sot_log::supervisor::journal::pointer::pointer_path(&state_dir_path);
     let pointer_before = std::fs::read(&pointer_path).expect("read the pointer before killing the authority");
 
     // Adopt across a daemon restart FIRST -- the resting authority
@@ -265,7 +265,7 @@ async fn capsule_resume_never_resets_an_ended_row() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -329,7 +329,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let (leg_before, voyage_before) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+            let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before killing supervisor and leg");
             (
                 report.leg.expect("a ready capsule has a leg"),
@@ -386,7 +386,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
     let (leg_after, voyage_after) = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            let (report, _process) = sot_log::supervisor_client::query_status(&dir)
+            let (report, _process) = sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after the re-execution");
             (report.leg, report.voyage)
         }
@@ -405,7 +405,7 @@ async fn capsule_resume_reexecutes_a_leg_that_ended_without_a_marker() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -570,7 +570,7 @@ async fn capsule_stale_attach_during_backoff_spawns_no_second_authority() {
     );
 
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
-    let _ = tokio::task::spawn_blocking(move || sot_log::supervisor_client::stop(&state_dir)).await;
+    let _ = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::stop(&state_dir)).await;
 
     env.kill_daemon_bounded().await;
 }

@@ -46,9 +46,9 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
     let (status, _process) =
-        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let voyage = status.voyage.expect("a ready capsule has a voyage");
-    sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
     // Wait for the daemon's observer, not a raw lane probe -- pty.open decides
     // from that cached phase, so a stale read here would skip activation entirely.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
@@ -159,7 +159,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -189,9 +189,9 @@ async fn setup_ended_row(env: &Env, label: &str) -> (Conn, u64, String, String, 
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
     let (status, _process) =
-        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let original_voyage = status.voyage.expect("a ready capsule has a voyage");
-    sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
     // The daemon's own observer, not a raw lane probe -- `pty.open`
     // decides from that cached phase.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
@@ -211,7 +211,7 @@ async fn assert_ends_in_a_fresh_voyage(
 ) {
     poll_for_phase(conn, next_id, workspace_id, "ready", BOUND.max(Duration::from_secs(60))).await;
     let (status2, _process2) =
-        sot_log::supervisor_client::query_status(state_dir_path).expect("query_status after the race resolved");
+        sot_log::attach_client::supervisor_client::query_status(state_dir_path).expect("query_status after the race resolved");
     let new_voyage = status2.voyage.expect("a ready capsule has a voyage");
     assert_ne!(
         new_voyage, original_voyage,
@@ -293,7 +293,7 @@ async fn a_selection_that_reaches_the_guard_first_still_retires_and_resets() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -357,7 +357,7 @@ async fn a_watchdog_that_reaches_the_guard_first_still_lets_the_selection_retire
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -418,7 +418,7 @@ async fn a_selection_that_waits_through_several_reprobe_cycles_still_resets() {
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -502,7 +502,7 @@ async fn a_selection_that_resumes_an_adopted_ended_row_converges_on_one_spawn_an
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;
@@ -562,14 +562,14 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
     let (status, original_process) =
-        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let voyage = status.voyage.expect("a ready capsule has a voyage");
     let original_pid = original_process.pid();
-    sot_log::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &voyage, "test end").expect("end_run over the lane");
     // Wait for the daemon's observer, not a raw lane probe -- a stale "ready"
     // here would skip activation and miss this test's own fault injection.
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ended_no_respawn", BOUND).await;
-    let pointer_path = sot_log::pointer::pointer_path(&state_dir_path);
+    let pointer_path = sot_log::supervisor::journal::pointer::pointer_path(&state_dir_path);
     let pointer_before = std::fs::read(&pointer_path).expect("a resident EndedNoRespawn authority has a published pointer");
 
     // Replace the journal directory with a plain file, restored on every
@@ -641,13 +641,13 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
         "a failed retirement must never touch drawer.voyage — nothing was reset"
     );
     let (status_after, process_after) =
-        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status after the failed attach");
+        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status after the failed attach");
     assert_eq!(
         process_after.pid(), original_pid,
         "the SAME authority must still be resident after a failed stop — never replaced"
     );
     // Phase is NOT asserted here: an unreadable journal is a real fault,
-    // and `journal_failed`'s own safety rule (`supervisor.rs`) treats it
+    // and `journal_failed`'s own safety rule (`supervisor/`) treats it
     // as cause to become Terminal regardless of which command tripped
     // it — an orthogonal, expected side effect of THIS fault-injection
     // method, not a claim about `ensure_started`'s own retirement arm.
@@ -672,7 +672,7 @@ async fn capsule_attach_on_ended_row_keeps_the_row_when_stop_fails() {
     // `Env`'s own `Drop`, F4).
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;

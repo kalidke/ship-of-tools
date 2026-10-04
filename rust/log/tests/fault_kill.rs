@@ -28,9 +28,9 @@
 //! - Random kill points do not guarantee a torn record or a segment
 //!   rotation in any run.
 
-use sot_log::segment::{RetentionClass, SegmentReader, SegmentState};
-use sot_log::verify::verify_voyage;
-use sot_log::voyage::VoyageStore;
+use sot_log::store::segment::{RetentionClass, SegmentReader, SegmentState};
+use sot_log::store::verify::verify_voyage;
+use sot_log::store::voyage::VoyageStore;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 #[path = "support/capsule_guard.rs"]
@@ -113,7 +113,7 @@ fn wait_first_output(
 #[test]
 fn kill9_sweep_recovers_green_every_round() {
     // ADR 0043 "Decisions for LU2" LU2b: the Linux `run` arm now binds a
-    // real Unix socket transport unconditionally (`capsule.rs`'s one
+    // real Unix socket transport unconditionally (`capsule/`'s one
     // unified writer loop, formerly a separate, wire-less Linux-only
     // loop) -- `bind` canonically validates the voyage id BEFORE any OS
     // call (ADR 0043 property 33), so it must be a real UUID now, not the
@@ -125,8 +125,8 @@ fn kill9_sweep_recovers_green_every_round() {
     let voyage = uuid::Uuid::now_v7().to_string();
     // `tempdir_in("/tmp")`, never the default (ambient `$TMPDIR`) --
     // review round: a long ambient `TMPDIR` broke `sun_path`'s 108-byte
-    // limit in the reviewer's own repro. Mirrors `tests/e2e_socket.rs`'s
-    // and `tests/socket_unix.rs`'s identical device.
+    // limit in the reviewer's own repro. Mirrors `tests/e2e_socket/`'s
+    // and `tests/socket_unix/`'s identical device.
     let runtime_dir = tempfile::Builder::new().prefix("sot-fk").tempdir_in("/tmp").unwrap();
     {
         use std::os::unix::fs::PermissionsExt;

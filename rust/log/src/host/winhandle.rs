@@ -3,7 +3,7 @@
 //! in the caller, not only the three wired into a child's `STARTUPINFO`. If
 //! the daemon's OWN stdout/stderr (as its launcher opened them against the
 //! fixed log path) are inheritable, they ride into every supervisor it
-//! spawns and from there into every leg (`supervisor.rs`'s leg spawn
+//! spawns and from there into every leg (`supervisor/`'s leg spawn
 //! inherits its own current stdio by design, for its shared stderr —
 //! decision 25) — a supervisor/leg outliving the daemon then keeps that
 //! handle open indefinitely, so a replacement daemon's launcher can fail to

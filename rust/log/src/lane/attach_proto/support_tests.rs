@@ -1,7 +1,7 @@
 //! Shared helpers for the attach protocol's tests: frame builders and drivers.
 
 use super::*;
-use crate::wire::{encode_attach_client, FrameSplitter};
+use crate::lane::wire::{encode_attach_client, FrameSplitter};
 
 pub(super) fn t0() -> Instant {
     Instant::now()

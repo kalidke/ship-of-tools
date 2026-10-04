@@ -14,7 +14,7 @@ pub(super) fn create_pipe_instance(
     first: bool,
     max_instances: u32,
 ) -> std::io::Result<OwnedHandle> {
-    let descriptor = crate::fsutil::owner_protected_pipe_descriptor()
+    let descriptor = crate::host::owner_protected_pipe_descriptor()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
     if first {

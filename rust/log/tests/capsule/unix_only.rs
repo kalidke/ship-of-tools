@@ -4,7 +4,7 @@
 
     /// Test: spawn failure (a nonexistent executable) is compensated, not
     /// escaped unsealed (the Linux capsule's own known gap, deliberately
-    /// not inherited here -- see `capsule.rs`'s own module doc), and
+    /// not inherited here -- see `capsule/`'s own module doc), and
     /// `producer_dead` is still the last frame recorded. The portable
     /// twin of `windows_only::spawn_failure_is_compensated`.
     #[test]

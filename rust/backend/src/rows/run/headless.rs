@@ -4,10 +4,10 @@ use std::path::Path;
 use sot_protocol::PtyEnter;
 use std::time::{Duration, Instant};
 
-use sot_log::client::PlatformEndpoint;
-use sot_log::fe_client::TAKE_QUEUE_CAP;
-use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
-use sot_log::state_dir::state_dir_hash;
+use sot_log::lane::client::PlatformEndpoint;
+use sot_log::attach_client::rules::TAKE_QUEUE_CAP;
+use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
+use sot_log::host::state_dir::state_dir_hash;
 
 /// This daemon build's own concrete attach client — always the real
 /// platform endpoint (pipes on Windows, a Unix socket on Linux). No
@@ -372,7 +372,7 @@ mod headless_size_gate_tests {
 
     #[test]
     fn oversized_payload_is_refused_before_any_attach() {
-        let bytes = vec![b'x'; sot_log::fe_client::TAKE_QUEUE_CAP + 1];
+        let bytes = vec![b'x'; sot_log::attach_client::rules::TAKE_QUEUE_CAP + 1];
         let err = type_into(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, deadline())
             .expect_err("oversized payload must be refused");
         assert_eq!(err.phase, "size");
@@ -386,7 +386,7 @@ mod headless_size_gate_tests {
         // some other way), which is enough to prove the size gate did
         // NOT reject it — that failure is expected and not asserted on
         // further than "it is not the size-gate error."
-        let bytes = vec![b'x'; sot_log::fe_client::TAKE_QUEUE_CAP];
+        let bytes = vec![b'x'; sot_log::attach_client::rules::TAKE_QUEUE_CAP];
         let err = type_into(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, deadline())
             .expect_err("a nonexistent state dir cannot succeed");
         assert_ne!(err.phase, "size", "the cap itself must not trip the size gate");
@@ -401,7 +401,7 @@ mod headless_size_gate_tests {
 
     #[test]
     fn write_and_enter_oversized_payload_is_refused_before_any_attach() {
-        let bytes = vec![b'x'; sot_log::fe_client::TAKE_QUEUE_CAP + 1];
+        let bytes = vec![b'x'; sot_log::attach_client::rules::TAKE_QUEUE_CAP + 1];
         let budget = Duration::from_secs(5);
         let err = write_and_enter(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", &bytes, budget, budget, budget)
             .expect_err("oversized payload must be refused");

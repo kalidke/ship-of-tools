@@ -12,9 +12,9 @@
 
 #![cfg(all(unix, target_os = "linux"))]
 
-use crate::envelope::*;
-use crate::segment::{Commit, RetentionClass, SegmentIdentity, SegmentReader, SegmentState};
-use crate::voyage::VoyageStore;
+use crate::store::envelope::*;
+use crate::store::segment::{Commit, RetentionClass, SegmentIdentity, SegmentReader, SegmentState};
+use crate::store::voyage::VoyageStore;
 use crate::{Error, Result};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -443,7 +443,7 @@ fn unmatched_opens(root: &Path, voyage_id: &str) -> Result<Vec<Seq>> {
 pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Result<ClaudeSummary> {
     // Resolve ONCE — see the capsule's run() for why (a relative path
     // re-resolved after the fence is taken can scan an unfenced store).
-    let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
+    let voyage_root = crate::host::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }

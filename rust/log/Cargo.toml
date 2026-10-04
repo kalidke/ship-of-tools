@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 # ADR 0041 U0 round-1, minor finding 9: gates ScriptedProbeOps (and its
 # dummy OS-object stand-ins) out of the production API. Enabled for this
-# crate's OWN unit tests via `cfg(test)` directly (see probe.rs); this
+# crate's OWN unit tests via `cfg(test)` directly (see supervisor/probe/); this
 # feature is the SEPARATE path a `tests/*.rs` integration-test crate in
 # this same package needs, since those compile the library WITHOUT
 # `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
@@ -29,13 +29,13 @@ thiserror = "2"
 gethostname = "0.5"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
 # ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
-# reason to `tracing` (`fe_client_io.rs`), not only the pane's own status
+# reason to `tracing` (`attach_client/client.rs`), not only the pane's own status
 # string -- this crate had no tracing dep before this. Same version the
 # rest of the workspace pins.
 tracing = { workspace = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
-# (L1-unix LU2a): `capsule.rs` (formerly `capsule_win.rs`) is no longer
+# (L1-unix LU2a): `capsule/` (formerly `capsule_win.rs`) is no longer
 # Windows-only — the writer loop is generic over `Producer` and its own
 # checkpoint tracking is platform-neutral, so the dependency moves here
 # from the Windows-only target table below, matching "a dependency should
@@ -58,7 +58,7 @@ libc = { workspace = true }
 # calls. Plus the owned-ConPTY layer (ADR 0041 "Containment and the owned
 # ConPTY layer"): Win32_System_Console for CreatePseudoConsole/Resize/Close,
 # Win32_System_JobObjects for the anonymous containment job, Win32_System_Pipes
-# for CreatePipe. Plus the ADR 0041 step 5 pipe transport (`pipe_win.rs`):
+# for CreatePipe. Plus the ADR 0041 step 5 pipe transport (`lane/pipe_win/`):
 # Win32_System_Pipes also for CreateNamedPipeW/ConnectNamedPipe/WaitNamedPipeW,
 # Win32_System_IO for OVERLAPPED/CancelIoEx/GetOverlappedResult — the pinned
 # cancellation mechanism a dedicated thread alone cannot provide. Same

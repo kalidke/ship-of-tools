@@ -1,5 +1,5 @@
 #![cfg(any(target_os = "linux", target_os = "macos", windows))]
-//! Integration tests for the capsule runtime (`src/capsule.rs`, ADR 0041
+//! Integration tests for the capsule runtime (`src/capsule/`, ADR 0041
 //! step 4; ADR 0043 "Decisions for LU2": renamed from `tests/capsule_win.rs`
 //! in L1-unix LU2a when the writer loop became generic over `Producer`,
 //! ungated in LU2b once a real Unix producer existed to drive it). Lives
@@ -18,12 +18,12 @@
 //! the reasons this gate ONCE excluded macOS are gone: M1 gave `fsutil`
 //! its `renamex_np` arm, and `self_status` has a macOS arm over the
 //! `pidversion` the audit token carries. The same two facts widened
-//! `capsule.rs`'s own internal `#[cfg(all(test, ...))] mod tests` gate,
+//! `capsule/`'s own internal `#[cfg(all(test, ...))] mod tests` gate,
 //! which was gated for the identical reason and still is.
 //!
 //! Nothing in this file reads `/proc`, opens a pidfd or expects
 //! PDEATHSIG: the Linux-kernel-specific mechanism lives in
-//! `tests/supervisor.rs`, which keeps its own gate. `unix_only` below is
+//! `tests/supervisor/`, which keeps its own gate. `unix_only` below is
 //! `cfg(unix)` because what it exercises — a real spawn failure, a real
 //! signal death, pty geometry — is Unix mechanism, not Linux mechanism,
 //! and it now runs on macOS too.
@@ -49,12 +49,12 @@
 #[path = "../support/transports.rs"]
 mod transports;
 
-use sot_log::attach_proto::ConnId;
+use sot_log::lane::attach_proto::ConnId;
 use sot_log::capsule::{self, CapsuleConfig, Command, ExitKind};
-use sot_log::producer::ExitStatus;
-use sot_log::segment::{RetentionClass, SegmentReader};
-use sot_log::verify::{leg_carries_run_end_marker, verify_voyage};
-use sot_log::wire::{self, Survival};
+use sot_log::capsule::producer::ExitStatus;
+use sot_log::store::segment::{RetentionClass, SegmentReader};
+use sot_log::store::verify::{leg_carries_run_end_marker, verify_voyage};
+use sot_log::lane::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
@@ -69,9 +69,9 @@ use transports::{no_transport, TestTransport};
 /// Unix.
 mod producer_under_test {
     #[cfg(windows)]
-    pub type P = sot_log::producer_conpty::ConptyProducer;
+    pub type P = sot_log::capsule::producer::conpty::producer::ConptyProducer;
     #[cfg(unix)]
-    pub type P = sot_log::producer_pty::PtyProducer;
+    pub type P = sot_log::capsule::producer::pty::PtyProducer;
 
     /// argv[0] every test in this file spawns as its shell. A bare
     /// interactive `/bin/sh` stays alive until killed, exactly like
@@ -138,7 +138,7 @@ fn config(dir: &std::path::Path, name: &str, argv: Vec<String>, cols: u16, rows:
         // Codex round-1 Major 9: typed evidence, not `None` -- a test
         // asserts "nothing to protect" the same way a real first-install
         // transaction would (see `rollout::RolloutEvidence`'s own doc).
-        rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
+        rollout_evidence: sot_log::store::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this harness -- see
         // `CapsuleConfig::parent_lease`'s own doc.
         parent_lease: None,
@@ -293,7 +293,7 @@ impl<'a> FrameWatcher<'a> {
 }
 
 /// Every sealed frame across every `.sotseg` in `root/seg`, in segment
-/// order — mirrors `capsule.rs`'s own test helper of the same name (not
+/// order — mirrors `capsule/`'s own test helper of the same name (not
 /// shared: see `capsule_win.rs`'s module doc on duplication).
 fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
     let seg_dir = root.join("seg");
@@ -314,7 +314,7 @@ fn sealed_frames(root: &std::path::Path, voyage: &str) -> Vec<Envelope> {
 }
 
 /// Test-only base64 decoder for `capsule_win.rs`'s encode-only engine —
-/// duplicated from `capsule.rs`'s own test helper.
+/// duplicated from `capsule/`'s own test helper.
 fn decode_b64(s: &str) -> Vec<u8> {
     let val = |c: u8| -> u32 {
         match c {
@@ -481,7 +481,7 @@ fn refuses_when_the_installed_rollback_target_cannot_read_the_marker() {
     let dir = tempfile::tempdir().unwrap();
     let argv = shell_command("exit 0");
     let mut cfg = config(dir.path(), "rolloutgate1", argv, 80, 25);
-    cfg.rollout_evidence = sot_log::rollout::RolloutEvidence::Installed {
+    cfg.rollout_evidence = sot_log::store::rollout::RolloutEvidence::Installed {
         release: "0.5.9".to_string(),
         target: "rolloutgate1-target".to_string(),
         reader_features: vec!["sot.producer.json-f64-v1".to_string()],

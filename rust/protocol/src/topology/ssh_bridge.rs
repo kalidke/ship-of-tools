@@ -102,7 +102,7 @@ fn argv(recipe: &SshRecipe) -> (&'static str, Vec<String>) {
 }
 
 /// Spawn the child for a synchronous caller — the lane client, which
-/// implements `sot_log::client::Client`'s blocking `&self` methods and so
+/// implements `sot_log::lane::client::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
 fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
     let (program, args) = argv(recipe);

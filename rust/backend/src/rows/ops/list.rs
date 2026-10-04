@@ -75,7 +75,7 @@ pub async fn handle_workspace_list(
             // boot, as an operator diagnostic only; `workspace.destroy`'s
             // own real proof (a live lane connect) is what actually
             // decides whether one is removable.
-            let state_dir = sot_log::state_dir::sot_state_dir().map(|root| {
+            let state_dir = sot_log::host::state_dir::sot_state_dir().map(|root| {
                 crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
                     .to_string_lossy()
                     .into_owned()

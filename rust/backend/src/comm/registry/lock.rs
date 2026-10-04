@@ -142,7 +142,7 @@ impl Me {
 
 /// `sot_host`, every char outside `[A-Za-z0-9._-]` made `_`; `-` if none.
 fn host_field() -> String {
-    let n: String = sot_log::state_dir::host_name()
+    let n: String = sot_log::host::state_dir::host_name()
         .unwrap_or_default()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' })
@@ -178,7 +178,7 @@ fn proof_fields(pid: u32) -> [String; 4] {
     let pidns = fs::read_link(format!("/proc/{pid}/ns/pid")).ok().and_then(|l| {
         Some(l.to_str()?.strip_prefix("pid:[")?.strip_suffix(']')?.to_string())
     });
-    let start = sot_log::challenge_unix::process_start_ticks(pid).ok().map(|t| t.to_string());
+    let start = sot_log::identity::challenge_unix::process_start_ticks(pid).ok().map(|t| t.to_string());
     [crate::comm_inbox::machine_id(), boot, pidns, start]
         .map(|f| f.unwrap_or_else(|| "-".into()))
 }
@@ -280,7 +280,7 @@ fn judge(id: &str, me: &Me) -> (Verdict, &'static str) {
 
 #[cfg(target_os = "linux")]
 fn proc_start(pid: u32) -> std::io::Result<String> {
-    sot_log::challenge_unix::process_start_ticks(pid).map(|t| t.to_string())
+    sot_log::identity::challenge_unix::process_start_ticks(pid).map(|t| t.to_string())
 }
 
 #[cfg(not(target_os = "linux"))]

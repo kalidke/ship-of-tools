@@ -3,10 +3,10 @@
 //! 20): a small, PRODUCTION supervisor-lane client for a caller OUTSIDE
 //! this crate that is not the FE — today, the backend daemon's own
 //! capsule workspace runtime (`sot-backend`'s `capsule_workspace.rs`).
-//! `attach_worker.rs` (ADR 0046 decision 3; formerly `fe_client_io.rs`,
+//! `attach_client/worker/` (ADR 0046 decision 3; formerly `attach_client/client.rs`,
 //! before that lane's extraction) already runs this exact
 //! connect+hello(build identity)+challenge procedure
-//! (`connect_and_challenge`, moved HERE from `supervisor.rs` this lane)
+//! (`connect_and_challenge`, moved HERE from `supervisor/` this lane)
 //! and its own `status` round trip (`attach_worker::supervisor_status`,
 //! still private there — right, since the attach worker's own six
 //! rulings own everything downstream of it there). This
@@ -24,14 +24,14 @@
 //! unit value lives behind its own concrete name, not this one) for
 //! every `pub fn` below (ADR 0045 decision 5: an `Endpoint` is a value,
 //! its four trait functions take `&self`) — the daemon keeps calling
-//! `sot_log::supervisor_client::{query_status, stop,
+//! `sot_log::attach_client::supervisor_client::{query_status, stop,
 //! end_run, reset}` unchanged; only the TYPE `ChallengedProcess` names now
 //! resolves via `PlatformEndpoint` rather than hard-coding
 //! `challenge_win`'s. The connect/send/read/error helpers this module and
-//! `supervisor.rs` both need (`connect_and_challenge`, `send_and_read`,
-//! `read_one_frame`, `err_state`) moved HERE from `supervisor.rs` this
+//! `supervisor/` both need (`connect_and_challenge`, `send_and_read`,
+//! `read_one_frame`, `err_state`) moved HERE from `supervisor/` this
 //! lane, alongside `state_dir_hash` (moved to `state_dir.rs`, a neutral
-//! pure function) — the dependency now points server (`supervisor.rs`) ->
+//! pure function) — the dependency now points server (`supervisor/`) ->
 //! client-helpers (this module), the right way round: a supervisor-lane
 //! CLIENT's own helpers should not have lived inside the SERVER module
 //! they were factored out of in the first place. Every piece below is
@@ -39,11 +39,11 @@
 //! `Endpoint::challenge`, `exchange::{SupervisorLaneExchange,
 //! SUPERVISOR_LANE_BUILD_ID}`, and `wire`'s supervisor-lane frames.
 
-use crate::attach_worker::{run_end_run_and_wait, FrameReader};
-use crate::client::{Client, Endpoint, PlatformEndpoint};
-use crate::fe_client::{QuitDispatcher, QuitState};
-use crate::transport::TEARDOWN_AGGREGATE_DEADLINE;
-use crate::wire::{
+use crate::attach_client::worker::{run_end_run_and_wait, FrameReader};
+use crate::lane::client::{Client, Endpoint, PlatformEndpoint};
+use crate::attach_client::rules::{QuitDispatcher, QuitState};
+use crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE;
+use crate::lane::wire::{
     self, DecodedFrame, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest,
 };
 use std::path::{Path, PathBuf};
@@ -60,7 +60,7 @@ use std::time::{Duration, Instant};
 pub type ChallengedProcess = <PlatformEndpoint as Endpoint>::Process;
 
 /// ADR 0041 Lifecycle "Every op has one budget: connect 2 s, request
-/// write 2 s..." — the same figure `fe_client_io.rs`'s own
+/// write 2 s..." — the same figure `attach_client/client.rs`'s own
 /// `HELLO_BUDGET`/`WRITE_BUDGET` pin, reused here as this module's own
 /// connect+challenge deadline for the same reason: hello doubles as the
 /// challenge's own steps 4-5 exchange (`SupervisorRequest::Hello`'s own
@@ -69,7 +69,7 @@ const CONNECT_AND_HELLO_BUDGET: Duration = Duration::from_secs(2);
 /// "Every client's first act, after the identity check above, is a
 /// `status` with a 5 s budget; a lane that accepts but does not answer
 /// within it is treated exactly as an absent lane." Matches
-/// `fe_client_io.rs`'s own `STATUS_BUDGET`.
+/// `attach_client/worker/mod.rs`'s own `STATUS_BUDGET`.
 const STATUS_BUDGET: Duration = Duration::from_secs(5);
 
 /// What a `status` round trip reports. `pid`/`created` are the reporting
@@ -125,8 +125,8 @@ fn connect(
     state_dir: &Path,
     deadline: Instant,
 ) -> crate::Result<(<PlatformEndpoint as Endpoint>::Client, ChallengedProcess)> {
-    let h = crate::state_dir::state_dir_hash(state_dir);
-    connect_and_challenge::<PlatformEndpoint>(&PlatformEndpoint::default(), &h, crate::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
+    let h = crate::host::state_dir::state_dir_hash(state_dir);
+    connect_and_challenge::<PlatformEndpoint>(&PlatformEndpoint::default(), &h, crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID, deadline)
 }
 
 /// Connect, challenge, and run one `status` request — everything a
@@ -206,7 +206,7 @@ pub fn stop(state_dir: &Path) -> crate::Result<()> {
 }
 
 /// Connect, challenge, and run [`run_end_run_and_wait`] — the SAME
-/// end_run+heartbeat-query loop `fe_client_io.rs`'s own `run_quit` uses
+/// end_run+heartbeat-query loop `attach_client/worker/quit.rs`'s own `run_quit` uses
 /// (ADR 0042 L1a, Codex review finding 4), bounded by that function's own
 /// ADR-pinned `fe_client::QUIT_CUTOFF` (90 s), never a daemon-invented
 /// budget. `voyage` MUST be the voyage the caller most recently observed
@@ -217,7 +217,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
     let hello_deadline = Instant::now() + CONNECT_AND_HELLO_BUDGET;
     let (mut conn, _process) = connect(state_dir, hello_deadline)?;
     let mut reader = FrameReader::new();
-    let h = crate::state_dir::state_dir_hash(state_dir);
+    let h = crate::host::state_dir::state_dir_hash(state_dir);
     let mut quit = QuitDispatcher::new();
     let operation_id = format!("sot-backend-end-run-{}", uuid::Uuid::now_v7());
     // Recovers the `record_closed`-but-not-yet-`record_verified` case
@@ -233,7 +233,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
             if let Ok((new_conn, _process)) = connect_and_challenge::<PlatformEndpoint>(
                 &PlatformEndpoint::default(),
                 &h,
-                crate::exchange::SUPERVISOR_LANE_BUILD_ID,
+                crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
                 Instant::now() + CONNECT_AND_HELLO_BUDGET,
             ) {
                 *c = new_conn;
@@ -264,7 +264,7 @@ pub fn end_run(state_dir: &Path, voyage: &str, reason: &str) -> crate::Result<En
 
 /// Bound for [`reset`]'s own poll-to-completion after the command is
 /// accepted — matches the authority's private `RESETTING_WATCHDOG`
-/// (`supervisor.rs`, 30s), the reset transaction's own worst-case
+/// (`supervisor/`, 30s), the reset transaction's own worst-case
 /// budget.
 const RESET_BUDGET: Duration = Duration::from_secs(30);
 const RESET_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -474,9 +474,9 @@ impl Persistent {
 
 // ---------------------------------------------------------------------
 // L1-unix LU3b: the client-side supervisor-lane helpers, moved here from
-// `supervisor.rs` (ADR 0043 decision 20) — a supervisor-lane CLIENT's own
+// `supervisor/` (ADR 0043 decision 20) — a supervisor-lane CLIENT's own
 // connect/send/read/error primitives belong in the client module, not
-// the server module they were factored out of; `supervisor.rs` (the
+// the server module they were factored out of; `supervisor/` (the
 // server, still Windows-only until LU3c) now imports `err_state` from
 // HERE and its three test-support helpers instantiate
 // [`connect_and_challenge`]/[`send_and_read`] at `pipe_win::PipeEndpoint`
@@ -498,19 +498,19 @@ pub(crate) fn connect_and_challenge<E: Endpoint>(
     deadline: Instant,
 ) -> crate::Result<(E::Client, E::Process)> {
     let conn = endpoint.connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
+    let mut exchange = crate::identity::exchange::SupervisorLaneExchange::new(build.to_string());
     match endpoint.challenge(&conn, &mut exchange, deadline) {
-        crate::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
+        crate::identity::challenge::ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // ADR 0030 §8 decision 31c: the ONE `Foreign` cause that is
         // typed, not text — `exchange.is_version_skew()` is read AFTER
         // the challenge, off the SAME concrete exchange this call
         // constructed (never a trait object here), so it reflects
         // exactly what the terminal reply was.
-        crate::challenge::ChallengeOutcome::Foreign if exchange.is_version_skew() => {
+        crate::identity::challenge::ChallengeOutcome::Foreign if exchange.is_version_skew() => {
             Err(crate::Error::VersionSkew)
         }
-        crate::challenge::ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
-        crate::challenge::ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
+        crate::identity::challenge::ChallengeOutcome::Foreign => Err(err_state("supervisor lane challenge: foreign")),
+        crate::identity::challenge::ChallengeOutcome::Undetermined => Err(err_state("supervisor lane challenge: undetermined")),
     }
 }
 
@@ -551,7 +551,7 @@ pub(crate) fn send_and_read<C: Client>(
     deadline: Instant,
 ) -> crate::Result<SupervisorReply> {
     let bytes = wire::encode_supervisor_request(request).map_err(|e| err_state(format!("{e}")))?;
-    let result = crate::deadline::run_with_deadline(
+    let result = crate::identity::deadline::run_with_deadline(
         deadline,
         || conn.cancel(),
         move || -> crate::Result<SupervisorReply> {
@@ -565,17 +565,17 @@ pub(crate) fn send_and_read<C: Client>(
     result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
 }
 
-/// `pub(crate)`: `supervisor.rs`'s own `end_run_over_mgmt_lane` (a
+/// `pub(crate)`: `supervisor/journal/end_run.rs`'s own `end_run_over_mgmt_lane` (a
 /// Windows mechanism function this lane does not touch — LU3c's job)
 /// reads the mgmt-lane shutdown ack with this SAME primitive, so it
 /// needs crate visibility, not merely module-private.
 pub(crate) fn read_one_frame<C: Client>(conn: &C, deadline: Instant) -> crate::Result<DecodedFrame> {
-    let result = crate::deadline::run_with_deadline(deadline, || conn.cancel(), move || read_next_frame(conn));
+    let result = crate::identity::deadline::run_with_deadline(deadline, || conn.cancel(), move || read_next_frame(conn));
     result.unwrap_or_else(|| Err(err_state("timed out waiting for a reply")))
 }
 
 /// The one "malformed/unexpected protocol shape" error shape every
-/// caller in this module (and `supervisor.rs`, which imports this) uses
+/// caller in this module (and `supervisor/`, which imports this) uses
 /// rather than minting a second one.
 pub(crate) fn err_state(msg: impl Into<String>) -> crate::Error {
     crate::Error::State(msg.into())

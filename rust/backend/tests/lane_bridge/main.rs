@@ -15,8 +15,8 @@
 mod support;
 use support::*;
 
-use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
-use sot_log::segment::SegmentReader;
+use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
+use sot_log::store::segment::SegmentReader;
 use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{op, Frame};
 
@@ -42,7 +42,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// here from the one piece that IS `pub`, `wire::CHECKPOINT_CHUNKS_AT_
 /// MAX_PAYLOAD`, rather than a second, drifting magic number.
 const CHECKPOINT_TRANSFER_BUDGET: Duration =
-    Duration::from_secs(sot_log::wire::CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD as u64 * 5);
+    Duration::from_secs(sot_log::lane::wire::CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD as u64 * 5);
 
 fn wake_flag_for_test() -> (Arc<AtomicBool>, Box<dyn Fn() + Send + 'static>) {
     let woke = Arc::new(AtomicBool::new(false));
@@ -96,9 +96,9 @@ fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
     Ok(String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.trim().is_empty()).count())
 }
 
-/// [`rust/log/tests/fe_client.rs`'s own `sealed_frames`]: every frame
+/// [`rust/log/tests/fe_client/`'s own `sealed_frames`]: every frame
 /// across every sealed `.sotseg` under a real supervisor-owned voyage.
-fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::envelope::Envelope> {
+fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::store::envelope::Envelope> {
     let seg_dir = state_dir.join("voyages").join(voyage).join("seg");
     let mut names: Vec<String> =
         std::fs::read_dir(&seg_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
@@ -114,7 +114,7 @@ fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::envelope::Envel
 
 /// Sum of file sizes under `dir` — a live, growing proxy for "the record
 /// keeps committing," without requiring `end_run` first (frames commit
-/// durably as `Commit::Immediate` — see `fe_client.rs`'s own doc on why
+/// durably as `Commit::Immediate` — see `rust/log/tests/fe_client/`'s own doc on why
 /// that makes a mid-flight read honest).
 fn dir_bytes(dir: &Path) -> u64 {
     std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok()).filter_map(|e| e.metadata().ok()).map(|m| m.len()).sum()).unwrap_or(0)

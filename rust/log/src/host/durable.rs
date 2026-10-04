@@ -420,7 +420,7 @@ fn wide_verbatim(p: &Path) -> Result<Vec<u16>> {
 /// code 3 is PATH not FILE, meaning a real code path was constructing a
 /// path whose parent directory never existed. Broadening the transient
 /// set papered over that with a bounded retry-then-fail-anyway instead of
-/// fixing the actual missing-directory bug (see `supervisor.rs`'s own
+/// fixing the actual missing-directory bug (see `supervisor/`'s own
 /// fix). `ERROR_SHARING_VIOLATION` and `ERROR_ACCESS_DENIED` remain: both
 /// are genuinely transient AV/indexer holds on a name this process itself
 /// just created (rust-lang/rust#123985), unrelated to path existence.

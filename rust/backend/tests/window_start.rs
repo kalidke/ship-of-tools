@@ -55,7 +55,7 @@ fn write_closing_record(env: &Env) {
 fn write_record(env: &Env, closing: bool, forget: &[&str], not_ended: u32) {
     let rec = serde_json::json!({
         "v": 1,
-        "boot": sot_log::challenge::boot_identity().unwrap_or_default(),
+        "boot": sot_log::identity::challenge::boot_identity().unwrap_or_default(),
         "holders": [],
         "handover_until_ms": null,
         "closing": closing,
@@ -120,7 +120,7 @@ async fn ready_row_in(env: &Env, label: &str, agent: Option<&str>, root: &Path) 
 
 async fn supervisor_pid(state_dir: &Path) -> Option<u32> {
     let dir = state_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir).ok().map(|(_, p)| p.pid()))
+    tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir).ok().map(|(_, p)| p.pid()))
         .await
         .unwrap()
 }
@@ -184,10 +184,10 @@ fn row_legs(row: &Row) -> String {
 /// The "slow row": its legs killed, then its fence held here, so no end
 /// of it can be proven until the fence is dropped.
 #[cfg(target_os = "linux")]
-async fn hold_row_end(row: &Row) -> sot_log::fence::SupervisorLock {
+async fn hold_row_end(row: &Row) -> sot_log::supervisor::journal::fence::SupervisorLock {
     kill_row_capsule(row);
     let dir = row.state_dir.clone();
-    poll_until(|| { let dir = dir.clone(); async move { sot_log::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
+    poll_until(|| { let dir = dir.clone(); async move { sot_log::supervisor::journal::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }
 
 /// No sot-capsule leg of `row` appears for 3 s: the start never resumed it.
@@ -221,7 +221,7 @@ fn wait_exit(env: &Env, within: Duration) -> Option<std::process::ExitStatus> {
 async fn lease(env: &Env) -> (Conn, FeLeaseRes) {
     let stream = poll_until(|| try_connect(&env.socket_path), BOUND, "the daemon's socket").await;
     let mut conn = tokio::io::BufReader::new(stream);
-    let me = sot_log::challenge::self_identity().expect("self identity");
+    let me = sot_log::identity::challenge::self_identity().expect("self identity");
     let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
     let res = call(&mut conn, 1, op::FE_LEASE, serde_json::to_value(&req).unwrap()).await;
     let res: FeLeaseRes = serde_json::from_value(res.payload.clone())
@@ -459,7 +459,7 @@ async fn restart_with_holders_no_lease_shuts_down() {
     let conn = granted_lease(&env).await;
     env.kill_daemon_bounded().await;
     drop(conn);
-    let me = sot_log::challenge::self_identity().expect("self identity");
+    let me = sot_log::identity::challenge::self_identity().expect("self identity");
     let rec = read_record(&env).expect("the holder is recorded");
     assert_eq!(rec["holders"][0]["pid"], me.pid, "the recorded holder is not this live process: {rec}");
     assert_eq!(rec["holders"][0]["created"], me.created, "the recorded holder is not this live process: {rec}");

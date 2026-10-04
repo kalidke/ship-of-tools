@@ -1,7 +1,7 @@
 //! A row's own systemd scope: capture, remembered list, and the aimed kill at destroy.
 
 use crate::row_scope_aim::{aim, prefix};
-use sot_log::state_dir::state_dir_hash;
+use sot_log::host::state_dir::state_dir_hash;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -307,7 +307,7 @@ mod tests {
     /// `end_run`'s unreachable arm reaches its `Unheld` answer.
     fn absent_row(state_dir: &Path) {
         let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
-        sot_log::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
+        sot_log::supervisor::journal::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
         let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
         std::fs::create_dir_all(&voyage_root).expect("voyage root");
         std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");

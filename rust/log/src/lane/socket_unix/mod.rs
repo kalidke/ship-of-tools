@@ -1,17 +1,17 @@
 //! The L1-unix LU1b Unix-domain-socket transport (ADR 0043): a server for
 //! `<runtime_dir>/voyage-<id>.sock` and `<runtime_dir>/supervisor-<h>.sock`.
 //! It moves bytes and reports completions; it does not know about
-//! mgmt/attach lanes, `hello`, opcodes, or checkpoints — `wire.rs` owns
+//! mgmt/attach lanes, `hello`, opcodes, or checkpoints — `lane/wire/` owns
 //! every frame shape. Transport only: no dependency on the capsule or
 //! `sot-capsule` bin, and none may be added here.
 //!
-//! This module is [`pipe_win`](crate::pipe_win)'s mechanical twin BY
+//! This module is [`pipe_win`](crate::lane::pipe_win)'s mechanical twin BY
 //! PROPERTY, not by mechanism (ADR 0043 "Port by property, not by
 //! mechanism") — same event vocabulary, same thread roles
 //! (`sot-sock-accept`/`sot-sock-reaper`/`sot-sock-r-<id>`/
 //! `sot-sock-w-<id>`, vs. `sot-pipe-accept`/`sot-pipe-reaper`/
 //! `sot-pipe-r-<id>`/`sot-pipe-w-<id>`), same teardown order and the same
-//! shared bounds (`crate::transport`). What Unix DELETES relative to that
+//! shared bounds (`crate::lane::transport`). What Unix DELETES relative to that
 //! module (ADR 0043 "What this deletes" / decision 5): the whole
 //! completion-proof apparatus (`CompletionUnproven`, `mem::forget`,
 //! `process::abort`) — POSIX `read`/`write` never borrow the caller's
@@ -22,7 +22,7 @@
 //!
 //! # No instance registry — the kernel's own backlog does that job
 //!
-//! `pipe_win.rs` needs an [`InstanceRegistry`](crate::pipe_win) because
+//! `lane/pipe_win/` needs an [`InstanceRegistry`](crate::lane::pipe_win) because
 //! `CreateNamedPipeW` allocates a FIXED pool of named-pipe instances and
 //! the pipe NAME is only held while at least one instance exists — so an
 //! instance must be recycled (never closed) to keep accepting without
@@ -37,7 +37,7 @@
 //!
 //! # Cancellation: `shutdown(2)`, no per-op cancel primitive
 //!
-//! Windows needs one [`IoSlot`](crate::pipe_win) per direction per
+//! Windows needs one [`IoSlot`](crate::lane::pipe_win) per direction per
 //! connection because `CancelIoEx` targets a SPECIFIC pending overlapped
 //! op. POSIX has no equivalent of targeting one blocked call from another
 //! thread — the primitive that generalizes is `shutdown(2)` on the
@@ -80,18 +80,18 @@
 //! very much still alive and needs to actually RECEIVE the `AcceptError`
 //! event that failure produces. Conflating the two would let a transient
 //! events-channel backlog silently swallow that very event at the moment
-//! it matters most; `pipe_win.rs` keeps the identical split between its
+//! it matters most; `lane/pipe_win/` keeps the identical split between its
 //! own `ServerShared::dropping` and `AcceptState::accept_stopping` for the
 //! same reason.
 //!
 //! # Reliable lifecycle delivery, byte-bounded both directions
 //!
-//! Identical contract to `pipe_win.rs` (see that module's doc for the full
+//! Identical contract to `lane/pipe_win/` (see that module's doc for the full
 //! argument): `Accepted`/`Sent`/`Closed`/`AcceptError` retry against a full
 //! `events()` channel indefinitely (escaping only via `dropping`); `Bytes`
 //! is the one event kind allowed to be abandoned, and abandoning it always
 //! forces a guaranteed `Closed` through the same reliable path. Outbound:
-//! [`crate::transport::OutboundBudget`] reserves bytes per connection,
+//! [`crate::lane::transport::OutboundBudget`] reserves bytes per connection,
 //! including the in-flight item, released only once the write physically
 //! completes.
 //!
@@ -127,20 +127,20 @@
 //!
 //! # Visibility
 //!
-//! Every type below is `pub`, not `pub(crate)` — `tests/socket_unix.rs` is
+//! Every type below is `pub`, not `pub(crate)` — `tests/socket_unix/` is
 //! a separate integration-test crate and can only ever reach a library's
-//! `pub` items, the same reason `pipe_win.rs`'s own types are `pub`.
+//! `pub` items, the same reason `lane/pipe_win/`'s own types are `pub`.
 
 #![cfg(unix)]
 
-use crate::client::Client;
+use crate::lane::client::Client;
 // `Endpoint`'s only implementor here (`SocketEndpoint`) exists on the two
 // Unix targets that have a peer-identity mechanism this crate trusts -- a
 // plain, unconditional `use` would warn "unused import" on any OTHER Unix
 // build, the same device this crate already uses for
 // `deadline.rs`/`exchange_identity`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::client::Endpoint;
+use crate::lane::client::Endpoint;
 // The platform's own challenge module for THIS transport, chosen ONCE by
 // an alias -- the same device `client::PlatformEndpoint` and
 // `transport::PlatformLaneServer` already use, and the reason every
@@ -150,10 +150,10 @@ use crate::client::Endpoint;
 // own reuse generation together (see either module's own doc). No other
 // Unix has one, which is what the gate above says.
 #[cfg(target_os = "linux")]
-use crate::challenge_unix as challenge_os;
+use crate::identity::challenge_unix as challenge_os;
 #[cfg(target_os = "macos")]
-use crate::challenge_macos as challenge_os;
-use crate::transport::{
+use crate::identity::challenge_macos as challenge_os;
+use crate::lane::transport::{
     join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
     BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, READ_BUF_LEN,
     TEARDOWN_AGGREGATE_DEADLINE,
@@ -208,8 +208,8 @@ pub type SendMarker = u64;
 
 // `ClosedReason`, `LaneEvent`, and `TransportError` used to be defined
 // here (`SocketError`/this module's own event enums) — L1-unix LU3a (ADR
-// 0043 decisions 17/19) hoisted all three into `crate::transport`, since
-// `pipe_win.rs`'s own copies were byte-for-byte identical in shape and
+// 0043 decisions 17/19) hoisted all three into `crate::lane::transport`, since
+// `lane/pipe_win/`'s own copies were byte-for-byte identical in shape and
 // both platforms' servers now produce the SAME event type. Imported
 // below; nothing in this module defines them anymore.
 
@@ -219,7 +219,7 @@ pub type SendMarker = u64;
 
 /// `<runtime_dir>/voyage-<voyage_id>.sock`, after validating `voyage_id`
 /// is the canonical lowercase-hyphenated form of an RFC 4122 UUID — the
-/// same check [`crate::pipe_win`]'s own `validate_voyage_id` runs,
+/// same check [`crate::lane::pipe_win`]'s own `validate_voyage_id` runs,
 /// delegating to the SAME `pointer::canonical_voyage_id` (one
 /// implementation, not two that can drift).
 pub fn voyage_socket_path(voyage_id: &str) -> Result<PathBuf, TransportError> {
@@ -237,7 +237,7 @@ pub fn supervisor_socket_path(h: &str) -> Result<PathBuf, TransportError> {
 }
 
 fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
-    if crate::pointer::canonical_voyage_id(voyage_id).is_some() {
+    if crate::supervisor::journal::pointer::canonical_voyage_id(voyage_id).is_some() {
         Ok(())
     } else {
         Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
@@ -245,7 +245,7 @@ fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
 }
 
 fn socket_path(file_name: &str) -> Result<PathBuf, TransportError> {
-    let dir = crate::state_dir::runtime_dir().map_err(TransportError::RuntimeDir)?;
+    let dir = crate::host::state_dir::runtime_dir().map_err(TransportError::RuntimeDir)?;
     let path = dir.join(format!("{file_name}.sock"));
     if path.as_os_str().as_bytes().len() > max_sun_path_bytes() {
         return Err(TransportError::PathTooLong(path));
@@ -304,7 +304,7 @@ enum ReaperMsg {
 /// long, then wake, drain the kernel's own backlog in one go, and never
 /// once observe `TrySendError::Full` — kernel socket buffer sizes also
 /// differ across Unix targets). Gated `#[cfg(any(test, feature =
-/// "test-support"))]` — the SAME combined gate `pipe_win.rs`'s own
+/// "test-support"))]` — the SAME combined gate `lane/pipe_win/`'s own
 /// equivalent test-only methods use (see `Cargo.toml`'s doc on that
 /// feature) — so a normal build carries a ZERO-SIZE unit struct whose
 /// `note_*` methods are empty `#[inline]` fns: no atomic, no counter, no
@@ -378,7 +378,7 @@ struct ServerShared {
     /// that ever calls `set_wake` (immediately after `bind`/
     /// `bind_supervisor` returns) — every read after that is wait-free.
     /// Never set at all for the supervisor lane (`bind_supervisor`'s own
-    /// caller, `supervisor.rs`, wakes its main loop by blocking on
+    /// caller, `supervisor/`, wakes its main loop by blocking on
     /// `events()` directly — see that module's own `MAIN_LOOP_POLL`
     /// comment — so it has no need of this). NOT to be confused with
     /// `wake_write`/`wake_read` below — this server's OWN internal

@@ -126,7 +126,7 @@ fn resize_ordered_exchange_commits_and_rejects() {
 /// burst pacing on the runner, which nothing here controls (a runner-image
 /// change turned exactly that assertion red on unchanged code); the
 /// blocking property is proven deterministically by OutputBudget's own
-/// unit tests in capsule.rs. Run on a background thread with a LOCAL
+/// unit tests in capsule/. Run on a background thread with a LOCAL
 /// bounded wait: a teardown regression here is exactly a deadlock, and
 /// this test must fail loud within its own bound rather than consume the
 /// whole CI job's timeout.
@@ -372,7 +372,7 @@ fn attach_mid_stream_checkpoint_reproduces_reference_screen() {
     // Round-2 review, finding 8: PROVE an interior CSI/OSC/DCS/UTF-8 cut
     // actually occurred, rather than asserting repetition makes one "all
     // but certain". Each `Class::Producer` frame in the sealed voyage IS
-    // exactly one real ConPTY-read chunk (`handle_output!` appends one
+    // exactly one real ConPTY-read chunk (`handle_output` appends one
     // frame per `ReaderEvent::Output`, unmodified) -- so replaying those
     // frames one at a time into a fresh parser and checking
     // `Parser::is_ground()` after each one finds every point a REAL read
@@ -540,7 +540,7 @@ fn the_leg_job_refuses_a_breakaway() {
     use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 
-    let job = sot_log::conpty::AnonymousJob::create().expect("create leg job");
+    let job = sot_log::capsule::producer::conpty::AnonymousJob::create().expect("create leg job");
     let mut helper = spawn_gated_breakaway_helper();
     let ok = unsafe { AssignProcessToJobObject(job.raw(), helper.as_raw_handle() as HANDLE) };
     assert!(ok != 0, "AssignProcessToJobObject: {}", std::io::Error::last_os_error());

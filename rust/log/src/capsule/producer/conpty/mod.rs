@@ -243,7 +243,7 @@ pub struct AnonymousJob(OwnedHandle);
 
 impl AnonymousJob {
     /// `pub` for the ADR 0043 decision 32 breakaway tests
-    /// (`rust/log/tests/capsule.rs`), which stand up their own anonymous
+    /// (`rust/log/tests/capsule/`), which stand up their own anonymous
     /// job(s) outside any `ConptySpawn` to prove the breakaway/denial
     /// shape directly.
     pub fn create() -> Result<Self> {
@@ -339,8 +339,8 @@ impl PrimaryProcess {
     /// `Ok(false)`: the timeout elapsed; still running.
     pub fn wait(&self, timeout: std::time::Duration) -> Result<bool> {
         // Capped at u32::MAX - 1, never the
-        // literal Win32 INFINITE -- see fsutil::duration_to_wait_ms's doc.
-        let ms = crate::fsutil::duration_to_wait_ms(timeout);
+        // literal Win32 INFINITE -- see host::duration_to_wait_ms's doc.
+        let ms = crate::host::duration_to_wait_ms(timeout);
         match unsafe { WaitForSingleObject(self.raw(), ms) } {
             WAIT_OBJECT_0 => Ok(true),
             WAIT_TIMEOUT => Ok(false),

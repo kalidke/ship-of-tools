@@ -147,9 +147,9 @@ impl Drop for BudgetCancelGuard {
 /// true (no deadlock, verify-green, bookkeeping live); the bound itself is
 /// a plain condvar protocol, provable right at the primitive.
 // These unit tests open a real store, so they run wherever the store has a
-// real rename arm. That was Linux and Windows only until M1 gave `fsutil`
+// real rename arm. That was Linux and Windows only until M1 gave `host`
 // its `renamex_np` arm; macOS is now a third, and the gate says so. Every
-// OTHER Unix still hits `fsutil`'s fail-closed arm, which is why this is
+// OTHER Unix still hits `host`'s fail-closed arm, which is why this is
 // three named targets and not bare `any(unix, windows)`. Nothing in this
 // module reads `/proc`, opens a pidfd or expects PDEATHSIG — it is a
 // condvar protocol and a run-end marker — so no test inside needed a

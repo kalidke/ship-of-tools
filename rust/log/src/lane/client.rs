@@ -10,14 +10,14 @@
 //! Ungated, like `challenge.rs`/`transport.rs`: this is the CONTRACT, not
 //! an implementation. `Client`/`Endpoint`'s two implementors
 //! (`PipeClient`/`PipeEndpoint` on Windows, `SocketClient`/
-//! `SocketEndpoint` on Linux) live in `pipe_win.rs`/`socket_unix.rs`
+//! `SocketEndpoint` on Linux) live in `lane/pipe_win/`/`lane/socket_unix/`
 //! themselves, next to the concrete types they delegate to — the same
-//! placement `impl crate::challenge::ChallengeableConnection for
+//! placement `impl crate::identity::challenge::ChallengeableConnection for
 //! PipeClient` used to have, before the blanket impl below replaced it.
 
-use crate::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
-use crate::exchange::IdentityExchange;
-use crate::transport::TransportError;
+use crate::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
+use crate::identity::exchange::IdentityExchange;
+use crate::lane::transport::TransportError;
 use std::time::{Duration, Instant};
 
 /// The blocking read/write/cancel shape every concrete pipe/socket
@@ -84,7 +84,7 @@ impl<C: Client> ChallengeableConnection for C {
 }
 
 /// The methods both platforms' `ChallengedProcess` share — everything the
-/// full five-step [`crate::challenge::ChallengeOutcome::Proven`] proof
+/// full five-step [`crate::identity::challenge::ChallengeOutcome::Proven`] proof
 /// earns a caller. ADR 0043 decision 33: the per-platform
 /// challenged-process exit-status accessor (`GetExitCodeProcess` on
 /// Windows, `PIDFD_GET_INFO` on Linux) is deleted outright — readerless
@@ -168,7 +168,7 @@ pub trait Endpoint {
 }
 
 /// L1-unix LU3b: the endpoint a process speaks on the platform it runs
-/// on — the frontend (`fe_client_io.rs`) and `supervisor_client` are
+/// on — the frontend (`attach_client/client.rs`) and `supervisor_client` are
 /// generic over [`Endpoint`] and instantiated with this, the ONLY place
 /// the platform is chosen for a client. Windows speaks `PipeEndpoint`,
 /// Linux and macOS BOTH speak `SocketEndpoint` — one alias arm, not two,
@@ -179,6 +179,6 @@ pub trait Endpoint {
 /// what does not exist off these three today — see `fe_client_io`'s own
 /// top-of-module `cfg`).
 #[cfg(windows)]
-pub type PlatformEndpoint = crate::pipe_win::PipeEndpoint;
+pub type PlatformEndpoint = crate::lane::pipe_win::PipeEndpoint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub type PlatformEndpoint = crate::socket_unix::SocketEndpoint;
+pub type PlatformEndpoint = crate::lane::socket_unix::SocketEndpoint;

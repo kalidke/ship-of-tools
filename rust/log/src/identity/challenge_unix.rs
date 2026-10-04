@@ -4,7 +4,7 @@
 //! kernel has it, else `pidfd_open` validated by start time), and the
 //! retained-pidfd process handle a proof returns
 //! ([`ChallengedProcess`]). Steps 4-5 (the wire half) are shared,
-//! platform-neutral logic in `crate::challenge` -- see that module's own
+//! platform-neutral logic in `crate::identity::challenge` -- see that module's own
 //! doc; [`challenge()`] and [`authenticate_server()`] below call into it
 //! rather than reimplementing it. Mirrors `challenge_win.rs` in SHAPE;
 //! every Win32 mechanism there has a POSIX/Linux replacement here.
@@ -41,12 +41,12 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::challenge::{
+use crate::identity::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::client::{PeerIdentity, PeerProcess};
-use crate::exchange::IdentityExchange;
+use crate::lane::client::{PeerIdentity, PeerProcess};
+use crate::identity::exchange::IdentityExchange;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
@@ -187,7 +187,7 @@ const SO_PEERPIDFD: libc::c_int = 77;
 
 /// `pidfd_open(2)`: no safe wrapper function exists in `libc` (only the
 /// syscall NUMBER is exported), so this goes through the raw `syscall(2)`
-/// the ADR names. `pub(crate)` (ADR 0043 decision 21): `probe_unix.rs`'s
+/// the ADR names. `pub(crate)` (ADR 0043 decision 21): `supervisor/probe/unix.rs`'s
 /// own `SpawnedChild` reuses this SAME helper for the freshly spawned,
 /// not-yet-challenged child, rather than duplicating the syscall
 /// encoding a second time.
@@ -204,7 +204,7 @@ pub(crate) fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
 /// Poll a pidfd for readability — it becomes readable exactly when the
 /// process it identifies has exited (POSIX pidfd semantics), bounded,
 /// never infinite. `pub(crate)` (ADR 0043 decision 21): shared by
-/// [`ChallengedProcess::wait`] above and `probe_unix.rs`'s own
+/// [`ChallengedProcess::wait`] above and `supervisor/probe/unix.rs`'s own
 /// `SpawnedChild::wait` — one poll loop, not two copies.
 pub(crate) fn poll_pidfd_readable(fd: RawFd, timeout: Duration) -> io::Result<bool> {
     let mut pfd = libc::pollfd {
@@ -556,7 +556,7 @@ pub fn challenge(
 
     // Steps 4-5: the lane's own request/reply, the shared, platform-
     // neutral wire half (L1-unix LU1a) -- see
-    // `crate::challenge::exchange_identity`'s own doc.
+    // `crate::identity::challenge::exchange_identity`'s own doc.
     let c: &dyn ChallengeableConnection = conn;
     let exchange_result = exchange_identity(c, exchange, reply_deadline);
 
@@ -627,11 +627,11 @@ mod tests {
         use std::os::fd::AsRawFd;
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
         let cred = super::peer_credentials(a.as_raw_fd()).unwrap();
-        let me = crate::challenge::self_identity().unwrap();
+        let me = crate::identity::challenge::self_identity().unwrap();
         assert_eq!(cred.pid, me.pid);
         assert_eq!(cred.pid, std::process::id());
-        assert_eq!(crate::challenge::process_created(cred.pid).unwrap(), me.created);
-        assert_eq!(me.boot, crate::challenge::boot_identity().unwrap());
+        assert_eq!(crate::identity::challenge::process_created(cred.pid).unwrap(), me.created);
+        assert_eq!(me.boot, crate::identity::challenge::boot_identity().unwrap());
     }
 
     /// A literal `/proc/pid/stat`-shaped line whose `comm` field (the

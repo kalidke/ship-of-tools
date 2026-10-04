@@ -1,6 +1,6 @@
 //! The platform subsystem: state dirs, durable publication, kernel locks.
-//! The glob re-exports below keep the old `crate::fsutil::...` paths
-//! (`lib.rs` aliases `host as fsutil`) until the crate's re-export cleanup.
+//! The glob re-exports below keep the old `crate::host::...` paths
+//! (`lib.rs` aliases `host as host`) until the crate's re-export cleanup.
 
 mod durable;
 mod lock;
@@ -49,7 +49,7 @@ fn io_ctx(e: std::io::Error, what: std::fmt::Arguments<'_>) -> Error {
     let sep = if path.is_empty() { "" } else { ": " };
     // "io: " (4 bytes) is `Error`'s own Display wrapper (`#[error("io:
     // {0}")]`) around whatever this returns.
-    let budget = crate::wire::MAX_SUPERVISOR_STRING_LEN.saturating_sub(4 + head.len() + code.len() + sep.len());
+    let budget = crate::lane::wire::MAX_SUPERVISOR_STRING_LEN.saturating_sub(4 + head.len() + code.len() + sep.len());
     let tail = if path.len() > budget {
         let keep = budget.saturating_sub(3); // room for the "..." marker itself
         let mut cut = path.len().saturating_sub(keep);
@@ -101,7 +101,7 @@ mod tests {
         let os_err = std::io::Error::from_raw_os_error(206); // ERROR_FILENAME_EXCED_RANGE
         let wrapped = io_ctx(os_err, format_args!("MoveFileExW {deep:?} -> {deep:?}"));
         let msg = format!("{wrapped}");
-        assert!(msg.len() <= crate::wire::MAX_SUPERVISOR_STRING_LEN, "{} bytes: {msg}", msg.len());
+        assert!(msg.len() <= crate::lane::wire::MAX_SUPERVISOR_STRING_LEN, "{} bytes: {msg}", msg.len());
         assert!(msg.starts_with("io: MoveFileExW (os error 206): "), "{msg}");
         assert!(msg.ends_with("segment-recognizable-tail.sotseg.tmp\""), "{msg}");
     }

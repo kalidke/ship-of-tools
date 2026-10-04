@@ -132,7 +132,7 @@ pub(super) struct SpawnLease(std::os::fd::OwnedFd);
 #[cfg(windows)]
 pub(super) struct LegLease {
     name: String,
-    _lease: crate::lease::Lease,
+    _lease: crate::supervisor::lease_win::Lease,
 }
 #[cfg(unix)]
 pub(super) struct LegLease {
@@ -143,8 +143,8 @@ pub(super) struct LegLease {
 impl LegLease {
     #[cfg(windows)]
     pub(super) fn create(h: &str) -> std::io::Result<Self> {
-        let name = crate::lease::lease_name(h, std::process::id());
-        let _lease = crate::lease::create(&name)?;
+        let name = crate::supervisor::lease_win::lease_name(h, std::process::id());
+        let _lease = crate::supervisor::lease_win::create(&name)?;
         Ok(Self { name, _lease })
     }
 

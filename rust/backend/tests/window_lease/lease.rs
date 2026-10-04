@@ -209,7 +209,7 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     let dir = state_dir.clone();
-    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir))
+    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
         .await
         .unwrap()
         .expect("query_status on a ready row");
@@ -351,9 +351,9 @@ async fn non_lease_fe_never_decides() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("nonlease");
     let mut daemon = Daemon::start(&env, &[]).await;
-    let me = sot_log::challenge::self_identity().expect("this process's identity");
+    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
 
-    async fn refused(env: &Env, me: &sot_log::challenge::ProcessIdentity) {
+    async fn refused(env: &Env, me: &sot_log::identity::challenge::ProcessIdentity) {
         let mut c = tokio::io::BufReader::new(try_connect(&env.socket_path).await.expect("connect"));
         let req = FeLeaseReq { boot: me.boot.clone(), pid: me.pid + 1, created: me.created, token: None };
         let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
@@ -395,7 +395,7 @@ async fn fast_reopen_never_reaches_dying_daemon() {
     // The slow row holds the shutdown in step 3.
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(try_connect(&env.socket_path).await.is_none(), "the dying daemon still accepted a connection");
-    let me = sot_log::challenge::self_identity().expect("this process's identity");
+    let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
     let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
     codec::write_frame(&mut c, &f, None).await.expect("write fe.lease");

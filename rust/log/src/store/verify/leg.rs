@@ -217,8 +217,8 @@ pub fn leg_producer_uptime_ms(seg_dir: &Path, voyage_id: &str, epoch: u64) -> Re
 mod tests {
     use super::super::support_tests::store;
     use super::*;
-    use crate::envelope::*;
-    use crate::segment::{tests::test_env, Commit};
+    use crate::store::envelope::*;
+    use crate::store::segment::{tests::test_env, Commit};
     use serde_json::json;
 
     /// `leg_carries_run_end_marker` — the small typed accessor a later

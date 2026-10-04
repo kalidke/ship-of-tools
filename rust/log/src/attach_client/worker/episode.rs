@@ -1,9 +1,9 @@
 //! The steps of one attach episode, in the order run_worker calls them: reach the supervisor, attach, announce, resume input, start and stop the episode reader.
 
 use super::*;
-use crate::challenge::PeerAuthOutcome;
-use crate::client::Client;
-use crate::fe_client::{self, FeDownBaseline, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState, Role, TakeTransaction};
+use crate::identity::challenge::PeerAuthOutcome;
+use crate::lane::client::Client;
+use crate::attach_client::rules::{self, FeDownBaseline, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState, Role, TakeTransaction};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::Receiver;
 
@@ -186,7 +186,7 @@ pub(super) fn cancel_input_for_new_voyage(
         // supervisor's own `Status` reply, not a locally cached
         // pointer read.
         let mut canceled_input = false;
-        if let fe_client::ReconnectResendDecision::Cancel { canceled } =
+        if let rules::ReconnectResendDecision::Cancel { canceled } =
             outstanding.resend_after_reconnect(&voyage, take_epoch)
         {
             canceled_input = true;
@@ -310,7 +310,7 @@ pub(super) fn announce_attach(
     // observation of the voyage process, bound to this connection).
     // A second, throwaway mgmt-lane dial used to re-prove the same
     // (pid, created) here and blocked input until it finished.
-    emit(WorkerEvent::Notice(fe_client::attach_notice_text(&format!("{}", attach_identity.1))));
+    emit(WorkerEvent::Notice(rules::attach_notice_text(&format!("{}", attach_identity.1))));
 
     // Anything still queued was typed before this attach: discarded
     // and counted, never delivered.
@@ -344,7 +344,7 @@ pub(super) fn resume_outstanding_input<E: Endpoint>(
     // that a real keystroke would, so `resize` then the retained
     // frame flow through the identical lockstep-respecting path.
     match outstanding.resend_after_reconnect(&voyage, take_epoch) {
-        fe_client::ReconnectResendDecision::Resend { .. } => {
+        rules::ReconnectResendDecision::Resend { .. } => {
             *take_intent = TakeIntent::ReconnectResend;
             if take.role() == Role::Watching {
                 let actions = take.on_input_while_watching(&[]);
@@ -353,13 +353,13 @@ pub(super) fn resume_outstanding_input<E: Endpoint>(
                 }
             }
         }
-        fe_client::ReconnectResendDecision::Cancel { canceled } => {
+        rules::ReconnectResendDecision::Cancel { canceled } => {
             emit(WorkerEvent::Status(format!(
                 "input canceled \u{2014} the voyage changed ({} byte(s) lost)",
                 canceled.bytes.len()
             )));
         }
-        fe_client::ReconnectResendDecision::None => {}
+        rules::ReconnectResendDecision::None => {}
     }
 }
 

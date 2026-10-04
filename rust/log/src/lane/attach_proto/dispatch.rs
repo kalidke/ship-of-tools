@@ -138,7 +138,7 @@ impl AttachProto {
                 }
             }
             Some(Role::Mgmt) => {}
-            // Structurally unreachable given wire.rs's own lane latching
+            // Structurally unreachable given lane/wire/'s own lane latching
             // (an mgmt-tagged body cannot arrive on a connection already
             // latched to the attach lane) — refuse rather than panic.
             _ => return self.close_with_refusal(conn, RefusalReason::LaneSequenceViolation, now),
@@ -180,7 +180,7 @@ impl AttachProto {
         let role_is_unclassified = matches!(self.conns.get(&conn).map(|c| &c.role), Some(Role::Unclassified { .. }));
         let role_is_mgmt = matches!(self.conns.get(&conn).map(|c| &c.role), Some(Role::Mgmt));
         if role_is_mgmt {
-            // Structurally unreachable given wire.rs's own lane latching.
+            // Structurally unreachable given lane/wire/'s own lane latching.
             return self.close_with_refusal(conn, RefusalReason::LaneSequenceViolation, now);
         }
         if role_is_unclassified && !matches!(frame, AttachClient::Hello { .. }) {

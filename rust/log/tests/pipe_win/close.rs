@@ -264,7 +264,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
 
     // Let the reader saturate the events channel and hit its abandon
     // bound WITHOUT this test draining anything -- that stall is exactly
-    // what proves the guarantee (pipe_win.rs's own BYTES_ABANDON_AFTER is
+    // what proves the guarantee (lane/pipe_win/'s own BYTES_ABANDON_AFTER is
     // 5s; wait well past it).
     std::thread::sleep(Duration::from_secs(8));
 

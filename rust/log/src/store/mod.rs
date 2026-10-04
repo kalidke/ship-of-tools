@@ -1,7 +1,7 @@
 //! The ADR 0039 voyage store: record codec, envelope schema, segment files,
 //! open-time recovery and the reader-first rollout gate.
 
-mod dedupe;
+pub(crate) mod dedupe;
 pub mod envelope;
 pub mod record;
 pub mod recovery;

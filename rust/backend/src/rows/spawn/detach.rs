@@ -42,7 +42,7 @@ pub enum StartMode {
 }
 
 /// The daemon's capsule runtime — spawning, watching, querying, and
-/// ending a supervisor over `sot_log::supervisor_client`. Platform
+/// ending a supervisor over `sot_log::attach_client::supervisor_client`. Platform
 /// chosen by exactly TWO forks inside (ADR 0043 decision 22): the
 /// capsule executable's name ([`CAPSULE_EXE`]) and the detach mechanism
 /// ([`spawn_detached`]'s two twins) — everything else below is
@@ -487,7 +487,7 @@ fn spawn_detached(
 /// Every platform `sotd` ships for. The gate this module carried until
 /// the supervisor-epoch ruling was never about what macOS can do:
 /// `sot-capsule supervise` is built and shipped in the macOS release
-/// archive, `sot_log::supervisor_client` compiles there, the death watch
+/// archive, `sot_log::attach_client::supervisor_client` compiles there, the death watch
 /// is a kqueue `NOTE_EXIT` knote and the parent-death lease works. The
 /// single blocker was a daemon-side read of a FRESHLY SPAWNED
 /// supervisor's identity, in the unit that supervisor would later report
@@ -503,7 +503,7 @@ fn spawn_detached(
 /// provably: `challenge_unix::self_start_ticks` (what a supervisor
 /// reports) is literally `process_start_ticks(std::process::id())`, the
 /// same read the daemon used to perform on the same pid, asserted by
-/// `rust/log/tests/supervisor.rs`'s own equality test.
+/// `rust/log/tests/supervisor/`'s own equality test.
 ///
 /// What this module's macOS arm does NOT claim: that a capsule row
 /// actually works on a Mac. Nothing here has ever run on one. It

@@ -2,9 +2,9 @@
 //! RENDERING half. ADR 0046 decision 3 (lane B3a) extracted the transport
 //! half — connect, hello, attach, checkpoint reassembly, the episode
 //! reader, take/input transactions, reconnect, quit — into
-//! [`crate::attach_worker::AttachWorker`], a worker with a caller-
+//! [`crate::attach_client::worker::AttachWorker`], a worker with a caller-
 //! supplied event sink. This is a PURE, behavior-preserving extraction:
-//! [`crate::attach_worker::WorkerEvent`] is exactly this module's own
+//! [`crate::attach_client::worker::WorkerEvent`] is exactly this module's own
 //! pre-extraction `ClientEvent`, renamed; [`FeAttachClient`] is now a
 //! THIN WRAPPER over the worker, owning only the [`vt100_ctt::Parser`]
 //! and `pump()`-facing UI bookkeeping (`status`/`notice`/`quit_message`/
@@ -21,25 +21,25 @@
 //!
 //! [`Self::attach_inner`] builds its own `mpsc::channel::<WorkerEvent>()`
 //! and passes a closure over its sending half — plus the caller's `wake`
-//! — as [`crate::attach_worker::AttachWorker::spawn`]'s own `sink`
+//! — as [`crate::attach_client::worker::AttachWorker::spawn`]'s own `sink`
 //! argument, exactly the shape the pre-extraction module's `run_worker`
 //! was spawned with. [`Self::pump`] drains that channel non-blockingly,
 //! unchanged from before this lane.
 //!
-//! [`InputOutcome`] is [`crate::attach_worker::InputOutcome`], re-
+//! [`InputOutcome`] is [`crate::attach_client::worker::InputOutcome`], re-
 //! exported at this module's own path so existing callers
-//! (`capsule_workspace.rs`, `tests/fe_client.rs`) are unaffected by the
+//! (`capsule_workspace.rs`, `tests/fe_client/`) are unaffected by the
 //! move.
 
-use crate::attach_worker::{AttachWorker, DEFAULT_INGRESS_BOUND_BYTES};
-pub use crate::attach_worker::{InputOutcome, WorkerEvent};
-use crate::client::Endpoint;
+use crate::attach_client::worker::{AttachWorker, DEFAULT_INGRESS_BOUND_BYTES};
+pub use crate::attach_client::worker::{InputOutcome, WorkerEvent};
+use crate::lane::client::Endpoint;
 // `PlatformEndpoint` only EXISTS on Windows, Linux and macOS (`client.rs`'s own
 // cfg) -- this module's one remaining platform tie, confined to
 // `FeAttachClient`'s default type parameter and the unit tests below
 // that construct it directly.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-use crate::client::PlatformEndpoint;
+use crate::lane::client::PlatformEndpoint;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -197,7 +197,7 @@ impl<E: Endpoint> FeAttachClient<E> {
     /// decision 5 — the state-dir hash for the platform endpoints) and is
     /// the CALLER's resolved value (`state_dir::state_dir_hash` of
     /// `state_dir::sot_state_dir()` for the real frontend; an isolated
-    /// tempdir's hash for `tests/fe_client.rs`) — this constructor takes
+    /// tempdir's hash for `tests/fe_client/`) — this constructor takes
     /// it rather than resolving it itself, the same way `sot-capsule
     /// supervise <state_dir>` takes its state dir as an explicit argument
     /// rather than an internal env-var lookup, so a real client and a

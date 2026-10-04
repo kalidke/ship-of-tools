@@ -1,7 +1,7 @@
 //! The `Producer` trait: the capsule writer loop's own nine call sites
 //! into whatever OS primitive is actually running the child — ConPTY +
-//! job containment on Windows (`producer_conpty.rs`), a bare PTY +
-//! process group on Unix (`producer_pty.rs`, LU2b). Parameterizing
+//! job containment on Windows (`capsule/producer/conpty/producer.rs`), a bare PTY +
+//! process group on Unix (`capsule/producer/pty/`, LU2b). Parameterizing
 //! `capsule::run` over this trait is what lets ONE writer loop serve
 //! every platform (ADR 0043 "Decisions for LU2", decision 11): the
 //! frame factory, the output budget, the input WAL, the run-end marker,
@@ -16,7 +16,7 @@
 //! closed; a Unix pty master returns `EOF`/`EIO` the instant the LAST
 //! slave fd closes (NOT precisely "when the child dies" —
 //! a child that closes its own stdio and reopens its controlling tty
-//! yields `EIO` mid-run too, which is why `producer_pty.rs`'s own
+//! yields `EIO` mid-run too, which is why `capsule/producer/pty/`'s own
 //! `PtyProducer` keeps a slave descriptor held in the CAPSULE itself for
 //! as long as the run lasts, so the master never sees either shape until
 //! `close_output_side` actually drops it) — but the CONTRACT this
@@ -54,7 +54,7 @@ pub enum ExitStatus {
 }
 
 /// The parent-death lease's own per-platform shape (ADR 0043 decision
-/// 15): a named, kernel-brokered mutex on Windows (`crate::lease`),
+/// 15): a named, kernel-brokered mutex on Windows (`crate::supervisor::lease_win`),
 /// checked by name; an inherited pipe read-end file descriptor on Unix,
 /// checked by `producer_pty::parent_lease_fd_broken` — a real descendant
 /// is the only thing that can hold the fd. `capsule::CapsuleConfig`'s
@@ -128,7 +128,7 @@ pub trait Producer: Send + Sized {
     /// dead (exited or killed). NOT "reaped" — a Unix
     /// leader may stay an unreaped zombie for as long as this producer
     /// lives (its exit is observed, deliberately, without consuming it;
-    /// see `producer_pty.rs`'s own module doc), and only dropping the
+    /// see `capsule/producer/pty/`'s own module doc), and only dropping the
     /// producer frees its pid.
     fn domain_is_empty(&self) -> Result<bool>;
 

@@ -108,7 +108,7 @@ const COMM_FORWARD_SLACK: std::time::Duration = std::time::Duration::from_secs(5
 /// This host's name — the one `sotd topology` uses — or empty when it has
 /// none, which never matches a hub or a record's writer.
 pub(crate) fn comm_self_host() -> String {
-    sot_log::state_dir::host_name().unwrap_or_default()
+    sot_log::host::state_dir::host_name().unwrap_or_default()
 }
 
 /// The topology's half of "this daemon is its comm folder's hub": no topology

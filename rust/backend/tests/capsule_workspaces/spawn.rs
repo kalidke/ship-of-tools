@@ -11,7 +11,7 @@ use super::*;
 /// running — and the rebooted daemon's `resume_all` then raced a brand
 /// new `--resume` leg straight into the still-live `supervisor.lock`
 /// fence. `sot-capsule supervise` failed that fence acquisition FAST
-/// (`crate::fence::lock_supervisor`, `rust/log/src/supervisor.rs`) and
+/// (`crate::fence::lock_supervisor`, `rust/log/src/supervisor/`) and
 /// (round-1 of this fix) exited `EXIT_TERMINAL` (69) within a couple
 /// hundred ms; the daemon's watchdog treated 69 as unconditionally
 /// terminal (rule F — never re-diagnosed) and marked the row
@@ -90,7 +90,7 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     let leg_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before daemon restart")
                 .0
                 .leg
@@ -124,7 +124,7 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
     // spawned a second leg to worry about, only the one adopted one.
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -141,11 +141,11 @@ async fn capsule_workspace_boot_adopts_a_still_alive_supervisor_without_spawning
 /// adoption rather than immediately marking the row `capsule_terminal`.
 ///
 /// This test creates the contention DIRECTLY — no timing race needed —
-/// using a "fake lock holder": `sot_log::fence::lock_supervisor` is
+/// using a "fake lock holder": `sot_log::supervisor::journal::fence::lock_supervisor` is
 /// `pub`, so this test pre-holds `supervisor.lock` at a workspace's
 /// state dir from THIS TEST PROCESS itself, a real cross-process kernel
 /// lock that `supervise_inner` acquires as its very FIRST act — BEFORE
-/// it ever consults `--start` vs `--resume` (`rust/log/src/supervisor.rs`)
+/// it ever consults `--start` vs `--resume` (`rust/log/src/supervisor/`)
 /// — so the contention this proves is identical whichever mode the next
 /// spawn uses.
 ///
@@ -229,7 +229,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     // into the fence this test is about to pre-hold.
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir).expect("stop the supervisor authority")
+        move || sot_log::attach_client::supervisor_client::stop(&dir).expect("stop the supervisor authority")
     })
     .await
     .unwrap();
@@ -249,7 +249,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
     // The fake lock holder itself: held for this test's whole remaining
     // body, released only at the very end. The state dir already exists
     // (the earlier real spawn created it) — no `create_dir_all` needed.
-    let fake_lock = sot_log::fence::lock_supervisor(&state_dir_path)
+    let fake_lock = sot_log::supervisor::journal::fence::lock_supervisor(&state_dir_path)
         .expect("pre-hold the fence from the test process");
 
     let pty_req = serde_json::json!({
@@ -291,7 +291,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// The gap this test proves closed: a capsule row whose agent argv can
 /// never launch was UNENDABLE from the UI. `sot-capsule supervise`'s own
 /// anti-flap bound (`FLAP_THRESHOLD` == 3, `respawn_or_terminal` in
-/// `rust/log/src/supervisor.rs`) trips within milliseconds of a real
+/// `rust/log/src/supervisor/`) trips within milliseconds of a real
 /// `CreateProcess` failure and enters sticky `Lifecycle::Terminal`,
 /// self-exiting `TERMINAL_EXIT_GRACE` (2s) later with no external `stop`
 /// ever required -- so by the time a `workspace.list` poll (or a user)

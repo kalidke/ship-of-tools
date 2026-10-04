@@ -23,17 +23,17 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 }
 
 /// ADR 0043 decision 21: the same `(pid, start-time ticks)` pair
-/// `capsule.rs`'s own `self_status` uses for the identical adoption-
+/// `capsule/mod.rs`'s own `self_status` uses for the identical adoption-
 /// challenge identity (decision 16) — Linux has no `GetProcessTimes`
 /// analogue, so this reads `/proc/self/stat` via the same helper
 /// `challenge_unix` already exposes for reading a PEER's start time.
 #[cfg(target_os = "linux")]
 pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
-    Ok((std::process::id(), crate::challenge_unix::self_start_ticks()?))
+    Ok((std::process::id(), crate::identity::challenge_unix::self_start_ticks()?))
 }
 
 /// ADR 0043 decision 21, the macOS arm — the exact twin of what
-/// `capsule.rs`'s own `self_status` reports on this target, for the
+/// `capsule/mod.rs`'s own `self_status` reports on this target, for the
 /// identical adoption-challenge identity (decision 16), and it is NOT a
 /// start time. `created` is per-platform by definition ("whatever unit
 /// this OS's own `status_ok.created` carries, compared for equality
@@ -50,7 +50,7 @@ pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
 /// INSTANCE, so a recycled pid carries a different one.
 #[cfg(target_os = "macos")]
 pub(super) fn self_pid_and_created() -> std::io::Result<(u32, u64)> {
-    Ok((std::process::id(), u64::from(crate::challenge_macos::self_pidversion()?)))
+    Ok((std::process::id(), u64::from(crate::identity::challenge_macos::self_pidversion()?)))
 }
 
 // ---------------------------------------------------------------------

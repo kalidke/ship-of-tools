@@ -121,7 +121,7 @@ async fn the_accept_is_answered_before_the_leg_is_touched() {
     assert_eq!(payload["workspace_id"], id);
     assert!(restart.is_some(), "the effect is deferred to the caller, after the write");
 
-    let state_root = sot_log::state_dir::sot_state_dir().expect("pinned state root");
+    let state_root = sot_log::host::state_dir::sot_state_dir().expect("pinned state root");
     let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &id);
     assert!(
         !state_dir.exists(),

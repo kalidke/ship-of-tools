@@ -111,7 +111,7 @@ pub(super) async fn handle_connection<R, W>(
     clients: Clients,
     topology_store: Arc<crate::topology_store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
-    peer_identity: sot_log::challenge::PeerAuthOutcome,
+    peer_identity: sot_log::identity::challenge::PeerAuthOutcome,
     leases: Arc<crate::lease::Leases>,
 ) -> Result<()>
 where
@@ -173,7 +173,7 @@ where
             // the hello-gated loop, the reaper or any handler.
             if f.kind == Kind::Req && f.op == op::FE_LEASE {
                 tracing::info!(?peer_identity, "fe.lease — a lease connection");
-                let state_root = sot_log::state_dir::sot_state_dir();
+                let state_root = sot_log::host::state_dir::sot_state_dir();
                 return crate::lease::hold(
                     buffered,
                     tx,

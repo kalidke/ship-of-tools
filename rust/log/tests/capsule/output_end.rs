@@ -94,7 +94,7 @@ struct FakeProducer {
     sink: std::io::Sink,
 }
 
-impl sot_log::producer::Producer for FakeProducer {
+impl sot_log::capsule::producer::Producer for FakeProducer {
     type Output = FakeOutput;
 
     fn pre_spawn_detail() -> serde_json::Value {

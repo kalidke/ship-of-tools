@@ -103,7 +103,7 @@ pub(crate) async fn destroy_capsule_workspace(
     resume_first: bool,
 ) -> (CapsuleDestroyOutcome, Option<tokio::sync::OwnedMutexGuard<()>>) {
     {
-        let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+        let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
             return (
                 CapsuleDestroyOutcome::Kept {
                     detail: format!(
@@ -114,7 +114,7 @@ pub(crate) async fn destroy_capsule_workspace(
                 None,
             );
         };
-        // SAFETY (Fable review): `sot_log::state_dir::state_dir_hash`
+        // SAFETY (Fable review): `sot_log::host::state_dir::state_dir_hash`
         // canonicalizes `state_dir` itself, falling back to the RAW path
         // only when that fails -- which is exactly the missing-directory
         // case the orphan proof exists for. If `state_root` is reached

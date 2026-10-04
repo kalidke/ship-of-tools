@@ -1,11 +1,11 @@
 //! Steady state: the byte-accounted reader queue, the attach reader and the frame and input handlers.
 
-use crate::client::{Client, Endpoint};
-use crate::fe_client::{
+use crate::lane::client::{Client, Endpoint};
+use crate::attach_client::rules::{
     self, InputWireOutcome, OutstandingSlot, QuitDispatcher,
     ReconnectDecision, ReconnectState, Role, TakeAction, TakeTransaction,
 };
-use crate::wire::{
+use crate::lane::wire::{
     self, AttachClient, AttachServer, DecodedFrame, ResizeRefusedReason,
     SupervisorPhase, TakeRefusedReason,
 };
@@ -28,7 +28,7 @@ use super::*;
 /// bytes are never counted — those are consumed earlier, by
 /// `attach_and_collect_checkpoint` on the same connection, before this
 /// reader exists) and blocks its own next `read()` while it is at or above
-/// [`READER_QUEUE_CAP_BYTES`]; [`crate::fe_client_io::FeAttachClient::
+/// [`READER_QUEUE_CAP_BYTES`]; [`crate::attach_client::client::FeAttachClient::
 /// pump`] decrements it, via [`AttachWorker::ack_output_consumed`], as it
 /// actually consumes `Output` bytes — the ONLY place it is ever
 /// decremented, which is what makes the accounting real (see
@@ -495,7 +495,7 @@ pub(super) fn flush_after_pen_secured<E: Endpoint>(
         }
         TakeIntent::StaleRetry => {
             let resolution = outstanding.apply_outcome(InputWireOutcome::RefusedStale, take_epoch, mint_idem_key);
-            if let fe_client::OutstandingResolution::RetryNewEpoch { idem_key } = resolution {
+            if let rules::OutstandingResolution::RetryNewEpoch { idem_key } = resolution {
                 if let Some(o) = outstanding.outstanding() {
                     send_wire_input::<E>(attach_conn, controller_id, take_epoch, idem_key, o.bytes.clone());
                 }
@@ -559,7 +559,7 @@ pub(super) fn handle_attach_frame<E: Endpoint>(
             // (a reconnect) — a headless caller pins this across a write.
             take_epoch_pub.store(epoch, Ordering::Release);
             if *take_intent == TakeIntent::ReconnectResend {
-                if let fe_client::ReconnectResendDecision::Cancel { canceled } =
+                if let rules::ReconnectResendDecision::Cancel { canceled } =
                     outstanding.resend_after_reconnect(voyage, epoch)
                 {
                     emit(WorkerEvent::Status(format!(
@@ -661,7 +661,7 @@ pub(super) fn handle_attach_frame<E: Endpoint>(
         }
         DecodedFrame::AttachServer(AttachServer::InputDeliveryUnknown) => {
             let res = outstanding.apply_outcome(InputWireOutcome::DeliveryUnknown, *take_epoch, mint_idem_key);
-            if matches!(res, fe_client::OutstandingResolution::Unknown) {
+            if matches!(res, rules::OutstandingResolution::Unknown) {
                 emit(WorkerEvent::Status("input delivery unknown".to_string()));
                 if let Ok(mut g) = last_input_outcome.lock() {
                     *g = Some(InputOutcome::DeliveryUnknown);
@@ -674,9 +674,9 @@ pub(super) fn handle_attach_frame<E: Endpoint>(
         | DecodedFrame::AttachServer(AttachServer::HelloOk { .. })
         | DecodedFrame::AttachServer(AttachServer::HelloRefused { .. })
         | DecodedFrame::AttachServer(AttachServer::CheckpointChunk { .. })
-        // ADR 0046 decision 3: the capsule (attach_proto.rs) speaks these
+        // ADR 0046 decision 3: the capsule (lane/attach_proto/) speaks these
         // to any v3 client, but this worker still asks for v2 (unchanged
-        // by this lane -- see wire.rs's own history) and so never
+        // by this lane -- see lane/wire/'s own history) and so never
         // receives them for real; listed here only so this match stays
         // exhaustive over `AttachServer`. Consuming them belongs to
         // B3b2/B3b3, not this arm.

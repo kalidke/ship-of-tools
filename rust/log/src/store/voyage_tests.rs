@@ -2,8 +2,8 @@
 
 use super::*;
 use super::super::support_tests::{intent_env, lc, lc_take};
-use crate::envelope::Seq;
-use crate::segment::Commit;
+use crate::store::envelope::Seq;
+use crate::store::segment::Commit;
 
 /// The concurrent-bootstrap race a shared staging pathname allowed
 /// (review finding on the DACL unit): with one `.creating` path, attempt
@@ -38,7 +38,7 @@ fn concurrent_bootstraps_publish_exactly_one_verifiable_voyage() {
     assert_eq!(winners, 1, "exactly one bootstrap must win: {results:?}");
     // The published voyage is complete and internally consistent — the
     // race's failure mode was an EMPTY root published as success.
-    crate::verify::verify_voyage(&root, "voyr").unwrap();
+    crate::store::verify::verify_voyage(&root, "voyr").unwrap();
     let store = VoyageStore::open_for_writing(&root, "voyr").unwrap();
     drop(store);
     // Loser's guard plus winner's sweep leave no attempt residue.
@@ -92,7 +92,7 @@ fn bootstrap_open_write_reopen() {
     store.advance_chain(d);
 
     // Verify the whole voyage.
-    crate::verify::verify_voyage(&root, "voy1").unwrap();
+    crate::store::verify::verify_voyage(&root, "voy1").unwrap();
 }
 
 #[test]
@@ -290,7 +290,7 @@ fn prepare_root_then_open_prepared_reproduces_an_ordinary_open() {
     let mut w = store.open_segment(0).unwrap();
     w.append(&lc(1, 1), Commit::Immediate).unwrap();
     w.seal(None).unwrap();
-    crate::verify::verify_voyage(&root, "voysplit").unwrap();
+    crate::store::verify::verify_voyage(&root, "voysplit").unwrap();
 }
 
 /// ADR 0041 Codex round-2 discharge: `open_prepared`'s kernel-identity
@@ -522,7 +522,7 @@ fn cas_replay_reflushes_existing_blob_on_windows() {
 }
 
 /// Independently derive this process's own token-user SID as a string —
-/// deliberately NOT calling into `fsutil`'s private
+/// deliberately NOT calling into `host`'s private
 /// `owner_protected_descriptor`, so a bug in THAT helper's SID lookup
 /// could not also hide from these tests.
 #[cfg(windows)]

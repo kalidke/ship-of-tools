@@ -10,7 +10,7 @@
 //!
 //! # Fact 1 — does the kernel serve the SERVER's identity to a CLIENT?
 //!
-//! `src/challenge_unix.rs` (Linux only, read its "Why `SO_PEERCRED` on the
+//! `src/identity/challenge_unix.rs` (Linux only, read its "Why `SO_PEERCRED` on the
 //! CLIENT's own fd works" section) proves the peer's pid from the CLIENT's
 //! OWN fd: `SO_PEERCRED` is latched at `connect(2)` onto BOTH ends of a
 //! connected `AF_UNIX` socket, so a client reading its own socket learns
@@ -35,7 +35,7 @@
 //!
 //! # Fact 2 — does closing a pty master reap the child on the slave side?
 //!
-//! The Linux capsule leans on `PR_SET_PDEATHSIG` (`src/producer_pty.rs`),
+//! The Linux capsule leans on `PR_SET_PDEATHSIG` (`src/capsule/producer/pty/`),
 //! which macOS does not have. If pty hangup does not reap a producer
 //! there, the pipe lease planned for the next milestone stops being
 //! belt-and-braces and becomes the only thing between a dead supervisor

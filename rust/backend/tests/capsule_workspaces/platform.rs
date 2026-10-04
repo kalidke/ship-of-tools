@@ -3,13 +3,13 @@
 use super::*;
 
 /// One `MgmtRequest::Status` round trip against the LEG's own real
-/// voyage socket (`sot_log::socket_unix::connect_voyage_socket`, ADR
+/// voyage socket (`sot_log::lane::socket_unix::connect_voyage_socket`, ADR
 /// 0043 decision 8 steps 1-3: connect + same-user auth, the ordinary
 /// step-5-client-facing constructor) — the WIRE value the degrade test
 /// proves against (Codex SHOULD-FIX: `/proc/<pid>/cmdline` text does not
 /// prove propagation onto the wire; restoring the deleted Unix survival
 /// clamp would still leave a cmdline-only check green). Distinct from
-/// [`try_query_status`]'s own `sot_log::supervisor_client::query_status`:
+/// [`try_query_status`]'s own `sot_log::attach_client::supervisor_client::query_status`:
 /// that is the SUPERVISOR's own status (`SupervisorReply::StatusOk`,
 /// which carries no `survival` field at all) — `survival` lives only on
 /// `MgmtReply::StatusOk`, the LEG's own mgmt lane. The SOM0 mgmt lane
@@ -22,18 +22,18 @@ use super::*;
 /// timeout, exactly [`drain_stderr_bounded`]'s own "leak, never hang"
 /// tradeoff.
 #[cfg(target_os = "linux")]
-async fn leg_survival(voyage_id: &str) -> sot_log::wire::Survival {
+async fn leg_survival(voyage_id: &str) -> sot_log::lane::wire::Survival {
     let voyage_id_owned = voyage_id.to_string();
     let voyage_id_for_body = voyage_id_owned.clone();
     tokio::time::timeout(
         BOUND,
-        tokio::task::spawn_blocking(move || -> sot_log::wire::Survival {
-            let client = sot_log::socket_unix::connect_voyage_socket(&voyage_id_for_body)
+        tokio::task::spawn_blocking(move || -> sot_log::lane::wire::Survival {
+            let client = sot_log::lane::socket_unix::connect_voyage_socket(&voyage_id_for_body)
                 .unwrap_or_else(|e| panic!("connect_voyage_socket({voyage_id_for_body}): {e}"));
-            let body = sot_log::wire::encode_mgmt_request(&sot_log::wire::MgmtRequest::Status)
+            let body = sot_log::lane::wire::encode_mgmt_request(&sot_log::lane::wire::MgmtRequest::Status)
                 .expect("MgmtRequest::Status has no fields; encoding cannot fail");
             client.write_all(&body).expect("write MgmtRequest::Status");
-            let mut splitter = sot_log::wire::FrameSplitter::new();
+            let mut splitter = sot_log::lane::wire::FrameSplitter::new();
             let mut buf = [0u8; 512];
             loop {
                 let n = client.read(&mut buf).expect("read mgmt reply");
@@ -41,7 +41,7 @@ async fn leg_survival(voyage_id: &str) -> sot_log::wire::Survival {
                 let (frames, err) = splitter.feed(&buf[..n]);
                 assert!(err.is_none(), "mgmt lane wire error: {err:?}");
                 for frame in frames {
-                    if let sot_log::wire::DecodedFrame::MgmtReply(sot_log::wire::MgmtReply::StatusOk {
+                    if let sot_log::lane::wire::DecodedFrame::MgmtReply(sot_log::lane::wire::MgmtReply::StatusOk {
                         survival,
                         ..
                     }) = frame
@@ -293,7 +293,7 @@ async fn create_from_inside_a_job_that_forbids_breakaway_still_reaches_ready() {
 
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_status, process) =
-        tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&state_dir))
+        tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&state_dir))
             .await
             .unwrap()
             .expect("query_status after ready");
@@ -360,7 +360,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
 
     let (status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir)
+        move || sot_log::attach_client::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
@@ -409,7 +409,7 @@ async fn capsule_supervisor_survives_a_real_user_service_stop() {
 
     let leg_after = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status after restart").0.leg
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after restart").0.leg
     })
     .await
     .unwrap();
@@ -468,7 +468,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
     let state_dir = state_dir_from_list(&mut conn, &mut next_id, &workspace_id).await;
     let (_status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir)
+        move || sot_log::attach_client::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
@@ -516,7 +516,7 @@ async fn destroy_ends_a_child_that_left_the_agents_process_group() {
 #[cfg(target_os = "linux")]
 fn scope_guard_refuses_everything_the_aim_rule_refuses() {
     let state = tempfile::tempdir().expect("tempdir");
-    let h = sot_log::state_dir::state_dir_hash(state.path());
+    let h = sot_log::host::state_dir::state_dir_hash(state.path());
     for (target, own, accepted) in row_scope_aim::aim_table(&h) {
         assert_eq!(row_scope_aim::aim(&target, &own, &h).is_ok(), accepted, "aim on {target:?} with own {own:?}");
         // `forget`: the accepted row's path does not exist, and even so no
@@ -573,7 +573,7 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
 
     let (status, process) = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir)
+        move || sot_log::attach_client::supervisor_client::query_status(&dir)
     })
     .await
     .unwrap()
@@ -584,7 +584,7 @@ async fn capsule_launch_degrades_when_no_user_scope_is_available() {
     let survival = leg_survival(&voyage_id).await;
     assert_eq!(
         survival,
-        sot_log::wire::Survival::Degraded,
+        sot_log::lane::wire::Survival::Degraded,
         "the leg's own mgmt status must report survival=degraded when the user scope is denied"
     );
 

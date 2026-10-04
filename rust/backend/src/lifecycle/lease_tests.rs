@@ -1,7 +1,7 @@
 //! Tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
 
 use super::*;
-use sot_log::challenge::PeerAuthenticated;
+use sot_log::identity::challenge::PeerAuthenticated;
 use std::time::Duration;
 
 const BOOT: &str = "boot-a";

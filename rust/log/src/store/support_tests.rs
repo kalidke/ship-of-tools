@@ -1,10 +1,10 @@
 //! Frame builders shared by the store's voyage and dedupe tests.
 
-use crate::envelope::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, FrameRef, RefKind, Seq, Source};
-use crate::segment::tests::test_env;
+use crate::store::envelope::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, FrameRef, RefKind, Seq, Source};
+use crate::store::segment::tests::test_env;
 
 /// A conforming standalone frame (lifecycle needs no attached_to).
-pub(super) fn lc(epoch: u64, n: u64) -> crate::envelope::Envelope {
+pub(super) fn lc(epoch: u64, n: u64) -> crate::store::envelope::Envelope {
     let mut e = test_env(epoch, n);
     e.class = Class::Lifecycle;
     e.payload = Some(serde_json::json!({"kind": "producer_ready"}));

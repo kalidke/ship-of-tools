@@ -486,8 +486,8 @@ pub async fn handle_version_query(
     let daemon = sot_protocol::DaemonVersion {
         app_version: sot_protocol::app_version(),
         protocol: sot_protocol::PROTOCOL_VERSION,
-        lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
-        lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
+        lane_build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+        lane_proto: sot_log::lane::wire::SUPERVISOR_PROTO_V1,
         host: crate::workspaces::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
         uptime_s: clients.uptime().as_secs(),

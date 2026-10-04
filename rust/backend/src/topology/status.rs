@@ -392,7 +392,7 @@ async fn gather(topo: &Topology, self_host: &str) -> BTreeMap<String, Probe> {
 /// because `gather` needs the daemon's own tokio runtime for concurrency.
 pub async fn run(args: &[String]) -> i32 {
     let json = args.iter().any(|a| a == "--json");
-    let me = match sot_log::state_dir::host_name() {
+    let me = match sot_log::host::state_dir::host_name() {
         Ok(h) => h,
         Err(e) => {
             eprintln!("sotd status: {e}");

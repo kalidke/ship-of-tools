@@ -43,7 +43,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
-use sot_log::transport::TransportError;
+use sot_log::lane::transport::TransportError;
 
 /// The usage line, printed on a bad argument and for `--help`.
 pub(crate) const USAGE: &str = "Usage: sotd stdio-bridge [--host <host>]";
@@ -59,13 +59,13 @@ const CHUNK: usize = 64 * 1024;
 /// two `sot-log` clients `LaneDial::Local` dials with, never a second
 /// connector written here.
 #[cfg(unix)]
-type Bridged = sot_log::socket_unix::SocketClient;
+type Bridged = sot_log::lane::socket_unix::SocketClient;
 #[cfg(windows)]
-type Bridged = sot_log::pipe_win::PipeClient;
+type Bridged = sot_log::lane::pipe_win::PipeClient;
 
 #[cfg(unix)]
 fn connect(path: &Path) -> Result<Bridged, TransportError> {
-    sot_log::socket_unix::connect_unix_socket_unchallenged(path)
+    sot_log::lane::socket_unix::connect_unix_socket_unchallenged(path)
 }
 
 #[cfg(windows)]
@@ -78,7 +78,7 @@ fn connect(path: &Path) -> Result<Bridged, TransportError> {
     // sets it here — the dial is the first thing this process does and no
     // other thread exists yet to cancel it.
     let dial_cancel = std::sync::atomic::AtomicBool::new(false);
-    sot_log::pipe_win::connect_pipe_path_unchallenged(text, &dial_cancel)
+    sot_log::lane::pipe_win::connect_pipe_path_unchallenged(text, &dial_cancel)
 }
 
 pub fn run(args: &[String]) -> i32 {

@@ -134,7 +134,7 @@ pub(in crate::supervisor) fn service_lane(
 /// the ONE thing that must
 /// be bounded per tick is HOW LONG `service_lane`'s own event-drain loop
 /// runs before returning control — capped there, at `LANE_EVENT_QUOTA`
-/// (`pipe_win.rs`'s own `reader_loop` is a tight, unpaced
+/// (`lane/pipe_win/conn.rs`'s own `reader_loop` is a tight, unpaced
 /// `ReadFile`-then-`deliver_bytes`-then-loop with nothing gating a
 /// sustained single connection's throughput, so `MAX_LANE_INSTANCES`
 /// alone does not bound it — a genuine, not merely theoretical, per-tick
@@ -171,7 +171,7 @@ fn handle_lane_bytes(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, id: ConnId,
                     let (pid, created) = self_pid_and_created().unwrap_or((0, 0));
                     let reply = wire::encode_supervisor_reply(&SupervisorReply::HelloOk {
                         proto: wire::SUPERVISOR_PROTO_V1,
-                        build: crate::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+                        build: crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
                         pid,
                         created,
                     })

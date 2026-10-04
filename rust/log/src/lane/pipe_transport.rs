@@ -1,5 +1,5 @@
-//! The ADR 0041 step-5 bridge between [`crate::pipe_win`]'s real named-pipe
-//! transport and [`crate::transport`]'s `Transport` trait — the deferred
+//! The ADR 0041 step-5 bridge between [`crate::lane::pipe_win`]'s real named-pipe
+//! transport and [`crate::lane::transport`]'s `Transport` trait — the deferred
 //! half of unit U3 (round 2). Neither side knows about the other:
 //! `pipe_win` is a byte transport with no opinion on what rides over it;
 //! `capsule::run` drives `AttachProto` against an abstract `Transport`.
@@ -59,7 +59,7 @@
 //!
 //! # `AcceptError` maps to `TransportEvent::TransportFatal`
 //!
-//! `crate::transport::LaneEvent::AcceptError` means no future connection can
+//! `crate::lane::transport::LaneEvent::AcceptError` means no future connection can
 //! ever be accepted while this capsule holds the pipe's name — an
 //! unreachable-forever session if `run` just kept going regardless
 //! (round-2 e2e review, finding 4). This bridge translates it to
@@ -103,8 +103,8 @@
 
 #![cfg(windows)]
 
-use crate::pipe_win::{ConnId, PipeServer};
-use crate::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
+use crate::lane::pipe_win::{ConnId, PipeServer};
+use crate::lane::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
 use std::sync::Arc;

@@ -158,7 +158,7 @@
 //! `handle_lane_bytes` call it triggers) running indefinitely, never
 //! returning control to poll `Lifecycle` transitions, worker results,
 //! watchdogs, or `Terminal`/stop exit conditions — verified NOT already
-//! bounded by connection count alone: `pipe_win.rs`'s own `reader_loop`
+//! bounded by connection count alone: `lane/pipe_win/conn.rs`'s own `reader_loop`
 //! is a tight, unpaced `ReadFile`-then-deliver-then-loop with nothing
 //! gating how much a single SUSTAINED connection can push over an
 //! extended span of wall-clock time, so `MAX_LANE_INSTANCES` (a
@@ -212,15 +212,15 @@
 //!
 //! The platform is chosen exactly ONCE, by three local type aliases
 //! (`Client`/`Process`/`Lane`, just below the imports) over
-//! [`crate::client::PlatformEndpoint`] and
-//! [`crate::transport::PlatformLaneServer`] — never by threading a type
+//! [`crate::lane::client::PlatformEndpoint`] and
+//! [`crate::lane::transport::PlatformLaneServer`] — never by threading a type
 //! parameter through the state machine above. `Lane`/`Client`/`Process`
 //! resolve to concrete platform types (`PipeServer`/`PipeClient`/
 //! `challenge_win::ChallengedProcess` on Windows,
 //! `SocketServer`/`SocketClient`/`challenge_unix::ChallengedProcess` on
 //! Linux) whose own inherent methods already implement
-//! [`crate::transport::LaneServer`]/[`crate::client::Client`]/
-//! [`crate::client::PeerProcess`] purely by delegation (see `client.rs`
+//! [`crate::lane::transport::LaneServer`]/[`crate::lane::client::Client`]/
+//! [`crate::lane::client::PeerProcess`] purely by delegation (see `client.rs`
 //! and each concrete module's own `impl LaneServer`/`impl Client` block)
 //! — this file calls those inherent methods directly, exactly as it did
 //! against the concrete Windows types before this lane, so the seam
@@ -232,37 +232,37 @@
 //! an `Endpoint` is a value, so its four trait functions take `&self` —
 //! `PlatformEndpoint` is a type alias, so its own unit value is reached
 //! via `default()` rather than the alias name itself).
-//! [`crate::transport::TransportError::is_endpoint_absent`] is the
+//! [`crate::lane::transport::TransportError::is_endpoint_absent`] is the
 //! ONE absence predicate [`end_run_over_mgmt_lane`]/
 //! [`probe_writer_liveness`] use on both platforms now, instead of a
 //! Windows-shaped inline `NotFound` guard.
 
 #![cfg(any(windows, target_os = "linux", target_os = "macos"))]
 
-use crate::attach_proto::ConnId;
-use crate::challenge::ChallengeOutcome;
-use crate::classify::{self, ProbeOutcome};
-use crate::client::{Endpoint, PlatformEndpoint};
-use crate::fsutil;
-use crate::pointer::{self, PointerState};
+use crate::lane::attach_proto::ConnId;
+use crate::identity::challenge::ChallengeOutcome;
+use crate::supervisor::probe::classify::{self, ProbeOutcome};
+use crate::lane::client::{Endpoint, PlatformEndpoint};
+use crate::host;
+use crate::supervisor::journal::pointer::{self, PointerState};
 #[cfg(windows)]
-use crate::probe_win::RealProbeOps;
+use crate::supervisor::probe::win::RealProbeOps;
 #[cfg(target_os = "linux")]
-use crate::probe_unix::RealProbeOps;
+use crate::supervisor::probe::unix::RealProbeOps;
 #[cfg(target_os = "macos")]
-use crate::probe_macos::RealProbeOps;
-use crate::recovery::{self, LatestLegState};
-use crate::segment::RetentionClass;
+use crate::supervisor::probe::macos::RealProbeOps;
+use crate::store::recovery::{self, LatestLegState};
+use crate::store::segment::RetentionClass;
 // L1-unix LU3b: the client-side supervisor-lane helpers (and the shared
 // error constructor) now live in `supervisor_client` -- the dependency
 // points server -> client-helpers, the right way round (ADR 0043
 // decision 20). This module's own production code keeps calling
 // `err_state(..)` bare, unchanged at every call site.
-use crate::supervisor_client::err_state;
-use crate::transport::{LaneEvent, PlatformLaneServer, CONNECT_BOUND};
-use crate::verify;
-use crate::voyage::VoyageStore;
-use crate::wire::{
+use crate::attach_client::supervisor_client::err_state;
+use crate::lane::transport::{LaneEvent, PlatformLaneServer, CONNECT_BOUND};
+use crate::store::verify;
+use crate::store::voyage::VoyageStore;
+use crate::lane::wire::{
     self, DecodedFrame, Survival, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest,
 };
@@ -451,10 +451,10 @@ const RECOVERY_END_RUN_REASON: &str = "recovered";
 pub const EXIT_CLEAN: i32 = 0;
 pub const EXIT_TERMINAL: i32 = 69;
 /// Fence contention, distinct from [`EXIT_TERMINAL`]: `supervise_inner` reaches
-/// this ONLY when `crate::fence::lock_supervisor` fails with
+/// this ONLY when `crate::supervisor::journal::fence::lock_supervisor` fails with
 /// `Error::State` -- the one error that specific call can produce, and
 /// only when a bounded retry against an ALREADY-HELD lock finally times
-/// out (`fsutil::lock_writer`'s own "lock held by another process").
+/// out (`host::lock_writer`'s own "lock held by another process").
 /// That means some OTHER process currently holds `supervisor.lock` --
 /// almost always the previous authority for this SAME state dir, still
 /// finishing its own teardown (it drops its lane BEFORE releasing the
@@ -524,7 +524,7 @@ pub fn supervise(config: SuperviseConfig) -> i32 {
     // `build_run_command`'s default-inherit stdio never carries anything
     // past its own, intentionally-shared stderr (decision 25). Non-fatal.
     #[cfg(windows)]
-    if let Err(e) = crate::winhandle::harden_own_stdio(false) {
+    if let Err(e) = crate::host::winhandle::harden_own_stdio(false) {
         note(format_args!("could not harden inherited stdin/stdout ({e}); continuing"));
     }
     if !config.assume_no_rollback_target {
@@ -572,7 +572,7 @@ pub fn connect_and_challenge_with_build_for_test(
     build: &str,
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
     let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
-    let mut exchange = crate::exchange::SupervisorLaneExchange::new(build.to_string());
+    let mut exchange = crate::identity::exchange::SupervisorLaneExchange::new(build.to_string());
     let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
     Ok((conn, outcome))
 }
@@ -588,37 +588,37 @@ pub fn connect_and_challenge_with_proto_for_test(
 ) -> crate::Result<(Client, ChallengeOutcome<Process>)> {
     let conn = PlatformEndpoint::default().connect_supervisor_unchallenged(h)?;
     let mut exchange =
-        crate::exchange::SupervisorLaneExchange::with_proto_for_test(crate::exchange::SUPERVISOR_LANE_BUILD_ID, proto);
+        crate::identity::exchange::SupervisorLaneExchange::with_proto_for_test(crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID, proto);
     let outcome = PlatformEndpoint::default().challenge(&conn, &mut exchange, Instant::now() + Duration::from_secs(2));
     Ok((conn, outcome))
 }
 
-/// L1-unix LU3b: [`crate::supervisor_client::connect_and_challenge`] is
+/// L1-unix LU3b: [`crate::attach_client::supervisor_client::connect_and_challenge`] is
 /// now the production analog of
 /// [`connect_and_challenge_with_build_for_test`] — connect the supervisor
 /// lane by state-dir hash and run the full same-connection challenge with
 /// THIS build's own identity, generic over `client::Endpoint` since a
 /// production caller off Windows now exists too
-/// ([`crate::supervisor_client`], ADR 0042 L1a / ADR 0043 decision 20).
+/// ([`crate::attach_client::supervisor_client`], ADR 0042 L1a / ADR 0043 decision 20).
 /// L1-unix LU3c: this test helper instantiates it at [`PlatformEndpoint`]
-/// now too — the SAME alias `supervisor.rs`'s own production code is
+/// now too — the SAME alias `supervisor/`'s own production code is
 /// generic over, rather than hard-coding `pipe_win::PipeEndpoint` the way
 /// it did while this module was still Windows-only.
 #[cfg(any(test, feature = "test-support"))]
 pub fn connect_and_challenge_for_test(h: &str) -> crate::Result<(Client, Process)> {
-    crate::supervisor_client::connect_and_challenge::<PlatformEndpoint>(
+    crate::attach_client::supervisor_client::connect_and_challenge::<PlatformEndpoint>(
         &PlatformEndpoint::default(),
         h,
-        crate::exchange::SUPERVISOR_LANE_BUILD_ID,
+        crate::identity::exchange::SUPERVISOR_LANE_BUILD_ID,
         Instant::now() + Duration::from_secs(2),
     )
 }
 
-/// L1-unix LU3b: [`crate::supervisor_client::send_and_read`] is now the
+/// L1-unix LU3b: [`crate::attach_client::supervisor_client::send_and_read`] is now the
 /// production analog this test-only wrapper delegates to — one
 /// request/reply round trip every supervisor-lane caller needs after its
 /// own connect+challenge, generic over `client::Client` so both
-/// [`request_for_test`] and [`crate::supervisor_client`]'s own production
+/// [`request_for_test`] and [`crate::attach_client::supervisor_client`]'s own production
 /// callers share one implementation rather than two that could drift.
 #[cfg(any(test, feature = "test-support"))]
 pub fn request_for_test(
@@ -626,7 +626,7 @@ pub fn request_for_test(
     request: &SupervisorRequest,
     deadline: Instant,
 ) -> crate::Result<SupervisorReply> {
-    crate::supervisor_client::send_and_read(conn, request, deadline)
+    crate::attach_client::supervisor_client::send_and_read(conn, request, deadline)
 }
 
 // ---------------------------------------------------------------------

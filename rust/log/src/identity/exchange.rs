@@ -12,7 +12,7 @@
 //! cannot skip or reorder the OS authentication steps, because this
 //! trait never sees the connection until they are done.
 
-use crate::wire::{self, DecodedFrame, MgmtReply, MgmtRequest, SupervisorReply, SupervisorRequest};
+use crate::lane::wire::{self, DecodedFrame, MgmtReply, MgmtRequest, SupervisorReply, SupervisorRequest};
 
 /// What one lane's post-SID exchange concluded, fed one chunk of newly
 /// read bytes at a time.

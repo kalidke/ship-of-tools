@@ -268,7 +268,7 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     // Only a Ready row is typed into: a row whose agent has ended can still
     // show a prompt-shaped last screen. (Nothing on the wake path restarts a
     // row; `wake_if_free` only attaches.)
-    let ready = crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
+    let ready = crate::capsule_workspace::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
     if crate::capsule_workspace::phase_of(state_dir) != ready {
         return Step::Skip;
     }

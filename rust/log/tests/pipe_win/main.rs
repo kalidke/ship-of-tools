@@ -1,6 +1,6 @@
 #![cfg(windows)]
 //! Integration tests for the ADR 0041 step-5 pipe transport
-//! (`src/pipe_win.rs`, unit U3 round 3 — discharges the second Codex
+//! (`src/lane/pipe_win/`, unit U3 round 3 — discharges the second Codex
 //! adversarial round's test findings). Lives in `tests/` for the same
 //! structural reason `tests/conpty.rs` and `tests/capsule_win.rs` do:
 //! this module's own types are `pub` specifically so a real-pipe
@@ -34,18 +34,18 @@
 //! rather than assuming one write equals one `Bytes` event.
 //!
 //! L1-unix LU1a: `challenge`/`ChallengedProcess`/`authenticate_server`
-//! moved to `sot_log::challenge_win` (the Windows steps 1-3 half); the
+//! moved to `sot_log::identity::challenge_win` (the Windows steps 1-3 half); the
 //! `ChallengeableConnection` trait itself (`write_all`/`read`/`cancel`)
-//! stays in `sot_log::challenge`, and its raw-handle counterpart is now
-//! the separate `sot_log::challenge_win::PipeChallengeable` extension
+//! stays in `sot_log::identity::challenge`, and its raw-handle counterpart is now
+//! the separate `sot_log::identity::challenge_win::PipeChallengeable` extension
 //! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
 
-use sot_log::challenge::ChallengeOutcome;
-use sot_log::challenge_win::challenge;
-use sot_log::exchange::VoyageMgmtExchange;
-use sot_log::pipe_win::{connect_voyage_pipe, ConnId, PipeServer};
-use sot_log::transport::{ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE};
-use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
+use sot_log::identity::challenge::ChallengeOutcome;
+use sot_log::identity::challenge_win::challenge;
+use sot_log::identity::exchange::VoyageMgmtExchange;
+use sot_log::lane::pipe_win::{connect_voyage_pipe, ConnId, PipeServer};
+use sot_log::lane::transport::{ClosedReason, LaneEvent, TransportError, CONNECT_BOUND, TEARDOWN_AGGREGATE_DEADLINE};
+use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -139,7 +139,7 @@ fn expect_closed(server: &PipeServer, conn_id: ConnId, timeout: Duration) -> Clo
 /// a GENEROUS bound, evidence of a genuinely broken startup, never a
 /// tight race — expires, at which point the LAST error fails the test
 /// loudly. Identical helper in `tests/e2e_pipe.rs` and
-/// `tests/e2e_socket.rs` (no shared test module spans Windows-only and
+/// `tests/e2e_socket/` (no shared test module spans Windows-only and
 /// Linux-only files).
 fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>, deadline: Duration) -> T {
     let started = Instant::now();
@@ -190,7 +190,7 @@ fn accumulate_bytes(
     out
 }
 
-/// NUL-terminated UTF-16, matching `pipe_win.rs`'s own private helper.
+/// NUL-terminated UTF-16, matching `lane/pipe_win/`'s own private helper.
 fn wide(s: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(s)
@@ -254,7 +254,7 @@ fn assert_squat_check_failed(err: std::io::Error) {
 }
 
 /// This process's own token-user SID, stringified — independently
-/// derived so a bug in `pipe_win.rs`'s or `fsutil.rs`'s own SID lookup
+/// derived so a bug in `lane/pipe_win/`'s or `host/`'s own SID lookup
 /// could not also hide from this test.
 fn current_user_sid_string() -> String {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};

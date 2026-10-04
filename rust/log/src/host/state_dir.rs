@@ -113,23 +113,21 @@ pub fn host_name() -> Result<String, String> {
 }
 
 /// LU5a (ADR 0043 decision 23): the store's own volume preflight
-/// (`fsutil::preflight_volume`), exposed here as the narrow public seam
-/// the daemon's own `qualified_state_root` needs — `fsutil` itself stays
-/// a private, internal-primitives module (see `lib.rs`'s own doc: "fsutil
-/// itself is a private module, invisible..."), the same pattern
-/// `fence::lock_supervisor` already uses for a different `fsutil`
+/// (`host::preflight_volume`), exposed here as the narrow public seam
+/// the daemon's own `qualified_state_root` needs, the same pattern
+/// `fence::lock_supervisor` already uses for a different `host`
 /// primitive. Lives here (this module, not `fence`) because it is a
 /// STATE-ROOT check, not a fence one.
 pub fn preflight_volume(dir: &std::path::Path) -> crate::Result<()> {
-    crate::fsutil::preflight_volume(dir)
+    crate::host::preflight_volume(dir)
 }
 
-/// L1-unix LU3b: moved here from `supervisor.rs` (a pure hash of a path,
+/// L1-unix LU3b: moved here from `supervisor/` (a pure hash of a path,
 /// with no OS-facing mechanism of its own) — the supervisor lane's own
 /// per-state-dir pipe/socket name, shared by every caller that connects
 /// to it: `fe_client_io`'s worker, `supervisor_client`'s `connect`, the
 /// authority's own `PipeServer::bind_supervisor`/`SocketServer::
-/// bind_supervisor` call in `supervisor.rs`, and both platforms' real-
+/// bind_supervisor` call in `supervisor/`, and both platforms' real-
 /// process integration tests. Stable for the SAME path (canonicalized
 /// first, so a symlinked or relative `state_dir` still names the same
 /// lane), different for different paths — proven by this module's own
@@ -166,7 +164,7 @@ mod state_dir_hash_tests {
 // live sockets/pipes go, as opposed to `sot_state_dir`'s durable-state
 // tree above. Moved DOWN here from `sot-protocol`'s `topology::endpoint`
 // module (ADR 0042 L2b's original home): the daemon's own session
-// sockets and the Ship's Log Unix transport (`socket_unix.rs`) both need
+// sockets and the Ship's Log Unix transport (`lane/socket_unix/`) both need
 // the identical derivation, and `sot-log` is the lower crate in the
 // dependency graph (the frontend and backend already depend on both;
 // `sot-protocol` gains a dependency on `sot-log`, never the reverse).

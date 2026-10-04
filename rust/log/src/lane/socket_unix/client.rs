@@ -286,10 +286,10 @@ impl SocketClient {
 /// client implements — `write_all`/`read`/`cancel` already have this
 /// exact signature (modulo the error type, unified by decision 17), so
 /// this is pure delegation. The blanket `impl<C: Client>
-/// ChallengeableConnection for C` in `crate::client` is what makes
+/// ChallengeableConnection for C` in `crate::lane::client` is what makes
 /// `SocketClient` challengeable now — the hand-written façade this impl
 /// used to be (`socket_error_to_io`, its own `TransportError -> io::Error`
-/// mapping) is gone; `crate::client`'s ONE mapping replaces it.
+/// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
 impl Client for SocketClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         SocketClient::write_all(self, bytes)
@@ -309,7 +309,7 @@ impl Client for SocketClient {
 /// `challenge_unix.rs`'s own doc for why this is the Linux twin of
 /// `challenge_win::PipeChallengeable`.
 #[cfg(target_os = "linux")]
-impl crate::challenge_unix::SocketChallengeable for SocketClient {
+impl crate::identity::challenge_unix::SocketChallengeable for SocketClient {
     fn raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
@@ -326,7 +326,7 @@ impl crate::challenge_unix::SocketChallengeable for SocketClient {
 /// need"). The `connect_anchor_boot_ticks` field this `SocketClient`
 /// still carries is therefore never read on this target.
 #[cfg(target_os = "macos")]
-impl crate::challenge_macos::SocketChallengeable for SocketClient {
+impl crate::identity::challenge_macos::SocketChallengeable for SocketClient {
     fn raw_fd(&self) -> RawFd {
         self.stream.as_raw_fd()
     }
@@ -365,13 +365,13 @@ impl Endpoint for SocketEndpoint {
     fn challenge(
         &self,
         conn: &Self::Client,
-        exchange: &mut dyn crate::exchange::IdentityExchange,
+        exchange: &mut dyn crate::identity::exchange::IdentityExchange,
         reply_deadline: Instant,
-    ) -> crate::challenge::ChallengeOutcome<Self::Process> {
+    ) -> crate::identity::challenge::ChallengeOutcome<Self::Process> {
         challenge_os::challenge(conn, exchange, reply_deadline)
     }
 
-    fn authenticate_server(&self, conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
+    fn authenticate_server(&self, conn: &Self::Client) -> crate::identity::challenge::PeerAuthOutcome {
         challenge_os::authenticate_server(conn)
     }
 }
@@ -471,7 +471,7 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// lane needs the full five-step `challenge_os::challenge`,
 /// which the caller composes itself on top of this. L1-unix LU3b: now
 /// called on Linux AND macOS, via `Endpoint for SocketEndpoint`'s own
-/// `connect_supervisor_unchallenged` (`fe_client_io.rs` and
+/// `connect_supervisor_unchallenged` (`attach_client/client.rs` and
 /// `supervisor_client`, both generic over `Endpoint`, are its callers).
 pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
@@ -504,16 +504,16 @@ pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportE
     Ok(client)
 }
 
-/// Maps [`crate::challenge::PeerAuthOutcome`] to this module's own
+/// Maps [`crate::identity::challenge::PeerAuthOutcome`] to this module's own
 /// `Result` — the exact logic [`connect_voyage_socket`] runs, pulled out
 /// so it is directly unit-testable without a live socket, mirroring
 /// `pipe_win::map_peer_auth_outcome`'s own reasoning.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
+fn map_peer_auth_outcome(outcome: crate::identity::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
     match outcome {
-        crate::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
-        crate::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
-        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
+        crate::identity::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
+        crate::identity::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
+        crate::identity::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
             via: "direct",
             detail: "peer identity authentication could not be completed".to_string(),
         }),

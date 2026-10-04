@@ -1,7 +1,7 @@
 #![cfg(unix)]
 //! Server-side contract tests for the L1-unix LU1b Unix-domain-socket
-//! transport (`src/socket_unix.rs`) — the mechanical twin of
-//! `tests/pipe_win.rs`'s own contract suite, ported by TYPE SWAP: every
+//! transport (`src/lane/socket_unix/`) — the mechanical twin of
+//! `tests/pipe_win/`'s own contract suite, ported by TYPE SWAP: every
 //! portable pipe test that exercises `PipeServer`'s public surface through
 //! a raw client is ported here against `SocketServer` through a raw
 //! `std::os::unix::net::UnixStream` client (the LU1c `SocketClient` —
@@ -16,7 +16,7 @@
 //!
 //! # Process-isolated hang bounding
 //!
-//! Same rationale as `tests/pipe_win.rs`'s own [`run_isolated`] (copied
+//! Same rationale as `tests/pipe_win/`'s own [`run_isolated`] (copied
 //! verbatim below, with `SOCKET_UNIX_TEST_CHILD` in place of
 //! `PIPE_WIN_TEST_CHILD`): a real PROCESS boundary bounds every hang path,
 //! including one inside a wedged `SocketServer::drop` running on the test
@@ -34,12 +34,12 @@
 //! process, per above) never race another test's own env var mutation.
 
 #[cfg(target_os = "linux")]
-use sot_log::socket_unix::connect_voyage_socket;
-use sot_log::socket_unix::{voyage_socket_path, ConnId, SocketClient, SocketServer};
-use sot_log::state_dir::current_uid;
+use sot_log::lane::socket_unix::connect_voyage_socket;
+use sot_log::lane::socket_unix::{voyage_socket_path, ConnId, SocketClient, SocketServer};
+use sot_log::host::state_dir::current_uid;
 #[cfg(target_os = "linux")]
-use sot_log::transport::CONNECT_BOUND;
-use sot_log::transport::{ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE};
+use sot_log::lane::transport::CONNECT_BOUND;
+use sot_log::lane::transport::{ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
@@ -55,7 +55,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Re-invoke THIS test binary, running only `test_name`, as a child
-/// process — see the module doc, and `tests/pipe_win.rs`'s identical
+/// process — see the module doc, and `tests/pipe_win/`'s identical
 /// helper, which this is copied from verbatim (renamed env var only).
 /// Returns `true` when called FROM WITHIN that child (so the caller
 /// should run its real test body); returns `false` in the parent after
@@ -166,7 +166,7 @@ fn expect_closed(server: &SocketServer, conn_id: ConnId, timeout: Duration) -> C
 /// criterion for "the reader is genuinely blocked on a full channel".
 /// Bounded by an overall 10s timeout so a genuine regression fails the
 /// test loudly rather than hanging it. `65_536` matches
-/// `socket_unix.rs`'s own (crate-private) `READ_BUF_LEN` — not
+/// `lane/socket_unix/`'s own (crate-private) `READ_BUF_LEN` — not
 /// importable from this integration-test crate, so duplicated as a
 /// literal, the same way this file's other tests already hardcode it
 /// (e.g. the `QueueFull`-flooding tests above).

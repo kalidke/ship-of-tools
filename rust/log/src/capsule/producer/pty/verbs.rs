@@ -35,7 +35,7 @@ impl Producer for PtyProducer {
         // process exit, not a spawn failure. Neither property may be
         // silently dropped: the flock fix is real (a rare parallel-test
         // flake, per its own comment) and `ExitKind::SpawnFailed` must
-        // stay honest (`tests/capsule.rs`'s own
+        // stay honest (`tests/capsule/`'s own
         // `spawn_failure_is_compensated_unix`, the Unix twin of the
         // Windows spawn-failure test). The fix keeps BOTH: resolve
         // argv[0] (PATH search, exactly `execvp`'s own algorithm, if it

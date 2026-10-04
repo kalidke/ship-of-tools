@@ -32,11 +32,11 @@ pub fn ensure_running(workspaces: &Workspaces, ws: &Arc<Workspace>) {
     if workspaces.has_observer(&ws.workspace_id) {
         return;
     }
-    let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+    let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
         return;
     };
     let state_dir = state_dir_for(&state_root, &ws.workspace_id);
-    let persistent = sot_log::supervisor_client::Persistent::new(&state_dir);
+    let persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
     // Obtained outside the loop so removal can interrupt a round blocked in `spawn_blocking`.
     let cancel_handle = persistent.cancel_handle();
     let cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(move || cancel_handle.cancel());
@@ -51,7 +51,7 @@ pub fn ensure_running(workspaces: &Workspaces, ws: &Arc<Workspace>) {
 async fn run(
     ws: Arc<Workspace>,
     state_dir: PathBuf,
-    mut persistent: sot_log::supervisor_client::Persistent,
+    mut persistent: sot_log::attach_client::supervisor_client::Persistent,
     workspaces: Workspaces,
 ) {
     loop {
@@ -65,7 +65,7 @@ async fn run(
         })
         .await
         .unwrap_or_else(|_join_err| {
-            (sot_log::supervisor_client::Persistent::new(&state_dir), Observation::Failed)
+            (sot_log::attach_client::supervisor_client::Persistent::new(&state_dir), Observation::Failed)
         });
         persistent = returned;
         observe(&ws, observation);
@@ -74,8 +74,8 @@ async fn run(
 }
 
 /// One BLOCKING round: no pointer -> `Stopped`; otherwise one `status` call via [`local_phase`].
-fn poll_once(state_dir: &Path, persistent: &mut sot_log::supervisor_client::Persistent) -> Observation {
-    if phase_for_missing_pointer(sot_log::pointer::pointer_path(state_dir).is_file()).is_some() {
+fn poll_once(state_dir: &Path, persistent: &mut sot_log::attach_client::supervisor_client::Persistent) -> Observation {
+    if phase_for_missing_pointer(sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file()).is_some() {
         return Observation::Stopped;
     }
     match persistent.status() {

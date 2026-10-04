@@ -1,9 +1,9 @@
-//! The L1-unix LU1b bridge between [`crate::socket_unix`]'s real
-//! Unix-domain-socket transport and [`crate::transport`]'s `Transport`
-//! trait — a line-for-line twin of [`crate::pipe_transport`], adapted only
+//! The L1-unix LU1b bridge between [`crate::lane::socket_unix`]'s real
+//! Unix-domain-socket transport and [`crate::lane::transport`]'s `Transport`
+//! trait — a line-for-line twin of [`crate::lane::pipe_transport`], adapted only
 //! in the nouns it names. Neither side knows about the other:
 //! `socket_unix` is a byte transport with no opinion on what rides over
-//! it; `capsule.rs`'s run loop drives `AttachProto` against an abstract
+//! it; `capsule/`'s run loop drives `AttachProto` against an abstract
 //! `Transport`. This module is the thin adapter that makes the real
 //! socket satisfy that trait — nothing here decides protocol behavior, it
 //! only moves bytes and translates event/id shapes.
@@ -32,7 +32,7 @@
 //!
 //! # `AcceptError` maps to `TransportEvent::TransportFatal`
 //!
-//! `crate::transport::LaneEvent::AcceptError` means no future connection
+//! `crate::lane::transport::LaneEvent::AcceptError` means no future connection
 //! can ever be accepted while this capsule holds the socket's name — this
 //! bridge translates it to [`transport::TransportEvent::TransportFatal`],
 //! which the capsule's run loop maps to an orderly self-end. See
@@ -50,8 +50,8 @@
 
 #![cfg(unix)]
 
-use crate::socket_unix::{ConnId, SocketServer};
-use crate::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
+use crate::lane::socket_unix::{ConnId, SocketServer};
+use crate::lane::transport::{LaneEvent, Transport, TransportEvent as CapsuleEvent};
 use crate::Result;
 use std::collections::HashSet;
 use std::sync::Arc;

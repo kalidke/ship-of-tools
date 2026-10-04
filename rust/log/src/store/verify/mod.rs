@@ -16,11 +16,11 @@
 //! fixtures and the crash/fault harness — those exercise the writer and
 //! recovery paths, not this reader-side pass.
 
-use crate::envelope::{
+use crate::store::envelope::{
     validate_blob_ref, validate_str128, ActorKind, BlobRef, Class, ExchangePhase, InputContent,
     InputFactKind, LifecycleKind, RefKind, Seq,
 };
-use crate::segment::{SegmentIdentity, SegmentReader, SegmentState};
+use crate::store::segment::{SegmentIdentity, SegmentReader, SegmentState};
 use crate::{Error, Result};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -103,8 +103,8 @@ pub fn verify_voyage(root: &Path, voyage_id: &str) -> Result<()> {
 fn check_integer_numbers(v: &serde_json::Value) -> std::result::Result<(), String> {
     match v {
         serde_json::Value::Number(n) => {
-            let ok = n.as_i64().map(|i| i.unsigned_abs() <= crate::envelope::U53_MAX)
-                .or_else(|| n.as_u64().map(|u| u <= crate::envelope::U53_MAX))
+            let ok = n.as_i64().map(|i| i.unsigned_abs() <= crate::store::envelope::U53_MAX)
+                .or_else(|| n.as_u64().map(|u| u <= crate::store::envelope::U53_MAX))
                 .unwrap_or(false);
             if ok { Ok(()) } else { Err(format!("non-integer or out-of-range number {n}")) }
         }

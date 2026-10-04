@@ -3,7 +3,7 @@
 // NOT "the one place in the workspace", and the scope is worth stating exactly
 // rather than claiming more than is delivered:
 //
-//   - `sot_log::fsutil`'s `preflight_nonce` is an independent `<pid>-<seq>`
+//   - `sot_log::host`'s `preflight_nonce` is an independent `<pid>-<seq>`
 //     generator with its own counter and the same reasoning. It CANNOT share
 //     this one: `sot-log` is the LOWER crate and must not depend on
 //     `sot-updater`. Two, deliberately.

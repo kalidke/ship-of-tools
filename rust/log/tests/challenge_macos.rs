@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 //! Integration tests for the macOS identity challenge
-//! (`src/challenge_macos.rs`) and the `SocketClient` construction path it
+//! (`src/identity/challenge_macos.rs`) and the `SocketClient` construction path it
 //! authenticates (`connect_voyage_socket`, whose non-Linux stub this
 //! milestone replaced for macOS alone). The sibling Linux file
 //! (`tests/challenge_unix.rs`) is the shape this copies -- including its
@@ -17,12 +17,12 @@
 //! Linux and Windows legs; the blocking `macos-latest` job is the only
 //! place it runs.
 
-use sot_log::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use sot_log::challenge_macos::{authenticate_server, challenge, self_pidversion};
-use sot_log::exchange::VoyageMgmtExchange;
-use sot_log::socket_unix::{connect_voyage_socket, ConnId, SocketServer};
-use sot_log::transport::LaneEvent;
-use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
+use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use sot_log::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
+use sot_log::identity::exchange::VoyageMgmtExchange;
+use sot_log::lane::socket_unix::{connect_voyage_socket, ConnId, SocketServer};
+use sot_log::lane::transport::LaneEvent;
+use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::time::{Duration, Instant};
 
 /// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
@@ -80,7 +80,7 @@ fn fresh_voyage_id() -> String {
 }
 
 /// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir for the
-/// lifetime of the returned guard -- mirrors `tests/socket_unix.rs`'s
+/// lifetime of the returned guard -- mirrors `tests/socket_unix/`'s
 /// identical helper, `tempdir_in("/tmp")` and all: `$TMPDIR` on the
 /// macOS runner is ~56 bytes and `sun_path` is 104 there, so the default
 /// would overflow the address for real on this leg.
@@ -145,7 +145,7 @@ fn await_status_request(server: &SocketServer, conn_id: ConnId, timeout: Duratio
 /// wire.
 fn challenge_with_reply(
     reply: MgmtReply,
-) -> ChallengeOutcome<sot_log::challenge_macos::ChallengedProcess> {
+) -> ChallengeOutcome<sot_log::identity::challenge_macos::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = SocketServer::bind(&voyage_id, 1).expect("bind");
     let client = connect_voyage_socket(&voyage_id).expect("connect");

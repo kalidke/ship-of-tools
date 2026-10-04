@@ -5,7 +5,7 @@ use super::*;
 /// A minimal lane-refusal FIXTURE standing in for a supervisor of another
 /// build (ADR 0030 §8 decision 31c) — binds the EXACT unix socket path
 /// `phase_of`'s own `query_status` will dial for `state_dir`
-/// (`sot_log::socket_unix::supervisor_socket_path`, the same one this
+/// (`sot_log::lane::socket_unix::supervisor_socket_path`, the same one this
 /// process's own `SOT_RUNTIME_DIR` resolves it to), accepts ONE
 /// connection, and writes back `reply_bytes` verbatim before closing.
 /// Same-user peer credentials (the SID/`SO_PEERCRED` steps) pass for
@@ -19,8 +19,8 @@ use super::*;
 /// "unreachable" stays unreachable.
 #[cfg(target_os = "linux")]
 fn spawn_lane_refusal_fixture(state_dir: &Path, reply_bytes: Vec<u8>) -> std::thread::JoinHandle<()> {
-    let h = sot_log::state_dir::state_dir_hash(state_dir);
-    let path = sot_log::socket_unix::supervisor_socket_path(&h).expect("supervisor socket path");
+    let h = sot_log::host::state_dir::state_dir_hash(state_dir);
+    let path = sot_log::lane::socket_unix::supervisor_socket_path(&h).expect("supervisor socket path");
     let _ = std::fs::remove_file(&path);
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture supervisor socket");
     std::thread::spawn(move || {
@@ -66,8 +66,8 @@ async fn phase_reports_foreign_for_a_version_skew_refusal() {
     // Bind the fixture where the (now-stopped) real supervisor was, and
     // reply with the ACTUAL wire encoding of `Refused { VersionSkew }` —
     // the one reply a real supervisor of another build would send.
-    let reply = sot_log::wire::encode_supervisor_reply(&sot_log::wire::SupervisorReply::Refused {
-        reason: sot_log::wire::SupervisorRefusedReason::VersionSkew,
+    let reply = sot_log::lane::wire::encode_supervisor_reply(&sot_log::lane::wire::SupervisorReply::Refused {
+        reason: sot_log::lane::wire::SupervisorRefusedReason::VersionSkew,
     })
     .expect("Refused encodes unconditionally");
     let fixture = spawn_lane_refusal_fixture(&state_dir_path, reply);
@@ -161,7 +161,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
 
     let leg_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status before killing the supervisor").0.leg
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status before killing the supervisor").0.leg
     })
     .await
     .unwrap()
@@ -220,7 +220,7 @@ async fn capsule_observer_reports_unreachable_after_a_bare_supervisor_kill_then_
     // Recovery is a fresh leg (ADR 0043 decision 33 spawns anew, never resurrects).
     let leg_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status after recovery").0.leg
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status after recovery").0.leg
     })
     .await
     .unwrap();

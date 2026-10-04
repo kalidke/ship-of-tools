@@ -22,7 +22,7 @@ impl std::fmt::Debug for PipeClient {
     }
 }
 
-/// Maps [`crate::challenge::PeerAuthOutcome`] to this module's own
+/// Maps [`crate::identity::challenge::PeerAuthOutcome`] to this module's own
 /// `Result` — the exact logic [`connect_voyage_pipe`] runs, pulled out so
 /// it is directly unit-testable (U1a Codex round-1, minor cluster: "a
 /// constructor-level failure-mapping test") without needing an OS-level
@@ -30,11 +30,11 @@ impl std::fmt::Debug for PipeClient {
 /// is constructible in CI (a genuine Foreign result needs a second real
 /// account; the ADR itself scopes that proof to step 7's real-machine
 /// suite).
-pub(super) fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
+pub(super) fn map_peer_auth_outcome(outcome: crate::identity::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
     match outcome {
-        crate::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
-        crate::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
-        crate::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
+        crate::identity::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
+        crate::identity::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
+        crate::identity::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
             via: "direct",
             detail: "peer identity authentication could not be completed".to_string(),
         }),
@@ -49,7 +49,7 @@ pub(super) fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) 
 /// directional (governs who may CONNECT, not who MADE the object), so a
 /// raw successful `CreateFileW` here proves nothing about who is on the
 /// other end; this function runs
-/// [`crate::challenge_win::authenticate_server`] (identify the peer process,
+/// [`crate::identity::challenge_win::authenticate_server`] (identify the peer process,
 /// compare its token-user SID to this account's — NOT the full five-step
 /// `challenge()`, which additionally binds a reply's own pid/creation to
 /// this connection and needs a lane-specific request to get one) before
@@ -74,7 +74,7 @@ pub(super) fn map_peer_auth_outcome(outcome: crate::challenge::PeerAuthOutcome) 
 /// now, not this bounded retry.
 pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError> {
     let client = connect_voyage_pipe_unchallenged(voyage_id)?;
-    map_peer_auth_outcome(crate::challenge_win::authenticate_server(&client))?;
+    map_peer_auth_outcome(crate::identity::challenge_win::authenticate_server(&client))?;
     Ok(client)
 }
 
@@ -85,7 +85,7 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError
 /// exactly this reason — an unchallenged `PipeClient` reachable through a
 /// PUBLIC type would be a public path to raw pipe I/O on an unauthenticated
 /// connection, defeating this whole module's own enforcement. See
-/// `probe_win.rs`'s module doc for why making `RealProbeOps` crate-private
+/// `supervisor/probe/win.rs`'s module doc for why making `RealProbeOps` crate-private
 /// costs nothing today (no production code instantiates it yet) and stays
 /// architecturally sound once U2's classifier lands (a public function
 /// in THIS crate, reachable from `sot-capsule`'s separate bin target,
@@ -106,7 +106,7 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 
 /// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
 /// authentication — every real caller must run the SAME five-step
-/// [`crate::challenge_win::challenge`] the mgmt lane's own client does (the
+/// [`crate::identity::challenge_win::challenge`] the mgmt lane's own client does (the
 /// supervisor lane's security is "MUTUAL", not the weaker SID-only proof
 /// [`connect_voyage_pipe`] settles for), so unlike that function this one
 /// intentionally has no `_unchallenged`-free sibling here — the caller
@@ -336,10 +336,10 @@ impl PipeClient {
 /// client implements — `write_all`/`read`/`cancel` already have this
 /// exact signature (modulo the error type, unified by decision 17), so
 /// this is pure delegation. The blanket `impl<C: Client>
-/// ChallengeableConnection for C` in `crate::client` is what makes
+/// ChallengeableConnection for C` in `crate::lane::client` is what makes
 /// `PipeClient` challengeable now — the hand-written façade this impl
 /// used to be (`pipe_error_to_io`, its own `TransportError -> io::Error`
-/// mapping) is gone; `crate::client`'s ONE mapping replaces it.
+/// mapping) is gone; `crate::lane::client`'s ONE mapping replaces it.
 impl Client for PipeClient {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         PipeClient::write_all(self, bytes)
@@ -356,8 +356,8 @@ impl Client for PipeClient {
 
 /// L1-unix LU1a: the Windows-shaped extension half of the same-connection
 /// challenge — see `challenge_win.rs`'s own doc for why this is a separate
-/// trait from [`crate::challenge::ChallengeableConnection`] above.
-impl crate::challenge_win::PipeChallengeable for PipeClient {
+/// trait from [`crate::identity::challenge::ChallengeableConnection`] above.
+impl crate::identity::challenge_win::PipeChallengeable for PipeClient {
     fn raw_handle(&self) -> HANDLE {
         self.raw.0
     }
@@ -372,7 +372,7 @@ pub struct PipeEndpoint;
 
 impl Endpoint for PipeEndpoint {
     type Client = PipeClient;
-    type Process = crate::challenge_win::ChallengedProcess;
+    type Process = crate::identity::challenge_win::ChallengedProcess;
 
     fn connect_voyage_unchallenged(
         &self,
@@ -391,14 +391,14 @@ impl Endpoint for PipeEndpoint {
     fn challenge(
         &self,
         conn: &Self::Client,
-        exchange: &mut dyn crate::exchange::IdentityExchange,
+        exchange: &mut dyn crate::identity::exchange::IdentityExchange,
         reply_deadline: Instant,
-    ) -> crate::challenge::ChallengeOutcome<Self::Process> {
-        crate::challenge_win::challenge(conn, exchange, reply_deadline)
+    ) -> crate::identity::challenge::ChallengeOutcome<Self::Process> {
+        crate::identity::challenge_win::challenge(conn, exchange, reply_deadline)
     }
 
-    fn authenticate_server(&self, conn: &Self::Client) -> crate::challenge::PeerAuthOutcome {
-        crate::challenge_win::authenticate_server(conn)
+    fn authenticate_server(&self, conn: &Self::Client) -> crate::identity::challenge::PeerAuthOutcome {
+        crate::identity::challenge_win::authenticate_server(conn)
     }
 }
 
@@ -427,7 +427,7 @@ pub(super) fn map_client_io_error(op: &'static str) -> impl Fn(std::io::Error) -
 /// constructible deterministically in CI; see `authenticate_server_is_
 /// undetermined_when_step_one_itself_fails` in the integration test for
 /// the OS-call-failure case proven against a real, deliberately invalid
-/// handle instead). Lives here (not in `tests/pipe_win.rs`) because
+/// handle instead). Lives here (not in `tests/pipe_win/`) because
 /// `map_peer_auth_outcome` is a private implementation detail with no
 /// reason to be `pub` merely for testability, and a pure mapping over
 /// already-constructed `PeerAuthOutcome` values needs no real pipe --
@@ -436,7 +436,7 @@ pub(super) fn map_client_io_error(op: &'static str) -> impl Fn(std::io::Error) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenge::{PeerAuthOutcome, PeerAuthenticated};
+    use crate::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
 
     #[test]
     fn map_peer_auth_outcome_authenticated_is_ok() {

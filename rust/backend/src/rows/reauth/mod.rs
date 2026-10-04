@@ -365,7 +365,7 @@ pub async fn handle_workspace_reauth(
 
     // Everything that can still fail has to fail BEFORE the record moves
     // and before the ack: after the ack there is no reader left to tell.
-    let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+    let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
         return refuse(
             "no_state_root",
             format!(

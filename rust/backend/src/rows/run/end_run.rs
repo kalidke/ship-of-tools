@@ -5,7 +5,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 /// Outcome of [`runtime::end_run`] — the daemon's own portable
-/// vocabulary over `sot_log::supervisor_client::EndRunOutcome` (never
+/// vocabulary over `sot_log::attach_client::supervisor_client::EndRunOutcome` (never
 /// that raw, platform-specific type crossing into `handlers.rs`). Defined
 /// here, outside `runtime`, so `handlers.rs`'s outcome→response
 /// mapping stays plain and unit-testable on every platform; `end_run`'s
@@ -24,10 +24,10 @@ pub enum EndRunOutcome {
     AlreadyEnded,
     /// The authority had already reached `Terminal` before this call
     /// ever reached it — its own internal flap/retry budget exhausted
-    /// (`FLAP_THRESHOLD`, `rust/log/src/supervisor.rs`), most often an
+    /// (`FLAP_THRESHOLD`, `rust/log/src/supervisor/`), most often an
     /// agent argv that can never launch (e.g. `claude` missing from
     /// PATH). A `Terminal` authority admits no fresh `EndRun` anyway
-    /// (`supervisor.rs`'s `handle_command` gates `EndRun` on
+    /// (`supervisor/authority/mod.rs`'s `handle_command` gates `EndRun` on
     /// `Lifecycle::Ready`) — so this sends `stop` instead (admitted
     /// unconditionally, regardless of lifecycle: `SupervisorOp::Stop`'s
     /// own admission has no lifecycle gate) and waits for its confirmed
@@ -57,7 +57,7 @@ pub enum EndRunOutcome {
     /// proof came back absent: a bounded, non-blocking attempt to take
     /// `supervisor.lock` on the same state dir succeeded — nobody holds
     /// the AUTHORITY over this row (the kernel released the fence the
-    /// instant its last holder died — `sot_log::fence`) — AND
+    /// instant its last holder died — `sot_log::supervisor::journal::fence`) — AND
     /// [`runtime::leg_absent`] independently proved no LEG holds the
     /// voyage's own `writer.lock` either (`voyage.rs`). No authority AND
     /// no leg is safe to treat as `Removable`, same as `Terminal`.
@@ -119,8 +119,8 @@ pub fn end_run(
     root_canonicalized: bool,
 ) -> std::io::Result<super::EndRunOutcome> {
     use super::EndRunOutcome as R;
-    use sot_log::supervisor_client::EndRunOutcome as O;
-    use sot_log::wire::SupervisorPhase;
+    use sot_log::attach_client::supervisor_client::EndRunOutcome as O;
+    use sot_log::lane::wire::SupervisorPhase;
 
     // A4b: the row's remembered scopes (`row_scope::SCOPES_FILE`)
     // are ended after the graceful end when a supervisor answers, and
@@ -131,7 +131,7 @@ pub fn end_run(
     #[cfg(not(target_os = "linux"))]
     let (root, own) = (PathBuf::new(), String::new());
 
-    let (status, scope) = match sot_log::supervisor_client::query_status(state_dir) {
+    let (status, scope) = match sot_log::attach_client::supervisor_client::query_status(state_dir) {
         Ok((status, process)) => {
             // A4b: the challenged supervisor's own scope, captured
             // and listed durably before the end that makes it exit; a
@@ -250,7 +250,7 @@ pub fn end_run(
             // fresh `EndRun` command would only be refused
             // (`Failed{"no leg is currently running"}`, since
             // `EndRun` requires `Lifecycle::Ready`; see
-            // `supervisor.rs`'s `handle_command`). Skip the doomed
+            // `supervisor/authority/mod.rs`'s `handle_command`). Skip the doomed
             // round trip; retry the stop instead of fabricating a
             // verified outcome this call never actually observed.
             if let Err(d) =
@@ -295,12 +295,12 @@ pub fn end_run(
     }
 
     // Ready/Ending are only reachable once Recovering's own Done arm
-    // has set `authority.voyage_id` (`supervisor.rs`), so this is
+    // has set `authority.voyage_id` (`supervisor/authority/`), so this is
     // always populated here.
     let voyage = status
         .voyage
-        .expect("Ready/Ending implies a voyage_id (supervisor.rs's own recovery transition)");
-    let outcome = sot_log::supervisor_client::end_run(state_dir, &voyage, reason)
+        .expect("Ready/Ending implies a voyage_id (supervisor/'s own recovery transition)");
+    let outcome = sot_log::attach_client::supervisor_client::end_run(state_dir, &voyage, reason)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     Ok(match outcome {
         O::RecordVerified => match stop_and_end_scope(state_dir, "end_run confirmed verified", scope.as_deref(), &root, &own) {
@@ -355,7 +355,7 @@ enum NotProven {
 /// rather than guess.
 fn absence_proof(state_dir: &Path) -> Result<bool, NotProven> {
     let _fence =
-        sot_log::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
+        sot_log::supervisor::journal::fence::lock_supervisor(state_dir).map_err(|_| NotProven::FenceUnavailable)?;
     leg_absent(state_dir).map_err(NotProven::LegCheckFailed)
     // `_fence` drops here, right after `leg_absent`'s own single
     // observation -- observe only, never become the holder.
@@ -383,7 +383,7 @@ fn is_definitely_orphaned(e: &sot_log::Error) -> bool {
 }
 
 /// Whether a `lock_writer` failure is genuine contention (its OWN
-/// bounded-retry exhaustion, `fsutil.rs`) rather than some OTHER
+/// bounded-retry exhaustion, `host/`) rather than some OTHER
 /// refusal that happens to share `Error::State`'s shape — Windows:
 /// `open_lock_file`'s reparse-point refusal is the one other producer
 /// of `Error::State` on this exact call (Codex review, 2026-09-11:
@@ -412,8 +412,8 @@ pub fn is_lock_contention(detail: &str) -> bool {
 /// absence is NOT proven, so the caller must keep the row rather than
 /// guess.
 pub fn leg_absent(state_dir: &Path) -> Result<bool, String> {
-    let voyage = match sot_log::pointer::validate(state_dir) {
-        sot_log::pointer::PointerState::Valid(id) => id,
+    let voyage = match sot_log::supervisor::journal::pointer::validate(state_dir) {
+        sot_log::supervisor::journal::pointer::PointerState::Valid(id) => id,
         other => return Err(format!("voyage pointer is not valid: {other:?}")),
     };
     let root = sot_log::supervisor::voyage_root_path(state_dir, &voyage);
@@ -431,7 +431,7 @@ pub fn leg_absent(state_dir: &Path) -> Result<bool, String> {
 /// leg to run — see that function's own doc for why this exists and
 /// why a failure here is only ever logged, never propagated.
 fn stop_and_warn(state_dir: &Path, why: &'static str) {
-    if let Err(e) = sot_log::supervisor_client::stop(state_dir) {
+    if let Err(e) = sot_log::attach_client::supervisor_client::stop(state_dir) {
         tracing::warn!(
             state_dir = ?state_dir, error = %e, why,
             "capsule workspace: stop after end_run failed (resident supervisor leaked)"
@@ -468,7 +468,7 @@ pub(crate) fn stop_then_end_scope(state_dir: &Path, scope: Option<&str>, root: &
 #[cfg(test)]
 mod is_definitely_orphaned_tests {
     use super::*;
-    use sot_log::transport::TransportError;
+    use sot_log::lane::transport::TransportError;
 
     fn io_transport(kind: std::io::ErrorKind) -> sot_log::Error {
         sot_log::Error::Transport(TransportError::Io {
@@ -540,7 +540,7 @@ mod tests {
         // `writer.lock` exists and is free -- BOTH halves now proven
         // absent.
         let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
-        sot_log::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
+        sot_log::supervisor::journal::pointer::publish(state_dir, voyage_id).expect("publish the pointer");
         let voyage_root = sot_log::supervisor::voyage_root_path(state_dir, voyage_id);
         std::fs::create_dir_all(&voyage_root).expect("voyage root");
         std::fs::write(voyage_root.join("writer.lock"), b"").expect("writer.lock file");
@@ -562,7 +562,7 @@ mod tests {
         // lock attempt must fail regardless of the leg, so `end_run`
         // keeps the unreachable-lane refusal (Err) rather than
         // fabricating `Unheld` out from under a live holder.
-        let holder = sot_log::fence::lock_supervisor(state_dir).expect("take the fence");
+        let holder = sot_log::supervisor::journal::fence::lock_supervisor(state_dir).expect("take the fence");
         match end_run(state_dir, "test reason", true) {
             Err(_) => {}
             Ok(outcome) => {
@@ -578,7 +578,7 @@ mod tests {
     // above (including the no-pointer-published Err case) -- this test
     // instead targets what `leg_absent` cannot organically produce on
     // Linux at all: the OTHER, non-contention refusal `lock_writer` can
-    // report (Windows' reparse-point check, `fsutil.rs`) sharing the SAME
+    // report (Windows' reparse-point check, `host/`) sharing the SAME
     // `Error::State` shape as genuine contention. `is_lock_contention` is
     // the pure predicate that tells them apart (Codex review,
     // 2026-09-11); this is its regression test -- pure string matching,

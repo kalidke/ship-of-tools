@@ -382,7 +382,7 @@ impl LaneServer for SocketServer {
 }
 
 /// TEST-SUPPORT ONLY (`#[cfg(any(test, feature = "test-support"))]`,
-/// matching [`Probes`]'s own gate and `pipe_win.rs`'s identical
+/// matching [`Probes`]'s own gate and `lane/pipe_win/`'s identical
 /// convention for its own test-only methods): a way for a test to WAIT on
 /// an OBSERVED precondition (the events channel genuinely full; a
 /// `Bytes` delivery genuinely abandoned) instead of assuming either from

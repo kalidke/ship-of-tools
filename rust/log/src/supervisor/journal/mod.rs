@@ -44,7 +44,7 @@
 //! `Err` (this module has no fallback interpretation for a version it
 //! does not recognize), never a silent best-effort parse.
 //!
-//! Portable (no OS-specific code): reuses [`crate::fsutil::publish_noreplace`],
+//! Portable (no OS-specific code): reuses [`crate::host::publish_noreplace`],
 //! which already has both platform arms, like `pointer.rs`/`rollout.rs`.
 //!
 //! Single-writer by construction: every write here happens only while the
@@ -107,9 +107,9 @@ fn closed_path(state_dir: &Path, operation_id: &str) -> PathBuf {
 /// module doc); `digest` is the caller's own stable hex digest of the
 /// WIRE command this id names — an id resubmitted with a DIFFERENT
 /// digest is `refused {id_conflict}`, which the caller (not this module)
-/// decides by comparing against [`read_active`]'s answer. `sot_log::wire`
+/// decides by comparing against [`read_active`]'s answer. `sot_log::lane::wire`
 /// owns the canonical BYTE encoding ([`wire::canonical_supervisor_op_bytes`]);
-/// `supervisor.rs` SHA-256s those bytes into the hex string this module
+/// `supervisor/` SHA-256s those bytes into the hex string this module
 /// only stores and compares.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveRecord {
@@ -121,7 +121,7 @@ pub struct ActiveRecord {
 impl ActiveRecord {
     /// Semantic validation beyond "parses as JSON": `digest` must be the exact shape a real SHA-256
     /// hex digest has; every voyage id must be the canonical
-    /// lowercase-hyphenated UUID text [`crate::pointer::canonical_voyage_id`]
+    /// lowercase-hyphenated UUID text [`crate::supervisor::journal::pointer::canonical_voyage_id`]
     /// requires everywhere else in this crate; `reset`'s `aside` must be
     /// a BARE basename — no path separator, no drive-letter colon, never
     /// `.`/`..`/absolute — so a corrupted record can never redirect
@@ -134,16 +134,16 @@ impl ActiveRecord {
         }
         match &self.op {
             ActiveOp::EndRun { voyage, .. } => {
-                if crate::pointer::canonical_voyage_id(voyage).is_none() {
+                if crate::supervisor::journal::pointer::canonical_voyage_id(voyage).is_none() {
                     return Err(Error::Schema(format!("invalid voyage id shape: {voyage:?}")));
                 }
             }
             ActiveOp::Reset { old_voyage, new_voyage, aside } => {
-                if crate::pointer::canonical_voyage_id(new_voyage).is_none() {
+                if crate::supervisor::journal::pointer::canonical_voyage_id(new_voyage).is_none() {
                     return Err(Error::Schema(format!("invalid voyage id shape: {new_voyage:?}")));
                 }
                 if let Some(v) = old_voyage {
-                    if crate::pointer::canonical_voyage_id(v).is_none() {
+                    if crate::supervisor::journal::pointer::canonical_voyage_id(v).is_none() {
                         return Err(Error::Schema(format!("invalid voyage id shape: {v:?}")));
                     }
                 }
@@ -190,7 +190,7 @@ pub enum ActiveOp {
         /// The leg epoch this operation targeted, if known at admission
         /// time — recovery's own "reads the DURABLE MARKER ... a marker
         /// in the leg's own epoch means ACCEPTED" needs this to know
-        /// WHICH epoch to ask [`crate::verify::leg_carries_run_end_marker`]
+        /// WHICH epoch to ask [`crate::store::verify::leg_carries_run_end_marker`]
         /// about (a marker "governs only its OWN epoch"). `None` is a
         /// real, recoverable case (recovery falls back to the CURRENT
         /// voyage's latest leg) — never confused with "this was actually
@@ -254,7 +254,7 @@ pub enum TerminalRecord {
 /// fsyncs the directory itself and its PARENT (`state_dir`) — restating
 /// an already-durable anchor costs a little I/O and is always correct
 /// (the same "restating is what the barrier is for" philosophy
-/// `fsutil::finish_publication` already uses), where checking "did this
+/// `host::finish_publication` already uses), where checking "did this
 /// call create it for the first time" and fsyncing only then would leave
 /// a residue directory that was never durably anchored by an EARLIER,
 /// crashed first call. Without this, the very first `begin` under a
@@ -264,15 +264,15 @@ pub enum TerminalRecord {
 pub fn ensure_dir(state_dir: &Path) -> Result<()> {
     let dir = journal_dir(state_dir);
     std::fs::create_dir_all(&dir)?;
-    crate::fsutil::fsync_dir(&dir)?;
-    crate::fsutil::fsync_dir(state_dir)?;
+    crate::host::fsync_dir(&dir)?;
+    crate::host::fsync_dir(state_dir)?;
     Ok(())
 }
 
 /// Durably publish `operation_id`'s `.active` record BEFORE the first
 /// irreversible act (ADR 0041: "publishes a journal record ... before
 /// the first irreversible act"). Crash-durable: temp file, write, fsync,
-/// no-clobber rename, directory fsync — [`crate::fsutil::publish_noreplace`]'s
+/// no-clobber rename, directory fsync — [`crate::host::publish_noreplace`]'s
 /// own pinned order, not a second implementation of it.
 ///
 /// `Err` wrapping [`std::io::ErrorKind::AlreadyExists`] means this id
@@ -391,7 +391,7 @@ fn publish_json<T: Serialize>(dir: &Path, target: &Path, value: &T) -> Result<()
         f.write_all(&bytes)?;
         f.sync_all()?;
     }
-    let result = crate::fsutil::publish_noreplace(&tmp, target);
+    let result = crate::host::publish_noreplace(&tmp, target);
     if result.is_err() {
         // A lost race (AlreadyExists) or any other publish failure: don't
         // leave this attempt's temp file behind as residue.
@@ -421,7 +421,7 @@ struct EnvelopeOwned<T> {
 
 /// Read `operation_id`'s `.active` record, if any, semantically
 /// validated (see [`ActiveRecord::validate`]). `None` is
-/// [`crate::verify`]-style ADR 0041 `unknown_operation`: "returned for a
+/// [`crate::store::verify`]-style ADR 0041 `unknown_operation`: "returned for a
 /// MISSING journal entry and ONLY that; it is the one state meaning SAFE
 /// TO RESUBMIT."
 pub fn read_active(state_dir: &Path, operation_id: &str) -> Result<Option<ActiveRecord>> {
@@ -470,7 +470,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     if envelope.schema_version != SCHEMA_VERSION {
         return Err(Error::Schema(format!(
             "{}: journal schema version {} is not the {SCHEMA_VERSION} this build understands \
-             (no migration exists — see journal.rs's own doc)",
+             (no migration exists — see supervisor/journal/'s own doc)",
             path.display(),
             envelope.schema_version
         )));

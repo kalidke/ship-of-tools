@@ -2,7 +2,7 @@
 
 use super::*;
 use super::support_tests::*;
-use crate::wire::encode_attach_client;
+use crate::lane::wire::encode_attach_client;
 
 // -- ADR 0046 decision 3 (lane B3b1): owner-emitted pen/geometry -----
 

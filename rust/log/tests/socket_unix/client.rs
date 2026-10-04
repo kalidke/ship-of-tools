@@ -5,12 +5,12 @@ use super::*;
 // ---------------------------------------------------------------------
 // L1-unix LU1c: `SocketClient` (`write_all`/`read`/`cancel`, and the
 // bounded connect retry loop). Mirrors the analogous section of
-// `tests/pipe_win.rs`. `SocketClient::from_stream_for_test` builds a
+// `tests/pipe_win/`. `SocketClient::from_stream_for_test` builds a
 // client around a plain `UnixStream::connect` — the `pub(crate)`
 // unchallenged constructors are not reachable from this separate
 // integration-test crate, exactly like `pipe_win::
 // connect_voyage_pipe_unchallenged` is not reachable from
-// `tests/pipe_win.rs` either.
+// `tests/pipe_win/` either.
 // ---------------------------------------------------------------------
 
 /// A `SocketClient::read` blocked on one thread is unblocked by

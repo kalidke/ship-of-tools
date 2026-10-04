@@ -1,6 +1,6 @@
 //! Ruling (b): take-on-first-input is a transaction (`TakeTransaction`).
 
-use crate::wire::{self, ResizeRefusedReason};
+use crate::lane::wire::{self, ResizeRefusedReason};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------

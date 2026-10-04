@@ -1,13 +1,13 @@
 //! The capsule: one process babysitting one producer, writing its voyage
 //! (ADR 0041 step 4 — the capsule runtime; ADR 0039 is the format it
-//! writes). Generic over [`crate::producer::Producer`] (ADR 0043
+//! writes). Generic over [`crate::capsule::producer::Producer`] (ADR 0043
 //! "Decisions for LU2"): the writer loop below — the frame factory, the
 //! output budget, the input WAL, the run-end marker, the `AttachProto`
 //! service path, `ShutdownGuard`, rotation and sealing — is
 //! platform-neutral and drives whatever producer the caller names through
-//! exactly nine trait calls: `producer_conpty.rs`'s `ConptyProducer`
-//! (Windows), wrapping `conpty.rs`'s owned-ConPTY primitives, and (LU2b)
-//! `producer_pty.rs`'s `PtyProducer` (Unix), a bare `openpty` fd plus a
+//! exactly nine trait calls: `capsule/producer/conpty/producer.rs`'s `ConptyProducer`
+//! (Windows), wrapping `capsule/producer/conpty/`'s owned-ConPTY primitives, and (LU2b)
+//! `capsule/producer/pty/`'s `PtyProducer` (Unix), a bare `openpty` fd plus a
 //! process group.
 //!
 //! Three properties this module adds over the legacy Linux capsule, all
@@ -54,7 +54,7 @@
 //!   match (a hostile or broken producer's repeat queries) is counted, not
 //!   re-answered and not re-recorded, closing the unbounded-frame-spam
 //!   amplification.
-//! - **Exit status is raw and unsigned end-to-end.** `conpty.rs`'s
+//! - **Exit status is raw and unsigned end-to-end.** `capsule/producer/conpty/`'s
 //!   `exit_code` had a real bug — even after a caller had *already*
 //!   confirmed the process exited, it still mapped a genuine raw exit code
 //!   of 259 to `None`, the exact `STILL_ACTIVE` value it was trying to
@@ -71,7 +71,7 @@
 //!   `Result` (not an undifferentiated "EOF" that swallowed both a clean
 //!   close and a genuine I/O error). Whether that's expected depends
 //!   entirely on WHEN it arrives: before this loop has ever called
-//!   `close_pty()`, it is exactly the anomaly `conpty.rs`'s own contract
+//!   `close_pty()`, it is exactly the anomaly `capsule/producer/conpty/`'s own contract
 //!   says shouldn't happen (ConPTY keeps `hOutput` open regardless of
 //!   child lifetime until explicitly closed) — capsule-fatal, `run`
 //!   returns an `Err` with nothing further written (ADR 0039's crash
@@ -106,9 +106,9 @@
 //! `run` gains a transport-event channel ([`TransportEvent`]/[`Transport`],
 //! the U3 seam — a real named pipe on Windows, or a test transport here)
 //! serviced every MAIN-LOOP iteration through
-//! [`crate::attach_proto::AttachProto`] — that module OWNS the
+//! [`crate::lane::attach_proto::AttachProto`] — that module OWNS the
 //! connection/role/lockstep/pen/keepalive state machine; this loop only
-//! executes the [`crate::attach_proto::Action`]s it returns
+//! executes the [`crate::lane::attach_proto::Action`]s it returns
 //! (`execute_actions`) and feeds events back
 //! (`connection_opened`/`frame`/`sent`/`tick`/`ground_reached`/
 //! `checkpoint_ready`/`take_committed`/`resize_outcome`/`input_outcome`).
@@ -116,20 +116,21 @@
 //! existing subscribers and, on a ground boundary, promotes any pending
 //! attach — the watermark barrier the ADR requires, one loop step.
 
-use crate::attach_proto::{
+use crate::lane::attach_proto::{
     Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
 };
-use crate::envelope::*;
-use crate::producer::{ExitStatus, ParentLease, Producer};
-use crate::host_handshake::{self, HostHandshake};
+use crate::store::envelope::*;
+use crate::capsule::producer::{ExitStatus, ParentLease, Producer};
+use crate::capsule::producer::host_handshake::{self, HostHandshake};
 // the SAME shared-deadline poll-join
-// primitive and the SAME pinned aggregate bound `pipe_win.rs` uses for its
+// primitive and the SAME pinned aggregate bound `lane/pipe_win/` uses for its
 // own worker joins -- one mechanism, one constant, reused here for this
 // module's closer/reader thread joins rather than a second bespoke copy.
-use crate::transport::{join_within, Transport, TransportEvent, TEARDOWN_AGGREGATE_DEADLINE};
-use crate::segment::{Commit, RetentionClass, SegmentWriter};
-use crate::voyage::{DedupeEntry, DedupeState, VoyageStore};
-use crate::wire::{self, Survival};
+use crate::lane::transport::{join_within, Transport, TransportEvent, TEARDOWN_AGGREGATE_DEADLINE};
+use crate::store::segment::{Commit, RetentionClass, SegmentWriter};
+use crate::store::dedupe::{DedupeEntry, DedupeState};
+use crate::store::voyage::VoyageStore;
+use crate::lane::wire::{self, Survival};
 use crate::{Error, Result};
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
@@ -252,7 +253,7 @@ pub struct CapsuleConfig {
     /// verbatim in mgmt `status`.
     pub survival: Survival,
     /// The reader-first rollout gate's input (ADR 0041 "Upgrade and
-    /// version skew"; see `crate::rollout`) — TYPED, identity-bound
+    /// version skew"; see `crate::store::rollout`) — TYPED, identity-bound
     /// evidence, never an `Option` a caller could pass `None` into as an
     /// implicit "no rollback target": `run`
     /// refuses to open a segment declaring
@@ -262,7 +263,7 @@ pub struct CapsuleConfig {
     /// crate's manual testing harness (`sot-capsule.rs`) hardcodes
     /// `RolloutEvidence::NoRollbackTarget` directly, never reading a
     /// stopgap file that could quietly become load-bearing.
-    pub rollout_evidence: crate::rollout::RolloutEvidence,
+    pub rollout_evidence: crate::store::rollout::RolloutEvidence,
     /// ADR 0041 Lifecycle "Discovery, and the two windows a spawn passes
     /// through": `Some(lease)` when a supervisor spawned this process and
     /// wants its parent-death lease checked as the writer fence's own
@@ -440,7 +441,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 #[cfg(target_os = "linux")]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
-    let created = crate::challenge_unix::self_start_ticks()
+    let created = crate::identity::challenge_unix::self_start_ticks()
         .map_err(|e| Error::State(format!("capsule: self_start_ticks failed: {e}")))?;
     Ok(MgmtStatus { pid, created, survival })
 }
@@ -460,7 +461,7 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
 #[cfg(target_os = "macos")]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     let pid = std::process::id();
-    let created = crate::challenge_macos::self_pidversion()
+    let created = crate::identity::challenge_macos::self_pidversion()
         .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;
     Ok(MgmtStatus { pid, created: u64::from(created), survival })
 }

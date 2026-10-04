@@ -12,7 +12,7 @@
 //! scripted test support (`ScriptedProbeOps` and its dummy types) — the
 //! REAL implementation over actual OS objects (`RealProbeOps`,
 //! `SpawnedChild`) is necessarily platform-specific and lives in
-//! `probe_win.rs` today.
+//! `supervisor/probe/win.rs` today.
 //!
 //! U0 SCOPE: the seam and both implementations (real and scripted). Which
 //! observation MEANS `READY`/`ABSENT`/`FOREIGN`/`PENDING`/... is the
@@ -27,7 +27,7 @@
 //! that never touch the OS at all — so a model test can construct every
 //! row without a real pipe, a real spawned process, or a real challenge.
 
-use crate::challenge::ChallengeOutcome;
+use crate::identity::challenge::ChallengeOutcome;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -84,7 +84,7 @@ pub enum FenceProbe {
 pub trait ProbeOps {
     /// A live connection — `PipeClient` for the real impl, a cheap dummy
     /// marker for the scripted impl. No trait bound here: only `ProbeOps::challenge`'s REAL implementation needs
-    /// `crate::challenge::ChallengeableConnection`, and it already knows its own concrete
+    /// `crate::identity::challenge::ChallengeableConnection`, and it already knows its own concrete
     /// `Conn` type, so the bound would only ever force a placeholder
     /// implementation on every OTHER impl for no reason.
     type Conn;
@@ -94,7 +94,7 @@ pub trait ProbeOps {
     /// created it.
     type SpawnedChild;
     /// A proven server's retained identity (Stage A4/B1's READY/ADOPTED
-    /// evidence) — `crate::challenge_win::ChallengedProcess` for the real
+    /// evidence) — `crate::identity::challenge_win::ChallengedProcess` for the real
     /// impl.
     type Process;
 
@@ -152,13 +152,13 @@ pub trait ProbeOps {
 // "test-support"` additionally covers a SEPARATE integration-test crate
 // in `tests/` within this same package, which can enable it via a
 // self-referential `[dev-dependencies]` entry (see Cargo.toml) — the
-// mechanism a later unit's own model test (`tests/supervisor.rs` or
+// mechanism a later unit's own model test (`tests/supervisor/` or
 // similar) is expected to use.
 // ---------------------------------------------------------------------
 
 /// A cheap placeholder connection for [`ScriptedProbeOps`] — never
 /// touches the OS, and never implements
-/// [`crate::challenge::ChallengeableConnection`] at all: only `ProbeOps::challenge`
+/// [`crate::identity::challenge::ChallengeableConnection`] at all: only `ProbeOps::challenge`
 /// consumes that trait, and only the REAL implementation (over a real
 /// `PipeClient`) ever needs it, so requiring it of every `ProbeOps::Conn`
 /// forced this placeholder to carry a fake null handle and three

@@ -17,7 +17,7 @@
 // Split deliberately into PURE helpers (no OS call: the state-dir path
 // arithmetic, the phase-to-wire-string mapping, the agent argv choice)
 // and the platform runtime (spawning, watching, querying, ending a
-// supervisor over `sot_log::supervisor_client`). The pure half is
+// supervisor over `sot_log::attach_client::supervisor_client`). The pure half is
 // compiled and unit-tested on every platform — ADR 0042 L1a's own gate
 // runs `cargo test --workspace` on Linux, and gating path/string
 // arithmetic behind `#[cfg(windows)]` would only prevent that gate from

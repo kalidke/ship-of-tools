@@ -1,7 +1,7 @@
 //! The ADR 0041 step-5 Windows named-pipe transport: a server and client
 //! for `\\.\pipe\sot-voyage-<id>`. It moves bytes and reports completions;
 //! it does not know about mgmt/attach lanes, `hello`, opcodes, or
-//! checkpoints — `wire.rs` owns every frame shape, and
+//! checkpoints — `lane/wire/` owns every frame shape, and
 //! [`wire::FrameSplitter`] is what a consumer of this module's `Bytes`
 //! events feeds. Transport only: no dependency on the capsule or
 //! `sot-capsule` bin, and none may be added here.
@@ -224,20 +224,20 @@
 //!
 //! # Visibility
 //!
-//! Every type below is `pub`, not `pub(crate)` — `tests/pipe_win.rs` is a
+//! Every type below is `pub`, not `pub(crate)` — `tests/pipe_win/` is a
 //! separate integration-test crate, and an integration test can only ever
 //! reach a library's `pub` items.
 
 #![cfg(windows)]
 
-use crate::client::{Client, Endpoint};
-use crate::transport::{
+use crate::lane::client::{Client, Endpoint};
+use crate::lane::transport::{
     join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
     BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL,
     READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
 };
 #[cfg(any(test, feature = "test-support"))]
-use crate::transport::JOIN_POLL_INTERVAL;
+use crate::lane::transport::JOIN_POLL_INTERVAL;
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -290,7 +290,7 @@ fn supervisor_pipe_name_wide(h: &str) -> Vec<u16> {
 }
 
 /// NUL-terminated UTF-16 for an arbitrary Rust string. A small, deliberate
-/// duplicate of `conpty.rs`'s and `fsutil.rs`'s own private copies of this
+/// duplicate of `capsule/producer/conpty/`'s and `host.rs`'s own private copies of this
 /// exact helper — sharing a three-line leaf helper would add machinery
 /// without value under this crate's existing rule.
 fn wide_null(s: &str) -> Vec<u16> {
@@ -310,7 +310,7 @@ fn wide_null(s: &str) -> Vec<u16> {
 /// Anything that fails to parse at all (path-traversal shapes, wrong
 /// length, non-hex bytes) is rejected the same way.
 fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
-    if crate::pointer::canonical_voyage_id(voyage_id).is_some() {
+    if crate::supervisor::journal::pointer::canonical_voyage_id(voyage_id).is_some() {
         Ok(())
     } else {
         Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
@@ -328,8 +328,8 @@ pub type SendMarker = u64;
 
 // `ClosedReason`, `LaneEvent`, and `TransportError` used to be defined
 // here (`PipeError`/this module's own event enums) — L1-unix LU3a (ADR
-// 0043 decisions 17/19) hoisted all three into `crate::transport`, since
-// `socket_unix.rs`'s own copies were byte-for-byte identical in shape and
+// 0043 decisions 17/19) hoisted all three into `crate::lane::transport`, since
+// `lane/socket_unix/`'s own copies were byte-for-byte identical in shape and
 // both platforms' servers now produce the SAME event type. Imported
 // above; nothing in this module defines them anymore.
 
@@ -439,7 +439,7 @@ struct ServerShared {
     /// that ever calls `set_wake` (immediately after `bind`/
     /// `bind_supervisor` returns) — every read after that is wait-free.
     /// Never set at all for the supervisor lane (`bind_supervisor`'s own
-    /// caller, `supervisor.rs`, wakes its main loop by blocking on
+    /// caller, `supervisor/`, wakes its main loop by blocking on
     /// `events()` directly — see that module's own `MAIN_LOOP_POLL`
     /// comment — so it has no need of this).
     activity_wake: OnceLock<Arc<dyn Fn() + Send + Sync>>,
@@ -501,7 +501,7 @@ mod tests {
     // -- join_within: the ADR 0041 step 6 U1b teardown-deadline mechanism,
     // proven directly against plain `std::thread::spawn` closures this
     // module fully controls -- no real pipe needed for the shared-deadline
-    // / loud-on-expiry properties themselves (`tests/pipe_win.rs` proves
+    // / loud-on-expiry properties themselves (`tests/pipe_win/` proves
     // the same mechanism composed with real workers).
 
     #[test]

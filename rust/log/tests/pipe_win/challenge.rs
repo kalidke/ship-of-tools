@@ -5,7 +5,7 @@ use super::*;
 
 // ---------------------------------------------------------------------
 // ADR 0041 U0 round-1: the same-connection challenge's real-pipe tests
-// (moved here from `src/challenge.rs`'s own unit tests -- security-
+// (moved here from `src/identity/challenge.rs`'s own unit tests -- security-
 // sensitive Windows I/O belongs in a named integration target the
 // windows-2022 job runs, not in the crate's own `--lib` test binary).
 // Deadlines are GENEROUS (30s), not the tight 5s the original in-crate
@@ -51,7 +51,7 @@ fn await_status_request(server: &PipeServer, conn_id: ConnId, timeout: Duration)
 /// Real challenge, real pipe, SAME process on both ends — a genuine
 /// same-user server, proven. Also this test's own shared "give me a real
 /// proven process" helper for the two tests below it.
-fn self_proven_challenge() -> ChallengeOutcome<sot_log::challenge_win::ChallengedProcess> {
+fn self_proven_challenge() -> ChallengeOutcome<sot_log::identity::challenge_win::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = PipeServer::bind(&voyage_id, 1).expect("bind");
     let client = connect_voyage_pipe(&voyage_id).expect("connect");
@@ -322,7 +322,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
 /// directly), so a regression that stopped calling `authenticate_server`
 /// at all would still pass this test (nothing here proves enforcement
 /// happened) -- that is exactly why the failure-mapping unit tests in
-/// `pipe_win.rs` itself (`map_peer_auth_outcome`) exist alongside it: they
+/// `lane/pipe_win/` itself (`map_peer_auth_outcome`) exist alongside it: they
 /// prove the CONSTRUCTOR's mapping logic in isolation, and this test
 /// proves the happy path stays usable end to end.
 #[test]
@@ -367,7 +367,7 @@ fn connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_serve
 /// here; this test instead proves the OTHER typed failure — `Undetermined`
 /// — that steps 1-3 alone can already produce.
 struct InvalidHandleConn;
-impl sot_log::challenge::ChallengeableConnection for InvalidHandleConn {
+impl sot_log::identity::challenge::ChallengeableConnection for InvalidHandleConn {
     fn write_all(&self, _bytes: &[u8]) -> std::io::Result<()> {
         unreachable!("authenticate_server never sends a request")
     }
@@ -381,7 +381,7 @@ impl sot_log::challenge::ChallengeableConnection for InvalidHandleConn {
 /// L1-unix LU1a: raw-handle access moved off `ChallengeableConnection`
 /// onto this separate, Windows-only extension trait — see
 /// `challenge_win.rs`'s own doc for why.
-impl sot_log::challenge_win::PipeChallengeable for InvalidHandleConn {
+impl sot_log::identity::challenge_win::PipeChallengeable for InvalidHandleConn {
     fn raw_handle(&self) -> windows_sys::Win32::Foundation::HANDLE {
         windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
     }
@@ -389,8 +389,8 @@ impl sot_log::challenge_win::PipeChallengeable for InvalidHandleConn {
 
 #[test]
 fn authenticate_server_is_undetermined_when_step_one_itself_fails() {
-    use sot_log::challenge::PeerAuthOutcome;
-    use sot_log::challenge_win::authenticate_server;
+    use sot_log::identity::challenge::PeerAuthOutcome;
+    use sot_log::identity::challenge_win::authenticate_server;
     let outcome = authenticate_server(&InvalidHandleConn);
     assert!(matches!(outcome, PeerAuthOutcome::Undetermined), "{outcome:?}");
 }

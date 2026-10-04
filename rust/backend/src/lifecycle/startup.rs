@@ -26,7 +26,7 @@ pub(crate) fn begin(
     workspaces: &Workspaces,
     ws_events: &broadcast::Sender<WorkspaceChanged>,
 ) -> Arc<Leases> {
-    let own_boot = sot_log::challenge::boot_identity();
+    let own_boot = sot_log::identity::challenge::boot_identity();
     let now_ms = lease::now_ms();
     if let Err(e) = &own_boot {
         tracing::warn!("boot identity unknown, so no lease can be granted: {e}");
@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
-    use sot_log::challenge::{PeerAuthOutcome, PeerAuthenticated};
+    use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
     use sot_protocol::ops::{FeLeaseReq, LeaseOutcome};
 
     use crate::lease::HeldRecord;
@@ -154,7 +154,7 @@ mod tests {
         // A directory where the registration file goes: it will not go.
         std::fs::create_dir_all(crate::workspaces::toml_path_for(&stuck.slug)).unwrap();
 
-        let own = sot_log::challenge::boot_identity().expect("this host's boot");
+        let own = sot_log::identity::challenge::boot_identity().expect("this host's boot");
         let state = tempfile::tempdir().unwrap();
         let path = state.path().join(bounds::HELD_RECORD_FILE);
         let rec = HeldRecord {

@@ -1,11 +1,11 @@
-//! Black-box tests for `sot_log::wire` (ADR 0041 step 5, unit U1) that
+//! Black-box tests for `sot_log::lane::wire` (ADR 0041 step 5, unit U1) that
 //! exercise it purely through its public API, as a real caller (the
 //! capsule, a test client, step 6's client) would: build frames, encode
 //! them, and feed the resulting bytes through a [`FrameSplitter`] however
 //! they happen to arrive.
 //!
 //! Byte-level goldens, bounds, lane binding, and the chunk-arithmetic
-//! proof live as unit tests inside `src/wire.rs` itself (matching
+//! proof live as unit tests inside `src/lane/wire/` itself (matching
 //! `host_handshake.rs`'s discipline of colocating tests with the module
 //! they exercise). What belongs here instead is scenario coverage that
 //! is inherently about the PUBLIC surface: arbitrary chunking of a
@@ -15,10 +15,10 @@
 //! together pin the WHOLE supervisor lane's v1 wire bytes -- every
 //! top-level and nested variant, every optional field both absent and
 //! present -- against two immutable committed fixture files (ADR 0045
-//! decision 7), the file-based conformance proof `src/wire.rs`'s own
+//! decision 7), the file-based conformance proof `src/lane/wire/`'s own
 //! per-frame inline-byte goldens don't provide.
 
-use sot_log::wire::{
+use sot_log::lane::wire::{
     encode_attach_client, encode_attach_server, encode_keepalive, encode_mgmt_reply,
     encode_mgmt_request, encode_supervisor_reply, encode_supervisor_request, AttachClient,
     AttachRefusedReason, AttachServer, DecodedFrame, FrameSplitter, MgmtReply, MgmtRequest,

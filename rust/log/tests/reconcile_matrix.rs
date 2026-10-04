@@ -22,10 +22,10 @@
 //!
 //! After every non-Err outcome, `verify_voyage` must be green.
 
-use sot_log::record;
-use sot_log::recovery::{reconcile, Reconciled};
-use sot_log::segment::{Commit, HeaderBody, RetentionClass, SegmentReader, SegmentWriter};
-use sot_log::verify::verify_voyage;
+use sot_log::store::record;
+use sot_log::store::recovery::{reconcile, Reconciled};
+use sot_log::store::segment::{Commit, HeaderBody, RetentionClass, SegmentReader, SegmentWriter};
+use sot_log::store::verify::verify_voyage;
 use sot_log::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, Seq, Source};
 use sot_log::{SegmentIdentity, SegmentState};
 use std::path::{Path, PathBuf};

@@ -3,7 +3,7 @@
 //! `sot-conpty-helper --script [repeats] [--linger]`
 //! `sot-conpty-helper --script [repeats] --drip`
 //!
-//! Minimal helper binary for `conpty.rs`'s containment test (ADR 0041
+//! Minimal helper binary for `capsule/producer/conpty/`'s containment test (ADR 0041
 //! §"Containment and the owned ConPTY layer"). Prints its own PID as `pid:<n>\n`, then:
 //!
 //! - top-level invocation (no `--child`): spawns ITSELF again with
@@ -75,7 +75,7 @@
 //! copies.
 //!
 //! `spawn-breakaway <exe> <args…>` (ADR 0043 decision 32's own breakaway
-//! tests, `tests/capsule.rs`): blocks for one line on stdin — the test's
+//! tests, `tests/capsule/`): blocks for one line on stdin — the test's
 //! own signal that it has finished assigning THIS process to whichever
 //! job(s) the test wants it contained by, closing the race a plain
 //! "spawn immediately" would leave open — then spawns `exe args…` with

@@ -2,7 +2,7 @@
 //! the current one established.
 
 use super::*;
-use crate::envelope::Envelope;
+use crate::store::envelope::Envelope;
 use super::lifecycle::check_lifecycle;
 
 /// What the walk has established about the frames before the one it checks.
@@ -387,7 +387,7 @@ fn check_input(
             // (`voyage::parse_idem_key`, the shared implementation
             // — one format check, not two) omit the identity from
             // its index and re-forward it after a crash.
-            if crate::voyage::parse_idem_key(&idem_key).is_none() {
+            if crate::store::dedupe::parse_idem_key(&idem_key).is_none() {
                 return Err(Error::Schema(format!(
                     "input {:?}: idem_key {idem_key:?} is not lowercase hex32",
                     env.seq
@@ -462,7 +462,7 @@ fn check_producer_numbers(root: &Path, env: &Envelope, f64_ok: bool) -> Result<(
             })?;
         }
         if let Some(pr) = &env.payload_ref {
-            if pr.encoding == crate::envelope::PayloadEncoding::JsonUtf8 {
+            if pr.encoding == crate::store::envelope::PayloadEncoding::JsonUtf8 {
                 let bytes = read_blob(root, &pr.blob, env.seq)?;
                 let v: serde_json::Value =
                     serde_json::from_slice(&bytes).map_err(|e| Error::Schema(format!(

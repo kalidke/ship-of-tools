@@ -2,7 +2,7 @@
 
 use super::*;
 use super::support_tests::*;
-use crate::wire::encode_attach_client;
+use crate::lane::wire::encode_attach_client;
 
 // -- the pen --------------------------------------------------------
 

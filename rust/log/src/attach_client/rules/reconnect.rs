@@ -1,6 +1,6 @@
 //! Ruling (d): reconnect backoff and the terminal decision (`ReconnectState`).
 
-use crate::wire::SupervisorPhase;
+use crate::lane::wire::SupervisorPhase;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------
@@ -50,7 +50,7 @@ pub const RECONNECT_BACKOFF_CAP: Duration = Duration::from_secs(4);
 /// figure the ADR's own "Upgrade and version skew" section names as THE
 /// health window ("readiness + stability, 120 s at today's provisional
 /// values") — a distinct instance of the same named concept, not
-/// `supervisor.rs`'s private `READINESS_CUTOFF + STABILITY_INTERVAL`
+/// `supervisor/`'s private `READINESS_CUTOFF + STABILITY_INTERVAL`
 /// (that pair governs the LAUNCHER's rollback decision, a different
 /// authority, and is not `pub`). Re-derive both together if the
 /// provisional value ever changes.
@@ -123,7 +123,7 @@ impl ReconnectState {
     /// only invoking this when BOTH halves of the conjunction are
     /// currently true (Codex review round, finding 8: a live attach
     /// pipe with an unresponsive supervisor must never reach this at
-    /// all — see `fe_client_io.rs`'s own doc on where this is and is
+    /// all — see `attach_client/client.rs`'s own doc on where this is and is
     /// not called). `now` is checked against the FIRST time this
     /// condition was observed continuously.
     pub fn classify_unresponsive(&mut self, now: Instant) -> ReconnectDecision {

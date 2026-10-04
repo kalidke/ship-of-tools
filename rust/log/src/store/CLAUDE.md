@@ -28,11 +28,11 @@ open-time repair may do; `voyage.rs` `VoyageStore::open_prepared` for anything t
 - Only a provably torn tail is discarded (`record::classify_tail`, `recovery::reconcile`); every other defect halts and
   nothing is deleted.
 - A segment is published only by a no-clobber rename followed by a flush of its directory
-  (`fsutil::publish_noreplace`, called from `SegmentWriter::seal` and `recovery`).
+  (`host::publish_noreplace`, called from `SegmentWriter::seal` and `recovery`).
 - A feature-bearing run opens only when `rollout::gate` clears the feature against the installed rollback target's
   reader (called from the capsule's run open). The transaction that would write that evidence is unbuilt, as
   `rollout.rs`'s own doc says.
-- One writer per voyage: `VoyageStore::open_prepared` pins the root (`fsutil::PinnedDir`), takes `writer.lock` through the
+- One writer per voyage: `VoyageStore::open_prepared` pins the root (`host::PinnedDir`), takes `writer.lock` through the
   pin and checks the parent-death lease before it reads any history.
 - The dedupe index is folded in that same walk and fails closed on history it cannot trust (`dedupe::walk_segment`).
 - A blob is published temp, fsync, no-clobber rename; a collision with different bytes is loud

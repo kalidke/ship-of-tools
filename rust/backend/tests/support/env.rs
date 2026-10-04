@@ -132,7 +132,7 @@ impl Env {
                 .expect("chmod runtime tempdir to 0700");
         }
         // ADR 0043 decision 1 (propagation, not discovery): every direct
-        // `sot_log::supervisor_client::*`/`sot_log::fence::*` call THIS
+        // `sot_log::attach_client::supervisor_client::*`/`sot_log::supervisor::journal::fence::*` call THIS
         // TEST PROCESS ITSELF makes (never through the daemon's own wire
         // protocol) must resolve the SAME `SOT_RUNTIME_DIR` the spawned
         // `sotd` was launched with (`spawn_sotd`'s own `.env(...)`) — a
@@ -201,7 +201,7 @@ impl Env {
     }
 
     /// Spawn a real `sotd` rooted at this env's project/state/config —
-    /// `sot_log::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%` on
+    /// `sot_log::host::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%` on
     /// Windows / `$XDG_STATE_HOME` on Linux directly (no daemon CLI flag
     /// exists for it), and `workspaces.rs`'s own registry root reads
     /// `%XDG_CONFIG_HOME%`/`$XDG_CONFIG_HOME` on the respective platform —
@@ -266,7 +266,7 @@ impl Env {
     }
     /// macOS lane: `not(windows)`, mirroring the SHIPPED
     /// `workspaces::app_config_dir`, whose non-Windows arm is
-    /// `sot_log::state_dir::sot_config_dir()` (`$XDG_CONFIG_HOME`, else
+    /// `sot_log::host::state_dir::sot_config_dir()` (`$XDG_CONFIG_HOME`, else
     /// `$HOME/.config`) on every Unix, macOS included — so the Linux gate
     /// here was narrower than the behaviour it mirrors.
     #[cfg(not(windows))]

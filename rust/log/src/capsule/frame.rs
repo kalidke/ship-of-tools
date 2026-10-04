@@ -16,7 +16,7 @@ pub(super) fn wall_ms() -> i64 {
 
 /// The writer loop's frame factory: sequential seq, capsule clocks, and the
 /// per-run refs (attached_to / input WAL) threaded through one small state.
-/// Identical in shape to `capsule.rs`'s `FrameCtx` — duplicated, not
+/// Identical in shape to `capsule/frame.rs`'s `FrameCtx` — duplicated, not
 /// shared (module doc).
 pub(super) struct FrameCtx {
     pub(super) epoch: u64,
@@ -172,7 +172,7 @@ pub(super) fn commit_run_end_marker(
 /// this function writes — `input`, `refused_stale_epoch`, `forward_intent`,
 /// `forwarded` alike — carries `ctx.take_epoch`, the CURRENTLY COMMITTED
 /// epoch, in its `Actor.take_epoch` field, NEVER the wire-claimed
-/// (possibly stale) `take_epoch` parameter. `verify.rs` requires every
+/// (possibly stale) `take_epoch` parameter. `store/verify/` requires every
 /// controller frame's declared `take_epoch` to equal whatever is committed
 /// AT THAT POINT in the frame stream (`controller take_epoch {te} !=
 /// committed {committed_take_epoch}` is its exact check) — that field
@@ -182,7 +182,7 @@ pub(super) fn commit_run_end_marker(
 /// `claimed` object in its body (ignorable extra JSON — ADR 0039: "unknown
 /// object members are ignorable") for operators who want to see what was
 /// actually asserted. `controller_id` stays the WIRE-CLAIMED identity
-/// (unlike `take_epoch`, `verify.rs` never checks it against anything, and
+/// (unlike `take_epoch`, `store/verify/` never checks it against anything, and
 /// recording who actually attempted the write is more useful than
 /// overwriting it with the current holder's name on a REFUSED attempt).
 ///
@@ -319,7 +319,7 @@ pub(super) fn run_input_wal(
 }
 
 /// Minimal base64 (standard alphabet, padded) — duplicated from
-/// `capsule.rs`; see the module doc.
+/// `capsule/`; see the module doc.
 pub(super) mod base64_engine {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     pub fn encode_b64(data: &[u8]) -> String {
@@ -479,7 +479,7 @@ mod tests {
         drop(w);
         let seg_dir = dir.path().join("rem4").join("seg");
         assert!(
-            crate::verify::leg_carries_run_end_marker(&seg_dir, "rem4", 1).unwrap(),
+            crate::store::verify::leg_carries_run_end_marker(&seg_dir, "rem4", 1).unwrap(),
             "a marker whose write succeeded (only its fsync report lied) must still be visible \
              to the accessor -- a requester's pessimistic report can never erase a real byte"
         );
@@ -535,7 +535,7 @@ mod tests {
             let name = if power_loss { "iwb" } else { "iwa" };
             let (mut store, mut w) = run_end_marker_writer(dir.path(), name);
             let seg_dir = dir.path().join(name).join("seg");
-            let open = w.identity().path(&seg_dir, crate::segment::SegmentState::Open);
+            let open = w.identity().path(&seg_dir, crate::store::segment::SegmentState::Open);
             let mut ctx = input_wal_ctx(1);
             let mut witness = PtyWitness::new(open.clone());
             let mut fw = 0u64;
@@ -560,7 +560,7 @@ mod tests {
             let mut w = store
                 .open_segment_with_features(0, vec!["sot.capsule.run-end-requested-v1".to_string()])
                 .unwrap();
-            let open2 = w.identity().path(&seg_dir, crate::segment::SegmentState::Open);
+            let open2 = w.identity().path(&seg_dir, crate::store::segment::SegmentState::Open);
             let mut ctx = input_wal_ctx(2);
             let mut witness = PtyWitness::new(open2);
             let mut fw = 0u64;
@@ -581,7 +581,7 @@ mod tests {
     fn input_wal_fsync_error_after_an_ack_halts_before_the_next_forward() {
         let dir = tempfile::tempdir().unwrap();
         let (mut store, mut w) = run_end_marker_writer(dir.path(), "iwf");
-        let open = w.identity().path(&dir.path().join("iwf").join("seg"), crate::segment::SegmentState::Open);
+        let open = w.identity().path(&dir.path().join("iwf").join("seg"), crate::store::segment::SegmentState::Open);
         let mut ctx = input_wal_ctx(1);
         let mut witness = PtyWitness::new(open);
         let mut fw = 0u64;

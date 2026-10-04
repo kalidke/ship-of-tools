@@ -15,7 +15,7 @@
 mod support;
 use support::*;
 
-use sot_log::fe_client_io::FeAttachClient;
+use sot_log::attach_client::client::FeAttachClient;
 use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{codec, op, Frame, HelloReq};
 
@@ -220,8 +220,8 @@ async fn k3b_ssh_cold_dial() {
         }
     }
     std::os::unix::fs::symlink(&env.socket_path, sessions.join("sot.sock")).expect("symlink");
-    assert!(sot_log::state_dir::is_private_dir(rt.path()), "temp runtime dir is not private");
-    assert!(sot_log::state_dir::is_private_dir(&rt.path().join("sot")), "temp sot dir is not private");
+    assert!(sot_log::host::state_dir::is_private_dir(rt.path()), "temp runtime dir is not private");
+    assert!(sot_log::host::state_dir::is_private_dir(&rt.path().join("sot")), "temp sot dir is not private");
     // `test -S` fails closed: where this temp dir does not exist (another /tmp behind ssh), the
     // bridge never starts, so it can never fall back to the live runtime dir's socket.
     let remote = format!(

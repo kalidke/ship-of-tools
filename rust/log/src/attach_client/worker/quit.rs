@@ -1,8 +1,8 @@
 //! The quit path: `run_end_run_and_wait`, `run_quit` and the supervisor-lane reconnect it needs.
 
-use crate::client::Endpoint;
-use crate::fe_client::{OutstandingSlot, QuitDispatcher, QuitState};
-use crate::wire::{self, DecodedFrame, SupervisorOp, SupervisorReply, SupervisorRequest};
+use crate::lane::client::Endpoint;
+use crate::attach_client::rules::{OutstandingSlot, QuitDispatcher, QuitState};
+use crate::lane::wire::{self, DecodedFrame, SupervisorOp, SupervisorReply, SupervisorRequest};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,7 @@ use super::*;
 
 
 /// Steady heartbeat cadence for `run_quit`'s own loop, chosen against a
-/// CONFIRMED read of U2's own idle-eviction code (`supervisor.rs`'s
+/// CONFIRMED read of U2's own idle-eviction code (`supervisor/`'s
 /// `service_lane`/`handle_lane_bytes`): a connection's idle clock
 /// (`Conn::last_activity`, evicted past `LANE_IDLE_DEADLINE` = 5 s) is
 /// reset in EXACTLY ONE place — `handle_lane_bytes`'s own

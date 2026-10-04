@@ -2,8 +2,8 @@
 
 use super::support_tests::store;
 use super::*;
-use crate::envelope::*;
-use crate::segment::{tests::test_env, Commit};
+use crate::store::envelope::*;
+use crate::store::segment::{tests::test_env, Commit};
 use serde_json::json;
 
 #[test]
@@ -122,7 +122,7 @@ fn run_end_requested_needs_its_declared_feature() {
     assert!(format!("{err}").contains("does not declare"), "got: {err}");
     run("re2", feat(), json!({"kind": "run_end_requested", "reason": "quit"})).unwrap();
     // The wire's shutdown.reason permits empty (require_nonempty=false
-    // in wire.rs) — the marker carries it verbatim.
+    // in lane/wire/) — the marker carries it verbatim.
     run("re3", feat(), json!({"kind": "run_end_requested", "reason": ""})).unwrap();
     assert!(run("re4", feat(), json!({"kind": "run_end_requested"})).is_err());
     assert!(run("re5", feat(), json!({"kind": "run_end_requested", "reason": 1})).is_err());
@@ -197,7 +197,7 @@ fn unknown_feature_name_refuses_the_whole_segment() {
 /// never disagree: the frame cannot even be written.
 #[test]
 fn spilled_control_frame_is_refused() {
-    use crate::envelope::{PayloadEncoding, PayloadRef};
+    use crate::store::envelope::{PayloadEncoding, PayloadRef};
     let dir = tempfile::tempdir().unwrap();
     let mut s = store(dir.path(), "sp2");
     let content =
@@ -208,7 +208,7 @@ fn spilled_control_frame_is_refused() {
     e.class = Class::Lifecycle;
     e.payload = None;
     e.payload_ref = Some(PayloadRef {
-        blob: crate::envelope::BlobRef {
+        blob: crate::store::envelope::BlobRef {
             algo: "sha256".into(),
             digest,
             length: content.len() as u64,
@@ -257,13 +257,13 @@ fn turn_closure_modes() {
 
 #[test]
 fn f64_feature_gates_fractional_producer_numbers() {
-    use crate::segment::{HeaderBody, RetentionClass, SegmentWriter};
+    use crate::store::segment::{HeaderBody, RetentionClass, SegmentWriter};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("f1");
-    crate::voyage::VoyageStore::bootstrap(&root, "f1", RetentionClass::Discard).unwrap();
+    crate::store::voyage::VoyageStore::bootstrap(&root, "f1", RetentionClass::Discard).unwrap();
     let build = |features: Vec<String>, name: &str, dir: &std::path::Path| {
         let root = dir.join(name);
-        crate::voyage::VoyageStore::bootstrap(&root, name, RetentionClass::Discard).ok();
+        crate::store::voyage::VoyageStore::bootstrap(&root, name, RetentionClass::Discard).ok();
         let header = HeaderBody {
             version: 1,
             required_features: features,
@@ -304,7 +304,7 @@ fn f64_feature_gates_fractional_producer_numbers() {
 /// (spilled) must hit the same f64 gate as an inline payload.
 #[test]
 fn f64_gate_covers_spilled_json_payload_ref() {
-    use crate::envelope::{PayloadEncoding, PayloadRef};
+    use crate::store::envelope::{PayloadEncoding, PayloadRef};
     let dir = tempfile::tempdir().unwrap();
     let mut s = store(dir.path(), "sp1");
     let content = br#"{"cost": 0.5}"#;
@@ -321,7 +321,7 @@ fn f64_gate_covers_spilled_json_payload_ref() {
     prod.refs = vec![FrameRef { kind: RefKind::AttachedTo, frame: Seq { epoch: 1, n: 1 } }];
     prod.payload = None;
     prod.payload_ref = Some(PayloadRef {
-        blob: crate::envelope::BlobRef {
+        blob: crate::store::envelope::BlobRef {
             algo: "sha256".into(),
             digest,
             length: content.len() as u64,

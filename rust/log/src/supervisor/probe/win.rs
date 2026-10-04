@@ -1,4 +1,4 @@
-//! Windows half of the probe classifier's OS-facing seam (`crate::probe`
+//! Windows half of the probe classifier's OS-facing seam (`crate::supervisor::probe`
 //! is the platform-neutral trait and scripted test support — see that
 //! module's own doc): [`RealProbeOps`], the real `ProbeOps` implementation
 //! over an actual named pipe and spawned child, and [`SpawnedChild`], the
@@ -8,9 +8,9 @@
 
 #![cfg(windows)]
 
-use crate::challenge::ChallengeOutcome;
-use crate::challenge_win::{self, ChallengedProcess};
-use crate::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
+use crate::identity::challenge::ChallengeOutcome;
+use crate::identity::challenge_win::{self, ChallengedProcess};
+use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -109,12 +109,12 @@ impl SpawnedChild {
 /// already gated behind `cfg(test)`/`test-support`) at their current
 /// visibility is unaffected: neither one hands back a real, unauthenticated
 /// `PipeClient` to anything outside this crate. `sot-capsule
-/// supervise` (`supervisor.rs`) is that consumer, on Windows exactly as
+/// supervise` (`supervisor/`) is that consumer, on Windows exactly as
 /// on Linux.
 pub(crate) struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {
-    type Conn = crate::pipe_win::PipeClient;
+    type Conn = crate::lane::pipe_win::PipeClient;
     type SpawnedChild = SpawnedChild;
     type Process = ChallengedProcess;
 
@@ -138,9 +138,9 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn connect(&self, voyage_id: &str) -> ConnectOutcome<Self::Conn> {
-        match crate::pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
+        match crate::lane::pipe_win::connect_voyage_pipe_unchallenged(voyage_id) {
             Ok(client) => ConnectOutcome::Connected(client),
-            Err(crate::transport::TransportError::Io { source, .. }) => {
+            Err(crate::lane::transport::TransportError::Io { source, .. }) => {
                 use windows_sys::Win32::Foundation::{
                     ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
                 };
@@ -156,13 +156,13 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
-        let mut exchange = crate::exchange::VoyageMgmtExchange::default();
+        let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
         challenge_win::challenge(conn, &mut exchange, deadline)
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
         let lock_path = voyage_root.join("writer.lock");
-        match crate::fsutil::lock_writer(&lock_path) {
+        match crate::host::lock_writer(&lock_path) {
             // The guard drops here, releasing the fence immediately --
             // this is a PROBE, never a hold.
             Ok(_guard) => FenceProbe::Free,

@@ -4,7 +4,7 @@
 //! test to update casually. The fixture doubles as the cross-language
 //! conformance input (the Julia reader will consume the same file).
 
-use sot_log::segment::{Commit, HeaderBody, RetentionClass, SegmentReader, SegmentWriter};
+use sot_log::store::segment::{Commit, HeaderBody, RetentionClass, SegmentReader, SegmentWriter};
 use sot_log::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, Seq, Source};
 use std::path::PathBuf;
 
@@ -209,10 +209,10 @@ fn golden_run_end_requested_segment_bytes_are_pinned() {
 /// Fourth golden: a Unix signal death (ADR 0043 "Decisions for LU2" LU2b,
 /// decision 13) — `producer_dead.detail.signal` (never `.exit_code`, its
 /// mutually exclusive sibling), the shape
-/// `tests/capsule.rs`'s own `unix_only::signal_death_records_signal`
+/// `tests/capsule/`'s own `unix_only::signal_death_records_signal`
 /// exercises against a real killed child; this fixture pins the WIRE
 /// BYTES for that same shape without needing a real process. Both readers
-/// treat `detail` as free-form (`verify.rs`; `julia/sotlog` reads
+/// treat `detail` as free-form (`store/verify/`; `julia/sotlog` reads
 /// neither), so this is purely additive — no new required feature is
 /// declared. Regenerate: UPDATE_GOLDEN=1.
 #[test]
@@ -272,7 +272,7 @@ fn golden_signal_death_segment_bytes_are_pinned() {
 
     // The actual property this fixture exists to pin: `detail.signal`
     // round-trips through a real read + seal verification exactly as
-    // `verify.rs`/`julia/sotlog` would see it (both treat `detail` as
+    // `store/verify/`/`julia/sotlog` would see it (both treat `detail` as
     // free-form — ADR 0043 decision 13), and no `exit_code` key ever
     // appears alongside it.
     let dead = r.frames.last().unwrap();

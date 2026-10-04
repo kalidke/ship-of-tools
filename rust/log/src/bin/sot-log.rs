@@ -25,8 +25,8 @@ fn main() {
     let Some(root) = args.next() else { usage() };
     let Some(voyage_id) = args.next() else { usage() };
     let mode = match args.next().as_deref() {
-        None => sot_log::verify::VerifyMode::Complete,
-        Some("--allow-open-tip") => sot_log::verify::VerifyMode::AllowOpenTip,
+        None => sot_log::store::verify::VerifyMode::Complete,
+        Some("--allow-open-tip") => sot_log::store::verify::VerifyMode::AllowOpenTip,
         Some(other) => {
             eprintln!("unknown argument: {other}");
             usage();
@@ -38,7 +38,7 @@ fn main() {
     }
 
     let root = PathBuf::from(root);
-    match sot_log::verify::verify_voyage_mode(&root, &voyage_id, mode) {
+    match sot_log::store::verify::verify_voyage_mode(&root, &voyage_id, mode) {
         Ok(()) => {
             println!(
                 "ok: {} segments verified",

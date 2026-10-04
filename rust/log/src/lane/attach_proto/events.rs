@@ -215,8 +215,8 @@ impl AttachProto {
                 // completion -- PenSnapshot, then everything queued
                 // behind the transfer -- must be FULLY built before any
                 // REPLAYED held request runs. A replayed `CommitTake`/
-                // `ApplyResize`'s own loop-side handling (`capsule.rs`'s
-                // `flush_output!`) publishes MORE output to this SAME,
+                // `ApplyResize`'s own loop-side handling (`capsule/writer_loop/output_path.rs`'s
+                // `flush_output`) publishes MORE output to this SAME,
                 // now-`Done` watcher inline, the moment the caller's
                 // action loop reaches it -- which, positioned first as
                 // before this fix, could physically reach the wire ahead
@@ -453,7 +453,7 @@ impl AttachProto {
     /// whether the checkpoint-slot holder is currently `AwaitingGround`.
     ///
     /// Real CI failure (windows-latest, U2 round-3): `ground_reached` used
-    /// to be fed ONLY from `flush_output!`, itself reached only by FRESH
+    /// to be fed ONLY from `flush_output`, itself reached only by FRESH
     /// output crossing the group-commit threshold, or a periodic idle
     /// timer tied to the output channel's own polling cadence — never
     /// directly by admission or by `tick`, the loop's one truly
@@ -505,8 +505,8 @@ impl AttachProto {
     /// THIS one — has already queued its bytes into
     /// `WatcherState::pending_post_watermark` (`output_committed`'s `Some(_)
     /// => queue` arm treats every non-`Done` state alike). `bytes` (the live
-    /// parser's checkpoint, taken via `capsule_win.rs`'s
-    /// `flush_output!`/`ground_reached` watermark barrier: fsync -> publish
+    /// parser's checkpoint, taken via `capsule/writer_loop/output_path.rs`'s
+    /// `flush_output`/`ground_reached` watermark barrier: fsync -> publish
     /// -> checkpoint, in that order, one loop step) reflects EXACTLY that
     /// same committed history — the barrier's own ordering is correct; the
     /// bug was never syncing the queue to it. Left alone, that backlog is a

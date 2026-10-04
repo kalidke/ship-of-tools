@@ -114,7 +114,7 @@ fn eof_before_registration_is_handled_cleanly() {
 
 /// Smoke test: a client that connects and disconnects with NO
 /// synchronization at all. Ported defensively (accepting either honest
-/// outcome, matching `tests/pipe_win.rs`'s own version) even though a
+/// outcome, matching `tests/pipe_win/`'s own version) even though a
 /// Unix listen backlog makes the accept side considerably more
 /// deterministic than a named pipe's `ConnectNamedPipe` — this only
 /// proves the race never wedges anything and never poisons the socket for

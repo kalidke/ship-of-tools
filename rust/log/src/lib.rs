@@ -7,81 +7,22 @@
 //! retention deletion, no forks, no packs — those return through the
 //! `codec_id` / `required_features` / version seams).
 
-pub use lane::attach_proto;
+pub mod attach_client;
 pub mod capsule;
-pub use capsule::producer;
-#[cfg(windows)]
-pub use capsule::producer::conpty::producer as producer_conpty;
-#[cfg(unix)]
-pub use capsule::producer::pty as producer_pty;
-mod identity;
-pub use identity::challenge;
-#[cfg(windows)]
-pub use identity::challenge_win;
-#[cfg(target_os = "linux")]
-pub use identity::challenge_unix;
-#[cfg(target_os = "macos")]
-pub use identity::challenge_macos;
-mod lane;
-pub use lane::client;
-pub use supervisor::probe::classify;
 pub mod claude;
-#[cfg(windows)]
-pub use capsule::producer::conpty;
-pub use lane::transport;
-#[cfg(windows)]
-pub use lane::pipe_win;
-#[cfg(windows)]
-pub use lane::pipe_transport;
-#[cfg(unix)]
-pub use lane::socket_unix;
-#[cfg(unix)]
-pub use lane::socket_transport;
-pub use supervisor::probe;
-#[cfg(windows)]
-pub use supervisor::probe::win as probe_win;
-#[cfg(target_os = "linux")]
-pub use supervisor::probe::unix as probe_unix;
-#[cfg(target_os = "macos")]
-pub use supervisor::probe::macos as probe_macos;
-use capsule::producer::host_handshake;
-pub use identity::deadline;
-mod store;
-pub use store::envelope;
-pub use supervisor::journal::fence;
-pub use identity::exchange;
-pub use attach_client::rules as fe_client;
-mod attach_client;
-pub use attach_client::client as fe_client_io;
-pub use attach_client::worker as attach_worker;
-pub use supervisor::journal;
-#[cfg(windows)]
-pub use supervisor::lease_win as lease;
-pub use supervisor::journal::pointer;
-pub use store::record;
-pub use store::recovery;
-pub use store::rollout;
-pub use store::segment;
-mod host;
-pub use host::state_dir;
+pub mod host;
+pub mod identity;
+pub mod lane;
+pub mod store;
 pub mod supervisor;
-#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
-pub use attach_client::supervisor_client;
-pub use store::verify;
-pub use store::voyage;
-pub use lane::wire;
+
+pub use host::lock_writer;
 #[cfg(windows)]
-pub use host::winhandle;
+pub use host::owner_protected_pipe_descriptor;
 
-use host as fsutil;
-
-pub use fsutil::lock_writer;
-#[cfg(windows)]
-pub use fsutil::owner_protected_pipe_descriptor;
-
-pub use envelope::*;
-pub use record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
-pub use segment::{SegmentIdentity, SegmentReader, SegmentState, SegmentWriter};
+pub use store::envelope::*;
+pub use store::record::{RecordKind, TailClass, CODEC_JSON, MAGIC, PRELUDE_LEN, RECORD_MAX_BODY};
+pub use store::segment::{SegmentIdentity, SegmentReader, SegmentState, SegmentWriter};
 
 /// Errors are split by what the caller may do about them: `TornTail` is the
 /// ONLY recoverable corruption (ADR 0039 tail rule); everything else under
@@ -144,7 +85,7 @@ pub enum Error {
     /// finding on the conpty unit).
     #[cfg(windows)]
     #[error("conpty: {0}")]
-    Conpty(#[from] conpty::ConptyError),
+    Conpty(#[from] capsule::producer::conpty::ConptyError),
     /// A transport OPERATION failed — the former Windows-only `Pipe`
     /// variant (`pipe_win::PipeError`) and Unix-only `Socket` variant
     /// (`socket_unix::SocketError`) merged into one ungated variant (ADR
@@ -161,7 +102,7 @@ pub enum Error {
     /// event, since by then `run` is already past `bind` and mid-loop, not
     /// somewhere a `Result` could propagate to.
     #[error("transport: {0}")]
-    Transport(#[from] transport::TransportError),
+    Transport(#[from] lane::transport::TransportError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

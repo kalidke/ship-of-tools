@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// for a capsule workspace whose supervisor lane could not be reached at
 /// all — connect refused, an undetermined challenge, or a timeout (ADR
 /// 0042 L1a: "failure -> unreachable"). Distinct from every
-/// [`sot_log::wire::SupervisorPhase`] variant, which are all states of a
+/// [`sot_log::lane::wire::SupervisorPhase`] variant, which are all states of a
 /// lane that DID answer, and from [`FOREIGN_PHASE`] (ADR 0030 §8 decision
 /// 31c) below — a challenge that specifically proves foreign now gets its
 /// own phase rather than folding in here.
@@ -33,7 +33,7 @@ pub const UNREACHABLE_PHASE: &str = "unreachable";
 pub const FOREIGN_PHASE: &str = "foreign";
 
 /// The wire phase string for a capsule workspace with no published
-/// voyage pointer (`<state_dir>/drawer.voyage`, `sot_log::pointer` —
+/// voyage pointer (`<state_dir>/drawer.voyage`, `sot_log::supervisor::journal::pointer` —
 /// ADR 0041 Lifecycle's write-once durable fact that a voyage exists).
 /// Rule B (shrink round): the POINTER, not directory presence, is the
 /// discriminator — a state directory can exist with no pointer ever
@@ -58,7 +58,7 @@ pub const NEVER_STARTED_PHASE: &str = "stopped";
 /// Whether a capsule workspace's supervisor lane is even worth querying,
 /// given whether its voyage pointer exists — pure, no I/O itself (the
 /// caller supplies `pointer_exists`, e.g. `phase_of`'s own
-/// `sot_log::pointer::pointer_path(state_dir).is_file()`). `None` means
+/// `sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file()`). `None` means
 /// "query it, we can't tell from this alone"; `Some(..)` short-circuits a
 /// connect attempt that cannot possibly succeed — no pipe was ever bound
 /// for a workspace whose pointer was never published, so `phase_of` skips
@@ -74,11 +74,11 @@ pub fn phase_for_missing_pointer(pointer_exists: bool) -> Option<&'static str> {
 /// Map the supervisor lane's own phase to the wire string
 /// `workspace.list` reports — snake_case, matching every other
 /// wire-enum-as-string in this protocol (`repl_state`, `agent_state`).
-/// Portable: [`sot_log::wire`] has no OS dependency (see that crate's own
+/// Portable: [`sot_log::lane::wire`] has no OS dependency (see that crate's own
 /// module doc), so this needs no `#[cfg(windows)]` either, and the pure
 /// unit tests below exercise it directly on Linux.
-pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
-    use sot_log::wire::SupervisorPhase;
+pub fn phase_str(phase: sot_log::lane::wire::SupervisorPhase) -> &'static str {
+    use sot_log::lane::wire::SupervisorPhase;
     match phase {
         SupervisorPhase::Starting => "starting",
         SupervisorPhase::Ready => "ready",
@@ -89,9 +89,9 @@ pub fn phase_str(phase: sot_log::wire::SupervisorPhase) -> &'static str {
 }
 
 /// Converts to the local `Phase` (R10); [`phase_str`] stays for the wire mapping.
-pub(crate) fn local_phase(phase: sot_log::wire::SupervisorPhase) -> crate::workspaces::Phase {
+pub(crate) fn local_phase(phase: sot_log::lane::wire::SupervisorPhase) -> crate::workspaces::Phase {
     use crate::workspaces::Phase;
-    use sot_log::wire::SupervisorPhase as SP;
+    use sot_log::lane::wire::SupervisorPhase as SP;
     match phase {
         SP::Starting => Phase::Starting,
         SP::Ready => Phase::Ready,
@@ -105,11 +105,11 @@ pub(crate) fn local_phase(phase: sot_log::wire::SupervisorPhase) -> crate::works
 pub fn probe(state_dir: &Path) -> (&'static str, crate::workspaces::Observation) {
     use crate::workspaces::{Observation, SupervisorIdentity};
     if let Some(phase) =
-        super::phase_for_missing_pointer(sot_log::pointer::pointer_path(state_dir).is_file())
+        super::phase_for_missing_pointer(sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file())
     {
         return (phase, Observation::Stopped);
     }
-    match sot_log::supervisor_client::query_status(state_dir) {
+    match sot_log::attach_client::supervisor_client::query_status(state_dir) {
         // The retained process handle (the second element) is not
         // this caller's concern -- a one-shot phase probe, dropped
         // (closing the handle) the instant this returns.
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn phase_str_is_total_and_snake_case() {
-        use sot_log::wire::SupervisorPhase;
+        use sot_log::lane::wire::SupervisorPhase;
         assert_eq!(phase_str(SupervisorPhase::Starting), "starting");
         assert_eq!(phase_str(SupervisorPhase::Ready), "ready");
         assert_eq!(phase_str(SupervisorPhase::Ending), "ending");
@@ -187,7 +187,7 @@ mod tests {
         // started must read as quietly "stopped", not as the loud
         // "unreachable" a query FAILURE reports — the two must never
         // collide with each other or with any answered lifecycle phase.
-        use sot_log::wire::SupervisorPhase;
+        use sot_log::lane::wire::SupervisorPhase;
         assert_ne!(NEVER_STARTED_PHASE, UNREACHABLE_PHASE);
         for p in [
             SupervisorPhase::Starting,
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn unreachable_phase_is_distinct_from_every_answered_phase() {
-        use sot_log::wire::SupervisorPhase;
+        use sot_log::lane::wire::SupervisorPhase;
         for p in [
             SupervisorPhase::Starting,
             SupervisorPhase::Ready,

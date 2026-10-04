@@ -489,7 +489,7 @@ fn map_kind(k: &notify::EventKind) -> Option<ChangeKind> {
 /// preview events for files no preview pane will ever show.
 fn self_owned_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Some(state) = sot_log::state_dir::sot_state_dir() {
+    if let Some(state) = sot_log::host::state_dir::sot_state_dir() {
         roots.push(state);
     }
     // A release install's prefix (`<prefix>/updates` is the staging area, and

@@ -68,7 +68,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
 
     let frames = sealed_frames(&state_dir, &voyage);
     let resize_from_headless = frames.iter().any(|f| {
-        if f.class != sot_log::envelope::Class::ControlExchange {
+        if f.class != sot_log::store::envelope::Class::ControlExchange {
             return false;
         }
         let Some(p) = f.payload.as_ref() else { return false };
@@ -80,7 +80,7 @@ fn headless_attach_adopts_capsule_geometry_and_types_without_resizing() {
     let input_frame = frames
         .iter()
         .find(|f| {
-            f.class == sot_log::envelope::Class::Input
+            f.class == sot_log::store::envelope::Class::Input
                 && f.source.actor.controller_id.as_deref() == Some("lu6c-headless-test")
         })
         .expect("no input frame attributed to the headless controller_id in the sealed record");
@@ -296,13 +296,13 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
         frames
             .iter()
             .filter(|f| {
-                f.class == sot_log::envelope::Class::Input
+                f.class == sot_log::store::envelope::Class::Input
                     && f.source.actor.controller_id.as_deref() == Some(cid)
             })
             .count()
     };
     assert_eq!(count_for("lu6c-headless-b"), 1, "the headless write must appear EXACTLY once in the sealed record");
-    // `capsule.rs`'s own `run_input_wal` commits a durable `Class::Input`
+    // `capsule/frame.rs`'s own `run_input_wal` commits a durable `Class::Input`
     // frame on EVERY fresh idem_key BEFORE deciding stale-or-not ("input is
     // durably logged before the producer sees it", ADR 0039) — so
     // driver_a's post-demotion keystroke is not a single logged attempt:
@@ -320,7 +320,7 @@ fn headless_write_while_a_client_is_driving_demotes_it_without_duplicating_input
     let refused_stale_count = frames
         .iter()
         .filter(|f| {
-            f.class == sot_log::envelope::Class::Lifecycle
+            f.class == sot_log::store::envelope::Class::Lifecycle
                 && f.source.actor.controller_id.as_deref() == Some("lu6c-driver-a")
                 && f.payload.as_ref().and_then(|p| p.get("fact")?.get("fact")?.as_str()) == Some("refused_stale_epoch")
         })

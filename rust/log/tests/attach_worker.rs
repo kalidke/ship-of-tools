@@ -1,9 +1,9 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! ADR 0046 decision 3 (lane B3a): real cross-process integration tests
-//! for `sot_log::attach_worker::AttachWorker` — the transport half
+//! for `sot_log::attach_client::worker::AttachWorker` — the transport half
 //! extracted out of `fe_client_io::FeAttachClient`. This is a PURE,
-//! behavior-preserving extraction (see `attach_worker.rs`'s own top
-//! doc): `tests/fe_client.rs`'s existing 11 real-process tests, run
+//! behavior-preserving extraction (see `attach_client/worker/`'s own top
+//! doc): `tests/fe_client/`'s existing 11 real-process tests, run
 //! unchanged against the new wrapper, are the proof of that. This file
 //! adds coverage for the one genuine addition the extraction makes —
 //! bounded ingress — plus a real multi-chunk checkpoint transfer, whose
@@ -13,9 +13,9 @@
 //! existing test: every other real-process fixture in this crate uses a
 //! small 80x24 terminal whose checkpoint always fits in one wire chunk.
 //!
-//! Real supervisor+capsule fixture — `tests/fe_client.rs`'s own pattern
+//! Real supervisor+capsule fixture — `tests/fe_client/`'s own pattern
 //! (spawn a real `sot-capsule supervise`, poll for lane readiness),
-//! since a `TestTransport`-mocked capsule (`tests/capsule.rs`'s own
+//! since a `TestTransport`-mocked capsule (`tests/capsule/`'s own
 //! harness) drives the capsule's server-side `Transport` trait, not the
 //! client-side `Endpoint` an `AttachWorker` connects through.
 //!
@@ -26,11 +26,11 @@
 //! to force multiple wire chunks needs its own producer this lane has
 //! no reason to build.
 
-use sot_log::attach_worker::{AttachWorker, WorkerEvent};
-use sot_log::client::{Endpoint, PlatformEndpoint};
-use sot_log::state_dir::state_dir_hash;
+use sot_log::attach_client::worker::{AttachWorker, WorkerEvent};
+use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use sot_log::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
-use sot_log::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
+use sot_log::lane::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -49,7 +49,7 @@ const SHELL: &[&str] = &["cmd.exe"];
 const SHELL: &[&str] = &["/bin/sh"];
 
 // -----------------------------------------------------------------------
-// Leaf helpers — duplicated from `tests/fe_client.rs` rather than shared
+// Leaf helpers — duplicated from `tests/fe_client/` rather than shared
 // (this crate's own convention, stated there: a supervisor-lane CLIENT
 // test's helpers are small enough that one copy per file beats a shared
 // dependency between two independent test binaries).
@@ -285,7 +285,7 @@ fn an_oversize_input_is_admitted_when_the_queue_is_idle() {
 /// A large, densely-colored screen (near the checkpoint format's own
 /// MAX_ROWS x MAX_COLS) so the checkpoint's own worst-case-per-cell cost
 /// (content + non-default attrs) comfortably exceeds one wire chunk
-/// (`sot_log::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`, ~1 MiB) — a blank or
+/// (`sot_log::lane::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD`, ~1 MiB) — a blank or
 /// default-attrs screen would not (a default cell costs a single zero
 /// byte in the checkpoint format), so this is the one real-process
 /// fixture in the crate whose checkpoint transfer actually spans
@@ -328,10 +328,10 @@ fn multi_chunk_checkpoint_reassembles_correctly() {
     });
 
     assert!(
-        checkpoint.len() > sot_log::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD,
+        checkpoint.len() > sot_log::lane::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD,
         "expected a checkpoint spanning multiple wire chunks (>{} bytes); got {} bytes -- \
          the fixture's own content may need to be denser",
-        sot_log::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD,
+        sot_log::lane::wire::MAX_CHECKPOINT_CHUNK_PAYLOAD,
         checkpoint.len()
     );
 

@@ -35,7 +35,7 @@ const REVOKE_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// XNU may change, and the honest thing for a record-keeping system is to
 /// print what it is rather than to pin a figure this project does not
 /// control. It also reports HOW the master ended — `Ok(0)` or `EIO` —
-/// because `capsule.rs`'s rule admits either (Darwin may report a revoked
+/// because `capsule/`'s rule admits either (Darwin may report a revoked
 /// master as either, and both reach the same arm).
 #[test]
 fn a_revoked_pty_master_reports_how_much_of_the_final_output_survived() {
@@ -79,7 +79,7 @@ fn a_revoked_pty_master_reports_how_much_of_the_final_output_survived() {
         .arg(format!("printf '%{REVOKE_PROBE_BYTES}d' 0; exec /usr/bin/true"));
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // SAFETY: fork-to-exec closure -- `setsid`, `ioctl`, `dup2` and
-    // `close` only, the same async-signal-safe set `producer_pty.rs`'s own
+    // `close` only, the same async-signal-safe set `capsule/producer/pty/`'s own
     // `pre_exec` uses.
     unsafe {
         cmd.pre_exec(move || {

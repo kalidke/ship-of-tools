@@ -6,8 +6,8 @@
 //! (RENAME_NOREPLACE) → verify → unlink the original. Idempotent at every
 //! crash point; states are distinguished by filename.
 
-use crate::fsutil;
-use crate::segment::{RecoveryMeta, SegmentIdentity, SegmentReader, SegmentState};
+use crate::host;
+use crate::store::segment::{RecoveryMeta, SegmentIdentity, SegmentReader, SegmentState};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
@@ -62,7 +62,7 @@ pub fn reconcile(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) ->
             // cannot stand in for this, and reconciliation runs it per
             // segment, which costs nothing — `open_for_writing` already
             // reads and verifies every sealed segment).
-            fsutil::finish_publication(&id.path(seg_dir, Sealed))?;
+            host::finish_publication(&id.path(seg_dir, Sealed))?;
             Ok(Reconciled::Sealed)
         }
 
@@ -75,9 +75,9 @@ pub fn reconcile(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) ->
             // never finished flushing before a prior incarnation crashed,
             // so it must survive until AFTER we've restated that flush
             // ourselves, never before.
-            fsutil::finish_publication(&p)?;
+            host::finish_publication(&p)?;
             std::fs::remove_file(id.path(seg_dir, Recovering))?;
-            fsutil::fsync_dir(seg_dir)?;
+            host::fsync_dir(seg_dir)?;
             Ok(Reconciled::Recovered)
         }
 
@@ -123,15 +123,15 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
     // (r4-8): nothing could have been acked before the header barrier, so
     // reinitializing is safe.
     let bytes = std::fs::read(&open_path)?;
-    let headerless = match crate::record::decode_at(&bytes, 0) {
+    let headerless = match crate::store::record::decode_at(&bytes, 0) {
         Ok(None) => true,                          // empty file
         Err(Error::TornTail { .. }) => true,       // partial header record
-        Ok(Some(rec)) => rec.kind != crate::record::RecordKind::Header,
+        Ok(Some(rec)) => rec.kind != crate::store::record::RecordKind::Header,
         Err(_) => false, // complete-but-corrupt first record: falls through to loud below
     };
     if headerless {
         std::fs::remove_file(&open_path)?;
-        fsutil::fsync_dir(seg_dir)?;
+        host::fsync_dir(seg_dir)?;
         return Ok(Reconciled::ReinitializedOpen);
     }
 
@@ -144,9 +144,9 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
         // the source flush before the rename (pinned publication order;
         // P3 round-1 review blocker, reachable on Linux too).
         reader.verify_seal()?;
-        fsutil::fsync_file(&open_path)?;
+        host::fsync_file(&open_path)?;
         let to = id.path(seg_dir, SegmentState::Sealed);
-        fsutil::publish_noreplace(&open_path, &to)?;
+        host::publish_noreplace(&open_path, &to)?;
         return Ok(Reconciled::PublishedAsIs);
     }
     if reader.tail_tear.is_none() {
@@ -154,7 +154,7 @@ fn reconcile_open(seg_dir: &Path, id: &SegmentIdentity, recovering_epoch: u64) -
     }
 
     // Provable tear: quarantine, then rebuild.
-    fsutil::publish_noreplace(&open_path, &id.path(seg_dir, SegmentState::Recovering))?;
+    host::publish_noreplace(&open_path, &id.path(seg_dir, SegmentState::Recovering))?;
     recover_from_quarantine(seg_dir, id, recovering_epoch)
 }
 
@@ -188,7 +188,7 @@ fn recover_from_quarantine(
     // restating unconditionally here covers both; the fresh case is simply
     // a harmless repeat (Part 3 finding — before building anything ON TOP
     // of this file, its own publication must be durable, not just visible).
-    fsutil::finish_publication(&r_path)?;
+    host::finish_publication(&r_path)?;
     let reader = SegmentReader::read(&r_path, false)?;
     if reader.seal.is_some() {
         // Post-seal records are loud in the reader, so a sealed quarantine
@@ -196,8 +196,8 @@ fn recover_from_quarantine(
         // flush restated first (same cache-visible-seal hazard as
         // reconcile_open's publish-as-is row).
         reader.verify_seal()?;
-        fsutil::fsync_file(&r_path)?;
-        fsutil::publish_noreplace(&r_path, &id.path(seg_dir, SegmentState::Sealed))?;
+        host::fsync_file(&r_path)?;
+        host::publish_noreplace(&r_path, &id.path(seg_dir, SegmentState::Sealed))?;
         return Ok(Reconciled::PublishedAsIs);
     }
     let recovery = reader.tail_tear.map(|(_, dropped)| RecoveryMeta {
@@ -210,18 +210,18 @@ fn recover_from_quarantine(
     let staging = id.path(seg_dir, SegmentState::RecoveringOut);
     if staging.exists() {
         std::fs::remove_file(&staging)?;
-        fsutil::fsync_dir(seg_dir)?;
+        host::fsync_dir(seg_dir)?;
     }
     let mut hasher = sha2::Sha256::new();
-    hasher.update(crate::segment::SEAL_DOMAIN);
+    hasher.update(crate::store::segment::SEAL_DOMAIN);
     hasher.update(prefix);
-    let meta = crate::segment::SealMeta {
+    let meta = crate::store::segment::SealMeta {
         frame_count: reader.frames.len() as u64,
         first_seq: reader.frames.first().map(|f| f.seq),
         last_seq: reader.frames.last().map(|f| f.seq),
         recovery,
     };
-    let (seal_wire, _digest) = crate::segment::build_seal_record(hasher, &meta)?;
+    let (seal_wire, _digest) = crate::store::segment::build_seal_record(hasher, &meta)?;
     {
         use std::io::Write as _;
         let mut f = std::fs::OpenOptions::new()
@@ -232,14 +232,14 @@ fn recover_from_quarantine(
         f.write_all(&seal_wire)?;
         f.sync_all()?;
     }
-    fsutil::publish_noreplace(&staging, &id.path(seg_dir, SegmentState::Sealed))?;
+    host::publish_noreplace(&staging, &id.path(seg_dir, SegmentState::Sealed))?;
     // Verify the published result, then retire the original (transaction
     // scratch — every retained byte lives verbatim in the published file,
     // the recovery seal is the audit).
     let published = id.path(seg_dir, SegmentState::Sealed);
     SegmentReader::read(&published, true)?.verify_seal()?;
     std::fs::remove_file(&r_path)?;
-    fsutil::fsync_dir(seg_dir)?;
+    host::fsync_dir(seg_dir)?;
     Ok(Reconciled::Recovered)
 }
 
@@ -416,8 +416,8 @@ mod latest_leg_state_tests {
 #[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::*;
-    use crate::envelope::Seq;
-    use crate::segment::{Commit, HeaderBody, RetentionClass, SegmentWriter};
+    use crate::store::envelope::Seq;
+    use crate::store::segment::{Commit, HeaderBody, RetentionClass, SegmentWriter};
 
     fn header(index: u64, epoch: u64) -> HeaderBody {
         HeaderBody {
@@ -443,7 +443,7 @@ mod tests {
     fn write_open_with_frames(dir: &Path, n_frames: u64) -> SegmentWriter {
         let mut w = SegmentWriter::create(dir, header(0, 1)).unwrap();
         for n in 1..=n_frames {
-            w.append(&crate::segment::tests::test_env(1, n), Commit::Immediate)
+            w.append(&crate::store::segment::tests::test_env(1, n), Commit::Immediate)
                 .unwrap();
         }
         w
@@ -527,7 +527,7 @@ mod tests {
         let p = dir.path().join("00000000-00000000000001.open");
         let mut bytes = std::fs::read(&p).unwrap();
         // Corrupt a byte in the MIDDLE (inside the first frame), not the tail.
-        let hdr = crate::record::decode_at(&bytes, 0).unwrap().unwrap();
+        let hdr = crate::store::record::decode_at(&bytes, 0).unwrap().unwrap();
         bytes[hdr.wire_len + 20] ^= 0xFF;
         std::fs::write(&p, &bytes).unwrap();
         assert!(reconcile(dir.path(), &id(0, 1), 2).is_err());
@@ -560,7 +560,7 @@ mod tests {
         // Hand-crafted frame body: valid per the open-schema rules, but with
         // z-before-a key order and a member no Envelope field captures.
         let body = br#"{"seq":{"epoch":1,"n":1},"class":"lifecycle","source":{"emitter":"capsule","actor":{"kind":"unknown"},"derivation":"synthetic"},"t_wall_ms":0,"t_mono_us":0,"refs":[],"payload":{"kind":"producer_ready","zeta":1,"alpha":2},"zz_future_member":{"keep":"me"}}"#;
-        let frame_wire = crate::record::encode(crate::record::RecordKind::Frame, body, None).unwrap();
+        let frame_wire = crate::store::record::encode(crate::store::record::RecordKind::Frame, body, None).unwrap();
         let mut bytes = std::fs::read(&p).unwrap();
         bytes.extend_from_slice(&frame_wire);
         let prefix_len = bytes.len();

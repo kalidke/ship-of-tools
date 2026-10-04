@@ -3,9 +3,7 @@
 ## Idea
 One answer per machine fact and one primitive per platform mechanism: where state lives, what the host is called, how a
 file is published durably, how a lock is held, and what a volume must support. It lives in sot-log because that is the
-workspace's bottom crate: every other Rust crate can reach it and it reaches none of them. `lib.rs` aliases
-`host as fsutil` and re-exports `host::state_dir` and `host::winhandle`, so the old `crate::fsutil::...` and
-`sot_log::state_dir` paths still resolve until the crate's re-export cleanup.
+workspace's bottom crate: every other Rust crate can reach it and it reaches none of them.
 
 ## Owns
 - The per-machine dirs and the host name (`state_dir.rs`: `sot_state_dir`, `sot_config_dir`, `runtime_dir`,
@@ -13,8 +11,8 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - Publication and fsync (`durable.rs`: `publish_noreplace`, `finish_publication`, `rename_noreplace_raw`, `fsync_dir`,
   `fsync_file`, `ensure_container`, `create_dir_protected`).
 - Kernel locks (`lock.rs`: `lock_writer`, `lock_supervisor`).
-- The daemon's single-instance lock (`lock.rs`: `daemon_lock_path`, `try_lock_daemon`, `DaemonLock`), re-exported at
-  `sot_log::fence` because the backend has no library target its tests could reach.
+- The daemon's single-instance lock (`lock.rs`: `daemon_lock_path`, `try_lock_daemon`, `DaemonLock`), reached by the backend
+  as `sot_log::host::daemon_lock_path`, `try_lock_daemon` and `DaemonLock`.
 - The volume preflight (`volume.rs`: `preflight_volume`).
 - The directory pin (`pinned_dir.rs`: `PinnedDir`, `DirIdentity`, `dir_identity`).
 - Windows owner-only descriptors and SIDs (`winsec.rs`: `owner_protected_pipe_descriptor`, `token_user_sid_string`).
@@ -38,7 +36,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 ## Connections
 - In this crate: the store, supervisor, lanes, conpty and capsule call `publish_noreplace`, `lock_writer`, `PinnedDir`
   and `state_dir`.
-- Outside: `sot_log::state_dir` in the backend, frontend and protocol (about 75 uses); `sot_log::lock_writer` in the
+- Outside: `sot_log::host::state_dir` in the backend, frontend and protocol (about 75 uses); `sot_log::lock_writer` in the
   backend's leg-absence proof; `sot_log::owner_protected_pipe_descriptor` for the daemon's session pipe;
   `winhandle::harden_own_stdio` in the daemon's main.
 - Beside it: the backend's own platform files `rust/backend/src/paths.rs` and `rust/backend/src/durable.rs`.
@@ -51,7 +49,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 
 ## Files
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`
-  and the re-exports that keep the old `fsutil` paths.
+  and the glob re-exports of the files below.
 - `durable.rs`: durable publication, fsync, no-clobber rename, container creation.
 - `lock.rs`: the writer fence, the supervisor fence and the daemon's single-instance lock, held by the kernel.
 - `pinned_dir.rs`: a directory's kernel identity and a handle that pins it.

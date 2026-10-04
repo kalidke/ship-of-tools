@@ -27,7 +27,7 @@ struct FakeSupervisor {
     /// identity read, then the post-spawn settle read. Both are phases
     /// `phase_rests` accepts, so the wait returns on its first poll and
     /// no test ever sleeps on the real 30 s deadline.
-    status: std::sync::Mutex<std::collections::VecDeque<(u32, u64, sot_log::wire::SupervisorPhase)>>,
+    status: std::sync::Mutex<std::collections::VecDeque<(u32, u64, sot_log::lane::wire::SupervisorPhase)>>,
     end_run: Result<crate::capsule_workspace::EndRunOutcome, String>,
     spawn: Result<&'static str, String>,
     reset: Result<String, String>,
@@ -39,7 +39,7 @@ impl FakeSupervisor {
     /// where a resumed run rests, an end that verified and a reset that
     /// minted.
     fn healthy() -> Self {
-        use sot_log::wire::SupervisorPhase as P;
+        use sot_log::lane::wire::SupervisorPhase as P;
         Self {
             record: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             spawned_argv: std::sync::Arc::new(std::sync::Mutex::new(None)),
@@ -55,8 +55,8 @@ impl FakeSupervisor {
     /// Re-script the two reads: the identity read, then the settle read.
     fn status_reads(
         &self,
-        identity: (u32, u64, sot_log::wire::SupervisorPhase),
-        settled: (u32, u64, sot_log::wire::SupervisorPhase),
+        identity: (u32, u64, sot_log::lane::wire::SupervisorPhase),
+        settled: (u32, u64, sot_log::lane::wire::SupervisorPhase),
     ) {
         *self.status.lock().unwrap() = [identity, settled].into_iter().collect();
     }
@@ -71,7 +71,7 @@ impl FakeSupervisor {
 }
 
 impl RestartEffects for FakeSupervisor {
-    fn query_status(&self, _state_dir: &Path) -> Result<sot_log::supervisor_client::StatusReport, String> {
+    fn query_status(&self, _state_dir: &Path) -> Result<sot_log::attach_client::supervisor_client::StatusReport, String> {
         self.record.lock().unwrap().push(Effect::Status);
         let (pid, created, phase) = self
             .status
@@ -79,7 +79,7 @@ impl RestartEffects for FakeSupervisor {
             .unwrap()
             .pop_front()
             .expect("the fake was asked for more status reads than it was scripted");
-        Ok(sot_log::supervisor_client::StatusReport { pid, created, voyage: None, leg: None, phase })
+        Ok(sot_log::attach_client::supervisor_client::StatusReport { pid, created, voyage: None, leg: None, phase })
     }
     fn end_run(
         &self,
@@ -228,7 +228,7 @@ async fn a_spawn_that_fails_leaves_the_record_on_the_new_account() {
 // missing `Reset` no pure test of `ready_to_mint` can observe.
 #[tokio::test]
 async fn a_replacement_that_rests_with_a_leg_live_is_never_minted_on() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     let _g = env_guarded();
     let home = home_with(true, &[("team", true)]);
     let scratch = tempfile::tempdir().unwrap();
@@ -254,7 +254,7 @@ async fn a_replacement_that_rests_with_a_leg_live_is_never_minted_on() {
 // incidental — read after the retire, there would be nothing to compare.
 #[tokio::test]
 async fn a_leaked_retire_is_never_minted_on_end_to_end() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     let _g = env_guarded();
     let home = home_with(true, &[("team", true)]);
     let scratch = tempfile::tempdir().unwrap();
@@ -282,7 +282,7 @@ async fn a_leaked_retire_is_never_minted_on_end_to_end() {
 /// login the switch moved away from.
 #[test]
 fn only_the_resting_phase_of_a_resumed_run_licenses_a_mint() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     let fresh = (4242u32, 900u64);
     let retired = Some((1111u32, 800u64));
     assert!(super::ready_to_mint(P::EndedNoRespawn, retired, fresh).is_ok());
@@ -299,7 +299,7 @@ fn only_the_resting_phase_of_a_resumed_run_licenses_a_mint() {
 /// say so, or the next reader chases a missing leg that is running.
 #[test]
 fn a_live_leg_is_reported_as_the_old_login_not_as_an_absence() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     let detail = super::ready_to_mint(P::Ready, Some((1111, 800)), (4242, 900))
         .expect_err("a live leg is not a licence to mint");
     assert!(detail.contains("already live"), "got {detail:?}");
@@ -314,7 +314,7 @@ fn a_live_leg_is_reported_as_the_old_login_not_as_an_absence() {
 /// from its own cached argv and account.
 #[test]
 fn a_leaked_retire_is_never_minted_on_however_it_rests() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     let same = (1111u32, 800u64);
     let detail = super::ready_to_mint(P::EndedNoRespawn, Some(same), same)
         .expect_err("the process the switch retired is not a replacement");
@@ -327,7 +327,7 @@ fn a_leaked_retire_is_never_minted_on_however_it_rests() {
 /// compared, so a recycled pid on a genuinely new process still mints.
 #[test]
 fn a_recycled_pid_on_a_new_authority_still_mints() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     assert!(super::ready_to_mint(P::EndedNoRespawn, Some((1111, 800)), (1111, 901)).is_ok());
 }
 
@@ -335,7 +335,7 @@ fn a_recycled_pid_on_a_new_authority_still_mints() {
 /// whose authority had already gone; it is not evidence of a leak.
 #[test]
 fn an_unknown_predecessor_does_not_block_the_mint() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     assert!(super::ready_to_mint(P::EndedNoRespawn, None, (4242, 900)).is_ok());
 }
 
@@ -345,7 +345,7 @@ fn an_unknown_predecessor_does_not_block_the_mint() {
 /// version's two-second settle was not enough to believe.
 #[test]
 fn only_settled_phases_end_the_wait() {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     for resting in [P::Ready, P::EndedNoRespawn, P::Terminal] {
         assert!(super::phase_rests(resting), "{resting:?} rests");
     }

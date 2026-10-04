@@ -10,7 +10,7 @@ its substitute)".
 
 READER ONLY — no writer. See `docs/adr/0039-voyage-frame-codec-and-segment-format.md`
 for the normative spec; this module implements exactly that document, byte
-for byte, against `rust/log/src/record.rs` and `rust/log/src/segment.rs` as
+for byte, against `rust/log/src/store/record.rs` and `rust/log/src/store/segment.rs` as
 the reference implementation.
 
 Scope note: this reader always treats its input as a **sealed** `.sotseg`

@@ -12,7 +12,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     std::fs::create_dir_all(voyages_dir(&config.state_dir))?;
 
     // ONE AUTHORITY.
-    let _fence = match crate::fence::lock_supervisor(&config.state_dir) {
+    let _fence = match crate::supervisor::journal::fence::lock_supervisor(&config.state_dir) {
         Ok(f) => f,
         // `Error::State` is the ONE error `lock_supervisor` can return for
         // "already held" (see `EXIT_CONTENDED`'s own doc for why this is
@@ -28,7 +28,7 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
         }
     };
 
-    let h = crate::state_dir::state_dir_hash(&config.state_dir);
+    let h = crate::host::state_dir::state_dir_hash(&config.state_dir);
 
     // The lane: bound AFTER the fence, BEFORE any adopt or spawn.
     let lane = match Lane::bind_supervisor(&h, MAX_LANE_INSTANCES) {

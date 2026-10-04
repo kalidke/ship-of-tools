@@ -1,6 +1,6 @@
 //! Ruling (a): the one quit dispatcher (`QuitDispatcher`).
 
-use crate::wire::{SupervisorOperationState, SupervisorRefusedReason};
+use crate::lane::wire::{SupervisorOperationState, SupervisorRefusedReason};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------

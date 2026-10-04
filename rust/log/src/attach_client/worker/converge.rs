@@ -1,11 +1,11 @@
 //! Supervisor-lane connect, probe and converge-on-Ready, then the attach lane hello and checkpoint collection.
 
-use crate::challenge::ChallengeOutcome;
-use crate::client::Endpoint;
-use crate::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
-use crate::fe_client::{self, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState};
-use crate::transport::TEARDOWN_AGGREGATE_DEADLINE;
-use crate::wire::{
+use crate::identity::challenge::ChallengeOutcome;
+use crate::lane::client::Endpoint;
+use crate::identity::exchange::{SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
+use crate::attach_client::rules::{self, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState};
+use crate::lane::transport::TEARDOWN_AGGREGATE_DEADLINE;
+use crate::lane::wire::{
     self, AttachClient, AttachServer, DecodedFrame,
     SupervisorPhase, SupervisorReply, SupervisorRequest,
 };
@@ -232,7 +232,7 @@ pub(super) const FIRST_ATTACH_ENDED_NO_RESPAWN_BOUND: Duration = TEARDOWN_AGGREG
 /// ADR 0043 decision 28, ADR 0045 decision 6: the attach client converges
 /// on the supervisor's OWN word ONLY, never on a pointer file. Given an
 /// already-connected, already-`hello`'d supervisor lane, polls `Status`
-/// on that SAME connection every [`fe_client::RECONNECT_BACKOFF_INITIAL`]
+/// on that SAME connection every [`rules::RECONNECT_BACKOFF_INITIAL`]
 /// (a FIXED interval — Codex review round finding 6: this loop is
 /// steady-state polling of a lane that is actively ANSWERING, so
 /// [`ReconnectState::retry_with_backoff`]'s doubling does not apply to
@@ -326,7 +326,7 @@ pub(super) fn converge_on_ready<E: Endpoint>(
                 emit(WorkerEvent::Status("supervisor starting \u{2014} waiting\u{2026}".to_string()));
                 emitted_starting = true;
             }
-            match wait_for_retry_or_shutdown(cmd_rx, fe_client::RECONNECT_BACKOFF_INITIAL, held) {
+            match wait_for_retry_or_shutdown(cmd_rx, rules::RECONNECT_BACKOFF_INITIAL, held) {
                 WaitOutcome::Shutdown => return ReadyOutcome::Shutdown,
                 WaitOutcome::Continue => continue,
             }

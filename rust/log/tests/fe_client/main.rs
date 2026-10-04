@@ -1,9 +1,9 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! ADR 0041 step 6 U3 (ADR 0043 decisions 20/21 for the Linux half):
 //! real cross-process integration tests for
-//! `sot_log::fe_client_io::FeAttachClient` — the FE attach-only client,
+//! `sot_log::attach_client::client::FeAttachClient` — the FE attach-only client,
 //! driven exactly the way the real frontend drives it, against a REAL
-//! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor.rs`
+//! `sot-capsule supervise` and a REAL capsule leg. `tests/supervisor/`
 //! already proves the supervisor's OWN lifecycle wiring across a real
 //! process boundary; what THIS file adds is proof the CLIENT's own six
 //! rulings (`fe_client`'s pure state machines) hold when driven by a real
@@ -25,12 +25,12 @@
 //! this file does not attempt to inject a clock into a live worker
 //! thread, unlike `fe_client`'s own unit tests.
 
-use sot_log::client::{Endpoint, PlatformEndpoint};
-use sot_log::fe_client_io::{FeAttachClient, InputOutcome};
-use sot_log::segment::SegmentReader;
-use sot_log::state_dir::state_dir_hash;
+use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use sot_log::attach_client::client::{FeAttachClient, InputOutcome};
+use sot_log::store::segment::SegmentReader;
+use sot_log::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
-use sot_log::wire::{
+use sot_log::lane::wire::{
     MgmtReply, MgmtRequest, SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply,
     SupervisorRequest,
 };
@@ -45,20 +45,20 @@ mod capsule_guard;
 use capsule_guard::CapsuleGuard;
 
 /// L1-unix LU3c: the lane's own client type, chosen once — see
-/// `tests/supervisor.rs`'s identical alias for why this replaces
-/// `sot_log::pipe_win::PipeClient` (Windows-only, as this whole file used
+/// `tests/supervisor/`'s identical alias for why this replaces
+/// `sot_log::lane::pipe_win::PipeClient` (Windows-only, as this whole file used
 /// to be).
 type Client = <PlatformEndpoint as Endpoint>::Client;
 
 /// An interactive shell on its pty stays open until EndRun, on both
-/// platforms — mirrors `tests/supervisor.rs`'s identical `SHELL` const.
+/// platforms — mirrors `tests/supervisor/`'s identical `SHELL` const.
 #[cfg(windows)]
 const SHELL: &[&str] = &["cmd.exe"];
 #[cfg(target_os = "linux")]
 const SHELL: &[&str] = &["/bin/sh"];
 
 /// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir under `/tmp`
-/// for the lifetime of the returned guard — mirrors `tests/supervisor.rs`
+/// for the lifetime of the returned guard — mirrors `tests/supervisor/`
 /// identical helper (see its own doc). A no-op on Windows.
 #[cfg(target_os = "linux")]
 struct RuntimeDirGuard {
@@ -85,18 +85,18 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
 }
 
 /// The voyage mgmt lane's own unchallenged connect, per platform —
-/// mirrors `tests/supervisor.rs`'s identical helper.
+/// mirrors `tests/supervisor/`'s identical helper.
 #[cfg(windows)]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::transport::TransportError> {
-    sot_log::pipe_win::connect_voyage_pipe(voyage_id)
+fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
+    sot_log::lane::pipe_win::connect_voyage_pipe(voyage_id)
 }
 #[cfg(target_os = "linux")]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::transport::TransportError> {
-    sot_log::socket_unix::connect_voyage_socket(voyage_id)
+fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
+    sot_log::lane::socket_unix::connect_voyage_socket(voyage_id)
 }
 
 /// Real-process tests are SERIALIZED (same reason and mechanism as
-/// `tests/supervisor.rs`'s `SERIAL`): each spawns a supervisor, a capsule and a
+/// `tests/supervisor/`'s `SERIAL`): each spawns a supervisor, a capsule and a
 /// shell, and a two-core runner is the shared resource.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn serial() -> std::sync::MutexGuard<'static, ()> {
@@ -156,7 +156,7 @@ fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::E
 }
 
 /// Bounded poll for the lane to accept a connection AND answer the
-/// challenge — `tests/supervisor.rs`'s own helper of the same name.
+/// challenge — `tests/supervisor/`'s own helper of the same name.
 fn wait_for_lane(h: &str, timeout: Duration) -> Client {
     poll_until(
         || connect_and_challenge_for_test(h).ok().map(|(conn, _process)| conn),
@@ -173,7 +173,7 @@ fn status(conn: &Client) -> (Option<String>, Option<u64>, SupervisorPhase) {
 }
 
 /// As [`status`], but never panics — `Err`'s own text names what went
-/// wrong. Mirrors `tests/supervisor.rs`'s own helper of the same
+/// wrong. Mirrors `tests/supervisor/`'s own helper of the same
 /// name (this crate's leaf-helper-duplication convention). Used only
 /// where a connection MAY legitimately be gone (a diagnostic path that
 /// must not itself panic and hide the real failure).
@@ -211,7 +211,7 @@ fn command(conn: &Client, operation_id: &str, op: SupervisorOp) -> SupervisorOpe
 
 /// One bounded, cancellable `Client::read` — Codex review round,
 /// finding 14: mirrors `tests/e2e_pipe.rs`'s own `read_bounded` (the
-/// `sot_log::deadline` module this pattern is built on is crate-private,
+/// `sot_log::identity::deadline` module this pattern is built on is crate-private,
 /// unreachable from an external `tests/*.rs` binary, so this file keeps
 /// its own copy of the idiom rather than the machinery). Spawns a worker
 /// thread that owns the actual blocking read; `Client::cancel`,
@@ -244,16 +244,16 @@ fn read_bounded(conn: &Arc<Client>, label: &'static str, timeout: Duration) -> V
 /// watcher (this test's own `FeAttachClient`), per step 5's design.
 fn capsule_pid(voyage: &str) -> u32 {
     let conn = Arc::new(connect_voyage_mgmt(voyage).expect("connect voyage mgmt lane for status"));
-    let bytes = sot_log::wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
+    let bytes = sot_log::lane::wire::encode_mgmt_request(&MgmtRequest::Status).unwrap();
     conn.write_all(&bytes).unwrap();
-    let mut splitter = sot_log::wire::FrameSplitter::new();
+    let mut splitter = sot_log::lane::wire::FrameSplitter::new();
     loop {
         let chunk = read_bounded(&conn, "mgmt status_ok", Duration::from_secs(10));
         assert!(!chunk.is_empty(), "unexpected EOF waiting for mgmt status_ok");
         let (frames, err) = splitter.feed(&chunk);
         assert_eq!(err, None, "unexpected wire error decoding mgmt status_ok");
         for f in frames {
-            if let sot_log::wire::DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, .. }) = f {
+            if let sot_log::lane::wire::DecodedFrame::MgmtReply(MgmtReply::StatusOk { pid, .. }) = f {
                 return pid;
             }
         }
@@ -329,7 +329,7 @@ fn poll_screen(client: &mut FeAttachClient, timeout: Duration, pred: impl Fn(&st
 /// per-test root `tests/e2e_pipe.rs`'s own harness uses, since THIS file
 /// goes through the real supervisor rather than configuring
 /// `capsule::CapsuleConfig` directly).
-fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::envelope::Envelope> {
+fn sealed_frames(state_dir: &Path, voyage: &str) -> Vec<sot_log::store::envelope::Envelope> {
     let seg_dir = state_dir.join("voyages").join(voyage).join("seg");
     let mut out = Vec::new();
     let mut names: Vec<String> = std::fs::read_dir(&seg_dir)
@@ -359,7 +359,7 @@ fn query(conn: &Client, operation_id: &str) -> SupervisorOperationState {
     }
 }
 
-/// Ends the run cleanly (mirrors `tests/supervisor.rs`'s own
+/// Ends the run cleanly (mirrors `tests/supervisor/`'s own
 /// `end_run_and_expect_record_closed` + `poll_to_terminal` composition)
 /// so the voyage is durably SEALED before `sealed_frames` reads it — an
 /// in-progress segment's frames are written with `Commit::Immediate` but

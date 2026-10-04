@@ -52,7 +52,7 @@ fn full_lifecycle_hello_status_end_run_query_and_clean_exit() {
 
     // A DIFFERENT digest under the same id is an id_conflict.
     let conflict = command(&conn, op_id, SupervisorOp::Stop);
-    assert_eq!(conflict, SupervisorOperationState::Refused { reason: sot_log::wire::SupervisorRefusedReason::IdConflict });
+    assert_eq!(conflict, SupervisorOperationState::Refused { reason: sot_log::lane::wire::SupervisorRefusedReason::IdConflict });
 
     let stop_reply = command(&conn, "test-stop-1", SupervisorOp::Stop);
     assert_eq!(stop_reply, SupervisorOperationState::Stopping);
@@ -111,7 +111,7 @@ fn a_status_probe_against_an_idle_supervisor_is_not_poll_bound() {
         std::thread::sleep(IDLE_BEFORE_PROBE);
         let started = Instant::now();
         let (report, _process) =
-            sot_log::supervisor_client::query_status(&state_dir).expect("status probe against an idle supervisor");
+            sot_log::attach_client::supervisor_client::query_status(&state_dir).expect("status probe against an idle supervisor");
         elapsed_all.push(started.elapsed());
         assert_eq!(report.phase, SupervisorPhase::Ready);
     }

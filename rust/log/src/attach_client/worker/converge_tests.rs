@@ -1,9 +1,9 @@
 //! Tests: Health probe, absence clock, first attach, link-down pause, dial backoff and attach refusal.
 
-use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::client::{Client, Endpoint};
-use crate::fe_client::{self, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState};
-use crate::wire::{self, AttachServer, SupervisorPhase, SupervisorReply};
+use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use crate::lane::client::{Client, Endpoint};
+use crate::attach_client::rules::{self, OutstandingSlot, QuitDispatcher, ReconnectDecision, ReconnectState};
+use crate::lane::wire::{self, AttachServer, SupervisorPhase, SupervisorReply};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -41,11 +41,11 @@ fn health_probe_uses_the_last_reported_voyage_id() {
     // `HEALTH_WINDOW` later is `Terminal`.
     let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, lane, None, now);
     assert_eq!(decision, ReconnectDecision::Retry, "the clock merely starting is never itself terminal");
-    let later = now + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
+    let later = now + rules::HEALTH_WINDOW + Duration::from_secs(1);
     let decision = on_supervisor_absent_or_unresponsive::<TestEndpoint>(&ep, &mut reconnect, lane, None, later);
     assert_eq!(
         decision,
-        ReconnectDecision::Terminal(fe_client::TerminalReason::HealthWindowExpired),
+        ReconnectDecision::Terminal(rules::TerminalReason::HealthWindowExpired),
         "the clock started by the first None call must expire after HEALTH_WINDOW"
     );
 }
@@ -54,22 +54,22 @@ fn health_probe_uses_the_last_reported_voyage_id() {
 /// outcome per call, so a test can drive the probe through an exact
 /// absence/uncertainty/absence sequence.
 struct ScriptedEndpoint {
-    script: Mutex<std::collections::VecDeque<Result<(), crate::transport::TransportError>>>,
+    script: Mutex<std::collections::VecDeque<Result<(), crate::lane::transport::TransportError>>>,
 }
 impl Endpoint for ScriptedEndpoint {
     type Client = TestClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         match self.script.lock().unwrap().pop_front().expect("script exhausted before the test finished driving it") {
             Ok(()) => Ok(TestClient),
             Err(e) => Err(e),
         }
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("uncertainty_clears_the_absence_clock never drives the supervisor lane")
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         unreachable!("uncertainty_clears_the_absence_clock never challenges")
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
@@ -89,14 +89,14 @@ impl Endpoint for ScriptedEndpoint {
 /// clear is real, not a permanent bypass.
 #[test]
 fn uncertainty_clears_the_absence_clock() {
-    fn absent() -> crate::transport::TransportError {
-        crate::transport::TransportError::Io {
+    fn absent() -> crate::lane::transport::TransportError {
+        crate::lane::transport::TransportError::Io {
             op: "test",
             source: std::io::Error::new(ErrorKind::NotFound, "absent"),
         }
     }
-    fn unreachable_err() -> crate::transport::TransportError {
-        crate::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "unreachable"))
+    fn unreachable_err() -> crate::lane::transport::TransportError {
+        crate::lane::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "unreachable"))
     }
 
     let ep = ScriptedEndpoint {
@@ -114,14 +114,14 @@ fn uncertainty_clears_the_absence_clock() {
     // 2) An `Unreachable` probe, well within what would have been
     // the original window, clears the clock instead of merely
     // retrying on top of it.
-    let t1 = t0 + fe_client::HEALTH_WINDOW - Duration::from_secs(10);
+    let t1 = t0 + rules::HEALTH_WINDOW - Duration::from_secs(10);
     let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t1);
     assert_eq!(d, ReconnectDecision::Retry, "Unreachable must retry, never go terminal on its own");
 
     // 3) Past where the ORIGINAL (t0) clock would have expired --
     // still Retry, because step 2 cleared it: this absence starts
     // its OWN fresh window at t2, not inheriting t0's age.
-    let t2 = t0 + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
+    let t2 = t0 + rules::HEALTH_WINDOW + Duration::from_secs(1);
     let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t2);
     assert_eq!(
         d,
@@ -132,11 +132,11 @@ fn uncertainty_clears_the_absence_clock() {
     // 4) The FRESH window from step 3 (t2) does eventually expire on
     // its own -- proving step 2/3 cleared and restarted the clock
     // rather than disabling it.
-    let t3 = t2 + fe_client::HEALTH_WINDOW + Duration::from_secs(1);
+    let t3 = t2 + rules::HEALTH_WINDOW + Duration::from_secs(1);
     let d = on_supervisor_absent_or_unresponsive::<ScriptedEndpoint>(&ep, &mut reconnect, lane, Some(voyage_id), t3);
     assert_eq!(
         d,
-        ReconnectDecision::Terminal(fe_client::TerminalReason::HealthWindowExpired),
+        ReconnectDecision::Terminal(rules::TerminalReason::HealthWindowExpired),
         "the fresh window started at t2 must still expire after its own full HEALTH_WINDOW"
     );
 }
@@ -154,10 +154,10 @@ impl ScriptedReadyClient {
     }
 }
 impl Client for ScriptedReadyClient {
-    fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+    fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::lane::transport::TransportError> {
         Ok(())
     }
-    fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+    fn read(&self, buf: &mut [u8]) -> Result<usize, crate::lane::transport::TransportError> {
         let mut q = self.replies.lock().unwrap();
         let frame = q.pop_front().expect("scripted supervisor replies exhausted before the test finished driving it");
         buf[..frame.len()].copy_from_slice(&frame);
@@ -169,25 +169,25 @@ impl Client for ScriptedReadyClient {
 /// Scripts [`Endpoint::connect_voyage_unchallenged`] with one queued
 /// outcome per call — first `Unreachable`, then success.
 struct ScriptedVoyageEndpoint {
-    voyage_connects: Mutex<VecDeque<Result<(), crate::transport::TransportError>>>,
+    voyage_connects: Mutex<VecDeque<Result<(), crate::lane::transport::TransportError>>>,
 }
 impl Endpoint for ScriptedVoyageEndpoint {
     type Client = ScriptedReadyClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         match self.voyage_connects.lock().unwrap().pop_front().expect("voyage-connect script exhausted") {
             Ok(()) => Ok(ScriptedReadyClient::new(Vec::new())),
             Err(e) => Err(e),
         }
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("converge_on_ready never reconnects the supervisor lane itself")
     }
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::exchange::IdentityExchange,
+        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("converge_on_ready never challenges")
@@ -212,7 +212,7 @@ fn a_first_attach_that_fails_mid_connect_still_reaches_the_voyage_a_reset_mints_
     ]);
     let ep = ScriptedVoyageEndpoint {
         voyage_connects: Mutex::new(VecDeque::from([
-            Err(crate::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet"))),
+            Err(crate::lane::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet"))),
             Ok(()),
         ])),
     };
@@ -260,17 +260,17 @@ impl Endpoint for CountingUnreachableEndpoint {
     type Client = ScriptedReadyClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         self.voyage_dials.fetch_add(1, Ordering::AcqRel);
-        Err(crate::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet")))
+        Err(crate::lane::transport::TransportError::Unreachable(std::io::Error::new(ErrorKind::TimedOut, "leg not up yet")))
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("converge_on_ready never reconnects the supervisor lane itself")
     }
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::exchange::IdentityExchange,
+        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("converge_on_ready never challenges")
@@ -290,17 +290,17 @@ impl Endpoint for LinkDownEndpoint {
     type Client = ScriptedReadyClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         self.voyage_dials.fetch_add(1, Ordering::AcqRel);
-        Err(crate::transport::TransportError::LinkDown)
+        Err(crate::lane::transport::TransportError::LinkDown)
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("converge_on_ready never reconnects the supervisor lane itself")
     }
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::exchange::IdentityExchange,
+        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("converge_on_ready never challenges")
@@ -419,10 +419,10 @@ struct RefusingClient {
     frame: Mutex<Option<Vec<u8>>>,
 }
 impl Client for RefusingClient {
-    fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+    fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::lane::transport::TransportError> {
         Ok(())
     }
-    fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+    fn read(&self, buf: &mut [u8]) -> Result<usize, crate::lane::transport::TransportError> {
         let frame = self.frame.lock().unwrap().take().expect("the refusal frame must end the transfer on its own");
         buf[..frame.len()].copy_from_slice(&frame);
         Ok(frame.len())
@@ -437,13 +437,13 @@ impl Endpoint for RefusingEndpoint {
     type Client = RefusingClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never dials")
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never dials")
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         unreachable!("an_attach_refusal_carries_its_reason_to_the_caller never challenges")
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {

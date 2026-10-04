@@ -76,13 +76,13 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     // also serves the boot-adopts-a-still-alive-supervisor test in this
     // same file) ---
     // Record the current leg epoch BEFORE stopping the supervisor
-    // authority over its own lane (sot_log::supervisor_client::stop) --
+    // authority over its own lane (sot_log::attach_client::supervisor_client::stop) --
     // its capsule leg is deliberately outside the supervisor's own job
     // (ADR 0041 Lifecycle) and survives.
     let leg_before = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status before stop")
                 .0
                 .leg
@@ -124,7 +124,7 @@ async fn capsule_workspace_create_list_attach_refusal_adopt_and_destroy() {
     // Leak proof: mirror the SAME "lane goes silent after stop" idiom
     // the adoption proof above uses (`sot-capsule supervise` otherwise
     // idles in `EndedNoRespawn` forever without a `stop` request — see
-    // `supervisor.rs`'s own exit-condition doc). Without this, the
+    // `supervisor/mod.rs`'s own exit-condition doc). Without this, the
     // field defect this closes reproduces exactly: one resident
     // `sot-capsule.exe` per destroy, holding `supervisor.lock` and the
     // exe, that nothing would ever reap.

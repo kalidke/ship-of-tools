@@ -9,10 +9,10 @@
 //! to dispose of," so nothing there may be cut short by a timer the way
 //! Stage B's `WEDGED` legitimately is.
 //!
-//! This module is generic over [`ProbeOps`] exactly like `probe.rs`
+//! This module is generic over [`ProbeOps`] exactly like `supervisor/probe/`
 //! itself, so the SAME transition logic is driven scripted-only by a
 //! model test (no real OS object touched) and for real by
-//! `crate::probe_win::RealProbeOps` (Windows) / `crate::probe_unix::RealProbeOps` (Linux) — see `tests/supervisor.rs`.
+//! `crate::supervisor::probe::win::RealProbeOps` (Windows) / `crate::supervisor::probe::unix::RealProbeOps` (Linux) — see `tests/supervisor/`.
 //! Portable: this module makes no OS call of its own —
 //! everything platform-specific is behind [`ProbeOps`] — so its unit
 //! tests (against `ScriptedProbeOps`) now run on every CI platform, not
@@ -30,8 +30,8 @@
 //! time" — because that clamp is part of the transition logic itself,
 //! not a policy choice a caller could reasonably vary.
 
-use crate::challenge::ChallengeOutcome;
-use crate::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
+use crate::identity::challenge::ChallengeOutcome;
+use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -259,7 +259,7 @@ fn sleep_until_next_attempt<O: ProbeOps>(ops: &O, attempt_interval: Duration, bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::probe::{DummyConn, DummyProcess, DummySpawnedChild, ScriptedProbeOps};
+    use crate::supervisor::probe::{DummyConn, DummyProcess, DummySpawnedChild, ScriptedProbeOps};
     use std::time::Duration;
 
     const ATTEMPT: Duration = Duration::from_millis(1);
@@ -512,7 +512,7 @@ mod tests {
     fn b7_file_not_found_fence_free_is_absent() {
         let ops = ScriptedProbeOps::new();
         ops.push_connect(ConnectOutcome::FileNotFound);
-        ops.push_writer_fence_probe(crate::probe::FenceProbe::Free);
+        ops.push_writer_fence_probe(crate::supervisor::probe::FenceProbe::Free);
         let deadline = ops.now() + Duration::from_secs(60);
         let dir = tempfile::tempdir().unwrap();
         let outcome = probe_adopt_only(&ops, "voy", dir.path(), deadline, ATTEMPT);
@@ -524,9 +524,9 @@ mod tests {
     fn b8_file_not_found_fence_held_is_pending_then_b7_absent() {
         let ops = ScriptedProbeOps::new();
         ops.push_connect(ConnectOutcome::FileNotFound);
-        ops.push_writer_fence_probe(crate::probe::FenceProbe::Held);
+        ops.push_writer_fence_probe(crate::supervisor::probe::FenceProbe::Held);
         ops.push_connect(ConnectOutcome::FileNotFound);
-        ops.push_writer_fence_probe(crate::probe::FenceProbe::Free);
+        ops.push_writer_fence_probe(crate::supervisor::probe::FenceProbe::Free);
         let deadline = ops.now() + Duration::from_secs(60);
         let dir = tempfile::tempdir().unwrap();
         let outcome = probe_adopt_only(&ops, "voy", dir.path(), deadline, ATTEMPT);
@@ -550,9 +550,9 @@ mod tests {
         // be consumed and `all_exhausted` would catch it.
         let ops = ScriptedProbeOps::new();
         ops.push_connect(ConnectOutcome::FileNotFound);
-        ops.push_writer_fence_probe(crate::probe::FenceProbe::Error(std::io::Error::other("x")));
+        ops.push_writer_fence_probe(crate::supervisor::probe::FenceProbe::Error(std::io::Error::other("x")));
         ops.push_connect(ConnectOutcome::FileNotFound);
-        ops.push_writer_fence_probe(crate::probe::FenceProbe::Free);
+        ops.push_writer_fence_probe(crate::supervisor::probe::FenceProbe::Free);
         let deadline = ops.now() + Duration::from_secs(60); // never hit -- the retry itself is the assertion
         let dir = tempfile::tempdir().unwrap();
         let outcome = probe_adopt_only(&ops, "voy", dir.path(), deadline, ATTEMPT);

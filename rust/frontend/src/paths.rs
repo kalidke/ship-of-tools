@@ -12,11 +12,11 @@
 // subtree there too — so the state dir has to agree with them, not with an
 // optional override.
 //
-// ADR 0041 step 6, unit U0: the rule itself moved to `sot_log::state_dir`
+// ADR 0041 step 6, unit U0: the rule itself moved to `sot_log::host::state_dir`
 // (the single owner now — a "later" process needing it, e.g. a capsule
 // supervisor, must agree with the FE, not maintain a third copy). This
 // function is a pure delegation: same signature, same resolved paths,
-// byte-identical — `sot_log::state_dir`'s own tests pin the rule
+// byte-identical — `sot_log::host::state_dir`'s own tests pin the rule
 // (including the XDG_STATE_HOME/%LOCALAPPDATA% precedence) that used to
 // have no test coverage here at all.
 
@@ -25,5 +25,5 @@
 /// staged binary + logs (ADR 0017), the relaunch sentinel, the FE control
 /// channel (ADR 0019), and session reconnect memory (state.rs).
 pub(crate) fn sot_state_dir() -> Option<std::path::PathBuf> {
-    sot_log::state_dir::sot_state_dir()
+    sot_log::host::state_dir::sot_state_dir()
 }

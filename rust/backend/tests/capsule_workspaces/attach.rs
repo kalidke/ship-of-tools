@@ -163,7 +163,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
 /// is never destroyed here"); on a NON-default row it actually REMOVES
 /// the registry entry once the run is confirmed ended, which would
 /// delete the very row this test needs to re-attach to. Ends the run
-/// directly over the lane instead (`sot_log::supervisor_client::end_run`,
+/// directly over the lane instead (`sot_log::attach_client::supervisor_client::end_run`,
 /// never a follow-up `stop` — the authority is left RESIDENT in
 /// `EndedNoRespawn` on purpose, so the re-attach below exercises the
 /// real retirement arm against a genuinely resident authority, not an
@@ -275,7 +275,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::wire::SupervisorPhase::Ready).then_some(())
+                (report.phase == sot_log::lane::wire::SupervisorPhase::Ready).then_some(())
             }
         },
         BOUND,
@@ -286,14 +286,14 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     // --- #182 items A.1/C, plus this test's own doc above: end the run,
     // leave the authority resting, prove attach recovers via `reset`
     // with a NEW voyage (not a flat refusal, not a resurrected old one) ---
-    let (original_status, original_process) = sot_log::supervisor_client::query_status(&state_dir_path)
+    let (original_status, original_process) = sot_log::attach_client::supervisor_client::query_status(&state_dir_path)
         .expect("query_status before ending the run");
     let original_voyage = original_status
         .voyage
         .expect("a ready capsule has a voyage");
     let original_pid = original_process.pid();
 
-    sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end")
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end")
         .expect("end_run over the lane");
 
     poll_until(
@@ -301,7 +301,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             let dir = state_dir_path.clone();
             async move {
                 let report = try_query_status(dir).await?;
-                (report.phase == sot_log::wire::SupervisorPhase::EndedNoRespawn).then_some(())
+                (report.phase == sot_log::lane::wire::SupervisorPhase::EndedNoRespawn).then_some(())
             }
         },
         BOUND,
@@ -335,7 +335,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
             reattach_res.payload
         );
         if let Some(report) = try_query_status(state_dir_path.clone()).await {
-            if report.phase == sot_log::wire::SupervisorPhase::Ready {
+            if report.phase == sot_log::lane::wire::SupervisorPhase::Ready {
                 break report.voyage.expect("a ready capsule has a voyage");
             }
         }
@@ -355,7 +355,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     // directly — a distinct pid is the cross-platform half of that proof
     // (`ChallengedProcess::pid()` exists on both platforms).
     let (_new_status, new_process) =
-        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status after recovery");
+        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status after recovery");
     assert_ne!(
         new_process.pid(),
         original_pid,
@@ -385,13 +385,13 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     // otherwise leak past this test. There is no `std::process::Child`
     // for it here (the daemon owns the actual spawn), so this stops it
     // over its own lane instead — the same
-    // `sot_log::supervisor_client::stop` the create-test's own adoption
+    // `sot_log::attach_client::supervisor_client::stop` the create-test's own adoption
     // proof uses. Best-effort: the AUTHORITY is gone either way; its
     // detached leg survives on Linux and is swept by `Env`'s own `Drop`
     // (F4) once this test's own `env` goes out of scope below.
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
 
@@ -431,9 +431,9 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
     poll_for_phase(&mut conn, &mut next_id, &workspace_id, "ready", BOUND).await;
 
     let (status, _process) =
-        sot_log::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
+        sot_log::attach_client::supervisor_client::query_status(&state_dir_path).expect("query_status before ending the run");
     let original_voyage = status.voyage.expect("a ready capsule has a voyage");
-    sot_log::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
+    sot_log::attach_client::supervisor_client::end_run(&state_dir_path, &original_voyage, "test end").expect("end_run over the lane");
 
     // end_run went straight to the lane, bypassing the daemon, so the phase
     // cell is still stale Ready; the guarded helper's fresh probe must decide.
@@ -447,7 +447,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
     let ready_deadline = Instant::now() + BOUND.max(Duration::from_secs(90));
     let new_voyage = loop {
         if let Some(report) = try_query_status(state_dir_path.clone()).await {
-            if report.phase == sot_log::wire::SupervisorPhase::Ready {
+            if report.phase == sot_log::lane::wire::SupervisorPhase::Ready {
                 break report.voyage.expect("a ready capsule has a voyage");
             }
         }
@@ -461,7 +461,7 @@ async fn capsule_attach_right_after_run_end_activates_despite_a_stale_cached_rea
 
     let _ = tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir)
+        move || sot_log::attach_client::supervisor_client::stop(&dir)
     })
     .await;
     env.kill_daemon_bounded().await;

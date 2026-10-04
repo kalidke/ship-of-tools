@@ -2,8 +2,8 @@
 
 use super::support_tests::store;
 use super::*;
-use crate::envelope::*;
-use crate::segment::{tests::test_env, Commit};
+use crate::store::envelope::*;
+use crate::store::segment::{tests::test_env, Commit};
 use serde_json::json;
 
 // --- helpers shared by the cross-field / lattice / stream / take tests ---

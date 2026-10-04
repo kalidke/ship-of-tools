@@ -11,7 +11,7 @@ use super::*;
 /// whole run and its `Drop` kills the child's process group, which is
 /// exactly the behaviour under test -- driving it through that type would
 /// measure the producer's own killing, not the kernel's. The shape below
-/// is `producer_pty.rs`'s own `pre_exec` sequence, minus the Linux-only
+/// is `capsule/producer/pty/`'s own `pre_exec` sequence, minus the Linux-only
 /// PDEATHSIG arming that is the reason this fact matters at all.
 #[test]
 fn closing_the_pty_master_hangs_up_and_reaps_the_child() {
@@ -82,7 +82,7 @@ fn pty_hangup_reaps_the_child(slave_held: SlaveHeld) {
     let master = unsafe { OwnedFd::from_raw_fd(master_fd) };
     let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
 
-    // CLOEXEC on BOTH before the fork, exactly as `producer_pty.rs` does
+    // CLOEXEC on BOTH before the fork, exactly as `capsule/producer/pty/` does
     // it -- and here it is load-bearing for the measurement, not only for
     // hygiene: if the child inherited a copy of the MASTER, closing the
     // parent's master would not hang the pty up at all and this test would
@@ -116,7 +116,7 @@ fn pty_hangup_reaps_the_child(slave_held: SlaveHeld) {
         .stderr(Stdio::null());
     // SAFETY: this closure runs between fork and exec -- only
     // async-signal-safe calls, per `pre_exec`'s contract. `setsid`,
-    // `ioctl`, `dup2` and `close` all are (same set `producer_pty.rs`'s
+    // `ioctl`, `dup2` and `close` all are (same set `capsule/producer/pty/`'s
     // own `pre_exec` uses).
     unsafe {
         cmd.pre_exec(move || {

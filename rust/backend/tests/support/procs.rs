@@ -238,7 +238,7 @@ pub fn arm_scope_guard(rel: &str, state_dir: &Path) -> ScopeKillGuard {
 /// [`arm_scope_guard`] with the caller's own cgroup given, for the aim table.
 #[cfg(target_os = "linux")]
 pub fn arm_scope_guard_against(rel: &str, own_rel: &str, state_dir: &Path) -> ScopeKillGuard {
-    let hash = sot_log::state_dir::state_dir_hash(state_dir);
+    let hash = sot_log::host::state_dir::state_dir_hash(state_dir);
     if let Err(e) = row_scope_aim::aim(rel, own_rel, &hash) {
         panic!("arm_scope_guard: the production aim rule refuses this target: {e}");
     }

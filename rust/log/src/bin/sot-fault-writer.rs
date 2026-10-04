@@ -12,8 +12,8 @@
 //! Frame shapes mirror `tests/golden.rs`'s `fixture_frames()` exactly —
 //! those are proven writer- and verifier-legal.
 
-use sot_log::segment::Commit;
-use sot_log::voyage::VoyageStore;
+use sot_log::store::segment::Commit;
+use sot_log::store::voyage::VoyageStore;
 use sot_log::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, FrameRef, RefKind, Seq, Source};
 use std::time::{SystemTime, UNIX_EPOCH};
 

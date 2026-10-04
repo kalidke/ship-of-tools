@@ -6,12 +6,12 @@
 //! Deliberately ungated — no `#![cfg(windows)]` here, unlike most of this
 //! crate's siblings: this is the CONTRACT, not an implementation.
 //!
-//! [`ConnId`] lives in [`crate::attach_proto`], not here — this module
+//! [`ConnId`] lives in [`crate::lane::attach_proto`], not here — this module
 //! only uses it. [`TEARDOWN_AGGREGATE_DEADLINE`]/`join_within` are the
 //! one teardown bound and poll-join both platforms, and `capsule_win`'s
 //! own closer/reader thread joins, share.
 
-use crate::attach_proto::ConnId;
+use crate::lane::attach_proto::ConnId;
 use crate::Result;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
@@ -150,7 +150,7 @@ pub trait Transport {
     /// forwarding channel, an actor thread, a join) for an implementation
     /// that already owns a channel — real or synthetic — of its own.
     /// MUST NOT BLOCK: called once per MAIN-LOOP iteration
-    /// (`service_transport_events!`/`_teardown!`), in a `while let Some(ev)
+    /// (`service_transport_events`/`service_transport_events_teardown`), in a `while let Some(ev)
     /// = ...` drain, immediately BEFORE this loop's own
     /// `output_rx.recv_timeout(GROUP_COMMIT_WINDOW)` wait — that recv is
     /// this loop's ONE latency budget per iteration; a blocking or
@@ -219,7 +219,7 @@ pub const TEARDOWN_AGGREGATE_DEADLINE: Duration = Duration::from_secs(20);
 
 /// L1-unix LU1b (ADR 0043 "Bounds are the same numbers on both
 /// platforms"): the total connect retry budget, hoisted here from
-/// `pipe_win.rs`'s own `PIPE_CONNECT_BOUND` — the one bound LU1a left
+/// `lane/pipe_win/`'s own `PIPE_CONNECT_BOUND` — the one bound LU1a left
 /// behind because only one platform's client existed yet. Both
 /// `pipe_win::connect_named_pipe_unchallenged` (Windows) and the Unix
 /// client's own connect retry (LU1c) share this SAME constant, and both
@@ -289,9 +289,9 @@ pub(crate) fn join_within(jh: JoinHandle<()>, deadline: Instant) -> bool {
 
 // ---------------------------------------------------------------------
 // Shared implementation helpers — both platforms' transports use these
-// (L1-unix LU1a, hoisted out of `pipe_win.rs`). Not part of the
+// (L1-unix LU1a, hoisted out of `lane/pipe_win/`). Not part of the
 // `Transport` CONTRACT above; a Unix transport implementation is free to
-// reuse them exactly as `pipe_win.rs` does, or not, at its own
+// reuse them exactly as `lane/pipe_win/` does, or not, at its own
 // discretion.
 // ---------------------------------------------------------------------
 
@@ -414,8 +414,8 @@ impl StartGate {
 // ---------------------------------------------------------------------
 
 /// Errors a concrete transport's own synchronous API surface can report
-/// at the call site — `crate::pipe_win`'s former `PipeError` and
-/// [`crate::socket_unix`]'s former `SocketError` merged into one type
+/// at the call site — `crate::lane::pipe_win`'s former `PipeError` and
+/// [`crate::lane::socket_unix`]'s former `SocketError` merged into one type
 /// (ADR 0043 decision 17): the union of both platforms' variants,
 /// `Io { op, source }` kept verbatim (the shape production code already
 /// matches on), `InvalidMaxInstances` folded into `InvalidMaxConnections`
@@ -433,7 +433,7 @@ pub enum TransportError {
     InvalidMaxConnections,
     // Unix only (never produced on Windows, where there is no `sun_path`
     // limit to exceed): the exact byte ceiling is platform-specific
-    // (`crate::socket_unix::max_sun_path_bytes`, unreachable from this
+    // (`crate::lane::socket_unix::max_sun_path_bytes`, unreachable from this
     // ungated module on a non-Unix target), so the message names the
     // path without embedding a number this type cannot portably compute.
     #[error("endpoint path {0:?} exceeds this platform's path-length limit")]
@@ -562,7 +562,7 @@ pub enum ClosedReason {
 /// `translate()` functions read this one type instead of two separately
 /// defined ones. Delivered over a `LaneServer::events()` receiver in the
 /// order the transport observed them; the consumer feeds `Bytes`
-/// payloads to its own [`crate::wire::FrameSplitter`] per connection.
+/// payloads to its own [`crate::lane::wire::FrameSplitter`] per connection.
 ///
 /// Not to be confused with this module's own [`TransportEvent`] (the
 /// OLDER, ADR-0041-era capsule-facing contract `Transport::try_recv_event`
@@ -621,12 +621,12 @@ pub trait LaneServer: Sized {
 /// L1-unix LU3c: the server twin of `client::PlatformEndpoint` — the
 /// lane a step-6 supervisor binds on the platform it runs on, chosen
 /// ONCE by this alias (never by threading a type parameter through
-/// `supervisor.rs`'s own state machine). Windows speaks `PipeServer`;
+/// `supervisor/`'s own state machine). Windows speaks `PipeServer`;
 /// Linux and macOS both speak `SocketServer`, which is `#![cfg(unix)]`
 /// and needs no per-OS half at all: a LISTENER has no peer identity to
 /// read, so the one mechanism that separates the two Unixes never
 /// reaches this side of the lane.
 #[cfg(windows)]
-pub type PlatformLaneServer = crate::pipe_win::PipeServer;
+pub type PlatformLaneServer = crate::lane::pipe_win::PipeServer;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub type PlatformLaneServer = crate::socket_unix::SocketServer;
+pub type PlatformLaneServer = crate::lane::socket_unix::SocketServer;

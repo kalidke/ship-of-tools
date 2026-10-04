@@ -4,20 +4,20 @@
 //! proof returns ([`ChallengedProcess`]), and the raw-handle extension
 //! trait ([`PipeChallengeable`]) a connection needs to supply for them.
 //! Steps 4-5 (the wire half) are shared, platform-neutral logic in
-//! `crate::challenge` — see that module's own doc; [`challenge()`] and
+//! `crate::identity::challenge` — see that module's own doc; [`challenge()`] and
 //! [`authenticate_server()`] below call into it rather than
 //! reimplementing it. A `challenge_unix.rs` counterpart lands in
 //! L1-unix's LU1c.
 
 #![cfg(windows)]
 
-use crate::challenge::{
+use crate::identity::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::client::{PeerIdentity, PeerProcess};
-use crate::exchange::IdentityExchange;
-use crate::fsutil;
+use crate::lane::client::{PeerIdentity, PeerProcess};
+use crate::identity::exchange::IdentityExchange;
+use crate::host;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::time::{Duration, Instant};
 
@@ -143,13 +143,13 @@ impl PeerProcess for ChallengedProcess {
 }
 
 /// `WaitForSingleObject`, bounded (never Win32 `INFINITE` —
-/// `fsutil::duration_to_wait_ms`'s guard). Shared by every retained
+/// `host::duration_to_wait_ms`'s guard). Shared by every retained
 /// Windows process handle in this crate: [`ChallengedProcess::wait`]
-/// above, and `crate::probe_win::SpawnedChild::wait` — the pre-proof owned
+/// above, and `crate::supervisor::probe::win::SpawnedChild::wait` — the pre-proof owned
 /// child, which needs the identical bounded wait but is deliberately a
 /// DIFFERENT type (nothing has proven ITS identity yet).
 pub(crate) fn wait_handle(handle: HANDLE, timeout: Duration) -> std::io::Result<bool> {
-    let ms = fsutil::duration_to_wait_ms(timeout);
+    let ms = host::duration_to_wait_ms(timeout);
     match unsafe { WaitForSingleObject(handle, ms) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
@@ -159,7 +159,7 @@ pub(crate) fn wait_handle(handle: HANDLE, timeout: Duration) -> std::io::Result<
 }
 
 /// `TerminateProcess`. Shared by [`ChallengedProcess::terminate`] and
-/// `crate::probe_win::SpawnedChild::terminate`.
+/// `crate::supervisor::probe::win::SpawnedChild::terminate`.
 pub(crate) fn terminate_handle(handle: HANDLE) -> std::io::Result<()> {
     if unsafe { TerminateProcess(handle, 1) } == 0 {
         return Err(std::io::Error::last_os_error());
@@ -168,7 +168,7 @@ pub(crate) fn terminate_handle(handle: HANDLE) -> std::io::Result<()> {
 }
 
 /// `GetProcessTimes` on an already-open handle, packed to the exact bits
-/// the wire's `status_ok.created` carries. `crate::probe_win::
+/// the wire's `status_ok.created` carries. `crate::supervisor::probe::win::
 /// SpawnedChild` reuses this for its own identity, over a different
 /// handle. `pub`: `sot-backend`'s watchdog reads a just-spawned child's
 /// creation time this way, with no network round trip -- the Windows
@@ -215,11 +215,11 @@ fn authenticate_steps_1_to_3(
 
     // Step 3: nothing past this point trusts, decodes, or acts on
     // anything from the peer until the SID matches.
-    let their_sid = match fsutil::sid_string_from_process(handle.as_raw_handle() as HANDLE) {
+    let their_sid = match host::sid_string_from_process(handle.as_raw_handle() as HANDLE) {
         Ok(s) => s,
         Err(_) => return ChallengeOutcome::Undetermined,
     };
-    let my_sid = match fsutil::token_user_sid_string() {
+    let my_sid = match host::token_user_sid_string() {
         Ok(s) => s,
         Err(_) => return ChallengeOutcome::Undetermined,
     };
@@ -265,7 +265,7 @@ pub fn challenge(
 
     // Steps 4-5: the lane's own request/reply, now the shared,
     // platform-neutral wire half (L1-unix LU1a) — see
-    // `crate::challenge::exchange_identity`'s own doc for the full
+    // `crate::identity::challenge::exchange_identity`'s own doc for the full
     // reasoning this used to carry inline here.
     let c: &dyn ChallengeableConnection = conn;
     let exchange_result = exchange_identity(c, exchange, reply_deadline);

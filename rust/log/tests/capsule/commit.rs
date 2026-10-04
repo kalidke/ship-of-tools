@@ -175,10 +175,10 @@ fn extract_marker_numbers(text: &str) -> Vec<u64> {
 /// drained queue must reach the transport BEFORE any request replayed
 /// off that SAME completion (a `take`/`resize` that raced in behind the
 /// watcher's own still-outstanding attach reply) can publish fresh
-/// output via the loop's own `flush_output!` (`capsule.rs`'s
+/// output via the loop's own `flush_output` (`capsule/writer_loop/output_path.rs`'s
 /// `CommitTake`/`ApplyResize` arms) — reproduced as "later Output ->
 /// PenSnapshot -> Geometry -> older Output" before the fix in
-/// `attach_proto.rs`'s `sent` (`CheckpointChunk` final-chunk arm), which
+/// `lane/attach_proto/`'s `sent` (`CheckpointChunk` final-chunk arm), which
 /// now builds this watcher's own completion FIRST and replays a held
 /// frame LAST.
 ///
@@ -251,7 +251,7 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     // for B's OWN echo of each marker before sending the next -- the
     // deterministic proof this test's `cutoff` relies on, but slow
     // enough that the capsule's own GROUP_COMMIT_WINDOW-paced periodic
-    // flush (capsule.rs's `flush_output!`, independent of any client
+    // flush (capsule/writer_loop/output_path.rs's `flush_output`, independent of any client
     // action) always catches up first, so nothing is left GENUINELY
     // pending by the time a later action's own flush_output runs --
     // proven not to reproduce the round-1 defect shape at all by an
@@ -391,7 +391,7 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     // confirm a few markers have actually been forwarded, THEN release A
     // IMMEDIATELY, with no further sleep. This is deliberately a COUNT,
     // not a fixed delay: the capsule's own 50ms GROUP_COMMIT_WINDOW
-    // periodic flush (`capsule.rs`) runs on its own clock the whole time
+    // periodic flush (`capsule/`) runs on its own clock the whole time
     // this test executes regardless of what this thread does, so any
     // fixed sleep comparable to or longer than it would let that
     // ordinary cycle catch up and flush this burst on its own, before

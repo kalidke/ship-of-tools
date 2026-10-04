@@ -1,7 +1,7 @@
 //! The input-WAL dedupe index folded from the retained voyage at open (ADR 0041 decision 5).
 
-use crate::envelope::{InputFactKind, Seq};
-use crate::segment::SegmentReader;
+use crate::store::envelope::{InputFactKind, Seq};
+use crate::store::segment::SegmentReader;
 use crate::{Error, Result};
 use std::collections::HashMap;
 
@@ -12,7 +12,7 @@ pub type IdemKey = [u8; 16];
 
 /// One `idem_key`'s position in the ADR 0039 "Input WAL + dedupe" lattice,
 /// as folded from the retained voyage. Four states, not the verifier's
-/// five (`FactState` in `verify.rs` also tracks `Observed`): a
+/// five (`FactState` in `store/verify/mod.rs` also tracks `Observed`): a
 /// `producer_observed` fact — an adapter-only extension raw-terminal
 /// capsules never emit (ADR 0041: "raw-terminal chains end at `forwarded`")
 /// — folds into `Forwarded` here too, because both answer a duplicate
@@ -40,7 +40,7 @@ pub struct DedupeEntry {
 }
 
 /// Parses a lowercase `hex32` `idem_key` into its 16 raw bytes. Shared by
-/// the fold (below, the "writer" side) and `verify.rs` (finding 8: "add
+/// the fold (below, the "writer" side) and `store/verify/` (finding 8: "add
 /// lowercase-hex32 idem_key enforcement to BOTH the writer validation and
 /// the verifier" — one format check, not two independently-drifting ones).
 /// `pub(crate)` rather than a second copy: a malformed key is now a FOLD
@@ -71,7 +71,7 @@ pub(crate) fn parse_idem_key(s: &str) -> Option<IdemKey> {
 /// FAILS CLOSED (finding 8): a duplicate `idem_key` across two `input`
 /// frames, an `input_fact` naming an unresolvable input, a fact-kind
 /// illegal from its idem_key's CURRENT lattice state (mirroring
-/// `verify.rs`'s own `FactState` machine exactly — `forward_intent` only
+/// `store/verify/mod.rs`'s own `FactState` machine exactly — `forward_intent` only
 /// from `Input`, `forwarded`/`refused_stale_epoch` only from... see below),
 /// an unrecognized fact-kind string, or a malformed (non-lowercase-hex32)
 /// `idem_key` are all errors, not silently-skipped or last-writer-wins
@@ -94,7 +94,7 @@ pub(super) fn walk_segment(
             }
         }
 
-        if f.class == crate::envelope::Class::Input {
+        if f.class == crate::store::envelope::Class::Input {
             let key_str = p.get("idem_key").and_then(|v| v.as_str()).ok_or_else(|| {
                 Error::Schema(format!("frame {:?}: idem_key is missing or not a string", f.seq))
             })?;
@@ -119,14 +119,14 @@ pub(super) fn walk_segment(
             continue;
         }
 
-        if f.class != crate::envelope::Class::Lifecycle
+        if f.class != crate::store::envelope::Class::Lifecycle
             || p.get("kind").and_then(|v| v.as_str()) != Some("input_fact")
         {
             continue;
         }
         // Round-2 review, finding 6: the fold goes fully TYPED and
         // fallible here -- `serde_json::from_value` into the same shape
-        // `verify.rs`'s own `FactObj` deserializes (`input: Seq, fact:
+        // `store/verify/mod.rs`'s own `FactObj` deserializes (`input: Seq, fact:
         // InputFactKind, intent: Option<Seq>`), so a missing/malformed
         // `fact` object, a missing/non-object `input` seq, or an unknown
         // fact-kind string are ALL a single `Err` instead of three
@@ -226,8 +226,8 @@ mod tests {
     use super::super::support_tests::{ctrl_env, forwarded_env, input_env, intent_env, lc_take, refused_env};
     use super::super::voyage::VoyageStore;
     use super::*;
-    use crate::envelope::Class;
-    use crate::segment::{Commit, RetentionClass};
+    use crate::store::envelope::Class;
+    use crate::store::segment::{Commit, RetentionClass};
     /// The dedupe index, from a voyage exercising every legal `idem_key`
     /// chain shape (ADR 0039's exact five, minus `{…,observed}` which
     /// `DedupeState` deliberately folds into `Forwarded` — see its doc),
@@ -281,7 +281,7 @@ mod tests {
             let d = w.seal(None).unwrap();
             store.advance_chain(d);
 
-            crate::verify::verify_voyage(&root, "voyd").unwrap();
+            crate::store::verify::verify_voyage(&root, "voyd").unwrap();
         }
 
         // Reopen as a successor incarnation -- the index must be rebuilt
@@ -318,7 +318,7 @@ mod tests {
     /// `idem_key` across two `input` frames (previously last-writer-wins);
     /// an `input_fact` naming a `Seq` that was never a committed `input`
     /// frame (previously silently skipped); a fact-kind illegal from its
-    /// idem_key's current lattice state, mirroring `verify.rs`'s own
+    /// idem_key's current lattice state, mirroring `store/verify/`'s own
     /// `FactState` machine (previously accepted unconditionally); and a
     /// malformed (non-lowercase-hex32) `idem_key` (previously silently
     /// skipped, which could verify green yet omit an identity from the
@@ -374,7 +374,7 @@ mod tests {
             w.append(&lc_take(1, 2, 2, Some("ctrl")), Commit::Immediate).unwrap();
             w.append(&input_env(1, 3, &key), Commit::Immediate).unwrap();
             // `forwarded` directly from the `Input` state, skipping
-            // `forward_intent` entirely -- illegal (mirrors verify.rs's
+            // `forward_intent` entirely -- illegal (mirrors store/verify/'s
             // own FactState lattice).
             let input_seq = Seq { epoch: 1, n: 3 };
             w.append(&forwarded_env(1, 4, input_seq, input_seq), Commit::Immediate).unwrap();

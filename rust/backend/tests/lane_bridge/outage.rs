@@ -179,7 +179,7 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
 
     let voyage = tokio::task::spawn_blocking({
         let d = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&d).expect("query_status").0.voyage
+        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
     })
     .await
     .unwrap()
@@ -187,7 +187,7 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
     let outcome = tokio::task::spawn_blocking({
         let d = state_dir.clone();
         let v = voyage.clone();
-        move || sot_log::supervisor_client::end_run(&d, &v, "lane bridge test teardown")
+        move || sot_log::attach_client::supervisor_client::end_run(&d, &v, "lane bridge test teardown")
     })
     .await
     .unwrap()
@@ -195,7 +195,7 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
     assert!(
         matches!(
             outcome,
-            sot_log::supervisor_client::EndRunOutcome::RecordVerified | sot_log::supervisor_client::EndRunOutcome::RecordClosed
+            sot_log::attach_client::supervisor_client::EndRunOutcome::RecordVerified | sot_log::attach_client::supervisor_client::EndRunOutcome::RecordClosed
         ),
         "end_run did not verify: {outcome:?}"
     );
@@ -204,7 +204,7 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
     let recorded_once = frames
         .iter()
         .filter(|f| {
-            f.class == sot_log::envelope::Class::Input
+            f.class == sot_log::store::envelope::Class::Input
                 && f.source.actor.controller_id.as_deref() == Some("test-fe")
                 && f.payload.as_ref().and_then(|p| p.get("length")?.as_u64()).map(|l| l as usize) == Some(marker.len())
         })

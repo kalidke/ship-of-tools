@@ -1,9 +1,9 @@
 //! Tests: The stall harness, held inputs, take-queue drops, the status-probe keystroke and the held-handshake gate.
 
-use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::client::{Client, Endpoint};
-use crate::fe_client::{OutstandingSlot, QuitDispatcher, ReconnectState, TakeTransaction};
-use crate::wire::{self, AttachClient, AttachServer, DecodedFrame, SupervisorPhase, SupervisorReply};
+use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use crate::lane::client::{Client, Endpoint};
+use crate::attach_client::rules::{OutstandingSlot, QuitDispatcher, ReconnectState, TakeTransaction};
+use crate::lane::wire::{self, AttachClient, AttachServer, DecodedFrame, SupervisorPhase, SupervisorReply};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -28,17 +28,17 @@ struct StallState {
 /// parks until `cancel` -- a stalled supervisor behind a live socket.
 struct StallClient(Arc<StallState>);
 impl Client for StallClient {
-    fn write_all(&self, bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), crate::lane::transport::TransportError> {
         self.0.writes.lock().unwrap().push(bytes.to_vec());
         Ok(())
     }
-    fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+    fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::lane::transport::TransportError> {
         self.0.read_entered.store(true, Ordering::SeqCst);
         let mut cancelled = self.0.cancelled.lock().unwrap();
         while !*cancelled {
             cancelled = self.0.released.wait(cancelled).unwrap();
         }
-        Err(crate::transport::TransportError::Cancelled)
+        Err(crate::lane::transport::TransportError::Cancelled)
     }
     fn cancel(&self) {
         *self.0.cancelled.lock().unwrap() = true;
@@ -52,13 +52,13 @@ impl Endpoint for StallEndpoint {
     type Client = StallClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("the steady state never dials the voyage lane")
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
-        Err(crate::transport::TransportError::Cancelled)
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
+        Err(crate::lane::transport::TransportError::Cancelled)
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         unreachable!("the re-dial fails before any challenge")
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
@@ -165,7 +165,7 @@ fn an_input_dropped_whole_by_a_full_take_queue_is_counted() {
     let discarded = Arc::new(AtomicUsize::new(0));
     let worker = spawn_stall_steady(rx, attach_conn, sup_conn, 0, Arc::clone(&discarded));
 
-    tx.send(input_msg(&vec![b'a'; crate::fe_client::TAKE_QUEUE_CAP], 0)).unwrap();
+    tx.send(input_msg(&vec![b'a'; crate::attach_client::rules::TAKE_QUEUE_CAP], 0)).unwrap();
     tx.send(input_msg(b"z", 0)).unwrap();
     let started = Instant::now();
     while discarded.load(Ordering::SeqCst) != 1 {
@@ -279,7 +279,7 @@ struct GateConn {
     gated: bool,
     state: Mutex<GateConnState>,
     cv: Condvar,
-    splitter: Mutex<crate::wire::FrameSplitter>,
+    splitter: Mutex<crate::lane::wire::FrameSplitter>,
     entered: Sender<()>,
     inputs: Sender<Vec<u8>>,
 }
@@ -308,7 +308,7 @@ enum GateClient {
     Sup(Arc<Mutex<String>>),
 }
 impl Client for GateClient {
-    fn write_all(&self, bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+    fn write_all(&self, bytes: &[u8]) -> Result<(), crate::lane::transport::TransportError> {
         let GateClient::Voyage(conn) = self else { return Ok(()) };
         let (frames, _) = conn.splitter.lock().unwrap().feed(bytes);
         for f in frames {
@@ -336,7 +336,7 @@ impl Client for GateClient {
         }
         Ok(())
     }
-    fn read(&self, buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+    fn read(&self, buf: &mut [u8]) -> Result<usize, crate::lane::transport::TransportError> {
         let conn = match self {
             GateClient::Voyage(conn) => conn,
             GateClient::Sup(voyage) => {
@@ -355,7 +355,7 @@ impl Client for GateClient {
         let mut st = conn.state.lock().unwrap();
         loop {
             if st.closed {
-                return Err(crate::transport::TransportError::Cancelled);
+                return Err(crate::lane::transport::TransportError::Cancelled);
             }
             if !st.out.is_empty() {
                 let n = st.out.len().min(buf.len());
@@ -384,27 +384,27 @@ impl Endpoint for GateEndpoint {
     type Client = GateClient;
     type Process = TestProcess;
 
-    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_voyage_unchallenged(&self, _lane: &str, _voyage_id: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         let mut conns = self.conns.lock().unwrap();
         let conn = Arc::new(GateConn {
             gated: !conns.is_empty(),
             state: Mutex::new(GateConnState::default()),
             cv: Condvar::new(),
-            splitter: Mutex::new(crate::wire::FrameSplitter::new()),
+            splitter: Mutex::new(crate::lane::wire::FrameSplitter::new()),
             entered: self.entered.clone(),
             inputs: self.inputs.clone(),
         });
         conns.push(Arc::clone(&conn));
         Ok(GateClient::Voyage(conn))
     }
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         Ok(GateClient::Sup(Arc::clone(&self.voyage)))
     }
-    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
+    fn challenge(&self, _conn: &Self::Client, _exchange: &mut dyn crate::identity::exchange::IdentityExchange, _deadline: Instant) -> ChallengeOutcome<Self::Process> {
         ChallengeOutcome::Proven(TestProcess)
     }
     fn authenticate_server(&self, _conn: &Self::Client) -> PeerAuthOutcome {
-        PeerAuthOutcome::Authenticated(crate::challenge::PeerAuthenticated { pid: 7, created: 7 })
+        PeerAuthOutcome::Authenticated(crate::identity::challenge::PeerAuthenticated { pid: 7, created: 7 })
     }
 }
 

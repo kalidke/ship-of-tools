@@ -19,4 +19,4 @@ an OS implementation must provide.
 - The classifier makes no OS call of its own: everything goes through `ProbeOps` (`classify.rs`), so its tests run on every platform with `ScriptedProbeOps`.
 - Stage A resolves an owned child completely, challenge included, before the episode deadline is consulted (`probe_owned_spawn`).
 - The episode deadline and the attempt cadence come from the caller, never from this folder; only the per-attempt challenge deadline is derived here, clamped to the caller's boundary (`clamped_challenge_deadline`).
-- Each OS file is self-gated by its own `#![cfg]`; `lib.rs` re-exports it under the old name (`probe_unix`, `probe_win`, `probe_macos`).
+- Each OS file is self-gated by its own `#![cfg]`;

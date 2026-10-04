@@ -74,7 +74,7 @@ Read `src/supervisor/mod.rs` for the process chain and exit codes, then `src/cap
 the leg. For the record's format read `src/store/record.rs` and `src/store/segment.rs`; for a lane, `src/lane/wire/`.
 
 ## Rules
-- Modules are `pub` where integration tests reach them: those tests see only pub items.
-- `host` stays private behind the named facades `lock_writer` and `owner_protected_pipe_descriptor`.
+- Modules are `pub` where integration tests or other crates reach them: those see only pub items.
+- `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.

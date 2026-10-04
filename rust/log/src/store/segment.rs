@@ -2,9 +2,9 @@
 //! Record order: `header frame* seal?`. Sealing is a filename fact committed
 //! by RENAME_NOREPLACE; the seal digest chains segments (ADR 0039).
 
-use crate::envelope::{Digest, Envelope, Seq, U53_MAX};
-use crate::fsutil;
-use crate::record::{self, RecordKind};
+use crate::store::envelope::{Digest, Envelope, Seq, U53_MAX};
+use crate::host;
+use crate::store::record::{self, RecordKind};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -267,7 +267,7 @@ impl SegmentWriter {
         hasher.update(&wire);
         file.write_all(&wire)?;
         file.sync_all()?;
-        fsutil::fsync_dir(seg_dir)?;
+        host::fsync_dir(seg_dir)?;
         Ok(Self {
             file,
             seg_dir: seg_dir.to_path_buf(),
@@ -382,7 +382,7 @@ impl SegmentWriter {
         self.file.sync_all()?;
         let from = self.identity.path(&self.seg_dir, SegmentState::Open);
         let to = self.identity.path(&self.seg_dir, SegmentState::Sealed);
-        fsutil::publish_noreplace(&from, &to)?;
+        host::publish_noreplace(&from, &to)?;
         self.sealed = true;
         Ok(digest)
     }
@@ -572,7 +572,7 @@ impl SegmentReader {
 #[cfg(all(test, any(target_os = "linux", windows)))]
 pub(crate) mod tests {
     use super::*;
-    use crate::envelope::*;
+    use crate::store::envelope::*;
     use serde_json::json;
 
     pub(crate) fn test_env(epoch: u64, n: u64) -> Envelope {

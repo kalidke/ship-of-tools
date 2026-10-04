@@ -1,10 +1,10 @@
-//! macOS half of the probe classifier's OS-facing seam (`crate::probe`
+//! macOS half of the probe classifier's OS-facing seam (`crate::supervisor::probe`
 //! is the platform-neutral trait and scripted test support — see that
 //! module's own doc): [`RealProbeOps`], the real `ProbeOps`
 //! implementation over a real Unix domain socket and a real spawned
 //! child, and [`SpawnedChild`], the owned, not-yet-challenged child
 //! handle Stage A's A1-A3 observations are about. Mirrors
-//! `probe_unix.rs` in shape — but NOT by widening it: its every
+//! `supervisor/probe/unix.rs` in shape — but NOT by widening it: its every
 //! mechanism is a pidfd (`SYS_pidfd_send_signal`, `P_PIDFD`,
 //! `pidfd_open`), and none of those exist on Darwin.
 //!
@@ -68,9 +68,10 @@
 
 #![cfg(target_os = "macos")]
 
-use crate::challenge::ChallengeOutcome;
-use crate::challenge_macos::{drain_exit, watch_exit, ChallengedProcess};
-use crate::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
+use crate::identity::challenge::ChallengeOutcome;
+use crate::identity::challenge_macos::ChallengedProcess;
+use crate::identity::exit_watch_macos::{drain_exit, watch_exit};
+use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::cell::Cell;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
@@ -279,12 +280,12 @@ impl SpawnedChild {
 /// wait/terminate helpers, unmediated. No decisions — just the
 /// mechanical OS calls the classifier drives through [`ProbeOps`].
 /// `pub(crate)`, matching both siblings: no production consumer outside
-/// this crate. This module's own consumer is `supervisor.rs`, on macOS
+/// this crate. This module's own consumer is `supervisor/`, on macOS
 /// exactly as on Linux and Windows.
 pub(crate) struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {
-    type Conn = crate::socket_unix::SocketClient;
+    type Conn = crate::lane::socket_unix::SocketClient;
     type SpawnedChild = SpawnedChild;
     type Process = ChallengedProcess;
 
@@ -311,9 +312,9 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn connect(&self, voyage_id: &str) -> ConnectOutcome<Self::Conn> {
-        match crate::socket_unix::connect_voyage_socket_unchallenged(voyage_id) {
+        match crate::lane::socket_unix::connect_voyage_socket_unchallenged(voyage_id) {
             Ok(client) => ConnectOutcome::Connected(client),
-            Err(crate::transport::TransportError::Io { source, .. }) => match source.kind() {
+            Err(crate::lane::transport::TransportError::Io { source, .. }) => match source.kind() {
                 std::io::ErrorKind::NotFound => ConnectOutcome::FileNotFound,
                 // A Unix domain socket with no listener REFUSES
                 // (`ECONNREFUSED`) where a Windows named pipe that does
@@ -335,13 +336,13 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
-        let mut exchange = crate::exchange::VoyageMgmtExchange::default();
-        crate::challenge_macos::challenge(conn, &mut exchange, deadline)
+        let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
+        crate::identity::challenge_macos::challenge(conn, &mut exchange, deadline)
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
         let lock_path = voyage_root.join("writer.lock");
-        match crate::fsutil::lock_writer(&lock_path) {
+        match crate::host::lock_writer(&lock_path) {
             // The guard drops here, releasing the fence immediately --
             // this is a PROBE, never a hold.
             Ok(_guard) => FenceProbe::Free,

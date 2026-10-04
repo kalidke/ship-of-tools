@@ -2,18 +2,17 @@
 //! CAS publication (ADR 0039). Kernel-semantics parts have Linux and
 //! Windows arms (ADR 0041 §store port); the codec itself is portable.
 
-use crate::envelope::{Digest, Seq};
-use crate::fsutil::{self, DirIdentity, PinnedDir, WriterLock};
-use crate::recovery::{self, Reconciled};
-use crate::segment::{
+use crate::store::envelope::{Digest, Seq};
+use crate::host::{self, DirIdentity, PinnedDir, WriterLock};
+use crate::store::recovery::{self, Reconciled};
+use crate::store::segment::{
     HeaderBody, RetentionClass, SegmentIdentity, SegmentReader, SegmentState, SegmentWriter,
 };
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-pub use super::dedupe::{DedupeEntry, DedupeState, IdemKey};
-pub(crate) use super::dedupe::parse_idem_key;
+use super::dedupe::{DedupeEntry, IdemKey};
 use super::dedupe::walk_segment;
 
 pub struct VoyageStore {
@@ -62,7 +61,7 @@ pub struct VoyageStore {
 /// same-pathname directory-entry replacement (a rename-swap; see
 /// `open_prepared`'s own doc) leaves the string unchanged while the
 /// underlying object differs, and only the OS's own object identity
-/// (`fsutil::DirIdentity`) tells the two apart.
+/// (`host::DirIdentity`) tells the two apart.
 #[derive(Debug, Clone)]
 pub struct PreparedRoot {
     path: PathBuf,
@@ -113,7 +112,7 @@ impl VoyageStore {
         let root = root.as_path();
         let parent = parent.as_path();
         // Volume preflight BEFORE any `.creating` mutation (ADR 0041).
-        fsutil::preflight_volume(parent)?;
+        host::preflight_volume(parent)?;
         let name_str = name
             .to_str()
             .ok_or_else(|| Error::State("bad voyage root name".into()))?;
@@ -153,7 +152,7 @@ impl VoyageStore {
             }
         }
         let mut guard = StagingGuard(staging.clone(), true);
-        fsutil::create_dir_protected(&staging)?;
+        host::create_dir_protected(&staging)?;
         std::fs::create_dir_all(staging.join("seg"))?;
         std::fs::create_dir_all(staging.join("blobs").join(".tmp"))?;
         // sha256/ exists (and is flushed) from birth so the first CAS
@@ -171,12 +170,12 @@ impl VoyageStore {
         drop(lockf);
         // Persist the voyage identity + retention where the genesis header
         // will restate it (bootstrap happens before any segment exists).
-        fsutil::fsync_dir(&staging.join("blobs").join(".tmp"))?;
-        fsutil::fsync_dir(&staging.join("blobs").join("sha256"))?;
-        fsutil::fsync_dir(&staging.join("blobs"))?;
-        fsutil::fsync_dir(&staging.join("seg"))?;
-        fsutil::fsync_dir(&staging)?;
-        fsutil::publish_noreplace(&staging, root)?;
+        host::fsync_dir(&staging.join("blobs").join(".tmp"))?;
+        host::fsync_dir(&staging.join("blobs").join("sha256"))?;
+        host::fsync_dir(&staging.join("blobs"))?;
+        host::fsync_dir(&staging.join("seg"))?;
+        host::fsync_dir(&staging)?;
+        host::publish_noreplace(&staging, root)?;
         guard.1 = false; // published: the staging path IS the root now
         // Retire crash residue from attempts that never ran their guard (a
         // hard kill mid-bootstrap). Only after WINNING: the voyage exists,
@@ -221,7 +220,7 @@ impl VoyageStore {
     /// exists-check).
     pub fn prepare_root(root: &Path) -> Result<PreparedRoot> {
         let path = std::fs::canonicalize(root)?;
-        let identity = fsutil::dir_identity(&path)?;
+        let identity = host::dir_identity(&path)?;
         Ok(PreparedRoot { path, identity })
     }
 
@@ -284,7 +283,7 @@ impl VoyageStore {
     /// it structurally: every operation below resolves through the SAME
     /// held object (`PinnedDir::pinned_path`), never by re-deriving a path
     /// from the original argument again, so there is no LATER re-open left
-    /// for a swap to land in front of. See [`fsutil::PinnedDir`]'s own doc
+    /// for a swap to land in front of. See [`host::PinnedDir`]'s own doc
     /// for the per-platform mechanism (Windows: the OS itself refuses the
     /// rename/exchange while the handle is held; Linux: the
     /// `/proc/self/fd` alias is immune to one regardless).
@@ -333,7 +332,7 @@ impl VoyageStore {
         // I/O: open-existing plus one bounded `try_lock` retry (ADR 0041
         // store port), exactly the primitive the spawned child's
         // INVISIBLE window is defined in terms of.
-        let lock = fsutil::lock_writer(&root.join("writer.lock"))?;
+        let lock = host::lock_writer(&root.join("writer.lock"))?;
 
         // The lease check: the fence's FIRST act, before any other durable
         // I/O or history traversal. `lock` (and the fence it holds) drops
@@ -348,7 +347,7 @@ impl VoyageStore {
         // a store bootstrapped elsewhere and moved to an unsuitable volume
         // must refuse — now checked with the fence already held, since nothing
         // about the refusal itself needs to precede it.
-        fsutil::preflight_volume(root)?;
+        host::preflight_volume(root)?;
         // Restate the root's anchoring: bootstrap's publish rename may have
         // become visible while its container flush was lost to a crash — the
         // callers' bootstrap-if-absent check would then skip bootstrap
@@ -357,11 +356,11 @@ impl VoyageStore {
         // (This is also the Part 3 restatement for bootstrap's own publish:
         // no separate call is needed there — every open already re-flushes
         // root plus its parent, unconditionally, before anything else.)
-        fsutil::fsync_dir(root)?;
+        host::fsync_dir(root)?;
         // The one exception that stays on the REAL path -- see this
         // method's own doc.
         if let Some(parent) = prepared.path.parent() {
-            fsutil::fsync_dir(parent)?;
+            host::fsync_dir(parent)?;
         }
         let seg_dir = root.join("seg");
 
@@ -500,7 +499,7 @@ impl VoyageStore {
         }
         // Rebuild-and-seal via the recovery staging path with zero
         // truncation (the survivor is clean; this writer stamps the seal).
-        fsutil::publish_noreplace(&open_path, &id.path(&seg_dir, SegmentState::Recovering))?;
+        host::publish_noreplace(&open_path, &id.path(&seg_dir, SegmentState::Recovering))?;
         recovery::reconcile(&seg_dir, &id, self.epoch)?;
         let sealed = SegmentReader::read(&id.path(&seg_dir, SegmentState::Sealed), true)?;
         sealed.verify_seal()?;
@@ -567,8 +566,8 @@ impl VoyageStore {
         // and ITS entry lives in `blobs/`. Flushing only `sha256` would let a
         // blob reference become durable while its namespace parent stays
         // losable (round-3 finding; also the migration path for old stores).
-        fsutil::fsync_dir(&blobs.join("sha256"))?; // anchors the shard entry
-        fsutil::fsync_dir(&blobs)?; // anchors the sha256 entry
+        host::fsync_dir(&blobs.join("sha256"))?; // anchors the shard entry
+        host::fsync_dir(&blobs)?; // anchors the sha256 entry
         let dest = shard.join(&digest);
         if dest.exists() {
             let existing = std::fs::read(&dest)?;
@@ -584,7 +583,7 @@ impl VoyageStore {
             // renamed-file/parent flush ran, leaving it cache-visible but
             // not durable — `finish_publication` covers both halves; a bare
             // `fsync_dir(&shard)` covered only the parent.
-            fsutil::finish_publication(&dest)?;
+            host::finish_publication(&dest)?;
             return Ok(digest);
         }
         // Random suffix (not pid+digest): two same-process publishes of
@@ -600,7 +599,7 @@ impl VoyageStore {
             f.write_all(content)?;
             f.sync_all()?;
         }
-        match fsutil::rename_noreplace_raw(&tmp, &dest) {
+        match host::rename_noreplace_raw(&tmp, &dest) {
             Ok(()) => {}
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Raced an identical publish: verify + clean the temp. Same
@@ -619,7 +618,7 @@ impl VoyageStore {
             }
             Err(e) => return Err(e),
         }
-        fsutil::finish_publication(&dest)?;
+        host::finish_publication(&dest)?;
         Ok(digest)
     }
 }

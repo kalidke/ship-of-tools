@@ -77,7 +77,7 @@ pub(crate) async fn run(
         tracing::warn!("shutdown: a run start was still in flight at the rows deadline");
     }
 
-    let report = match sot_log::state_dir::sot_state_dir() {
+    let report = match sot_log::host::state_dir::sot_state_dir() {
         Some(state_root) => end_rows(workspaces.list(), &workspaces, &ws_events, &state_root, rows_deadline).await,
         None => {
             // No state root: nothing can be ended, so every row is counted.
@@ -197,7 +197,7 @@ async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<
 
 /// The drawer is a target iff its pointer exists in the state root (#17).
 fn drawer_is_target(state_root: &Path) -> bool {
-    sot_log::pointer::pointer_path(state_root).is_file()
+    sot_log::supervisor::journal::pointer::pointer_path(state_root).is_file()
 }
 
 /// One row, as `workspace.destroy` ends it but with no resume first (#11).
@@ -399,7 +399,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         assert!(!drawer_is_target(root.path()), "no pointer, no drawer to end");
 
-        std::fs::write(sot_log::pointer::pointer_path(root.path()), "x").expect("pointer");
+        std::fs::write(sot_log::supervisor::journal::pointer::pointer_path(root.path()), "x").expect("pointer");
         assert!(drawer_is_target(root.path()), "a drawer pointer makes the drawer an end target");
     }
 

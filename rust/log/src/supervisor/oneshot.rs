@@ -8,7 +8,7 @@ use super::*;
 // ---------------------------------------------------------------------
 
 pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: String) -> crate::Result<i32> {
-    let _fence = match crate::fence::lock_supervisor(state_dir) {
+    let _fence = match crate::supervisor::journal::fence::lock_supervisor(state_dir) {
         Ok(f) => f,
         Err(e) => {
             eprintln!(
@@ -28,7 +28,7 @@ pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: Str
             return Ok(EXIT_TERMINAL);
         }
     };
-    let outcome = end_run_over_mgmt_lane(&crate::state_dir::state_dir_hash(state_dir), &voyage_id, &reason)?;
+    let outcome = end_run_over_mgmt_lane(&crate::host::state_dir::state_dir_hash(state_dir), &voyage_id, &reason)?;
     match outcome {
         EndRunOutcome::Absent => {
             // raw pipe-NotFound alone is NOT
@@ -131,7 +131,7 @@ pub(super) fn endrun_inner(state_dir: &Path, voyage: Option<String>, reason: Str
 /// exactly like a fresh `supervise` startup — never minting a THIRD
 /// identity over an unresolved one.
 pub(super) fn reset_inner(state_dir: &Path, voyage: Option<String>) -> crate::Result<i32> {
-    let _fence = match crate::fence::lock_supervisor(state_dir) {
+    let _fence = match crate::supervisor::journal::fence::lock_supervisor(state_dir) {
         Ok(f) => f,
         Err(e) => {
             eprintln!(

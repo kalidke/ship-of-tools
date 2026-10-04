@@ -9,8 +9,8 @@
 //! ride the helper package's own suite.
 
 use sot_log::claude::{run, ClaudeConfig, Fence, OperatorCmd};
-use sot_log::segment::{RetentionClass, SegmentReader};
-use sot_log::verify::verify_voyage;
+use sot_log::store::segment::{RetentionClass, SegmentReader};
+use sot_log::store::verify::verify_voyage;
 use sot_log::{Class, RefKind};
 use std::io::Write;
 use std::path::{Path, PathBuf};

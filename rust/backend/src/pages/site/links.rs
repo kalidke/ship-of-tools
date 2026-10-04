@@ -321,7 +321,7 @@ impl Site {
     fn roots_path(&self) -> Option<PathBuf> {
         self.roots_file
             .clone()
-            .or_else(|| sot_log::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
+            .or_else(|| sot_log::host::state_dir::sot_config_dir().map(|d| d.join("data-roots")))
     }
 
     /// Whether the data-roots file has a non-comment absolute line: text only,

@@ -2,7 +2,7 @@
 //! chain lattice.
 
 use super::*;
-use crate::envelope::Envelope;
+use crate::store::envelope::Envelope;
 use super::frame::WalkState;
 
 pub(super) fn check_lifecycle(

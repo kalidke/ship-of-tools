@@ -235,7 +235,7 @@ fn restore_adopts_the_checkpoints_dimensions() {
 /// which need not match the pane the attaching frontend renders into.
 /// `restore_screen` alone leaves the client's screen at the checkpoint's
 /// size (proven above by `restore_adopts_the_checkpoints_dimensions`), so
-/// `sot_log::fe_client_io`'s `pump()` calls `Screen::set_size` to the
+/// `sot_log::attach_client::client`'s `pump()` calls `Screen::set_size` to the
 /// pane's own known rect immediately after every restore. This proves
 /// that step, at the exact crate boundary the fix calls: every cell the
 /// checkpoint described keeps its content and position, and every cell in

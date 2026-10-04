@@ -72,7 +72,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 #[tokio::test]
 async fn lease_holder_child() {
     let Ok(socket) = std::env::var("SOT_TEST_LEASE_CHILD") else { return };
-    let who = sot_log::challenge::self_identity().expect("this process's identity");
+    let who = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let stream = try_connect(Path::new(&socket)).await.expect("connect to the daemon");
     let (rx, mut tx) = stream.split();
     let mut rx = tokio::io::BufReader::new(rx);
@@ -283,9 +283,9 @@ fn stamped(log: &str, needle: &str) -> f64 {
 /// The "slow row": its supervisor killed by the pid this test read, then
 /// its fence held here, so no end of it can be proven.
 #[cfg(target_os = "linux")]
-async fn slow_row(state_dir: &Path) -> sot_log::fence::SupervisorLock {
+async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::SupervisorLock {
     let dir = state_dir.to_path_buf();
-    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::supervisor_client::query_status(&dir))
+    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
         .await
         .unwrap()
         .expect("query_status on a ready row");
@@ -293,7 +293,7 @@ async fn slow_row(state_dir: &Path) -> sot_log::fence::SupervisorLock {
     unsafe { libc::kill(process.pid() as i32, libc::SIGKILL) };
     drop(process);
     let dir = state_dir.to_path_buf();
-    poll_until(|| { let dir = dir.clone(); async move { sot_log::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
+    poll_until(|| { let dir = dir.clone(); async move { sot_log::supervisor::journal::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }
 
 #[cfg(target_os = "linux")]

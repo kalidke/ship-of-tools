@@ -167,7 +167,7 @@ pub struct DaemonLock(#[allow(dead_code)] std::fs::File); // held for its Drop
 
 /// One attempt at the daemon lock under `state_dir`: `Ok(None)` when
 /// another holder has it. std's `File::try_lock` is the same kernel lock
-/// `fsutil` uses for the supervisor fence.
+/// `host` uses for the supervisor fence.
 pub fn try_lock_daemon(state_dir: &Path) -> std::io::Result<Option<DaemonLock>> {
     let file = std::fs::OpenOptions::new()
         .read(true)

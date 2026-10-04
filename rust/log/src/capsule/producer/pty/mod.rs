@@ -1,6 +1,6 @@
 //! `impl Producer for PtyProducer` — a bare Unix `openpty` + process group
-//! behind the [`crate::producer::Producer`] trait (ADR 0043 "Decisions for
-//! LU2" LU2b), the Unix twin of `producer_conpty.rs`'s
+//! behind the [`crate::capsule::producer::Producer`] trait (ADR 0043 "Decisions for
+//! LU2" LU2b), the Unix twin of `capsule/producer/conpty/producer.rs`'s
 //! `ConptyProducer`. `spawn`'s `pre_exec` body
 //! (after its own new leading step —
 //! see the second point below): new session, slave becomes the controlling
@@ -79,7 +79,7 @@
 //!   path's belt, not this one's). The kernel then hangs the pty up and
 //!   signals the session that took it as its controlling terminal: this
 //!   child, which `setsid` + `TIOCSCTTY` two steps below made the leader
-//!   of that session. `tests/macos_kernel_facts.rs` pins that on a real
+//!   of that session. `tests/macos_kernel_facts/` pins that on a real
 //!   Mac and prints the latency it measured, in BOTH configurations that
 //!   matter: its fact 2
 //!   (`closing_the_pty_master_hangs_up_and_reaps_the_child`) drops the
@@ -149,7 +149,7 @@
 
 #![cfg(unix)]
 
-use crate::producer::{ExitStatus, Producer};
+use crate::capsule::producer::{ExitStatus, Producer};
 use crate::{Error, Result};
 use serde_json::json;
 use std::fs::File;
@@ -390,7 +390,7 @@ impl Drop for PtyProducer {
 /// never open at all (`EBADF`), or even a byte actually read (the
 /// supervisor's own contract says this never happens) — is broken, the
 /// same "an unopenable name is reported identically to an
-/// opened-but-broken one" contract [`crate::lease::open`] documents for
+/// opened-but-broken one" contract [`crate::supervisor::lease_win::open`] documents for
 /// the Windows named-mutex sibling. `O_NONBLOCK` is set on the fd itself
 /// (not merely the read call): the fd is a dedicated inherited descriptor
 /// no other code touches, so mutating its flags carries no shared-state
@@ -413,7 +413,7 @@ pub fn parent_lease_fd_broken(fd: RawFd) -> bool {
             // would warn on the redundant second value on this target) —
             // written this way rather than `cfg`-splitting the two names
             // apart for a portability difference this crate's own other
-            // Unix code (`socket_unix.rs`) doesn't bother distinguishing
+            // Unix code (`lane/socket_unix/`) doesn't bother distinguishing
             // either.
             return io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN);
         }
@@ -501,7 +501,7 @@ mod parent_lease_tests {
 
 /// Direct, same-file tests against `PtyProducer` itself — these need `self.pid` and the `Producer`
 /// trait's own methods directly, without a whole `capsule::run` loop
-/// around them; `tests/capsule.rs`'s own `unix_only` module covers the
+/// around them; `tests/capsule/`'s own `unix_only` module covers the
 /// full-loop-level property (`output_after_a_slave_reopen_is_recorded`).
 /// The two process-tree tests read `/proc` and are Linux-only (they ran on
 /// the macOS CI leg once and failed for want of `/proc`); the reader-strand
@@ -685,7 +685,7 @@ mod drop_and_domain_tests {
     /// survive the leader's own exit at all — the leader, as a session
     /// leader with a controlling tty, would otherwise send it a real
     /// `SIGHUP` on exit, and the test would prove nothing about `Drop`
-    /// specifically (mirrors `tests/e2e_socket.rs`'s identical finding,
+    /// specifically (mirrors `tests/e2e_socket/`'s identical finding,
     /// F7). No delay between backgrounding and the shell's own `exit 0`
     /// is needed: `find_descendant_by_pgrp` finds the descendant by its
     /// OWN pgrp, which survives the leader's exit/reparenting untouched.

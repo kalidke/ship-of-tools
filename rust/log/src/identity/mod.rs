@@ -7,4 +7,4 @@ pub mod challenge_unix;
 pub mod challenge_win;
 pub mod deadline;
 pub mod exchange;
-mod exit_watch_macos;
+pub(crate) mod exit_watch_macos;

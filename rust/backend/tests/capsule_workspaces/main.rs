@@ -3,7 +3,7 @@
 //! integration test: a real `sotd`, a real `sot-capsule[.exe]` it spawns
 //! DETACHED, talking the actual wire protocol over a real local socket
 //! (a named pipe on Windows, an `AF_UNIX` socket on Linux) — the same
-//! posture `rust/log/tests/supervisor_win.rs`/`supervisor.rs` take for
+//! posture `rust/log/tests/supervisor_win.rs`/`rust/log/tests/supervisor/` take for
 //! the supervisor authority one layer down. Requires `sot-capsule[.exe]`
 //! already built into the SAME target directory as `sotd[.exe]` (the CI
 //! job builds the whole workspace first — see `.github/workflows/rust.yml`'s
@@ -21,7 +21,7 @@
 //! silent) — never a sleep-and-hope, and never an unbounded read/write/
 //! kill/wait (Codex review finding 13).
 //!
-//! Uses `sot_log::supervisor_client` directly (a real dependency of this
+//! Uses `sot_log::attach_client::supervisor_client` directly (a real dependency of this
 //! crate, not a test double) for two proofs the daemon's own wire
 //! protocol has no op for: (1) `stop` ends JUST the supervisor authority
 //! while its capsule leg survives (ADR 0041 Lifecycle — legs are
@@ -151,7 +151,7 @@ enum AuthorityAtRestart {
     /// into its fence.
     Alive,
     /// The authority is explicitly stopped first
-    /// (`sot_log::supervisor_client::stop`) — its capsule leg
+    /// (`sot_log::attach_client::supervisor_client::stop`) — its capsule leg
     /// deliberately survives (ADR 0041 Lifecycle: legs are outside the
     /// supervisor's own job). Proves `sot-capsule`'s OWN leg-adoption of
     /// a still-alive orphaned leg behind a genuinely DEAD lane.
@@ -194,7 +194,7 @@ async fn restart_daemon_and_prove_adoption(
     if matches!(authority, AuthorityAtRestart::Stopped) {
         tokio::task::spawn_blocking({
             let dir = state_dir_path.to_path_buf();
-            move || sot_log::supervisor_client::stop(&dir).expect("stop the supervisor authority")
+            move || sot_log::attach_client::supervisor_client::stop(&dir).expect("stop the supervisor authority")
         })
         .await
         .unwrap();
@@ -271,7 +271,7 @@ async fn restart_daemon_and_prove_adoption(
     let leg_after = tokio::task::spawn_blocking({
         let dir = state_dir_path.to_path_buf();
         move || {
-            sot_log::supervisor_client::query_status(&dir)
+            sot_log::attach_client::supervisor_client::query_status(&dir)
                 .expect("query_status after restart")
                 .0
                 .leg

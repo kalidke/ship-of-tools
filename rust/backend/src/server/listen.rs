@@ -2,7 +2,7 @@
 
 use super::*;
 use super::conn::handle_connection;
-use sot_log::challenge::{PeerAuthOutcome, PeerAuthenticated};
+use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
 
 use interprocess::local_socket::{
     tokio::{prelude::*, Stream as LocalStream},
@@ -41,12 +41,12 @@ fn daemon_lock_wait() -> std::time::Duration {
 pub(super) async fn lock_daemon(
     state_root: &std::path::Path,
     socket: Option<&std::path::Path>,
-) -> Result<sot_log::fence::DaemonLock> {
-    let lock_path = sot_log::fence::daemon_lock_path(state_root);
+) -> Result<sot_log::host::DaemonLock> {
+    let lock_path = sot_log::host::daemon_lock_path(state_root);
     let deadline = tokio::time::Instant::now() + daemon_lock_wait();
     let mut logged = false;
     loop {
-        if let Some(lock) = sot_log::fence::try_lock_daemon(state_root)
+        if let Some(lock) = sot_log::host::try_lock_daemon(state_root)
             .with_context(|| format!("open the daemon lock {}", lock_path.display()))?
         {
             return Ok(lock);
@@ -77,8 +77,8 @@ pub(super) async fn lock_daemon(
 }
 
 /// Takes the daemon lock for `opts`, or runs unfenced when this machine has no state root.
-pub(super) async fn take_daemon_lock(opts: &crate::Opts) -> Result<Option<sot_log::fence::DaemonLock>> {
-    Ok(match sot_log::state_dir::sot_state_dir() {
+pub(super) async fn take_daemon_lock(opts: &crate::Opts) -> Result<Option<sot_log::host::DaemonLock>> {
+    Ok(match sot_log::host::state_dir::sot_state_dir() {
         Some(state_root) => Some(lock_daemon(&state_root, opts.socket.as_deref()).await?),
         None => {
             tracing::warn!(
@@ -123,7 +123,7 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
 
 /// The session pipe's security descriptor: protected, owner-only full
 /// access, no `OI`/`CI` inheritance — built from `sot_log::
-/// owner_protected_pipe_descriptor` (the SAME SDDL `pipe_win.rs` already
+/// owner_protected_pipe_descriptor` (the SAME SDDL `lane/pipe_win/` already
 /// uses for the voyage/supervisor pipes) rather than a second copy of that
 /// string. `interprocess`'s own `ListenerOptions` has no ACL-building of
 /// its own to reuse; `ListenerOptionsExt::security_descriptor` only takes
@@ -192,7 +192,7 @@ pub(super) async fn run_local(
     let mut listener_options = ListenerOptions::new().name(name);
     // Windows only: every legitimate client (frontend, CLI, capsule agents,
     // the comm bridge) runs as this same OS user, so owner-only full access
-    // is sufficient — same posture `pipe_win.rs` already gives the
+    // is sufficient — same posture `lane/pipe_win/` already gives the
     // voyage/supervisor pipes, applied here to the session pipe too. Unix
     // is unaffected: its socket security is the containing directory's mode
     // (`paths::secure_socket_dir` above), not this builder.
@@ -267,7 +267,7 @@ pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) 
     {
         use std::os::fd::AsRawFd;
         let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream;
-        match sot_log::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
+        match sot_log::identity::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
             Ok((pid, created)) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
             Err(_) => PeerAuthOutcome::Undetermined,
         }
@@ -288,7 +288,7 @@ pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) 
         let Some(pid) = creds.pid().and_then(|pid| u32::try_from(pid).ok()) else {
             return PeerAuthOutcome::Undetermined;
         };
-        match sot_log::challenge::process_created(pid) {
+        match sot_log::identity::challenge::process_created(pid) {
             Ok(created) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
             Err(_) => PeerAuthOutcome::Undetermined,
         }
@@ -305,7 +305,7 @@ mod tests {
 
     /// Twin of `sot-log`'s own
     /// `pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags`
-    /// (`rust/log/tests/pipe_win.rs`) — same technique (`GetSecurityInfo` on
+    /// (`rust/log/tests/pipe_win/`) — same technique (`GetSecurityInfo` on
     /// a LIVE handle, round-tripped to SDDL) — but against THIS crate's
     /// session pipe rather than a voyage/supervisor pipe: proves `run_local`
     /// actually wires `session_pipe_security_descriptor()` into the

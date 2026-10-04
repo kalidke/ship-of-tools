@@ -143,7 +143,7 @@ pub async fn handle_pty_input(
     match ws.runtime.as_str() {
         "capsule" => {
             {
-                let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+                let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
                     let payload = json!({
                         "error": format!(
                             "could not resolve this machine's state root ({} unset)",
@@ -191,7 +191,7 @@ pub async fn handle_pty_input(
                         }
                     };
                     let ready_phase =
-                        crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
+                        crate::capsule_workspace::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
@@ -272,7 +272,7 @@ pub async fn handle_pty_screen(
     match ws.runtime.as_str() {
         "capsule" => {
             {
-                let Some(state_root) = sot_log::state_dir::sot_state_dir() else {
+                let Some(state_root) = sot_log::host::state_dir::sot_state_dir() else {
                     let payload = json!({
                         "error": format!(
                             "could not resolve this machine's state root ({} unset)",
@@ -316,7 +316,7 @@ pub async fn handle_pty_screen(
                         }
                     };
                     let ready_phase =
-                        crate::capsule_workspace::phase_str(sot_log::wire::SupervisorPhase::Ready);
+                        crate::capsule_workspace::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
@@ -420,7 +420,7 @@ where
             .await?;
         return Ok(());
     };
-    let state_root = sot_log::state_dir::sot_state_dir();
+    let state_root = sot_log::host::state_dir::sot_state_dir();
     // `attach_direct` answers at once from memory, no
     // lane probe here -- `ensure_started` runs
     // fire-and-forget in the background under its own

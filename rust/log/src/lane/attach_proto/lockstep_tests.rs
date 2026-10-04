@@ -2,7 +2,7 @@
 
 use super::*;
 use super::support_tests::*;
-use crate::wire::{encode_attach_client, encode_mgmt_request};
+use crate::lane::wire::{encode_attach_client, encode_mgmt_request};
 
 // -- mgmt shutdown / ADR 0041 EndRun ------------------------------------
 

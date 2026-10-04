@@ -1,7 +1,7 @@
 //! The leg's side of its lanes: transport events in through AttachProto and its actions carried out, in the main loop and through teardown.
 use super::output_path::{flush_output, maybe_rotate};
 use super::*;
-use crate::attach_proto::RequestId;
+use crate::lane::attach_proto::RequestId;
 
 // THIS module decides nothing; `attach_proto::AttachProto` does (see
 // its module doc). `execute_light_actions` runs the action kinds that

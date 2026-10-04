@@ -72,7 +72,7 @@ fn attach_converges_on_the_supervisors_word() {
     // lane saw ONE connection from the client" has no observable surface
     // today -- `StatusOk` carries no connection count, and
     // `spawn_supervisor`'s inherited stdout/stderr carries no per-
-    // connection accept log line (`run_worker`/`supervisor.rs`'s lane
+    // connection accept log line (`run_worker`/`supervisor/`'s lane
     // handling logs nothing on accept). Dropped, as the brief's own
     // fallback instructs.
     drop(client);
@@ -169,7 +169,7 @@ fn unresponsive_supervisor_expires_the_health_window() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let h = state_dir_hash(&state_dir);
 
-    let _server = sot_log::socket_unix::SocketServer::bind_supervisor(&h, 1).expect("bind a bare supervisor socket");
+    let _server = sot_log::lane::socket_unix::SocketServer::bind_supervisor(&h, 1).expect("bind a bare supervisor socket");
 
     let (_woke, wake) = wake_flag();
     let mut client: FeAttachClient = FeAttachClient::attach(
@@ -214,7 +214,7 @@ fn unresponsive_supervisor_expires_the_health_window() {
     // Past the window's own end: a generous margin beyond the constant
     // itself, so the wait is a proof of "it DOES expire," never a tight
     // race against `HEALTH_WINDOW`'s exact edge.
-    let expiry_deadline = Instant::now() + sot_log::fe_client::HEALTH_WINDOW + Duration::from_secs(30);
+    let expiry_deadline = Instant::now() + sot_log::attach_client::rules::HEALTH_WINDOW + Duration::from_secs(30);
     loop {
         client.pump();
         if client.is_dead() {

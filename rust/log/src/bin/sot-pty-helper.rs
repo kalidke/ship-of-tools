@@ -9,7 +9,7 @@
 //! both) — see that file's own module doc for what each mode proves.
 //! Nothing about the byte-emitting behavior differs on Unix; only the
 //! top-level bare/`--child` mode's own containment mechanism does (a
-//! Unix process GROUP, via `producer_pty.rs`'s own `setsid`, rather than
+//! Unix process GROUP, via `capsule/producer/pty/`'s own `setsid`, rather than
 //! a Windows job object) — this binary itself needs no special call for
 //! that: a plain `Command` grandchild simply inherits the SAME process
 //! group its parent already has, by default.

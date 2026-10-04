@@ -349,11 +349,11 @@ async fn main() -> Result<()> {
         eprintln!("sotd: {msg}");
         std::process::exit(78);
     }
-    // Defect fix (field-proven, Windows; see `sot_log::winhandle`'s module
+    // Defect fix (field-proven, Windows; see `sot_log::host::winhandle`'s module
     // doc): harden this process's own inherited stdio before anything is
     // spawned, so it can never leak into a supervisor/leg that outlives us.
     #[cfg(windows)]
-    if let Err(e) = sot_log::winhandle::harden_own_stdio(true) {
+    if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true) {
         eprintln!("sotd: could not harden inherited stdio ({e}); continuing");
     }
 

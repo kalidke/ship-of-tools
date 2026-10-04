@@ -432,7 +432,7 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
-    // `sot-log/src/fe_client_io.rs`) — the dial itself runs on the worker
+    // `sot-log/src/attach_client/client.rs`) — the dial itself runs on the worker
     // thread it spawns, and `Unreachable` (what a dying child classifies
     // as) retries rather than failing this call outright (ADR 0045
     // decision 4: "Unreachable must retry, never go terminal on its

@@ -57,7 +57,7 @@ async fn a_busy_pane_over_a_slow_link_converges() {
 
     let voyage = tokio::task::spawn_blocking({
         let d = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&d).expect("query_status").0.voyage
+        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
     })
     .await
     .unwrap()
@@ -65,7 +65,7 @@ async fn a_busy_pane_over_a_slow_link_converges() {
     let seg_dir = state_dir.join("voyages").join(&voyage).join("seg");
     let initial_bytes = dir_bytes(&seg_dir);
 
-    // `attach_proto.rs`'s own `WATCHER_LIVE_QUEUE_BUDGET_BYTES` (4 MiB)
+    // `lane/attach_proto/`'s own `WATCHER_LIVE_QUEUE_BUDGET_BYTES` (4 MiB)
     // eviction exists and is wired (confirmed by reading that source: it
     // closes a watcher whose OWN unsent queue overflows 4 MiB) but is a
     // stalled-reader safety valve, not a slow-but-still-draining one: this
@@ -111,7 +111,7 @@ async fn a_busy_pane_over_a_slow_link_converges() {
 }
 
 // -----------------------------------------------------------------------
-// (viii) `rust/log/tests/fe_client.rs`'s own pen-contention proof,
+// (viii) `rust/log/tests/fe_client/`'s own pen-contention proof,
 // repeated through the bridge: a headless write via the daemon's OWN
 // `pty.input` demotes the bridged FE; its next input retakes; watcher
 // screen reads never take.
@@ -209,7 +209,7 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
 
     let voyage = tokio::task::spawn_blocking({
         let d = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&d).expect("query_status").0.voyage
+        move || sot_log::attach_client::supervisor_client::query_status(&d).expect("query_status").0.voyage
     })
     .await
     .unwrap()
@@ -217,7 +217,7 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
     let outcome = tokio::task::spawn_blocking({
         let d = state_dir.clone();
         let v = voyage.clone();
-        move || sot_log::supervisor_client::end_run(&d, &v, "lane bridge test teardown")
+        move || sot_log::attach_client::supervisor_client::end_run(&d, &v, "lane bridge test teardown")
     })
     .await
     .unwrap()
@@ -225,14 +225,14 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
     assert!(
         matches!(
             outcome,
-            sot_log::supervisor_client::EndRunOutcome::RecordVerified | sot_log::supervisor_client::EndRunOutcome::RecordClosed
+            sot_log::attach_client::supervisor_client::EndRunOutcome::RecordVerified | sot_log::attach_client::supervisor_client::EndRunOutcome::RecordClosed
         ),
         "end_run did not verify: {outcome:?}"
     );
 
     let frames = sealed_frames(&state_dir, &voyage);
     let count_for = |cid: &str| {
-        frames.iter().filter(|f| f.class == sot_log::envelope::Class::Input && f.source.actor.controller_id.as_deref() == Some(cid)).count()
+        frames.iter().filter(|f| f.class == sot_log::store::envelope::Class::Input && f.source.actor.controller_id.as_deref() == Some(cid)).count()
     };
     // TWO frames, not one: write_and_enter writes text and Enter as separate
     // wire ops, each its own sealed frame -- pinned by LENGTH, not just
@@ -241,7 +241,7 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
         frames
             .iter()
             .filter(|f| {
-                f.class == sot_log::envelope::Class::Input
+                f.class == sot_log::store::envelope::Class::Input
                     && f.source.actor.controller_id.as_deref() == Some("lb8-headless")
                     && f.payload.as_ref().and_then(|p| p.get("length")?.as_u64()).map(|l| l as usize) == Some(want)
             })
@@ -254,7 +254,7 @@ async fn headless_write_while_a_bridged_client_is_driving_demotes_it_without_dup
     let refused_stale_count = frames
         .iter()
         .filter(|f| {
-            f.class == sot_log::envelope::Class::Lifecycle
+            f.class == sot_log::store::envelope::Class::Lifecycle
                 && f.source.actor.controller_id.as_deref() == Some("lb8-driver")
                 && f.payload.as_ref().and_then(|p| p.get("fact")?.get("fact")?.as_str()) == Some("refused_stale_epoch")
         })

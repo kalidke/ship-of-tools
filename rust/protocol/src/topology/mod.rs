@@ -29,7 +29,7 @@
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
-//! `sot_log::state_dir::sot_config_dir` (`~/.config/sot`,
+//! `sot_log::host::state_dir::sot_config_dir` (`~/.config/sot`,
 //! `%LOCALAPPDATA%\sot\config`). No repo-local layer: the hub's own copy is
 //! canonical and every other box's copy is a `topology sync` fetch of it.
 //!
@@ -92,7 +92,7 @@ pub fn locate() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("SOT_HOSTS").filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(p));
     }
-    sot_log::state_dir::sot_config_dir().map(|d| d.join("hosts.toml"))
+    sot_log::host::state_dir::sot_config_dir().map(|d| d.join("hosts.toml"))
 }
 
 /// Read and parse the located file. `Ok(None)` when there is no file (the

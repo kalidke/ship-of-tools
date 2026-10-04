@@ -61,7 +61,7 @@ enum LegOutcome {
     /// race for `supervisor.lock`" from "a genuinely exhausted
     /// producer", but `sot-capsule supervise` already runs its OWN
     /// internal flap/retry budget (`FLAP_THRESHOLD`,
-    /// `respawn_or_terminal` in `rust/log/src/supervisor.rs`) before
+    /// `respawn_or_terminal` in `rust/log/src/supervisor/`) before
     /// it ever chooses to exit 69 — so a second restart layer on top,
     /// here, is always redundant at best. At worst it actively hid a
     /// real failure: a producer that will NEVER recover (e.g.

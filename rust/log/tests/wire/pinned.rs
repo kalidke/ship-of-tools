@@ -13,7 +13,7 @@ use super::*;
 // script), never a rewrite of this one. What this proves and what it
 // does not: two processes agreeing on `SUPERVISOR_PROTO_V1` agree on
 // these BYTES -- it cannot prove semantics, and command bytes feed
-// durable journal digests (`wire.rs:1098`), so a lane bump that changes
+// durable journal digests (`canonical_supervisor_op_bytes` in `src/lane/wire/supervisor.rs`), so a lane bump that changes
 // a command's encoding is ALSO a `journal::SCHEMA_VERSION` event. The
 // NESTED variants this file leaves unpinned (`SupervisorOp::Reset`/
 // `Stop`, every `SupervisorOperationState`, every `SupervisorPhase`,
@@ -192,12 +192,12 @@ fn supervisor_lane_v1_coverage_bytes_are_pinned_and_decode_back_identically() {
 
 // -----------------------------------------------------------------------
 // attach-lane-v3 fixture (ADR 0046 decision 3, lane B3b1): the FIRST
-// attach-lane fixture in this crate — v1/v2 have `src/wire.rs`'s own
+// attach-lane fixture in this crate — v1/v2 have `src/lane/wire/`'s own
 // inline byte goldens but no committed file, since the wire-level shape
 // hasn't needed a cross-process conformance pin until now. An immutable
 // committed file, one instance of `hello{v3}`/`hello_ok{v3}` (proving
 // the new version negotiates) plus every new `AttachServer` shape and
-// both `holder` forms (`Some`/`None`) `wire.rs`'s own colocated golden
+// both `holder` forms (`Some`/`None`) `lane/wire/`'s own colocated golden
 // tests already cover individually — this file's job is pinning them
 // TOGETHER, concatenated, the same cross-language conformance role
 // `tests/golden.rs`'s journal fixtures play. A wire change here is a NEW

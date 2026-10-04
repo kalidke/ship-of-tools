@@ -147,7 +147,7 @@ fn marker_is_durable_before_the_ack_completes_and_the_ack_still_works() {
 /// Real concurrency at the wire level (two mgmt connections, both
 /// requesting before either's ack physically completes) — the end-to-end
 /// proof that the WIRING (`attach_proto`'s `Action::RunEndRequested`
-/// ordering, `execute_actions!`'s dispatch) actually delivers the
+/// ordering, `execute_actions`'s dispatch) actually delivers the
 /// guarantee `commit_run_end_marker`'s own unit tests already prove in
 /// isolation against the pure function.
 #[test]
@@ -213,7 +213,7 @@ fn two_concurrent_shutdown_requests_write_one_marker_and_ack_both() {
 /// (`attach_proto::teardown_ignores_producer_bound_requests_but_not_mgmt_or_attach`)
 /// — reproving it here against a real ConPTY would only buy a race between
 /// the test thread's writes and whichever loop iteration observes them
-/// first, without adding coverage `execute_teardown_actions!`'s own
+/// first, without adding coverage `execute_teardown_actions`'s own
 /// `unreachable!` arms don't already give at compile time.
 ///
 /// U1a Codex round-1, minor cluster: asserts the exact count (2), not
@@ -288,7 +288,7 @@ fn shutdown_all_is_called_before_run_returns_on_every_exit_path() {
 /// writer fence (`store`, dropped via this same early return) is the
 /// only thing that may release past it. Simulated via `TestTransport::
 /// force_shutdown_expiry` (a real Windows stalled-worker scenario is
-/// proven separately, at the transport level, by `pipe_win.rs`'s own
+/// proven separately, at the transport level, by `lane/pipe_win/`'s own
 /// `stalled_worker_does_not_block_teardown_of_healthy_connections` and
 /// the pure `join_within` expiry tests) — this test's job is specifically
 /// `capsule::run`'s OWN reaction to that report.

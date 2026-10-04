@@ -1,11 +1,11 @@
 //! Shared test doubles: a do-nothing client, peer identity and endpoint.
 
-use crate::challenge::{ChallengeOutcome, PeerAuthOutcome};
-use crate::client::{Client, Endpoint};
+use crate::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
+use crate::lane::client::{Client, Endpoint};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::client::PeerIdentity;
+use crate::lane::client::PeerIdentity;
 
 // -----------------------------------------------------------------
 // ADR 0045 decision 6: the health probe uses the voyage id the
@@ -17,10 +17,10 @@ use crate::client::PeerIdentity;
 /// the connection it returns.
 pub(super) struct TestClient;
 impl Client for TestClient {
-    fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::transport::TransportError> {
+    fn write_all(&self, _bytes: &[u8]) -> Result<(), crate::lane::transport::TransportError> {
         Ok(())
     }
-    fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::transport::TransportError> {
+    fn read(&self, _buf: &mut [u8]) -> Result<usize, crate::lane::transport::TransportError> {
         Ok(0)
     }
     fn cancel(&self) {}
@@ -62,20 +62,20 @@ impl Endpoint for TestEndpoint {
         &self,
         lane: &str,
         voyage_id: &str,
-    ) -> Result<Self::Client, crate::transport::TransportError> {
+    ) -> Result<Self::Client, crate::lane::transport::TransportError> {
         *self.last_lane_probed.lock().unwrap() = Some(lane.to_string());
         *self.last_voyage_probed.lock().unwrap() = Some(voyage_id.to_string());
         Ok(TestClient)
     }
 
-    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::transport::TransportError> {
+    fn connect_supervisor_unchallenged(&self, _lane: &str) -> Result<Self::Client, crate::lane::transport::TransportError> {
         unreachable!("health_probe_uses_the_last_reported_voyage_id never drives the supervisor lane")
     }
 
     fn challenge(
         &self,
         _conn: &Self::Client,
-        _exchange: &mut dyn crate::exchange::IdentityExchange,
+        _exchange: &mut dyn crate::identity::exchange::IdentityExchange,
         _deadline: Instant,
     ) -> ChallengeOutcome<Self::Process> {
         unreachable!("health_probe_uses_the_last_reported_voyage_id never challenges")

@@ -199,7 +199,7 @@ installer_ownership_gate() {  # <running-bin> <home> <prefix> <os> <want-fronten
     printf 'allow'
 }
 
-# Mirrors sot_log::state_dir::host_name() (rust/log/src/state_dir.rs): this
+# Mirrors sot_log::host::state_dir::host_name() (rust/log/src/host/state_dir.rs): this
 # box's own name, needed to look itself up in the declared topology one step
 # before any staged sotd has run to say it out loud. Not a second parser —
 # the grammar itself is read by `sotd topology status` (installer_topology_role
@@ -488,7 +488,7 @@ case "$OS" in
 esac
 
 # Finding 2 (v0.6.5 macOS field report): the daemon correctly REFUSES to
-# put capsule records on a remote filesystem (`rust/log/src/fsutil.rs`
+# put capsule records on a remote filesystem (`rust/log/src/host/volume.rs`
 # `preflight_volume`'s statfs denylist), but today the only place that
 # says so is the backend's own journal -- from the frontend it just looks
 # like the retry blink, "supervisor lane not answering", forever. Surfacing
@@ -497,12 +497,12 @@ esac
 # $HOME (the default project root) and the state dir the daemon will
 # actually use. Linux only -- `stat -f -c %T` is GNU coreutils, and this
 # whole failure mode is Linux/Windows-only today anyway (capsule mode
-# isn't wired up on macOS -- see `rust/log/src/fsutil.rs`'s
+# isn't wired up on macOS -- see `rust/log/src/host/volume.rs`'s
 # `preflight_volume` non-Linux-unix arm). Warn, never abort: a remote
 # home is a real, working (if degraded) setup for everything except
 # capsule rows.
 if [ "$OS" = Linux ] && command -v stat >/dev/null 2>&1; then
-    # Mirrors `REMOTE_FS_TYPES`' names in fsutil.rs (NFS, SMB, CIFS, SMB2,
+    # Mirrors `REMOTE_FS_TYPES`' names in host/volume.rs (NFS, SMB, CIFS, SMB2,
     # 9p, FUSE) as GNU `stat -f -c %T` actually spells them.
     check_remote_fs() {
         local label="$1" dir="$2"

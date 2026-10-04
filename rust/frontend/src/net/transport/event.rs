@@ -9,7 +9,7 @@ pub enum IncomingEvt {
         session_id: String,
         revision: u64,
         /// The backend's declared host (`HelloRes.host`, ADR 0046 decision
-        /// 1 — resolved once by `sot_log::state_dir::host_name()` on that
+        /// 1 — resolved once by `sot_log::host::state_dir::host_name()` on that
         /// side) — `Some("myhost")` when a backend reports itself, `None`
         /// for older backends. `HostKey` (the dial label this connection
         /// is tagged with, `hosts.toml`-configured) is NEVER re-homed to

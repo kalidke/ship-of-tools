@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(in crate::ui) type PaneAttachClient = sot_log::fe_client_io::FeAttachClient<sot_protocol::topology::lane_client::DaemonLaneEndpoint>;
+pub(in crate::ui) type PaneAttachClient = sot_log::attach_client::client::FeAttachClient<sot_protocol::topology::lane_client::DaemonLaneEndpoint>;
 
 /// Attach clients parked when the session pane leaves their row, so a
 /// switch back reuses the live lane instead of dialing again (a remote
@@ -299,7 +299,7 @@ impl State {
         let controller_id = format!("{}#{}", self_comm_handle(), frontend_identity().instance);
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
-        match sot_log::fe_client_io::FeAttachClient::attach(
+        match sot_log::attach_client::client::FeAttachClient::attach(
             endpoint,
             target.to_string(),
             cols,
@@ -426,7 +426,7 @@ impl State {
         if changed {
             // BLOCKER (Codex review, lane B5 discharge): a `notice()` set
             // by an EARLIER checkpoint ("attached to leg started …") is
-            // retracted only on the NEXT checkpoint (`fe_client_io.rs`'s
+            // retracted only on the NEXT checkpoint (`attach_client/client.rs`'s
             // own doc) — between the two, a mid-outage `Unreachable`
             // retry, a refusal, or any other non-"attached" status must
             // win over that stale text, never be hidden behind it. The

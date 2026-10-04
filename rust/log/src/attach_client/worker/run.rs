@@ -1,11 +1,11 @@
 //! The worker thread: `run_worker`, its held-input bookkeeping and the retry and link-pause waits.
 
-use crate::client::Endpoint;
-use crate::fe_client::{
+use crate::lane::client::Endpoint;
+use crate::attach_client::rules::{
     FeDownBaseline, OutstandingSlot, QuitDispatcher,
     ReconnectState, TakeTransaction,
 };
-use crate::wire::{self};
+use crate::lane::wire::{self};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};

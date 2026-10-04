@@ -3,12 +3,12 @@
 //! `capsule::run` without a real named pipe or Unix socket underneath it.
 //! Import only neutral items (`attach_proto`/`transport`, `std`) — no
 //! producer, no platform `cfg` — so this file is usable unmodified from
-//! `tests/capsule.rs` (Windows, `ConptyProducer`) and, later,
-//! `tests/e2e_socket.rs` (Unix, `producer_pty`) alike. `#[path]`-included,
+//! `tests/capsule/` (Windows, `ConptyProducer`) and, later,
+//! `tests/e2e_socket/` (Unix, `producer_pty`) alike. `#[path]`-included,
 //! not a crate: see each including file's own `mod` declaration.
 
-use sot_log::attach_proto::ConnId;
-use sot_log::transport::{Transport, TransportEvent};
+use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::transport::{Transport, TransportEvent};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 

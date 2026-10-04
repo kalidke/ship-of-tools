@@ -37,7 +37,7 @@ fn run_ended(outcome: &crate::capsule_workspace::EndRunOutcome) -> Result<(), St
 /// between the seam and the thing it stands for. `spawn_replacement` is the
 /// exception: its real call takes eight arguments, all read off the plan.
 pub(crate) trait RestartEffects {
-    fn query_status(&self, state_dir: &Path) -> Result<sot_log::supervisor_client::StatusReport, String>;
+    fn query_status(&self, state_dir: &Path) -> Result<sot_log::attach_client::supervisor_client::StatusReport, String>;
     fn end_run(
         &self,
         state_dir: &Path,
@@ -57,8 +57,8 @@ pub(crate) trait RestartEffects {
 pub(crate) struct LiveSupervisor;
 
 impl RestartEffects for LiveSupervisor {
-    fn query_status(&self, state_dir: &Path) -> Result<sot_log::supervisor_client::StatusReport, String> {
-        sot_log::supervisor_client::query_status(state_dir).map(|(s, _)| s).map_err(|e| e.to_string())
+    fn query_status(&self, state_dir: &Path) -> Result<sot_log::attach_client::supervisor_client::StatusReport, String> {
+        sot_log::attach_client::supervisor_client::query_status(state_dir).map(|(s, _)| s).map_err(|e| e.to_string())
     }
     fn end_run(
         &self,
@@ -302,9 +302,9 @@ fn supervisor_identity(fx: &dyn RestartEffects, state_dir: &std::path::Path) -> 
 fn wait_until_resting(
     fx: &dyn RestartEffects,
     state_dir: &std::path::Path,
-) -> Result<sot_log::supervisor_client::StatusReport, String> {
+) -> Result<sot_log::attach_client::supervisor_client::StatusReport, String> {
     let deadline = std::time::Instant::now() + REPLACEMENT_SETTLE_DEADLINE;
-    let mut last: Option<sot_log::supervisor_client::StatusReport> = None;
+    let mut last: Option<sot_log::attach_client::supervisor_client::StatusReport> = None;
     loop {
         match fx.query_status(state_dir) {
             Ok(report) => {
@@ -331,8 +331,8 @@ fn wait_until_resting(
 /// restricted to the phases a live supervisor can report over `status` —
 /// this caller has just spawned one and is holding its reply, so the
 /// "nothing is there" phases that function also admits cannot arise here.
-fn phase_rests(phase: sot_log::wire::SupervisorPhase) -> bool {
-    use sot_log::wire::SupervisorPhase as P;
+fn phase_rests(phase: sot_log::lane::wire::SupervisorPhase) -> bool {
+    use sot_log::lane::wire::SupervisorPhase as P;
     matches!(phase, P::Ready | P::EndedNoRespawn | P::Terminal)
 }
 
@@ -362,11 +362,11 @@ fn phase_rests(phase: sot_log::wire::SupervisorPhase) -> bool {
 /// switch was supposed to retire must never be minted on, whatever phase
 /// it rests at.
 fn ready_to_mint(
-    phase: sot_log::wire::SupervisorPhase,
+    phase: sot_log::lane::wire::SupervisorPhase,
     retired: Option<(u32, u64)>,
     resident: (u32, u64),
 ) -> Result<(), String> {
-    use sot_log::wire::SupervisorPhase as P;
+    use sot_log::lane::wire::SupervisorPhase as P;
     if retired == Some(resident) {
         return Err(format!(
             "the authority answering is the same process the switch was supposed to retire (pid {}), \

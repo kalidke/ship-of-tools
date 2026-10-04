@@ -11,7 +11,7 @@ use std::time::Duration;
 // The death watch: one `kqueue` fd per handle, holding one
 // `EVFILT_PROC`/`NOTE_EXIT` knote. `pub(crate)` for the same reason
 // `challenge_unix::pidfd_open`/`poll_pidfd_readable` are (ADR 0043
-// decision 21): `probe_macos.rs`'s freshly spawned, not-yet-challenged
+// decision 21): `supervisor/probe/macos.rs`'s freshly spawned, not-yet-challenged
 // child reuses THESE, rather than encoding the same two calls twice.
 // ---------------------------------------------------------------------
 

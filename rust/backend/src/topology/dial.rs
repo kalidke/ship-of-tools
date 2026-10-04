@@ -6,7 +6,7 @@
 // this sends a plain unauthenticated `hello` (role `cli`) the same way any
 // other one-shot shell caller would.
 //
-// Deliberately NOT the supervisor lane's `sot_log::client::Client` (pipe/
+// Deliberately NOT the supervisor lane's `sot_log::lane::client::Client` (pipe/
 // socket challenge-auth trio): that machinery proves a CAPSULE's identity
 // for the attach protocol, a different, heavier contract this plain
 // control-socket hello has never needed.

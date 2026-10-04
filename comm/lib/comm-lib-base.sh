@@ -152,7 +152,7 @@ sot_jq_rawfile() {
 
 # sot_host — this shell's DECLARED host name for the wire only (ADR 0046
 # decision 1, manager review S1/S2): the ONE resolver matching
-# sot_log::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
+# sot_log::host::state_dir::host_name() on the Rust side exactly — `$SOT_SELF_HOST`
 # verbatim if set and non-empty (a NEW variable: `SOT_HOST` already means
 # the SSH target a remote frontend dials, `scripts/launch-sot.ps1`/
 # `launch-sot.sh` — reusing it here would silently rename a frontend's

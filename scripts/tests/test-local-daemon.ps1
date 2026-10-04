@@ -31,7 +31,7 @@
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
 # LOCALAPPDATA/XDG_STATE_HOME/XDG_CONFIG_HOME at directories under the test
-# root: the spawned daemon reads LOCALAPPDATA via sot_log::state_dir and
+# root: the spawned daemon reads LOCALAPPDATA via sot_log::host::state_dir and
 # HOME/XDG via rust/backend/src/paths.rs for its OWN state (workspace
 # registry, capsule resume-scan) -- without this it would read/write the
 # REAL developer state and try to resume real capsule workspaces against the

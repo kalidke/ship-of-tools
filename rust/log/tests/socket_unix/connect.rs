@@ -117,7 +117,7 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
 
 /// ADR 0043 decision 3: the socket file is owner-only (0600) inside a
 /// private, owner-only (0700) runtime dir — the Unix analogue of
-/// `pipe_win.rs`'s own SDDL descriptor test.
+/// `lane/pipe_win/`'s own SDDL descriptor test.
 #[test]
 fn socket_is_owner_only_in_a_private_dir() {
     if !run_isolated("connect::socket_is_owner_only_in_a_private_dir") {

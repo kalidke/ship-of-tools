@@ -20,9 +20,9 @@
 //! syscall shim or dm-flakey and are named follow-ups in the ADR's gate
 //! list, not silently claimed here.
 
-use sot_log::segment::{RetentionClass, SegmentReader, SegmentState};
-use sot_log::verify::verify_voyage;
-use sot_log::voyage::VoyageStore;
+use sot_log::store::segment::{RetentionClass, SegmentReader, SegmentState};
+use sot_log::store::verify::verify_voyage;
+use sot_log::store::voyage::VoyageStore;
 use std::path::Path;
 use std::time::Duration;
 

@@ -24,10 +24,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use sot_log::challenge::{PeerAuthOutcome, PeerAuthenticated};
-use sot_log::client::{Endpoint, PlatformEndpoint};
-use sot_log::state_dir::state_dir_hash;
-use sot_log::transport::TransportError;
+use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
+use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use sot_log::host::state_dir::state_dir_hash;
+use sot_log::lane::transport::TransportError;
 use sot_protocol::{codec, op, Frame, LaneConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite};
 
@@ -96,15 +96,15 @@ fn absent_kind(e: &TransportError) -> String {
 /// down) and `Corrupt` (can't tell) are exactly the two cases ADR 0045
 /// decision 2 already names for an absent/undetermined voyage lane.
 fn check_voyage_ownership(state_dir: &Path, voyage_id: &str) -> Result<(), DialFail> {
-    match sot_log::pointer::validate(state_dir) {
-        sot_log::pointer::PointerState::Valid(current) if current == voyage_id => Ok(()),
-        sot_log::pointer::PointerState::Valid(_) => Err(DialFail::VoyageMismatch),
-        sot_log::pointer::PointerState::NotFound => Err(DialFail::Absent {
+    match sot_log::supervisor::journal::pointer::validate(state_dir) {
+        sot_log::supervisor::journal::pointer::PointerState::Valid(current) if current == voyage_id => Ok(()),
+        sot_log::supervisor::journal::pointer::PointerState::Valid(_) => Err(DialFail::VoyageMismatch),
+        sot_log::supervisor::journal::pointer::PointerState::NotFound => Err(DialFail::Absent {
             kind: format!("{:?}", std::io::ErrorKind::NotFound),
             detail: "this row has no published voyage".into(),
         }),
-        sot_log::pointer::PointerState::Corrupt => Err(DialFail::Undetermined),
-        sot_log::pointer::PointerState::OtherIo(e) => Err(DialFail::Other(e.to_string())),
+        sot_log::supervisor::journal::pointer::PointerState::Corrupt => Err(DialFail::Undetermined),
+        sot_log::supervisor::journal::pointer::PointerState::OtherIo(e) => Err(DialFail::Other(e.to_string())),
     }
 }
 
@@ -225,7 +225,7 @@ where
         return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
     };
 
-    let Some(root) = sot_log::state_dir::sot_state_dir() else {
+    let Some(root) = sot_log::host::state_dir::sot_state_dir() else {
         return crate::proxy::reject(
             &mut tx,
             id,
@@ -318,7 +318,7 @@ where
 /// alias picks it for Linux and macOS alike), and a Unix stream adopted
 /// from a raw fd is the same operation on both.
 #[cfg(unix)]
-async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::socket_unix::SocketClient, what: &str) -> Result<()>
+async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::lane::socket_unix::SocketClient, what: &str) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -330,13 +330,13 @@ where
 }
 
 /// Windows twin of the Unix `pipe_upstream` above: the pipe handle was
-/// opened `FILE_FLAG_OVERLAPPED` (`pipe_win.rs`'s own connect), so it is
+/// opened `FILE_FLAG_OVERLAPPED` (`lane/pipe_win/`'s own connect), so it is
 /// valid for `NamedPipeClient::from_raw_handle` to adopt — `unsafe` only
 /// because that constructor trusts the caller's word that the handle is
 /// a named pipe opened for overlapped I/O, which it is here by
 /// construction.
 #[cfg(windows)]
-async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::pipe_win::PipeClient, what: &str) -> Result<()>
+async fn pipe_upstream<R, W>(rx: R, tx: W, conn: sot_log::lane::pipe_win::PipeClient, what: &str) -> Result<()>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,

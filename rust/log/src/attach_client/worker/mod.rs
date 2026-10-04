@@ -1,12 +1,12 @@
 //! ADR 0046 decision 3 (lane B3a): the attach lane's transport half,
-//! extracted out of `fe_client_io.rs` into a reusable worker,
+//! extracted out of `attach_client/client.rs` into a reusable worker,
 //! [`AttachWorker`], with a caller-supplied event sink. This lane is a
 //! PURE, behavior-preserving extraction — connect, hello, attach,
 //! checkpoint reassembly (still whole, as before — chunked delivery is
 //! B3b2's own change), the episode reader, the 2s liveness poll,
 //! take/input transactions, [`OutstandingSlot`], [`ReconnectState`], and
 //! quit (`request_quit`, the ONE dispatcher, unchanged) move here out of
-//! `fe_client_io.rs` verbatim in spirit; [`WorkerEvent`] is exactly the
+//! `attach_client/client.rs` verbatim in spirit; [`WorkerEvent`] is exactly the
 //! pre-extraction module's own `ClientEvent`, renamed, plus nothing else
 //! — every other candidate addition (per-request input outcomes,
 //! chunked checkpoint delivery, `Reattach`, `Take`, pen/geometry events,
@@ -42,9 +42,9 @@
 //! and session pane (`ui/drawer/terminal/`, `ui/agent_pane/`) and the daemon's headless callers
 //! (`capsule_workspace.rs`).
 
-use crate::client::Endpoint;
-use crate::fe_client::FeDownBaseline;
-use crate::wire::{self, DecodedFrame};
+use crate::lane::client::Endpoint;
+use crate::attach_client::rules::FeDownBaseline;
+use crate::lane::wire::{self, DecodedFrame};
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -113,7 +113,7 @@ const WORKER_TICK: Duration = Duration::from_millis(100);
 /// STOPS READING THE PIPE." (Codex review round, finding 7: the first
 /// landing's counter was local to the reader thread and released
 /// immediately, never actually shared with the consumer — see
-/// [`crate::fe_client_io::FeAttachClient::pump`]'s own doc for the real,
+/// [`crate::attach_client::client::FeAttachClient::pump`]'s own doc for the real,
 /// shared half.)
 const READER_QUEUE_CAP_BYTES: usize = 4 * 1024 * 1024;
 
@@ -191,7 +191,7 @@ pub enum WorkerEvent {
 /// can poll — unchanged from the pre-extraction module's own type,
 /// moved here since it names a worker-level (not rendering-level)
 /// observable; `fe_client_io` re-exports it at its own path so existing
-/// callers (`capsule_workspace.rs`, `tests/fe_client.rs`) are unaffected.
+/// callers (`capsule_workspace.rs`, `tests/fe_client/`) are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputOutcome {
     /// `input_recorded`: the record has it.
@@ -235,7 +235,7 @@ pub const DEFAULT_INGRESS_BOUND_BYTES: usize = 64 * 1024;
 
 /// A reusable attach transport, generic over `E: Endpoint` exactly like
 /// the pre-extraction `FeAttachClient` was (see that type's own doc,
-/// `fe_client_io.rs`, for why). Owns the background worker thread.
+/// `attach_client/client.rs`, for why). Owns the background worker thread.
 pub struct AttachWorker<E: Endpoint> {
     msg_tx: Sender<WorkerMsg>,
     ingress_bytes: Arc<AtomicUsize>,
@@ -479,7 +479,7 @@ pub(super) struct Held {
 
 // -----------------------------------------------------------------------
 // Pure-logic unit tests. Most of this module's behavior needs a real
-// supervisor + capsule process to attach to (`tests/fe_client.rs`'s own
+// supervisor + capsule process to attach to (`tests/fe_client/`'s own
 // real-process harness -- L1-unix LU3c ungated it to run on Linux too,
 // against a real socket lane, exactly like Windows); these pieces are pure
 // enough to test directly on every platform this module now compiles on.

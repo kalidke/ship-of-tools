@@ -2,7 +2,7 @@
 //! End-to-end test for the ADR 0041 step-5 pipe transport's deferred half
 //! (U3 round 2): a REAL capsule run, driven entirely over a REAL named
 //! pipe. `tests/capsule_win.rs` proves the writer loop and `AttachProto`
-//! against a synthetic `TestTransport`; `tests/pipe_win.rs` proves the raw
+//! against a synthetic `TestTransport`; `tests/pipe_win/` proves the raw
 //! transport against a plain echo consumer with no capsule. This file is
 //! the one place both are proven together: `pipe_transport::PipeTransport`
 //! wrapping a real `pipe_win::PipeServer`, with real OS clients connecting
@@ -18,12 +18,12 @@
 //! test below over time).
 
 use sot_log::capsule::{self, CapsuleConfig, ExitKind};
-use sot_log::pipe_transport::PipeTransport;
-use sot_log::producer_conpty::ConptyProducer;
-use sot_log::pipe_win::{connect_voyage_pipe, PipeClient};
-use sot_log::segment::{RetentionClass, SegmentReader};
-use sot_log::verify::verify_voyage;
-use sot_log::wire::{self, Survival};
+use sot_log::lane::pipe_transport::PipeTransport;
+use sot_log::capsule::producer::conpty::producer::ConptyProducer;
+use sot_log::lane::pipe_win::{connect_voyage_pipe, PipeClient};
+use sot_log::store::segment::{RetentionClass, SegmentReader};
+use sot_log::store::verify::verify_voyage;
+use sot_log::lane::wire::{self, Survival};
 use sot_log::{Class, Envelope, RefKind};
 use std::collections::VecDeque;
 use std::sync::{mpsc, Arc, Mutex};
@@ -62,7 +62,7 @@ fn config(
         // Codex round-1 Major 9: typed evidence, not `None` -- a test
         // asserts "nothing to protect" the same way a real first-install
         // transaction would (see `rollout::RolloutEvidence`'s own doc).
-        rollout_evidence: sot_log::rollout::RolloutEvidence::NoRollbackTarget,
+        rollout_evidence: sot_log::store::rollout::RolloutEvidence::NoRollbackTarget,
         // No supervisor in this end-to-end harness -- see
         // `CapsuleConfig::parent_lease`'s own doc.
         parent_lease: None,
@@ -72,7 +72,7 @@ fn config(
 /// Encode helpers for the attach lane's client frames and the mgmt lane's
 /// requests — identical in shape to `tests/capsule_win.rs`'s own `frame`
 /// module (not shared: a three-function module is exactly this crate's
-/// own leaf-helper-duplication convention, see `pipe_win.rs`'s module doc).
+/// own leaf-helper-duplication convention, see `lane/pipe_win/`'s module doc).
 mod frame {
     use super::wire;
 
@@ -150,7 +150,7 @@ fn wait_for_join<T: Send + 'static>(
 /// until it succeeds or `deadline` — a GENEROUS bound, evidence of a
 /// genuinely broken startup, never a tight race — expires, at which
 /// point the LAST error fails the test loudly. Identical helper in
-/// `tests/e2e_socket.rs` and `tests/pipe_win.rs` (no shared test module
+/// `tests/e2e_socket/` and `tests/pipe_win/` (no shared test module
 /// spans Windows-only and Linux-only files).
 fn wait_for_endpoint<T, E: std::fmt::Display>(connect: impl Fn() -> Result<T, E>, deadline: Duration) -> T {
     let started = Instant::now();
@@ -343,7 +343,7 @@ impl RealFrames {
 /// some OUTER timeout (if any) killed it, rather than failing this test
 /// with a clear message. Spawns a worker thread that owns the actual
 /// blocking read -- the exact cancel-from-another-thread idiom
-/// `tests/pipe_win.rs`'s own `client_read_cancel_unblocks_from_another_
+/// `tests/pipe_win/`'s own `client_read_cancel_unblocks_from_another_
 /// thread` proves sound: `PipeClient::cancel`, called from THIS thread,
 /// unblocks a read in flight on the WORKER thread. `Ok(0)`/an empty
 /// `Vec` means ordered EOF (a valid outcome for the post-shutdown EOF
@@ -535,7 +535,7 @@ fn full_pipe_e2e_two_clients_and_mgmt() {
 
     // No keepalive step here, deliberately (round-2 e2e fix): keepalive's
     // `last_activity` clock resets on ANY sent completion for a
-    // connection, INCLUDING a live `Output` frame — `attach_proto.rs`'s
+    // connection, INCLUDING a live `Output` frame — `lane/attach_proto/`'s
     // own doc: "any inbound frame, or any `sent` completion" — and a
     // connection that holds the driver capability is STILL, underneath,
     // a `Role::Watcher` subscribed to the same live output every other

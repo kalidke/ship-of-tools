@@ -20,7 +20,7 @@ fn a_voyage() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-// macOS's `fsutil::rename_noreplace_raw` fails closed (see
+// macOS's `host::rename_noreplace_raw` fails closed (see
 // `pointer.rs`'s own tests for the same gate) — every test here that
 // exercises `begin`/`finish` (both routed through `publish_noreplace`)
 // is gated identically.
@@ -94,7 +94,7 @@ fn finish_then_read_terminal_round_trips_and_leaves_the_id_out_of_active_operati
 /// `finish` must not depend on a prior `begin` having already created
 /// the journal directory: a caller can legitimately reconstruct a
 /// terminal fact without ever journaling an `.active` record for the
-/// SAME id first (`supervisor.rs`'s own `reconcile_reset`, resuming a
+/// SAME id first (`supervisor/journal/reset.rs`'s own `reconcile_reset`, resuming a
 /// reset purely from the pointer's own on-disk state). Regression for
 /// a real bug: `finish` used to skip `ensure_dir`, so this exact call
 /// failed `PATH_NOT_FOUND` on Windows.
@@ -186,7 +186,7 @@ fn reset_records_carry_the_new_voyage_and_the_aside_pathname() {
     );
 }
 
-// macOS's `fsutil::rename_noreplace_raw` fails closed by design (see
+// macOS's `host::rename_noreplace_raw` fails closed by design (see
 // the module doc, and `pointer.rs`'s own tests for the same gate) --
 // `mark_closed` is routed through `publish_json`/`publish_noreplace`
 // exactly like `begin`/`finish`, so it needs the identical gate.

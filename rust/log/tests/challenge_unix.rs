@@ -1,27 +1,27 @@
 #![cfg(target_os = "linux")]
 //! Integration tests for the ADR 0043 L1-unix LU1c Linux identity
-//! challenge (`src/challenge_unix.rs`) and the `SocketClient` construction
+//! challenge (`src/identity/challenge_unix.rs`) and the `SocketClient` construction
 //! path it authenticates (`connect_voyage_socket`). Mirrors the
-//! analogous section of `tests/pipe_win.rs` almost line for line — see
+//! analogous section of `tests/pipe_win/` almost line for line — see
 //! that file's own module doc for the process-isolation rationale this
 //! copies verbatim (`CHALLENGE_UNIX_TEST_CHILD` in place of
-//! `PIPE_WIN_TEST_CHILD`), and `tests/socket_unix.rs`'s own doc for the
+//! `PIPE_WIN_TEST_CHILD`), and `tests/socket_unix/`'s own doc for the
 //! `SOT_RUNTIME_DIR`-per-test isolation this also copies (including its
 //! macOS `/tmp`-not-`$TMPDIR` fix — irrelevant here, since this whole
 //! file is Linux-only, but kept for one copy-paste source of truth with
 //! that file rather than a second, silently-diverging one).
 
-use sot_log::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
-use sot_log::challenge_unix::{
+use sot_log::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
+use sot_log::identity::challenge_unix::{
     self, authenticate_server, challenge, self_start_ticks, ChallengedProcess, PeerCredentials,
     SocketChallengeable,
 };
-use sot_log::exchange::VoyageMgmtExchange;
-use sot_log::socket_unix::{
+use sot_log::identity::exchange::VoyageMgmtExchange;
+use sot_log::lane::socket_unix::{
     connect_voyage_socket, voyage_socket_path, ConnId, SocketClient, SocketServer,
 };
-use sot_log::transport::LaneEvent;
-use sot_log::wire::{self, MgmtReply, MgmtRequest, Survival};
+use sot_log::lane::transport::LaneEvent;
+use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
@@ -36,7 +36,7 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Re-invoke THIS test binary, running only `test_name`, as a child
-/// process — see `tests/pipe_win.rs`'s identical helper, which this is
+/// process — see `tests/pipe_win/`'s identical helper, which this is
 /// copied from verbatim (renamed env var only).
 fn run_isolated(test_name: &str) -> bool {
     if std::env::var("CHALLENGE_UNIX_TEST_CHILD").as_deref() == Ok(test_name) {
@@ -81,7 +81,7 @@ fn fresh_voyage_id() -> String {
 }
 
 /// Points `SOT_RUNTIME_DIR` at a fresh, mode-0700 tempdir for the
-/// lifetime of the returned guard — mirrors `tests/socket_unix.rs`'s
+/// lifetime of the returned guard — mirrors `tests/socket_unix/`'s
 /// identical helper.
 struct RuntimeDirGuard {
     _tmp: tempfile::TempDir,
@@ -89,7 +89,7 @@ struct RuntimeDirGuard {
 
 fn isolated_runtime_dir() -> RuntimeDirGuard {
     // `tempdir_in("/tmp")`, never the default `$TMPDIR` -- see
-    // `tests/socket_unix.rs`'s own doc for the macOS CI runner history
+    // `tests/socket_unix/`'s own doc for the macOS CI runner history
     // this guards against (this file is Linux-only, but the helper is
     // copied verbatim rather than silently drifting from its sibling).
     let tmp = tempfile::Builder::new()
@@ -161,11 +161,11 @@ fn ensure_established_gap() {
 /// proven process" helper for the two tests below it. Uses
 /// `connect_voyage_socket` (the FULL constructor, which already runs
 /// `authenticate_server` internally) rather than a raw unchallenged
-/// connect, exactly mirroring `tests/pipe_win.rs`'s own
+/// connect, exactly mirroring `tests/pipe_win/`'s own
 /// `self_proven_challenge` — running the separately-typed
 /// `challenge_unix::challenge` on top afterward is legal because
 /// `authenticate_server` never consumes anything from the wire.
-fn self_proven_challenge() -> ChallengeOutcome<sot_log::challenge_unix::ChallengedProcess> {
+fn self_proven_challenge() -> ChallengeOutcome<sot_log::identity::challenge_unix::ChallengedProcess> {
     let voyage_id = fresh_voyage_id();
     let server = SocketServer::bind(&voyage_id, 1).expect("bind");
     ensure_established_gap();
@@ -335,7 +335,7 @@ fn challenge_classifies_connection_death_mid_challenge_as_undetermined() {
 /// below: binds a real socket server for the voyage id named by
 /// `CHALLENGE_UNIX_XPROC_VOYAGE_ID`, answers exactly one `status` request
 /// with THIS PROCESS's own real pid/creation time, then stays up (exiting
-/// only once the parent kills it) -- mirrors `tests/pipe_win.rs`'s own
+/// only once the parent kills it) -- mirrors `tests/pipe_win/`'s own
 /// child role, except this one stays alive so the parent can assert on
 /// its still-live pid via `SO_PEERCRED` without a reap race. A normal
 /// test pass never sets that env var, so this is a silent no-op then.

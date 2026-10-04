@@ -422,7 +422,7 @@ fn lease_through_stdio_bridge_refused() {
 
     // The claim is this test process's own identity; the peer the daemon
     // reads is the bridge.
-    let who = sot_log::challenge::self_identity().expect("this process's identity");
+    let who = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let req = sot_protocol::ops::FeLeaseReq { boot: who.boot, pid: who.pid, created: who.created, token: None };
     let frame = sot_protocol::Frame::req(1, sot_protocol::op::FE_LEASE, serde_json::to_value(&req).expect("fe.lease serializes"));
     let mut line = serde_json::to_vec(&frame).expect("frame serializes");

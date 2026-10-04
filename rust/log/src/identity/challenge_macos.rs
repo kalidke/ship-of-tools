@@ -2,7 +2,7 @@
 //! ONE `getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)` -- that single call IS
 //! steps 1-3 -- plus the identity a proof returns
 //! ([`ChallengedProcess`]). Steps 4-5 (the wire half) are shared,
-//! platform-neutral logic in `crate::challenge` -- see that module's own
+//! platform-neutral logic in `crate::identity::challenge` -- see that module's own
 //! doc; [`challenge()`] and [`authenticate_server()`] below call into it
 //! rather than reimplementing it. Mirrors `challenge_unix.rs` in SHAPE,
 //! and is deliberately a fraction of its length -- why, is the whole
@@ -10,7 +10,7 @@
 //!
 //! # The kernel fact this rests on
 //!
-//! `tests/macos_kernel_facts.rs` pins it as a permanent, named
+//! `tests/macos_kernel_facts/` pins it as a permanent, named
 //! regression test rather than a one-off probe: on a connected `AF_UNIX`
 //! socket, `getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)` hands a CLIENT the
 //! 32-byte `audit_token_t` of its peer -- the SERVER -- carrying that
@@ -63,7 +63,7 @@
 //! specific `proc`, so -- exactly like a pidfd, and unlike a pid number
 //! -- it names the process INSTANCE. [`ChallengedProcess`] retains one,
 //! one `kqueue` fd per handle, closed by drop; that handle is what lets
-//! this type implement [`crate::client::PeerProcess`] with the SAME
+//! this type implement [`crate::lane::client::PeerProcess`] with the SAME
 //! contract as its two siblings rather than a weaker macOS spelling of
 //! it.
 //!
@@ -88,13 +88,13 @@
 
 #![cfg(target_os = "macos")]
 
-use crate::challenge::{
+use crate::identity::challenge::{
     exchange_identity, ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome, PeerAuthenticated,
     StatusFailure,
 };
-use crate::client::{PeerIdentity, PeerProcess};
-use crate::exchange::IdentityExchange;
-pub(crate) use super::exit_watch_macos::{drain_exit, watch_exit};
+use crate::lane::client::{PeerIdentity, PeerProcess};
+use crate::identity::exchange::IdentityExchange;
+use super::exit_watch_macos::{drain_exit, watch_exit};
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -120,7 +120,7 @@ pub trait SocketChallengeable: ChallengeableConnection {
 /// pid, asid, pidversion. Declared here rather than taken from `libc`,
 /// which exports the `SOL_LOCAL`/`LOCAL_PEERTOKEN` constants for apple
 /// targets but not this struct -- the same local declaration
-/// `tests/macos_kernel_facts.rs` already proved the shape of.
+/// `tests/macos_kernel_facts/` already proved the shape of.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct AuditToken {
@@ -263,7 +263,7 @@ fn authenticate_steps_1_to_3(conn: &dyn SocketChallengeable) -> ChallengeOutcome
         // Linux refuses to proceed on without a pidfd: the number alone
         // cannot distinguish this process from its successor. Not
         // `Foreign` -- nothing here says the peer is WRONG, only that it
-        // is unprovable (`tests/macos_kernel_facts.rs` pins a real peer
+        // is unprovable (`tests/macos_kernel_facts/` pins a real peer
         // as having a non-zero one).
         return ChallengeOutcome::Undetermined;
     }
@@ -610,7 +610,7 @@ pub fn challenge(
     };
 
     // Steps 4-5: the lane's own request/reply, the shared, platform-
-    // neutral wire half -- see `crate::challenge::exchange_identity`.
+    // neutral wire half -- see `crate::identity::challenge::exchange_identity`.
     let c: &dyn ChallengeableConnection = conn;
     let exchange_result = exchange_identity(c, exchange, reply_deadline);
 

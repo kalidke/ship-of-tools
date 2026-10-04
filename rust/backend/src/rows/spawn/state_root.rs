@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 /// state root" error text (`server.rs`'s boot resume-scan and `pty.open`
 /// start-on-attach; `handlers.rs`'s create/destroy/list capsule gates) —
 /// ONE shared constant so the two platforms' wording can never drift out
-/// of step with `sot_log::state_dir::sot_state_dir`'s own actual
+/// of step with `sot_log::host::state_dir::sot_state_dir`'s own actual
 /// resolution order (`%LOCALAPPDATA%` on Windows; `$XDG_STATE_HOME` or
 /// `$HOME` elsewhere). LU5a: the non-Windows arm is `not(windows)`, not
 /// `target_os = "linux"` — [`qualified_state_root`]'s own BODY is
@@ -27,7 +27,7 @@ pub(crate) const STATE_ROOT_HINT: &str = "$XDG_STATE_HOME or $HOME";
 /// supervise` itself, as its own first act after it actually runs; rule
 /// C, shrink round: this daemon never creates it — a synchronous spawn
 /// failure then leaves nothing on disk at all). `state_root` is
-/// `sot_log::state_dir::sot_state_dir()`, injected rather than resolved
+/// `sot_log::host::state_dir::sot_state_dir()`, injected rather than resolved
 /// here so this stays a pure function of its inputs (real callers
 /// resolve it once; a test supplies a tempdir root).
 pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
@@ -47,7 +47,7 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// this module — macOS never actually calls this (`allow(dead_code)`
 /// below). Three steps:
 ///
-/// 1. [`sot_log::state_dir::sot_state_dir`] resolves the root at all —
+/// 1. [`sot_log::host::state_dir::sot_state_dir`] resolves the root at all —
 ///    else the same [`STATE_ROOT_HINT`] wording every other "could not
 ///    resolve this machine's state root" caller already uses.
 /// 2. Created if missing (this daemon's OWN private-dir helper — rule C
@@ -58,12 +58,12 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 /// 3. `statfs` the resolved root and refuse a root that is not durable
 ///    enough to keep RESUMING capsule rows from across a daemon restart
 ///    — a SECOND, daemon-side deny list answering a different question
-///    than [`sot_log::state_dir::preflight_volume`]'s own remote-fs one:
+///    than [`sot_log::host::state_dir::preflight_volume`]'s own remote-fs one:
 ///    that one asks whether the store's primitives work at all (tmpfs
 ///    passes — see its own doc); this one asks about durability, which
 ///    tmpfs/ramfs answer no to regardless of how well they support
 ///    rename/fsync. Each Unix asks it the way ITS OWN `statfs(2)`
-///    actually answers, exactly as `sot_log::fsutil::remote_volume_name`
+///    actually answers, exactly as `sot_log::host::remote_volume_name`
 ///    already splits: Linux matches the `f_type` magic against its own
 ///    volatile list ([`linux_only`]); macOS has no tmpfs or ramfs to
 ///    name at all, and a RAM disk there mounts as plain `apfs`/`hfs`, so
@@ -75,7 +75,7 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 ///    its `Display` text. Windows: unchanged — the existing NTFS-only
 ///    arm already refuses everything this would and more.
 pub fn qualified_state_root() -> Result<PathBuf, String> {
-    let root = sot_log::state_dir::sot_state_dir()
+    let root = sot_log::host::state_dir::sot_state_dir()
         .ok_or_else(|| format!("could not resolve this machine's state root ({STATE_ROOT_HINT} unset)"))?;
     // Security review addendum (item 2b, v0.6.5 macOS field report): the
     // runtime dir and sockets already get `is_private_dir`'s
@@ -113,7 +113,7 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
             ));
         }
     }
-    sot_log::state_dir::preflight_volume(&root).map_err(|e| e.to_string())?;
+    sot_log::host::state_dir::preflight_volume(&root).map_err(|e| e.to_string())?;
     Ok(root)
 }
 
@@ -144,7 +144,7 @@ mod linux_only {
     /// Volatile filesystem magic numbers `statfs(2)` can report — refused
     /// on the state root itself regardless of how well they support the
     /// store's own primitives (tmpfs/ramfs support `RENAME_NOREPLACE`
-    /// and directory fsync fine — [`sot_log::state_dir::preflight_volume`]'s
+    /// and directory fsync fine — [`sot_log::host::state_dir::preflight_volume`]'s
     /// own remote-fs deny list does NOT refuse them, deliberately, since
     /// developer `/tmp` is often tmpfs). A durable capsule RECORD ROOT is
     /// a different, stricter question this second list answers.
@@ -153,7 +153,7 @@ mod linux_only {
         (0x8584_58F6u32 as i64, "ramfs"),
     ];
 
-    /// Pure lookup, mirroring `sot_log::fsutil`'s own `remote_fs_name` —
+    /// Pure lookup, mirroring `sot_log::host`'s own `remote_fs_name` —
     /// unit-tested directly against the constants above.
     pub(super) fn volatile_fs_name(f_type: i64) -> Option<&'static str> {
         VOLATILE_FS_TYPES.iter().find(|(magic, _)| *magic == f_type).map(|(_, name)| *name)
@@ -199,7 +199,7 @@ mod linux_only {
 /// a capsule state root must never sit on (NFS, SMB, WebDAV, AFP, a
 /// `fuse-t` network bridge) and true for the internal disk and any
 /// directly attached volume. Strictly wider than the fstype spelling
-/// `sot_log::fsutil::remote_volume_name` matches by substring, which is
+/// `sot_log::host::remote_volume_name` matches by substring, which is
 /// why it is worth having as this daemon's own second gate rather than
 /// leaving the whole question to `preflight_volume`.
 #[cfg(target_os = "macos")]
@@ -207,7 +207,7 @@ pub(crate) mod macos_only {
     use std::path::Path;
 
     /// `true` iff `dir`'s mount carries `MNT_LOCAL`. Mirrors
-    /// `sot_log::fsutil`'s own macOS `statfs` call shape rather than
+    /// `sot_log::host`'s own macOS `statfs` call shape rather than
     /// adding a second one with different error handling.
     pub(crate) fn mounted_locally(dir: &Path) -> std::io::Result<bool> {
         use std::ffi::CString;

@@ -7,7 +7,7 @@
 //! full same-connection challenge, then `hello`/`status`/`command`/
 //! `query`. The classifier's own transition table (A1-A5/B0-B9) and the
 //! journal's own crash-durability are already proven scripted-only by
-//! `classify.rs`'s and `journal.rs`'s own unit tests; what these tests
+//! `classify.rs`'s and `supervisor/journal/`'s own unit tests; what these tests
 //! add is proof the WIRING across a real process boundary is correct —
 //! on BOTH platforms now, driving a real Linux `sot-capsule supervise`
 //! spawning a real `sot-capsule run` over the socket lane, exactly as
@@ -18,11 +18,11 @@
 //! own exit code) — never a sleep-and-hope, and never a lifetime-counter
 //! observation of kernel state.
 
-use sot_log::client::{Endpoint, PlatformEndpoint};
-use sot_log::journal;
-use sot_log::state_dir::state_dir_hash;
+use sot_log::lane::client::{Endpoint, PlatformEndpoint};
+use sot_log::supervisor::journal;
+use sot_log::host::state_dir::state_dir_hash;
 use sot_log::supervisor::{connect_and_challenge_for_test, request_for_test};
-use sot_log::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
+use sot_log::lane::wire::{SupervisorOp, SupervisorOperationState, SupervisorPhase, SupervisorReply, SupervisorRequest};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -32,9 +32,9 @@ mod capsule_guard;
 use capsule_guard::CapsuleGuard;
 
 /// L1-unix LU3c: the lane's own client type, chosen once — the SAME
-/// platform-chosen alias `sot_log::supervisor.rs`'s own production code
+/// platform-chosen alias `sot_log::supervisor`'s own production code
 /// is generic over, so this test names one type regardless of platform
-/// instead of `sot_log::pipe_win::PipeClient` (Windows-only, as this
+/// instead of `sot_log::lane::pipe_win::PipeClient` (Windows-only, as this
 /// whole file used to be).
 type Client = <PlatformEndpoint as Endpoint>::Client;
 
@@ -53,7 +53,7 @@ const SHELL: &[&str] = &["/bin/sh"];
 /// supervisor correctly reaches its anti-flap terminal state anyway
 /// (reproduced). ~2s is wide enough for the poll to observe Ready even
 /// under load, far shorter than `STABILITY_INTERVAL` (60s in
-/// `supervisor.rs`), so the leg is still unstable and three of them
+/// `supervisor/`), so the leg is still unstable and three of them
 /// still trip the anti-flap bound.
 #[cfg(windows)]
 const SELF_EXITING_PRODUCER: &[&str] = &["cmd.exe", "/d", "/c", "ping -n 3 127.0.0.1 >nul & exit 1"];
@@ -64,7 +64,7 @@ const SELF_EXITING_PRODUCER: &[&str] = &["/bin/sh", "-c", "sleep 2; exit 1"];
 /// for the lifetime of the returned guard, so this process's own socket
 /// paths (and every child `sot-capsule` it spawns, which inherits this
 /// env var like any other) stay short and isolated — mirrors
-/// `tests/socket_unix.rs`/`tests/challenge_unix.rs`'s identical helper.
+/// `tests/socket_unix/`/`tests/challenge_unix.rs`'s identical helper.
 /// A no-op on Windows, which has no such env var or `sun_path` bound.
 #[cfg(target_os = "linux")]
 struct RuntimeDirGuard {
@@ -94,15 +94,15 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
 /// one call `pipe_gone`-style checks need
 /// (`endrun_and_reset_without_a_running_supervisor` and
 /// `a_crashed_supervisor_s_end_run_is_recovered_and_queryable_by_a_fresh_one`
-/// use it via [`sot_log::transport::TransportError::is_endpoint_absent`]
+/// use it via [`sot_log::lane::transport::TransportError::is_endpoint_absent`]
 /// rather than a hand-rolled `NotFound` match).
 #[cfg(windows)]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::transport::TransportError> {
-    sot_log::pipe_win::connect_voyage_pipe(voyage_id)
+fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
+    sot_log::lane::pipe_win::connect_voyage_pipe(voyage_id)
 }
 #[cfg(target_os = "linux")]
-fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::transport::TransportError> {
-    sot_log::socket_unix::connect_voyage_socket(voyage_id)
+fn connect_voyage_mgmt(voyage_id: &str) -> Result<Client, sot_log::lane::transport::TransportError> {
+    sot_log::lane::socket_unix::connect_voyage_socket(voyage_id)
 }
 
 /// Real-process tests are SERIALIZED: each spawns a supervisor, a capsule
@@ -290,7 +290,7 @@ fn wait_for_exit(child: &mut CapsuleGuard, timeout: Duration) -> std::process::E
 /// and not yet reaped, Linux's own portable "list my children" mechanism
 /// (no `ptrace`, no `/proc` tree walk) — then each listed child's own
 /// `/proc/<c>/stat` field 3 (state), parsed the same way
-/// `e2e_socket.rs`'s own `proc_state` does (fields after the comm's
+/// `tests/e2e_socket/`'s own `proc_state` does (fields after the comm's
 /// closing paren). Meant to be asserted WHILE the supervisor is still
 /// alive (its own `/proc/<pid>` entry, and thus this file, only exists
 /// then) — right after a run has ended, before anything stops the

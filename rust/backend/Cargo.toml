@@ -9,10 +9,10 @@ license.workspace = true
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
 # ADR 0042 slice L1a: the capsule workspace runtime (Windows-only in this
-# unit) calls `sot_log::state_dir`/`supervisor_client`. Unconditional, not
+# unit) calls `sot_log::host::state_dir`/`supervisor_client`. Unconditional, not
 # `[target.'cfg(windows)'.dependencies]`, matching how `sot-frontend`
 # already depends on this same crate (its own `paths::sot_state_dir`
-# delegates to `sot_log::state_dir::sot_state_dir` on every platform) --
+# delegates to `sot_log::host::state_dir::sot_state_dir` on every platform) --
 # sot-log's own Cargo.toml already confines its Windows-only pieces
 # (`windows-sys`, `vt100-ctt`) to `[target.'cfg(windows)'.dependencies]`,
 # so a non-Windows build of THIS crate pulls in nothing new merely by
@@ -52,7 +52,7 @@ uuid = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
 # of a child it just spawned itself (`capsule_workspace::runtime::
-# spawned_identity`) needs `HANDLE` to call `sot_log::challenge_win::
+# spawned_identity`) needs `HANDLE` to call `sot_log::identity::challenge_win::
 # creation_filetime_bits` directly -- the same version already pinned
 # under `[target.'cfg(windows)'.dev-dependencies]` below, promoted to a
 # real (non-dev) dependency since production code now names the type too.
@@ -83,7 +83,7 @@ tempfile = { workspace = true }
 # dependency is not transitively `use`-able, so the test needs its own.
 # `Win32_Storage_FileSystem`/`Win32_Security`/`Win32_Security_Authorization`
 # added for `server.rs`'s own session-pipe ACL test (the `GetSecurityInfo`/
-# SDDL round-trip `sot-log`'s `tests/pipe_win.rs` already uses for its twin
+# SDDL round-trip `sot-log`'s `tests/pipe_win/` already uses for its twin
 # test on the voyage/supervisor pipes) — same feature set that crate's own
 # Cargo.toml lists for the identical purpose.
 [target.'cfg(windows)'.dev-dependencies]

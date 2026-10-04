@@ -126,13 +126,13 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
     // must consume EXACTLY the envelope and hand everything past it,
     // untouched, to the raw pipe; sending it only AFTER reading the
     // reply would never exercise that).
-    let mut payload = sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Hello {
-        proto: sot_log::wire::SUPERVISOR_PROTO_V1,
-        build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+    let mut payload = sot_log::lane::wire::encode_supervisor_request(&sot_log::lane::wire::SupervisorRequest::Hello {
+        proto: sot_log::lane::wire::SUPERVISOR_PROTO_V1,
+        build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     })
     .expect("encode hello");
     payload.extend(
-        sot_log::wire::encode_supervisor_request(&sot_log::wire::SupervisorRequest::Status).expect("encode status"),
+        sot_log::lane::wire::encode_supervisor_request(&sot_log::lane::wire::SupervisorRequest::Status).expect("encode status"),
     );
     let (mut lane_conn, res) = lane_connect_with_payload(&env, &target, "supervisor", None, &payload).await;
     assert!(res.get("error").is_none(), "lane.connect refused: {res:?}");
@@ -142,9 +142,9 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
     assert!(pid > 0, "pid must be a real process id: {res:?}");
 
     use tokio::io::AsyncReadExt;
-    let mut splitter = sot_log::wire::FrameSplitter::new();
+    let mut splitter = sot_log::lane::wire::FrameSplitter::new();
     let mut got_hello: Option<(u32, u64)> = None;
-    let mut got_status: Option<sot_log::wire::SupervisorPhase> = None;
+    let mut got_status: Option<sot_log::lane::wire::SupervisorPhase> = None;
     let deadline = Instant::now() + BOUND;
     let mut buf = [0u8; 4096];
     while got_hello.is_none() || got_status.is_none() {
@@ -158,12 +158,12 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
         assert!(err.is_none(), "wire decode error over the piped supervisor lane: {err:?}");
         for f in frames {
             match f {
-                sot_log::wire::DecodedFrame::SupervisorReply(sot_log::wire::SupervisorReply::HelloOk {
+                sot_log::lane::wire::DecodedFrame::SupervisorReply(sot_log::lane::wire::SupervisorReply::HelloOk {
                     pid: hp,
                     created: hc,
                     ..
                 }) => got_hello = Some((hp, hc)),
-                sot_log::wire::DecodedFrame::SupervisorReply(sot_log::wire::SupervisorReply::StatusOk {
+                sot_log::lane::wire::DecodedFrame::SupervisorReply(sot_log::lane::wire::SupervisorReply::StatusOk {
                     phase,
                     ..
                 }) => got_status = Some(phase),
@@ -176,7 +176,7 @@ async fn lane_connect_supervisor_pipes_hello_and_status() {
         Some((pid as u32, created)),
         "the piped HelloOk's own pid+created must match lane.connect's own report"
     );
-    assert_eq!(got_status, Some(sot_log::wire::SupervisorPhase::Ready));
+    assert_eq!(got_status, Some(sot_log::lane::wire::SupervisorPhase::Ready));
 
     drop(lane_conn);
 
@@ -222,7 +222,7 @@ async fn lane_connect_voyage_pipes_the_attach_hello() {
 
     let voyage_id = tokio::task::spawn_blocking({
         let dir = state_dir.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status on the ready row").0.voyage
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status on the ready row").0.voyage
     })
     .await
     .unwrap()
@@ -233,13 +233,13 @@ async fn lane_connect_voyage_pipes_the_attach_hello() {
     assert_eq!(res["ok"].as_bool(), Some(true), "lane.connect payload: {res:?}");
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let hello = sot_log::wire::encode_attach_client(&sot_log::wire::AttachClient::Hello {
-        proto: sot_log::wire::ATTACH_PROTO_V2,
+    let hello = sot_log::lane::wire::encode_attach_client(&sot_log::lane::wire::AttachClient::Hello {
+        proto: sot_log::lane::wire::ATTACH_PROTO_V2,
     })
     .expect("encode attach hello");
     lane_conn.write_all(&hello).await.expect("write attach hello");
 
-    let mut splitter = sot_log::wire::FrameSplitter::new();
+    let mut splitter = sot_log::lane::wire::FrameSplitter::new();
     let mut buf = [0u8; 4096];
     let deadline = Instant::now() + BOUND;
     let proto = loop {
@@ -253,12 +253,12 @@ async fn lane_connect_voyage_pipes_the_attach_hello() {
         assert!(err.is_none(), "wire decode error over the piped voyage lane: {err:?}");
         if let Some(f) = frames.into_iter().next() {
             match f {
-                sot_log::wire::DecodedFrame::AttachServer(sot_log::wire::AttachServer::HelloOk { proto }) => break proto,
+                sot_log::lane::wire::DecodedFrame::AttachServer(sot_log::lane::wire::AttachServer::HelloOk { proto }) => break proto,
                 other => panic!("unexpected frame over the piped voyage lane: {other:?}"),
             }
         }
     };
-    assert_eq!(proto, sot_log::wire::ATTACH_PROTO_V2);
+    assert_eq!(proto, sot_log::lane::wire::ATTACH_PROTO_V2);
 
     drop(lane_conn);
     env.kill_daemon_bounded().await;
@@ -620,14 +620,14 @@ async fn lane_connect_refuses_a_voyage_id_the_target_row_does_not_own() {
 
     let voyage_a = tokio::task::spawn_blocking({
         let dir = state_dir_a.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status on row A").0.voyage
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status on row A").0.voyage
     })
     .await
     .unwrap()
     .expect("row A has a voyage");
     let voyage_b = tokio::task::spawn_blocking({
         let dir = state_dir_b.clone();
-        move || sot_log::supervisor_client::query_status(&dir).expect("query_status on row B").0.voyage
+        move || sot_log::attach_client::supervisor_client::query_status(&dir).expect("query_status on row B").0.voyage
     })
     .await
     .unwrap()

@@ -6,7 +6,7 @@
 //! conservative VT identity: `ESC [ ? 1 ; 0 c`. This is the ONLY host-facing
 //! query this project answers: CPR (`ESC [ 6 n`, cursor position report) is
 //! NAMED here, not implemented — ConPTY only asks for it under
-//! `PSEUDOCONSOLE_INHERIT_CURSOR`, which `conpty.rs::Pseudoconsole` never
+//! `PSEUDOCONSOLE_INHERIT_CURSOR`, which `capsule/producer/conpty/mod.rs::Pseudoconsole` never
 //! sets, so there is no documented reason it would ever arrive. If that
 //! assumption changes, answering CPR needs this module to track the LIVE
 //! parser's cursor position too, which it deliberately does not do.

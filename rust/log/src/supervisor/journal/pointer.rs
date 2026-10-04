@@ -3,7 +3,7 @@
 //! spawn passes through"). Published through this crate's OWN pinned
 //! crash-durable order — temp file → write → flush → NO-REPLACE rename →
 //! renamed-file flush → parent-directory flush — by calling
-//! [`fsutil::publish_noreplace`] rather than reimplementing that sequence
+//! [`host::publish_noreplace`] rather than reimplementing that sequence
 //! a second time.
 //!
 //! Validation is a typed result that keeps four outcomes distinct on
@@ -26,7 +26,7 @@
 //! reserves for actual operational failures (permission denial, a
 //! transient read error).
 
-use crate::{fsutil, Result};
+use crate::{host, Result};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -126,7 +126,7 @@ pub(crate) fn canonical_voyage_id(text: &str) -> Option<String> {
 /// validates it and never re-derives or reformats it) as `state_dir`'s
 /// pointer. WRITE-ONCE: a second publication against an existing pointer
 /// fails through the identical `AlreadyExists` path a racing writer would
-/// hit — [`fsutil::publish_noreplace`]'s no-clobber rename IS the
+/// hit — [`host::publish_noreplace`]'s no-clobber rename IS the
 /// write-once enforcement, so this function adds no second check for it.
 pub fn publish(state_dir: &Path, voyage_id: &str) -> Result<()> {
     let canonical = canonical_voyage_id(voyage_id).ok_or_else(|| {
@@ -148,7 +148,7 @@ pub fn publish(state_dir: &Path, voyage_id: &str) -> Result<()> {
         f.write_all(canonical.as_bytes())?;
         f.sync_all()?;
     }
-    let result = fsutil::publish_noreplace(&tmp, &target);
+    let result = host::publish_noreplace(&tmp, &target);
     if result.is_err() {
         // A lost race or any other publish failure: don't leave this
         // attempt's temp file behind as residue.
@@ -165,8 +165,8 @@ mod tests {
         uuid::Uuid::now_v7().to_string()
     }
 
-    // macOS (non-Linux unix) fails closed in fsutil::rename_noreplace_raw
-    // (fsutil.rs: "renamex_np when a macOS FE exists to dogfood it" -- ADR
+    // macOS (non-Linux unix) fails closed in host::rename_noreplace_raw
+    // (host.rs: "renamex_np when a macOS FE exists to dogfood it" -- ADR
     // 0041 scope note) -- publish() can never succeed there today, so this
     // publish-exercising test is gated the same way the store's own
     // voyage/segment/recovery test suites already gate theirs.

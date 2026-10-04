@@ -101,7 +101,7 @@ pub fn spawn_and_watch(
 ///
 /// Rule C (shrink round): does NOT create the state directory —
 /// `sot-capsule supervise` creates its own (`supervise_inner`'s first
-/// act, `rust/log/src/supervisor.rs`) once it actually runs, so a
+/// act, `rust/log/src/supervisor/`) once it actually runs, so a
 /// synchronous spawn failure here leaves nothing behind at all, not
 /// even an empty directory a later `phase_of` could misread.
 ///
@@ -164,7 +164,7 @@ pub fn start_supervisor(
 /// `reauth::mint_replacement_voyage` both come through here.
 pub(crate) fn reset_run(workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
     let _permit = workspaces.begin_start(workspace_id)?;
-    sot_log::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
+    sot_log::attach_client::supervisor_client::reset(state_dir).map_err(|e| e.to_string())
 }
 
 /// Bound for [`settle_after_spawn`] — the ONE deadline every spawn
@@ -187,7 +187,7 @@ fn spawn_settle_deadline() -> Duration {
 /// Waits under the caller's guard for a spawn to settle, polling until [`spawn_settle_deadline`] (timeout WARNS). BLOCKING.
 pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::workspaces::Observation) {
     let settle = spawn_settle_deadline();
-    let starting_phase = super::phase_str(sot_log::wire::SupervisorPhase::Starting);
+    let starting_phase = super::phase_str(sot_log::lane::wire::SupervisorPhase::Starting);
     let deadline = Instant::now() + settle;
     loop {
         let (phase, observation) = probe(state_dir);

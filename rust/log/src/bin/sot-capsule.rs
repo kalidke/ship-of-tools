@@ -40,14 +40,14 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
         // The lane build id this binary will answer the supervisor hello
         // with -- a diagnostic only since ADR 0045 decision 7 (the lane
         // gate is the protocol integer, not this value).
-        Some("build-id") => println!("{}", sot_log::exchange::SUPERVISOR_LANE_BUILD_ID),
+        Some("build-id") => println!("{}", sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID),
         #[cfg(windows)]
-        Some("run") => cmd_run::<sot_log::producer_conpty::ConptyProducer, _, _>(&args[1..], |n| {
-            sot_log::pipe_transport::PipeTransport::new(n)
+        Some("run") => cmd_run::<sot_log::capsule::producer::conpty::producer::ConptyProducer, _, _>(&args[1..], |n| {
+            sot_log::lane::pipe_transport::PipeTransport::new(n)
         }),
         #[cfg(unix)]
-        Some("run") => cmd_run::<sot_log::producer_pty::PtyProducer, _, _>(&args[1..], |n| {
-            sot_log::socket_transport::SocketTransport::new(n)
+        Some("run") => cmd_run::<sot_log::capsule::producer::pty::PtyProducer, _, _>(&args[1..], |n| {
+            sot_log::lane::socket_transport::SocketTransport::new(n)
         }),
         Some("supervise") => cmd_supervise(&args[1..]),
         Some("endrun") => cmd_endrun(&args[1..]),
@@ -61,9 +61,9 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
 
 /// One `run` arm over both platforms' own producer and transport (ADR
 /// 0043 "Decisions for LU2" LU2b): `P` is the platform's own
-/// [`sot_log::producer::Producer`] (`ConptyProducer` on Windows,
+/// [`sot_log::capsule::producer::Producer`] (`ConptyProducer` on Windows,
 /// `PtyProducer` on Linux), `make_transport` builds its
-/// [`sot_log::transport::Transport`] from the connection ceiling above
+/// [`sot_log::lane::transport::Transport`] from the connection ceiling above
 /// (`PipeTransport::new`/`SocketTransport::new`). Everything else — the
 /// flag grammar, the rollout-evidence gate, the exit-code mapping — is
 /// genuinely one shared implementation now; only the lease flag's own
@@ -76,8 +76,8 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn cmd_run<P, T, F>(args: &[String], make_transport: F)
 where
-    P: sot_log::producer::Producer,
-    T: sot_log::transport::Transport,
+    P: sot_log::capsule::producer::Producer,
+    T: sot_log::lane::transport::Transport,
     F: FnOnce(u32) -> T,
 {
     let usage = "usage: sot-capsule run <voyage_root> <voyage_id> [--cols <n>] [--rows <n>] \
@@ -95,7 +95,7 @@ where
     // voyage root is the ONLY identifying context this process alone can
     // add to a line in a file every OTHER workspace's own leg writes into
     // too; `run_note` issues each diagnostic as ONE complete write, same
-    // reasoning as `supervisor.rs`'s own `note` (a piecewise `eprintln!`
+    // reasoning as `supervisor/mod.rs`'s own `note` (a piecewise `eprintln!`
     // has no atomicity guarantee once two processes append to the same
     // `O_APPEND` file).
     let run_note_prefix = format!(
@@ -133,7 +133,7 @@ where
     // to `Normal` for a bare manual invocation. ADR 0043 decision 32:
     // honored verbatim on both platforms now -- no clamp -- the value itself is all downstream
     // code ever needs.
-    let mut survival = sot_log::wire::Survival::Normal;
+    let mut survival = sot_log::lane::wire::Survival::Normal;
     loop {
         match rest.first().map(String::as_str) {
             Some("--cols") if rest.len() > 1 => {
@@ -192,8 +192,8 @@ where
             }
             Some("--survival") if rest.len() > 1 => {
                 survival = match rest[1].as_str() {
-                    "normal" => sot_log::wire::Survival::Normal,
-                    "degraded" => sot_log::wire::Survival::Degraded,
+                    "normal" => sot_log::lane::wire::Survival::Normal,
+                    "degraded" => sot_log::lane::wire::Survival::Degraded,
                     _ => {
                         eprintln!("{usage}");
                         std::process::exit(2);
@@ -235,7 +235,7 @@ where
         ));
         std::process::exit(2);
     }
-    let rollout_evidence = sot_log::rollout::RolloutEvidence::NoRollbackTarget;
+    let rollout_evidence = sot_log::store::rollout::RolloutEvidence::NoRollbackTarget;
 
     #[cfg(windows)]
     let producer_kind = "raw-terminal-windows";
@@ -243,14 +243,14 @@ where
     let producer_kind = "raw-terminal";
 
     #[cfg(windows)]
-    let parent_lease = parent_lease_name.map(sot_log::producer::ParentLease::NamedMutex);
+    let parent_lease = parent_lease_name.map(sot_log::capsule::producer::ParentLease::NamedMutex);
     #[cfg(unix)]
-    let parent_lease = parent_lease_fd.map(sot_log::producer::ParentLease::InheritedFd);
+    let parent_lease = parent_lease_fd.map(sot_log::capsule::producer::ParentLease::InheritedFd);
 
     let config = sot_log::capsule::CapsuleConfig {
         voyage_root,
         voyage_id,
-        retention: sot_log::segment::RetentionClass::Archive,
+        retention: sot_log::store::segment::RetentionClass::Archive,
         producer_kind: producer_kind.into(),
         argv,
         cols,
@@ -287,8 +287,8 @@ where
             // death, mapped `128 + n` (the POSIX shell convention); on
             // Windows it stays unreachable but mapped the same honest way.
             std::process::exit(match s.exit_code {
-                Some(sot_log::producer::ExitStatus::Code(c)) => c as i32,
-                Some(sot_log::producer::ExitStatus::Signal(n)) => 128 + n,
+                Some(sot_log::capsule::producer::ExitStatus::Code(c)) => c as i32,
+                Some(sot_log::capsule::producer::ExitStatus::Signal(n)) => 128 + n,
                 None => 1,
             });
         }
@@ -336,7 +336,7 @@ fn cmd_supervise(args: &[String]) {
     // (see that field's own doc) — defaults to `Normal` for a bare
     // manual invocation, matching every existing caller of this CLI that
     // predates the flag.
-    let mut survival = sot_log::wire::Survival::Normal;
+    let mut survival = sot_log::lane::wire::Survival::Normal;
     let mut first_leg_without: Vec<String> = Vec::new();
     loop {
         match rest.first().map(String::as_str) {
@@ -356,8 +356,8 @@ fn cmd_supervise(args: &[String]) {
             }
             Some("--survival") if rest.len() > 1 => {
                 survival = match rest[1].as_str() {
-                    "normal" => sot_log::wire::Survival::Normal,
-                    "degraded" => sot_log::wire::Survival::Degraded,
+                    "normal" => sot_log::lane::wire::Survival::Normal,
+                    "degraded" => sot_log::lane::wire::Survival::Degraded,
                     _ => {
                         eprintln!("{usage}");
                         std::process::exit(2);
@@ -458,7 +458,7 @@ fn cmd_reset(args: &[String]) {
     std::process::exit(sot_log::supervisor::reset(&state_dir, voyage));
 }
 
-// `sot_log::fence::lock_supervisor` must be
+// `sot_log::supervisor::journal::fence::lock_supervisor` must be
 // reachable from THIS binary crate -- Cargo treats `src/bin/sot-capsule.rs`
 // as a SEPARATE crate from the package's own library even though they share
 // one Cargo.toml. This test is the
@@ -469,8 +469,8 @@ mod tests {
     #[test]
     fn supervisor_lock_facade_is_reachable_and_works_from_this_binary_crate() {
         let dir = tempfile::tempdir().unwrap();
-        let guard = sot_log::fence::lock_supervisor(dir.path()).unwrap();
-        assert!(sot_log::fence::supervisor_lock_path(dir.path()).is_file());
+        let guard = sot_log::supervisor::journal::fence::lock_supervisor(dir.path()).unwrap();
+        assert!(sot_log::supervisor::journal::fence::supervisor_lock_path(dir.path()).is_file());
         drop(guard);
     }
 }
@@ -494,7 +494,7 @@ fn run_claude(args: &[String], usage: &str) {
     let config = ClaudeConfig {
         voyage_root: std::path::PathBuf::from(&args[0]),
         voyage_id: args[1].clone(),
-        retention: sot_log::segment::RetentionClass::Archive,
+        retention: sot_log::store::segment::RetentionClass::Archive,
         helper_argv: vec!["node".into(), args[2].clone()],
         expected_sdk_version: args[3].clone(),
         fence,

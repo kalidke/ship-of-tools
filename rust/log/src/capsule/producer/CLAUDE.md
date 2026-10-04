@@ -18,5 +18,5 @@ charter: rust/log/CLAUDE.md.
 - The kill domain is the producer's: a setsid process group plus `PR_SET_PDEATHSIG` on Linux (`PtyProducer::spawn`), a
   kill-on-close job on Windows (`AnonymousJob`).
 - `HostHandshake::feed` counts DA1 queries across any chunk split; the writer loop answers only the first match of a run
-  (`dsr_answered` in `capsule/writer_loop.rs`).
+  (`dsr_answered` in `capsule/writer_loop/output_path.rs`).
 - `host_handshake` lives here, not under `conpty/`: `run` uses it on every platform and `conpty/` is Windows only.

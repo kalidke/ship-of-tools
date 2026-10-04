@@ -199,7 +199,7 @@ pub(super) fn capture_connect_anchor_boot_ticks() -> u64 {
     // less-than check, which a `0` timestamp can only ever fail (no
     // process has a negative start time), so this never needs to fail
     // the connect outright over it.
-    crate::challenge_unix::boot_ticks_now().unwrap_or(0)
+    crate::identity::challenge_unix::boot_ticks_now().unwrap_or(0)
 }
 #[cfg(not(target_os = "linux"))]
 pub(super) fn capture_connect_anchor_boot_ticks() -> u64 {

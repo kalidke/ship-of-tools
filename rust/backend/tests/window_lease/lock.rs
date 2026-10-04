@@ -24,7 +24,7 @@ async fn second_daemon_waits_for_lock() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("lockw");
     std::fs::create_dir_all(state_dir(&env)).expect("create the state dir");
-    let lock = sot_log::fence::try_lock_daemon(&state_dir(&env))
+    let lock = sot_log::host::try_lock_daemon(&state_dir(&env))
         .expect("open the daemon lock")
         .expect("the daemon lock is free");
     let mut daemon = sotd_on(&env, &[("RUST_LOG", "info")])
@@ -77,7 +77,7 @@ async fn daemon_lock_timeout_exits_1() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("lockt");
     std::fs::create_dir_all(state_dir(&env)).expect("create the state dir");
-    let _lock = sot_log::fence::try_lock_daemon(&state_dir(&env))
+    let _lock = sot_log::host::try_lock_daemon(&state_dir(&env))
         .expect("open the daemon lock")
         .expect("the daemon lock is free");
 
@@ -87,7 +87,7 @@ async fn daemon_lock_timeout_exits_1() {
         .expect("spawn sotd");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1), "a lock timeout exits 1; stderr: {stderr}");
-    let lock_path = sot_log::fence::daemon_lock_path(&state_dir(&env));
+    let lock_path = sot_log::host::daemon_lock_path(&state_dir(&env));
     assert!(stderr.contains(&lock_path.display().to_string()), "the error names the lock path: {stderr}");
     assert!(try_connect(&env.socket_path).await.is_none(), "a daemon that never got the lock never binds");
 }

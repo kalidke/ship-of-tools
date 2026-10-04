@@ -25,14 +25,14 @@
 //! bytes to send, what bytes count as "the identity") vary per lane — the
 //! voyage mgmt lane's own `status` request today, the supervisor lane's
 //! own `status_ok {voyage, leg?, phase}` protocol later — so
-//! [`crate::exchange::IdentityExchange`] is the one thing a lane provides,
+//! [`crate::identity::exchange::IdentityExchange`] is the one thing a lane provides,
 //! and `exchange_identity` is the one thing every lane AND every
 //! platform shares: a lane cannot skip or reorder the OS steps, because a
 //! platform's own `challenge()` is the only caller of
 //! `IdentityExchange::feed`, and it calls it only AFTER the OS-level
 //! identity check has already matched. The deadline race itself
-//! (`crate::deadline::run_with_deadline`) and the exchange trait/codec
-//! ([`crate::exchange`]) are both portable — genuinely tested on every CI
+//! (`crate::identity::deadline::run_with_deadline`) and the exchange trait/codec
+//! ([`crate::identity::exchange`]) are both portable — genuinely tested on every CI
 //! platform, not merely compile-checked on Windows — and now
 //! `exchange_identity` itself is too (L1-unix LU1a), leaving only the
 //! actual OS-level authentication calls platform-specific.
@@ -48,15 +48,15 @@
 //! anything was accepted immediately, with no liveness proof and no
 //! pid/creation binding to the CONNECTION's own reply — exactly what steps
 //! 4-5 exist to add. `Proven`/`ChallengedProcess` are RESERVED for the full
-//! five-step exchange again; `crate::challenge_win::authenticate_server`
+//! five-step exchange again; `crate::identity::challenge_win::authenticate_server`
 //! is the separately named, separately typed steps-1-3-only operation
 //! `pipe_win::connect_voyage_pipe` now calls instead — see that function's
 //! own doc for why the shared, lane-agnostic constructor can only ever
 //! offer identity authentication, never the full proof, and for the
 //! attach lane's own under-specification in the ADR.
 
-use crate::deadline::run_with_deadline;
-use crate::exchange::{ExchangeDecode, IdentityExchange};
+use crate::identity::deadline::run_with_deadline;
+use crate::identity::exchange::{ExchangeDecode, IdentityExchange};
 use std::time::Instant;
 
 /// One connection this crate can challenge: the blocking write/read/cancel
@@ -67,7 +67,7 @@ use std::time::Instant;
 /// `cancel()` from a second thread while the caller's thread blocks in
 /// `read`/`write_all`. Raw handle access for the platform-specific
 /// identity steps lives on the separate `PipeChallengeable`
-/// (`crate::challenge_win::PipeChallengeable`) extension trait, not here —
+/// (`crate::identity::challenge_win::PipeChallengeable`) extension trait, not here —
 /// see that trait's own doc.
 pub trait ChallengeableConnection: Sync {
     fn write_all(&self, bytes: &[u8]) -> std::io::Result<()>;
@@ -85,8 +85,8 @@ pub trait ChallengeableConnection: Sync {
 /// What the challenge concluded. Generic over the retained-process type
 /// so `probe::ProbeOps` (an associated-type seam) can drive this same
 /// three-way split with a cheap dummy type in tests, while the real
-/// `crate::challenge_win::challenge` free function always instantiates
-/// `ChallengeOutcome<crate::challenge_win::ChallengedProcess>`.
+/// `crate::identity::challenge_win::challenge` free function always instantiates
+/// `ChallengeOutcome<crate::identity::challenge_win::ChallengedProcess>`.
 #[derive(Debug)]
 pub enum ChallengeOutcome<P> {
     /// The peer's identity matched, and the reply's pid/creation matched
@@ -173,7 +173,7 @@ pub struct PeerAuthenticated {
     pub created: u64,
 }
 
-/// What `crate::challenge_win::authenticate_server` concluded — a
+/// What `crate::identity::challenge_win::authenticate_server` concluded — a
 /// SEPARATE enum from [`ChallengeOutcome`] (not a generic instantiation of
 /// it) for the same reason `PeerAuthenticated` is a separate type: nothing
 /// here is ever spelled `Proven`.
@@ -279,14 +279,14 @@ pub fn boot_identity() -> std::io::Result<String> {
 /// This process's [`ProcessIdentity`].
 pub fn self_identity() -> std::io::Result<ProcessIdentity> {
     #[cfg(target_os = "linux")]
-    let created = crate::challenge_unix::self_start_ticks()?;
+    let created = crate::identity::challenge_unix::self_start_ticks()?;
     #[cfg(target_os = "macos")]
-    let created = u64::from(crate::challenge_macos::self_pidversion()?);
+    let created = u64::from(crate::identity::challenge_macos::self_pidversion()?);
     #[cfg(windows)]
     let created = {
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
         // SAFETY: the current-process pseudo-handle needs no closing.
-        crate::challenge_win::creation_filetime_bits(unsafe { GetCurrentProcess() })?
+        crate::identity::challenge_win::creation_filetime_bits(unsafe { GetCurrentProcess() })?
     };
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Ok(ProcessIdentity {
@@ -299,7 +299,7 @@ pub fn self_identity() -> std::io::Result<ProcessIdentity> {
 /// The creation stamp of `pid`, in the units `self_identity` reports.
 #[cfg(target_os = "linux")]
 pub fn process_created(pid: u32) -> std::io::Result<u64> {
-    crate::challenge_unix::process_start_ticks(pid)
+    crate::identity::challenge_unix::process_start_ticks(pid)
 }
 
 #[cfg(windows)]
@@ -311,7 +311,7 @@ pub fn process_created(pid: u32) -> std::io::Result<u64> {
     if h.is_null() {
         return Err(std::io::Error::last_os_error());
     }
-    let r = crate::challenge_win::creation_filetime_bits(h);
+    let r = crate::identity::challenge_win::creation_filetime_bits(h);
     unsafe { CloseHandle(h) };
     r
 }

@@ -225,9 +225,9 @@ pub fn find_row(payload: &serde_json::Value, workspace_id: &str) -> Option<serde
 /// `None` (not an error) when it is legitimately absent/unreachable,
 /// which two of this test's own polls treat as the fact they're waiting
 /// for (the old supervisor going away after `stop`).
-pub async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::supervisor_client::StatusReport> {
+pub async fn try_query_status(state_dir: PathBuf) -> Option<sot_log::attach_client::supervisor_client::StatusReport> {
     tokio::task::spawn_blocking(move || {
-        sot_log::supervisor_client::query_status(&state_dir)
+        sot_log::attach_client::supervisor_client::query_status(&state_dir)
             .ok()
             .map(|(report, _process)| report)
     })
@@ -279,7 +279,7 @@ pub async fn create_ready_workspace_then_stop_its_supervisor(
 
     tokio::task::spawn_blocking({
         let dir = state_dir_path.clone();
-        move || sot_log::supervisor_client::stop(&dir).expect("stop the real supervisor authority")
+        move || sot_log::attach_client::supervisor_client::stop(&dir).expect("stop the real supervisor authority")
     })
     .await
     .unwrap();

@@ -208,7 +208,7 @@ fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
     // Resolve ONCE — the fresh `producer_pty`/`socket_transport` pair on
     // Linux and `producer_conpty`/`pipe_transport` on Windows share this
     // exact ordering (voyage root, then the lease, then the writer fence).
-    let voyage_root = crate::fsutil::ensure_container(&config.voyage_root)?;
+    let voyage_root = crate::host::ensure_container(&config.voyage_root)?;
     if !voyage_root.exists() {
         VoyageStore::bootstrap(&voyage_root, &config.voyage_id, config.retention)?;
     }
@@ -218,7 +218,7 @@ fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
     // other pre-fence-adjacent I/O -- never before. ADR 0043 decision 15:
     // per-platform variant of `ParentLease` — `NamedMutex` (Windows) folds
     // an unopenable/broken name to `true` (broken) here, matching
-    // `crate::lease::open`'s own documented contract: an unopenable lease
+    // `crate::supervisor::lease_win::open`'s own documented contract: an unopenable lease
     // name is reported identically to an opened-but-broken one, never
     // treated as "no lease was ever passed" (that is `None` below).
     // `InheritedFd` (Unix): `producer_pty::parent_lease_fd_broken` does one
@@ -231,10 +231,10 @@ fn open_store(config: &CapsuleConfig) -> Result<VoyageStore> {
             None => false,
             #[cfg(windows)]
             Some(ParentLease::NamedMutex(name)) => {
-                crate::lease::open(name).map(|c| c.is_broken()).unwrap_or(true)
+                crate::supervisor::lease_win::open(name).map(|c| c.is_broken()).unwrap_or(true)
             }
             #[cfg(unix)]
-            Some(ParentLease::InheritedFd(fd)) => crate::producer_pty::parent_lease_fd_broken(*fd),
+            Some(ParentLease::InheritedFd(fd)) => crate::capsule::producer::pty::parent_lease_fd_broken(*fd),
         }
     };
     let lease_broken: Option<&dyn Fn() -> bool> =
@@ -303,13 +303,13 @@ fn open_first_segment(
         attached: None,
     };
     // ADR 0041 "Upgrade and version skew" reader-first rollout gate (see
-    // `crate::rollout`): refuse to open ANY segment for this run if the
+    // `crate::store::rollout`): refuse to open ANY segment for this run if the
     // installed rollback target's reader cannot decode one declaring the
     // EndRun-marker feature. Checked once, before the first segment
     // (rotation reuses the SAME declared set — a run's declared features
     // are its own commitment for its whole life, not renegotiated
     // segment to segment).
-    crate::rollout::gate(
+    crate::store::rollout::gate(
         &config.rollout_evidence,
         RUN_END_REQUESTED_FEATURE,
     )?;
@@ -350,7 +350,7 @@ fn write_producer_attached(
     frames_written: &mut u64,
 ) -> Result<()> {
     // producer_attached: the raw-terminal redaction profile, content-hashed
-    // — identical to capsule.rs (this is a cross-platform semantic, not a
+    // — identical to capsule/ (this is a cross-platform semantic, not a
     // Linux one).
     let rules = json!({"input_content": "redacted", "turns": "none"});
     let rules_bytes = serde_json::to_vec(&rules)?;

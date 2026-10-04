@@ -167,7 +167,7 @@ fn client_fd_reports_the_server_pid_via_local_peertoken() {
 
     // `tempdir_in("/tmp")`, never `$TMPDIR`: on the macOS runner `$TMPDIR`
     // is ~56 bytes and `sun_path` is 104 there — the same overflow
-    // `tests/socket_unix.rs` documents and works around the same way.
+    // `tests/socket_unix/` documents and works around the same way.
     let tmp = tempfile::Builder::new()
         .prefix("sot-mf")
         .tempdir_in("/tmp")
@@ -217,7 +217,7 @@ fn client_fd_reports_the_server_pid_via_local_peertoken() {
     // connection explicitly blocking-with-a-timeout rather than relying on
     // which behaviour this kernel has.
     // Darwin refuses `SO_RCVTIMEO` on an ACCEPTED AF_UNIX socket (EINVAL),
-    // though it honours it on a CONNECTED one -- `tests/socket_unix.rs`
+    // though it honours it on a CONNECTED one -- `tests/socket_unix/`
     // sets it on the connect side and is green on this leg. So the kernel
     // cannot bound the read below; the deadline in `read_line_bounded`
     // does. Recorded as an observation, never asserted: it is a portability

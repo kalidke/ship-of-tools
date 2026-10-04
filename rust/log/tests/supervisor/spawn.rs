@@ -3,7 +3,7 @@
 use super::*;
 
 /// ADR 0043 decision 27/30: with the InitialProbe's connect no longer
-/// paying the full [`sot_log::transport::CONNECT_BOUND`] on an absent
+/// paying the full [`sot_log::lane::transport::CONNECT_BOUND`] on an absent
 /// voyage pipe (it fails fast on `ENOENT`/`ECONNREFUSED` now, retried
 /// only at [`sot_log::supervisor`]'s own 250ms `ATTEMPT_INTERVAL`), a
 /// fresh `--start` should reach `Ready` in well under a second rather
@@ -60,7 +60,7 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
     // `spawned_identity` performed it: this pid, this function, from the
     // parent, the instant after spawn.
     let spawn_side_ticks =
-        sot_log::challenge_unix::process_start_ticks(spawned_pid).expect("read the child's own /proc start ticks");
+        sot_log::identity::challenge_unix::process_start_ticks(spawned_pid).expect("read the child's own /proc start ticks");
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (reported_pid, reported_created) =
@@ -273,7 +273,7 @@ fn first_leg_without_strips_a_token_from_the_first_leg_and_an_unstable_respawn()
     let _ = wait_for_exit(&mut guard, Duration::from_secs(30));
 }
 
-/// `sot_log::supervisor_client::Persistent` reconnects transparently
+/// `sot_log::attach_client::supervisor_client::Persistent` reconnects transparently
 /// across REAL processes: (a) the held connection survives the
 /// supervisor process being killed and a fresh one adopting the same
 /// leg over the same state dir, and (b) it survives the supervisor's
@@ -294,7 +294,7 @@ fn persistent_client_survives_a_supervisor_restart_and_a_5s_idle_expiry() {
     let (voyage, leg) = wait_for_ready(&raw_conn, Duration::from_secs(90));
     drop(raw_conn);
 
-    let mut persistent = sot_log::supervisor_client::Persistent::new(&state_dir);
+    let mut persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
     let report = persistent.status().expect("first status on a freshly-ready row");
     assert_eq!(report.voyage.as_deref(), Some(voyage.as_str()));
     assert_eq!(report.leg, Some(leg));
@@ -353,7 +353,7 @@ fn a_cancel_landing_between_connect_and_publish_is_never_missed() {
     let (voyage, _leg) = wait_for_ready(&raw_conn, Duration::from_secs(90));
     drop(raw_conn);
 
-    let mut persistent = sot_log::supervisor_client::Persistent::new(&state_dir);
+    let mut persistent = sot_log::attach_client::supervisor_client::Persistent::new(&state_dir);
     let cancel_handle = persistent.cancel_handle();
     persistent.set_test_hook_after_connect_before_publish(move || cancel_handle.cancel());
 

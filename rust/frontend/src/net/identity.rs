@@ -31,14 +31,14 @@ pub(crate) fn frontend_address(host: &str) -> String {
 
 /// Cached singleton, mirroring the backend's own `declared_host()`
 /// (`sot-backend`'s `workspaces.rs`) — one resolver, called once, read
-/// everywhere after. `sot_log::state_dir::host_name()` failing means this
+/// everywhere after. `sot_log::host::state_dir::host_name()` failing means this
 /// process has no nameable host at all; fatal, same posture the backend
 /// takes at boot, rather than limping on with a guessed address no peer
 /// could actually reach it by.
 pub(crate) fn frontend_identity() -> &'static FrontendIdentity {
     static IDENTITY: std::sync::OnceLock<FrontendIdentity> = std::sync::OnceLock::new();
     IDENTITY.get_or_init(|| {
-        let host = sot_log::state_dir::host_name().unwrap_or_else(|e| {
+        let host = sot_log::host::state_dir::host_name().unwrap_or_else(|e| {
             panic!("cannot start: no declared host (ADR 0046 decision 1): {e}");
         });
         let env = std::env::var("SOT_FE_INSTANCE").ok();

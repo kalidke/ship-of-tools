@@ -49,9 +49,9 @@ impl State {
         let controller_id = self_comm_handle();
         let fe_down_to = self_comm_handle();
         let waker = self.window.clone();
-        match sot_log::fe_client_io::FeAttachClient::attach(
-            sot_log::client::PlatformEndpoint::default(),
-            sot_log::state_dir::state_dir_hash(&state_dir),
+        match sot_log::attach_client::client::FeAttachClient::attach(
+            sot_log::lane::client::PlatformEndpoint::default(),
+            sot_log::host::state_dir::state_dir_hash(&state_dir),
             80,
             24,
             controller_id,

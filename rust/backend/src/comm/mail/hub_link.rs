@@ -220,7 +220,7 @@ fn hub_frame_req(from: String, to: String, text: String) -> sot_protocol::CommFi
 /// the frontend wrote it too, but `comm-listen` had already delivered that mail,
 /// so moving it would file it a second time.
 fn move_fe_inbox() -> Result<(), String> {
-    let (Some(dir), Some(home)) = (sot_log::state_dir::sot_state_dir(), crate::paths::sot_comm_home()) else {
+    let (Some(dir), Some(home)) = (sot_log::host::state_dir::sot_state_dir(), crate::paths::sot_comm_home()) else {
         return Ok(());
     };
     move_fe_inbox_if(cfg!(windows), &dir, &home).map(|n| {

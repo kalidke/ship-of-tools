@@ -34,7 +34,7 @@ pub struct HelloReq {
     #[serde(default)]
     pub app_version: String,
     /// This connection's declared host (ADR 0046 decision 1) —
-    /// `sot_log::state_dir::host_name()`'s own value, self-reported by
+    /// `sot_log::host::state_dir::host_name()`'s own value, self-reported by
     /// every client kind, not only frontends. `#[serde(default)]` → `None`
     /// for a pre-this-field peer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,7 +265,7 @@ pub struct VersionQueryReq {}
 /// `lane_proto` is the supervisor-lane wire protocol integer this daemon
 /// gates on (ADR 0045 decision 7: `wire::SUPERVISOR_PROTO_V1`, compared
 /// against any supervisor it attaches, adopts, or spawns); `lane_build`
-/// is `sot_log::exchange::SUPERVISOR_LANE_BUILD_ID`, carried alongside
+/// is `sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID`, carried alongside
 /// as an informational build stamp only — never compared. Both are
 /// distinct from `app_version`, which is the product version (ADR 0030
 /// §1) and never gates a capsule attach. `#[serde(default)]` on
@@ -273,7 +273,7 @@ pub struct VersionQueryReq {}
 ///
 /// `host` (topology plan §F step 1) is this daemon's own declared host —
 /// `crate::workspaces::declared_host()` on the backend side, the same
-/// `sot_log::state_dir::host_name()` resolution ADR 0046 uses for
+/// `sot_log::host::state_dir::host_name()` resolution ADR 0046 uses for
 /// `HelloRes.host` and `ClientVersion.host`. `#[serde(default)]`: a
 /// daemon predating this field answers without it and an old client
 /// parsing a new daemon's extra field is unaffected either way — this is

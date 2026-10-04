@@ -394,7 +394,7 @@ pub(super) fn reissue_and_reconcile_end_run(
 ) -> crate::Result<EndRunReconciliation> {
     // Computed once, outside the reissue loop: the row does not change
     // hash between retries.
-    let h = crate::state_dir::state_dir_hash(state_dir);
+    let h = crate::host::state_dir::state_dir_hash(state_dir);
     loop {
         match end_run_over_mgmt_lane(&h, voyage_id, reason) {
             Ok(EndRunOutcome::Ended(process)) => {
@@ -613,7 +613,7 @@ mod tests {
     /// the worker while jumping straight to Terminal" (`stop` no longer uses this at all — only `force_terminal`
     /// does now). Constructing a real `Ready` variant needs a live,
     /// OS-proven `Process` this unit test has no safe way to
-    /// fabricate (see `tests/supervisor.rs` for that half, exercised
+    /// fabricate (see `tests/supervisor/` for that half, exercised
     /// end-to-end against a real process); the worker-bearing states are
     /// what this function actually exists for and are fully exercisable
     /// here.

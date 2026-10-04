@@ -404,7 +404,7 @@ impl Drop for IoSlot {
 /// overlapped example notes exactly this), so waiting on it
 /// unconditionally would manufacture a FALSE timeout. Bounded, never
 /// Win32 `INFINITE` — this crate's own rule (see
-/// `fsutil::duration_to_wait_ms`'s doc); in the ordinary case (the error
+/// `host::duration_to_wait_ms`'s doc); in the ordinary case (the error
 /// came from a properly-waited cancellation) the event is ALREADY
 /// signalled, so this returns effectively instantly.
 pub(super) const OVERLAPPED_COMPLETION_PROOF_TIMEOUT: Duration = Duration::from_secs(5);
@@ -439,7 +439,7 @@ pub(super) fn wait_overlapped(
             return Err(err);
         }
         let event = unsafe { (*ov).hEvent };
-        let ms = crate::fsutil::duration_to_wait_ms(OVERLAPPED_COMPLETION_PROOF_TIMEOUT);
+        let ms = crate::host::duration_to_wait_ms(OVERLAPPED_COMPLETION_PROOF_TIMEOUT);
         return match unsafe { WaitForSingleObject(event, ms) } {
             WAIT_OBJECT_0 => Err(err),
             WAIT_TIMEOUT => {

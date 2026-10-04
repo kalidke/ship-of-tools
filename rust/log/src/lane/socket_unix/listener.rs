@@ -7,7 +7,7 @@ use super::*;
 /// non-`_all` `create` + `DirBuilderExt::mode` maps to one `mkdir(2)` —
 /// atomic, no window for a racing attacker to land a symlink in); a
 /// present one gets a by-PATH PRE-check via
-/// [`crate::state_dir::is_private_dir`] (lstat-based: real directory,
+/// [`crate::host::state_dir::is_private_dir`] (lstat-based: real directory,
 /// owned by this uid, owner-only) — NOT the authoritative check (module
 /// doc "Security"): [`open_verified_dir_fd`], called immediately
 /// afterward, re-verifies the SAME properties against the actually-opened
@@ -30,7 +30,7 @@ pub(super) fn ensure_private_runtime_dir(dir: &Path) -> Result<(), TransportErro
             op: "stat(runtime dir)",
             source: e,
         }),
-        Ok(_) if crate::state_dir::is_private_dir(dir) => Ok(()),
+        Ok(_) if crate::host::state_dir::is_private_dir(dir) => Ok(()),
         Ok(_) => Err(TransportError::Io {
             op: "verify runtime dir",
             source: io::Error::new(
@@ -86,7 +86,7 @@ pub(super) fn open_verified_dir_fd(dir: &Path) -> Result<OwnedFd, TransportError
         });
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFDIR
-        || st.st_uid != crate::state_dir::current_uid()
+        || st.st_uid != crate::host::state_dir::current_uid()
         || st.st_mode & 0o077 != 0
     {
         return Err(TransportError::Io {
@@ -258,7 +258,7 @@ pub(super) fn create_and_bind_listener(
         });
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFSOCK
-        || st.st_uid != crate::state_dir::current_uid()
+        || st.st_uid != crate::host::state_dir::current_uid()
         || st.st_mode & 0o777 != 0o600
     {
         return Err(TransportError::Io {

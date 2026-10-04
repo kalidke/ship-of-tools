@@ -1,19 +1,16 @@
 //! `<state-dir>/supervisor.lock`: the public facade over
-//! `fsutil::lock_supervisor` (ADR 0041 Lifecycle "one authority, one
-//! fence"). `fsutil` itself is a private module — invisible from ANY
-//! other crate, including a future `sot-capsule` binary target, which
-//! Cargo treats as a SEPARATE crate from this package's library even
-//! though they share one `Cargo.toml` (a
-//! `pub fn` inside a private module is unreachable from outside the
-//! defining crate no matter how public the function itself is) — so this
-//! is the one place outside `fsutil` that ANY external caller may take
-//! the supervisor fence from. Mirrors `pointer::pointer_path`'s
+//! `host::lock_supervisor` (ADR 0041 Lifecycle "one authority, one
+//! fence"). `host::lock_supervisor` takes a lock PATH and hands back the
+//! writer lock's own type, so this is where an external caller
+//! takes the supervisor fence for a state dir, including the
+//! `sot-capsule` binary target, which Cargo treats as a SEPARATE crate
+//! from this package's library. Mirrors `pointer::pointer_path`'s
 //! discipline: callers pass the STATE DIR; the fixed file name is pinned
 //! here, never re-derived by the caller, so two callers can never
 //! accidentally mint different-named authority fences for the same
 //! drawer.
 
-use crate::fsutil;
+use crate::host;
 use crate::Result;
 use std::path::{Path, PathBuf};
 
@@ -26,26 +23,23 @@ pub fn supervisor_lock_path(state_dir: &Path) -> PathBuf {
 
 /// The held supervisor fence — kernel-released on drop (including hard
 /// kills), exactly like the voyage writer fence's own guard. A DISTINCT
-/// type (not a re-export of `fsutil::WriterLock`), so external callers'
+/// type (not a re-export of `host::WriterLock`), so external callers'
 /// code reads as holding THE authority fence, not an unrelated per-voyage
 /// writer lock that merely happens to share its kernel mechanics — and so
-/// this crate never has to expose a private-module type through a public
-/// signature to make the facade work.
-pub struct SupervisorLock(#[allow(dead_code)] fsutil::WriterLock); // held for its Drop
+/// this facade's public signature names no type from `host`.
+pub struct SupervisorLock(#[allow(dead_code)] host::WriterLock); // held for its Drop
 
 /// Acquire the ONE-AUTHORITY fence under `state_dir` — bootstraps it
 /// (`CREATE_NEW`) if absent, then takes it with the same kernel-lock
-/// mechanics the writer fence uses. See `fsutil::lock_supervisor`'s own
+/// mechanics the writer fence uses. See `host::lock_supervisor`'s own
 /// doc for the mechanism; this is its only public entry point. Mandatory
-/// and cross-process on both platforms (see `fsutil::WriterLock`'s own
+/// and cross-process on both platforms (see `host::WriterLock`'s own
 /// doc) — the real topology is CROSS-PROCESS (two separate
 /// `sot-capsule supervise` instances), and that is exactly what the
 /// kernel arbitrates.
 pub fn lock_supervisor(state_dir: &Path) -> Result<SupervisorLock> {
-    fsutil::lock_supervisor(&supervisor_lock_path(state_dir)).map(SupervisorLock)
+    host::lock_supervisor(&supervisor_lock_path(state_dir)).map(SupervisorLock)
 }
-
-pub use crate::host::{daemon_lock_path, try_lock_daemon, DaemonLock};
 
 #[cfg(test)]
 mod tests {
@@ -137,7 +131,7 @@ mod tests {
     /// the total count). A normal test pass never sets these, so this is
     /// a silent no-op then — only the parent test invokes it BY NAME with
     /// them set, in a dedicated child process (the same self-re-exec
-    /// shape `tests/pipe_win.rs`'s own cross-process challenge test
+    /// shape `tests/pipe_win/`'s own cross-process challenge test
     /// uses).
     ///
     /// Protocol: (1) NO-BARRIER — signal ready, then wait for the parent's

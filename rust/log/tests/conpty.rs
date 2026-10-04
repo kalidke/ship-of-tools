@@ -1,6 +1,6 @@
 #![cfg(windows)]
 //! Integration tests for the owned ConPTY + job containment layer
-//! (`src/conpty.rs`, ADR 0041 §"Containment and the owned ConPTY layer").
+//! (`src/capsule/producer/conpty/`, ADR 0041 §"Containment and the owned ConPTY layer").
 //!
 //! Lives in `tests/` rather than an inline `#[cfg(test)] mod` because one
 //! of these (the containment test) needs `env!("CARGO_BIN_EXE_...")` to
@@ -8,7 +8,7 @@
 //! binaries — not for a library's own unit tests. The rest are kept here
 //! too for one home and one `cargo test -p sot-log conpty` filter.
 
-use sot_log::conpty::ConptySpawn;
+use sot_log::capsule::producer::conpty::ConptySpawn;
 use sot_log::Error;
 use std::fs::File;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -45,8 +45,8 @@ fn spawn_reader_thread(mut reader: File) -> (Receiver<Vec<u8>>, std::thread::Joi
 }
 
 /// Bounded-wait for the spawned child to exit, observed through the JOB
-/// (not a process handle — `conpty.rs` deliberately doesn't keep one).
-fn wait_for_zero_active(job: &sot_log::conpty::AnonymousJob, timeout: Duration) {
+/// (not a process handle — `capsule/producer/conpty/` deliberately doesn't keep one).
+fn wait_for_zero_active(job: &sot_log::capsule::producer::conpty::AnonymousJob, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
         let n = job.active_processes().unwrap();

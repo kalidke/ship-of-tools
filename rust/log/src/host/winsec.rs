@@ -6,9 +6,9 @@ use crate::Result;
 /// Owns a security descriptor built by `ConvertStringSecurityDescriptorToSecurityDescriptorW`
 /// (`LocalAlloc`'d by that API) for exactly as long as the caller needs it
 /// live; freed on drop. `pub` (ADR 0041 step 5, widened for the session-pipe
-/// hardening fix): `pipe_win.rs`, a sibling module, builds and consumes the
+/// hardening fix): `lane/pipe_win/`, a sibling module, builds and consumes the
 /// pipe-flavored descriptor below through this same type, and `sot-backend`
-/// — a different crate entirely — reaches it through the `fsutil::
+/// — a different crate entirely — reaches it through the `host::
 /// owner_protected_pipe_descriptor` facade (see that re-export in `lib.rs`)
 /// to give its `interprocess`-backed session pipe the identical posture.
 /// The `sd` field itself stays private either way; `as_ptr` is the one
@@ -42,7 +42,7 @@ impl Drop for OwnerProtectedDescriptor {
 
 /// This process's own token-user SID, stringified — the shared first half
 /// of every owner-protected descriptor this module builds (the directory
-/// flavor below, and `pipe_win.rs`'s pipe flavor): same account, same
+/// flavor below, and `lane/pipe_win/`'s pipe flavor): same account, same
 /// `OpenProcessToken`/`GetTokenInformation(TokenUser)`/`ConvertSidToStringSidW`
 /// lookup, same `LocalAlloc`/`CloseHandle` discipline. Only the SDDL ACE
 /// that wraps this SID differs between callers. Also the "this account's"
@@ -194,7 +194,7 @@ pub(super) fn owner_protected_descriptor() -> Result<OwnerProtectedDescriptor> {
 /// directory flavor. `SE_DACL_PROTECTED` (the `P` flag) is preserved
 /// identically — a permissive ancestor still can never inject ACEs.
 ///
-/// `pub` and re-exported (`fsutil::owner_protected_pipe_descriptor` in
+/// `pub` and re-exported (`host::owner_protected_pipe_descriptor` in
 /// `lib.rs`): `sot-backend`'s session pipe — a second, `interprocess`-backed
 /// pipe family the daemon binds directly, not through this module — used to
 /// carry the Windows default descriptor (`Everyone`/`ANONYMOUS LOGON` read).

@@ -1001,14 +1001,14 @@ struct State {
     local_term: Option<crate::ui::drawer::terminal::pty::LocalTerminal>,
     /// ADR 0041 step 6 U3: the attach-only alternative to `local_term`,
     /// live only when `settings.attach_only` is on (Windows only — see
-    /// `sot_log::fe_client_io`). Mutually exclusive with `local_term`:
+    /// `sot_log::attach_client::client`). Mutually exclusive with `local_term`:
     /// the Terminal drawer's lazy-spawn site picks exactly one backend
     /// at creation time and never both. `None` on every non-Windows
     /// build target (the field itself still exists there so the rest of
     /// this struct's layout doesn't fork by platform) since attach-only
     /// has nothing to attach to off Windows.
     #[cfg(windows)]
-    attach_term: Option<sot_log::fe_client_io::FeAttachClient>,
+    attach_term: Option<sot_log::attach_client::client::FeAttachClient>,
     /// Last `(cols, rows)` the local terminal's PTY was sized to. `None`
     /// until the drawer rect is first observed; drives resize-on-change
     /// (mirrors `pty_size` for the LLM pane).

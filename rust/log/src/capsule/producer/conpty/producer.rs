@@ -1,6 +1,6 @@
 //! `impl Producer for ConptyProducer` — wraps the owned-ConPTY primitives
-//! `conpty.rs` hands out (`ConptySpawn`'s destructured fields) behind the
-//! [`crate::producer::Producer`] trait, so `capsule::run` can drive a
+//! `capsule/producer/conpty/` hands out (`ConptySpawn`'s destructured fields) behind the
+//! [`crate::capsule::producer::Producer`] trait, so `capsule::run` can drive a
 //! ConPTY producer through the same nine verbs any other platform's
 //! producer answers. Every method here is the one-line delegation the
 //! writer loop did directly before LU2a (ADR 0043 "Decisions for LU2");
@@ -9,8 +9,8 @@
 
 #![cfg(windows)]
 
-use crate::conpty::{observe_spawning_process_jobbed, AnonymousJob, ConptySpawn, PrimaryProcess, Pseudoconsole};
-use crate::producer::{ExitStatus, Producer};
+use crate::capsule::producer::conpty::{observe_spawning_process_jobbed, AnonymousJob, ConptySpawn, PrimaryProcess, Pseudoconsole};
+use crate::capsule::producer::{ExitStatus, Producer};
 use crate::Result;
 use serde_json::json;
 use std::fs::File;

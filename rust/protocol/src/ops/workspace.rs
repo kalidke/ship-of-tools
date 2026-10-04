@@ -204,7 +204,7 @@ pub struct WorkspaceListEntry {
     /// run for it), `"unreachable"` when the lane could not be queried at
     /// all, or `"foreign"` (ADR 0030 §8 decision 31c) when it WAS queried
     /// and answered — but refused this daemon's own build
-    /// (`sot_log::exchange::SUPERVISOR_LANE_BUILD_ID` mismatch,
+    /// (`sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID` mismatch,
     /// `version_skew`): a row this daemon can never attach, adopt, end, or
     /// destroy. Distinct from `"unreachable"` (no answer at all) even
     /// though both start from the same failed query — present only for

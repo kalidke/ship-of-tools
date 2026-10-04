@@ -3,7 +3,7 @@
 //! leaving stderr alone unless asked (decision 25's leg-shared log). Only
 //! test in this file/binary -- it mutates this process's REAL
 //! `STD_*_HANDLE`s, which would race a concurrent test in the SAME process
-//! (as `tests/pipe_win.rs` notes for `GetProcessHandleCount`); one binary
+//! (as `tests/pipe_win/` notes for `GetProcessHandleCount`); one binary
 //! per `tests/*.rs` file already isolates it.
 
 use std::os::windows::io::AsRawHandle;
@@ -46,12 +46,12 @@ fn harden_clears_stdin_stdout_and_stderr_only_when_asked() {
     }
     assert!(is_inheritable(STD_INPUT_HANDLE) && is_inheritable(STD_OUTPUT_HANDLE) && is_inheritable(STD_ERROR_HANDLE));
 
-    sot_log::winhandle::harden_own_stdio(false).unwrap();
+    sot_log::host::winhandle::harden_own_stdio(false).unwrap();
     assert!(!is_inheritable(STD_INPUT_HANDLE), "stdin must no longer be inheritable");
     assert!(!is_inheritable(STD_OUTPUT_HANDLE), "stdout must no longer be inheritable");
     assert!(is_inheritable(STD_ERROR_HANDLE), "stderr (decision 25's leg-shared log) must stay inheritable");
 
-    sot_log::winhandle::harden_own_stdio(true).unwrap();
+    sot_log::host::winhandle::harden_own_stdio(true).unwrap();
     assert!(!is_inheritable(STD_ERROR_HANDLE), "harden_own_stdio(true) must also clear stderr");
 
     unsafe {

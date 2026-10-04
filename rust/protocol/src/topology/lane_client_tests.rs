@@ -275,8 +275,8 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
         fn encode_request(&self) -> Vec<u8> {
             b"status".to_vec()
         }
-        fn feed(&mut self, _bytes: &[u8]) -> sot_log::exchange::ExchangeDecode {
-            sot_log::exchange::ExchangeDecode::Identity { pid: 222, created: 1 }
+        fn feed(&mut self, _bytes: &[u8]) -> sot_log::identity::exchange::ExchangeDecode {
+            sot_log::identity::exchange::ExchangeDecode::Identity { pid: 222, created: 1 }
         }
     }
     let mut exchange = FixedExchange;

@@ -1,18 +1,18 @@
-//! Linux half of the probe classifier's OS-facing seam (`crate::probe`
+//! Linux half of the probe classifier's OS-facing seam (`crate::supervisor::probe`
 //! is the platform-neutral trait and scripted test support — see that
 //! module's own doc): [`RealProbeOps`], the real `ProbeOps` implementation
 //! over a real Unix domain socket and a real spawned child, and
 //! [`SpawnedChild`], the owned, not-yet-challenged child handle Stage A's
-//! A1-A3 observations are about. Mirrors `probe_win.rs` in shape; every
+//! A1-A3 observations are about. Mirrors `supervisor/probe/win.rs` in shape; every
 //! Win32 mechanism there has a pidfd-based replacement here (ADR 0043
 //! decisions 8/21). No decision logic — just the mechanical OS calls the
 //! classifier drives through [`ProbeOps`].
 
 #![cfg(target_os = "linux")]
 
-use crate::challenge::ChallengeOutcome;
-use crate::challenge_unix::{self, ChallengedProcess};
-use crate::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
+use crate::identity::challenge::ChallengeOutcome;
+use crate::identity::challenge_unix::{self, ChallengedProcess};
+use crate::supervisor::probe::{ConnectOutcome, FenceProbe, ProbeOps, SpawnOutcome, WaitOutcome};
 use std::cell::Cell;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
@@ -187,12 +187,12 @@ impl SpawnedChild {
 /// `pub(crate)`, not `pub` — mirrors `probe_win::RealProbeOps`'s own doc
 /// for why (no production consumer outside this crate; `sot-capsule`
 /// reaches this crate only through its `pub` API regardless). This
-/// lane's own consumer is `supervisor.rs`, on Linux exactly as on
+/// lane's own consumer is `supervisor/`, on Linux exactly as on
 /// Windows.
 pub(crate) struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {
-    type Conn = crate::socket_unix::SocketClient;
+    type Conn = crate::lane::socket_unix::SocketClient;
     type SpawnedChild = SpawnedChild;
     type Process = ChallengedProcess;
 
@@ -219,9 +219,9 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn connect(&self, voyage_id: &str) -> ConnectOutcome<Self::Conn> {
-        match crate::socket_unix::connect_voyage_socket_unchallenged(voyage_id) {
+        match crate::lane::socket_unix::connect_voyage_socket_unchallenged(voyage_id) {
             Ok(client) => ConnectOutcome::Connected(client),
-            Err(crate::transport::TransportError::Io { source, .. }) => match source.kind() {
+            Err(crate::lane::transport::TransportError::Io { source, .. }) => match source.kind() {
                 std::io::ErrorKind::NotFound => ConnectOutcome::FileNotFound,
                 // A Unix domain socket with no listener REFUSES
                 // (`ECONNREFUSED`) where a Windows named pipe that does
@@ -243,13 +243,13 @@ impl ProbeOps for RealProbeOps {
     }
 
     fn challenge(&self, conn: &Self::Conn, deadline: Instant) -> ChallengeOutcome<Self::Process> {
-        let mut exchange = crate::exchange::VoyageMgmtExchange::default();
+        let mut exchange = crate::identity::exchange::VoyageMgmtExchange::default();
         challenge_unix::challenge(conn, &mut exchange, deadline)
     }
 
     fn writer_fence_probe(&self, voyage_root: &Path) -> FenceProbe {
         let lock_path = voyage_root.join("writer.lock");
-        match crate::fsutil::lock_writer(&lock_path) {
+        match crate::host::lock_writer(&lock_path) {
             // The guard drops here, releasing the fence immediately --
             // this is a PROBE, never a hold.
             Ok(_guard) => FenceProbe::Free,

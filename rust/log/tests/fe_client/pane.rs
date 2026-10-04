@@ -192,7 +192,7 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     let resize_seq = frames
         .iter()
         .find_map(|f| {
-            if f.class != sot_log::envelope::Class::ControlExchange {
+            if f.class != sot_log::store::envelope::Class::ControlExchange {
                 return None;
             }
             let p = f.payload.as_ref()?;
@@ -206,7 +206,7 @@ fn first_input_takes_the_pen_and_resize_precedes_the_flush() {
     let input_seq = frames
         .iter()
         .find_map(|f| {
-            if f.class != sot_log::envelope::Class::Input {
+            if f.class != sot_log::store::envelope::Class::Input {
                 return None;
             }
             let p = f.payload.as_ref()?;
