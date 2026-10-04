@@ -58,29 +58,7 @@ where
                 .await
         }
         op::PREVIEW_GET => {
-            // Off-loop (switch-latency Phase 1): a read-and-render of
-            // the requested node. `preview.set_scale` stays INLINE just
-            // below — it writes a `.scale.json` sidecar.
-            let req_id = frame.id;
-            let op_name = frame.op.clone();
-            let mut payload = frame.payload;
-            if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
-                .await?
-            {
-                return Ok(());
-            }
-            let session = session.clone();
-            let workspaces = workspaces.clone();
-            spawn_job(
-                jobs,
-                job_sem.clone(),
-                out_tx.clone(),
-                req_id,
-                op_name,
-                async move {
-                    handlers::handle_preview_get(req_id, payload, &session, &workspaces).await
-                },
-            );
+            offload_preview_get(tx, frame, session, workspaces, jobs, job_sem, out_tx).await?;
             return Ok(());
         }
         op::PREVIEW_SET_SCALE => {
@@ -88,33 +66,7 @@ where
                 .await
         }
         op::IMAGE_CROP => {
-            // Off-loop (switch-latency Phase 1): decodes the source
-            // image and writes a NEW, uniquely-named capture file — it
-            // never mutates any EXISTING shared state (the session
-            // revision bump it also does is safe off-loop for the same
-            // reason concurrent connections already interleave those
-            // bumps: their order relative to wall-clock request order
-            // was never guaranteed).
-            let req_id = frame.id;
-            let op_name = frame.op.clone();
-            let mut payload = frame.payload;
-            if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
-                .await?
-            {
-                return Ok(());
-            }
-            let session = session.clone();
-            let workspaces = workspaces.clone();
-            spawn_job(
-                jobs,
-                job_sem.clone(),
-                out_tx.clone(),
-                req_id,
-                op_name,
-                async move {
-                    handlers::handle_image_crop(req_id, payload, &session, &workspaces).await
-                },
-            );
+            offload_image_crop(tx, frame, session, workspaces, jobs, job_sem, out_tx).await?;
             return Ok(());
         }
         op::MATH_RENDER => {
@@ -147,75 +99,11 @@ where
             return Ok(());
         }
         op::KERNEL_REQUEST => {
-            // Off-loop: this op used to await
-            // `handlers::handle_kernel_request(...)` INLINE, in this
-            // same per-connection dispatch loop that
-            // also carries this connection's `pty` byte stream — a
-            // `kernel.request` against a dead/slow kernel held up
-            // dispatch of the NEXT frame on this connection, including
-            // a `pty.write`/`pty.open` for the same session's attached
-            // pane (the frontend multiplexes both over one connection
-            // per host). `preview.get`/`concept.read`/`image.crop` were
-            // already off-loop for the identical reason; this joins
-            // their existing pool (`job_sem`, `OFFLOOP_CONCURRENCY`)
-            // rather than adding a second cap for the same shape of
-            // operation (a bounded external-process call). Note this is
-            // NOT about `job_sem` ever being shared with pty ops —
-            // pty.* dispatch inline just below and never touch it; the
-            // actual shared choke point was the inline `.await` itself.
-            let req_id = frame.id;
-            let op_name = frame.op.clone();
-            let mut payload = frame.payload;
-            if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
-                .await?
-            {
-                return Ok(());
-            }
-            let session = session.clone();
-            let workspaces = workspaces.clone();
-            spawn_job(
-                jobs,
-                job_sem.clone(),
-                out_tx.clone(),
-                req_id,
-                op_name,
-                async move {
-                    handlers::handle_kernel_request(req_id, payload, &session, &workspaces)
-                        .await
-                },
-            );
+            offload_kernel_request(tx, frame, session, workspaces, jobs, job_sem, out_tx).await?;
             return Ok(());
         }
         op::CONCEPT_READ => {
-            // Off-loop (switch-latency Phase 1): a read of one
-            // `.concept/` annotation file. `concept.write`/`concept.list`
-            // stay INLINE (write, and directory-walk-then-read).
-            let req_id = frame.id;
-            let op_name = frame.op.clone();
-            let mut payload = frame.payload;
-            if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
-                .await?
-            {
-                return Ok(());
-            }
-            let session = session.clone();
-            let workspaces = workspaces.clone();
-            spawn_job(
-                jobs,
-                job_sem.clone(),
-                out_tx.clone(),
-                req_id,
-                op_name,
-                async move {
-                    // Test-only (see `test_slow_concept_read_delay`): a
-                    // no-op sleep unless a test set the env var.
-                    let delay = test_slow_concept_read_delay();
-                    if !delay.is_zero() {
-                        tokio::time::sleep(delay).await;
-                    }
-                    handlers::handle_concept_read(req_id, payload, &session, &workspaces).await
-                },
-            );
+            offload_concept_read(tx, frame, session, workspaces, jobs, job_sem, out_tx).await?;
             return Ok(());
         }
         op::CONCEPT_WRITE => {
@@ -611,4 +499,164 @@ where
         write_reply(tx, out_frame, out_blob).await?;
     }
     Ok(())
+}
+
+/// Answers `preview.get`: the read and render run as a job whose reply returns over `out_tx`.
+async fn offload_preview_get<W>(
+    tx: &mut W, frame: Frame, session: &Session, workspaces: &Workspaces, jobs: &mut JoinSet<()>,
+    job_sem: &Arc<Semaphore>, out_tx: &OutTx,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Off-loop (switch-latency Phase 1): a read-and-render of
+    // the requested node. `preview.set_scale` stays INLINE just
+    // below — it writes a `.scale.json` sidecar.
+    let req_id = frame.id;
+    let op_name = frame.op.clone();
+    let mut payload = frame.payload;
+    if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
+        .await?
+    {
+        return Ok(());
+    }
+    let session = session.clone();
+    let workspaces = workspaces.clone();
+    spawn_job(
+        jobs,
+        job_sem.clone(),
+        out_tx.clone(),
+        req_id,
+        op_name,
+        async move {
+            handlers::handle_preview_get(req_id, payload, &session, &workspaces).await
+        },
+    );
+    return Ok(());
+}
+
+/// Answers `image.crop`: the decode and crop run as a job whose reply returns over `out_tx`.
+async fn offload_image_crop<W>(
+    tx: &mut W, frame: Frame, session: &Session, workspaces: &Workspaces, jobs: &mut JoinSet<()>,
+    job_sem: &Arc<Semaphore>, out_tx: &OutTx,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Off-loop (switch-latency Phase 1): decodes the source
+    // image and writes a NEW, uniquely-named capture file — it
+    // never mutates any EXISTING shared state (the session
+    // revision bump it also does is safe off-loop for the same
+    // reason concurrent connections already interleave those
+    // bumps: their order relative to wall-clock request order
+    // was never guaranteed).
+    let req_id = frame.id;
+    let op_name = frame.op.clone();
+    let mut payload = frame.payload;
+    if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
+        .await?
+    {
+        return Ok(());
+    }
+    let session = session.clone();
+    let workspaces = workspaces.clone();
+    spawn_job(
+        jobs,
+        job_sem.clone(),
+        out_tx.clone(),
+        req_id,
+        op_name,
+        async move {
+            handlers::handle_image_crop(req_id, payload, &session, &workspaces).await
+        },
+    );
+    return Ok(());
+}
+
+/// Answers `kernel.request`: the kernel call runs as a job whose reply returns over `out_tx`.
+async fn offload_kernel_request<W>(
+    tx: &mut W, frame: Frame, session: &Session, workspaces: &Workspaces, jobs: &mut JoinSet<()>,
+    job_sem: &Arc<Semaphore>, out_tx: &OutTx,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Off-loop: this op used to await
+    // `handlers::handle_kernel_request(...)` INLINE, in this
+    // same per-connection dispatch loop that
+    // also carries this connection's `pty` byte stream — a
+    // `kernel.request` against a dead/slow kernel held up
+    // dispatch of the NEXT frame on this connection, including
+    // a `pty.write`/`pty.open` for the same session's attached
+    // pane (the frontend multiplexes both over one connection
+    // per host). `preview.get`/`concept.read`/`image.crop` were
+    // already off-loop for the identical reason; this joins
+    // their existing pool (`job_sem`, `OFFLOOP_CONCURRENCY`)
+    // rather than adding a second cap for the same shape of
+    // operation (a bounded external-process call). Note this is
+    // NOT about `job_sem` ever being shared with pty ops —
+    // pty.* dispatch inline just below and never touch it; the
+    // actual shared choke point was the inline `.await` itself.
+    let req_id = frame.id;
+    let op_name = frame.op.clone();
+    let mut payload = frame.payload;
+    if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
+        .await?
+    {
+        return Ok(());
+    }
+    let session = session.clone();
+    let workspaces = workspaces.clone();
+    spawn_job(
+        jobs,
+        job_sem.clone(),
+        out_tx.clone(),
+        req_id,
+        op_name,
+        async move {
+            handlers::handle_kernel_request(req_id, payload, &session, &workspaces)
+                .await
+        },
+    );
+    return Ok(());
+}
+
+/// Answers `concept.read`: the annotation read runs as a job whose reply returns over `out_tx`.
+async fn offload_concept_read<W>(
+    tx: &mut W, frame: Frame, session: &Session, workspaces: &Workspaces, jobs: &mut JoinSet<()>,
+    job_sem: &Arc<Semaphore>, out_tx: &OutTx,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    // Off-loop (switch-latency Phase 1): a read of one
+    // `.concept/` annotation file. `concept.write`/`concept.list`
+    // stay INLINE (write, and directory-walk-then-read).
+    let req_id = frame.id;
+    let op_name = frame.op.clone();
+    let mut payload = frame.payload;
+    if !canonicalize_workspace_id(tx, &workspaces, req_id, &op_name, &mut payload)
+        .await?
+    {
+        return Ok(());
+    }
+    let session = session.clone();
+    let workspaces = workspaces.clone();
+    spawn_job(
+        jobs,
+        job_sem.clone(),
+        out_tx.clone(),
+        req_id,
+        op_name,
+        async move {
+            // Test-only (see `test_slow_concept_read_delay`): a
+            // no-op sleep unless a test set the env var.
+            let delay = test_slow_concept_read_delay();
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            handlers::handle_concept_read(req_id, payload, &session, &workspaces).await
+        },
+    );
+    return Ok(());
 }
