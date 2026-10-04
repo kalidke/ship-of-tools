@@ -140,6 +140,13 @@ jobs:
         run: .\scripts\tests\test-local-daemon.ps1
         working-directory: .
 
+      - name: Test launcher leases
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        timeout-minutes: 10
+        run: .\scripts\tests\test-launcher-leases.ps1
+        working-directory: .
+
       # scripts/sot-hosts.ps1's Get-SotTopologyPlan against a fake sotd that prints fixed plan lines -- pure text
       # processing, no ssh, no network, so this needs neither a built sotd.exe nor CI's $env:CI-gated real-daemon
       # sections. Same 5.1 host as the steps above.
