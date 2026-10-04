@@ -12,8 +12,8 @@
 //!
 //! # Conn-id spaces are the SAME space, not reconciled by a map
 //!
-//! The lane server's `ConnId` and `attach_proto::ConnId` are both bare `u64`
-//! aliases, each independently allocated by its own module (the server's
+//! The lane server and `attach_proto` share one `ConnId`, a bare `u64`
+//! alias defined in `attach_proto`, allocated only by the server (its
 //! accept loop hands out its own sequence; `attach_proto` never allocates
 //! one at all — it only ever learns of a `ConnId` through a
 //! `transport::TransportEvent::ConnectionOpened` this module produces). Since

@@ -1,6 +1,8 @@
 //! The client: `SocketClient`, its `Client`/`Endpoint` impls, and the unchallenged and challenged connects.
 
 use super::*;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::lane::client::map_peer_auth_outcome;
 use super::connect::{capture_connect_anchor_boot_ticks, one_connect_attempt, ConnectAttempt};
 
 // ---------------------------------------------------------------------
@@ -502,20 +504,4 @@ pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportE
     let client = connect_voyage_socket_unchallenged(voyage_id)?;
     map_peer_auth_outcome(challenge_os::authenticate_server(&client))?;
     Ok(client)
-}
-
-/// Maps [`crate::identity::challenge::PeerAuthOutcome`] to this module's own
-/// `Result` — the exact logic [`connect_voyage_socket`] runs, pulled out
-/// so it is directly unit-testable without a live socket, mirroring
-/// `pipe_win::map_peer_auth_outcome`'s own reasoning.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn map_peer_auth_outcome(outcome: crate::identity::challenge::PeerAuthOutcome) -> Result<(), TransportError> {
-    match outcome {
-        crate::identity::challenge::PeerAuthOutcome::Authenticated(_) => Ok(()),
-        crate::identity::challenge::PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
-        crate::identity::challenge::PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
-            via: "direct",
-            detail: "peer identity authentication could not be completed".to_string(),
-        }),
-    }
 }

@@ -232,10 +232,11 @@
 
 use crate::host::wide_null;
 use crate::lane::client::{Client, Endpoint};
+use crate::lane::attach_proto::ConnId;
 use crate::lane::transport::{
-    join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
-    BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL,
-    READ_BUF_LEN, TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker,
+    StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
+    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
 };
 #[cfg(any(test, feature = "test-support"))]
 use crate::lane::transport::JOIN_POLL_INTERVAL;
@@ -265,12 +266,6 @@ use windows_sys::Win32::System::Pipes::{
 use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
-/// Extra capacity on the bounded reaper inbox beyond `max_instances` — a
-/// connection's own at-most-once teardown flag already caps live `Torn`
-/// messages at one per open connection, so the only other traffic this
-/// inbox ever carries is `Drop`'s own single `Shutdown` message.
-const REAPER_INBOX_SLACK: usize = 1;
-
 /// `\\.\pipe\sot-voyage-<id>`, UTF-16, NUL-terminated. Panics never: `id`
 /// is validated by [`validate_voyage_id`] at every call site before this
 /// runs.
@@ -289,31 +284,6 @@ fn pipe_name_wide(voyage_id: &str) -> Vec<u16> {
 fn supervisor_pipe_name_wide(h: &str) -> Vec<u16> {
     wide_null(&format!(r"\\.\pipe\sot-supervisor-{h}"))
 }
-
-/// The voyage id is validated as a canonical RFC 4122 UUID — lowercase,
-/// hyphenated, the exact form [`uuid::Uuid`]'s own `Display` produces —
-/// before it is ever interpolated into a pipe name. Delegates to
-/// `pointer::canonical_voyage_id` (ADR 0041 U0 round-1 minor finding 9):
-/// one canonical-UUID check for this crate, not two that can drift, as
-/// this one already had from `drawer.voyage`'s own (stricter) validation.
-/// Anything that fails to parse at all (path-traversal shapes, wrong
-/// length, non-hex bytes) is rejected the same way.
-fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
-    if crate::supervisor::journal::pointer::canonical_voyage_id(voyage_id).is_some() {
-        Ok(())
-    } else {
-        Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
-    }
-}
-
-/// Identifies one accepted connection for the lifetime of a [`PipeServer`].
-/// Assigned sequentially; never reused.
-pub type ConnId = u64;
-
-/// An opaque, caller-assigned correlation tag for one [`PipeServer::send`]
-/// call, echoed back on [`LaneEvent::Sent`] when the OS reports that
-/// send's `WriteFile` has PHYSICALLY completed.
-pub type SendMarker = u64;
 
 // `ClosedReason`, `LaneEvent`, and `TransportError` used to be defined
 // here (`PipeError`/this module's own event enums) — L1-unix LU3a (ADR
@@ -413,6 +383,7 @@ enum ReaperMsg {
 
 struct ServerShared {
     conns: Mutex<HashMap<ConnId, ConnHandle>>,
+    /// The next connection id: assigned sequentially; never reused.
     next_id: AtomicU64,
     accept: Mutex<AcceptState>,
     accept_cv: Condvar,

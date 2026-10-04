@@ -20,6 +20,24 @@ use crate::identity::exchange::IdentityExchange;
 use crate::lane::transport::TransportError;
 use std::time::{Duration, Instant};
 
+/// Maps [`PeerAuthOutcome`] to a `Result` — the exact logic both platforms'
+/// voyage connects run, pulled out so it is directly unit-testable (U1a
+/// Codex round-1, minor cluster: "a constructor-level failure-mapping
+/// test") without needing an OS-level SID mismatch or OS-call failure
+/// through a live endpoint, neither of which is constructible in CI (a
+/// genuine Foreign result needs a second real account; the ADR itself
+/// scopes that proof to step 7's real-machine suite).
+pub(super) fn map_peer_auth_outcome(outcome: PeerAuthOutcome) -> Result<(), TransportError> {
+    match outcome {
+        PeerAuthOutcome::Authenticated(_) => Ok(()),
+        PeerAuthOutcome::Foreign => Err(TransportError::Foreign),
+        PeerAuthOutcome::Undetermined => Err(TransportError::Undetermined {
+            via: "direct",
+            detail: "peer identity authentication could not be completed".to_string(),
+        }),
+    }
+}
+
 /// The blocking read/write/cancel shape every concrete pipe/socket
 /// client already exposed as an inherent API — named here so a caller
 /// (and, eventually, a generic one, LU3b) can hold either kind behind one
@@ -182,3 +200,43 @@ pub trait Endpoint {
 pub type PlatformEndpoint = crate::lane::pipe_win::PipeEndpoint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type PlatformEndpoint = crate::lane::socket_unix::SocketEndpoint;
+
+/// U1a Codex round-1, minor cluster: a constructor-level failure-mapping
+/// test for `connect_voyage_pipe`'s own `map_peer_auth_outcome`, proving
+/// the mapping code the constructor actually runs -- not `challenge`/
+/// `authenticate_server` directly, and not through a live pipe (a genuine
+/// OS-level Foreign/Undetermined through a real connection needs either a
+/// second real account or an unreliable timing race, neither
+/// constructible deterministically in CI; see `authenticate_server_is_
+/// undetermined_when_step_one_itself_fails` in the integration test for
+/// the OS-call-failure case proven against a real, deliberately invalid
+/// handle instead). Lives here (not in `tests/pipe_win/`) because
+/// `map_peer_auth_outcome` is a private implementation detail with no
+/// reason to be `pub` merely for testability, and a pure mapping over
+/// already-constructed `PeerAuthOutcome` values needs no real pipe --
+/// exactly the kind of test this crate's OTHER pure-logic modules
+/// (`attach_proto`, `wire`, `exchange`) already keep inline.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
+
+    #[test]
+    fn map_peer_auth_outcome_authenticated_is_ok() {
+        let outcome = PeerAuthOutcome::Authenticated(PeerAuthenticated { pid: 4242, created: 7 });
+        assert!(map_peer_auth_outcome(outcome).is_ok());
+    }
+
+    #[test]
+    fn map_peer_auth_outcome_foreign_is_the_typed_transport_error() {
+        assert!(matches!(map_peer_auth_outcome(PeerAuthOutcome::Foreign), Err(TransportError::Foreign)));
+    }
+
+    #[test]
+    fn map_peer_auth_outcome_undetermined_is_the_typed_transport_error() {
+        assert!(matches!(
+            map_peer_auth_outcome(PeerAuthOutcome::Undetermined),
+            Err(TransportError::Undetermined { via: "direct", .. })
+        ));
+    }
+}

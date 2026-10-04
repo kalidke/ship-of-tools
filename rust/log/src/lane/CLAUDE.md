@@ -6,7 +6,7 @@ program against. Part of capsule; charter: rust/log/CLAUDE.md.
 
 ## Files
 - `attach_proto/`: the attach and mgmt lanes' connection and role state machine (decides; the leg executes)
-- `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`
+- `client.rs`: the dialing seam: `Client`, `PeerIdentity`, `PeerProcess`, `Endpoint`, `PlatformEndpoint`, `map_peer_auth_outcome` (the peer-authentication mapping both connects use)
 - `mod.rs`: declares the lane modules; each file gates itself by platform
 - `pipe_win/`: the Windows named-pipe transport, server and client
 - `platform_transport.rs`: `PlatformTransport`, the capsule's `Transport` over `PlatformLaneServer`

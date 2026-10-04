@@ -153,10 +153,11 @@ use crate::lane::client::Endpoint;
 use crate::identity::challenge_unix as challenge_os;
 #[cfg(target_os = "macos")]
 use crate::identity::challenge_macos as challenge_os;
+use crate::lane::attach_proto::ConnId;
 use crate::lane::transport::{
-    join_within, ClosedReason, LaneEvent, LaneServer, OutboundBudget, StartGate, TransportError,
-    BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP, EVENTS_RETRY_INTERVAL, READ_BUF_LEN,
-    TEARDOWN_AGGREGATE_DEADLINE,
+    join_within, validate_voyage_id, ClosedReason, LaneEvent, LaneServer, OutboundBudget, SendMarker,
+    StartGate, TransportError, BYTES_ABANDON_AFTER, CONNECT_BOUND, EVENTS_CHANNEL_CAP,
+    EVENTS_RETRY_INTERVAL, READ_BUF_LEN, REAPER_INBOX_SLACK, TEARDOWN_AGGREGATE_DEADLINE,
 };
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -172,13 +173,6 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-
-/// Extra capacity on the bounded reaper inbox beyond `max_connections` —
-/// mirrors `pipe_win::REAPER_INBOX_SLACK`: a connection's own
-/// at-most-once teardown flag already caps live `Torn` messages at one
-/// per open connection, so the only other traffic this inbox ever
-/// carries is `Drop`'s own single `Shutdown`.
-const REAPER_INBOX_SLACK: usize = 1;
 
 /// `sockaddr_un::sun_path`'s usable byte length — its own array capacity
 /// minus the terminating NUL every `bind`/`connect` needs (ADR 0043
@@ -197,15 +191,6 @@ fn max_sun_path_bytes() -> usize {
     addr.sun_path.len() - 1
 }
 
-/// Identifies one accepted connection for the lifetime of a
-/// [`SocketServer`]. Assigned sequentially; never reused.
-pub type ConnId = u64;
-
-/// An opaque, caller-assigned correlation tag for one
-/// [`SocketServer::send`] call, echoed back on [`LaneEvent::Sent`]
-/// when the OS reports that send's `write` has PHYSICALLY completed.
-pub type SendMarker = u64;
-
 // `ClosedReason`, `LaneEvent`, and `TransportError` used to be defined
 // here (`SocketError`/this module's own event enums) — L1-unix LU3a (ADR
 // 0043 decisions 17/19) hoisted all three into `crate::lane::transport`, since
@@ -219,9 +204,9 @@ pub type SendMarker = u64;
 
 /// `<runtime_dir>/voyage-<voyage_id>.sock`, after validating `voyage_id`
 /// is the canonical lowercase-hyphenated form of an RFC 4122 UUID — the
-/// same check [`crate::lane::pipe_win`]'s own `validate_voyage_id` runs,
-/// delegating to the SAME `pointer::canonical_voyage_id` (one
-/// implementation, not two that can drift).
+/// shared [`validate_voyage_id`] check, which delegates to
+/// `pointer::canonical_voyage_id` (one implementation, not two that can
+/// drift).
 pub fn voyage_socket_path(voyage_id: &str) -> Result<PathBuf, TransportError> {
     validate_voyage_id(voyage_id)?;
     socket_path(&format!("voyage-{voyage_id}"))
@@ -234,14 +219,6 @@ pub fn voyage_socket_path(voyage_id: &str) -> Result<PathBuf, TransportError> {
 /// [`voyage_socket_path`] — matching `pipe_win::supervisor_pipe_name_wide`.
 pub fn supervisor_socket_path(h: &str) -> Result<PathBuf, TransportError> {
     socket_path(&format!("supervisor-{h}"))
-}
-
-fn validate_voyage_id(voyage_id: &str) -> Result<(), TransportError> {
-    if crate::supervisor::journal::pointer::canonical_voyage_id(voyage_id).is_some() {
-        Ok(())
-    } else {
-        Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
-    }
 }
 
 fn socket_path(file_name: &str) -> Result<PathBuf, TransportError> {
@@ -365,6 +342,7 @@ impl Probes {
 
 struct ServerShared {
     conns: Mutex<HashMap<ConnId, ConnHandle>>,
+    /// The next connection id: assigned sequentially; never reused.
     next_id: AtomicU64,
     reaper_tx: SyncSender<ReaperMsg>,
     events_tx: SyncSender<LaneEvent>,

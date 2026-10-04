@@ -312,6 +312,12 @@ pub(crate) const OUTBOUND_BUDGET_BYTES: usize = 4 * 1024 * 1024;
 /// magnitude as [`OUTBOUND_BUDGET_BYTES`].
 pub(crate) const EVENTS_CHANNEL_CAP: usize = OUTBOUND_BUDGET_BYTES / READ_BUF_LEN;
 
+/// Extra capacity on a server's bounded reaper inbox beyond its connection
+/// ceiling — a connection's own at-most-once teardown flag already caps live
+/// `Torn` messages at one per open connection, so the only other traffic
+/// this inbox ever carries is `Drop`'s own single `Shutdown` message.
+pub(super) const REAPER_INBOX_SLACK: usize = 1;
+
 /// How long a stalled delivery (lifecycle retry, or one `Bytes` attempt)
 /// sleeps between retries against a full `events` channel.
 pub(crate) const EVENTS_RETRY_INTERVAL: Duration = Duration::from_millis(20);
@@ -583,6 +589,28 @@ pub enum LaneEvent {
     /// and has stopped accepting new connections FOR GOOD — existing
     /// connections are unaffected.
     AcceptError(String),
+}
+
+/// An opaque, caller-assigned correlation tag for one `send` call, echoed
+/// back on [`LaneEvent::Sent`] when the OS reports that send's write has
+/// PHYSICALLY completed.
+pub type SendMarker = u64;
+
+/// The voyage id is validated as a canonical RFC 4122 UUID — lowercase,
+/// hyphenated, the exact form [`uuid::Uuid`]'s own `Display` produces —
+/// before it is ever interpolated into an endpoint name. Delegates to
+/// `pointer::canonical_voyage_id` (ADR 0041 U0 round-1 minor finding 9):
+/// one canonical-UUID check for this crate, not two that can drift, as
+/// this one already had from `drawer.voyage`'s own (stricter) validation.
+/// Anything that fails to parse at all (path-traversal shapes, wrong
+/// length, non-hex bytes) is rejected the same way.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub(super) fn validate_voyage_id(voyage_id: &str) -> std::result::Result<(), TransportError> {
+    if crate::supervisor::journal::pointer::canonical_voyage_id(voyage_id).is_some() {
+        Ok(())
+    } else {
+        Err(TransportError::InvalidVoyageId(voyage_id.to_string()))
+    }
 }
 
 /// L1-unix LU3a (ADR 0043 decision 19): what a step-6 supervisor needs

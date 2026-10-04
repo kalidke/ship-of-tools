@@ -108,7 +108,7 @@ pub fn validate(state_dir: &Path) -> PointerState {
 /// hyphenated form [`uuid::Uuid`]'s own `Display` produces — the ONE
 /// canonical-UUID check this crate uses everywhere a voyage id's shape
 /// must be pinned to exactly one spelling (this pointer's own content,
-/// and `pipe_win::validate_voyage_id`'s pipe-name guard, which delegates
+/// and `lane::transport::validate_voyage_id`'s endpoint-name guard, which delegates
 /// here — one implementation, not
 /// two that can drift). `Uuid::parse_str` alone accepts strictly more
 /// shapes (uppercase hex, the 32-hex-digit "simple" form, braced GUIDs,

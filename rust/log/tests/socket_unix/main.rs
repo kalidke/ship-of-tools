@@ -35,7 +35,8 @@
 
 #[cfg(target_os = "linux")]
 use sot_log::lane::socket_unix::connect_voyage_socket;
-use sot_log::lane::socket_unix::{voyage_socket_path, ConnId, SocketClient, SocketServer};
+use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::socket_unix::{voyage_socket_path, SocketClient, SocketServer};
 use sot_log::host::state_dir::current_uid;
 #[cfg(target_os = "linux")]
 use sot_log::lane::transport::CONNECT_BOUND;

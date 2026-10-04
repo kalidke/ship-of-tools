@@ -20,7 +20,8 @@
 use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use sot_log::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
 use sot_log::identity::exchange::VoyageMgmtExchange;
-use sot_log::lane::socket_unix::{connect_voyage_socket, ConnId, SocketServer};
+use sot_log::lane::attach_proto::ConnId;
+use sot_log::lane::socket_unix::{connect_voyage_socket, SocketServer};
 use sot_log::lane::transport::LaneEvent;
 use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::time::{Duration, Instant};
