@@ -16,8 +16,8 @@ lease, whether that computer's sessions end (ADR 0050).
 - The window's half, rust/frontend/src/lease.rs.
 
 ## Promises
-- A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept, and whose
-  token matches when one is expected (`lease::claim`, called by `Leases::grant`).
+- A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept
+  (`lease::claim`, called by `Leases::grant`).
 - Deadlines are wall-clock unix milliseconds, so a persisted handover deadline survives a restart (`startup_plan`
   reads `handover_until_ms` as written).
 - `held.json` is deleted when every field is empty or false and otherwise written through `crate::durable`
