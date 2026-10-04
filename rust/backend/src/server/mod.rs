@@ -40,10 +40,11 @@ use crate::Opts;
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinSet;
 
-mod conn;
+pub(super) mod conn;
 mod events;
+pub(super) mod hello;
 mod listen;
-mod reply;
+pub(super) mod reply;
 
 pub(crate) use conn::record_test_activation_marker;
 #[cfg(unix)]

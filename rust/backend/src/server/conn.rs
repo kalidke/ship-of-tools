@@ -6,7 +6,7 @@ use super::events::{
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
 use super::reply::{
-    canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx, OFFLOOP_CONCURRENCY,
+    canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, HandlerOutput, OutTx, OFFLOOP_CONCURRENCY,
 };
 use super::*;
 
@@ -1195,4 +1195,20 @@ where
             write_reply(&mut tx, out_frame, out_blob).await?;
         }
     }
+}
+
+/// `ping` (topology plan §F step 2): a bare liveness ack, no side effect
+/// beyond answering. Resetting this connection's read deadline is done in
+/// `server.rs`'s dispatch loop, ON EVERY frame it reads from an `fe`/
+/// `bridge` connection (not only `ping` ones) — this handler stays a pure
+/// echo so it needs no registry access, unlike `fe.presence`.
+pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::PING,
+            serde_json::to_value(sot_protocol::PingRes { ok: true })?,
+        ),
+        None,
+    )])
 }

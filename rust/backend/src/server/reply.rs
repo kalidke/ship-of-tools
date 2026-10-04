@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Output of an op handler. The first frame is the response to the request;
+/// any additional frames are emitted in order and represent things like ring
+/// replay on hello.
+pub type HandlerOutput = Vec<(Frame, Option<Vec<u8>>)>;
+
 // Half-open connection reaper tunables (ADR 0027). A peer that dies without a
 // FIN — a frontend killed -9, a collapsed SSH local-forward, a yanked network
 // — leaves the daemon-side socket ESTAB forever; without these two mechanisms
