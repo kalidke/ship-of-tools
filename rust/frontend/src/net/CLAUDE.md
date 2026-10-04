@@ -16,8 +16,9 @@ through the channel types below.
 - The reconnect memory, `session-<host>.json` (`state::state_path`, `load`, `save`).
 - The only writes of `sot_protocol::ssh_bridge::LinkGate`: up at any hello reply (`run_session`), down when the session
   ends (`run_protocol`).
-- The window's identity (`FrontendIdentity`) and the per-host maps on `State` are also fe-net's, but they still live in
-  the UI module; they move here later.
+- The window's identity (`identity::FrontendIdentity`, `identity::frontend_identity`) and the per-host helpers
+  (`hosts::resolve_default_host`, `hosts::lane_dial`) live here; the per-host table is still a set of `State` fields in
+  the UI module, which move here later.
 
 ## Promises
 - Events carry the dial `HostKey`; the daemon's declared host is display only (`IncomingEvt` tagging in `transport`).
@@ -39,7 +40,9 @@ through the channel types below.
 
 ## Files
 - `dial.rs`: the connection set from `--dial` and `--socket`.
-- `mod.rs`: declares the three parts.
+- `hosts.rs`: per-host connection helpers: the default and monitor host, a not-yet-spawned transport, the lane dial.
+- `identity.rs`: this frontend's one declared identity and its `fe@<host>` address.
+- `mod.rs`: declares the five parts.
 - `state.rs`: the persisted reconnect memory, one `session-<host>.json` per host.
 - `transport/`: the control transport, one task per host.
 
