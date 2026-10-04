@@ -3,6 +3,159 @@
 
 use super::*;
 
+/// One row of the `workspace.list` response. Mirrors
+/// `sot_protocol::WorkspaceListEntry` so the chrome can store it
+/// without a protocol dependency on every consumer.
+#[derive(Debug, Clone)]
+pub struct WorkspaceInfo {
+    pub workspace_id: String,
+    pub slug: String,
+    pub label: String,
+    pub project_root: String,
+    pub session_name: String,
+    pub kernel_running: bool,
+    pub is_default: bool,
+    /// Which agent this workspace auto-starts: "claude" | "codex" | "none".
+    /// A host's DEFAULT row with `agent == "none"` is the inert anchor (ADR
+    /// 0042 amendments 2026-09-04 / 2026-09-06), on every runtime —
+    /// `session_host_children` filters it out of the Sessions tree entirely
+    /// rather than rendering it as a session.
+    pub agent: String,
+    /// Contract (b): the FE launches claude (ccb) on first attach to a
+    /// workspace with `autostart_claude == true`. `agent_name` is the comm
+    /// handle the bootstrap joins as (informational on the FE side).
+    pub autostart_claude: bool,
+    pub agent_name: String,
+    /// The sot-comm handle the session inside this workspace actually
+    /// declared via `agent.join` — the **joined** handle, mirroring the
+    /// wire's `WorkspaceListEntry.agent_handle`. Distinct from
+    /// `agent_name` above, which is only what the workspace was CREATED
+    /// to expect: the two can differ, and only this one is what a sender
+    /// actually addresses. `WorkspaceInfo` doesn't derive
+    /// Serialize/Deserialize (it's constructed by hand from the wire
+    /// type at the one parse site below), so there's no `#[serde(default)]`
+    /// to mirror here — empty string = never joined, same as the wire
+    /// field's own empty-string-means-absent convention.
+    pub agent_handle: String,
+    /// Persisted spawn brief from the wire (mirrors the daemon's
+    /// `WorkspaceListEntry.task`). The FE no longer delivers briefs (maintainer
+    /// directive, 2026-06-16 — comm-spawn owns task delivery via a durable
+    /// post-spawn comm message), so this is retained for protocol parity but
+    /// intentionally unread on the FE side.
+    #[allow(dead_code)]
+    pub task: String,
+    /// State-nav (ADR 0023 seam): the agent's work state read from the
+    /// sot-comm registry by the daemon and copied onto the entry (the
+    /// FE can't read the registry — separate machine/HOME). One of
+    /// "working" | "idle" | "waiting" | "blocked" | "done"; "" when absent.
+    pub agent_state: String,
+    /// One-line glance of what the agent is doing / just did. "" when absent.
+    pub agent_summary: String,
+    /// ISO8601 (RFC3339) timestamp of the last state write — drives the
+    /// staleness aging of a "working" that's gone quiet. "" when absent.
+    pub agent_status_at: String,
+    /// Lifecycle of the workspace's persistent REPL child: "not_started" |
+    /// "starting" (spawned, precompiling — NOT dead) | "ready" | "dead";
+    /// "" from a daemon that predates the field. Mirrors the `lifecycle`
+    /// repl.frame evt for FEs that (re)connect mid-boot.
+    pub repl_state: String,
+    /// ADR 0042 slice L1a/L1b: `"tmux"` | `"capsule"` — which runtime
+    /// hosts this workspace's agent pane. `""` from a daemon that
+    /// predates L1a. ADR 0042 shrink round (rule A): no longer consulted
+    /// by the attach path at all — `attach_session_to_bl` always sends
+    /// `pty.open` and lets the daemon's own `attach_direct` reply decide
+    /// (the only kind this build's daemon sends), so an old daemon (or
+    /// one reporting `""`) changes nothing there either.
+    ///
+    /// Deserialized on every platform (the wire contract doesn't fork by
+    /// FE OS). Historically read by gpu.rs only from `#[cfg(windows)]`
+    /// call sites (L1b fix 5: capsule has nothing to attach to off
+    /// Windows) — 2026-09-04 amendment adds one platform-agnostic
+    /// reader, `session_host_children`'s inert-anchor filter, which must
+    /// tell a Windows capsule default row (`agent == "none"` there means
+    /// "never seeded an agent") apart from a shared backend's own TMUX
+    /// default row (`agent == "none"` there is normal — the SoT LLM
+    /// lives in the drawer). `""` from a daemon that predates L1a reads
+    /// as neither and is simply never filtered.
+    pub runtime: String,
+    /// The supervisor-lane phase (ADR 0041 Lifecycle, snake_case),
+    /// `"stopped"` (its state directory was never created — no supervisor
+    /// has ever run for it), or `"unreachable"` (the lane could not be
+    /// queried at all) — `Some` only for `runtime == "capsule"` rows.
+    /// Folded into the Sessions row's glance line (`capsule_phase_tag`).
+    pub phase: Option<String>,
+    /// Per-session accounts (owner-simplified brief, 2026-09-15): the
+    /// login directory this row's agent runs under. `""` = the agent's
+    /// default directory — the common case, and the only value from a
+    /// daemon that predates the field.
+    pub account: String,
+}
+
+impl WorkspaceInfo {
+    /// The daemon's default row in its inert-anchor state: home-rooted, no
+    /// agent, not a session -- on EVERY host (owner ruling 2026-09-06: a row
+    /// that looks like a session but cannot be closed, and invites an LLM
+    /// pane it must not have, confuses; the SoT LLM lives in the drawer, and
+    /// Ship of Tools development runs in its own workspace row like any
+    /// other project). Shared by the Sessions tree (`session_host_children`)
+    /// and the bottom strip's cache build (`fresh_workspace_caches`) so the
+    /// two never drift on what "inert" means.
+    pub(crate) fn is_inert_anchor(&self) -> bool {
+        self.is_default && self.agent == "none"
+    }
+}
+
+/// One row of the `accounts.list` response (owner-simplified brief,
+/// 2026-09-15). Mirrors `sot_protocol::AccountEntry`. `"default"` sorts
+/// first.
+#[derive(Debug, Clone)]
+pub struct AccountInfo {
+    pub name: String,
+    pub kinds: Vec<String>,
+    pub logged_in: std::collections::HashMap<String, bool>,
+}
+
+impl AccountInfo {
+    /// True if none of this account's declared kinds have a login here —
+    /// the new-session prompt dims the row and appends "(not logged in)",
+    /// still selectable: the daemon refuses with the exact fix command.
+    pub fn any_logged_in(&self) -> bool {
+        self.kinds.iter().any(|k| self.logged_in.get(k).copied().unwrap_or(false))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceCreatedInfo {
+    #[allow(dead_code)] // exposed by the protocol; frontend currently
+    // keys off slug for active_workspace_id, but the
+    // canonical id is what disk/IO consumers want
+    pub workspace_id: String,
+    pub slug: String,
+    pub label: String,
+    pub project_root: String,
+    pub session_name: String,
+}
+
+/// `workspace.destroy` reply payload. `tmux_killed` and `toml_removed`
+/// reflect what the daemon actually did — the chrome surfaces both in
+/// the status line so the user can spot a half-success.
+#[derive(Debug, Clone)]
+pub struct WorkspaceDestroyedInfo {
+    #[allow(dead_code)] // mirrors WorkspaceCreatedInfo; future routing
+    // may need the canonical id even though slug is
+    // what handlers key off today.
+    pub workspace_id: String,
+    pub slug: String,
+    pub label: String,
+    pub tmux_killed: bool,
+    pub toml_removed: bool,
+    /// `Some(detail)` when the backend kept the row instead of removing
+    /// it (the default workspace's capsule run was ended in place — see
+    /// `sot_protocol::ops::WorkspaceDestroyRes::kept`); `None` for an
+    /// ordinary destroy where the row is actually gone.
+    pub kept: Option<String>,
+}
+
 pub(crate) async fn send_workspace_activate<W: AsyncWrite + Unpin>(
     mut tx: W,
     id: u64,

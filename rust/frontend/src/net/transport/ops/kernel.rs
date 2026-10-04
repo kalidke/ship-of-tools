@@ -3,6 +3,105 @@
 
 use super::*;
 
+/// One row from `modules.list`. The kernel reply is a JSON object per
+/// module; we extract just the fields the chrome consumes. `path` is
+/// `None` for built-ins (Base, Core, Main) which have no on-disk file.
+#[derive(Debug, Clone)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub path: Option<String>,
+}
+
+/// One row from `file.parse`'s `definitions[]`. Mirrors the kernel's
+/// per-entity shape (name + kind + line + optional parent + per-entity
+/// ast_hash). The chrome uses `name`/`kind` for rendering the module's
+/// col-2 children and `ast_hash` for per-entity drift detection.
+#[derive(Debug, Clone)]
+pub struct DefinitionInfo {
+    pub name: String,
+    pub kind: String,
+    #[allow(dead_code)] // future: jump-to-line UX
+    pub line: i64,
+    #[allow(dead_code)] // future: nested-entity grouping
+    pub parent: Option<String>,
+    #[allow(dead_code)] // future: per-entity drift badge
+    pub ast_hash: Option<String>,
+}
+
+/// One backend-derived semantic span for a fenced code block. Returned
+/// in source order by `kernel.request markdown.tokenize` per the
+/// Codex-recommended tree-sitter-base + LSP-overlay architecture. Byte
+/// offsets are 0-indexed, end-exclusive (matches Rust slice semantics).
+/// `kind` is a tree-sitter standard capture name so the chrome can
+/// route through the same `preview::highlight::color_for_scope` palette
+/// the tree-sitter base layer uses.
+#[derive(Debug, Clone)]
+pub struct MarkdownToken {
+    pub start: usize,
+    pub end: usize,
+    pub kind: String,
+}
+
+/// One module node from `kernel.request project.scan`. Modules nest
+/// arbitrarily via `submodules`. Types carry their own constructors;
+/// non-constructor functions live in `functions`. Each entity records
+/// its file + line so the chrome's source-preview path knows where to
+/// fire `preview.get`.
+#[derive(Debug, Clone, Default)]
+pub struct ScanModule {
+    pub name: String,
+    pub file: String,
+    pub line: i64,
+    pub ast_hash: String,
+    pub types: Vec<ScanType>,
+    pub functions: Vec<ScanEntity>,
+    pub submodules: Vec<ScanModule>,
+}
+
+/// One type from `project.scan` — struct, mutable struct, abstract,
+/// or primitive. Carries its constructors (functions whose name
+/// matches the type's, merged inner + outer). Fields are not yet in
+/// the v1 wire shape — follow-up once the unified mode is in use.
+#[derive(Debug, Clone, Default)]
+pub struct ScanType {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub line: i64,
+    /// Carried for future per-entity drift detection. Same shape as
+    /// the `file.parse` ast_hash field on `DefinitionInfo`.
+    #[allow(dead_code)]
+    pub ast_hash: String,
+    pub constructors: Vec<ScanEntity>,
+}
+
+/// Generic non-module / non-type entity (functions, macros). Same
+/// shape used for top-level functions and for constructors nested
+/// under types.
+#[derive(Debug, Clone, Default)]
+pub struct ScanEntity {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub line: i64,
+    #[allow(dead_code)] // future: per-entity drift badge
+    pub ast_hash: String,
+}
+
+/// One method returned by `kernel.request function.methods`. Mirrors the
+/// kernel reply (`b5faf94`). `sig` is the standard `string(m)` repr; the
+/// chrome trims the trailing ` @ <module> <file>:<line>` for display.
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+    pub sig: String,
+    #[allow(dead_code)] // future: jump-to-line + per-method drift
+    pub file: String,
+    #[allow(dead_code)] // future: jump-to-line
+    pub line: i64,
+    #[allow(dead_code)] // future: per-method drift badge
+    pub ast_hash: Option<String>,
+}
+
 pub(crate) async fn send_modules_list<W: AsyncWrite + Unpin>(
     mut tx: W,
     pending: &mut HashMap<u64, PendingKind>,

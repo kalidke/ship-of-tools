@@ -3,6 +3,23 @@
 
 use super::*;
 
+/// Success payload for `repl.run_file`. Carries the canonical fields the
+/// chrome surfaces in the status line plus the frame list for any future
+/// out-of-band routing (e.g. mirroring the last image frame to the
+/// preview pane — TODO row 161).
+#[derive(Debug, Clone)]
+pub struct ReplRunFileInfo {
+    pub eval_id: u64,
+    pub path: String,
+    pub fresh: bool,
+    pub elapsed_ms: u64,
+    pub project_dir: Option<String>,
+    #[allow(dead_code)] // useful when frontend wants to distinguish
+    // discovered vs fallback for status copy
+    pub project_source: Option<String>,
+    pub frames: Vec<ReplFrame>,
+}
+
 pub(crate) async fn send_repl_eval<W: AsyncWrite + Unpin>(
     mut tx: W,
     pending: &mut HashMap<u64, PendingKind>,

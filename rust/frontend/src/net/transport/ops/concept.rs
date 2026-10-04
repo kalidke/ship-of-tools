@@ -3,6 +3,30 @@
 
 use super::*;
 
+/// Outcome of a `concept.write` request.
+#[derive(Debug, Clone)]
+pub enum ConceptWriteResult {
+    /// Write committed; `path` is what the backend reported and
+    /// `written` is the byte count. The chrome can clear the dirty
+    /// flag and dismiss any save-in-flight indicator.
+    // Fields are logged by the placeholder consumer; the full edit-mode
+    // UI in the next commit will read them for status-line confirmation.
+    #[allow(dead_code)]
+    Ok { path: String, written: u64 },
+    /// Optimistic-concurrency refusal: the on-disk `synced_against`
+    /// no longer matches the `expected_ast_hash` we sent (someone else,
+    /// or this client at an earlier session, wrote a newer version of
+    /// the annotation). The chrome should surface a banner offering
+    /// reload-discarding-edits vs keep-editing — never auto-clobber.
+    Stale,
+    /// Any other backend error — `code` is the protocol code (e.g.
+    /// "io_error", "bad_request"), `message` the human-readable detail.
+    /// Less common; chrome can show in a status line and let the user
+    /// retry / discard.
+    #[allow(dead_code)] // same — consumed in the next commit
+    Error { code: String, message: String },
+}
+
 pub(crate) async fn send_concept_read<W: AsyncWrite + Unpin>(
     mut tx: W,
     pending: &mut HashMap<u64, PendingKind>,

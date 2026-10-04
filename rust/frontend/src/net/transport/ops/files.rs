@@ -3,6 +3,58 @@
 
 use super::*;
 
+/// Outcome of a `file.write` request, mirroring the backend's three response
+/// shapes (success / optimistic-concurrency conflict / error).
+#[derive(Debug, Clone)]
+pub enum FileWriteResult {
+    /// Write committed; `version` is the new content hash to keep editing against.
+    #[allow(dead_code)]
+    Ok { path: String, version: String },
+    /// The on-disk file changed since the matching `FileRead`; carries the
+    /// current content+version so the editor can reconcile, never auto-clobber.
+    #[allow(dead_code)]
+    Conflict {
+        current_content: String,
+        current_version: String,
+    },
+    /// Any other backend error — `code` is the protocol code, `message` detail.
+    #[allow(dead_code)]
+    Error { code: String, message: String },
+}
+
+/// Outcome of a `file.delete` request, mirroring the backend's two response
+/// shapes (success / error). Directories are refused server-side with
+/// `code: "is_directory"`, surfaced here as an `Error`.
+#[derive(Debug, Clone)]
+pub enum FileDeleteResult {
+    /// File trashed; `path` is the absolute path that was removed and
+    /// `trash_path` is the in-workspace recovery location when the
+    /// `.sot-trash/` fallback was used (`None` for system trash).
+    #[allow(dead_code)]
+    Ok {
+        path: String,
+        trashed: bool,
+        trash_path: Option<String>,
+    },
+    /// Any backend error — `code` is the protocol code (`bad_node_id`,
+    /// `not_found`, `is_directory`, `file_delete_failed`, …), `message` detail.
+    #[allow(dead_code)]
+    Error { code: String, message: String },
+}
+
+/// Outcome of a `dir.create` request, mirroring the backend's two response
+/// shapes (success / error, incl. `code: "already_exists"`).
+#[derive(Debug, Clone)]
+pub enum DirCreateResult {
+    /// Directory created; `path` is the absolute path on disk.
+    #[allow(dead_code)]
+    Ok { path: String },
+    /// Any backend error — `code` is the protocol code (`bad_node_id`,
+    /// `already_exists`, `dir_create_failed`, …), `message` detail.
+    #[allow(dead_code)]
+    Error { code: String, message: String },
+}
+
 pub(crate) async fn send_file_read<W: AsyncWrite + Unpin>(
     mut tx: W,
     pending: &mut HashMap<u64, PendingKind>,

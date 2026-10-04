@@ -3,6 +3,16 @@
 
 use super::*;
 
+/// One row of the `directory.list` response, mirrored here so the
+/// chrome doesn't have to depend on `sot_protocol::DirectoryEntry`
+/// directly.
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub has_children: bool,
+}
+
 pub(crate) async fn send_tree_children<W: AsyncWrite + Unpin>(
     mut tx: W,
     pending: &mut HashMap<u64, PendingKind>,
