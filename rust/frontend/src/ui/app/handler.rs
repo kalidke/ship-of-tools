@@ -213,31 +213,7 @@ impl ApplicationHandler for App {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        // Self-relaunch (ADR 0017): the watcher thread set this when the
-        // sentinel appeared — 75 for a plain relaunch, 76 for a converge
-        // (relaunch-sot.ps1 -Converge; the supervisor re-runs its
-        // self-update prelude and freshness pass before respawning). Persist
-        // geometry, then exit with that code. Abrupt exit is fine: state is
-        // saved on events, and the OS reclaims the window/GPU surface.
-        let relaunch_code = state
-            .relaunch_flag
-            .swap(0, std::sync::atomic::Ordering::Relaxed);
-        if relaunch_code != 0 {
-            tracing::info!(
-                exit_code = relaunch_code,
-                "relaunch requested; exiting for supervisor respawn"
-            );
-            state.persist_resume_state();
-            // The exit hands the OS foreground to the about-to-spawn
-            // replacement (`finish_exit`, ADR 0017). The daemon keeps the
-            // sessions for a minute (Handover) while the new window opens.
-            if matches!(
-                exit_intent(ExitReason::Relaunch(relaunch_code as i32), state.leaving.as_ref().map(|l| l.intent)),
-                ExitStep::Leave { .. }
-            ) {
-                state.leave(event_loop, LeaveIntent::Handover, relaunch_code as i32);
-            }
-        }
+        relaunch_if_requested(state, event_loop);
         // FE control commands (ADR 0019): drain whatever the watcher enqueued
         // and dispatch on the main thread — same code paths as the keybinds.
         // Cheap no-op when the queue is empty.
@@ -482,56 +458,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Frame-rate cap: if the previous frame finished less than
-                // FRAME_BUDGET ago, defer. `about_to_wait` reschedules at
-                // the next frame boundary, so this draw isn't dropped —
-                // just collapsed with whatever else arrives in the
-                // intervening few ms. Capture mode bypasses the cap so
-                // frame_counter ticks up to CAPTURE_FRAME without delay.
-                let throttled = state.capture_path.is_none()
-                    && state
-                        .last_frame_at
-                        .map(|t| t.elapsed() < FRAME_BUDGET)
-                        .unwrap_or(false);
-                if throttled {
-                    state.dirty = true;
-                } else {
-                    state.dirty = false;
-                    if let Err(e) = state.redraw() {
-                        tracing::error!(error = %e, "redraw failed");
-                    }
-                    // ADR 0019: refresh fe-state.json if the observable state
-                    // changed this frame (cheap signature no-op otherwise).
-                    state.maybe_write_fe_state();
-                    // Portable focus-on-launch: now that the window is shown
-                    // and has painted once, attempt to take focus + raise.
-                    // Window managers that refuse focus-stealing (Windows
-                    // foreground-lock, macOS) get the OS-sanctioned fallback
-                    // of a user-attention request. One-shot. ADR 0017.
-                    if state.focus_on_first_frame {
-                        state.focus_on_first_frame = false;
-                        state.window.focus_window();
-                        // Windows blocks SetForegroundWindow for a freshly
-                        // spawned process (foreground lock), so a relaunched
-                        // FE lands behind. force_os_foreground escalates
-                        // (attach-thread → topmost-toggle → minimize/restore)
-                        // and reports whether we actually took the foreground.
-                        // Only fall back to a taskbar flash if it didn't.
-                        // ADR 0017.
-                        #[cfg(windows)]
-                        let got_foreground = force_os_foreground(&state.window);
-                        #[cfg(not(windows))]
-                        let got_foreground = false;
-                        if !got_foreground {
-                            state.window.request_user_attention(Some(
-                                winit::window::UserAttentionType::Critical,
-                            ));
-                        }
-                    }
-                    if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
-                        event_loop.exit();
-                    }
-                }
+                redraw_requested(state, event_loop);
             }
             WindowEvent::KeyboardInput {
                 event,
@@ -2883,5 +2810,86 @@ impl ApplicationHandler for App {
         state.dirty = false;
         state.window.request_redraw();
         event_loop.set_control_flow(ControlFlow::Wait);
+    }
+}
+
+fn relaunch_if_requested(state: &mut State, event_loop: &ActiveEventLoop) {
+    // Self-relaunch (ADR 0017): the watcher thread set this when the
+    // sentinel appeared — 75 for a plain relaunch, 76 for a converge
+    // (relaunch-sot.ps1 -Converge; the supervisor re-runs its
+    // self-update prelude and freshness pass before respawning). Persist
+    // geometry, then exit with that code. Abrupt exit is fine: state is
+    // saved on events, and the OS reclaims the window/GPU surface.
+    let relaunch_code = state
+        .relaunch_flag
+        .swap(0, std::sync::atomic::Ordering::Relaxed);
+    if relaunch_code != 0 {
+        tracing::info!(
+            exit_code = relaunch_code,
+            "relaunch requested; exiting for supervisor respawn"
+        );
+        state.persist_resume_state();
+        // The exit hands the OS foreground to the about-to-spawn
+        // replacement (`finish_exit`, ADR 0017). The daemon keeps the
+        // sessions for a minute (Handover) while the new window opens.
+        if matches!(
+            exit_intent(ExitReason::Relaunch(relaunch_code as i32), state.leaving.as_ref().map(|l| l.intent)),
+            ExitStep::Leave { .. }
+        ) {
+            state.leave(event_loop, LeaveIntent::Handover, relaunch_code as i32);
+        }
+    }
+}
+
+fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
+    // Frame-rate cap: if the previous frame finished less than
+    // FRAME_BUDGET ago, defer. `about_to_wait` reschedules at
+    // the next frame boundary, so this draw isn't dropped —
+    // just collapsed with whatever else arrives in the
+    // intervening few ms. Capture mode bypasses the cap so
+    // frame_counter ticks up to CAPTURE_FRAME without delay.
+    let throttled = state.capture_path.is_none()
+        && state
+            .last_frame_at
+            .map(|t| t.elapsed() < FRAME_BUDGET)
+            .unwrap_or(false);
+    if throttled {
+        state.dirty = true;
+    } else {
+        state.dirty = false;
+        if let Err(e) = state.redraw() {
+            tracing::error!(error = %e, "redraw failed");
+        }
+        // ADR 0019: refresh fe-state.json if the observable state
+        // changed this frame (cheap signature no-op otherwise).
+        state.maybe_write_fe_state();
+        // Portable focus-on-launch: now that the window is shown
+        // and has painted once, attempt to take focus + raise.
+        // Window managers that refuse focus-stealing (Windows
+        // foreground-lock, macOS) get the OS-sanctioned fallback
+        // of a user-attention request. One-shot. ADR 0017.
+        if state.focus_on_first_frame {
+            state.focus_on_first_frame = false;
+            state.window.focus_window();
+            // Windows blocks SetForegroundWindow for a freshly
+            // spawned process (foreground lock), so a relaunched
+            // FE lands behind. force_os_foreground escalates
+            // (attach-thread → topmost-toggle → minimize/restore)
+            // and reports whether we actually took the foreground.
+            // Only fall back to a taskbar flash if it didn't.
+            // ADR 0017.
+            #[cfg(windows)]
+            let got_foreground = force_os_foreground(&state.window);
+            #[cfg(not(windows))]
+            let got_foreground = false;
+            if !got_foreground {
+                state.window.request_user_attention(Some(
+                    winit::window::UserAttentionType::Critical,
+                ));
+            }
+        }
+        if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
+            event_loop.exit();
+        }
     }
 }
