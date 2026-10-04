@@ -753,8 +753,10 @@ fn ping_interval_duration() -> std::time::Duration {
 }
 
 mod hello;
-use hello::{read_hello_reply, HelloRefused, HELLO_TIMEOUT};
-pub(crate) use hello::protocol_mismatch_message;
+use hello::{accept_hello, read_hello, send_hello, HelloRefused};
+
+mod preamble;
+use preamble::{preamble_preview, preamble_tree_root};
 
 /// What `run_protocol` needs of the window: a redraw request. A trait so a
 /// test can run the protocol without a real window.
@@ -873,213 +875,21 @@ where
 
     // hello
     let hello_id = take_id(&mut next_id);
-    let hello = HelloReq {
-        client_id: session.memory.client_id.clone(),
-        session_id: session.memory.session_id.clone(),
-        last_seen_revision: session.memory.last_seen_revision,
-        token: token.map(|s| s.to_string()),
-        // ADR 0030 §2: advertise our wire-contract protocol + product version
-        // so the backend can gate on protocol equality and name both sides in
-        // a mismatch error.
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        // This FE's own declared identity (ADR 0046 decision 1): `name`
-        // is its address, `fe@<host>` — the value a `--fe <host>` target
-        // matches against, so the daemon can name "the frontend a person
-        // is at" (`fe.presence`) without a second derivation.
-        host: Some(crate::gpu::frontend_identity().host.clone()),
-        role: crate::gpu::FrontendIdentity::ROLE.to_string(),
-        instance: Some(crate::gpu::frontend_identity().instance.clone()),
-        name: Some(crate::gpu::frontend_identity().name.clone()),
-    };
-    codec::write_frame(
-        &mut tx,
-        &Frame::req(hello_id, op::HELLO, serde_json::to_value(&hello)?),
-        None,
-    )
-    .await?;
-
-    let (frame, _) = read_hello_reply(&mut rx, HELLO_TIMEOUT).await?;
-    if frame.id != hello_id {
-        anyhow::bail!("hello reply id mismatch: got {}, want {hello_id}", frame.id);
-    }
-    // Any reply, a refusal included, proves the link.
-    if let Some(gate) = gate {
-        gate.set_up(true);
-    }
-    if let Some(r) = frame.rev {
-        session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);
-    }
-    // Inspect the frame for an error envelope first — the backend rejects
-    // bad auth (and any other hello-time refusal) with `{error, code}`,
-    // which does not deserialize as HelloRes. Surfacing it as a clear
-    // auth-failed message beats a `serde_json` "hello res" error.
-    if let Some(err_msg) = frame.payload.get("error").and_then(|v| v.as_str()) {
-        let code = frame
-            .payload
-            .get("code")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if code == "token_mismatch" {
-            tracing::error!(code, "hello rejected: authentication failed ({err_msg})");
-            return Err(HelloRefused(format!("authentication failed: {err_msg}")).into());
-        }
-        if code == "protocol_mismatch" {
-            // ADR 0030 §2: a version skew, not a transient drop. Build a
-            // readable multi-line body from the backend's structured fields
-            // (falling back to its already-formatted `error` string) and add
-            // the dev fix hint, then push it as a ProtocolMismatch evt so the
-            // chrome shows a persistent blocking "update needed" screen. We
-            // still bail afterward so the reconnect loop keeps the socket warm
-            // — a re-hello re-affirms the same overlay, idempotently, until one
-            // side is updated.
-            let message = protocol_mismatch_message(&frame.payload, err_msg);
-            tracing::error!(code, "hello rejected: {err_msg}");
-            emit(IncomingEvt::ProtocolMismatch { message });
-            window.request_redraw();
-            return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
-        }
-        tracing::error!(code, "hello rejected: {err_msg}");
-        return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
-    }
-    let hello_res: HelloRes = serde_json::from_value(frame.payload).context("hello res")?;
-    // ADR 0030 §2: a successful hello from a pre-versioning backend comes back
-    // with protocol == 0. We still run (it spoke a compatible wire), but warn
-    // loudly so the skew is visible in logs — the backend should be updated.
-    if hello_res.protocol == 0 {
-        tracing::warn!(
-            backend_version = %hello_res.app_version,
-            "connected to a pre-versioning backend (protocol 0) — update the backend (ADR 0030)"
-        );
-    }
-    if session.memory.session_id.as_deref() != Some(hello_res.session_id.as_str()) {
-        // First run, or backend restarted with a new session — record the
-        // assigned id so the next reconnect is on the live session.
-        session.memory.session_id = Some(hello_res.session_id.clone());
-    }
-    crate::state::save(&host, &session.memory).ok();
-    // Hello round-trip succeeded — reset backoff to the floor so any
-    // *future* disconnect in this session restarts the exponential
-    // climb from 200ms rather than picking up wherever the previous
-    // unrelated reconnect cycle left it (e.g. wifi flicker followed
-    // by months of stable session).
-    *backoff_ms = 200;
-    // ADR 0046 decision 1: the daemon's declared host travels on this
-    // event for display only (see `State::record_declared_host` and
-    // `crate::gpu::host_label`) — the DIAL label (`host`) stays this
-    // connection's tag for its whole lifetime.
-    emit(IncomingEvt::Connected {
-        session_id: hello_res.session_id.clone(),
-        revision: hello_res.revision,
-        host: hello_res.host.clone(),
-        project_root: hello_res.project_root.clone(),
-        proxy: hello_res.proxy,
-        resolved,
-        backend_version: hello_res.app_version.clone(),
-    });
-    window.request_redraw();
-    // Manager review (round 2, finding 14): the declaration, not only the
-    // dial label — this is the exact instant the declared host becomes
-    // known, so it belongs in this line's own fields, not only the tree/
-    // status-line projection (`host_label`) that reads it back later.
-    tracing::info!(
-        dial = %host,
-        declared = ?hello_res.host,
-        session_id = %hello_res.session_id,
-        revision = hello_res.revision,
-        snapshot_pending = hello_res.snapshot_pending,
-        "connected"
-    );
+    send_hello(&mut tx, hello_id, &session, token).await?;
+    let frame = read_hello(&mut rx, hello_id, gate, &mut session, &emit, window).await?;
+    accept_hello(frame, &host, &mut session, backoff_ms, resolved, &emit, window)?;
 
     // tree.root — initial fetch on connect uses the default workspace
     // (no workspace_id). Once the chrome resumes a saved Sessions-mode
     // active_workspace_id it will re-fire this with the id set.
     let tree_id = take_id(&mut next_id);
-    codec::write_frame(
-        &mut tx,
-        &Frame::req(
-            tree_id,
-            op::TREE_ROOT,
-            serde_json::to_value(TreeRootReq {
-                mode: "files".into(),
-                workspace_id: None,
-            })?,
-        ),
-        None,
-    )
-    .await?;
-    let (frame, _) = codec::read_frame(&mut rx).await?;
-    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
-    // Hold the root node id so preview.get can target it without hardcoding
-    // the backend's id-format conventions in the frontend. Today files mode
-    // uses `files:` for the root; that may change.
-    let mut root_node_id = String::new();
-    if frame.id == tree_id && frame.payload.get("error").is_some() {
-        // An unreadable default directory is no reason to end the session:
-        // that would cycle the transport and flap the link gate.
-        tracing::warn!(payload = %frame.payload, "tree.root preamble refused; staying connected");
-    } else if frame.id == tree_id {
-        let res: TreeRootRes = serde_json::from_value(frame.payload).context("tree.root res")?;
-        root_node_id = res.node.id.clone();
-        emit(IncomingEvt::TreeRoot {
-            // Connect-time fetch is always the default workspace (see the
-            // tree.root request above). If the chrome resumed a non-default
-            // active workspace it re-fires tree.root with the id set, and
-            // this default reply is dropped by the workspace check rather
-            // than briefly flashing the wrong project's tree.
-            workspace_id: None,
-            root: res.node,
-            children: res.children,
-        });
-        window.request_redraw();
-    }
+    let root_node_id = preamble_tree_root(&mut tx, &mut rx, tree_id, &host, &mut session, &emit, window).await?;
 
     // preview.get against whatever the backend just reported as the root.
     // For the spike that's enough to prove blob round-trip; real previews
     // follow user navigation.
     let prev_id = take_id(&mut next_id);
-    codec::write_frame(
-        &mut tx,
-        &Frame::req(
-            prev_id,
-            op::PREVIEW_GET,
-            serde_json::to_value(PreviewGetReq {
-                node_id: root_node_id,
-                workspace_id: None,
-                page: None,
-                fit_w: None,
-                fit_h: None,
-            })?,
-        ),
-        None,
-    )
-    .await?;
-    let (frame, blob) = codec::read_frame(&mut rx).await?;
-    note_revision(frame.rev, &mut session.memory, &host, &mut session.gate);
-    if frame.id == prev_id && frame.payload.get("error").is_some() {
-        // Same rule as the tree.root preamble: with no readable root there
-        // is nothing to preview, and the session stays up.
-        tracing::warn!(payload = %frame.payload, "preview.get preamble refused; staying connected");
-    } else if frame.id == prev_id {
-        let res: PreviewGetRes =
-            serde_json::from_value(frame.payload).context("preview.get res")?;
-        let bytes = blob.unwrap_or_default();
-        emit(IncomingEvt::Preview {
-            node_id: None,
-            workspace_id: None,
-            mime: res.mime,
-            bytes,
-            extras: res.extras,
-            // No `PendingKind` to source a generation from — `0` is a
-            // sentinel below the chrome's counter (which starts at `0` and
-            // only increments on the first cursor-driven `preview.get`), so
-            // this preamble reply naturally loses to any real request the
-            // chrome has since fired, exactly like the workspace/host guard
-            // above already intends for a resumed non-default workspace.
-            generation: 0,
-        });
-        window.request_redraw();
-    }
+    preamble_preview(&mut tx, &mut rx, prev_id, root_node_id, &host, &mut session, &emit, window).await?;
 
     // Steady-state loop. `tokio::select!` lets us simultaneously read frames
     // arriving from the backend (replays, future server-pushed evts, replies
