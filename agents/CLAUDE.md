@@ -38,8 +38,8 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - Every code file directly in this folder installs flat into `~/.sot-comm/bin`, because `comm/bin-folders.txt` lists
   `agents`; `claude/` and `codex/` are never in that list, so their files install only through `src/sources.jl`.
 - A skill body is a template: Claude Code substitutes `$<digit>` and `$ARGUMENTS` into the text before the model reads
-  it, so a skill carries no `$` followed by a digit. Not yet true of the sot-setup skill, whose installer script line
-  `REPO="$(cd "$(dirname "$0")/.." ...` carries a `$0` (both copies); the unit that moves the skills must fix it.
+  it, so a skill carries no `$` followed by a digit; the sot-setup skill's launcher script finds its folder by
+  `BASH_SOURCE`, not `$0`. No test enforces the rule.
 
 ## Connections
 - Out, by op, over the daemon's wire through the shell client: `workspace.create` (`spawn/comm-spawn.sh`, and

@@ -369,7 +369,7 @@ socket. Write `$REPO/scripts/launch-sot-local.sh`:
 ```sh
 #!/usr/bin/env bash
 set -euo pipefail
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOCK="${SOT_SOCKET:-/tmp/sot-$USER.sock}"
 LOG="$REPO/dev/output/sotd-local.$(uname -n).log"; mkdir -p "$REPO/dev/output"
 rm -f "$SOCK"
