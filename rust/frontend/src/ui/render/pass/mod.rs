@@ -2,4 +2,5 @@
 
 use super::*;
 
+mod panes;
 mod preview;
