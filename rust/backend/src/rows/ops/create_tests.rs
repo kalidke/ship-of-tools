@@ -183,3 +183,112 @@ mod label_in_use_tests {
         assert!(same_slug_row_in_use("other", &r).is_none());
     }
 }
+
+mod refusal_tests {
+    use super::handle_workspace_create;
+    use crate::session::Session;
+    use crate::workspaces::{Workspace, Workspaces};
+    use serde_json::{json, Value};
+    use std::path::{Path, PathBuf};
+    use tokio::sync::broadcast;
+
+    /// Unique on-disk dir per case (pid + a counter); never cleaned up.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "sot-createref-{}-{}-{}",
+            std::process::id(),
+            tag,
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&d).expect("create scratch dir");
+        d
+    }
+
+    fn seeded(label: &str, root: &Path, runtime: &str) -> Workspace {
+        let mut w = Workspace::from_label(label, root.to_path_buf(), false, "none".into(), String::new(), String::new());
+        w.runtime = runtime.to_string();
+        w
+    }
+
+    /// Calls the handler once and returns the single reply frame's payload; the registry's ids must not change.
+    async fn refused(workspaces: &Workspaces, payload: Value) -> Value {
+        let ids = |w: &Workspaces| {
+            let mut v: Vec<String> = w.list().iter().map(|r| r.workspace_id.clone()).collect();
+            v.sort();
+            v
+        };
+        let before = ids(workspaces);
+        let (ws_events, _rx) = broadcast::channel(16);
+        let out = handle_workspace_create(1, payload, &Session::new(), workspaces, &ws_events)
+            .await
+            .expect("a refusal is a reply, not an error");
+        assert_eq!(out.len(), 1);
+        let (frame, blob) = &out[0];
+        assert!(blob.is_none());
+        assert_eq!(frame.op, sot_protocol::op::WORKSPACE_CREATE);
+        assert_eq!(ids(workspaces), before);
+        frame.payload.clone()
+    }
+
+    #[tokio::test]
+    async fn workspace_create_refusals_are_unchanged() {
+        // 1. missing root
+        let gone = std::env::temp_dir().join(format!("sot-createref-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&gone);
+        let got = refused(&Workspaces::new(), json!({"label": "c1", "project_root": gone.to_string_lossy()})).await;
+        assert_eq!(got, json!({
+            "error": format!("project_root does not exist: {}", gone.display()),
+            "code": "no_such_path",
+        }));
+
+        // 2. a file as root
+        let file = scratch_dir("file").join("plain.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let got = refused(&Workspaces::new(), json!({"label": "c2", "project_root": file.to_string_lossy()})).await;
+        assert_eq!(got, json!({
+            "error": format!("project_root is not a directory: {}", file.display()),
+            "code": "not_a_directory",
+        }));
+
+        // 3. a root already held by another row
+        let root = scratch_dir("dup");
+        let reg = Workspaces::new();
+        let other = reg.insert(seeded("other", &root, "capsule"));
+        let got = refused(&reg, json!({"label": "c3", "project_root": root.to_string_lossy()})).await;
+        assert_eq!(got, json!({
+            "error": "project_root is already registered as workspace 'other' (slug 'other')",
+            "code": "duplicate_root",
+            "existing": {"workspace_id": other.workspace_id, "slug": "other", "label": "other"},
+        }));
+
+        // 4. the same label again while its row is in use
+        let reg = Workspaces::new();
+        let busy = reg.insert(seeded("busy", &scratch_dir("busy-seed"), "tmux"));
+        let got = refused(&reg, json!({"label": "busy", "project_root": scratch_dir("busy-new").to_string_lossy()})).await;
+        assert_eq!(got, json!({
+            "error": "workspace 'busy' (slug 'busy') is in use (tmux row, phase 'stopped'): attach to it, or destroy it before creating it again",
+            "code": "label_in_use",
+            "existing": {"workspace_id": busy.workspace_id, "slug": "busy", "label": "busy", "phase": "stopped"},
+        }));
+
+        // 5. 6. 7. a bad agent name, agent kind and runtime
+        let root = scratch_dir("agent").to_string_lossy().into_owned();
+        let got = refused(&Workspaces::new(), json!({"label": "c5", "project_root": root, "agent_name": "a b"})).await;
+        assert_eq!(got, json!({
+            "error": "invalid agent_name \"a b\" (want 1-64 chars of [A-Za-z0-9._-])",
+            "code": "bad_agent_name",
+        }));
+        let got = refused(&Workspaces::new(), json!({"label": "c6", "project_root": root, "agent": "robot"})).await;
+        assert_eq!(got, json!({
+            "error": "unknown agent kind 'robot' (want claude | codex | none)",
+            "code": "bad_agent",
+        }));
+        let got = refused(&Workspaces::new(), json!({"label": "c7", "project_root": root, "runtime": "tmux"})).await;
+        assert_eq!(got, json!({
+            "error": "unknown runtime \"tmux\" (want \"capsule\" or \"\")",
+            "code": "bad_runtime",
+        }));
+    }
+}
