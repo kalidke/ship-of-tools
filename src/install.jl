@@ -57,11 +57,7 @@ function install_comm(; clis = [:claude, :codex])
     # end, so one refused file (field report
     # 2026-09-11) no longer leaves the skills and hooks un-updated.
     problems = String[]
-    files = Tuple{String,String}[]
-    _stage!(problems, "comm scripts") do
-        append!(files, _comm_bin_files())
-    end
-    _publish_comm_bin!(problems, bin, files)
+    files = _publish_comm_bin!(problems, bin)
     prev_manifest = _read_comm_manifest(bin)
     @info "Installed comm scripts" dir = bin count = length(readdir(bin))
 

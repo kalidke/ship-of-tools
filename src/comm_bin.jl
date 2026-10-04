@@ -64,18 +64,20 @@ end
 const COMM_SOURCE_ARG = r"(?:^|[;&|({`]|\b(?:if|then|do|else|elif|while|until)\s|!\s)\s*(?:source|\.)\s+((?:\"(?:[^\"\\$]|\\.|\$(?!\()|\$\((?:[^()\"']|\"[^\"]*\"|'[^']*')*\))*\"|'[^']*'|[^\s;&|()<>\"'`])+)"
 
 # The file names the `source` and `.` commands of `line` read: the last `/` part of each path argument,
-# quotes removed. A path built from a variable gives the variable, which names no file.
+# quotes removed. A path built from a variable gives the variable, which names no file. A line whose
+# first non-blank character is `#` is a comment and holds no command.
 _comm_sourced(line::AbstractString) =
+    occursin(r"^\s*#", line) ? String[] :
     [replace(String(last(split(m[1], '/'))), r"[\"']" => "") for m in eachmatch(COMM_SOURCE_ARG, line)]
 
-# The lines of `path`, or none when it cannot be read: such a file is judged when its folder is published,
-# which fails on it and keeps its old copy.
+# The lines of `path`, or `nothing` when it cannot be read: `_comm_bin_files` then lists only that file
+# for its folder, so the folder fails on it when it is published and keeps its old copies.
 function _comm_lines(path::AbstractString)
     try
         return readlines(path)
     catch e
         e isa SystemError || e isa Base.IOError || rethrow()
-        return String[]
+        return nothing
     end
 end
 
@@ -84,9 +86,11 @@ end
 # the files that source it (`_comm_bin_text`), so it is not one of them. Fails, and then `install_comm`
 # publishes no comm script, on two folders shipping one name and on a `source` or `.` command whose path
 # (`_comm_sourced`) names a file of its own folder in another line, a part from another folder, or any
-# shipped file from a part: each would install a script that sources a file the bin lacks. It reads
-# lines, not bash: a path built from a variable, a part run by another command (`bash <part>`) and a
-# source line inside a here-document are not seen.
+# shipped file from a part. A folder holding a file that cannot be read lists only the first such file.
+# It reads lines, not bash: it sees a `source` or `.` only at the start of a command (after `; & | ( {`,
+# a backquote or a keyword), and not in a case arm, after an assignment or a command word (`X=1 source`,
+# `builtin source`), split over lines, or as process substitution; a path built from a variable and a
+# part run by another command (`bash <part>`) are not seen; here-document lines are read as code.
 function _comm_bin_files(folders = _comm_bin_folders())
     files = Tuple{String,String}[]
     owner = Dict{String,String}()
@@ -98,19 +102,24 @@ function _comm_bin_files(folders = _comm_bin_folders())
         push!(files, (dir, name))
     end
     lines = Dict(p => _comm_lines(joinpath(p...)) for p in files)
+    scanned(p) = something(lines[p], String[])
     parts = Set{String}()
-    for (dir, name) in files, line in lines[(dir, name)]
+    for (dir, name) in files, line in scanned((dir, name))
         p = _comm_part_of(dir, line)
         p === nothing || push!(parts, p)
     end
-    for (dir, name) in files, line in lines[(dir, name)], n in _comm_sourced(line)
+    for (dir, name) in files, line in scanned((dir, name)), n in _comm_sourced(line)
         d = get(owner, n, nothing)
         d === nothing && continue
         !(name in parts) && (d == dir ? _comm_part_of(dir, line) == n : !(n in parts)) ||
             error("comm bin file $(joinpath(dir, name)) sources $n in a form the installer " *
                   "cannot install: $(strip(line))")
     end
-    return [(d, n) for (d, n) in files if !(n in parts)]
+    unreadable = Dict{String,String}()
+    for (d, n) in files
+        lines[(d, n)] === nothing && !haskey(unreadable, d) && (unreadable[d] = n)
+    end
+    return [(d, n) for (d, n) in files if haskey(unreadable, d) ? n == unreadable[d] : !(n in parts)]
 end
 
 # The text `name` installs as: its own bytes, with each line that sources a part (`_comm_part_of`)
@@ -128,12 +137,17 @@ function _comm_bin_text(folder::AbstractString, name::AbstractString)
     return String(take!(io))
 end
 
-# Publish `files` into `bin` folder by folder, in their order, each part inside the files that source it
-# (`_comm_bin_text`), each folder one stage of `problems`. The first folder is the library's (it is listed
-# first): when it records a problem, no other folder is published, so no new script runs against the
-# previous library. `rename` is `install_file`'s.
-function _publish_comm_bin!(problems::Vector{String}, bin::AbstractString, files;
+# List the comm scripts (`_comm_bin_files`, one stage of `problems`) and publish them into `bin` folder
+# by folder, in their order, each part inside the files that source it (`_comm_bin_text`), each folder
+# one stage of `problems`. The first folder is the library's (it is listed first): when it records a
+# problem, no other folder is published, so no new script runs against the previous library. Returns
+# the listed files, none when the listing failed. `rename` is `install_file`'s.
+function _publish_comm_bin!(problems::Vector{String}, bin::AbstractString;
                             rename = Base.Filesystem.rename)
+    files = Tuple{String,String}[]
+    _stage!(problems, "comm scripts") do
+        append!(files, _comm_bin_files())
+    end
     folders = unique(first.(files))
     for folder in folders
         before = length(problems)
@@ -144,11 +158,11 @@ function _publish_comm_bin!(problems::Vector{String}, bin::AbstractString, files
         end
         if folder == first(folders) && length(problems) > before
             push!(problems, "comm scripts after $(relpath(folder, REPO_ROOT)) (not published: " *
-                            "the library did not install, and a new script needs it)")
+                            "the library's folder recorded a problem)")
             break
         end
     end
-    return nothing
+    return files
 end
 
 # Every name this release installs directly into `<bin>`: the files

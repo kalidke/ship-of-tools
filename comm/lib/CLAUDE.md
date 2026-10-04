@@ -28,8 +28,9 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - `comm-lib.sh` only sources its parts, and a part calls nothing while it is sourced: outside function bodies there are
   assignments only, so the order of the parts changes no behaviour. A new part is a new file here and a new line
   `source "$(dirname "${BASH_SOURCE[0]}")/<part>" || return 1` there, the form the installer inlines (a `source` or `.`
-  command anywhere else whose path names a part stops the install; a path built from a variable and a part run by
-  another command are not seen). A part sources nothing, and uses no `BASH_SOURCE`, no `LINENO` and no top-level
+  command it sees anywhere else whose path names a part stops the install; it reads lines, not bash, so a command in a
+  case arm, after an assignment or a command word, split over lines or in process substitution, a path built from a
+  variable and a part run by another command are not seen). A part sources nothing, and uses no `BASH_SOURCE`, no `LINENO` and no top-level
   `return`, so inlined it defines the same functions and globals.
 - One registry write (`registry_replace` under `with_lock`) and one read (`sot_registry_read`: 0 present, 1 absent, 2
   unreadable).

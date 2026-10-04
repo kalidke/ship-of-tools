@@ -28,10 +28,13 @@ scripts/CLAUDE.md.
   name shipped by two folders fails the install.
 - A part (a file another file of its folder sources by `COMM_PART_LINE`) installs only inside the files that source it
   (`_comm_bin_text`), so a script's library is one file and an install replaces it with one rename. A `source` or `.`
-  command whose path names a file of its own folder other than by a part line, a part from another folder, or any
-  shipped file from a part, stops the comm scripts' install before any is published (`_comm_bin_files`); a path built
-  from a variable and a part run by another command are not seen. Folders publish in list order, comm/lib first, and
-  after comm/lib records a problem no other folder publishes (`_publish_comm_bin!`, pinned in test/install_tests.jl).
+  command it sees whose path names a file of its own folder other than by a part line, a part from another folder, or
+  any shipped file from a part, stops the comm scripts' install before any is published (`_comm_bin_files`). It reads
+  lines, not bash: a command in a case arm, after an assignment or a command word, split over lines or in process
+  substitution, a path built from a variable and a part run by another command are not seen, and here-document lines
+  are read as code. A file it cannot read is the only file its folder lists. `_publish_comm_bin!` lists, then publishes
+  folders in list order, comm/lib first, and after comm/lib records a problem no other folder publishes (pinned in
+  test/install_tests.jl).
 - No file named CLAUDE.md is installed from any source folder (`NEVER_INSTALLED`: `_comm_bin_files`, `_install_skills`,
   `_install_launchers`).
 - A move under comm/ edits only comm/bin-folders.txt and src/sources.jl, never src/ code or test/.

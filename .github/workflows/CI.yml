@@ -1,8 +1,8 @@
 name: CI
 on:
   # Pushes to main (and runs by hand) only -- not tags, not pull requests
-  # (owner ruling 2026-09-08: CI is the tag gate, not the per-PR workflow; see
-  # rust.yml). Path-filtered to the Julia packages, the docs and comm/ (the
+  # (owner ruling 2026-09-08: not the per-PR workflow; see rust.yml).
+  # Path-filtered to the Julia packages, the docs and comm/ (the
   # installer reads every comm folder it installs), so a Rust-only change never
   # spends five Julia jobs.
   push:

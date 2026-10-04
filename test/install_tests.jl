@@ -180,7 +180,7 @@ end
                     push!(bad, "after $(basename(dst)): comm-lib.sh does not source")
             end
             problems = String[]
-            ShipTools._publish_comm_bin!(problems, bin, files; rename = rename)
+            ShipTools._publish_comm_bin!(problems, bin; rename = rename)
             @test isempty(problems)
         end
         @test first(published) == "comm-lib.sh"
@@ -274,6 +274,8 @@ end
         @test refused(joinpath(lib, "lib-a.sh"), "source \"\$SCRIPT_DIR/app.sh\"\n")
         # Only the command's path is read: a comment naming a part is no refusal.
         @test !refused(joinpath(app, "app.sh"), "source \"\$SCRIPT_DIR/lib.sh\"   # a() is in lib-a.sh\n")
+        # A comment line holds no command, whatever its prose looks like.
+        @test !refused(joinpath(app, "app.sh"), "source \"\$SCRIPT_DIR/lib.sh\"\n    # reads `x`. lib-a.sh has it; (. lib-a.sh)\n")
         # Two files may source one part: each holds its text.
         write(joinpath(lib, "lib2.sh"), loader)
         @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (lib, "lib2.sh"), (app, "app.sh")]
@@ -281,26 +283,43 @@ end
     end
 end
 
-@testset "a file the scan cannot read is its folder's problem; after the library's, nothing else publishes" begin
+@testset "a file the scan cannot read is the only file its folder lists" begin
     mktempdir() do root
         lib = mkpath(joinpath(root, "lib"))
         app = mkpath(joinpath(root, "app"))
-        bin = mkpath(joinpath(root, "bin"))
-        write(joinpath(lib, "lib.sh"), "x=1\n")
+        loader = "x=1\nsource \"\$(dirname \"\${BASH_SOURCE[0]}\")/lib-a.sh\" || return 1\n"
+        write(joinpath(lib, "lib.sh"), loader)
+        write(joinpath(lib, "lib-a.sh"), "a() { :; }\n")
         write(joinpath(app, "app.sh"), "y=1\n")
-        files = [(lib, "lib.sh"), (app, "app.sh")]
-        # The scan lists a file it cannot read (where mode bits are enforced), so only that file's folder fails.
+        write(joinpath(app, "app2.sh"), "z=1\n")
+        # Where mode bits are enforced: the folder fails on that file when it is published, and none of its
+        # other files, so no part of an unreadable loader, is published.
+        chmod(joinpath(lib, "lib.sh"), 0o000)
+        unreadable = try read(joinpath(lib, "lib.sh")); false catch; true end
+        unreadable && @test ShipTools._comm_bin_files([lib, app]) ==
+            [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
+        chmod(joinpath(lib, "lib.sh"), 0o644)
         chmod(joinpath(app, "app.sh"), 0o000)
-        unreadable = try read(joinpath(app, "app.sh")); false catch; true end
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) == files
+        unreadable && @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh")]
         chmod(joinpath(app, "app.sh"), 0o644)
+        @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
+    end
+end
+
+@testset "after the library's folder records a problem, no other folder publishes" begin
+    mktempdir() do root
+        bin = mkpath(joinpath(root, "bin"))
+        names = last.(ShipTools._comm_bin_files())
         refuse(name) = (src, dst) -> basename(dst) == name ? error("refused") : Base.Filesystem.rename(src, dst)
         problems = String[]
-        ShipTools._publish_comm_bin!(problems, bin, files; rename = refuse("lib.sh"))
-        @test length(problems) == 2 && occursin("not published", problems[2])
-        @test !isfile(joinpath(bin, "app.sh"))
+        files = ShipTools._publish_comm_bin!(problems, bin; rename = refuse("comm-lib.sh"))
+        @test length(problems) == 2 && occursin("(not published: the library's folder recorded a problem)", problems[2])
+        @test sort(last.(files)) == sort(names)
+        @test isempty(readdir(bin))
+        # A later folder's problem is its own: the others publish.
         problems = String[]
-        ShipTools._publish_comm_bin!(problems, bin, files; rename = refuse("app.sh"))
-        @test length(problems) == 1 && isfile(joinpath(bin, "lib.sh"))
+        ShipTools._publish_comm_bin!(problems, bin; rename = refuse("comm-send.sh"))
+        @test length(problems) == 1
+        @test sort(readdir(bin)) == sort(filter(!=("comm-send.sh"), names))
     end
 end
