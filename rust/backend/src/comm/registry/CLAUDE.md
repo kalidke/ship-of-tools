@@ -6,6 +6,7 @@ design of record: docs/adr/0049-messaging-on-one-page.md.
 ## Files
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
+- `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
 - `mod.rs`: declares the files
 - `poll.rs`: the registry poll's change detection
 
@@ -26,5 +27,6 @@ count the agents between a comm script and its row's capsule.
 - At its bound a waiter fails closed and names the holder (`Blocked::fail_text`).
 - One daemon thread at a time is inside the protocol (`TURN`). `Held` removes the file when dropped, a panic included.
 - An ID counts as this process only through `Me::is_me`. comm/core/tests/test-registry-lock.sh t15 fails on any other
-  comparison to `.id` in lock.rs.
+  comparison to `.id` in lock.rs or lock_tests.rs.
+- The Rust and shell records are byte-equal (`the_shell_and_rust_records_are_byte_equal_and_judged_alike`, Linux).
 - File names map `:` to `.`.

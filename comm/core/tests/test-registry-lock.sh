@@ -433,13 +433,15 @@ t15() {
     [ "$out" = not ] || { echo "the same host name and pid, with no proof: $out"; return 1; }
     # A call site put back to a bare comparison would pass the two above.
     local rs="$SCRIPT_DIR/../../../rust/backend/src/comm/registry/lock.rs" hits
-    [ -f "$rs" ] || { echo "no $rs"; return 1; }
+    local rs_tests="$SCRIPT_DIR/../../../rust/backend/src/comm/registry/lock_tests.rs"
+    local f
+    for f in "$rs" "$rs_tests"; do [ -f "$f" ] || { echo "no $f"; return 1; }; done
     hits="$( { sed '/^_sot_lock_is_me() {/,/^}/s/.*//' "$SCRIPTS_DIR/comm-lib.sh" \
             | grep -nE ' (=|==|!=) +"?\$\{?_SOT_LOCK_ID([^A-Za-z0-9_]|$)|\$\{?_SOT_LOCK_ID\}?"? +(=|==|!=) |case +"?\$\{?_SOT_LOCK_ID|^ *"?\$\{?_SOT_LOCK_ID\}?"? *\)' \
             | sed 's/^/comm-lib.sh:/'
-        sed '/fn is_me(/,/^    }/s/.*//' "$rs" \
+        for f in "$rs" "$rs_tests"; do sed '/fn is_me(/,/^    }/s/.*//' "$f" \
             | grep -nE '(==|!=) *[&*]*[A-Za-z0-9_:().]*\.id([^A-Za-z0-9_]|$)|\.id *(==|!=)|contains\(&[A-Za-z0-9_:().]*\.id\)' \
-            | sed 's/^/comm_registry_lock.rs:/'; } )"
+            | sed "s|^|${f##*/}:|"; done; } )"
     [ -z "$hits" ] || { echo "the own ID compared but through _sot_lock_is_me / Me::is_me: $hits"; return 1; }
 }
 check "15: an ID with no proof fields is never judged mine, and nothing compares to it but the one test" t15
