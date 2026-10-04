@@ -13,7 +13,7 @@ mod cli;
 mod download;
 mod help;
 mod keybindings;
-mod layout;
+use ui::chrome::layout;
 mod lease;
 use ui::drawer::monitor as monitor_view;
 mod net;

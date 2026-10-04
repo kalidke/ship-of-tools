@@ -32,6 +32,10 @@ until `State` is split.
 
 ## Files
 - `drawer/`: the bottom drawer: the Monitor's view, the Terminal's pty and vt100 helpers.
+- `chrome/`: the pane chrome (focus, status line, nav spill, colours, wireframe geometry).
+
+## Files
+- `chrome/`: the pane chrome: focus and panes, the status line, nav spill, colours and the wireframe.
 - `mod.rs`: `State`, `App` and the rest of the window's code (over 800 lines under standing exemption E11).
 - `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`); the pages subsystem's window half.
