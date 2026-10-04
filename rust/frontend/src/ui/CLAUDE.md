@@ -20,9 +20,11 @@ goes to) and page_proxy.rs (the pages subsystem's window half) read `State`'s pr
 until `State` is split.
 
 ## Folders
+- `agent_pane/`: the agent pane's screen choice, attach client with warm pool, and input.
 - `control/`: agent control of the window: the fe.command route, its dispatch, the nav envelope and the file channel.
 
 ## Files
+- `agent_pane/`: the agent pane (its own page).
 - `control/`: the agent control surface, with its own page.
 - `mod.rs`: `State`, `App` and the rest of the window's code (over 800 lines under standing exemption E11).
 - `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
