@@ -1,5 +1,4 @@
 //! The hello handshake: the protocol gate, the hello reply with its revision replay and the roster entry.
-//! constant_time_eq: the compare the token gate uses.
 
 use super::*;
 use crate::handlers::HandlerOutput;
@@ -189,25 +188,6 @@ pub(super) fn admit_hello(
             }
         }
     }
-}
-
-/// Constant-time byte comparison for secrets (the app-level auth token here;
-/// `site_serve` duplicates this for its pool-port cookie secret). No `subtle`
-/// crate in the dependency tree — this is the standard XOR-accumulate idiom,
-/// not worth pulling one in for a couple of call sites. Differing lengths
-/// short-circuit (that timing leak reveals far less than per-byte content
-/// would), but for equal lengths every byte position is compared regardless
-/// of an earlier mismatch, so a match/no-match decision doesn't leak WHICH
-/// byte differed via timing.
-pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 #[cfg(test)]

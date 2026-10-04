@@ -12,7 +12,7 @@ pub(crate) use crate::server::reply::HandlerOutput;
 
 pub(crate) use crate::files::preview::{crop::handle_image_crop, handle_preview_get, scale::handle_preview_set_scale};
 
-pub(crate) use crate::server::hello::{handle_hello, constant_time_eq};
+pub(crate) use crate::server::hello::handle_hello;
 
 pub(crate) use crate::clients::{handle_fe_command_send, handle_fe_presence, handle_fe_sessions, handle_version_query};
 

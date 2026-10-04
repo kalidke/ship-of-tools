@@ -267,10 +267,7 @@ fn random_token() -> Option<String> {
     Some(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Constant-time byte comparison — mirrors `handlers::constant_time_eq`
-/// (duplicated rather than shared: this file already mirrors several small
-/// helpers from its siblings, e.g. `random_token`, rather than reaching
-/// across modules for them). Used for the pool-port secret/cookie check
+/// Constant-time byte comparison. Used for the pool-port secret/cookie check
 /// below, so a timing side-channel can't help a local user guess it.
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
