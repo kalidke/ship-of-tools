@@ -229,6 +229,70 @@ fn read_exec_res(res_payload: Option<serde_json::Value>)
     (res_code_error, error_out, project_dir, project_source)
 }
 
+/// Splits the collected frames into text, values, images and the strongest error kind; the first error frame fills `error_out`.
+fn split_exec_frames(frames: Vec<serde_json::Value>, error_out: &mut Option<ReplErrorOut>)
+    -> (String, String, Vec<ReplValueOut>, Vec<(String, String)>, Option<&'static str>) {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut values: Vec<ReplValueOut> = Vec::new();
+    let mut image_frames: Vec<(String, String)> = Vec::new();
+    let mut frame_error_kind: Option<&str> = None;
+    for f in &frames {
+        match f.get("kind").and_then(|v| v.as_str()) {
+            Some("stdout") => {
+                if let Some(t) = f.get("text").and_then(|v| v.as_str()) {
+                    stdout.push_str(t);
+                }
+            }
+            Some("stderr") => {
+                if let Some(t) = f.get("text").and_then(|v| v.as_str()) {
+                    stderr.push_str(t);
+                }
+            }
+            Some("value") => {
+                let mime = f.get("mime").and_then(|v| v.as_str()).unwrap_or("text/plain").to_string();
+                let mut text = f.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                exec_truncate_field(&mut text);
+                values.push(ReplValueOut { mime, text });
+            }
+            Some("image") => {
+                let mime = f.get("mime").and_then(|v| v.as_str()).unwrap_or("image/png").to_string();
+                if let Some(b64) = f.get("data_base64").and_then(|v| v.as_str()) {
+                    image_frames.push((mime, b64.to_string()));
+                }
+            }
+            Some("error") => {
+                let message = f.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let k = if message.contains("REPL busy") {
+                    "busy"
+                } else if message.contains("InterruptException") {
+                    "interrupted"
+                } else {
+                    "error"
+                };
+                // Strongest-wins: busy > interrupted > error.
+                frame_error_kind = Some(match (frame_error_kind, k) {
+                    (Some("busy"), _) | (_, "busy") => "busy",
+                    (Some("interrupted"), _) | (_, "interrupted") => "interrupted",
+                    _ => "error",
+                });
+                if error_out.is_none() {
+                    let stack: Vec<StackFrame> = f
+                        .get("stacktrace")
+                        .cloned()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .unwrap_or_default();
+                    let mut msg = message.clone();
+                    exec_truncate_field(&mut msg);
+                    *error_out = Some(ReplErrorOut { message: msg, stacktrace: stack });
+                }
+            }
+            _ => {}
+        }
+    }
+    (stdout, stderr, values, image_frames, frame_error_kind)
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -318,64 +382,7 @@ pub async fn handle_repl_execute(
     let (res_code_error, mut error_out, project_dir, project_source) = read_exec_res(res_payload);
 
     // Split collected frames.
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    let mut values: Vec<ReplValueOut> = Vec::new();
-    let mut image_frames: Vec<(String, String)> = Vec::new();
-    let mut frame_error_kind: Option<&str> = None;
-    for f in &frames {
-        match f.get("kind").and_then(|v| v.as_str()) {
-            Some("stdout") => {
-                if let Some(t) = f.get("text").and_then(|v| v.as_str()) {
-                    stdout.push_str(t);
-                }
-            }
-            Some("stderr") => {
-                if let Some(t) = f.get("text").and_then(|v| v.as_str()) {
-                    stderr.push_str(t);
-                }
-            }
-            Some("value") => {
-                let mime = f.get("mime").and_then(|v| v.as_str()).unwrap_or("text/plain").to_string();
-                let mut text = f.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                exec_truncate_field(&mut text);
-                values.push(ReplValueOut { mime, text });
-            }
-            Some("image") => {
-                let mime = f.get("mime").and_then(|v| v.as_str()).unwrap_or("image/png").to_string();
-                if let Some(b64) = f.get("data_base64").and_then(|v| v.as_str()) {
-                    image_frames.push((mime, b64.to_string()));
-                }
-            }
-            Some("error") => {
-                let message = f.get("message").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let k = if message.contains("REPL busy") {
-                    "busy"
-                } else if message.contains("InterruptException") {
-                    "interrupted"
-                } else {
-                    "error"
-                };
-                // Strongest-wins: busy > interrupted > error.
-                frame_error_kind = Some(match (frame_error_kind, k) {
-                    (Some("busy"), _) | (_, "busy") => "busy",
-                    (Some("interrupted"), _) | (_, "interrupted") => "interrupted",
-                    _ => "error",
-                });
-                if error_out.is_none() {
-                    let stack: Vec<StackFrame> = f
-                        .get("stacktrace")
-                        .cloned()
-                        .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or_default();
-                    let mut msg = message.clone();
-                    exec_truncate_field(&mut msg);
-                    error_out = Some(ReplErrorOut { message: msg, stacktrace: stack });
-                }
-            }
-            _ => {}
-        }
-    }
+    let (stdout, stderr, values, image_frames, frame_error_kind) = split_exec_frames(frames, &mut error_out);
 
     // Final outcome precedence: timeout / repl_died (from the await) win, then a
     // shim res error code, then frame classification (busy > interrupted >
