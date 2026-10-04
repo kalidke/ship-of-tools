@@ -165,7 +165,7 @@ impl State {
     pub(in crate::ui) fn dispatch_pending_math(&mut self) {
         let blocks = self.preview_md.media_blocks.clone();
         for block in blocks {
-            let crate::preview::markdown::MediaBlock::Math { latex, display } = block else {
+            let crate::ui::preview::markdown::MediaBlock::Math { latex, display } = block else {
                 continue;
             };
             let key = (latex.clone(), display);
@@ -193,7 +193,7 @@ impl State {
     /// fresh. No-op when buffers are already in sync — typical steady
     /// state across redraws.
     pub(in crate::ui) fn ensure_table_buffers(&mut self) {
-        use crate::preview::markdown::MediaBlock;
+        use crate::ui::preview::markdown::MediaBlock;
         // Snapshot the (rendered, font_px, line_h_px) of every Table in
         // current source order. Snapshot avoids the &mut self / &self
         // borrow conflict when we walk media_blocks then build buffers.
@@ -307,8 +307,8 @@ impl State {
         preview_scroll_px: f32,
     ) -> Vec<(usize, ScreenRect)> {
         // The text pass shifts glyph origins down by this; media must match.
-        let top = md_rect.y + crate::text::EXTRA_TOP_PAD_PX;
-        use crate::preview::markdown::MediaBlock;
+        let top = md_rect.y + crate::ui::render::text::EXTRA_TOP_PAD_PX;
+        use crate::ui::preview::markdown::MediaBlock;
         let mut out = Vec::new();
         if self.preview_md.media_blocks.is_empty() {
             return out;

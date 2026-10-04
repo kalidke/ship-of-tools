@@ -5,7 +5,7 @@ use super::*;
 impl State {
     pub(in crate::ui) fn draw_session_strip(
         &mut self,
-        lines: &mut Vec<crate::text::Line>,
+        lines: &mut Vec<crate::ui::render::text::Line>,
         border_rects_by_color: &mut HashMap<(u8, u8, u8), Vec<ScreenRect>>,
     ) -> Result<Vec<ScreenRect>> {
         // Bottom session strip (floating overlay): all sessions laid out
@@ -154,7 +154,7 @@ impl State {
         baseline_y: f32,
         pendings: &[bool],
         divider_offsets: &[f32],
-    ) -> Vec<crate::text::Line> {
+    ) -> Vec<crate::ui::render::text::Line> {
         // Per-name work-state tone, parallel to `labels` (built from
         // `workspace_slugs` in the same order). `now` is fetched per frame
         // so the wilt re-evaluates on the existing 1 Hz idle redraw.
@@ -202,7 +202,7 @@ impl State {
         baseline_y: f32,
         ship_y: f32,
         strip_logo_rects: &mut Vec<ScreenRect>,
-    ) -> (Vec<ScreenRect>, Vec<crate::text::Line>) {
+    ) -> (Vec<ScreenRect>, Vec<crate::ui::render::text::Line>) {
         // ONE list of marks: every rect a ship draws — its wheel, its box
         // name, the waterline segments, the bow rake, the stern — culled
         // once, there (`ship_marks`, `strip_visible`), so what the loop
@@ -227,7 +227,7 @@ impl State {
         // `ship_vertical` — the one place the band's locked geometry lives.
         let vert = ship_vertical(baseline_y, ship_y, self.cell_h, logo_h);
         let mut strip_hull_rects: Vec<ScreenRect> = Vec::new();
-        let mut tag_lines: Vec<crate::text::Line> = Vec::new();
+        let mut tag_lines: Vec<crate::ui::render::text::Line> = Vec::new();
         for m in &marks {
             match &m.kind {
                 StripMarkKind::Wheel => {
@@ -248,7 +248,7 @@ impl State {
                     // one more session. Never lifted, never bold, no tone,
                     // flash or badge sigil — a box name is chrome, and a
                     // host is not an agent.
-                    tag_lines.push(crate::text::Line {
+                    tag_lines.push(crate::ui::render::text::Line {
                         text: name.clone(),
                         x: m.left,
                         y: vert.name_y,

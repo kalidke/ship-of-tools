@@ -213,7 +213,7 @@ fn help_supports_control_question_mark_and_remapping() {
 #[test]
 fn control_command_shift_and_text_case_are_distinct() {
     let b = KeyBindings::defaults();
-    let c = crate::help::Context {
+    let c = crate::ui::input::help::Context {
         file: Some("fit.jl".into()),
         ..Default::default()
     };
@@ -240,8 +240,8 @@ fn control_command_shift_and_text_case_are_distinct() {
         ),
         Some(Action::RunCurrent)
     );
-    let image = crate::help::Context {
-        pane: crate::help::Pane::Preview,
+    let image = crate::ui::input::help::Context {
+        pane: crate::ui::input::help::Pane::Preview,
         image: true,
         ..Default::default()
     };
@@ -297,7 +297,7 @@ fn remapped_file_actions_and_conflicts_are_honest() {
     // Windows/Linux, Cmd+m on macOS) instead of only on the ones where
     // Primary still happens to mean Ctrl.
     b.merge_text("files.run_fresh = \"F8\"\npane.maximize = \"Primary+m\"");
-    let c = crate::help::Context {
+    let c = crate::ui::input::help::Context {
         file: Some("fit.jl".into()),
         ..Default::default()
     };

@@ -1,5 +1,5 @@
 //! Contextual help is a view of the dispatch catalog, never a second shortcut list.
-use crate::keybindings::{Action, ActionSpec, KeyBindings, Scope, ACTIONS};
+use crate::ui::input::keybindings::{Action, ActionSpec, KeyBindings, Scope, ACTIONS};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},

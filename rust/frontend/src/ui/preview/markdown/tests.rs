@@ -25,7 +25,7 @@ fn make_preview_with_figures(source: &str, figures: FigureMetricsMap) -> Markdow
     let mut fs = FontSystem::new();
     let math: MathMetricsMap = HashMap::new();
     let tokens = HashMap::new();
-    let highlight = crate::preview::highlight::HighlightService::new()
+    let highlight = crate::ui::preview::markdown::highlight::HighlightService::new()
         .expect("highlight service init");
     MarkdownPreview::new(&mut fs, source, 800.0, 600.0, 1.0, &math, &figures, &highlight, &tokens)
 }
@@ -402,7 +402,7 @@ fn walk_output_for_every_arm_matches_the_golden() {
     let mut figures = FigureMetricsMap::new();
     figures.insert("figs/cached.png".to_string(), FigureMetrics { width_px: 120.0, height_px: 80.0 });
     figures.insert("figs/failed.png".to_string(), FigureMetrics { width_px: 0.0, height_px: 0.0 });
-    let highlight = crate::preview::highlight::HighlightService::new().expect("highlight service init");
+    let highlight = crate::ui::preview::markdown::highlight::HighlightService::new().expect("highlight service init");
     // The first julia fence gets a cached overlay: its key is the one a
     // walk with an empty cache asks for first.
     let first = MarkdownPreview::new(&mut FontSystem::new(), EVERY_ARM, 800.0, 600.0, 1.5, &math, &figures, &highlight, &HashMap::new());

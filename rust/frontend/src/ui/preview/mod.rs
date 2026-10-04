@@ -15,7 +15,4 @@ mod layout;
 mod open;
 mod replies;
 pub(in crate::ui) use fetch::reply_is_current;
-pub(crate) use crate::ui::render::quad;
 
-pub(crate) use image::{png, svg};
-pub(crate) use markdown::highlight;

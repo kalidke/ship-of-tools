@@ -343,7 +343,7 @@ impl State {
                     .settings
                     .resolve_preset(self.monitor_aspect)
                     .columns
-                    .contains(&crate::settings::Slot::Llm);
+                    .contains(&crate::ui::persist::settings::Slot::Llm);
                 if has_llm {
                     self.wide_preview = false;
                     self.set_focus(PaneFocus::Llm);

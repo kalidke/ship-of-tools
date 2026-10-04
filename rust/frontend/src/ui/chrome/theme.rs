@@ -128,7 +128,7 @@ impl AgentTone {
     /// the bottom session strip (which draws raw `text::Line` colours, not
     /// ratatui styles) matches the Sessions-mode nav rows exactly.
     pub(in crate::ui) fn rgb(self) -> Option<(u8, u8, u8)> {
-        crate::chrome::ratatui_color_to_rgb(Some(self.color()))
+        crate::ui::render::cells::ratatui_color_to_rgb(Some(self.color()))
     }
 }
 

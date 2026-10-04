@@ -23,7 +23,7 @@ pub(in crate::ui) struct FigureCacheEntry {
 pub(in crate::ui) fn decode_figure_bytes(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    pipeline: &crate::preview::quad::QuadPipeline,
+    pipeline: &crate::ui::render::quad::QuadPipeline,
     mime: &str,
     bytes: &[u8],
 ) -> anyhow::Result<FigureCacheEntry> {
@@ -36,7 +36,7 @@ pub(in crate::ui) fn decode_figure_bytes(
         // an arbitrary target.
         let w: u32 = 800;
         let h: u32 = 600;
-        let quad = crate::preview::svg::quad_from_svg_bytes(device, queue, pipeline, bytes, w, h)?;
+        let quad = crate::ui::preview::image::svg::quad_from_svg_bytes(device, queue, pipeline, bytes, w, h)?;
         Ok(FigureCacheEntry {
             quad,
             natural_w_px: w,
@@ -44,7 +44,7 @@ pub(in crate::ui) fn decode_figure_bytes(
         })
     } else if mime.starts_with("image/") {
         let (quad, w, h) =
-            crate::preview::png::quad_and_dims_from_bytes(device, queue, pipeline, bytes)?;
+            crate::ui::preview::image::png::quad_and_dims_from_bytes(device, queue, pipeline, bytes)?;
         Ok(FigureCacheEntry {
             quad,
             natural_w_px: w,
@@ -196,7 +196,7 @@ impl State {
         let md_node_id = self.current_md_node_id.clone();
         let workspace_id = self.current_md_workspace_id.clone();
         for block in blocks {
-            let crate::preview::markdown::MediaBlock::Figure { url, .. } = block else {
+            let crate::ui::preview::markdown::MediaBlock::Figure { url, .. } = block else {
                 continue;
             };
             if figure_already_handled(

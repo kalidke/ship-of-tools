@@ -344,7 +344,7 @@ impl State {
             // row reservation in either dimension; uniform-scale
             // them to fit on the paint side.
             let (quad, paint_w, paint_h): (&Quad, f32, f32) = match block {
-                crate::preview::markdown::MediaBlock::Math { latex, display } => {
+                crate::ui::preview::markdown::MediaBlock::Math { latex, display } => {
                     let key = (latex.clone(), *display);
                     let Some(entry) = self.math_cache.get(&key) else {
                         continue;
@@ -357,7 +357,7 @@ impl State {
                     let ph_f = (ph as f32).min(rect.h);
                     (q, pw_f, ph_f)
                 }
-                crate::preview::markdown::MediaBlock::Figure { url, .. } => {
+                crate::ui::preview::markdown::MediaBlock::Figure { url, .. } => {
                     let Some(entry) = self.figure_cache.get(url) else {
                         continue;
                     };
@@ -375,7 +375,7 @@ impl State {
                 // clipping the overflow to the preview pane and
                 // `md_table_scroll_px` shifting the text left for
                 // horizontal scroll. Nothing to do in this loop.
-                crate::preview::markdown::MediaBlock::Table { .. } => continue,
+                crate::ui::preview::markdown::MediaBlock::Table { .. } => continue,
             };
             // Cull rects that fall completely outside the preview
             // viewport — avoids spending pixels on offscreen media.
@@ -437,7 +437,7 @@ impl State {
                 // Block panels first — full pane width per block, no
                 // x-padding; the line already covers the gutter.
                 for (by, bh) in block_rects {
-                    let sy = md_rect.y + crate::text::EXTRA_TOP_PAD_PX + by
+                    let sy = md_rect.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + by
                         - preview_scroll_px
                         - BLOCK_PAD_Y;
                     let sh = bh + 2.0 * BLOCK_PAD_Y;
@@ -462,7 +462,7 @@ impl State {
                 // for any glyph also tagged CODE_BLOCK_FLAG (the
                 // walker filters those out).
                 for (bx, by, bw, bh) in inline_rects {
-                    let sy = md_rect.y + crate::text::EXTRA_TOP_PAD_PX + by
+                    let sy = md_rect.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + by
                         - preview_scroll_px
                         - PAD_Y;
                     let sh = bh + 2.0 * PAD_Y;
@@ -524,7 +524,7 @@ impl State {
                     .code_block_rects()
                     .into_iter()
                     .filter_map(|(by, bh)| {
-                        let sy = md_rect.y + crate::text::EXTRA_TOP_PAD_PX + by
+                        let sy = md_rect.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + by
                             - preview_scroll_px
                             - BLOCK_PAD_Y;
                         let sh = bh + 2.0 * BLOCK_PAD_Y;
@@ -623,7 +623,7 @@ impl State {
                     // Mid-x-height is ≈ 55% down from line_top for a
                     // single-size run; close enough for the heading
                     // / paragraph mix the preview shows.
-                    let line_y = md_rect.y + crate::text::EXTRA_TOP_PAD_PX + by
+                    let line_y = md_rect.y + crate::ui::render::text::EXTRA_TOP_PAD_PX + by
                         - preview_scroll_px
                         + bh * 0.55
                         - STRIKE_THICKNESS * 0.5;

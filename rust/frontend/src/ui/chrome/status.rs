@@ -304,8 +304,8 @@ mod tests {
     fn leave_count_shows_with_nav_collapsed() {
         use crate::lease::{LeaveOutcome, LeaveStep, Leaving};
         let area = ratatui::layout::Rect::new(0, 0, 160, 48);
-        let preset = crate::settings::LayoutPreset::default_ultrawide();
-        let nav = |slot| crate::layout::compute(area, &preset, false, slot).rect_for(crate::settings::Slot::Nav);
+        let preset = crate::ui::persist::settings::LayoutPreset::default_ultrawide();
+        let nav = |slot| crate::ui::chrome::layout::compute(area, &preset, false, slot).rect_for(crate::ui::persist::settings::Slot::Nav);
         assert_eq!(nav(maximize_slot(true, PaneFocus::Preview, false)).width, 0, "a maximized preview hides nav");
         // A leave whose reply carried a count.
         let t0 = std::time::Instant::now();

@@ -47,7 +47,7 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
 
 ## Connections
 - In from fe-net: `(HostKey, IncomingEvt)` on one std mpsc fan-in into events.rs; `HostTable` (`State::hosts`) and
-  `frontend_identity` live in rust/frontend/src/net/ (ui re-exports the identity).
+  `frontend_identity` live in rust/frontend/src/net/.
 - Out through `State::send` and `send_to` (connections.rs): `OutgoingReq` on the per-host sender, routed by host.
 - Lifecycle (rust/frontend/src/lease.rs): `exit_intent` decides a quit, `State::request_quit` and `State::leave`
   (app/exit.rs) call `Leases::leave_all`, and the process exits once each held lease's daemon acks or its wait ends.
@@ -56,7 +56,7 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   the window.
 - Capsule: `FeAttachClient` (sot_log) in agent_pane/attach.rs, over the lane the control connection resolved.
 - main.rs resolves the dial set, builds the evt channel and one outgoing channel per host, then calls
-  `gpu::App::new(...)` (`use ui as gpu;` in main.rs) and `event_loop.run_app`; the window and `State` come later, in
+  `ui::App::new(...)` and `event_loop.run_app`; the window and `State` come later, in
   `resumed` (app/handler.rs) through `State::new` (init/). Transport tasks start there (`net::hosts::spawn_transports`).
 
 ## Folders

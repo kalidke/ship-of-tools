@@ -187,8 +187,8 @@ pub(in crate::ui) fn create_gpu_surface(window: &Arc<Window>, settings: &Setting
     // machines, where HighPerformance already resolved to the iGPU.
     // Binds once, here — changing the key needs an FE restart.
     let power_preference = match settings.gpu_power_preference {
-        crate::settings::GpuPowerPreference::Low => wgpu::PowerPreference::LowPower,
-        crate::settings::GpuPowerPreference::High => wgpu::PowerPreference::HighPerformance,
+        crate::ui::persist::settings::GpuPowerPreference::Low => wgpu::PowerPreference::LowPower,
+        crate::ui::persist::settings::GpuPowerPreference::High => wgpu::PowerPreference::HighPerformance,
     };
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference,
@@ -405,7 +405,7 @@ pub(in crate::ui) fn decode_logo_quads(
     // and leave the field None; the affected draw is then simply skipped.
     // `quad_and_dims_from_bytes` builds a Linear-sampled quad (smooth
     // downscale) and returns the native (w, h) for aspect-ratio sizing.
-    let logo_quad = match crate::preview::png::quad_and_dims_from_bytes(
+    let logo_quad = match crate::ui::preview::image::png::quad_and_dims_from_bytes(
         &device,
         &queue,
         &quad_pipeline,
@@ -417,7 +417,7 @@ pub(in crate::ui) fn decode_logo_quads(
             None
         }
     };
-    let wordmark_quad = match crate::preview::png::quad_and_dims_from_bytes(
+    let wordmark_quad = match crate::ui::preview::image::png::quad_and_dims_from_bytes(
         &device,
         &queue,
         &quad_pipeline,

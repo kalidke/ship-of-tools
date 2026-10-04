@@ -81,7 +81,7 @@ impl State {
             highlight_service,
             preview_md,
             md_rect_px,
-            monitor_view: crate::monitor_view::MonitorView::new(),
+            monitor_view: crate::ui::drawer::monitor::MonitorView::new(),
             monitor_quad: None,
             monitor_rect_px: ScreenRect {
                 x: 0.0,
@@ -326,7 +326,7 @@ fn initial_background(surface_format: wgpu::TextureFormat) -> wgpu::Color {
 
 fn initial_bl_pane_target(
     resume_matches_last_host: bool,
-    persisted_geom: &crate::state_persistence::GlobalState,
+    persisted_geom: &crate::ui::persist::resume::GlobalState,
     active_host: &HostKey,
 ) -> Option<(HostKey, String)> {
     // Restored BL target so the first pty.open re-attaches to
@@ -349,7 +349,7 @@ fn initial_bl_pane_target(
 fn initial_active_workspace_id(
     cli: &crate::cli::Cli,
     resume_matches_last_host: bool,
-    persisted_geom: &crate::state_persistence::GlobalState,
+    persisted_geom: &crate::ui::persist::resume::GlobalState,
 ) -> Option<String> {
     // Harness runs (capture or --ephemeral) skip the restore: a
     // persisted workspace switch re-fires tree.root + a root preview
@@ -372,7 +372,7 @@ fn initial_pending_resume_nav(cli: &crate::cli::Cli) -> Option<(String, u16)> {
         // Same determinism rule as active_workspace_id above.
         None
     } else {
-        let p = crate::state_persistence::load();
+        let p = crate::ui::persist::resume::load();
         p.nav_selected_id.map(|id| (id, p.nav_scroll.unwrap_or(0)))
     }
 }

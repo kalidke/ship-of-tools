@@ -38,7 +38,7 @@ impl State {
             .outer_position()
             .ok()
             .map(|p| p.to_logical::<f64>(scale));
-        let s = crate::state_persistence::GlobalState {
+        let s = crate::ui::persist::resume::GlobalState {
             last_mode: Some(self.mode.label().to_string()),
             // The persisted GlobalState is still single-host -- drop the
             // owner, keep the session name. `last_workspace_id` and
@@ -73,6 +73,6 @@ impl State {
                 .map(|r| r.node.id.clone()),
             nav_scroll: Some(self.tree_scroll),
         };
-        crate::state_persistence::save(&s);
+        crate::ui::persist::resume::save(&s);
     }
 }

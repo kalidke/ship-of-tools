@@ -26,6 +26,5 @@ is in `State::redraw` in ../app/frame.rs, and the sections it calls are in `pass
 - Bitmaps are drawn as quads, never through the cell grid: `QuadPipeline` draws them and `WgpuBackend` holds only cells.
 - The chrome grid holds back the strip's rows once, in `cell_grid_for`.
 - The clear colour is converted for the surface format in `clear_color_for_surface`.
-- Old paths `crate::text` and `crate::chrome` resolve through `use` lines in main.rs; `crate::chrome` is `cells.rs`.
 - A `--capture` shot exits the window once its write is tried, whether or not it succeeds; a selfie keeps it running,
   and the harness shot wins when both fall on one frame (`stage_frame_capture`, `finish_frame_capture`).

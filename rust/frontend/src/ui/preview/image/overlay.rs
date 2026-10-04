@@ -303,7 +303,7 @@ impl State {
         // Shape the label OUTSIDE the render pass (a persistent buffer on self).
         let scale_f = self.scale;
         let label = fmt_scale_label(nice, &scale.unit);
-        let label_buf = crate::preview::markdown::MarkdownPreview::new_plain(
+        let label_buf = crate::ui::preview::markdown::MarkdownPreview::new_plain(
             self.text.font_system_mut(),
             &label,
             (400.0 * scale_f).max(1.0),
@@ -379,7 +379,7 @@ impl State {
         if text_w <= 1.0 || preview_rect.h <= 1.0 {
             return clear_and_none(self);
         }
-        let buf = crate::preview::markdown::MarkdownPreview::new_plain(
+        let buf = crate::ui::preview::markdown::MarkdownPreview::new_plain(
             self.text.font_system_mut(),
             &text,
             text_w,

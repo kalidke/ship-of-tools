@@ -105,7 +105,7 @@ pub(super) fn hash_source(s: &str) -> u64 {
 ///     scope (caller emits default-coloured).
 ///   - Emit a `(start, end, scope)` whenever the active scope changes.
 pub(super) fn merge_highlight_spans(
-    base: &[crate::preview::highlight::HighlightSpan],
+    base: &[crate::ui::preview::markdown::highlight::HighlightSpan],
     overlay: &[crate::transport::MarkdownToken],
 ) -> Vec<(usize, usize, String)> {
     if overlay.is_empty() {

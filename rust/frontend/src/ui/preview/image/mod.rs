@@ -9,4 +9,3 @@ pub(crate) mod png;
 pub(crate) mod svg;
 pub(crate) mod view;
 
-use super::quad;

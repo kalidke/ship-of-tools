@@ -46,12 +46,12 @@ impl State {
                         "attach-only terminal needs this computer's backend to hold this window; opened a plain terminal"
                             .to_string();
                 }
-                let shell = crate::term::resolve_shell(self.settings.terminal_shell.as_deref());
+                let shell = crate::ui::drawer::terminal::pty::resolve_shell(self.settings.terminal_shell.as_deref());
                 let waker = self.window.clone();
                 // cwd = repo root, so the plain shell starts in the
                 // project directory. ADR 0017.
                 let cwd = self.repo_dir.clone();
-                match crate::term::LocalTerminal::spawn(
+                match crate::ui::drawer::terminal::pty::LocalTerminal::spawn(
                     &shell,
                     80,
                     24,

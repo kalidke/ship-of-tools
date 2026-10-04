@@ -144,7 +144,7 @@ pub(in crate::ui) fn session_strip_lines(
     flashes: &[f32],
     pendings: &[bool],
     divider_offsets: &[f32],
-) -> Vec<crate::text::Line> {
+) -> Vec<crate::ui::render::text::Line> {
     let gap = STRIP_GAP_CELLS * cell_w;
     let widths: Vec<f32> = labels
         .iter()
@@ -209,7 +209,7 @@ pub(in crate::ui) fn session_strip_lines(
         } else {
             (color, dim)
         };
-        out.push(crate::text::Line {
+        out.push(crate::ui::render::text::Line {
             text: lab.clone(),
             x: left,
             // Lift the active name a bit so it pops by VERTICAL position, not

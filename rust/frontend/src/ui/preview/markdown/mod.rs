@@ -288,7 +288,7 @@ struct WalkState<'a> {
     /// walk. Only used by the `NodeValue::CodeBlock` arm today; future
     /// inline-code highlighting can read from the same handle. Borrowed
     /// from `State::highlight_service`.
-    highlight: &'a crate::preview::highlight::HighlightService,
+    highlight: &'a crate::ui::preview::markdown::highlight::HighlightService,
     /// Per-fence semantic-overlay cache borrowed from
     /// `State::markdown_token_cache`. Keyed by `(lang, source_hash)`;
     /// when a fence hits, the walk overlays the backend's spans on top

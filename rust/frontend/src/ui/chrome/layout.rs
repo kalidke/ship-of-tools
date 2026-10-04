@@ -15,7 +15,7 @@
 use super::*;
 use ratatui::layout::Rect;
 
-use crate::settings::{LayoutPreset, Slot};
+use crate::ui::persist::settings::{LayoutPreset, Slot};
 
 /// Concrete geometry for one frame: a rect per slot present in the
 /// preset (others = `None`), the inner border positions, and any
@@ -410,7 +410,7 @@ pub(in crate::ui) fn draw_wireframe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::LayoutPreset;
+    use crate::ui::persist::settings::LayoutPreset;
 
     fn area(w: u16, h: u16) -> Rect {
         Rect {
@@ -556,11 +556,11 @@ mod tests {
 
     #[test]
     fn wireframe_right_edges_survive_a_partial_drawer() {
-        use crate::settings::{LayoutPreset, Slot};
+        use crate::ui::persist::settings::{LayoutPreset, Slot};
         use ratatui::{buffer::Buffer, layout::Rect};
         let area = Rect::new(0, 0, 60, 20);
         let paint = |p: &LayoutPreset| {
-            let geom = crate::layout::compute(area, p, true, None);
+            let geom = crate::ui::chrome::layout::compute(area, p, true, None);
             let mut buf = Buffer::empty(area);
             draw_wireframe(
                 &mut buf,

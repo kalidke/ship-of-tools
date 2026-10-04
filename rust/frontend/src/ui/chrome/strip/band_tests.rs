@@ -68,7 +68,7 @@ fn a_reserved_grid_still_lays_out_every_pane() {
     // from it still lays out, nor that the pane rects stay inside it.
     // Windows short enough to reach `compute`'s degenerate guard (and the
     // `rows.max(1)` clamp under it) are out of scope here, as in the sweep.
-    let preset = crate::settings::LayoutPreset::default_laptop();
+    let preset = crate::ui::persist::settings::LayoutPreset::default_laptop();
     for &(h, scale) in &[
         (768.0_f32, 1.0_f32),
         (1058.0, 1.0),
@@ -92,7 +92,7 @@ fn a_reserved_grid_still_lays_out_every_pane() {
             width: cols,
             height: rows,
         };
-        let geom = crate::layout::compute(area, &preset, true, None);
+        let geom = crate::ui::chrome::layout::compute(area, &preset, true, None);
         let llm = geom.llm.expect("the Llm column must survive the reservation");
         let repl = geom.repl.expect("the drawer must survive the reservation");
         assert!(

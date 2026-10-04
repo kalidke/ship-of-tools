@@ -96,7 +96,7 @@ impl State {
             self.window.request_redraw();
             return;
         }
-        let dest = crate::download::non_clobbering_path(&dir, &basename);
+        let dest = crate::ui::nav::files::download::non_clobbering_path(&dir, &basename);
         if let Err(e) = self.send(crate::transport::OutgoingReq::FileDownload {
             path: abs,
             dest: dest.clone(),

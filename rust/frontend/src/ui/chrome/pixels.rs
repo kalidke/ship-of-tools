@@ -5,7 +5,7 @@ use super::*;
 impl State {
     pub(in crate::ui) fn project_chrome(
         &mut self,
-    ) -> Result<(Vec<crate::text::Line>, HashMap<(u8, u8, u8), Vec<ScreenRect>>, Vec<ScreenRect>)> {
+    ) -> Result<(Vec<crate::ui::render::text::Line>, HashMap<(u8, u8, u8), Vec<ScreenRect>>, Vec<ScreenRect>)> {
         let mut lines = self.terminal.backend().project_lines(
             self.chrome_origin_x,
             self.chrome_origin_y,
@@ -74,7 +74,7 @@ impl State {
         Ok(border_rects_by_color)
     }
 
-    pub(in crate::ui) fn prepare_overlays(&mut self) -> Result<(Option<ScreenRect>, Vec<crate::text::Line>)> {
+    pub(in crate::ui) fn prepare_overlays(&mut self) -> Result<(Option<ScreenRect>, Vec<crate::ui::render::text::Line>)> {
         let mut help_overlay_rect = None;
         let mut help_overlay_lines = Vec::new();
         let mut help_opacity = 1.0;
@@ -104,7 +104,7 @@ impl State {
                         h: (content.len() as f32 + 2.0) * self.cell_h,
                     };
                     help_overlay_rect = Some(px);
-                    help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::text::Line {
+                    help_overlay_lines = content.into_iter().enumerate().map(|(i, text)| crate::ui::render::text::Line {
                         text, x: px.x + 2.0 * self.cell_w, y: px.y + (i as f32 + 1.0) * self.cell_h,
                         color: Some((167, 222, 231)), bold: i == 0, italic: false, dim: false,
                     }).collect();
@@ -123,10 +123,10 @@ impl State {
         // the row it covers. Prepared EVERY frame — an empty list is what
         // clears the overlay renderer's retained geometry (see
         // `prepare_overlay`'s doc), so no `if` around this call.
-        let mut overlay_lines: Vec<crate::text::Line> = self
+        let mut overlay_lines: Vec<crate::ui::render::text::Line> = self
             .nav_spill_segments
             .iter()
-            .map(|seg| crate::text::Line {
+            .map(|seg| crate::ui::render::text::Line {
                 text: seg.text.clone(),
                 x: self.chrome_origin_x + seg.x as f32 * self.cell_w,
                 y: self.chrome_origin_y + seg.row as f32 * self.cell_h,

@@ -19,7 +19,7 @@ use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::{Color, Modifier};
 
-use crate::text::Line;
+use crate::ui::render::text::Line;
 
 /// xterm 256-colour palette → RGB. 0..=15 mirror the named ANSI palette
 /// (we hand those off to `Color::Gray` etc. upstream, but the table here

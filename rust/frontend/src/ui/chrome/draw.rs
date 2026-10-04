@@ -498,7 +498,7 @@ impl State {
         (rows, empty)
     }
 
-    fn layout_preset_for(&self, drawer: DrawerContent) -> crate::settings::LayoutPreset {
+    fn layout_preset_for(&self, drawer: DrawerContent) -> crate::ui::persist::settings::LayoutPreset {
         // Layout proportions from the user's settings file (or
         // defaults). Snapshotted here so the ratatui closure doesn't
         // borrow `self`. Maximisation overrides the geom inside the
@@ -515,7 +515,7 @@ impl State {
             }
         };
         if drawer == DrawerContent::Help && layout_preset.drawer.is_none() {
-            layout_preset.drawer = Some(crate::settings::Slot::Repl);
+            layout_preset.drawer = Some(crate::ui::persist::settings::Slot::Repl);
         }
         layout_preset
     }

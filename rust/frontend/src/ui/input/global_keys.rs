@@ -51,8 +51,8 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
     // Browsing Help consumes its own input; no typed search leaks into Julia.
     if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl
         && !action.is_some_and(|a| matches!(a.spec().scope,
-            crate::keybindings::Scope::Global | crate::keybindings::Scope::Workspace |
-            crate::keybindings::Scope::Restore))
+            crate::ui::input::keybindings::Scope::Global | crate::ui::input::keybindings::Scope::Workspace |
+            crate::ui::input::keybindings::Scope::Restore))
     {
         tracing::debug!(?event.logical_key, ?action, "help drawer key");
         match &event.logical_key {
@@ -210,7 +210,7 @@ pub(in crate::ui) fn navigation_chords(state: &mut State, key: KeyPress<'_>, lab
             // The slot redraw lays out in the drawer; Help borrows Repl's when the preset has none.
             let drawer = match state.drawer {
                 DrawerContent::Closed => None,
-                DrawerContent::Help => preset.drawer.or(Some(crate::settings::Slot::Repl)),
+                DrawerContent::Help => preset.drawer.or(Some(crate::ui::persist::settings::Slot::Repl)),
                 _ => preset.drawer,
             };
             state.set_focus(state.focus.move_in(dir, &columns, drawer));

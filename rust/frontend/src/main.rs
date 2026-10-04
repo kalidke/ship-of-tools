@@ -8,26 +8,14 @@
 // winit drives the main thread for window/input/redraw; tokio carries the
 // Unix-socket protocol traffic to/from the backend (ADR 0010).
 
-use ui::render::cells as chrome;
 mod cli;
-use ui::chrome::layout;
 mod lease;
-use ui::drawer::monitor as monitor_view;
 mod net;
 mod pages;
 mod paths;
 mod relaunch;
 mod selfupdate;
-use ui::input::{help, keybindings};
-use ui::persist::settings;
-use ui::persist::resume as state_persistence;
-use ui::drawer::terminal::pty as term;
-use ui::render::text;
 mod ui;
-use ui as gpu;
-use ui::download;
-use ui::preview;
-use ui::preview::editor::buffer as edit_buffer;
 
 use net::{dial, state, transport};
 use pages as proxy_listen;
@@ -166,7 +154,7 @@ fn main() -> Result<()> {
         None
     };
 
-    let mut app = gpu::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
+    let mut app = ui::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

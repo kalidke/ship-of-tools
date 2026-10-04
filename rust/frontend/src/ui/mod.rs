@@ -25,23 +25,23 @@ use ratatui::{
     Terminal,
 };
 
-use crate::chrome::WgpuBackend;
-use crate::edit_buffer::EditBuffer;
+use crate::ui::render::cells::WgpuBackend;
+use crate::ui::preview::editor::buffer::EditBuffer;
 use crate::dial::HostKey;
-use crate::keybindings::{Action, KeyBindings, Modifiers};
-use crate::help;
+use crate::ui::input::keybindings::{Action, KeyBindings, Modifiers};
+use crate::ui::input::help;
 use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
-use crate::preview::markdown::{
+use crate::ui::preview::markdown::{
     FigureMetrics, FigureMetricsMap, MarkdownPreview, MathMetrics, MathMetricsMap,
     BODY_SIZE as MD_BODY_SIZE,
 };
-use crate::preview::png::quad_from_png_bytes;
-use crate::preview::quad::{Quad, QuadPipeline, ScreenRect};
-use crate::preview::svg::quad_from_svg_bytes;
-use crate::preview::markdown::media::{
+use crate::ui::preview::image::png::quad_from_png_bytes;
+use crate::ui::render::quad::{Quad, QuadPipeline, ScreenRect};
+use crate::ui::preview::image::svg::quad_from_svg_bytes;
+use crate::ui::preview::markdown::media::{
     parse_math_svg_dims, whole_row_bottom, MathSvg, TableBufferEntry, MATHJAX_EX_FACTOR,
 };
-use crate::settings::Settings;
+use crate::ui::persist::settings::Settings;
 use crate::transport::OutgoingReq;
 use crate::net::hosts::{PendingTransport, lane_dial, resolve_default_host, resolve_monitor_host};
 use crate::pages::{open_html_in_browser, open_url_in_browser};
@@ -50,7 +50,7 @@ use crate::relaunch::relaunch_sentinel_path;
 #[cfg(windows)]
 use crate::relaunch::{allow_next_foreground, force_os_foreground};
 use crate::net::identity::self_comm_handle;
-pub(crate) use crate::net::identity::{FrontendIdentity, frontend_identity};
+use crate::net::identity::frontend_identity;
 use sot_protocol::ops::LeaveIntent;
 use sot_protocol::{ReplFrame, TreeNode};
 
@@ -70,7 +70,6 @@ use preview::image::view::{
 };
 mod nav;
 use nav::*;
-pub(crate) use nav::files::download;
 
 pub(crate) mod chrome;
 use chrome::*;
@@ -140,7 +139,7 @@ const HOST_DIVIDER_GLYPH: &str = "⚙";
 
 
 
-use crate::text::TextLayer;
+use crate::ui::render::text::TextLayer;
 
 
 
@@ -892,7 +891,7 @@ struct State {
     /// the drawer rect via the resvg→wgpu-quad path (same as MathJax);
     /// `monitor_rect_px` is the drawer's pixel rect from the last layout
     /// pass; `monitor_dirty` requests a re-render when data or size changes.
-    monitor_view: crate::monitor_view::MonitorView,
+    monitor_view: crate::ui::drawer::monitor::MonitorView,
     monitor_quad: Option<Quad>,
     monitor_rect_px: ScreenRect,
     monitor_dirty: bool,
@@ -999,7 +998,7 @@ struct State {
     /// first time the Terminal drawer opens (Ctrl+T); a separate field
     /// from the ratatui `terminal` so the draw closure's `self.terminal`
     /// borrow and this terminal's `screen()` borrow are disjoint.
-    local_term: Option<crate::term::LocalTerminal>,
+    local_term: Option<crate::ui::drawer::terminal::pty::LocalTerminal>,
     /// ADR 0041 step 6 U3: the attach-only alternative to `local_term`,
     /// live only when `settings.attach_only` is on (Windows only — see
     /// `sot_log::fe_client_io`). Mutually exclusive with `local_term`:
@@ -1140,7 +1139,7 @@ struct State {
     /// once per `State` because `HighlightConfiguration::new` compiles
     /// the per-language highlight query — moderately expensive vs
     /// the per-redraw highlight call itself.
-    highlight_service: crate::preview::highlight::HighlightService,
+    highlight_service: crate::ui::preview::markdown::highlight::HighlightService,
     preview_md: MarkdownPreview,
     /// Pixel rect of the markdown pane from the most recent ratatui layout
     /// pass; cached so we can re-shape on resize without re-running layout.
@@ -1329,7 +1328,7 @@ struct State {
     /// The shaped scalebar label buffer (e.g. `500 nm`), rebuilt each frame
     /// from the adaptive bar length by `build_scalebar` (shaped OUTSIDE the
     /// render pass). `None` when the bar isn't drawn.
-    scalebar_label: Option<crate::preview::markdown::MarkdownPreview>,
+    scalebar_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
     /// Agent-supplied figure captions, sticky per (workspace, file). Written by
     /// the `preview`/`reveal` fe-commands, read at render time for whichever
     /// image the pane is actually showing. Deliberately NOT part of
@@ -1340,7 +1339,7 @@ struct State {
     /// The shaped caption buffer for the image on screen, rebuilt each frame by
     /// `build_caption` (shaped OUTSIDE the render pass, like `scalebar_label`).
     /// `None` when no caption is drawn.
-    caption_label: Option<crate::preview::markdown::MarkdownPreview>,
+    caption_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
     /// Height in px of the caption band the LAST frame reserved (0.0 for none).
     /// Published by the render pass purely so the KEYBOARD zoom/pan handler can
     /// reach it: that handler runs outside the render pass, rebuilds the pane

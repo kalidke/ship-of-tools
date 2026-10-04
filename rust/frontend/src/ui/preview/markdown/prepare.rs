@@ -47,7 +47,7 @@ impl State {
             let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
                 continue;
             };
-            let crate::preview::markdown::MediaBlock::Math { latex, display } = block else {
+            let crate::ui::preview::markdown::MediaBlock::Math { latex, display } = block else {
                 continue;
             };
             let key = (latex.clone(), *display);
@@ -105,7 +105,7 @@ impl State {
 
     pub(in crate::ui) fn prepare_preview_text(
         &mut self,
-        lines: Vec<crate::text::Line>,
+        lines: Vec<crate::ui::render::text::Line>,
         media_paint_targets: Vec<(usize, ScreenRect)>,
         preview_rect: ScreenRect,
         image_rect: ScreenRect,
@@ -130,13 +130,13 @@ impl State {
         // The preview text is laid out at its own line pitch, so the cell-grid
         // bottom rarely lands on a line boundary; clip at the last whole line.
         let whole_line_clip = |p: &MarkdownPreview, r: ScreenRect, scroll_px: f32| {
-            r.y + crate::text::EXTRA_TOP_PAD_PX
-                + p.whole_line_bottom(scroll_px, r.h - crate::text::EXTRA_TOP_PAD_PX)
+            r.y + crate::ui::render::text::EXTRA_TOP_PAD_PX
+                + p.whole_line_bottom(scroll_px, r.h - crate::ui::render::text::EXTRA_TOP_PAD_PX)
         };
         let md_clip_bottom = whole_line_clip(&self.preview_md, md_rect, preview_scroll_px);
-        let mut extras: Vec<crate::text::ExtraArea> = Vec::new();
+        let mut extras: Vec<crate::ui::render::text::ExtraArea> = Vec::new();
         if let (Some(sb), Some(lbl)) = (scalebar_draw.as_ref(), self.scalebar_label.as_ref()) {
-            extras.push(crate::text::ExtraArea {
+            extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &lbl.buffer,
                 x: sb.label_x,
                 y: sb.label_y,
@@ -150,7 +150,7 @@ impl State {
             });
         }
         if let (Some(cap), Some(lbl)) = (caption_draw.as_ref(), self.caption_label.as_ref()) {
-            extras.push(crate::text::ExtraArea {
+            extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &lbl.buffer,
                 x: cap.text_x,
                 y: cap.text_y,
@@ -166,7 +166,7 @@ impl State {
             });
         }
         if show_md {
-            extras.push(crate::text::ExtraArea {
+            extras.push(crate::ui::render::text::ExtraArea {
                 buffer: &self.preview_md.buffer,
                 x: md_rect.x,
                 y: md_rect.y,
@@ -180,7 +180,7 @@ impl State {
         }
         if show_edit {
             if let Some(pe) = self.preview_edit.as_ref() {
-                extras.push(crate::text::ExtraArea {
+                extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &pe.buffer,
                     x: preview_rect.x,
                     y: preview_rect.y,
@@ -200,7 +200,7 @@ impl State {
         // cheat sheet. Trumps everything (highest priority in the cascade).
         if show_fatal {
             if let Some(pf) = self.preview_fatal.as_ref() {
-                extras.push(crate::text::ExtraArea {
+                extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &pf.buffer,
                     x: preview_rect.x,
                     y: preview_rect.y,
@@ -229,7 +229,7 @@ impl State {
                 let Some(block) = self.preview_md.media_blocks.get(*block_idx) else {
                     continue;
                 };
-                if !matches!(block, crate::preview::markdown::MediaBlock::Table { .. }) {
+                if !matches!(block, crate::ui::preview::markdown::MediaBlock::Table { .. }) {
                     continue;
                 }
                 let Some(entry) = self.table_buffers.get(table_idx) else {
@@ -248,8 +248,8 @@ impl State {
                 // y. The ExtraArea pipeline adds EXTRA_TOP_PAD_PX to
                 // the y, so we subtract it back here.
                 let table_x = rect.x - self.md_table_scroll_px;
-                let table_y = rect.y - crate::text::EXTRA_TOP_PAD_PX;
-                extras.push(crate::text::ExtraArea {
+                let table_y = rect.y - crate::ui::render::text::EXTRA_TOP_PAD_PX;
+                extras.push(crate::ui::render::text::ExtraArea {
                     buffer: &entry.buffer,
                     x: table_x,
                     y: table_y,

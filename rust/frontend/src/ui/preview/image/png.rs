@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 
-use super::quad::{Quad, QuadPipeline, SamplerKind};
+use crate::ui::render::quad::{Quad, QuadPipeline, SamplerKind};
 
 /// Decode-time allocation ceiling for a single raster. The `image` crate's
 /// default limit is 512 MiB, which rejects large scientific rasters outright

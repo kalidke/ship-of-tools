@@ -82,7 +82,7 @@ impl State {
 }
 
 struct LaunchInputs {
-    persisted_geom: crate::state_persistence::GlobalState,
+    persisted_geom: crate::ui::persist::resume::GlobalState,
     active_host: crate::dial::HostKey,
     resume_matches_last_host: bool,
     monitor_hub: Option<String>,
@@ -97,7 +97,7 @@ fn load_launch_inputs(
     // Loaded here (rather than at each of its several uses below) so
     // `last_host` and the window-geometry fields below all read the
     // SAME snapshot of the file.
-    let persisted_geom = crate::state_persistence::load();
+    let persisted_geom = crate::ui::persist::resume::load();
     // ADR 0042 L2a codex review, item H: `last_host` is the active
     // host AT QUIT (persist_resume_state writes it every save now —
     // see the field's own doc for the ADR 0015 -> L2a meaning
@@ -144,7 +144,7 @@ fn load_launch_inputs(
 fn create_window(
     event_loop: &ActiveEventLoop,
     cli: &crate::cli::Cli,
-    persisted_geom: &crate::state_persistence::GlobalState,
+    persisted_geom: &crate::ui::persist::resume::GlobalState,
     init_w: f64,
     init_h: f64,
 ) -> Result<Arc<Window>> {
@@ -244,7 +244,7 @@ fn load_splash_png(
         &queue,
         &quad_pipeline,
         LOGO_WORDMARK_PNG,
-        crate::preview::quad::SamplerKind::Linear,
+        crate::ui::render::quad::SamplerKind::Linear,
     )
     .map_err(|e| {
         tracing::warn!(error = %e, "startup wordmark decode failed");
@@ -256,7 +256,7 @@ fn load_splash_png(
 
 struct PreviewContent {
     preview_svg: Option<Quad>,
-    highlight_service: crate::preview::highlight::HighlightService,
+    highlight_service: crate::ui::preview::markdown::highlight::HighlightService,
     preview_md: MarkdownPreview,
     md_rect_px: ScreenRect,
     concept_rect_px: ScreenRect,
@@ -278,7 +278,7 @@ fn build_preview_content(
     // (per-language `HighlightConfiguration` compile is moderately
     // expensive) and reused across every `MarkdownPreview::new` /
     // re-shape call.
-    let highlight_service = crate::preview::highlight::HighlightService::new()
+    let highlight_service = crate::ui::preview::markdown::highlight::HighlightService::new()
         .context("failed to build HighlightService")?;
 
     // Initial markdown buffer with the full surface as a fallback rect;
@@ -414,7 +414,7 @@ fn apply_startup_font_scale(state: &mut State, cli: &crate::cli::Cli) {
     if let Some(fs) = cli.font_scale {
         state.apply_text_scale(fs);
     } else if let Some(fs) = (!state.ephemeral)
-        .then(|| crate::state_persistence::load().font_scale)
+        .then(|| crate::ui::persist::resume::load().font_scale)
         .flatten()
     {
         if (fs - 1.0).abs() > 0.001 {

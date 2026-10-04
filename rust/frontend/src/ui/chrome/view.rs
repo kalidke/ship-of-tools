@@ -44,9 +44,9 @@ pub(super) type NavRow = (
 /// this view of its own locals; fields below `// written by the draw` are the
 /// closure's results, copied back into `draw_chrome`'s locals after the draw.
 pub(super) struct ChromeView<'a> {
-    pub(super) layout_preset: &'a crate::settings::LayoutPreset,
+    pub(super) layout_preset: &'a crate::ui::persist::settings::LayoutPreset,
     pub(super) drawer_open: bool,
-    pub(super) maximize_slot: Option<crate::settings::Slot>,
+    pub(super) maximize_slot: Option<crate::ui::persist::settings::Slot>,
     pub(super) nav_logo_row: bool,
     pub(super) focus: PaneFocus,
     pub(super) mode: Mode,
@@ -224,7 +224,7 @@ impl ChromeView<'_> {
     fn pane_rects(
         &self,
         area: ratatui::layout::Rect,
-    ) -> (crate::layout::LayoutGeom, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect) {
+    ) -> (crate::ui::chrome::layout::LayoutGeom, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect) {
         let ChromeView { layout_preset, drawer_open, maximize_slot, nav_logo_row, .. } = *self;
         // Inner divisions positioned by the user-configurable
         // settings (defaults 50/50, see settings.toml). Range
@@ -247,7 +247,7 @@ impl ChromeView<'_> {
         // `cols >= 2 && rows >= 2` similarly keeps the BL
         // backend safe). Toggle: Ctrl+z. A leave's line restores the
         // panes (`maximize_slot`).
-        let geom = crate::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
+        let geom = crate::ui::chrome::layout::compute(area, &layout_preset, drawer_open, maximize_slot);
         // Names preserved so the rest of the closure reads
         // unchanged: nav = old TL (left column), preview = old
         // TR (middle column), llm = old BL (rightmost column
@@ -255,7 +255,7 @@ impl ChromeView<'_> {
         // `nav_frame_rect` is the pane as laid out (title and focus border
         // hang off it); `nav_rect` is what the tree body may use -- one
         // row shorter when the wordmark owns the first row.
-        let nav_frame_rect = geom.rect_for(crate::settings::Slot::Nav);
+        let nav_frame_rect = geom.rect_for(crate::ui::persist::settings::Slot::Nav);
         let nav_rect = if nav_logo_row && nav_frame_rect.height > 1 {
             ratatui::layout::Rect {
                 y: nav_frame_rect.y + 1,
@@ -265,9 +265,9 @@ impl ChromeView<'_> {
         } else {
             nav_frame_rect
         };
-        let preview_rect = geom.rect_for(crate::settings::Slot::Preview);
-        let llm_rect = geom.rect_for(crate::settings::Slot::Llm);
-        let repl_rect = geom.rect_for(crate::settings::Slot::Repl);
+        let preview_rect = geom.rect_for(crate::ui::persist::settings::Slot::Preview);
+        let llm_rect = geom.rect_for(crate::ui::persist::settings::Slot::Llm);
+        let repl_rect = geom.rect_for(crate::ui::persist::settings::Slot::Repl);
         (geom, nav_frame_rect, nav_rect, preview_rect, llm_rect, repl_rect)
     }
 

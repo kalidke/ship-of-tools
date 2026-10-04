@@ -135,7 +135,7 @@ impl State {
             self.preview_edit.as_ref(),
             preview_rect.h,
         );
-        let visible_px = (shown_h - crate::text::EXTRA_TOP_PAD_PX).max(line_h);
+        let visible_px = (shown_h - crate::ui::render::text::EXTRA_TOP_PAD_PX).max(line_h);
         // `preview_scroll` is body-line units; convert the pixel slack
         // back via ceil so the final body-line step always lands the
         // bottom of the document on screen (no off-by-fraction clip).

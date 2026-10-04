@@ -82,7 +82,7 @@ pub(super) fn walk_code_block<'b>(ctx: Ctx, cb: NodeCodeBlock, out: &mut Vec<(St
             }
             let mut a = attrs_for(c);
             if let Some(col) =
-                crate::preview::highlight::color_for_scope(scope)
+                crate::ui::preview::markdown::highlight::color_for_scope(scope)
             {
                 a = a.color(col);
             }

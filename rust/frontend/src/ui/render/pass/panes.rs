@@ -228,7 +228,7 @@ impl State {
         &mut self,
         mut rpass: &mut wgpu::RenderPass<'_>,
         help_overlay_rect: Option<ScreenRect>,
-        overlay_lines: Vec<crate::text::Line>,
+        overlay_lines: Vec<crate::ui::render::text::Line>,
     ) -> Result<()> {
         // Nav-spill overlay — the ONLY draws above the main text pass.
         // Backing strips first (near-opaque surface navy, one cell row

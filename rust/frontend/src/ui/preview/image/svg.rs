@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use resvg::tiny_skia::{Pixmap, Transform};
 use resvg::usvg::{fontdb, Options, Tree};
 
-use super::quad::{Quad, QuadPipeline};
+use crate::ui::render::quad::{Quad, QuadPipeline};
 
 /// System-font database, populated once on first SVG. On Linux fontconfig
 /// makes "serif" / "sans-serif" resolve transparently; on Windows usvg's

@@ -294,7 +294,7 @@ impl ChromeView<'_> {
                     row: nav_rect.y + vis_idx as u16,
                     text: shown,
                     width_cells,
-                    color: crate::chrome::ratatui_color_to_rgb(style.fg),
+                    color: crate::ui::render::cells::ratatui_color_to_rgb(style.fg),
                     bold: style.add_modifier.contains(Modifier::BOLD),
                     dim: style.add_modifier.contains(Modifier::DIM),
                 });

@@ -14,7 +14,7 @@ pub enum IncomingEvt {
         /// for older backends. `HostKey` (the dial label this connection
         /// is tagged with, `hosts.toml`-configured) is NEVER re-homed to
         /// this value — the GPU thread records it separately, for display
-        /// only (`crate::gpu::host_label`, the one display projection).
+        /// only (`crate::ui::nav::hosts_tree::host_label`, the one display projection).
         host: Option<String>,
         /// `--project-root` the backend was started with, so the chrome
         /// can show "myhost:Ship of Tools" rather than just the host.

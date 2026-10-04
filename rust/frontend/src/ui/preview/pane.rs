@@ -254,11 +254,11 @@ impl State {
             // extras) filter Linear — rasterized text aliases hard under
             // Nearest. Standalone rasters keep Nearest per the 2026-05-22 ask.
             let sampler = if self.preview_page.is_some() {
-                crate::preview::quad::SamplerKind::Linear
+                crate::ui::render::quad::SamplerKind::Linear
             } else {
-                crate::preview::quad::SamplerKind::Nearest
+                crate::ui::render::quad::SamplerKind::Nearest
             };
-            match crate::preview::png::quad_and_source_dims_from_png_bytes(
+            match crate::ui::preview::image::png::quad_and_source_dims_from_png_bytes(
                 &self.device,
                 &self.queue,
                 &self.quad_pipeline,
@@ -673,7 +673,7 @@ mod tests {
         let (b3, bh3) = preview_scroll_target(true, &md, 10.0 * h, None, 12.0 * h);
         assert!(std::ptr::eq(b3, &md));
         assert_eq!(bh3, 10.0 * h);
-        let vis = bh - crate::text::EXTRA_TOP_PAD_PX;
+        let vis = bh - crate::ui::render::text::EXTRA_TOP_PAD_PX;
         let s = preview_max_scroll(h, vis, b);
         assert!((s as f32) * h < edit.total_visual_pixels(h) - vis + h);
     }

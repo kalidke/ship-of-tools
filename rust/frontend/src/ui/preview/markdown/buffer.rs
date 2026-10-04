@@ -68,7 +68,7 @@ impl MarkdownPreview {
         scale: f32,
         math_metrics: &MathMetricsMap,
         figure_metrics: &FigureMetricsMap,
-        highlight: &crate::preview::highlight::HighlightService,
+        highlight: &crate::ui::preview::markdown::highlight::HighlightService,
         token_cache: &std::collections::HashMap<
             (String, u64),
             Vec<crate::transport::MarkdownToken>,
@@ -235,7 +235,7 @@ impl MarkdownPreview {
             .iter()
             .map(|(text, kind)| {
                 let mut a = Attrs::new().family(Family::Monospace).metrics(metrics);
-                if let Some(c) = crate::preview::highlight::color_for_scope(kind) {
+                if let Some(c) = crate::ui::preview::markdown::highlight::color_for_scope(kind) {
                     a = a.color(c);
                 }
                 (normalize_newlines(text).into_owned(), a)

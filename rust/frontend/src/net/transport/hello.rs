@@ -86,10 +86,10 @@ pub(super) async fn send_hello<W: AsyncWrite + Unpin>(
         // is its address, `fe@<host>` — the value a `--fe <host>` target
         // matches against, so the daemon can name "the frontend a person
         // is at" (`fe.presence`) without a second derivation.
-        host: Some(crate::gpu::frontend_identity().host.clone()),
-        role: crate::gpu::FrontendIdentity::ROLE.to_string(),
-        instance: Some(crate::gpu::frontend_identity().instance.clone()),
-        name: Some(crate::gpu::frontend_identity().name.clone()),
+        host: Some(crate::net::identity::frontend_identity().host.clone()),
+        role: crate::net::identity::FrontendIdentity::ROLE.to_string(),
+        instance: Some(crate::net::identity::frontend_identity().instance.clone()),
+        name: Some(crate::net::identity::frontend_identity().name.clone()),
     };
     codec::write_frame(
         &mut tx,
@@ -189,7 +189,7 @@ pub(super) fn accept_hello<Wn: Redraw>(
     *backoff_ms = 200;
     // ADR 0046 decision 1: the daemon's declared host travels on this
     // event for display only (see `State::record_declared_host` and
-    // `crate::gpu::host_label`) — the DIAL label (`host`) stays this
+    // `crate::ui::nav::hosts_tree::host_label`) — the DIAL label (`host`) stays this
     // connection's tag for its whole lifetime.
     emit(IncomingEvt::Connected {
         session_id: hello_res.session_id.clone(),

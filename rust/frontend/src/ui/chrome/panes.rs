@@ -26,8 +26,8 @@ pub(in crate::ui) enum PaneFocus {
 }
 
 impl PaneFocus {
-    fn slot(self) -> crate::settings::Slot {
-        use crate::settings::Slot;
+    fn slot(self) -> crate::ui::persist::settings::Slot {
+        use crate::ui::persist::settings::Slot;
         match self {
             PaneFocus::NavTree => Slot::Nav,
             PaneFocus::Preview => Slot::Preview,
@@ -36,8 +36,8 @@ impl PaneFocus {
         }
     }
 
-    fn from_slot(slot: crate::settings::Slot) -> Self {
-        use crate::settings::Slot;
+    fn from_slot(slot: crate::ui::persist::settings::Slot) -> Self {
+        use crate::ui::persist::settings::Slot;
         match slot {
             Slot::Nav => PaneFocus::NavTree,
             Slot::Preview => PaneFocus::Preview,
@@ -57,10 +57,10 @@ impl PaneFocus {
     pub(in crate::ui) fn move_in(
         self,
         dir: SpatialDir,
-        columns: &[crate::settings::Slot],
-        drawer: Option<crate::settings::Slot>,
+        columns: &[crate::ui::persist::settings::Slot],
+        drawer: Option<crate::ui::persist::settings::Slot>,
     ) -> Self {
-        use crate::settings::Slot;
+        use crate::ui::persist::settings::Slot;
         use SpatialDir::*;
         let (Some(&first), Some(&last)) = (columns.first(), columns.last()) else {
             return self;
@@ -127,7 +127,7 @@ pub(in crate::ui) enum SpatialDir {
 
 /// The slot maximization gives the whole area, if any. While a leave has a
 /// line to show, none: the nav pane draws that line (`nav_pinned_rows`).
-pub(in crate::ui) fn maximize_slot(maximized: bool, focus: PaneFocus, leave_line: bool) -> Option<crate::settings::Slot> {
+pub(in crate::ui) fn maximize_slot(maximized: bool, focus: PaneFocus, leave_line: bool) -> Option<crate::ui::persist::settings::Slot> {
     (maximized && !leave_line).then(|| focus.slot())
 }
 
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn move_in_walks_only_the_laid_out_columns() {
-        use crate::settings::Slot as S;
+        use crate::ui::persist::settings::Slot as S;
         use PaneFocus::*;
         use SpatialDir::*;
         let full = [S::Nav, S::Preview, S::Llm];
