@@ -18,7 +18,7 @@ resolved to a [`FileType`](@ref) at runtime once the right packages are loaded.
     table. What works today: the seven standard plugins load automatically
     with the kernel, and the HDF5 example lazy-loads on the first `.h5`
     preview through the kernel's built-in extension table
-    (`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/ShipToolsKernel.jl`). A
+    (`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl`). A
     third-party plugin loads only from a source checkout: add it to
     `julia/kernel`'s environment, then either add it to the kernel's `using`
     list or map its file extension in `LAZY_PLUGIN_FOR_EXT`. On a release install the kernel

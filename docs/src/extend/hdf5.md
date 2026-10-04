@@ -180,7 +180,7 @@ No concept entities yet, and nothing calls `parse_entities` or `ast_hash` today
     reads that table yet.
 
 Today the kernel loads HDF5Preview through its built-in extension table,
-`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/ShipToolsKernel.jl`, which maps
+`LAZY_PLUGIN_FOR_EXT` in `julia/kernel/src/preview.jl`, which maps
 `.h5` to the package. It does not `using HDF5Preview` at startup; the plugin is
 loaded on the first `.h5` preview, so `HDF5_jll` is pulled only when a user
 actually opens an HDF5 file. Your own plugin loads the same way, from a source

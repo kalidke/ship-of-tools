@@ -113,7 +113,7 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
             # (unbalanced braces) a stray key can sit at depth <= 0 and be
             # missed — measured, not hypothetical. So require the "hooks" key to
             # be PRESENT as well: that fails closed on truncated, array-rooted
-            # or empty files, and on any future scanner bug. test/runtests.jl
+            # or empty files, and on any future scanner bug. test/codex_tests.jl
             # additionally parses the file for real.
             ks = _json_toplevel_keys(txt)
             "hooks" in ks || error("""
