@@ -1,0 +1,39 @@
+# Standing exemptions for check-layout.sh: <kind> <path-glob> <reason...>
+# ** crosses folders, * stays inside one name, a trailing /** also matches the folder itself.
+# Source: dev/output/organize/v2/00-skeleton.md, decisions E4, E5, E11, E12.
+# The paths cover today's tree and the tree after the pass.
+
+# E4: a folder under a tests folder (support/, fixtures/, a split binary tests/<name>/) gets no page
+no-page **/tests/*/**   E4 folder under a tests folder; the tests page maps it
+no-page **/test/*/**    E4 folder under a Julia test folder (fixtures)
+
+# E5: vendored crate, exempt from the bounds
+no-page rust/vt100/*/**       E5, E12 vendored fork: subfolders in upstream's layout
+file-size rust/vt100/**       E5, E12 vendored fork
+folder-size rust/vt100/**     E5, E12 vendored fork
+
+# E5: installer-shaped folders (SKILL.md is the page; the installer copies them whole)
+no-page comm/adapters/**      E5 installer-shaped: the comm skills, Codex hooks and plugin
+no-page agents/claude/**      E5 installer-shaped: bin and the non-comm skills
+no-page agents/codex/**       E5 installer-shaped: ccx
+no-page **/skills/**          E5 every skill folder: its SKILL.md is its page
+
+# E5: below docs/ (a page under docs/src would be published; docs/CLAUDE.md maps docs/tools/)
+no-page docs/*/**             E5 everything below docs/
+
+# E5: one-file folders kept for packaging
+no-page julia/pluto                      E5 sidecar start.jl, one file
+no-page julia/plugins/*                  E5 one-file plugin package, no page each
+no-page examples/*/**                    E5 the folders below examples/
+no-page rust/backend/sidecars/mathjax/** E5 packaged sidecar
+no-page rust/log/src/bin/support         E5 helper for the bins
+no-page rust/updater/examples            E5 one example
+no-page rust/frontend/queries            E5 queries
+no-page deploy/**                        E5 one unit file, its header is its page
+no-page .sot/**                          E5 no source
+no-page dev/**                           E5 no source
+
+# E11: files over 800 lines that stay, each with its reason
+file-size rust/frontend/src/ui/mod.rs   E11 State is one 1,371-line struct
+file-size rust/log/src/claude.rs        E11 dormant SDK producer, keep-or-retire on the 0.6.7 list
+file-size scripts/install.sh            E11 the one-liner fetches and runs it alone before any checkout exists
