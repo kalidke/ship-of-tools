@@ -28,9 +28,7 @@ const PROTOCOL_VERSION = 1
     serve(io_in::IO, io_out::IO; project_root::AbstractString = pwd())
 
 Run the kernel NDJSON dispatch loop on the given streams. One JSON request
-per line on `io_in`; one JSON response per line on `io_out`, with optional
-length-prefixed blob bytes following any response whose payload carries
-`"blob": {"len": N, "mime": ...}`.
+per line on `io_in`; one JSON response per line on `io_out`.
 
 The wire format mirrors `docs/adr/0001-protocol.md`: envelopes are
 `{v, id, kind, op, payload}`, with optional `rev` for revision-bearing
@@ -179,7 +177,7 @@ end
 Read the file at `payload.path` (relative to project_root if not absolute),
 parse via JuliaSyntax, return:
 
-- the AST hash (SHA-256 of the canonical pruned kind+text walk)
+- the AST hash
 - top-level definition names + their kinds (function, struct, module, …)
 
 The hash is what concept-annotation provenance is keyed on per ADR 0005.
