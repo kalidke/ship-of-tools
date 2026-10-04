@@ -14,6 +14,8 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 - `markdown/`: markdown and source text shaped by cosmic-text, with tree-sitter highlighting.
 - `editor/`: in-pane editing.
 - `replies.rs`: preview, preview.changed, concept, browser-open and protocol-mismatch replies
+- `layout.rs`: the pane's pixel layout for one frame (`State::preview_shows`, `layout_figure`, `layout_markdown`,
+  `layout_concept`, `clamp_preview_scroll`).
 
 ## Start here
 `pane.rs` `render_preview_source` for a new kind of preview; `markdown/mod.rs` for text previews; `image/png.rs` for bitmaps. The shared quad pipeline is in
@@ -34,3 +36,5 @@ rust/frontend/src/ui/render/quad.rs.
 - A pinned preview suppresses the cursor-follow fetch (`maybe_fire_preview`).
 - Every `preview.get` carries a fresh generation, so only the newest reply installs (`next_preview_gen`).
 - A preview or concept reply is installed only if its generation is the latest and its host and workspace are still the active ones (`reply_is_current`).
+- A figure caption reserves a band at the pane's foot, and every image rect is derived from the reduced rect
+  (`layout_figure`, `image_rect_for_caption`).
