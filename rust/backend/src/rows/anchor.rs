@@ -39,9 +39,7 @@ impl Workspaces {
 }
 
 /// The single decision of what LAUNCH FIELDS (`autostart_claude`, `agent`,
-/// `agent_name`, `task`) the daemon's own default/home row gets at boot —
-/// the counterpart of [`default_row_runtime`] above, for the launch
-/// fields rather than the runtime string.
+/// `agent_name`, `task`) the daemon's own default/home row gets at boot.
 ///
 /// 2026-09-04 amendment (owner ruling): the default/home row is an INERT
 /// ANCHOR, not a session — the workspace the daemon falls back to and
@@ -53,8 +51,7 @@ impl Workspaces {
 /// started a claude capsule and it looked like every other session).
 ///
 /// `existing` survives verbatim UNLESS it is a Windows CORRUPTED row —
-/// `existing.0` (its on-disk `runtime`) is not `"capsule"`, the same
-/// field incident [`default_row_runtime`]'s own doc describes: whatever
+/// `existing.0` (its on-disk `runtime`) is not `"capsule"`: whatever
 /// wrote a stale `"tmux"` there flipped `agent`/`autostart_claude`
 /// alongside it, so preserving them verbatim would boot a capsule with a
 /// corrupted agent. That row re-seeds to the SAME inert defaults a
@@ -92,11 +89,11 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
         })
         .unwrap_or_else(|| "home".to_string());
     // ADR 0042 slice L1a, Codex review finding 5: the default workspace's
-    // OWN `runtime` must survive this re-registration. `scan_disk` (just
-    // above) already loaded it correctly from its toml if one exists —
-    // read it back BEFORE constructing a fresh seed, whose own
-    // `Workspace::from_label` default ("tmux") would otherwise silently
-    // clobber a scanned capsule default back to tmux on every restart
+    // OWN `runtime` must survive this re-registration. `scan_disk`
+    // already loaded it correctly from its toml if one exists —
+    // read it back BEFORE constructing a fresh seed
+    // would otherwise silently
+    // clobber a scanned capsule default on every restart
     // (`insert`'s own "new metadata wins" semantics, working exactly as
     // designed, applied to the wrong source of truth). `None` means a
     // genuinely first-ever launch on this machine.
@@ -139,8 +136,8 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
     // `agent = "claude"`, `autostart_claude = true` here, so pressing
     // Enter on it silently started a claude capsule and the row looked
     // like every other session — the exact confusion this amendment
-    // removes). `default_row_launch_seed` (workspaces.rs, the launch-field
-    // counterpart of `default_row_runtime` below) is the one place this
+    // removes). `default_row_launch_seed`
+    // is the one place this
     // decision — and the Windows corrupted-row re-seed's OWN identical
     // fallback — is made, so it stays unit-testable without a live
     // registry.
@@ -164,14 +161,13 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
         seed_task,
     );
     // ADR 0042 slice L1a: route through the ONE function that decides
-    // this row's runtime for this OS (`workspaces::default_row_runtime`
-    // — see its own doc) rather than re-deciding it here. On Windows
+    // this row's runtime for this OS rather than re-deciding it here. On Windows
     // this is unconditionally "capsule", correcting rather than
     // preserving a stale on-disk "tmux" leftover — the field incident
     // this fixes: the old preserve-verbatim behaviour never self-healed
     // such a value, and the daemon then refused to start the row at all
     // (`pty spawn failed error=tmux is not available on Windows`), a
-    // dead end (`default_workspace_not_destroyable`, below).
+    // dead end (`default_workspace_not_destroyable`).
     if let Some(existing) = &existing_default {
         if cfg!(windows) && existing.runtime != "capsule" {
             tracing::info!(
