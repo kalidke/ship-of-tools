@@ -277,11 +277,6 @@ pub fn boot_identity() -> std::io::Result<String> {
     Ok(boot_from_bootid((rc == 0).then_some(data)))
 }
 
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-pub fn boot_identity() -> std::io::Result<String> {
-    Err(std::io::ErrorKind::Unsupported.into())
-}
-
 /// This process's [`ProcessIdentity`].
 pub fn self_identity() -> std::io::Result<ProcessIdentity> {
     #[cfg(target_os = "linux")]
@@ -294,8 +289,6 @@ pub fn self_identity() -> std::io::Result<ProcessIdentity> {
         // SAFETY: the current-process pseudo-handle needs no closing.
         crate::challenge_win::creation_filetime_bits(unsafe { GetCurrentProcess() })?
     };
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    let created: u64 = return Err(std::io::ErrorKind::Unsupported.into());
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Ok(ProcessIdentity {
         boot: boot_identity()?,
