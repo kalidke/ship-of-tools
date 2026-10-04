@@ -50,11 +50,14 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 (the revision ring).
 
 ## Files
-- `mod.rs`: the whole listener for now: `run`, `run_local`, `lock_daemon`, `handle_connection`, the per-bus
-  `recv_*`/`write_*` pairs, `write_frame_to` and the job pool.
+- `mod.rs`: the entry: `run` boots the buses and the roster, the registry-watch projection, and the re-exports
+- `listen.rs`: the daemon lock, the live-socket refusal, the pipe descriptor and the accept loop (`run_local`)
+- `conn.rs`: one connection: the read-deadline reaper, the first-frame peek and the control loop with the op table
+- `events.rs`: one `recv_*`/`write_*` pair per bus, turning a broadcast event into its evt frame
+- `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
 
 ## Start here
 An op: the `match` in `handle_connection`. Bind, accept and the lock: `run_local` and `lock_daemon`. Boot order and
-buses: `run`. Write deadlines: `write_deadline`.
+buses: `run`. Write deadlines and the job pool: `reply.rs`.
 
 Records: ADR 0001, 0027, 0035, 0045, 0050.
