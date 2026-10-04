@@ -1,9 +1,10 @@
 //! The nav pane's body inside the chrome draw: the header, the tree rows and their colours, the scroll and the spill segments.
 
 use super::*;
+use super::view::{ChromeView, NavRow};
 
 impl ChromeView<'_> {
-    pub(in crate::ui) fn nav_body(
+    pub(super) fn nav_body(
         &mut self,
         nav_rect: ratatui::layout::Rect,
         preview_rect: ratatui::layout::Rect,

@@ -12,6 +12,7 @@ mod spill;
 mod status;
 mod strip;
 mod theme;
+mod view;
 
 pub(in crate::ui) use panes::*;
 pub(in crate::ui) use spill::*;

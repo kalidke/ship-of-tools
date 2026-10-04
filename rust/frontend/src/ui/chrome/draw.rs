@@ -2,6 +2,7 @@
 //! `ChromeView` and copies its results back; the snapshot pieces it calls.
 
 use super::*;
+use super::view::{ChromeView, NavRow};
 
 impl State {
     pub(in crate::ui) fn draw_chrome(
