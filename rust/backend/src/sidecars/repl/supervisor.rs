@@ -4,21 +4,13 @@ use std::collections::HashMap;
 use std::process::Stdio;
 
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 
 use super::*;
 use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
-
-#[derive(Serialize)]
-struct WireRequest<'a> {
-    v: u32,
-    id: u64,
-    kind: &'a str,
-    op: &'a str,
-    payload: &'a Value,
-}
+use crate::sidecars::WireRequest;
 
 /// One line off the REPL child's stdout. Both the streamed `repl.frame` evts
 /// and the terminal res ack share this envelope shape; `kind`/`op` disambiguate

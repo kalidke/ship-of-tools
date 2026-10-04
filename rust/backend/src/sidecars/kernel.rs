@@ -32,11 +32,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, watch, OnceCell};
+
+use super::WireRequest;
 
 /// Bound on ONE caller's wait for a reply — covering both "the kernel is
 /// still starting" and "the kernel is running but this op is slow" alike,
@@ -149,15 +151,6 @@ struct Submission {
     op: String,
     payload: Value,
     reply: oneshot::Sender<Result<Value>>,
-}
-
-#[derive(Serialize)]
-struct WireRequest<'a> {
-    v: u32,
-    id: u64,
-    kind: &'a str,
-    op: &'a str,
-    payload: &'a Value,
 }
 
 #[derive(Deserialize)]

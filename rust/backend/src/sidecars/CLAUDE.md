@@ -38,7 +38,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `rust/backend/sidecars/mathjax/`: the MathJax script (`render.mjs`); never moved.
 
 ## Files
-- `mod.rs`: declares the seven modules.
+- `mod.rs`: declares the seven modules and `WireRequest`.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.
@@ -58,5 +58,5 @@ for a sampler's life.
 - A wire shape changes together with its other side: kernel NDJSON and `KERNEL_PROTOCOL_VERSION` with julia/kernel;
   Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax `{id, tex, display}` with
   rust/backend/sidecars/mathjax/render.mjs.
-- The shutdown wiring and `WireRequest` exist in two copies (kernel and Pluto take the `Signal`; MathJax and the monitor
-  use `ChildGuard` and `fired`; `WireRequest` is also in repl/); change one, check the other.
+- The shutdown wiring exists in two forms (kernel and Pluto take the `Signal`; MathJax and the monitor use
+  `ChildGuard` and `fired`); change one, check the other.
