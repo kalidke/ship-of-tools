@@ -13,6 +13,8 @@
 pub(crate) mod image;
 pub(crate) mod markdown;
 pub(crate) mod editor;
+pub(crate) mod pane;
+pub(crate) mod concept;
 #[path = "../../preview/quad.rs"]
 pub(crate) mod quad;
 
