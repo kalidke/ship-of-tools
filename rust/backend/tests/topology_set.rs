@@ -2,7 +2,7 @@
 //! `topology.set`/`topology.changed` (plan §B "Editing the master list"):
 //! a real `sotd` over the REAL wire protocol, same posture as
 //! `ping_reaper.rs` (no protocol doubles, no mocked `handle_connection`) —
-//! `Env`/`connect_and_hello`/`call`/`sotd_exe` copied and trimmed from that
+//! `Env`/`connect_and_hello`/`call` copied and trimmed from that
 //! file (its own header explains why: each `tests/*.rs` binary is a
 //! separate compilation unit).
 //!
@@ -14,7 +14,7 @@
 //! and broadcasts `topology.changed` to a SEPARATE connection, over the
 //! real socket, not just in-process.
 //!
-//! `mod support;` is used for exactly one helper, `comm_isolation_dirs` —
+//! `mod support;` serves `comm_isolation_dirs` and `sotd_exe` —
 //! this file's own `Env` stays local, same reasoning as `ping_reaper.rs`.
 
 mod support;
@@ -98,7 +98,7 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let mut cmd = Command::new(sotd_exe());
+        let mut cmd = Command::new(support::sotd_exe());
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -127,10 +127,6 @@ impl Drop for Env {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
     }
-}
-
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
 
 type Conn = tokio::io::BufReader<LocalStream>;

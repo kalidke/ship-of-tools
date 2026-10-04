@@ -66,6 +66,14 @@ pub const TEST_STATE_HOST: &str = "testhost";
 pub fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
+/// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
+/// binary; not worth a shared dependency for four lines).
+#[allow(dead_code)]
+pub fn wake_flag_for_test() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, Box<dyn Fn() + Send + 'static>) {
+    let woke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let woke2 = std::sync::Arc::clone(&woke);
+    (woke, Box::new(move || woke2.store(true, std::sync::atomic::Ordering::Relaxed)))
+}
 /// The capsule executable's own file name for this platform — mirrors
 /// `rows::spawn::detach`'s `CAPSULE_SIBLING_NAME`.
 #[cfg(windows)]

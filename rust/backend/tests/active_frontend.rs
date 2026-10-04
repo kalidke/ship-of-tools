@@ -18,7 +18,7 @@
 //!    genuine hostname collision) never both receive an untargeted
 //!    `fe.command.send` — exactly one does, by connection identity.
 //!
-//! `mod support;` is used for exactly one helper, `comm_isolation_dirs` —
+//! `mod support;` serves `comm_isolation_dirs`, `sotd_exe` and `try_connect` —
 //! this file's own `Env` stays local (a separate, lighter fixture than
 //! `support::Env`'s heavier capsule-process one).
 
@@ -28,8 +28,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
-use interprocess::local_socket::GenericFilePath;
+use interprocess::local_socket::tokio::Stream as LocalStream;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
 /// Generous bound for a whole exchange — not a precision timing assertion,
@@ -91,7 +90,7 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let daemon = Command::new(sotd_exe())
+        let daemon = Command::new(support::sotd_exe())
             .arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -124,28 +123,12 @@ impl Drop for Env {
     }
 }
 
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
-}
-
-async fn try_connect(socket_path: &std::path::Path) -> Option<LocalStream> {
-    let name = socket_path
-        .to_str()
-        .expect("socket path is valid UTF-8")
-        .to_fs_name::<GenericFilePath>()
-        .expect("interpret socket path as a local-socket name");
-    tokio::time::timeout(Duration::from_secs(2), LocalStream::connect(name))
-        .await
-        .ok()
-        .and_then(Result::ok)
-}
-
 type Conn = tokio::io::BufReader<LocalStream>;
 
 async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
     let deadline = std::time::Instant::now() + BOUND;
     loop {
-        if let Some(s) = try_connect(socket_path).await {
+        if let Some(s) = support::try_connect(socket_path).await {
             return tokio::io::BufReader::new(s);
         }
         assert!(std::time::Instant::now() < deadline, "sotd's socket never accepted a connection");

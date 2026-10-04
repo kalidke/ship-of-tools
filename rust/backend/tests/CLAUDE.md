@@ -26,7 +26,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a TCP-to-Unix relay
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
-- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`), `env.rs` (`Env`), `procs.rs` (process spawning)
+- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
 ## Start here

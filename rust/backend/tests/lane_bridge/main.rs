@@ -23,7 +23,6 @@ use sot_protocol::{op, Frame};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -44,12 +43,6 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const CHECKPOINT_TRANSFER_BUDGET: Duration =
     Duration::from_secs(sot_log::lane::wire::CHECKPOINT_CHUNKS_AT_MAX_PAYLOAD as u64 * 5);
 
-fn wake_flag_for_test() -> (Arc<AtomicBool>, Box<dyn Fn() + Send + 'static>) {
-    let woke = Arc::new(AtomicBool::new(false));
-    let woke2 = Arc::clone(&woke);
-    (woke, Box::new(move || woke2.store(true, Ordering::Relaxed)))
-}
-
 /// Creates a `runtime: "capsule"` workspace and polls it to `"ready"`,
 /// returning its id and the `session_name` `lane.connect`'s own `target`
 /// names — `workspace.create`'s reply already carries it (mirrors
@@ -68,32 +61,6 @@ async fn create_ready_capsule_row(env: &Env, conn: &mut Conn, next_id: &mut u64,
     let target = create_res.payload["session_name"].as_str().expect("session_name").to_string();
     poll_for_phase(conn, next_id, &workspace_id, "ready", BOUND.max(Duration::from_secs(90))).await;
     (workspace_id, target)
-}
-
-/// [`capsule_workspaces/main.rs`'s own `kill_supervisor_only`], reproduced
-/// here (not moved — only `Env` and the wire helpers were): SIGKILL every
-/// process matching this env's own anchored `supervise` pattern, then
-/// poll it gone. Simulates the authority crashing outright, never a
-/// graceful `stop`.
-fn kill_supervisor_only(state_root: &Path) {
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", state_root);
-    let _ = Command::new("pkill")
-        .arg("-9")
-        .arg("-f")
-        .arg(&pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    assert!(poll_until_no_process_matches(&pattern, BOUND), "a supervisor process still matches {pattern:?} after SIGKILL");
-}
-
-/// [`capsule_workspaces/main.rs`'s own `count_matching_processes`] twin —
-/// needed here to prove "exactly one new supervise process," not merely
-/// "at least one."
-fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
-    let output = Command::new("pgrep").arg("-f").arg(pattern).stdin(Stdio::null()).stderr(Stdio::null()).output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.trim().is_empty()).count())
 }
 
 /// [`rust/log/tests/fe_client/`'s own `sealed_frames`]: every frame

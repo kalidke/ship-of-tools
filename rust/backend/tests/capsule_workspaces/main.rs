@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use sot_protocol::op;
 // Linux-only: every `Command`/`Stdio` call site left in this file after
 // the ADR 0045 lane B4b support-module lift (`kill_supervisor_only`,
-// `kill_leg_only`, `count_matching_processes`) and every `Frame`/`codec::`
+// `count_matching_processes`; `kill_leg_only` stays here) and every `Frame`/`codec::`
 // call site (the `lane.connect` fixtures) live inside
 // `#[cfg(target_os = "linux")]` helpers -- an unguarded import here would
 // warn unused on Windows.
@@ -58,7 +58,8 @@ use sot_protocol::slug;
 // (`connect_and_hello`, `call`, `poll_until`, `poll_for_phase`), `find_row`,
 // `try_query_status`, `create_ready_workspace_then_stop_its_supervisor`, and
 // the anchored-pgrep leg-sweep machinery (`build_leg_pgrep_pattern` and
-// friends, `Env::leg_pgrep_pattern`) moved verbatim to `tests/support/mod.rs`
+// friends, `Env::leg_pgrep_pattern`, `kill_supervisor_only`,
+// `count_matching_processes`) and `wake_flag_for_test` moved verbatim to `tests/support/`
 // so `lane_bridge/main.rs`'s own cross-process proofs can reuse them without a
 // second, drifting copy. `mod support;` (not a `tests/*.rs` file itself —
 // Cargo only auto-discovers direct children of `tests/`) plus a glob import
@@ -302,28 +303,6 @@ async fn state_dir_from_list(conn: &mut Conn, next_id: &mut u64, workspace_id: &
 // --- ADR 0043 decision 33 (lane L1a): the per-row guard, resume_if_absent,
 // and the watchdog's guard-through-backoff restart --- //
 
-/// SIGKILL every process matching the SUPERVISE half of this env's own
-/// anchored leg pattern ([`build_leg_pgrep_pattern`]), then poll it gone —
-/// simulates the authority crashing outright (never a graceful `stop`,
-/// which would publish its own end-of-authority state cleanly). The
-/// capsule LEG (a separate process, ADR 0041 Lifecycle) is untouched.
-#[cfg(target_os = "linux")]
-fn kill_supervisor_only(state_root: &Path) {
-    let pattern = build_leg_pgrep_pattern(&sot_capsule_exe(), "supervise", state_root);
-    let _ = Command::new("pkill")
-        .arg("-9")
-        .arg("-f")
-        .arg(&pattern)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    assert!(
-        poll_until_no_process_matches(&pattern, BOUND),
-        "a supervisor process still matches {pattern:?} after SIGKILL"
-    );
-}
-
 /// [`kill_supervisor_only`]'s twin for the capsule LEG (the `run`
 /// subcommand) — used only where a test needs the leg genuinely gone too
 /// (no marker, no survivor to adopt), never on its own.
@@ -342,24 +321,6 @@ fn kill_leg_only(state_root: &Path) {
         poll_until_no_process_matches(&pattern, BOUND),
         "a leg process still matches {pattern:?} after SIGKILL"
     );
-}
-
-/// The number of live processes whose command line matches `pattern` —
-/// [`any_process_matches`]'s counting twin, needed by the stale-attach
-/// test below to prove "at most ONE," not merely "at least one." `Err`
-/// only when `pgrep` itself could not be run at all (Codex review,
-/// 2026-09-11: a query failure must fail the test, never silently count
-/// as "zero processes" — a false "at most one" proves nothing). `pgrep`
-/// exiting 1 (no match) is a normal, successful `Ok(0)`, not an error.
-#[cfg(target_os = "linux")]
-fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {
-    let output = Command::new("pgrep")
-        .arg("-f")
-        .arg(pattern)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()?;
-    Ok(String::from_utf8_lossy(&output.stdout).lines().filter(|l| !l.trim().is_empty()).count())
 }
 
 /// How many times `needle` appears in `sotd.log` so far — used to

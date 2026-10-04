@@ -392,11 +392,3 @@ async fn capsule_pty_input_enter_not_sent_on_a_pen_steal_between_text_and_enter(
     drop(stealer);
     env.kill_daemon_bounded().await;
 }
-
-/// Local copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
-/// binary; not worth a shared dependency for four lines).
-fn wake_flag_for_test() -> (std::sync::Arc<std::sync::atomic::AtomicBool>, Box<dyn Fn() + Send + 'static>) {
-    let woke = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let woke2 = std::sync::Arc::clone(&woke);
-    (woke, Box::new(move || woke2.store(true, std::sync::atomic::Ordering::Relaxed)))
-}

@@ -45,8 +45,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
-use interprocess::local_socket::GenericFilePath;
+use interprocess::local_socket::tokio::Stream as LocalStream;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
 /// Generous bound for the whole exchange (connect + hello + both requests +
@@ -60,10 +59,6 @@ const BOUND: Duration = Duration::from_secs(30);
 /// B's reply — sent and read while A is still pending — could not possibly
 /// be a same-instant coincidence.
 const SLOW_MS: u64 = 500;
-
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
-}
 
 /// One isolated `sotd`, rooted at a fresh temp project, with every path it
 /// could touch OUTSIDE that tempdir (workspace-registry config, per-machine
@@ -158,7 +153,7 @@ impl Env {
             }
         };
 
-        let mut cmd = Command::new(sotd_exe());
+        let mut cmd = Command::new(support::sotd_exe());
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -233,24 +228,12 @@ impl Drop for Env {
     }
 }
 
-async fn try_connect(socket_path: &std::path::Path) -> Option<LocalStream> {
-    let name = socket_path
-        .to_str()
-        .expect("socket path is valid UTF-8")
-        .to_fs_name::<GenericFilePath>()
-        .expect("interpret socket path as a local-socket name");
-    tokio::time::timeout(Duration::from_secs(2), LocalStream::connect(name))
-        .await
-        .ok()
-        .and_then(Result::ok)
-}
-
 type Conn = tokio::io::BufReader<LocalStream>;
 
 async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
     let deadline = Instant::now() + BOUND;
     loop {
-        if let Some(s) = try_connect(socket_path).await {
+        if let Some(s) = support::try_connect(socket_path).await {
             return tokio::io::BufReader::new(s);
         }
         assert!(Instant::now() < deadline, "sotd's socket never accepted a connection");
