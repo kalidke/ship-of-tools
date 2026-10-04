@@ -4,6 +4,7 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 `OutgoingReq` and `IncomingEvt`. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Files
+- `event.rs`: `IncomingEvt`, every event a connection hands the UI thread
 - `mod.rs`: the per-host connection task (`spawn`, `connect_and_run`, `run_protocol`, `run_session`) and every part of the transport no other file here holds
 
 ## Start here
