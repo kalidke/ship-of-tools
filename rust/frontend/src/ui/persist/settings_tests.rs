@@ -223,3 +223,29 @@
         let resolved = s.download_dir();
         assert!(!resolved.as_os_str().is_empty());
     }
+
+    #[test]
+    fn load_layered_reads_the_file_sot_settings_names() {
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("SOT_SETTINGS", v),
+                    None => std::env::remove_var("SOT_SETTINGS"),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os("SOT_SETTINGS"));
+        let dir = std::env::temp_dir().join(format!("sot-settings-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("settings.toml");
+        std::fs::write(&file, "[font]\nscale = 2.37\n").unwrap();
+
+        std::env::set_var("SOT_SETTINGS", &file);
+        assert_eq!(Settings::load_layered().font_scale, Some(2.37));
+
+        // A variable naming a missing file falls through to the later sources.
+        std::env::set_var("SOT_SETTINGS", dir.join("missing.toml"));
+        assert_ne!(Settings::load_layered().font_scale, Some(2.37));
+        let _ = std::fs::remove_dir_all(&dir);
+    }

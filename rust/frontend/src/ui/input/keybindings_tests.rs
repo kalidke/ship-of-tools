@@ -480,3 +480,32 @@ mod windows_shifted_punctuation_tests {
         }
     }
 }
+
+#[test]
+fn load_layered_reads_the_file_sot_keybindings_names() {
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(v) => std::env::set_var("SOT_KEYBINDINGS", v),
+                None => std::env::remove_var("SOT_KEYBINDINGS"),
+            }
+        }
+    }
+    let _restore = Restore(std::env::var_os("SOT_KEYBINDINGS"));
+    let dir = std::env::temp_dir().join(format!("sot-keybindings-pin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("keybindings.toml");
+    std::fs::write(&file, "[keys]\npane.maximize = \"Ctrl+Alt+j\"\n").unwrap();
+    let j = Key::Character("j".into());
+
+    std::env::set_var("SOT_KEYBINDINGS", &file);
+    let b = KeyBindings::load_layered();
+    assert!(b.matches(Action::MaximizePane, &j, true, true, false));
+
+    // A variable naming a missing file falls through to the later sources.
+    std::env::set_var("SOT_KEYBINDINGS", dir.join("missing.toml"));
+    let b = KeyBindings::load_layered();
+    assert!(!b.matches(Action::MaximizePane, &j, true, true, false));
+    let _ = std::fs::remove_dir_all(&dir);
+}
