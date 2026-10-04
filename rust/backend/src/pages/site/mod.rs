@@ -61,6 +61,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
+use super::random_token;
 use crate::pages::http::{content_type, serve_file, write_simple};
 
 /// Per-connection site roots, keyed by an unguessable per-open NONCE — not
@@ -252,19 +253,6 @@ fn root_for(nonce: &str) -> Option<Arc<Site>> {
         .unwrap_or_else(|p| p.into_inner())
         .get(nonce)
         .cloned()
-}
-
-/// Generate an unguessable token (32 lowercase hex chars = 128 bits from the
-/// OS CSPRNG), or `None` if the OS CSPRNG can't be read. Fails CLOSED
-/// (security review): a predictable token defeats the whole point of this
-/// scheme. Mirrors `pages::video`'s.
-fn random_token() -> Option<String> {
-    let mut buf = [0u8; 16];
-    if let Err(e) = getrandom::fill(&mut buf) {
-        tracing::error!(error = %e, "random_token: OS CSPRNG read failed — refusing to mint a predictable token");
-        return None;
-    }
-    Some(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Constant-time byte comparison. Used for the pool-port secret/cookie check

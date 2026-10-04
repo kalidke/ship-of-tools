@@ -48,6 +48,7 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 
 - `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
 - `mod.rs`: declares the folder's modules and `start_page_servers`, which binds the listeners at boot.
+  It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records.
 - `site/`: the static-site server (own page).

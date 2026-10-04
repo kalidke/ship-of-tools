@@ -30,6 +30,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use super::http::{content_type, serve_file, write_simple};
+use super::random_token;
 
 /// Live video grants: `token -> absolute path`, plus insertion order so the
 /// oldest grant can be evicted once `MAX_GRANTS` is exceeded (a session that
@@ -74,20 +75,6 @@ fn path_for_token(token: &str) -> Option<PathBuf> {
         .by_token
         .get(token)
         .cloned()
-}
-
-/// Generate an unguessable token (32 lowercase hex chars = 128 bits from the
-/// OS CSPRNG), or `None` if the OS CSPRNG can't be read. Fails CLOSED
-/// (security review): a predictable token defeats the whole point of this
-/// scheme, so callers must refuse to mint a grant rather than fall back to
-/// something merely "unpredictable-ish".
-fn random_token() -> Option<String> {
-    let mut buf = [0u8; 16];
-    if let Err(e) = getrandom::fill(&mut buf) {
-        tracing::error!(error = %e, "random_token: OS CSPRNG read failed — refusing to mint a predictable token");
-        return None;
-    }
-    Some(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Video extensions this server will serve. Mirrors `ShipToolsVideoFile`'s

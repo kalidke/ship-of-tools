@@ -35,3 +35,17 @@ pub(crate) async fn start_page_servers() {
     // docs.open reports "slots busy" when none are assignable.
     crate::pages::site::spawn_pool().await;
 }
+
+/// Generate an unguessable token (32 lowercase hex chars = 128 bits from the
+/// OS CSPRNG), or `None` if the OS CSPRNG can't be read. Fails CLOSED
+/// (security review): a predictable token defeats the whole point of this
+/// scheme, so callers must refuse to mint a grant rather than fall back to
+/// something merely "unpredictable-ish".
+fn random_token() -> Option<String> {
+    let mut buf = [0u8; 16];
+    if let Err(e) = getrandom::fill(&mut buf) {
+        tracing::error!(error = %e, "random_token: OS CSPRNG read failed — refusing to mint a predictable token");
+        return None;
+    }
+    Some(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
