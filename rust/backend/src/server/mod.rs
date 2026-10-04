@@ -43,7 +43,7 @@ use tokio::task::JoinSet;
 pub(super) mod conn;
 mod events;
 pub(super) mod hello;
-mod listen;
+pub(crate) mod listen;
 pub(super) mod reply;
 
 pub(crate) use conn::record_test_activation_marker;

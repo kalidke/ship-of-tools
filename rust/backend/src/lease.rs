@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use sot_log::challenge::{PeerAuthOutcome, PeerAuthenticated, ProcessIdentity};
+use sot_log::challenge::{PeerAuthOutcome, ProcessIdentity};
 use sot_protocol::ops::{
     lease as bounds, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavingRes, FeNoticeSeenReq, FeNoticeSeenRes,
     LeaseOutcome, LeaveIntent,
@@ -504,48 +504,7 @@ pub(crate) async fn ticker(leases: Arc<Leases>) {
     }
 }
 
-/// The connecting process, read from the OS at accept, before the stream
-/// is split (1.2). Only Linux checks the uid, because it comes with the
-/// pid there; on macOS the socket directory and on Windows the pipe ACL
-/// already bind the peer to this user. Any OS-call failure is
-/// `Undetermined`.
-pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) -> PeerAuthOutcome {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd;
-        let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream;
-        match sot_log::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
-            Ok((pid, created)) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
-            Err(_) => PeerAuthOutcome::Undetermined,
-        }
-    }
-    #[cfg(any(target_os = "linux", windows))]
-    {
-        use interprocess::local_socket::traits::StreamCommon as _;
-        let Ok(creds) = stream.peer_creds() else {
-            return PeerAuthOutcome::Undetermined;
-        };
-        #[cfg(target_os = "linux")]
-        match creds.euid() {
-            // SAFETY: geteuid has no preconditions and cannot fail.
-            Some(uid) if uid == unsafe { libc::geteuid() } => {}
-            Some(_) => return PeerAuthOutcome::Foreign,
-            None => return PeerAuthOutcome::Undetermined,
-        }
-        let Some(pid) = creds.pid().and_then(|pid| u32::try_from(pid).ok()) else {
-            return PeerAuthOutcome::Undetermined;
-        };
-        match sot_log::challenge::process_created(pid) {
-            Ok(created) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
-            Err(_) => PeerAuthOutcome::Undetermined,
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    {
-        let _ = stream;
-        PeerAuthOutcome::Undetermined
-    }
-}
+pub(crate) use crate::server::listen::accepted_peer;
 
 /// A lease line's cap; an over-cap line is discarded up to its newline
 /// and answered with an error.
@@ -830,6 +789,7 @@ pub(crate) fn startup_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sot_log::challenge::PeerAuthenticated;
     use std::time::Duration;
 
     const BOOT: &str = "boot-a";

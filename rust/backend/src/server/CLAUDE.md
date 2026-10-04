@@ -42,7 +42,7 @@ this folder serve the same idea.
 - In: `main` calls `run` and `refuse_live_socket`; the lease and reauth code write through `write_frame_within` and
   `write_frame_to`; `capsule_workspace` calls `record_test_activation_marker`.
 - Out: `startup::begin` before bind, `shutdown::run` when accepting ends, each op's handler, `proxy`'s
-  `handle_proxy_connect`, `lane_bridge`'s `handle_lane_connect`, `lease::hold`, and `lease::accepted_peer` at accept.
+  `handle_proxy_connect`, `lane_bridge`'s `handle_lane_connect`, `lease::hold`, and `accepted_peer` (in `listen.rs`) at accept.
   Frames are read by `codec::read_frame`, which allocates a blob of its declared length with no cap (a known defect).
 
 ## Folders
@@ -52,7 +52,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster, the registry-watch projection, and the re-exports
 - `hello.rs`: the hello handshake (protocol gate, hello reply and its replay)
-- `listen.rs`: the daemon lock, the live-socket refusal, the pipe descriptor and the accept loop (`run_local`)
+- `listen.rs`: the daemon lock, the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek and the control loop with the op table
 - `events.rs`: one `recv_*`/`write_*` pair per bus, turning a broadcast event into its evt frame
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
