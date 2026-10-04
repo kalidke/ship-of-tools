@@ -74,10 +74,6 @@ pub(in crate::ui) fn cell_grid_for(
     (cols.max(1), rows.max(1))
 }
 
-/// Resolve a Sessions row's agent state from its node payload into the render
-/// tone plus a wilt flag (true = active state gone stale). `None` when there
-/// is no agent state to show, so the row renders exactly as it did before
-/// state-nav. `now` is injected so the staleness check stays unit-testable.
 /// Built-in monitor-width tier for the startup font-scale SEED — used only
 /// when no per-host persisted zoom and no `[font] scale` settings key exist.
 /// Wide displays read better a notch larger (maintainer note, 2026-07-03: 1.1 on a

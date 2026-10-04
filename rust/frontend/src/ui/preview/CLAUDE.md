@@ -7,7 +7,7 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 - `mod.rs`: declares the subfolders, `pane`, `concept` and quad, and re-exports `png`, `svg` and `highlight` at their old `preview::` paths.
 - `pane.rs`: which node the pane shows and how a reply's bytes route to a renderer (`render_preview_source`), plus the pin and the path routing for `o`/`W`/`O`.
 - `concept.rs`: the concept-annotation slot beside the preview: the `concept.read` request, the frontmatter split and the `file.parse` drift check.
-- `fetch.rs`: the cursor-follow `preview.get` (`maybe_fire_preview`) and the request-generation counters for the preview and concept slots.
+- `fetch.rs`: the cursor-follow `preview.get` (`maybe_fire_preview`), the request-generation counters for the preview and concept slots, and which reply counts (`reply_is_current`).
 - `open.rs`: the external opens of the previewed file: the right outside tool (`open_path_external`), the docs page and the quarto execute.
 - `image/`: image previews (PNG decode, SVG rasterization).
 - `markdown/`: markdown and source text shaped by cosmic-text, with tree-sitter highlighting.
@@ -31,3 +31,4 @@ rust/frontend/src/ui/render/quad.rs.
 - The scroll clamp measures only the buffer on screen (`preview_scroll_target`).
 - A pinned preview suppresses the cursor-follow fetch (`maybe_fire_preview`).
 - Every `preview.get` carries a fresh generation, so only the newest reply installs (`next_preview_gen`).
+- A preview or concept reply is installed only if its generation is the latest and its host and workspace are still the active ones (`reply_is_current`).

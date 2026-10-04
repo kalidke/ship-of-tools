@@ -437,6 +437,10 @@ impl State {
     }
 }
 
+/// Resolve a Sessions row's agent state from its node payload into the render
+/// tone plus a wilt flag (true = active state gone stale). `None` when there
+/// is no agent state to show, so the row renders exactly as it did before
+/// state-nav. `now` is injected so the staleness check stays unit-testable.
 pub(in crate::ui) fn agent_tone_for(
     payload: &serde_json::Map<String, serde_json::Value>,
     now: chrono::DateTime<chrono::Utc>,

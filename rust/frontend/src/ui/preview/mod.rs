@@ -17,6 +17,7 @@ pub(crate) mod pane;
 pub(crate) mod concept;
 mod fetch;
 mod open;
+pub(in crate::ui) use fetch::reply_is_current;
 pub(crate) use crate::ui::render::quad;
 
 pub(crate) use image::{png, svg};
