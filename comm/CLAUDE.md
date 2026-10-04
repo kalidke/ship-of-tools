@@ -17,7 +17,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   `sot_require_agent`).
 - Work-state: `comm-status.sh`, `comm-turn-auditor.sh`, the four Claude status hooks and the Codex blocked hook (the row
   colour is a reduction of the facts they stamp).
-- Housed here, not messaging: the shell daemon client in `comm-lib.sh` (`sot_oneshot_request`) and the agent adapters under
+- Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
   `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, the `/worktree` scripts to
   `agents/worktree/`, and `sot-fe` and `sot-nav.sh` to `agents/sot-fe/`, installed into the same bin. The launchers, the
   non-messaging skills, `sot-gh-auth.sh` and `comm-pipe-request.ps1` moved to `agents/`.
@@ -50,7 +50,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.
-- `lib/`: the shared shell library `comm-lib.sh`, which every script sources from its own folder.
+- `lib/`: the shared shell library: the loader `comm-lib.sh`, which every script sources from its own folder, and its seven parts.
 - `mail/`: `comm-send.sh`, `comm-relay.sh` and `comm-poll.sh`, installed flat beside the library.
 - `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).

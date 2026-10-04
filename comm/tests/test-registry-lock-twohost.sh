@@ -67,7 +67,7 @@ cleanup() {
 trap cleanup EXIT
 SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 mkdir -p "$DIR/lib"
-cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"
+cp "$SCRIPTS_DIR"/comm-lib*.sh "$DIR/lib/"
 LIB="$DIR/lib/comm-lib.sh"
 
 on() { local h="$1"; shift; ssh -o BatchMode=yes -o ConnectTimeout=5 "$h" "$@"; }

@@ -87,7 +87,7 @@ cleanup() {
 trap cleanup EXIT
 SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 mkdir -p "$DIR/lib" "$DIR/inbox"
-cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"
+cp "$SCRIPTS_DIR"/comm-lib*.sh "$DIR/lib/"
 # The wire, stubbed on both sides: each frame is one line in the case's
 # wire.log, and nothing answers, so a wire send is FAILED and files nothing.
 cat > "$DIR/lib/wire-stub.sh" <<'STUB'

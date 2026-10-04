@@ -54,7 +54,7 @@ ln -s "$HOOKS_DIR/comm-status-heartbeat.sh" "$FLAT_BIN_DIR/comm-status-heartbeat
 ln -s "$HOOKS_DIR/comm-status-idle.sh" "$FLAT_BIN_DIR/comm-status-idle.sh"
 ln -s "$SCRIPTS_DIR/comm-turn-auditor.sh" "$FLAT_BIN_DIR/comm-turn-auditor.sh"
 ln -s "$SCRIPTS_DIR/comm-context.sh" "$FLAT_BIN_DIR/comm-context.sh"
-ln -s "$SCRIPTS_DIR/comm-lib.sh" "$FLAT_BIN_DIR/comm-lib.sh"
+ln -s "$SCRIPTS_DIR"/comm-lib*.sh "$FLAT_BIN_DIR/"
 ln -s "$SCRIPTS_DIR/comm-status.sh" "$FLAT_BIN_DIR/comm-status.sh"
 
 W() { printf '%s' "$1" | bash "$HOOKS_DIR/comm-status-working.sh"; }

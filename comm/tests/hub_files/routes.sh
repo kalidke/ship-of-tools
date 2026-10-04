@@ -164,14 +164,16 @@ case_the_lock_identity_matches_the_shared_fixtures() {
 
 # T13 — the wait is ONE number in both languages; no lease constant survives.
 case_the_wait_is_one_number_and_no_lease_survives() {
-    local lib="$SCRIPTS_DIR/comm-lib.sh" names
-    [ "$(grep -c 'SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"' "$lib")" -eq 1 ] \
-        || { echo "  comm-lib.sh does not default the wait to 10 exactly once"; return 1; }
-    names="$(grep -ohE 'SOT_INBOX_LOCK_[A-Z_]+' "$lib" | sort -u)"
+    # The library is the loader and its seven parts: every comm-lib*.sh, read as one text.
+    local libs=("$SCRIPTS_DIR"/comm-lib*.sh) names
+    [ "${#libs[@]}" -ge 8 ] && [ -f "${libs[0]}" ] || { echo "  fewer than eight comm-lib*.sh in $SCRIPTS_DIR"; return 1; }
+    [ "$(cat "${libs[@]}" | grep -c 'SOT_INBOX_LOCK_WAIT_SECS="${SOT_INBOX_LOCK_WAIT_SECS:-10}"')" -eq 1 ] \
+        || { echo "  comm-lib*.sh does not default the wait to 10 exactly once"; return 1; }
+    names="$(cat "${libs[@]}" | grep -ohE 'SOT_INBOX_LOCK_[A-Z_]+' | sort -u)"
     [ "$names" = "SOT_INBOX_LOCK_WAIT_SECS" ] || { echo "  lock knobs: $names"; return 1; }
-    grep -niE 'inbox.{0,40}(stale|patience|reclaim|lease)|(stale|patience|reclaim|lease).{0,40}inbox' "$lib" \
-        | grep -v '^[0-9]*: *#' && { echo "  a lease constant is spelled in comm-lib.sh"; return 1; }
-    grep -n 'flock -w' "$lib" | grep -qv 'SOT_INBOX_LOCK_WAIT_SECS' && { echo "  a flock wait not read from the one knob"; return 1; }
+    cat "${libs[@]}" | grep -niE 'inbox.{0,40}(stale|patience|reclaim|lease)|(stale|patience|reclaim|lease).{0,40}inbox' \
+        | grep -v '^[0-9]*: *#' && { echo "  a lease constant is spelled in comm-lib*.sh"; return 1; }
+    cat "${libs[@]}" | grep -n 'flock -w' | grep -qv 'SOT_INBOX_LOCK_WAIT_SECS' && { echo "  a flock wait not read from the one knob"; return 1; }
     # The Rust filer: the same knob, the same 10, no other wait outside its
     # tests, and no lease word outside a comment.
     local rs="$SCRIPT_DIR/../../rust/backend/src/comm/mail/inbox.rs"

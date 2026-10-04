@@ -434,11 +434,12 @@ t15() {
     # A call site put back to a bare comparison would pass the two above.
     local rs="$SCRIPT_DIR/../../rust/backend/src/comm/registry/lock.rs" hits
     local rs_tests="$SCRIPT_DIR/../../rust/backend/src/comm/registry/lock_tests.rs"
-    local f
+    local f libs=("$SCRIPTS_DIR"/comm-lib*.sh)
     for f in "$rs" "$rs_tests"; do [ -f "$f" ] || { echo "no $f"; return 1; }; done
-    hits="$( { sed '/^_sot_lock_is_me() {/,/^}/s/.*//' "$SCRIPTS_DIR/comm-lib.sh" \
+    [ "${#libs[@]}" -ge 8 ] && [ -f "${libs[0]}" ] || { echo "fewer than eight comm-lib*.sh in $SCRIPTS_DIR"; return 1; }
+    hits="$( { sed '/^_sot_lock_is_me() {/,/^}/s/.*//' "${libs[@]}" \
             | grep -nE ' (=|==|!=) +"?\$\{?_SOT_LOCK_ID([^A-Za-z0-9_]|$)|\$\{?_SOT_LOCK_ID\}?"? +(=|==|!=) |case +"?\$\{?_SOT_LOCK_ID|^ *"?\$\{?_SOT_LOCK_ID\}?"? *\)' \
-            | sed 's/^/comm-lib.sh:/'
+            | sed 's/^/comm-lib*.sh:/'
         for f in "$rs" "$rs_tests"; do sed '/fn is_me(/,/^    }/s/.*//' "$f" \
             | grep -nE '(==|!=) *[&*]*[A-Za-z0-9_:().]*\.id([^A-Za-z0-9_]|$)|\.id *(==|!=)|contains\(&[A-Za-z0-9_:().]*\.id\)' \
             | sed "s|^|${f##*/}:|"; done; } )"

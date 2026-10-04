@@ -52,7 +52,7 @@ run own "$SELF_ROW" "$STATUS" waiting x;          [ "$RC" -eq 0 ] || { echo "FAT
 FLAT="$WORK/flat"; mkdir -p "$FLAT"
 cp "$HOOKS_DIR/comm-status-heartbeat.sh" "$FLAT/"
 ln -s "$SCRIPTS_DIR/comm-context.sh" "$FLAT/comm-context.sh"
-ln -s "$SCRIPTS_DIR/comm-lib.sh" "$FLAT/comm-lib.sh"
+ln -s "$SCRIPTS_DIR"/comm-lib*.sh "$FLAT/"
 # A turn is running (a floor) and the row's stamp is old: what the heartbeat refreshes.
 # The shims npm installs: `node <package>/bin/codex.js`. Each runs its arguments
 # in a shell with stdio inherited, as the real agents run their tools; the shell

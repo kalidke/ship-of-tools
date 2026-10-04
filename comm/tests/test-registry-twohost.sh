@@ -71,7 +71,7 @@ trap cleanup EXIT
 SCRIPTS_DIR="$(guard_stage_bin "$DIR")" || exit 2
 
 mkdir -p "$DIR/lib"
-cp "$SCRIPTS_DIR/comm-lib.sh" "$DIR/lib/comm-lib.sh"
+cp "$SCRIPTS_DIR"/comm-lib*.sh "$DIR/lib/"
 cat > "$DIR/lib/helper.sh" <<'HELPER'
 # helper.sh PAIR SIDE ROLE OTHER START END — a writer (ROLE w1|w2) or the
 # reader (ROLE r, of side OTHER's rows) of one pair folder.

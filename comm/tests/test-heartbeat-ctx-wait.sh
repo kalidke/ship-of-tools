@@ -32,7 +32,7 @@ NAME="hbctx-test"
 
 FLAT="$WORK/flat"; mkdir -p "$FLAT"
 cp "$HOOKS_DIR/comm-status-heartbeat.sh" "$FLAT/"
-ln -s "$SCRIPTS_DIR/comm-lib.sh" "$FLAT/comm-lib.sh"
+ln -s "$SCRIPTS_DIR"/comm-lib*.sh "$FLAT/"
 STUB="$FLAT/comm-context.sh"
 HB_OUT="$WORK/hb.out"
 
