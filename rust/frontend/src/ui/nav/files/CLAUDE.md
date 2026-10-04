@@ -12,6 +12,7 @@ operation is a method on `State` or a pure function beside it. Part of fe-ui; ch
 - `transfer.rs`: `UploadState`, `UploadBatch`, and `State`'s `start_download`, `start_upload` and the chunk loop.
 - `listing.rs`: `expanded_files_dirs` and `State`'s hidden-files toggle and directory refreshes.
 - `download.rs`: where and under what name a downloaded file lands locally (`non_clobbering_path`).
+- `replies.rs`: replies to file delete, dir create, upload and download
 
 ## Start here
 prompt.rs `NavPrompt` for a new nav-pane prompt; transfer.rs `State::start_upload` for transfers.

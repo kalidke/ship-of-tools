@@ -5,6 +5,7 @@ use super::*;
 mod listing;
 mod paths;
 mod prompt;
+mod replies;
 mod reveal;
 mod transfer;
 
