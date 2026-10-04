@@ -4515,18 +4515,18 @@ pub mod headless {
     /// This daemon build's own concrete attach client — always the real
     /// platform endpoint (pipes on Windows, a Unix socket on Linux). No
     /// caller of this module ever needs to name `E` itself.
-    type Client = FeAttachClient<PlatformEndpoint>;
+    pub(crate) type Client = FeAttachClient<PlatformEndpoint>;
 
     /// How often the daemon polls its own headless client. Independent of
     /// (and much finer than) the deadline a caller passes in — this is
     /// just the local spin-wait granularity, not a protocol budget.
-    const POLL_INTERVAL: Duration = Duration::from_millis(20);
+    pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
     /// Bound for the client's own worker-thread join on every exit path
     /// (`FeAttachClient::shutdown`). Generous relative to the worker's
     /// 100 ms tick, but still a REAL bound — "on EVERY exit path: drop the
     /// client, then observe the worker's closure" (ADR 0042 amendment §3).
-    const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
+    pub(crate) const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
 
     /// What a headless op failed to do, and where. `phase` is one of
     /// `size` (the size gate, before any attach), `attach`, `checkpoint`,
@@ -4730,29 +4730,6 @@ pub mod headless {
         out
     }
 
-    /// What [`wake_if_free`] did.
-    #[derive(Debug, PartialEq, Eq)]
-    pub enum WakeOutcome {
-        /// The screen was not a free prompt; nothing was typed.
-        NotFree,
-        /// The line was typed and Enter written.
-        Woke,
-        /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
-        /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
-        TypedNoEnter { reason: &'static str, border: String },
-        /// A write on `step` (`"text"` or `"enter"`) returned an error (`detail`, the phase and its text), or its
-        /// delivery is unknown: what that step wrote may still have reached the agent.
-        Unconfirmed { step: &'static str, detail: String },
-    }
-
-    /// The outcome once the line is typed and the gate passed: the Enter write's result.
-    pub(crate) fn wake_outcome(enter: Result<(), HeadlessError>) -> WakeOutcome {
-        match enter {
-            Ok(()) => WakeOutcome::Woke,
-            Err(e) => unconfirmed("enter", e),
-        }
-    }
-
     /// What the Enter write's result says to a `pty.input` caller: only the stale refusal (phase `"input"`, the
     /// one outcome where nothing was written, see `send_and_wait_recorded`) is `NotSent`; every other failure may
     /// have reached the agent.
@@ -4764,96 +4741,9 @@ pub mod headless {
         }
     }
 
-    /// A failed write on `step`, as the outcome the wake reports.
-    pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
-        WakeOutcome::Unconfirmed { step, detail: format!("{}: {}", e.phase, e.detail) }
-    }
-
-    /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
-    /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
-    /// [`free_test_lines`] reads them), and
-    /// only then type `line` and, if the typed-line gate (asked of the live screen after the pacing wait) says
-    /// the line sits alone in main's input box, Enter, as [`write_and_enter`] does. A screen
-    /// that is not free gets no hold (it still costs the attach); one that is
-    /// must then hold identical (the cursor, and every row through the line
-    /// under it) for `still_for`, else it is a working row and nothing is
-    /// typed. `is_free` is asked of the first frame and again immediately
-    /// before typing. Never takes the pen unless the prompt is free and
-    /// still, and never retries.
-    pub fn wake_if_free(
-        state_dir: &Path,
-        controller_id: &str,
-        line: &str,
-        is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
-        agent: &str,
-        still_for: Duration,
-        op_budget: Duration,
-        quiet_budget: Duration,
-        pacing_budget: Duration,
-    ) -> Result<WakeOutcome, HeadlessError> {
-        let mut client = attach(state_dir, controller_id)?;
-        if let Err(e) = wait_for_checkpoint(&mut client, Instant::now() + op_budget) {
-            client.shutdown(SHUTDOWN_WAIT);
-            return Err(e);
-        }
-        let cursor = client.screen().cursor_position();
-        let first = wake_lines(&client);
-        let seen = free_test_lines(client.screen());
-        // `SOT_TEST_WAKE_MARKS` (test-only, the `SOT_TEST_PACING_HOLD` convention): a directory in which the attempt
-        // leaves a file at each point, for a stub that moves focus at exactly `hold` and `final-ok`: `hold` when the hold
-        // begins (the screen was free), `final-ok` when the live final check passes (before typing), `done` when
-        // the client is shut down. An attach or checkpoint failure before the hold (above) returns early and
-        // writes no `done`.
-        let marks = std::env::var_os("SOT_TEST_WAKE_MARKS").map(std::path::PathBuf::from);
-        let mark = |name: &str| {
-            if let Some(dir) = &marks {
-                let path = dir.join(name);
-                if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, b"")) {
-                    tracing::warn!(path = %path.display(), error = %e, "comm wake: test mark not written");
-                }
-            }
-        };
-        let out = if !is_free(&seen, Some(cursor), agent) {
-            Ok(WakeOutcome::NotFree)
-        } else {
-            mark("hold");
-            let held_from = Instant::now();
-            let mut still = true;
-            while still && held_from.elapsed() < still_for {
-                std::thread::sleep(POLL_INTERVAL);
-                client.pump();
-                still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(&client), cursor.0) == held_rows(&first, cursor.0);
-            }
-            // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
-            if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
-                mark("final-ok");
-                Ok(match type_and_pace(&mut client, line.as_bytes(), op_budget, quiet_budget, pacing_budget) {
-                    Err(e) => unconfirmed("text", e),
-                    Ok(_) => {
-                        client.pump();
-                        let lines = free_test_lines(client.screen());
-                        let cursor = Some(client.screen().cursor_position());
-                        match crate::comm_wake::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
-                            Some(reason) => {
-                                let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
-                                WakeOutcome::TypedNoEnter { reason, border }
-                            }
-                            None => wake_outcome(send_enter(&mut client, op_budget)),
-                        }
-                    }
-                })
-            } else {
-                Ok(WakeOutcome::NotFree)
-            }
-        };
-        client.shutdown(SHUTDOWN_WAIT);
-        mark("done");
-        out
-    }
-
     /// [`write_and_enter`]'s steps 2-3 (type, then wait for the screen to settle) over an already attached,
     /// checkpointed client; the caller shuts the client down.
-    fn type_and_pace(
+    pub(crate) fn type_and_pace(
         client: &mut Client,
         text: &[u8],
         op_budget: Duration,
@@ -4894,7 +4784,7 @@ pub mod headless {
     }
 
     /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above.
-    fn send_enter(client: &mut Client, op_budget: Duration) -> Result<(), HeadlessError> {
+    pub(crate) fn send_enter(client: &mut Client, op_budget: Duration) -> Result<(), HeadlessError> {
         send_and_wait_recorded(client, &[0x0d], Instant::now() + op_budget).map(|_| ())
     }
 
@@ -4903,41 +4793,6 @@ pub mod headless {
     fn current_lines(client: &Client) -> Vec<String> {
         let (_, cols) = client.screen().size();
         client.screen().rows(0, cols).map(|line| line.trim_end().to_string()).collect()
-    }
-
-    /// [`current_lines`] trimming ASCII spaces only: the no-break space after the
-    /// glyph is the main input prompt's own mark, and `trim_end` would strip it.
-    fn wake_lines(client: &Client) -> Vec<String> {
-        let (_, cols) = client.screen().size();
-        client.screen().rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect()
-    }
-
-    /// [`wake_lines`] as the wake's free test reads them: on the cursor's row a dim cell (SGR 2) reads as a
-    /// space. Claude Code draws its prompt suggestion and placeholders dim, and they are not input; a typed draft
-    /// is not dim. Only that row: the hold compares [`wake_lines`] whole.
-    pub(crate) fn free_test_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
-        let (row, _) = screen.cursor_position();
-        let (_, cols) = screen.size();
-        let mut lines: Vec<String> = screen.rows(0, cols).map(|line| line.trim_end_matches(' ').to_string()).collect();
-        if let Some(line) = lines.get_mut(row as usize) {
-            *line = (0..cols)
-                .filter_map(|col| screen.cell(row, col))
-                .filter(|cell| !cell.is_wide_continuation())
-                .map(|cell| if cell.dim() || !cell.has_contents() { " " } else { cell.contents() })
-                .collect::<String>()
-                .trim_end_matches(' ')
-                .to_string();
-        }
-        lines
-    }
-
-    /// The rows the wake's hold compares: from the top of the screen through
-    /// the line under the cursor, which for claude is the input box's lower
-    /// rule. Claude Code draws a background-agent footer below the box that
-    /// ticks every second at rest, while a working turn's spinner is always
-    /// above the box.
-    pub(crate) fn held_rows(lines: &[String], cursor_row: u16) -> &[String] {
-        &lines[..lines.len().min(cursor_row as usize + 2)]
     }
 
     /// Reads the current, visible screen of the row at `state_dir` as a
@@ -4961,13 +4816,13 @@ pub mod headless {
         Ok(ScreenShot { cols, rows, lines, cursor })
     }
 
-    fn attach(state_dir: &Path, controller_id: &str) -> Result<Client, HeadlessError> {
+    pub(crate) fn attach(state_dir: &Path, controller_id: &str) -> Result<Client, HeadlessError> {
         Client::attach_headless(PlatformEndpoint::default(), state_dir_hash(state_dir), controller_id.to_string()).map_err(|e| {
             HeadlessError { phase: "attach", detail: e.to_string(), submitted: false }
         })
     }
 
-    fn wait_for_checkpoint(client: &mut Client, deadline: Instant) -> Result<(), HeadlessError> {
+    pub(crate) fn wait_for_checkpoint(client: &mut Client, deadline: Instant) -> Result<(), HeadlessError> {
         loop {
             client.pump();
             if client.is_checkpointed() {
@@ -4999,20 +4854,13 @@ mod headless_size_gate_tests {
     // dir on disk, and no real process at all — a nonexistent path is
     // fine, and a real attach attempt against it would prove the test
     // wrong (the size gate must short-circuit before that).
-    use super::headless::{enter_outcome, type_into, unconfirmed, wake_outcome, write_and_enter, HeadlessError, WakeOutcome};
+    use super::headless::{enter_outcome, type_into, write_and_enter, HeadlessError};
     use sot_protocol::PtyEnter;
     use std::path::Path;
     use std::time::{Duration, Instant};
 
     fn deadline() -> Instant {
         Instant::now() + Duration::from_secs(5)
-    }
-
-    #[test]
-    fn wake_outcome_table() {
-        let failed = || HeadlessError { phase: "record", detail: "input delivery unknown".to_string(), submitted: true };
-        assert_eq!(wake_outcome(Ok(())), WakeOutcome::Woke);
-        assert_eq!(wake_outcome(Err(failed())), WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".to_string() });
     }
 
     #[test]
@@ -5024,15 +4872,6 @@ mod headless_size_gate_tests {
         assert_eq!(enter_outcome(Err(stale)), PtyEnter::NotSent);
         assert_eq!(enter_outcome(Err(unknown)), PtyEnter::Unknown);
         assert_eq!(enter_outcome(Err(take)), PtyEnter::Unknown);
-    }
-
-    #[test]
-    fn text_write_failure_is_unconfirmed_not_skipped() {
-        // The mapping `wake_if_free` applies to a `type_and_pace` error; a real text-write failure needs a stub
-        // supervisor with no seam here, so the mapping is tested directly.
-        let failed = HeadlessError { phase: "write", detail: "broken pipe".to_string(), submitted: true };
-        let out = unconfirmed("text", failed);
-        assert_eq!(out, WakeOutcome::Unconfirmed { step: "text", detail: "write: broken pipe".to_string() });
     }
 
     #[test]
