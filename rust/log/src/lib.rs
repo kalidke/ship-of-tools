@@ -65,7 +65,8 @@ pub use identity::challenge_macos;
 // Ungated, like `challenge`/`transport`: this is the CONTRACT, not an
 // implementation -- the implementing types live in `pipe_win.rs`/
 // `socket_unix.rs`/`challenge_win.rs`/`challenge_unix.rs` themselves.
-pub mod client;
+mod lane;
+pub use lane::client;
 // ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
 // table) `probe.rs` deliberately ships without — see that module's own
 // doc. Portable (L1-unix LU1a): makes no OS call of its own, so its unit
@@ -77,7 +78,7 @@ pub mod conpty;
 // of `capsule_win`/`pipe_win`) -- deliberately NOT cfg-gated, unlike its
 // siblings below: `pipe_win`/`pipe_transport` are the Windows
 // implementation, a Unix implementation lands in LU1.
-pub mod transport;
+pub use lane::transport;
 // ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
 // client). `pub`, matching `conpty`/`capsule_win`/`wire`: its tests live in
 // `tests/pipe_win.rs`, a separate integration-test crate that can only ever
@@ -90,7 +91,8 @@ pub mod pipe_win;
 // needs to reach it, and the bin needs nothing from it beyond construction
 // -- one bridge, reused by both, rather than duplicated or made
 // unreachable from the test crate.
-pub mod pipe_transport;
+#[cfg(windows)]
+pub use lane::pipe_transport;
 // L1-unix LU1b (ADR 0043): the Unix domain-socket transport server --
 // `SocketServer` (bind/accept, per-connection reader+writer threads, one
 // bounded events channel, byte-budgeted outbound, two-phase teardown).
@@ -101,7 +103,8 @@ pub mod socket_unix;
 // L1-unix LU1b: the thin bridge from `socket_unix`'s real Unix-domain-
 // socket transport to `transport`'s `Transport` trait -- the Unix twin of
 // `pipe_transport`. Self-gated (`#![cfg(unix)]`).
-pub mod socket_transport;
+#[cfg(unix)]
+pub use lane::socket_transport;
 // ADR 0041 step 6, unit U0: fault-injection scaffolding for the probe
 // classifier's own (later) model test. NO classifier logic lives here —
 // see the module's own doc. Platform-neutral (L1-unix LU1a): the
