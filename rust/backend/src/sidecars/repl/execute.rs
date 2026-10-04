@@ -210,6 +210,25 @@ async fn await_exec_reply(req: &ReplExecuteReq,
     (elapsed_ms, base_outcome, res_payload)
 }
 
+/// Reads the terminal error code and the project the shim reported out of its res.
+fn read_exec_res(res_payload: Option<serde_json::Value>)
+    -> (bool, Option<ReplErrorOut>, Option<String>, Option<String>) {
+    let mut res_code_error = false;
+    let mut error_out: Option<ReplErrorOut> = None;
+    let mut project_dir: Option<String> = None;
+    let mut project_source: Option<String> = None;
+    if let Some(res) = &res_payload {
+        project_dir = res.get("project_dir").and_then(|v| v.as_str()).map(String::from);
+        project_source = res.get("project_source").and_then(|v| v.as_str()).map(String::from);
+        if let Some(code) = res.get("code").and_then(|v| v.as_str()) {
+            res_code_error = true;
+            let msg = res.get("error").and_then(|v| v.as_str()).unwrap_or(code).to_string();
+            error_out = Some(ReplErrorOut { message: msg, stacktrace: Vec::new() });
+        }
+    }
+    (res_code_error, error_out, project_dir, project_source)
+}
+
 /// `repl.execute` (ADR 0033): run a `.jl` file (or code chunk) in a workspace's
 /// persistent REPL and return the COLLECTED output as one authoritative
 /// response. See `op::REPL_EXECUTE`. The output is gathered off a dedicated
@@ -296,19 +315,7 @@ pub async fn handle_repl_execute(
 
     // Terminal error carried by the shim's res (bad_request / io_error /
     // repl_exception) — authoritative over frame inspection.
-    let mut res_code_error = false;
-    let mut error_out: Option<ReplErrorOut> = None;
-    let mut project_dir: Option<String> = None;
-    let mut project_source: Option<String> = None;
-    if let Some(res) = &res_payload {
-        project_dir = res.get("project_dir").and_then(|v| v.as_str()).map(String::from);
-        project_source = res.get("project_source").and_then(|v| v.as_str()).map(String::from);
-        if let Some(code) = res.get("code").and_then(|v| v.as_str()) {
-            res_code_error = true;
-            let msg = res.get("error").and_then(|v| v.as_str()).unwrap_or(code).to_string();
-            error_out = Some(ReplErrorOut { message: msg, stacktrace: Vec::new() });
-        }
-    }
+    let (res_code_error, mut error_out, project_dir, project_source) = read_exec_res(res_payload);
 
     // Split collected frames.
     let mut stdout = String::new();
