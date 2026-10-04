@@ -12,15 +12,15 @@ separate julia bundle). Read
 `docs/adr/0030-versioning-release-and-auto-update.md` §1–3 before your first
 release from a fresh context.
 
-## Preflight (do all five, report anything amiss instead of proceeding)
+## Preflight (do all six, report anything amiss instead of proceeding)
 
-1. **main is green**: latest `Rust` workflow run on main succeeded
-   (`gh run list --workflow Rust --limit 1`); check the Julia `CI` workflow
-   too — a red Julia CI should be investigated, though only the Rust gate
-   hard-blocks a release.
+1. **CI is green on the branch being cut**: the latest real (not skipped) `rust.yml`
+   and `CI.yml` runs on that branch (`main` for a final, `fixes/*` or `rc/*` for a candidate) succeeded and sit at
+   HEAD or an ancestor of it; `scripts/release.sh` refuses the cut otherwise. On a candidate branch, dispatch them:
+   `gh workflow run <wf> --ref <branch>`.
 2. **Tree clean + synced**: `git status --porcelain` empty, HEAD ==
-   origin/main. Coordinate over sot-comm if an FE session announced pending
-   pushes (sync-before-push convention).
+   `origin/<branch>` for the branch being cut. Coordinate over sot-comm if a
+   session announced pending pushes (sync-before-push convention).
 3. **Pick the version**: semver, pre-1.0 (minor = anything may change).
    Check `git tag -l` for the last tag; if no public-track tags exist, use the
    current product version as the baseline. Prereleases use `-rc.N`
@@ -43,8 +43,8 @@ release from a fresh context.
      does still sort BELOW `rc9` — that is the trap in the bullet above.)
    - The 0.6.6 line is undotted (`rc1`…`rc9`, then `rc9.1`, `rc9.2`, …) and
      stays that way. 0.6.7 opens at `-rc.1`.
-4. **Private ops handoff current** — `<ops>/STATUS.md` and `<ops>/TODO.md`
-   should not be stale when cutting the release.
+4. **Handoff current** — the cutting session's handoff (`dev/output/handoff-<handle>.md`)
+   is current, and every defect known to the line is on the candidate's list.
 5. **The comm matrix has run, if this candidate carries any comm change**:
    `comm/core/tests/comm-matrix.sh --boxes <a,b,c> [--expect <version>]`. The
    hermetic suites gate a merge; the matrix gates the CANDIDATE, because a
@@ -119,11 +119,11 @@ or before a first-of-its-kind release.
   features — not defects — in the later candidate.
 - **Finals come from main; candidates come from the line's candidate branch.**
   A tag starts the next line's branch, candidates are tagged from that branch,
-  and the final is cut from main after the branch merges in. The `main only`
-  wording below applies to the final. Before any final, prove main actually
+  and the final is cut from main after the branch merges in. Before any final, prove main actually
   carries what the last tested candidate carried — by content, not by ancestry.
-- Releases are cut from **main only**; the script enforces clean-tree +
-  HEAD==origin/main + tag-not-exists.
+- `scripts/release.sh` enforces the branch (`main`, `fixes/*` or `rc/*`), a clean
+  tree, HEAD == `origin/<branch>`, a tag that does not exist and sorts above every tag on its line, and green CI
+  on that branch.
 - **Never** delete/re-cut a published tag that anyone may have fetched — cut a
   patch release instead. A broken `-rc.N` may be deleted (tag + release) since
   rc consumers are just us.

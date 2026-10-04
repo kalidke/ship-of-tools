@@ -13,10 +13,9 @@
 #                      tolerates a missing executable, so dev units are fine)
 #   @SOT_PROJECT_ROOT@ the project the daemon serves
 #
-# Default transport is the per-user socket derived from `--label sot`
-# (`/run/user/<uid>/sot/sessions/sot.sock` on normal Linux hosts). Remote FEs
-# should forward a local TCP port to that socket over SSH rather than targeting
-# a machine-wide remote TCP bind.
+# The daemon listens only on the per-user socket derived from `--label sot`
+# (`/run/user/<uid>/sot/sessions/sot.sock` on normal Linux hosts). A window on another
+# computer reaches it through its own ssh child running `sotd stdio-bridge`.
 
 [Unit]
 Description=Ship of Tools backend daemon (sotd)

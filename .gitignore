@@ -81,7 +81,7 @@
 /.sot/settings.toml
 /.sot/keybindings.toml
 
-# Relocated to the private ship-of-tools-ops sibling repo (ADR 0030 §7)
+# Retired: the git bus and the memory mirror (ADR 0030 §7). Still ignored, so a leftover private copy is never committed.
 .claude-bus/
 .claude-memory/
 

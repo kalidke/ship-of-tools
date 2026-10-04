@@ -227,7 +227,8 @@ the fix:
 - **History: scan, then accept — no rewrite.** Nothing secret is in history (hostnames,
   ssh alias names, candid chatter — messy, not sensitive; tokens were never committed).
   Before flipping visibility, run a secrets scanner (gitleaks) over the full history as a
-  gate. ADRs stay public; working-session handoff docs live in the private ops sidecar.
+  gate. ADRs stay public; working-session handoff docs live in the private ops sidecar (amended 2026-10-03: each session's handoff is now
+  `dev/output/handoff-<handle>.md` in its own checkout, gitignored; the sidecar keeps the publish guard's denylist).
 - `requirements.md` gets a scope amendment: distribution/public use is currently explicitly
   out of scope there.
 
