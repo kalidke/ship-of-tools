@@ -36,6 +36,10 @@ scripts/CLAUDE.md.
   needs it.
 - A suite runs only if a step names it: add a new suite to `rust.yml` (or `CI.yml` for Julia) by name, in the commit
   that adds it.
+- Function length is gated: the `rust.yml` step "Function length" runs clippy's `too_many_lines` (more than 100 code
+  lines) as an error, `vt100-ctt` excluded because it denies `clippy::all` in its own source. A function over the limit
+  carries `#[allow(clippy::too_many_lines, reason = "...")]`, and the step "Function length allowances can only fall"
+  pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit.
 - The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of
   the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
 - Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's
