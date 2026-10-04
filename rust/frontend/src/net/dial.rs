@@ -22,6 +22,7 @@
 // the caller's own choice, not a parse failure.
 
 use std::path::PathBuf;
+use sot_protocol::topology::endpoint::is_plain_host_name;
 
 /// A dialed host's name — identifies which daemon connection owns a
 /// workspace, a Sessions-tree host node, or an `IncomingEvt`. A plain
@@ -92,18 +93,6 @@ pub fn parse_dial_arg(arg: &str) -> Result<(HostKey, crate::net::transport::Tran
         ));
     };
     Ok((host.to_string(), config))
-}
-
-/// Same grammar `sot_protocol::topology::endpoint`'s (private) `is_plain_host_name`
-/// checks a listed host against — kept as its own copy here because that
-/// one isn't `pub`, and a `--dial` host name is the frontend's own CLI
-/// surface, not a re-parse of `sotd topology plan`'s output (that parsing
-/// stays in exactly one function, in the launcher script that reads it).
-fn is_plain_host_name(s: &str) -> bool {
-    let mut chars = s.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
 }
 
 /// The startup connection set: every `--dial` entry (argument order; a

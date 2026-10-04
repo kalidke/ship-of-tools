@@ -28,7 +28,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 
 ## Connections
-- In: the window's control transport is the only writer of `LinkGate`; the window's `parse_dial_arg` and the page
+- In: the window's control transport is the only writer of `LinkGate`; the window's `parse_dial_arg` (which checks the host with `is_plain_host_name`) and the page
   proxy read endpoints and the gate; sot-log's attach worker drives `DaemonLaneEndpoint` on its own threads; the
   daemon's hub link and comm forward build logins with `SshRecipe`; `sotd topology
   plan|sync|status|apply|relay-endpoint|relay-sockets` call the parser, the derivations and `relay_units`.
