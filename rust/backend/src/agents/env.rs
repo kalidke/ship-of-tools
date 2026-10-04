@@ -1,5 +1,6 @@
 // env.rs — the spawn env: nesting-marker scrub list, the supervisor env and `agent_env`.
 
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 /// Environment variables scrubbed from the spawned supervisor's (and
@@ -118,6 +119,70 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
         std::env::var_os("HOME").map(PathBuf::from).as_deref(),
     ));
     env
+}
+
+/// The account half of a spawn's env: the account's env, its shared links and, for a claude row, the
+/// folder-trust record, prepared in the config dir this spawn will use.
+pub(crate) fn account_spawn_env(
+    agent_kind: &str,
+    account: &str,
+    cwd: &Path,
+    workspace_id: &str,
+) -> std::io::Result<Vec<(String, String)>> {
+    // Accounts brief: the SAME refusal `workspace.create` already
+    // ran once, re-run here so a folder that vanished BETWEEN create
+    // and this spawn (or a watchdog restart) refuses loudly instead
+    // of silently starting on the default directory. `ErrorKind::
+    // Unsupported` (never retried by the watchdog -- see its own
+    // "no retry, marking terminal" arm) matches `qualified_state_root`'s
+    // own classification just above: both are operator-fixable, not
+    // transient.
+    match crate::accounts::account_home() {
+        Some(home) => {
+            let extra = crate::accounts::account_env(agent_kind, account, &home)
+                .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
+            // Accounts brief: link the shared entries now that account_env
+            // has proved the folder exists (sharing ruling: accounts.rs
+            // module doc). Same refusal shape as account_env's own error
+            // just above; ensure_account_links itself no-ops for an empty
+            // account or "default", so no guard is needed here.
+            crate::accounts::ensure_account_links(&home, account)
+                .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
+            // Trusted-folder brief: with a root under the prefix the
+            // owner declared, pre-answer claude's folder-trust dialog
+            // in the config dir THIS spawn is about to use -- here,
+            // where the config dir is prepared, so a first spawn and a
+            // leg resumed against another account share the one call.
+            // NEVER a refusal, unlike the two above it: the degraded
+            // outcome is the dialog appearing, which is what happened
+            // before this existed, and a row that will not start is
+            // worse. Claude rows only -- no other agent has this dialog.
+            if agent_kind == "claude" {
+                if let Err(msg) = crate::accounts::ensure_folder_trusted(
+                    &home,
+                    account,
+                    cwd,
+                    crate::accounts::trusted_root_prefix().as_deref(),
+                ) {
+                    tracing::warn!(
+                        workspace_id,
+                        cwd = ?cwd,
+                        error = %msg,
+                        "capsule spawn: folder trust not recorded; the agent starts anyway and \
+                         may stop at the folder-trust dialog"
+                    );
+                }
+            }
+            Ok(extra)
+        }
+        None if account.is_empty() || account == "default" => Ok(Vec::new()),
+        None => {
+            return Err(std::io::Error::new(
+                ErrorKind::Unsupported,
+                format!("no home directory to resolve account {account:?} against"),
+            ));
+        }
+    }
 }
 
 /// `~/.local/bin` on `PATH`, prepended once — the ONE copy of this rule
