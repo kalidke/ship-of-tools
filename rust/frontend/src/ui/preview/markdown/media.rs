@@ -282,7 +282,7 @@ impl State {
 
     /// Walk `preview_md.buffer`'s laid-out runs looking for the FFFC
     /// (OBJECT REPLACEMENT CHARACTER) placeholders that
-    /// `preview/markdown.rs` emitted for `$$…$$` / `$…$` / `![](…)`
+    /// `walk` (ui/preview/markdown/walk.rs) emitted for `$$…$$` / `$…$` / `![](…)`
     /// regions. Returns one entry per FFFC glyph, in source order,
     /// paired with the screen rect to paint into (md_rect-relative
     /// + scroll-adjusted). The order matches `preview_md.media_blocks`
@@ -293,7 +293,7 @@ impl State {
     /// off-screen produces a rect with `y` < `md_rect.y` — caller culls.
     ///
     /// **Takes `md_rect`, NOT `preview_rect`** — and adds
-    /// `EXTRA_TOP_PAD_PX` exactly as the text pass does (text.rs:327).
+    /// `EXTRA_TOP_PAD_PX` exactly as the text pass does (ui/render/text.rs, `TextLayer::prepare`).
     /// The two passes must share one origin: buffer coordinates are laid
     /// out inside `md_rect` (= preview_rect + pad), so anchoring media at
     /// `preview_rect` painted every SVG `pad_y + EXTRA_TOP_PAD_PX` too

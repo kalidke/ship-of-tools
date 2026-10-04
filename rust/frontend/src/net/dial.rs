@@ -119,7 +119,7 @@ fn is_plain_host_name(s: &str) -> bool {
 /// the SAME `ssh:<target>[/<host>]` recipe would otherwise both connect to
 /// the same daemon, and the second one's label would silently reach the
 /// first one's connection (`record_declared_host`/`drain_events` in
-/// `gpu.rs` lean on this: it's the reason two dials can never land on the
+/// `ui/connections.rs` and `ui/events.rs` lean on this: it's the reason two dials can never land on the
 /// same daemon in the first place — there is no shutdown path to close a
 /// newcomer transport that collides after the fact). A well-formed `sotd
 /// topology plan` never emits this — every host gets a distinct recipe —

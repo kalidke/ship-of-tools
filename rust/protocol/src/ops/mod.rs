@@ -165,7 +165,7 @@ pub mod op {
     pub const ACCOUNTS_LIST: &str = "accounts.list";
     /// Client→daemon: explicitly names the workspace THIS CONNECTION is now
     /// viewing/acting in. Sent by the frontend's single "switch chrome"
-    /// entry point (`switch_to_workspace`, gpu.rs) UNCONDITIONALLY as the
+    /// entry point (`switch_to_workspace`, ui/session/switch.rs) UNCONDITIONALLY as the
     /// very first wire action of any workspace switch — including a UI-cache
     /// hit that fires no other request at all, and a switch back to the
     /// default workspace (`workspace_id: None`, same convention as

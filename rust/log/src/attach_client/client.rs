@@ -16,7 +16,7 @@
 //! `screen`/`send_input`/`resize`/`request_quit`/`quit_message`/
 //! `should_exit`/`shutdown`/...) is BYTE-IDENTICAL to before this lane,
 //! for its existing callers: the frontend's Terminal drawer and session
-//! pane (`gpu.rs`) and the daemon's headless callers
+//! pane (`ui/drawer/terminal/`, `ui/agent_pane/`) and the daemon's headless callers
 //! (`capsule_workspace.rs`).
 //!
 //! [`Self::attach_inner`] builds its own `mpsc::channel::<WorkerEvent>()`
@@ -134,7 +134,7 @@ pub struct FeAttachClient<
     /// checkpoint to `parser` (set right after `restore_screen`,
     /// regardless of whether that restore itself succeeded — the
     /// checkpoint EVENT still landed either way, and there is only ever
-    /// one per attach episode). The caller (`gpu.rs`'s session pane) uses
+    /// one per attach episode). The caller (`ui/agent_pane/`'s session pane) uses
     /// this to know when it may stop holding the pane's previous content
     /// and paint this client's own screen instead — see
     /// `pane_screen_choice` there.

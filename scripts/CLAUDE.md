@@ -40,7 +40,7 @@ and the launch path fails open: no update step can stop a window from starting.
 - Launch to daemon: `sotd session-socket-path`, `sotd topology plan|sync|status`, the `fe.lease` and `fe.leaving`
   frames, and exit codes 0, 75 and 76 from the window.
 - Launch to window: arguments (`--socket`, `--dial`, `--relaunched`), the `relaunch.request` sentinel written by
-  `relaunch-sot.ps1` and watched by `rust/frontend/src/gpu.rs`.
+  `relaunch-sot.ps1` and watched by `rust/frontend/src/relaunch.rs`.
 - Install to launch: on Unix `install.sh` renders the `sot-launch` wrapper once and the wrapper reads
   `lib/sot-daemon.sh` from `repo/current` at each start; on Windows `launch-sot.ps1` re-runs the install steps at
   every launch.

@@ -1,7 +1,7 @@
-// monitor_view.rs — frontend state + SVG rendering for the Ctrl+M server-
+// ui/drawer/monitor.rs — frontend state + SVG rendering for the Ctrl+M server-
 // monitor drawer (ADR 0020). Holds a per-host ring of recent samples (filled
 // by monitor.history on open, appended by monitor.tick) and renders a
-// small-multiples line chart as an SVG string. gpu.rs rasterizes that string
+// small-multiples line chart as an SVG string. `layout_drawer_px` rasterizes that string
 // through the existing resvg -> wgpu-quad path into the drawer rect — the same
 // path that renders MathJax, so there is no new rendering machinery and no
 // ratatui braille/sparkline hack (which the project rejects).

@@ -76,7 +76,7 @@ use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 /// of `rust/backend/tests/lane_bridge.rs`'s hermetic harness — it opens
 /// no port, since nothing listens on TCP anywhere in the daemon, so a
 /// client-side address shape guards nothing; `lane_dial()`
-/// (`rust/frontend/src/gpu.rs`) stops producing it, and it is a 0.6.7
+/// (`rust/frontend/src/net/hosts.rs`) stops producing it, and it is a 0.6.7
 /// deletion candidate once that harness is ported to `Local`). Carries
 /// no row: the row rides `Endpoint`'s own `lane` argument, named exactly
 /// once — never duplicated onto the dial value itself.

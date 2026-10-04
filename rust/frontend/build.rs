@@ -1,6 +1,6 @@
 // Windows-only: embed the Ship of Tools logo into sot.exe as its icon resource.
 //
-// The runtime `with_window_icon`/`with_taskbar_icon` (gpu.rs) sets the icon on
+// The runtime `with_window_icon`/`with_taskbar_icon` (ui/init/mod.rs) sets the icon on
 // the live *window*, which drives Alt-Tab and the title bar. But Windows draws a
 // running app's *taskbar button* from the app identity, which — with an explicit
 // AppUserModelID (set in main.rs) — resolves to the *executable's own icon*. An

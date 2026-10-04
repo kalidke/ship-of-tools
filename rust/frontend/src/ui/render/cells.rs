@@ -1,4 +1,4 @@
-// chrome.rs — ratatui chrome rendered into the wgpu surface.
+// ui/render/cells.rs — ratatui chrome rendered into the wgpu surface.
 //
 // Per ADR 0011: ratatui owns layout, borders, labels, focus, keymaps. This
 // module is the glue: a custom `Backend` impl that absorbs ratatui's cell

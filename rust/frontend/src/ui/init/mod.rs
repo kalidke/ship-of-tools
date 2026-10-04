@@ -163,7 +163,7 @@ fn create_window(
         const LOGO_PNG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png"));
         let rgba = image::load_from_memory(LOGO_PNG).ok()?.to_rgba8();
         // 512² source → a tidy 256² icon; the OS rescales per surface. Area-
-        // averaging `thumbnail` matches the preview/png.rs downscale idiom.
+        // averaging `thumbnail` matches the ui/preview/image/png.rs downscale idiom.
         let icon = image::imageops::thumbnail(&rgba, 256, 256);
         let (w, h) = icon.dimensions();
         Icon::from_rgba(icon.into_raw(), w, h).ok()

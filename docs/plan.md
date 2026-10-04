@@ -51,9 +51,9 @@ The go/no-go gate for option C. If this lands, C is defensible. If preview-layer
 
 **Files (sketch):**
 - `rust/frontend/src/main.rs` — winit event loop, wgpu surface init, connect-and-spawn flow.
-- `rust/frontend/src/chrome.rs` — ratatui custom `Backend` impl.
-- `rust/frontend/src/preview/mod.rs` — preview-layer dispatch on MIME.
-- `rust/frontend/src/preview/{png,markdown,svg}.rs` — three concrete renderers.
+- `rust/frontend/src/ui/render/cells.rs` — ratatui custom `Backend` impl.
+- `rust/frontend/src/ui/preview/mod.rs` — preview-layer dispatch on MIME.
+- `rust/frontend/src/ui/preview/{image/png,markdown/mod,image/svg}.rs` — three concrete renderers.
 - `rust/frontend/src/transport.rs` — SSH-spawn + Unix-socket connect + reconnect loop.
 - `rust/backend/src/main.rs` — Unix-socket listener, session-id handshake, kernel supervisor.
 - `rust/backend/src/session.rs` — session state (tree cursor, preview cache, revision counter for reconnect).

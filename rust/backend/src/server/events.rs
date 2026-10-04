@@ -31,7 +31,7 @@ pub(super) async fn recv_watcher(
 ///   workspace is gone, so there is no view left to serve traffic to.
 /// - `Some(id)` that resolves: the SAME two-path predicate
 ///   `resolve_preview_changed` applies frontend-side
-///   (`rust/frontend/src/gpu.rs`), just evaluated once at fan-out instead of
+///   (`rust/frontend/src/ui/preview/pane.rs`), just evaluated once at fan-out instead of
 ///   once per received-and-discarded frame — (a) the event is tagged with
 ///   the active workspace's slug, or (b) workspaces overlap (umbrella roots
 ///   registered over the same tree, watch budgets capping a watcher's

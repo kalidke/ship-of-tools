@@ -1,4 +1,4 @@
-// preview/png.rs — decode PNG bytes to RGBA8, hand the buffer to the quad
+// ui/preview/image/png.rs — decode PNG bytes to RGBA8, hand the buffer to the quad
 // pipeline. Future image/jpeg / image/webp use the same path.
 
 use anyhow::{Context, Result};

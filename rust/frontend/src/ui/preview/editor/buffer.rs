@@ -1,4 +1,4 @@
-// edit_buffer.rs — minimal editable text buffer for the concept-write
+// ui/preview/editor/buffer.rs — minimal editable text buffer for the concept-write
 // editor in the Preview pane.
 //
 // Scope per a 2026-05-15T21:32Z design note:

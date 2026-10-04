@@ -1,7 +1,7 @@
 // settings.rs — user-configurable layout (and future general) settings
 // for the frontend.
 //
-// Sibling to keybindings.rs and following the same layered-discovery
+// Sibling to ui/input/keybindings.rs and following the same layered-discovery
 // pattern, so both files feel consistent and the user (or the LLM
 // editing on their behalf) only has to learn one shape.
 //
@@ -73,7 +73,7 @@
 //                                   # the efficient on-demand idle path.
 //                                   # Set true on a VRR/adaptive-sync OLED
 //                                   # panel that pumps brightness in
-//                                   # borderless fullscreen (see gpu.rs);
+//                                   # borderless fullscreen (see ui/app/handler.rs);
 //                                   # everyone else stays off. Costs 25.5
 //                                   # points of one core + 8.5 points of
 //                                   # iGPU 3D continuously at idle in
@@ -143,7 +143,7 @@ impl GpuPowerPreference {
     fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             // The wgpu spellings are accepted too — the user reading
-            // gpu.rs shouldn't have to translate.
+            // ui/render/surface.rs shouldn't have to translate.
             "low" | "low_power" | "lowpower" | "integrated" => Some(GpuPowerPreference::Low),
             "high" | "high_performance" | "highperformance" | "discrete" => {
                 Some(GpuPowerPreference::High)

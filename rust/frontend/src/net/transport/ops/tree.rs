@@ -86,7 +86,7 @@ pub(crate) async fn send_toggle_hidden<W: AsyncWrite + Unpin>(
     )
     .await?;
     // No PendingKind: the response's new-state is redundant
-    // with the tree.root re-fetch gpu.rs fires right after,
+    // with the tree.root re-fetch `toggle_hidden_files` (ui/nav/files/listing.rs) fires right after,
     // and an unmatched response id is silently ignored.
     Ok(())
 }

@@ -484,7 +484,7 @@ struct State {
     /// user expects.
     wheel_residue_y: f32,
     /// Resolved keybindings (defaults overlaid with the user's
-    /// `keybindings.toml` if present). See `keybindings.rs` for the
+    /// `keybindings.toml` if present). See `ui/input/keybindings.rs` for the
     /// file format and discovery order. Read-only once loaded — the
     /// chrome doesn't reload mid-session.
     bindings: KeyBindings,

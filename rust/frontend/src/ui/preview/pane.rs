@@ -160,7 +160,7 @@ struct TokenSpan {
 }
 
 /// Raster image mimes the preview pane decodes through the byte-sniffing quad
-/// path (`preview/png.rs`, `with_guessed_format`). Kept in sync with the raster
+/// path (`ui/preview/image/png.rs`, `with_guessed_format`). Kept in sync with the raster
 /// `image/*` outputs of the backend's `mime_for_path`: `image/svg+xml` is
 /// excluded (vector — it has its own preview path) and `image/tiff` is omitted
 /// because the backend never emits it.

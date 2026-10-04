@@ -218,7 +218,7 @@ impl State {
                 }
                 // Same-ws short-circuit: if the target workspace is the one we're
                 // already viewing, render in place NOW (mirrors handle_nav_envelope
-                // gpu.rs:3399+, the in-place branch the imperative path dropped).
+                // ui/control/envelope.rs, the in-place branch the imperative path dropped).
                 // Without this, a same-ws preview badges + waits for a switch that
                 // never comes (you're already there) — so a naive `sot-fe
                 // preview <active-ws> <file>` opened nothing. The decision is a

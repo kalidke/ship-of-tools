@@ -351,7 +351,7 @@ mod tests {
     /// catch-all: `{"error": "unknown op: workspace.activate"}`, same `op`
     /// and `id` echoed back) finds nothing in `pending` and MUST fall all
     /// the way through to the generic `IncomingEvt::Event` catch-all —
-    /// which gpu.rs's own catch-all (`else { tracing::debug!(%op, "evt"); }`)
+    /// which ui/control/replies.rs's own catch-all (`else { tracing::debug!(%op, "evt"); }`)
     /// only logs at debug and does nothing else. This is what makes the skew
     /// safe: no status-line error, no retry, no effect on the switch that
     /// sent it. A real `WorkspaceActivateRes` success reply lands the exact
@@ -544,7 +544,7 @@ mod tests {
     // --- Switch-latency Phase 1: the generation/owner fields transport.rs
     // threads through `PendingKind` are exactly what the request stamped.
     // The chrome's accept/reject DECISION (`reply_is_current`) lives in
-    // gpu.rs and is tested there; this only proves the plumbing.
+    // ui/preview/fetch.rs and is tested there; this only proves the plumbing.
 
     #[test]
     fn concept_read_reply_echoes_the_workspace_and_generation_it_was_fired_with() {

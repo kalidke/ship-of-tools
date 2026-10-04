@@ -14,7 +14,7 @@
 #
 # Sentinel content picks the exit code (ADR 0017's 76 amendment): a bare
 # timestamp -> 75 (plain relaunch, this file's default). `-Converge` writes
-# `converge` instead -> the frontend's watcher (rust/frontend/src/gpu.rs)
+# `converge` instead -> the frontend's watcher (rust/frontend/src/relaunch.rs)
 # reads that back and exits 76, and the supervisor (launch-sot.ps1's
 # do/while loop) converges BEFORE respawning -- what that means depends on
 # the install: a PINNED release install applies any update sot-apply.ps1
@@ -67,7 +67,7 @@ $sentinel = Join-Path $sentinelDir 'relaunch.request'
 $sentinelValue = if ($Converge) { "converge`n$(Get-Date -Format o)" } else { Get-Date -Format o }
 # Write to a same-directory temp file, then Move-Item -Force (an atomic
 # rename on the same volume) into the final path -- the watcher thread
-# (gpu.rs) does exists -> read -> delete with no lock, so writing the
+# (relaunch.rs) does exists -> read -> delete with no lock, so writing the
 # final path directly risks it reading a partial/truncated write (which
 # decodes as a plain relaunch) or losing the delete race (an extra
 # respawn). -Encoding ascii, not utf8: PowerShell 5.1's -Encoding utf8

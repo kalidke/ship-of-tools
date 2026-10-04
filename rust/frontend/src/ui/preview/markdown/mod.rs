@@ -1,8 +1,8 @@
-// preview/markdown.rs — flowed markdown via comrak → cosmic-text rich text.
+// ui/preview/markdown/mod.rs — flowed markdown via comrak → cosmic-text rich text.
 //
 // Per ADR 0011: the preview-layer renders into a ratatui-allocated rect
 // without going through the cell stream. Markdown is text-only, so it reuses
-// the glyphon stack from text.rs rather than introducing a new pipeline.
+// the glyphon stack from ui/render/text.rs rather than introducing a new pipeline.
 //
 // The walk turns a comrak AST into a flat list of (text, attrs) spans which
 // cosmic-text consumes via `set_rich_text`. Inline math is intentionally left
@@ -75,7 +75,7 @@ const FIGURE_BLOCK_H_DEFAULT: f32 = 200.0;
 
 /// Per-equation pixel dimensions extracted from the MathJax SVG once
 /// it arrives, expressed in *unscaled* pixels so the walk can scale
-/// them by `Ctx::scale` itself. The chrome (gpu.rs) builds this from
+/// them by `Ctx::scale` itself. The chrome (ui/preview/pane.rs) builds this from
 /// `math_cache` before calling `MarkdownPreview::new`; the walk uses
 /// it to size display-math line heights and inline-math placeholders.
 #[derive(Clone, Copy, Debug)]
@@ -220,7 +220,7 @@ pub struct MarkdownPreview {
     pub media_blocks: Vec<MediaBlock>,
     /// Fences that were walked but not yet covered by the
     /// `markdown.tokenize` cache. Each entry is `(lang, source_hash,
-    /// padded_source)` — caller (gpu.rs) drains this after construction
+    /// padded_source)` — caller (`dispatch_pending_markdown_tokens`, ui/preview/markdown/media.rs) drains this after construction
     /// to fire `OutgoingReq::MarkdownTokenize` for any not already
     /// in-flight. Empty in the cache-hit path (everything came from
     /// the overlay).

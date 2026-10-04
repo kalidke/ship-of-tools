@@ -273,7 +273,7 @@ function Stop-Splash {
 # one-line startup notice (a refused pull, a failed comm install, a pinned
 # capsule -- see Invoke-FreshnessPass and Set-LaunchNoticeEnv below): the
 # frontend renders $env:SOT_LAUNCH_NOTICE as a single status string
-# (gpu.rs's FeCommand::Notify arm), so multiple problems join with "; "
+# (ui/control/dispatch.rs's FeCommand::Notify arm), so multiple problems join with "; "
 # rather than teaching it a list. Reset at the start of every prelude call
 # (each launch, and each converge) so a resolved problem stops repeating.
 $script:launchNotices = [System.Collections.Generic.List[string]]::new()
@@ -508,7 +508,7 @@ if (-not $Local) {
 #
 # ADR 0042 L2a codex review, item I: the state-toml `last_host` read
 # (`Read-SotLastHost`, ADR 0015) is DELETED (unrelated to this box's own
-# host name -- see state_persistence.rs's field doc for what `last_host`
+# host name -- see ui/persist/resume.rs's field doc for what `last_host`
 # means today, frontend-side).
 #
 # Ordering risk (manager review): a brand-new box has no sotd(.exe) built
@@ -837,7 +837,7 @@ if (-not $localDaemonReady) {
 # same respawn but FIRST re-runs Invoke-SelfUpdatePrelude + Invoke-
 # FreshnessPass + Invoke-LocalDaemonEnsure -- relaunch-sot.ps1 -Converge
 # writes `converge` as the sentinel file's content instead of a bare
-# timestamp, and the frontend's watcher (rust/frontend/src/gpu.rs) reads
+# timestamp, and the frontend's watcher (rust/frontend/src/relaunch.rs) reads
 # that back to pick 76 over 75. Any other exit code = real quit. See
 # docs/adr/0017-frontend-self-relaunch.md's 76 amendment.
 # A converge that finds the launcher code on disk changed re-invokes the
@@ -903,7 +903,7 @@ if ($token) {
 # this SAME invocation. A later exit-76 CONVERGE re-runs the prelude and
 # freshness pass and calls Set-LaunchNoticeEnv again before its own respawn
 # (see the do/while loop), so the notice stays current across converges too.
-# The frontend reads it once at its own startup (rust/frontend/src/gpu.rs)
+# The frontend reads it once at its own startup (rust/frontend/src/ui/init/mod.rs)
 # and renders it through the same status/notify_sticky_until fields
 # FeCommand::Notify uses.
 function Set-LaunchNoticeEnv {
@@ -920,7 +920,7 @@ Set-LaunchNoticeEnv
 # SAME value, while a fresh `launch-sot.ps1` invocation (a genuinely
 # independent frontend, not a relaunch of this one) mints its own. The
 # frontend folds this into its supervisor-lane controller id
-# (`gpu.rs`'s `fe_instance_component`) so the durable record can tell
+# (`net/identity.rs`'s `resolve_fe_instance_component`) so the durable record can tell
 # two frontends on one machine apart even though their comm handle
 # (hostname-based) is identical. Respects an existing value so a caller
 # can pin one explicitly; never overwritten by a converge/relaunch.

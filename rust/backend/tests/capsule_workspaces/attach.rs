@@ -97,7 +97,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     // exactly what the frontend sends attaching a capsule row — though
     // in practice the frontend never sends it for THIS row at all
     // (2026-09-04's own frontend-side filter, tested separately in
-    // `gpu.rs`); this is belt-and-suspenders coverage of the backend
+    // `ui/nav/sessions_tree_tests.rs`); this is belt-and-suspenders coverage of the backend
     // guard alone.
     let pty_req = serde_json::json!({
         "cols": 80, "rows": 24, "user_switch": true, "target": default_target,

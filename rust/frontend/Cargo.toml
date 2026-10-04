@@ -78,7 +78,7 @@ rfd = { version = "0.14", default-features = false, features = ["xdg-portal", "t
 arboard = { version = "3", default-features = false }
 # Tree-sitter syntax highlighting for the markdown preview's fenced code
 # blocks and (later) the editor pane. Replaces the hand-rolled Julia lexer
-# in `preview/markdown.rs` — see ADR (TODO) for the migration rationale.
+# in `src/ui/preview/markdown/` — see ADR (TODO) for the migration rationale.
 # v1 covers Julia only; rust/python/markdown grammars layer on later via
 # the same `HighlightService::LanguageRegistry`. C compiler required at
 # build time (every grammar crate has its own `build.rs` invoking `cc`);
@@ -98,7 +98,7 @@ portable-pty = "0.9"
 # Windows-only: force the relaunched window to the OS foreground. winit's
 # focus_window() is blocked by the Win32 foreground lock for a freshly
 # spawned process (ADR 0017 self-relaunch), so we do the AttachThreadInput
-# dance via raw user32 calls (see force_os_foreground in gpu.rs). Scoped to
+# dance via raw user32 calls (see force_os_foreground in src/relaunch.rs). Scoped to
 # Windows; the frontend builds on Linux/macOS untouched.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [

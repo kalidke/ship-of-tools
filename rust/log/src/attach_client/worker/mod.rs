@@ -39,7 +39,7 @@
 //! `attach_headless`/`pump`/`screen`/`send_input`/`resize`/
 //! `request_quit`/`quit_message`/`should_exit`/`shutdown`/...) is
 //! unchanged for its existing callers: the frontend's Terminal drawer
-//! and session pane (`gpu.rs`) and the daemon's headless callers
+//! and session pane (`ui/drawer/terminal/`, `ui/agent_pane/`) and the daemon's headless callers
 //! (`capsule_workspace.rs`).
 
 use crate::client::Endpoint;

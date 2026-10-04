@@ -68,7 +68,7 @@ pub struct WorkspaceInfo {
     /// one reporting `""`) changes nothing there either.
     ///
     /// Deserialized on every platform (the wire contract doesn't fork by
-    /// FE OS). Historically read by gpu.rs only from `#[cfg(windows)]`
+    /// FE OS). Historically read by ui/ only from `#[cfg(windows)]`
     /// call sites (L1b fix 5: capsule has nothing to attach to off
     /// Windows) — 2026-09-04 amendment adds one platform-agnostic
     /// reader, `session_host_children`'s inert-anchor filter, which must

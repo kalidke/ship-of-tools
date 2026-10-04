@@ -377,7 +377,7 @@ mod tests {
     // concurrently on another thread (observed: state_path called twice in
     // the same test resolving to two DIFFERENT dirs). Deliberately does NOT
     // touch XDG_CONFIG_HOME/HOME — those are shared with
-    // state_persistence.rs's OWN (differently-locked) test env mutation,
+    // ui/persist/resume.rs's OWN (differently-locked) test env mutation,
     // and cross-module interference there was observed directly (a flaky
     // failure in load_tolerates_garbage_lines while this module's tests ran
     // concurrently).

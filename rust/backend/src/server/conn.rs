@@ -271,7 +271,7 @@ where
 
     // This connection's active workspace, made EXPLICIT via `workspace.activate`
     // (`op::WORKSPACE_ACTIVATE`) — the frontend's single "switch chrome" entry
-    // point (`switch_to_workspace`, gpu.rs) fires it UNCONDITIONALLY as the
+    // point (`switch_to_workspace`, ui/session/switch.rs) fires it UNCONDITIONALLY as the
     // very first wire action of any switch, including a UI-cache hit that
     // fires no other request at all, and a switch back to the default
     // workspace. Also fired once on reconnect, right after `hello` succeeds.

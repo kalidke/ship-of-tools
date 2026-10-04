@@ -14,7 +14,7 @@ export MarkdownDoc
     MarkdownDoc <: FileType
 
 Built-in plugin for Markdown files. Renders as `text/markdown`; the
-frontend's existing markdown renderer (`preview/markdown.rs` with
+frontend's existing markdown renderer (`rust/frontend/src/ui/preview/markdown/` with
 comrak) does the actual layout and inline-math rendering.
 """
 struct MarkdownDoc <: ConceptExplorerCore.FileType end

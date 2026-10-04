@@ -1,4 +1,4 @@
-// state_persistence.rs — frontend-side "where we left off" durable state
+// ui/persist/resume.rs — frontend-side "where we left off" durable state
 // per ADR 0013 §"Startup — resume, don't land".
 //
 // Two files live under `$XDG_CONFIG_HOME/sot/` (or `$HOME/.config/sot/`):
@@ -57,7 +57,7 @@ pub struct GlobalState {
     pub last_host: Option<String>,
     /// Window inner size in *logical* pixels so cross-DPR launches
     /// don't blow up the geometry. `None` falls through to the
-    /// hard-coded default in gpu.rs.
+    /// hard-coded default in ui/init/mod.rs.
     pub window_w: Option<f64>,
     pub window_h: Option<f64>,
     /// Window outer position in *logical* pixels. `None` lets the OS
@@ -76,7 +76,7 @@ pub struct GlobalState {
     /// zoom instead of resetting to 1.0. `None` → default 1.0.
     pub font_scale: Option<f64>,
     /// Nav cursor's selected node id at last save (e.g.
-    /// `files:rust/frontend/src/gpu.rs`), restored best-effort when that
+    /// `files:rust/frontend/src/ui/mod.rs`), restored best-effort when that
     /// row is present in the reloaded tree. `None` → land on the default
     /// cursor.
     pub nav_selected_id: Option<String>,

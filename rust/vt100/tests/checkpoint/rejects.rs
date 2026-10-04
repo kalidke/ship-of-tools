@@ -240,7 +240,7 @@ fn restore_adopts_the_checkpoints_dimensions() {
 /// that step, at the exact crate boundary the fix calls: every cell the
 /// checkpoint described keeps its content and position, and every cell in
 /// the pane's rect resolves to `Some` rather than the `None` that made
-/// `rust/frontend/src/gpu.rs`'s `paint_terminal` skip a cell and leave a
+/// `rust/frontend/src/ui/drawer/terminal/vt.rs`'s `paint_terminal` skip a cell and leave a
 /// previous frame's content sitting in the ratatui buffer — the observed
 /// "garbled" first paint.
 #[test]

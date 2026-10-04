@@ -2,7 +2,7 @@
 //! U0 — promoted from the frontend's own `paths.rs`, build-order step 1's
 //! comment there): ONE resolution rule, owned here so every process that
 //! needs it shares it rather than drifting copies. That drift already
-//! happened once — `gpu.rs`'s old `sot_state_dir()` checked
+//! happened once — `ui/`'s old `sot_state_dir()` checked
 //! `%LOCALAPPDATA%` only on Windows while `state.rs`'s old `state_path()`
 //! checked `$XDG_STATE_HOME` first on *both* platforms, so a Windows box
 //! with `XDG_STATE_HOME` set split session state from the relaunch
@@ -81,7 +81,7 @@ pub fn sot_state_dir() -> Option<std::path::PathBuf> {
 
 /// The declared identity's `host` component (ADR 0046 decision 1): one
 /// resolver, replacing the five independent guesses that used to disagree
-/// (`gpu.rs`'s per-call mint, the backend's own `gethostname` call, this
+/// (`ui/`'s per-call mint, the backend's own `gethostname` call, this
 /// crate's old `state_host()`, the comm digest, and the frontend's `hosts.rs`
 /// label) — every one of them fixed a wrong answer with another resolver
 /// tier or override env instead of declaring the fact once.
@@ -320,7 +320,7 @@ mod tests {
 
     // Every test here mutates process-global env vars, and `cargo test`
     // runs tests in parallel within one process by default — the SAME
-    // discipline `state_persistence.rs`'s own tests already use for this
+    // discipline `ui/persist/resume.rs`'s own tests already use for this
     // exact reason.
     static SERIAL: Mutex<()> = Mutex::new(());
 

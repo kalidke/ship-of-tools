@@ -169,7 +169,7 @@ pub(in crate::ui) fn session_strip_lines(
         // keep the pre-state-nav styling so "idle = current colour" holds.
         // The contrast lever composes on top via `contrast_tone_rgb` for the
         // coloured branch; for the plain branches the "dim" lever bakes an
-        // explicitly-dimmed colour (text.rs's fixed 0.65 DIM can't be made
+        // explicitly-dimmed colour (ui/render/text.rs's fixed 0.65 DIM can't be made
         // stronger through the `dim` flag alone). The flash is applied last.
         let (color, dim) = match tones.get(i).copied().flatten() {
             Some((

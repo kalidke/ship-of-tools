@@ -23,7 +23,7 @@ pub enum OutgoingReq {
     },
     /// Flip the backend's per-workspace Files-mode "show hidden files" flag
     /// (`nav.toggle_hidden`, ADR: `.` keybind). The backend bumps
-    /// `tree.invalidate`; the caller (gpu.rs) re-fetches `tree.root` right
+    /// `tree.invalidate`; the caller (`toggle_hidden_files`, ui/nav/files/listing.rs) re-fetches `tree.root` right
     /// after on the same ordered connection so the new visibility shows up.
     /// The response carries the new state but the FE ignores it (the re-fetch
     /// is authoritative), so no PendingKind is stamped.
@@ -31,7 +31,7 @@ pub enum OutgoingReq {
     /// Explicit "this connection's view is now `workspace_id`" signal
     /// (`workspace.activate`, `None` = default workspace). Fired
     /// UNCONDITIONALLY as the very first wire action of `switch_to_workspace`
-    /// (gpu.rs) — including a UI-cache hit that fires no other request at
+    /// (ui/session/switch.rs) — including a UI-cache hit that fires no other request at
     /// all — and once more on reconnect, right after `hello` succeeds
     /// (`IncomingEvt::Connected`'s resume handling). Replaces inferring the
     /// active workspace daemon-side from whichever op's `workspace_id`
@@ -53,7 +53,7 @@ pub enum OutgoingReq {
     /// winit `window_event` handler's real `KeyboardInput`/`MouseInput`
     /// arms, throttled there to at most one per `PRESENCE_THROTTLE` — never
     /// from command-file dispatch, capture-mode simulation, or any other
-    /// automated path. `gpu.rs`'s `report_presence` sends this one PER
+    /// automated path. `ui/session/presence.rs`'s `report_presence` sends this one PER
     /// CONNECTED HOST (`send_to`, not `send`) under that one throttle: a
     /// person is present for every daemon this frontend is attached to,
     /// not only whichever host is active right now — otherwise a daemon
@@ -69,7 +69,7 @@ pub enum OutgoingReq {
     FePresence,
     /// Declare the sot-comm handles this box's OWN daemon owns, with
     /// their state (session-listing brief decision 2), on a connection
-    /// OTHER than that owning daemon's own — see `gpu.rs`'s
+    /// OTHER than that owning daemon's own — see `ui/events.rs`'s
     /// `IncomingEvt::Workspaces`/`Connected` arms for who sends this and
     /// when. Fire-and-forget, same idiom as `FePresence` above: no
     /// `PendingKind`, an older daemon's unknown-op error is silently

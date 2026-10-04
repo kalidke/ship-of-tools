@@ -78,7 +78,7 @@ pub struct TransportConfig {
 /// DIFFERENT daemon than the one actually running this host.
 ///
 /// Lives here, beside `TransportConfig`, because `IncomingEvt::Connected`
-/// carries it — moved out of `gpu.rs`, which names it
+/// carries it — moved out of `ui/mod.rs`, which names it
 /// `crate::transport::ResolvedDial`. No longer `Copy` (`SshRecipe` isn't):
 /// every former `.copied()` reader became `.cloned()` (the amendment's own
 /// site list, C3's commit).

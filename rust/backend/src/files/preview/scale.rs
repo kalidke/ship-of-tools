@@ -363,7 +363,7 @@ pub(super) fn merge_png_phys_scale(
     let Some((x_nm, y_nm)) = png_phys_nm_per_px(bytes) else {
         return extras;
     };
-    // The FE renders ONE bar from `axes[0]` by design (gpu.rs: "Isotropic
+    // The FE renders ONE bar from `axes[0]` by design (ui/preview/image/overlay.rs: "Isotropic
     // sources ship two equal axes; Phase 1 renders one bar"). A sidecar is
     // hand-authored, so unequal axes there are a deliberate act; `pHYs` is
     // read automatically off any file that happens to have one, so emitting

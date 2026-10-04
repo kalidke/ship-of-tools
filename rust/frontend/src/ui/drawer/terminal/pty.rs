@@ -1,4 +1,4 @@
-// term/mod.rs — local terminal pane: PTY hosting + shell resolution.
+// ui/drawer/terminal/pty.rs — local terminal pane: PTY hosting + shell resolution.
 //
 // G2 (Frontend PTY plumbing): `LocalTerminal` spawns an arbitrary shell in a
 // PTY, reads its output on a background thread forwarding chunks via mpsc, and

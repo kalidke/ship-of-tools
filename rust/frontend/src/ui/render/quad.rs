@@ -1,4 +1,4 @@
-// preview/quad.rs — textured-quad pipeline shared by every bitmap-bearing
+// ui/render/quad.rs — textured-quad pipeline shared by every bitmap-bearing
 // preview renderer (png, svg-via-resvg, future video frames, …).
 //
 // Renders an RGBA8 texture into a screen-space rect specified in physical

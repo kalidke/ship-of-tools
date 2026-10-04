@@ -27,7 +27,7 @@ pub enum IncomingEvt {
         /// `ResolvedDial::Local` for the pipe, `ResolvedDial::Ssh(recipe)`
         /// for the ssh child, carrying the exact recipe it spawned. The
         /// proxy arms on `proxy && !matches!(resolved, ResolvedDial::Local)`
-        /// (`gpu.rs`) — keyed on the transport that CONNECTED, not the CLI
+        /// (`ui/events.rs`) — keyed on the transport that CONNECTED, not the CLI
         /// shape.
         /// Replaces the former separate `remote: bool` / `tcp_peer:
         /// Option<SocketAddr>` pair: `remote` was literally `via_tcp`, and
@@ -195,7 +195,7 @@ pub enum IncomingEvt {
     /// happy path from the stale-write optimistic-concurrency refusal
     /// (Linux's `4ebca35`) and from any other backend error so the chrome
     /// can offer the right next-step UX. Consumer is the concept-write
-    /// editor in gpu.rs.
+    /// editor in ui/events.rs.
     ConceptWriteDone {
         target: String,
         result: ConceptWriteResult,

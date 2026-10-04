@@ -2,8 +2,8 @@
 // held for the window's life, so the daemon knows a window is attached and
 // the window can say, on leaving, what should happen to the computer's
 // sessions. This file is the lease's whole client side; `transport.rs` calls
-// `before_data_connection` before each local data connection, and `gpu.rs`
-// reads `notice()` and `owed()`, acks through `notice_seen`, and leaves through it.
+// `before_data_connection` before each local data connection, and the window
+// (ui/chrome/draw.rs, ui/app/frame.rs) reads `notice()` and `owed()`, acks through `notice_seen`, and leaves through it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;

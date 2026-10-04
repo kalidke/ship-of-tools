@@ -1,4 +1,4 @@
-// preview/svg.rs — SVG bytes → RGBA8 bitmap via resvg → quad.
+// ui/preview/image/svg.rs — SVG bytes → RGBA8 bitmap via resvg → quad.
 //
 // This is the path inline-math takes: the backend's MathJax sidecar produces
 // SVG for each math snippet (per ADR 0012); we rasterise here at the size the
@@ -42,7 +42,7 @@ fn system_fontdb() -> Arc<fontdb::Database> {
 /// Rasterise SVG bytes into an RGBA8 bitmap of exactly `(target_w,
 /// target_h)` and upload as a quad. Non-uniform scaling: the caller is
 /// expected to have computed `target_*` from the SVG's intrinsic ex-unit
-/// dimensions (see `gpu.rs::parse_math_svg_dims` /
+/// dimensions (see `ui/preview/markdown/media.rs::parse_math_svg_dims` /
 /// `MATHJAX_EX_FACTOR`), so the aspect ratio is already correct. If the
 /// caller passes an aspect that disagrees with the SVG, the output will
 /// stretch — that's a caller bug, not a fit-recovery concern. Doing the

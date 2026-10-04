@@ -1,4 +1,4 @@
-// preview/highlight.rs — tree-sitter-backed syntax highlighting.
+// ui/preview/markdown/highlight.rs — tree-sitter-backed syntax highlighting.
 //
 // One `HighlightService` lives on `State`; the markdown preview's fenced
 // code-block walk and (later) the editor pane both call

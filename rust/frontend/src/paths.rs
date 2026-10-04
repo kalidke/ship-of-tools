@@ -1,7 +1,7 @@
 // paths.rs — shared filesystem path resolution.
 //
 // ADR 0041 build-order step 1: ONE resolution rule for the per-machine state
-// dir, replacing two copies that had drifted apart (`gpu.rs`'s
+// dir, replacing two copies that had drifted apart (`ui/`'s old
 // `sot_state_dir()` checked `%LOCALAPPDATA%` only on Windows; `state.rs`'s
 // `state_path()` checked `$XDG_STATE_HOME` first on *both* platforms). With
 // `XDG_STATE_HOME` set on Windows that split session state from the relaunch

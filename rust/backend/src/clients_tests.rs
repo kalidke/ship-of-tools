@@ -443,7 +443,7 @@ mod fe_sessions_tests {
 
     /// Review blocker 1 (cut for rc9.8): `name` identifies a BOX, not a
     /// process — a SECOND frontend on the same box (same declared name,
-    /// `instance` is what tells them apart, gpu.rs) can exit and leave a
+    /// `instance` is what tells them apart, rust/frontend/src/net/identity.rs) can exit and leave a
     /// stale `disconnected` entry for an identity a still-live connection
     /// ALSO holds right now. That identity must list as attached, never
     /// both attached and gone.

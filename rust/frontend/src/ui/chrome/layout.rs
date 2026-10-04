@@ -8,7 +8,7 @@
 //
 // The chrome rendering closure stays largely intact — it just asks
 // this module for a `LayoutGeom` and reads rect per slot.
-// `draw_wireframe` (in `gpu.rs`) now takes the inner vertical /
+// `draw_wireframe` (in this file) now takes the inner vertical /
 // horizontal line positions from the same struct, so the box-drawing
 // junctions stay in sync with the pane geometry automatically.
 
