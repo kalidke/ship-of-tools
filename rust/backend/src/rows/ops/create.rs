@@ -329,78 +329,10 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     Ok((capsule_argv, capsule_state_root, account))
 }
 
-pub async fn handle_workspace_create(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    session: &Session,
-    workspaces: &Workspaces,
-    ws_events: &broadcast::Sender<WorkspaceChanged>,
-) -> Result<HandlerOutput> {
-    use sot_protocol::{WorkspaceCreateReq, WorkspaceCreateRes};
-    // ADR 0023 §3 daemon-boot trigger — read off the raw payload (it is not a
-    // `WorkspaceCreateReq` struct field: adding one would force the frozen FE's
-    // struct literal to set it). serde ignores it on the typed deserialize below.
-    let boot = payload_json
-        .get("boot")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let req: WorkspaceCreateReq =
-        serde_json::from_value(payload_json).context("workspace.create payload")?;
-    tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
-
-    let project_root = std::path::PathBuf::from(&req.project_root);
-    if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
-        return Ok(out);
-    }
-
-    let (agent_kind, autostart, runtime) = match resolve_create_agent(req_id, &req) {
-        Ok(agent) => agent,
-        Err(out) => return Ok(out),
-    };
-    let (capsule_argv, capsule_state_root, account) =
-        match check_create_host(req_id, &req, &agent_kind, &runtime, &project_root) {
-            Ok(host) => host,
-            Err(out) => return Ok(out),
-        };
-    let mut ws_seed = crate::workspaces::Workspace::from_label(
-        &req.label,
-        project_root.clone(),
-        autostart,
-        agent_kind.clone(),
-        req.agent_name.clone(),
-        req.task.clone(),
-    );
-    ws_seed.runtime = runtime;
-    ws_seed.account = std::sync::Mutex::new(account);
-    // The run gate, before the row exists: a refused create leaves nothing
-    // to roll back. Held through the start below, so a shutdown that
-    // closes the gate meanwhile waits for this create to finish.
-    let start_permit = match workspaces.begin_start(&ws_seed.workspace_id) {
-        Ok(permit) => permit,
-        Err(refusal) => {
-            let payload = json!({
-                "error": format!("capsule workspace could not be started: {refusal}"),
-                "code": "capsule_spawn_failed",
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
-                None,
-            )]);
-        }
-    };
-    let ws_handle = workspaces.insert(ws_seed);
-    if let Err(e) = crate::workspaces::save(&ws_handle) {
-        tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
-    }
-
-    // ADR 0043 decision 22: branch on the resolved runtime VALUE, not a
-    // platform cfg. Since ADR 0046 decision 5 that value is always
-    // "capsule" for a NEW row, and since the macOS wiring lane the
-    // capsule runtime carries no platform gate at all: one spawn path,
-    // every host this daemon builds for. What differs per platform lives
-    // in `capsule_workspace`'s own leaf `cfg(unix)`/`cfg(windows)` arms,
-    // so a host with neither fails to COMPILE rather than quietly
-    // creating a row it can never supervise.
+/// Starts the new row's capsule supervisor; a failure rolls the row back and refuses.
+async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, workspaces: &Workspaces,
+    ws_handle: &std::sync::Arc<crate::workspaces::Workspace>, capsule_state_root: Option<std::path::PathBuf>,
+    capsule_argv: &Vec<String>, project_root: &std::path::PathBuf) -> std::result::Result<(), HandlerOutput> {
     {
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
     // and, unlike the tmux path below, a SYNCHRONOUS failure here
@@ -519,12 +451,92 @@ pub async fn handle_workspace_create(
                 "error": format!("capsule workspace could not be started: {detail}"),
                 "code": "capsule_spawn_failed",
             });
-            return Ok(vec![(
+            return Err(vec![(
                 Frame::res(req_id, op::WORKSPACE_CREATE, payload),
                 None,
             )]);
         }
     }
+    }
+    Ok(())
+}
+
+pub async fn handle_workspace_create(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    session: &Session,
+    workspaces: &Workspaces,
+    ws_events: &broadcast::Sender<WorkspaceChanged>,
+) -> Result<HandlerOutput> {
+    use sot_protocol::{WorkspaceCreateReq, WorkspaceCreateRes};
+    // ADR 0023 §3 daemon-boot trigger — read off the raw payload (it is not a
+    // `WorkspaceCreateReq` struct field: adding one would force the frozen FE's
+    // struct literal to set it). serde ignores it on the typed deserialize below.
+    let boot = payload_json
+        .get("boot")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let req: WorkspaceCreateReq =
+        serde_json::from_value(payload_json).context("workspace.create payload")?;
+    tracing::info!(label = %req.label, project_root = %req.project_root, boot, "workspace.create");
+
+    let project_root = std::path::PathBuf::from(&req.project_root);
+    if let Err(out) = check_create_root(req_id, &req, &project_root, workspaces) {
+        return Ok(out);
+    }
+
+    let (agent_kind, autostart, runtime) = match resolve_create_agent(req_id, &req) {
+        Ok(agent) => agent,
+        Err(out) => return Ok(out),
+    };
+    let (capsule_argv, capsule_state_root, account) =
+        match check_create_host(req_id, &req, &agent_kind, &runtime, &project_root) {
+            Ok(host) => host,
+            Err(out) => return Ok(out),
+        };
+    let mut ws_seed = crate::workspaces::Workspace::from_label(
+        &req.label,
+        project_root.clone(),
+        autostart,
+        agent_kind.clone(),
+        req.agent_name.clone(),
+        req.task.clone(),
+    );
+    ws_seed.runtime = runtime;
+    ws_seed.account = std::sync::Mutex::new(account);
+    // The run gate, before the row exists: a refused create leaves nothing
+    // to roll back. Held through the start below, so a shutdown that
+    // closes the gate meanwhile waits for this create to finish.
+    let start_permit = match workspaces.begin_start(&ws_seed.workspace_id) {
+        Ok(permit) => permit,
+        Err(refusal) => {
+            let payload = json!({
+                "error": format!("capsule workspace could not be started: {refusal}"),
+                "code": "capsule_spawn_failed",
+            });
+            return Ok(vec![(
+                Frame::res(req_id, op::WORKSPACE_CREATE, payload),
+                None,
+            )]);
+        }
+    };
+    let ws_handle = workspaces.insert(ws_seed);
+    if let Err(e) = crate::workspaces::save(&ws_handle) {
+        tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
+    }
+
+    // ADR 0043 decision 22: branch on the resolved runtime VALUE, not a
+    // platform cfg. Since ADR 0046 decision 5 that value is always
+    // "capsule" for a NEW row, and since the macOS wiring lane the
+    // capsule runtime carries no platform gate at all: one spawn path,
+    // every host this daemon builds for. What differs per platform lives
+    // in `capsule_workspace`'s own leaf `cfg(unix)`/`cfg(windows)` arms,
+    // so a host with neither fails to COMPILE rather than quietly
+    // creating a row it can never supervise.
+    if let Err(out) = start_created_capsule(req_id, &req, workspaces, &ws_handle, capsule_state_root,
+        &capsule_argv, &project_root).await
+    {
+        return Ok(out);
     }
     drop(start_permit);
 
