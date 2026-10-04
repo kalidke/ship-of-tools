@@ -44,7 +44,7 @@ use crate::handlers::HandlerOutput;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// The "active frontend" window: a `last_person_input_at` stamp older than
 /// this no longer counts as "a person is here" for `snapshot_with_active`
@@ -56,9 +56,7 @@ const ACTIVE_WINDOW: Duration = Duration::from_secs(5 * 60);
 /// One connected frontend, as the backend sees it. `app_version`/`protocol`
 /// (ADR 0030 §8 decision 31b) are what `version.query` reports per client —
 /// sourced from the hello this connection already sent, never a new probe.
-/// `peer` is captured but not yet surfaced on the wire (hence `allow`ed).
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ClientInfo {
     /// This connection's own registration serial (mirrors the `by_conn`
     /// map key onto the value itself) — carried here so a caller holding
@@ -68,16 +66,9 @@ pub struct ClientInfo {
     pub serial: u64,
     /// The frontend-supplied, reconnect-stable id (per ADR 0010).
     pub client_id: String,
-    /// "local" | "tcp" — the transport this connection arrived on.
-    pub transport: &'static str,
-    /// Peer address for TCP connections; None for local sockets.
-    pub peer: Option<String>,
-    /// Unix-epoch seconds the connection registered (hello time).
-    pub connected_at: u64,
     /// This client's `HelloReq::app_version`, captured at registration
     /// (first hello on this connection — a later reconnect hello on the
-    /// SAME connection keeps the original `register` call, matching
-    /// `transport`/`peer`'s own lifetime).
+    /// SAME connection keeps the original `register` call).
     pub app_version: String,
     /// This client's `HelloReq::protocol`, same capture timing as
     /// `app_version`.
@@ -166,7 +157,7 @@ impl Clients {
 
     /// How long this daemon process has been up — the session-listing
     /// brief's header value, and nothing else: no other decision reads
-    /// this (it is display only, same footing as `connected_at`).
+    /// this.
     pub fn uptime(&self) -> Duration {
         Instant::now().saturating_duration_since(self.started_at)
     }
@@ -177,8 +168,6 @@ impl Clients {
     pub fn register(
         &self,
         client_id: impl Into<String>,
-        transport: &'static str,
-        peer: Option<String>,
         app_version: impl Into<String>,
         protocol: u32,
         role: String,
@@ -190,9 +179,6 @@ impl Clients {
         let info = ClientInfo {
             serial,
             client_id: client_id.into(),
-            transport,
-            peer,
-            connected_at: now_secs(),
             app_version: app_version.into(),
             protocol,
             role,
@@ -213,7 +199,6 @@ impl Clients {
             role = %info.role,
             host = ?info.host,
             instance = ?info.instance,
-            transport = info.transport,
             connections = count,
             distinct_clients = %roster,
             "frontend connected"
@@ -463,15 +448,6 @@ fn distinct_client_ids(by_conn: &HashMap<u64, ClientInfo>) -> String {
     ids.sort_unstable();
     ids.dedup();
     ids.join(",")
-}
-
-/// Wall-clock seconds for `connected_at` (informational/logging only — the
-/// active-frontend resolution above uses `Instant`, never this).
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// `version.query` (ADR 0030 §8 decision 31b, ADR 0043 decision 31): pure

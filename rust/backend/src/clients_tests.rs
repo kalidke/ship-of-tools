@@ -6,10 +6,10 @@
         let clients = Clients::new();
         assert_eq!(clients.count(), 0);
 
-        let g1 = clients.register("client-a", "tcp", Some("127.0.0.1:5000".into()), "0.6.0", 1, String::new(), None, None, None);
+        let g1 = clients.register("client-a", "0.6.0", 1, String::new(), None, None, None);
         assert_eq!(clients.count(), 1);
 
-        let g2 = clients.register("client-b", "local", None, "0.6.0", 1, String::new(), None, None, None);
+        let g2 = clients.register("client-b", "0.6.0", 1, String::new(), None, None, None);
         assert_eq!(clients.count(), 2);
         assert_eq!(clients.snapshot_with_active().clients.len(), 2);
 
@@ -22,8 +22,8 @@
     #[test]
     fn same_client_id_two_connections_are_distinct() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None);
-        let g2 = clients.register("client-a", "tcp", None, "0.6.0", 1, String::new(), None, None, None);
+        let g1 = clients.register("client-a", "0.6.0", 1, String::new(), None, None, None);
+        let g2 = clients.register("client-a", "0.6.0", 1, String::new(), None, None, None);
         // Two live connections, one distinct client.
         assert_eq!(clients.count(), 2);
         assert_eq!(distinct_client_ids(&clients.inner.lock().unwrap().by_conn), "client-a");
@@ -38,7 +38,7 @@
         // Decision 31b: this is exactly what `version.query`'s `clients[]`
         // roster reads — sourced from registration, not a new probe.
         let clients = Clients::new();
-        let g = clients.register("client-a", "tcp", None, "0.6.0-dev+abc1234", 1, String::new(), None, None, None);
+        let g = clients.register("client-a", "0.6.0-dev+abc1234", 1, String::new(), None, None, None);
         let snap = clients.snapshot_with_active();
         assert_eq!(snap.clients.len(), 1);
         assert_eq!(snap.clients[0].app_version, "0.6.0-dev+abc1234");
@@ -49,8 +49,8 @@
     #[test]
     fn touch_person_input_stamps_only_the_named_serial() {
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _g2 = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let g1 = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _g2 = clients.register("client-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         assert!(clients
             .snapshot_with_active()
@@ -69,7 +69,7 @@
     #[test]
     fn touch_person_input_on_a_departed_serial_is_a_harmless_noop() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         let serial = g.serial();
         drop(g);
         // Must not panic on a serial that no longer has an entry.
@@ -89,7 +89,7 @@
     #[test]
     fn declare_sessions_lands_on_its_serial_and_dies_with_the_connection() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         assert!(
             clients.snapshot_with_active().clients[0].sessions.is_none(),
             "never-declared reads as None before the first fe.sessions"
@@ -109,7 +109,7 @@
     #[test]
     fn declare_sessions_on_a_departed_serial_is_a_harmless_noop() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         let serial = g.serial();
         drop(g);
         // Must not panic on a serial that no longer has an entry.
@@ -125,7 +125,7 @@
         // one row on a box with several must drop only that handle from
         // the NEXT declaration, leaving the others' state untouched.
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(
             g.serial(),
             vec![
@@ -162,7 +162,7 @@
         // the sessions leave with the connection, but the BOX is retained
         // as one "not connected since" entry — never silently absent.
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(g.serial(), vec![declared_session("agent@host-a", "working")]);
         drop(g);
 
@@ -178,7 +178,7 @@
         // must not manufacture a "not connected" line for a box that
         // never claimed to have sessions in the first place.
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         drop(g);
 
         assert_eq!(
@@ -194,12 +194,12 @@
         // a FRESH connection under the same name clears the entry the
         // PREVIOUS connection's drop left behind.
         let clients = Clients::new();
-        let g1 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g1 = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(g1.serial(), vec![declared_session("agent@host-a", "working")]);
         drop(g1);
         assert_eq!(clients.disconnected_since(Instant::now()).len(), 1, "disconnected after the first drop");
 
-        let g2 = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g2 = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(g2.serial(), vec![declared_session("agent@host-a", "working")]);
         assert_eq!(
             clients.disconnected_since(Instant::now()),
@@ -211,7 +211,7 @@
     #[test]
     fn a_second_declaration_replaces_the_first_rather_than_accumulating() {
         let clients = Clients::new();
-        let g = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(g.serial(), vec![declared_session("agent-1@host-a", "working")]);
         clients.declare_sessions(g.serial(), vec![declared_session("agent-2@host-a", "idle")]);
 
@@ -225,7 +225,7 @@
     fn active_frontend_requires_both_a_handle_and_a_fresh_stamp() {
         let clients = Clients::new();
         // No handle at all: never active, even though it's touched.
-        let no_handle = clients.register("client-a", "local", None, "0.6.0", 1, String::new(), None, None, None);
+        let no_handle = clients.register("client-a", "0.6.0", 1, String::new(), None, None, None);
         clients.touch_person_input(no_handle.serial());
         assert_eq!(
             clients.snapshot_with_active().active(),
@@ -234,7 +234,7 @@
         );
 
         // A handle but never touched: not active either.
-        let untouched = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let untouched = clients.register("client-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
         let _ = &untouched;
         assert_eq!(clients.snapshot_with_active().active(), None);
     }
@@ -246,8 +246,6 @@
         let clients = Clients::new();
         let g = clients.register(
             "client-a",
-            "local",
-            None,
             "0.6.0",
             1,
             "cli".to_string(),
@@ -270,8 +268,6 @@
         let clients = Clients::new();
         let g = clients.register(
             "client-a",
-            "local",
-            None,
             "0.6.0",
             1,
             "agent".to_string(),
@@ -296,9 +292,6 @@
         ClientInfo {
             serial,
             client_id: format!("client-{serial}"),
-            transport: "local",
-            peer: None,
-            connected_at: 0,
             app_version: "0.6.0".into(),
             protocol: 1,
             role: "fe".to_string(),
@@ -366,8 +359,8 @@
         // — `is_active_serial` must be true for that one and false for the
         // other, never both (2026-09-08 review, finding 5).
         let clients = Clients::new();
-        let a = clients.register("client-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
-        let b = clients.register("client-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
+        let a = clients.register("client-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
+        let b = clients.register("client-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-dup".into()));
         clients.touch_person_input(a.serial());
 
         let snap = clients.snapshot_with_active();
@@ -382,9 +375,9 @@
         // per the module doc — an "fe" row always counts), and the
         // requester itself ("cli", never its own receiver).
         let clients = Clients::new();
-        let bridge = clients.register("client-x", "local", None, "0.6.0", 1, "bridge".to_string(), None, None, Some("X".into()));
-        let fe = clients.register("client-fe", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@h".into()));
-        let me = clients.register("client-me", "local", None, "0.6.0", 1, "cli".to_string(), None, None, Some("self".into()));
+        let bridge = clients.register("client-x", "0.6.0", 1, "bridge".to_string(), None, None, Some("X".into()));
+        let fe = clients.register("client-fe", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@h".into()));
+        let me = clients.register("client-me", "0.6.0", 1, "cli".to_string(), None, None, Some("self".into()));
         let _ = (&bridge, &fe);
 
         let mut to_x = clients.receivers_for("X", me.serial());
@@ -421,7 +414,7 @@ mod fe_sessions_tests {
     #[tokio::test]
     async fn a_named_connection_declares_and_is_stored() {
         let clients = Clients::new();
-        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g = clients.register("c-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
             .await
             .expect("handler ok");
@@ -436,7 +429,7 @@ mod fe_sessions_tests {
     #[tokio::test]
     async fn an_unnamed_connection_is_refused_not_stored() {
         let clients = Clients::new();
-        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, None);
+        let g = clients.register("c-a", "0.6.0", 1, "fe".to_string(), None, None, None);
         let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
             .await
             .expect("handler ok");
@@ -457,7 +450,7 @@ mod fe_sessions_tests {
     #[tokio::test]
     async fn an_attached_box_with_a_stale_disconnected_entry_lists_sessions_never_not_connected() {
         let clients = Clients::new();
-        let g1 = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g1 = clients.register("c-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(
             g1.serial(),
             vec![sot_protocol::DeclaredSession {
@@ -470,7 +463,7 @@ mod fe_sessions_tests {
 
         // A second process on the SAME box, also declared, then gone —
         // this is what leaves the stale `disconnected` entry behind.
-        let g2 = clients.register("c-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let g2 = clients.register("c-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.declare_sessions(
             g2.serial(),
             vec![sot_protocol::DeclaredSession {
@@ -545,8 +538,8 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_counts_the_exclusive_connection_not_the_shared_handle() {
         let clients = Clients::new();
-        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let stale = clients.register("c-stale", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -576,8 +569,8 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_send_with_an_active_client_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let active = clients.register("c-active", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle = clients.register("c-idle", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -615,8 +608,8 @@ mod fe_command_send_tests {
     async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
         let clients = Clients::new();
         // Registered but never touched by a person -> no active frontend.
-        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
-        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        let _idle_a = clients.register("c-idle-a", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle_b = clients.register("c-idle-b", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
@@ -646,7 +639,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_is_never_overridden_by_active_resolution() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
@@ -670,7 +663,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn explicit_target_that_is_attached_delivers_to_it() {
         let clients = Clients::new();
-        let _target = clients.register("c-target", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
+        let _target = clients.register("c-target", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
@@ -692,7 +685,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_no_active_frontend_publishes_nothing() {
         let clients = Clients::new();
-        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle = clients.register("c-idle", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
         let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
@@ -711,7 +704,7 @@ mod fe_command_send_tests {
     #[tokio::test]
     async fn untargeted_relaunch_with_an_active_frontend_delivers_to_it_only() {
         let clients = Clients::new();
-        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
         clients.touch_person_input(active.serial());
 
         let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);

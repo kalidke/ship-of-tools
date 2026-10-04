@@ -153,8 +153,6 @@ pub(super) async fn handle_connection<R, W>(
     clients: Clients,
     topology_store: Arc<crate::topology_store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
-    transport: &'static str,
-    peer: Option<String>,
     peer_identity: sot_log::challenge::PeerAuthOutcome,
     leases: Arc<crate::lease::Leases>,
 ) -> Result<()>
@@ -190,7 +188,7 @@ where
     {
         Ok((f, blob)) => {
             if f.kind == Kind::Req && f.op == op::PROXY_CONNECT {
-                tracing::info!(transport, "proxy.connect — leaving control loop for a raw pipe");
+                tracing::info!("proxy.connect — leaving control loop for a raw pipe");
                 return crate::proxy::handle_proxy_connect(
                     buffered,
                     tx,
@@ -205,7 +203,7 @@ where
             // platform where `lane.connect` silently falls through to
             // the "unknown op" answer instead.
             if f.kind == Kind::Req && f.op == op::LANE_CONNECT {
-                tracing::info!(transport, "lane.connect — leaving control loop for a raw pipe");
+                tracing::info!("lane.connect — leaving control loop for a raw pipe");
                 return crate::lane_bridge::handle_lane_connect(
                     buffered,
                     tx,
@@ -218,7 +216,7 @@ where
             // A lease (1.2) is a connection of its own: it never enters
             // the hello-gated loop, the reaper or any handler.
             if f.kind == Kind::Req && f.op == op::FE_LEASE {
-                tracing::info!(transport, ?peer_identity, "fe.lease — a lease connection");
+                tracing::info!(?peer_identity, "fe.lease — a lease connection");
                 let state_root = sot_log::state_dir::sot_state_dir();
                 return crate::lease::hold(
                     buffered,
@@ -234,13 +232,13 @@ where
             Some((f, blob))
         }
         Err(e) => {
-            tracing::debug!(error = %e, transport, "first read failed before any frame; closing");
+            tracing::debug!(error = %e, "first read failed before any frame; closing");
             return Ok(());
         }
     };
 
     let mut read_fut = Some(Box::pin(read_owned(buffered)));
-    tracing::debug!(transport, "connection ready");
+    tracing::debug!("connection ready");
 
 
     // Connected-client registry entry (ADR 0010/0013). Registered on the
@@ -407,7 +405,7 @@ where
                     match wire {
                         Ok((f, _blob)) => f,
                         Err(e) => {
-                            tracing::debug!(error = %e, transport, "read_frame returned; closing");
+                            tracing::debug!(error = %e, "read_frame returned; closing");
                             return Ok(());
                         }
                     }
@@ -416,7 +414,6 @@ where
                     write_preview_changed(
                         &mut tx,
                         change,
-                        transport,
                         active_workspace.as_deref(),
                         &workspaces,
                     )
@@ -424,39 +421,39 @@ where
                     continue;
                 }
                 wsc = recv_ws_events(&mut ws_events_rx) => {
-                    write_workspace_changed(&mut tx, wsc, transport).await?;
+                    write_workspace_changed(&mut tx, wsc).await?;
                     continue;
                 }
                 tpc = recv_topo_changed(&mut topo_changed_rx) => {
-                    write_topology_changed(&mut tx, tpc, transport).await?;
+                    write_topology_changed(&mut tx, tpc).await?;
                     continue;
                 }
                 msg = recv_agent_msg(&mut agent_events_rx) => {
-                    write_agent_message(&mut tx, msg, transport).await?;
+                    write_agent_message(&mut tx, msg).await?;
                     continue;
                 }
                 rcp = recv_agent_receipt(&mut agent_receipt_rx) => {
-                    write_agent_receipt(&mut tx, rcp, transport).await?;
+                    write_agent_receipt(&mut tx, rcp).await?;
                     continue;
                 }
                 fc = recv_fe_command(&mut fe_command_rx) => {
-                    write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
+                    write_fe_command(&mut tx, fc, client_guard.as_ref().map(|g| g.serial())).await?;
                     continue;
                 }
                 rf = recv_repl_frame(&mut repl_frame_rx) => {
-                    write_repl_frame(&mut tx, rf, transport).await?;
+                    write_repl_frame(&mut tx, rf).await?;
                     continue;
                 }
                 tick = recv_monitor(&mut monitor_rx) => {
                     if monitor_subscribed {
-                        write_monitor_tick(&mut tx, tick, transport).await?;
+                        write_monitor_tick(&mut tx, tick).await?;
                     }
                     continue;
                 }
                 // Same hygiene drain as the pty-present arm above.
                 Some(res) = jobs.join_next(), if !jobs.is_empty() => {
                     if let Err(e) = res {
-                        tracing::error!(error = %e, transport, "off-loop job panicked");
+                        tracing::error!(error = %e, "off-loop job panicked");
                     }
                     continue;
                 }
@@ -470,7 +467,7 @@ where
                 // sent a `ping` at all (opt-in by ping: see the arming
                 // comment above `is_long_lived_role`'s declaration).
                 () = tokio::time::sleep_until(read_deadline), if deadline_armed => {
-                    tracing::info!(transport, ?peer, "no frame within the read deadline; reaping half-open connection");
+                    tracing::info!("no frame within the read deadline; reaping half-open connection");
                     return Ok(());
                 }
             }
@@ -489,7 +486,7 @@ where
         }
 
         if frame.kind != Kind::Req {
-            tracing::debug!(?frame.kind, op = %frame.op, transport, "ignoring non-req frame");
+            tracing::debug!(?frame.kind, op = %frame.op, "ignoring non-req frame");
             continue;
         }
 
@@ -536,8 +533,6 @@ where
                             hello_name = req.name.clone();
                             client_guard = Some(clients.register(
                                 req.client_id,
-                                transport,
-                                peer.clone(),
                                 req.app_version,
                                 req.protocol,
                                 req.role,
@@ -590,7 +585,6 @@ where
                     out_tx.clone(),
                     req_id,
                     op_name,
-                    transport,
                     async move {
                         handlers::handle_preview_get(req_id, payload, &session, &workspaces).await
                     },
@@ -625,7 +619,6 @@ where
                     out_tx.clone(),
                     req_id,
                     op_name,
-                    transport,
                     async move {
                         handlers::handle_image_crop(req_id, payload, &session, &workspaces).await
                     },
@@ -694,7 +687,6 @@ where
                     out_tx.clone(),
                     req_id,
                     op_name,
-                    transport,
                     async move {
                         handlers::handle_kernel_request(req_id, payload, &session, &workspaces)
                             .await
@@ -722,7 +714,6 @@ where
                     out_tx.clone(),
                     req_id,
                     op_name,
-                    transport,
                     async move {
                         // Test-only (see `test_slow_concept_read_delay`): a
                         // no-op sleep unless a test set the env var.
@@ -1113,7 +1104,7 @@ where
                     )])
                 }),
             other => {
-                tracing::warn!(op = %other, transport, "unknown op");
+                tracing::warn!(op = %other, "unknown op");
                 let payload = serde_json::json!({ "error": format!("unknown op: {other}") });
                 Ok(vec![(Frame::res(frame.id, other, payload), None)])
             }
@@ -1122,7 +1113,7 @@ where
         // Service-time logging + per-request error containment (turns a
         // handler `Err` into one `handler_error` frame instead of ending the
         // connection) — shared with every off-loop job via `finish_dispatch`.
-        let out_frames = finish_dispatch(&frame.op, frame.id, transport, dispatch_started, dispatched);
+        let out_frames = finish_dispatch(&frame.op, frame.id, dispatch_started, dispatched);
 
         for (out_frame, out_blob) in out_frames {
             write_reply(&mut tx, out_frame, out_blob).await?;

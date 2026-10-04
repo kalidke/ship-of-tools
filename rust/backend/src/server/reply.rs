@@ -126,13 +126,12 @@ where
 pub(super) fn finish_dispatch(
     op_name: &str,
     req_id: u64,
-    transport: &'static str,
     started: std::time::Instant,
     result: Result<handlers::HandlerOutput>,
 ) -> handlers::HandlerOutput {
     let service_ms = started.elapsed().as_millis() as u64;
     if service_ms >= SLOW_REQUEST_MS {
-        tracing::info!(op = %op_name, id = req_id, service_ms, transport, "slow request");
+        tracing::info!(op = %op_name, id = req_id, service_ms, "slow request");
     } else {
         tracing::debug!(op = %op_name, id = req_id, service_ms, "request served");
     }
@@ -207,7 +206,6 @@ pub(super) fn spawn_job<F>(
     out_tx: OutTx,
     req_id: u64,
     op_name: String,
-    transport: &'static str,
     fut: F,
 ) where
     F: std::future::Future<Output = Result<handlers::HandlerOutput>> + Send + 'static,
@@ -223,14 +221,14 @@ pub(super) fn spawn_job<F>(
                     "{op_name} timed out after {OFFLOOP_QUEUE_TIMEOUT:?} waiting to run \
                      (off-loop queue saturated)"
                 );
-                let out_frames = finish_dispatch(&op_name, req_id, transport, started, Err(err));
+                let out_frames = finish_dispatch(&op_name, req_id, started, Err(err));
                 for (frame, blob) in out_frames {
                     let _ = out_tx.send((frame, blob)).await;
                 }
                 return;
             }
         };
-        let out_frames = finish_dispatch(&op_name, req_id, transport, started, fut.await);
+        let out_frames = finish_dispatch(&op_name, req_id, started, fut.await);
         drop(permit);
         for (frame, blob) in out_frames {
             if out_tx.send((frame, blob)).await.is_err() {

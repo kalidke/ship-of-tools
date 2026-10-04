@@ -94,7 +94,6 @@ fn preview_changed_visible(
 pub(super) async fn write_preview_changed<W>(
     tx: &mut W,
     change: Result<PreviewChanged, broadcast::error::RecvError>,
-    transport: &'static str,
     active_workspace_id: Option<&str>,
     workspaces: &Workspaces,
 ) -> Result<bool>
@@ -119,13 +118,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "preview watcher lagged on this connection; client missed file events"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "preview watcher channel closed");
+            tracing::debug!("preview watcher channel closed");
             Ok(false)
         }
     }
@@ -146,7 +144,6 @@ pub(super) async fn recv_ws_events(
 pub(super) async fn write_workspace_changed<W>(
     tx: &mut W,
     change: Result<WorkspaceChanged, broadcast::error::RecvError>,
-    transport: &'static str,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -165,13 +162,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "workspace event bus lagged on this connection; client missed workspace changes"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "workspace event bus channel closed");
+            tracing::debug!("workspace event bus channel closed");
             Ok(false)
         }
     }
@@ -190,7 +186,6 @@ pub(super) async fn recv_topo_changed(
 pub(super) async fn write_topology_changed<W>(
     tx: &mut W,
     change: Result<crate::topology_store::TopologyChanged, broadcast::error::RecvError>,
-    transport: &'static str,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -205,13 +200,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "topology event bus lagged on this connection; client missed a topology change"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "topology event bus channel closed");
+            tracing::debug!("topology event bus channel closed");
             Ok(false)
         }
     }
@@ -232,7 +226,6 @@ pub(super) async fn recv_agent_msg(
 pub(super) async fn write_agent_message<W>(
     tx: &mut W,
     msg: Result<AgentMessage, broadcast::error::RecvError>,
-    transport: &'static str,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -260,13 +253,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "agent relay bus lagged on this connection; client missed messages"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "agent relay bus channel closed");
+            tracing::debug!("agent relay bus channel closed");
             Ok(false)
         }
     }
@@ -287,7 +279,6 @@ pub(super) async fn recv_agent_receipt(
 pub(super) async fn write_agent_receipt<W>(
     tx: &mut W,
     rcp: Result<AgentReceipt, broadcast::error::RecvError>,
-    transport: &'static str,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -304,13 +295,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "agent receipt bus lagged on this connection; client missed receipts"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "agent receipt bus channel closed");
+            tracing::debug!("agent receipt bus channel closed");
             Ok(false)
         }
     }
@@ -340,7 +330,6 @@ pub(super) async fn recv_fe_command(
 pub(super) async fn write_fe_command<W>(
     tx: &mut W,
     evt: Result<FeCommandEvt, broadcast::error::RecvError>,
-    transport: &'static str,
     my_serial: Option<u64>,
 ) -> Result<bool>
 where
@@ -360,13 +349,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "fe command bus lagged on this connection; client missed commands"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "fe command bus channel closed");
+            tracing::debug!("fe command bus channel closed");
             Ok(false)
         }
     }
@@ -389,7 +377,6 @@ pub(super) async fn recv_repl_frame(
 pub(super) async fn write_repl_frame<W>(
     tx: &mut W,
     msg: Result<ReplFrameMsg, broadcast::error::RecvError>,
-    transport: &'static str,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -408,13 +395,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "repl frame bus lagged on this connection; client missed frames"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "repl frame bus channel closed");
+            tracing::debug!("repl frame bus channel closed");
             Ok(false)
         }
     }
@@ -437,7 +423,6 @@ pub(super) async fn recv_monitor(
 pub(super) async fn write_monitor_tick<W>(
     tx: &mut W,
     msg: Result<HostLatest, broadcast::error::RecvError>,
-    transport: &'static str,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -452,13 +437,12 @@ where
         Err(broadcast::error::RecvError::Lagged(n)) => {
             tracing::warn!(
                 skipped = n,
-                transport,
                 "monitor bus lagged on this connection"
             );
             Ok(false)
         }
         Err(broadcast::error::RecvError::Closed) => {
-            tracing::debug!(transport, "monitor bus channel closed");
+            tracing::debug!("monitor bus channel closed");
             Ok(false)
         }
     }
@@ -489,7 +473,7 @@ mod agent_relay_wire_tests {
             id: Some("x-1".into()),
         };
         let mut buf: Vec<u8> = Vec::new();
-        assert!(write_agent_message(&mut buf, Ok(msg.clone()), "test")
+        assert!(write_agent_message(&mut buf, Ok(msg.clone()))
             .await
             .expect("write"));
         let f = one_frame(&buf);
@@ -498,7 +482,7 @@ mod agent_relay_wire_tests {
 
         let mut buf2: Vec<u8> = Vec::new();
         let old = AgentMessage { id: None, ..msg };
-        assert!(write_agent_message(&mut buf2, Ok(old), "test")
+        assert!(write_agent_message(&mut buf2, Ok(old))
             .await
             .expect("write"));
         let f2 = one_frame(&buf2);
@@ -515,7 +499,6 @@ mod agent_relay_wire_tests {
         assert!(write_agent_receipt(
             &mut buf,
             Ok(AgentReceipt { id: "x-1".into(), filer: "fe@otherbox".into() }),
-            "test"
         )
         .await
         .expect("write"));

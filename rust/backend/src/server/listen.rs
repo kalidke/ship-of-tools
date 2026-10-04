@@ -219,13 +219,13 @@ pub(super) async fn run_local(
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
                 rx, tx, s, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe,
-                cl, tps, tpe, "local", None, peer_identity, le,
+                cl, tps, tpe, peer_identity, le,
             )
             .await
             {
-                tracing::warn!(error = %e, transport = "local", "connection ended with error");
+                tracing::warn!(error = %e, "connection ended with error");
             } else {
-                tracing::info!(transport = "local", "connection closed");
+                tracing::info!("connection closed");
             }
         });
     };
