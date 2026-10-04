@@ -425,6 +425,60 @@ mod tests {
         }
     }
 
+    /// Debug text with the `Reveal` variant name read as `Preview`, so a
+    /// reveal and a preview of the same args compare equal on both sides of
+    /// the alias merge.
+    fn shown(x: impl std::fmt::Debug) -> String {
+        format!("{x:?}").replacen("Reveal {", "Preview {", 1)
+    }
+
+    #[test]
+    fn reveal_routes_as_preview() {
+        let roi = serde_json::json!({"x": 10, "y": 20, "w": 300, "h": 200});
+        let cases = [
+            (serde_json::json!({"workspace": "ws", "path": "a.jl"}), Some("fe@host-a")),
+            (
+                serde_json::json!({"workspace": "ws", "path": "a.jl", "urgent": true}),
+                Some("fe@host-a"),
+            ),
+            (serde_json::json!({"workspace": "ws", "path": "a.jl", "urgent": true}), None),
+            (serde_json::json!({"workspace": "ws", "path": "a.png", "roi": roi}), None),
+            (
+                serde_json::json!({"workspace": "ws", "path": "a.png", "caption": "  one\n\ntwo\t "}),
+                None,
+            ),
+        ];
+        for (args, target) in cases {
+            let via_reveal = route_fe_command(&fe_evt("reveal", args.clone(), target), "fe@host-a");
+            let via_preview = route_fe_command(&fe_evt("preview", args.clone(), target), "fe@host-a");
+            assert!(via_preview.is_some(), "{args}");
+            assert_eq!(shown(via_reveal), shown(via_preview), "{args}");
+        }
+    }
+
+    #[test]
+    fn file_channel_reveal_parses_as_preview() {
+        let fields = [
+            r#""workspace":"ws","path":"a.jl""#,
+            r#""workspace":"ws","path":"a.jl","urgent":true"#,
+            r#""workspace":"ws","path":"a.png","roi":{"x":1,"y":2,"w":3,"h":4}"#,
+            r#""workspace":"ws","path":"a.png","caption":"hi","urgent":false"#,
+        ];
+        for f in fields {
+            let parse = |cmd: &str| {
+                serde_json::from_str::<FeCommand>(&format!(r#"{{"cmd":"{cmd}",{f}}}"#)).unwrap()
+            };
+            assert_eq!(shown(parse("reveal")), shown(parse("preview")), "{f}");
+        }
+    }
+
+    #[test]
+    fn file_channel_error_texts_are_pinned() {
+        let text = |json: &str| serde_json::from_str::<FeCommand>(json).unwrap_err().to_string();
+        assert_eq!(text(r#"{"cmd":"nope"}"#), "unknown variant `nope`, expected one of `workspace`, `cycle_ws`, `reload_keybindings`, `notify`, `open_url`, `mode`, `nav`, `capture_roi`, `preview`, `reveal`, `docs`, `relaunch` at line 1 column 13");
+        assert_eq!(text(r#"{"cmd":"reveal","workspace":"w"}"#), "missing field `path`");
+    }
+
     #[test]
     fn route_preview_parses_roi() {
         // Well-formed roi → carried through as a viewport aim.
