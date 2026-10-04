@@ -10,7 +10,7 @@ impl State {
         // with `preview_md.media_blocks` by appearance order, and
         // pre-rasterise any math SVGs we have that haven't been
         // rasterised yet at the current pane width. Painting happens
-        // inside the rpass below; do the side-effecty rasterise here
+        // inside the rpass; do the side-effecty rasterise here
         // while we have &mut self.
         let media_paint_targets: Vec<(usize, ScreenRect)> = if show_md {
             self.collect_media_paint_targets(md_rect, preview_scroll_px)

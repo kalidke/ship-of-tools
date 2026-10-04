@@ -26,7 +26,7 @@ impl State {
             // canvas: a pane resize or a zoom restored from the
             // view-state cache can sit above the per-pixel ceiling for
             // the current geometry, and the canvas must honour it. Same
-            // `(image_rect, size_px)` inputs as the `letterbox` above —
+            // `(image_rect, size_px)` inputs as the `letterbox` —
             // they must stay in lockstep, caption band included, or at the
             // ceiling canvas_w no longer equals 16 × source-px exactly.
             let zoom_max = png_zoom_max(image_rect.w, image_rect.h, quad.size_px);
@@ -244,7 +244,7 @@ impl State {
         // `render_many` mutably borrows its quad for the whole render-pass
         // lifetime (`'a`), so two colours must come from two disjoint
         // fields — one map borrowed twice would alias. `self.preview_png`'s
-        // borrow ended when the image block closed above.
+        // borrow ended when the image block closed.
         if let Some(sb) = scalebar_draw.as_ref() {
             let sx = image_rect.x.max(0.0) as u32;
             let sy = image_rect.y.max(0.0) as u32;

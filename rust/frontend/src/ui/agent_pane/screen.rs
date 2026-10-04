@@ -293,7 +293,7 @@ impl State {
                     // with `attach_direct`). This arm only keeps an
                     // ALREADY-LIVE client's viewport in sync with the pane
                     // rect, mirroring the drawer's own attach-client
-                    // resize below (`term_size_observed`).
+                    // resize (`term_size_observed`).
                     if need_open || need_resize {
                         if let Some(t) = self.pane_attach_term.as_mut() {
                             t.resize(cols, rows);

@@ -204,7 +204,7 @@ impl State {
         // single mutable borrow for the pass (no per-entry borrow conflict
         // like two render_many calls on one field would hit), while
         // &self.device/queue/quad_pipeline stay separate fields — the same
-        // disjoint-field pattern as the code_bg / strike passes above.
+        // disjoint-field pattern as the code_bg / strike passes.
         if !border_rects_by_color.is_empty() {
             for (color, quad) in self.border_quads.iter_mut() {
                 if let Some(rects) = border_rects_by_color.get(color) {

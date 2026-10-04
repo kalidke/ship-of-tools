@@ -16,7 +16,7 @@ impl State {
         // self, so the ease can mutate self.* without a borrow conflict.
         //
         // Each ship's bow wheel is accumulated here (physical px) and drawn
-        // from `self.logo_quad` inside the render pass below — the per-ship
+        // from `self.logo_quad` inside the render pass — the per-ship
         // layout it needs only exists in this block.
         let mut strip_logo_rects: Vec<ScreenRect> = Vec::new();
         if !self.workspace_slugs.is_empty() {

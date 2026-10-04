@@ -38,7 +38,7 @@ impl State {
             border_thickness,
         );
         // Group rects by colour (1–2 colours typical): `Quad::render_many` is
-        // one colour per Quad, so the pass below does one batched draw per
+        // one colour per Quad, so the pass does one batched draw per
         // colour.
         let mut border_rects_by_color: HashMap<(u8, u8, u8), Vec<ScreenRect>> = HashMap::new();
         for bq in &border_quads_raw {
