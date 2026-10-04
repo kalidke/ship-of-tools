@@ -22,6 +22,7 @@ until `State` is split.
 ## Folders
 - `agent_pane/`: the agent pane's screen choice, attach client with warm pool, and input.
 - `control/`: agent control of the window: the fe.command route, its dispatch, the nav envelope and the file channel.
+- `persist/`: the window's settings, config discovery and resume state.
 
 ## Files
 - `agent_pane/`: the agent pane (its own page).
@@ -30,6 +31,7 @@ until `State` is split.
 - `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`); the pages subsystem's window half.
 - `scan_tests.rs`: the crate's own source for the tests that scan it.
+- `persist/`: the window's settings, config discovery and resume state.
 
 ## Start here
 `State` in mod.rs for view state; `impl ApplicationHandler for App` for the event loop.

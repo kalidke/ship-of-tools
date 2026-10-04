@@ -1,7 +1,7 @@
 // One action catalog supplies dispatch, resolved shortcut labels and contextual help.
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use crate::ui::persist::discover::find_keybindings_file;
 use winit::keyboard::{Key, NamedKey};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,39 +628,6 @@ fn strip_quotes(s: &str) -> String {
         .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
         .unwrap_or(s)
         .to_string()
-}
-
-fn find_keybindings_file() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("SOT_KEYBINDINGS") {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    // repo-local: walk up from cwd looking for .sot/keybindings.toml.
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut cur: &Path = &cwd;
-        loop {
-            let candidate = cur.join(".sot").join("keybindings.toml");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-            match cur.parent() {
-                Some(parent) => cur = parent,
-                None => break,
-            }
-        }
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        let p = PathBuf::from(home)
-            .join(".config")
-            .join("sot")
-            .join("keybindings.toml");
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 /// Test helper: the modifiers `Primary` resolves to on this OS (Ctrl on
