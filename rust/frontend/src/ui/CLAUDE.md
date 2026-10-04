@@ -29,6 +29,7 @@ until `State` is split.
 - `nav/`: the navigation pane's trees (CLAUDE.md there).
 - `persist/`: the window's settings, config discovery and resume state.
 - `preview/`: the preview pane (image, markdown and editor subfolders).
+- `render/`: the window's pixels: glyph text, the cell backend and textured quads.
 
 ## Files
 - `agent_pane/`: the agent pane (its own page).
@@ -40,6 +41,7 @@ until `State` is split.
 - `nav/`: the navigation pane's trees: mode and tree store, tree view, Modules, Sessions and Hosts trees.
 - `persist/`: the window's settings, config discovery and resume state.
 - `preview/`: the preview pane, with its image, markdown and editor subfolders.
+- `render/`: the window's pixels: glyph text, the cell backend and textured quads.
 - `mod.rs`: `State` and the rest of the window's code (over 800 lines under standing exemption E11).
 - `connections.rs`: the window's view of its connection set: which connection a request goes to, and the per-host names (`send`, `send_to`, `default_host`, `ordered_hosts`).
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`); the pages subsystem's window half.

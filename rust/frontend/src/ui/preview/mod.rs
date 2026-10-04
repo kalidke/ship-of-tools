@@ -15,8 +15,7 @@ pub(crate) mod markdown;
 pub(crate) mod editor;
 pub(crate) mod pane;
 pub(crate) mod concept;
-#[path = "../../preview/quad.rs"]
-pub(crate) mod quad;
+pub(crate) use crate::ui::render::quad;
 
 pub(crate) use image::{png, svg};
 pub(crate) use markdown::highlight;

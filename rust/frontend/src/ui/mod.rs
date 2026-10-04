@@ -12819,6 +12819,7 @@ mod capsule_pane_tests {
 #[cfg(test)]
 mod scan_tests;
 pub(crate) mod preview;
+pub(crate) mod render;
 use self::preview::concept::{
     parse_synced_against, split_frontmatter, strip_frontmatter, ConceptInfo, FILE_PARSE_MAX_RETRIES,
 };

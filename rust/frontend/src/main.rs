@@ -8,7 +8,7 @@
 // winit drives the main thread for window/input/redraw; tokio carries the
 // Unix-socket protocol traffic to/from the backend (ADR 0010).
 
-mod chrome;
+use ui::render::cells as chrome;
 mod cli;
 use ui::chrome::layout;
 mod lease;
@@ -22,7 +22,7 @@ use ui::input::{help, keybindings};
 use ui::persist::settings;
 use ui::persist::resume as state_persistence;
 use ui::drawer::terminal::pty as term;
-mod text;
+use ui::render::text;
 mod ui;
 use ui as gpu;
 use ui::download;
