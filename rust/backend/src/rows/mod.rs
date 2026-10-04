@@ -3,6 +3,7 @@
 mod registry;
 pub(crate) mod anchor;
 pub(crate) mod gate;
+pub(crate) mod reauth;
 pub(crate) mod workspace;
 
 use std::collections::HashMap;

@@ -32,7 +32,7 @@ mod lane_bridge;
 mod lifecycle;
 mod pages;
 mod paths;
-mod reauth;
+use rows::reauth;
 mod rows;
 #[cfg(target_os = "linux")]
 mod row_scope_aim;

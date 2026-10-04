@@ -49,7 +49,7 @@ toml and its migrations are still in `workspaces.rs`, and the capsule spawn, obs
   names callers still reach as `crate::workspaces::`.
 
 ## Folders
-None yet.
+- `reauth/`: `workspace.reauth`, the accept half and the restart runner
 
 ## Files
 - `mod.rs`: the `Workspace`, `Workspaces` and `Inner` structs, the `WorkspaceChanged` event and the session name rule
@@ -57,6 +57,7 @@ None yet.
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
 - `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `default_row_launch_seed`
+- `reauth/`: `workspace.reauth`, the accept half and the restart runner
 
 ## Start here
 `mod.rs` for the three structs, then `registry.rs::insert` for how a row enters. For a phase change read
