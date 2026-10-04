@@ -18,8 +18,8 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - Work-state: `comm-status.sh`, `comm-turn-auditor.sh`, `comm-session-start.sh`, the four Claude status hooks and the
   Codex blocked hook (the row colour is a reduction of the facts they stamp).
 - Housed here, not messaging: the shell daemon client in `comm-lib.sh` (`sot_oneshot_request`) and the tools on it
-  (`sot-fe`, `comm-spawn.sh`, `comm-despawn.sh`, `comm-worktree-*.sh`, `sot-nav.sh`, `comm-bootstrap.sh`,
-  `comm-probe.sh`, `sot-gh-auth.sh`, `comm-pipe-request.ps1`), and the agent adapters under `adapters/`.
+  (`sot-fe`, `comm-worktree-*.sh`, `sot-nav.sh`, `sot-gh-auth.sh`, `comm-pipe-request.ps1`), and the agent adapters under
+  `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, installed into the same bin.
 
 ## Promises
 - `filed` is printed only on the appender's word: a local append that synced, a daemon's `comm.file` answer `ok`, or a

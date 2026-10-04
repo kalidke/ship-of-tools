@@ -9,7 +9,7 @@
 # Usage: comm/core/tests/test-spawn-capsule-workspace.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/../../comm/tests/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 

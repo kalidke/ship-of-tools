@@ -20,7 +20,7 @@
 # runs over its own table of must-flag and must-pass lines, one per shape.
 #
 # The same walk holds the home guard to its word: every `test-*.sh` under
-# comm/ whose non-comment lines name a comm script (`comm-*.sh` or
+# comm/ and agents/ whose non-comment lines name a comm script (`comm-*.sh` or
 # `comm-lib`) sources lib-home-guard.sh before any command but `set`. That
 # check first proves it flags a copy of test-hub-files.sh without its source
 # line.
@@ -99,7 +99,7 @@ echo "PASS: the delete pattern flags and passes each of its $n table rows"
 
 files=(); suites=()
 while IFS= read -r f; do
-    case "$f" in comm/*) case "${f##*/}" in test-*.sh) suites+=("$REPO/$f") ;; esac ;; esac
+    case "$f" in comm/*|agents/*) case "${f##*/}" in test-*.sh) suites+=("$REPO/$f") ;; esac ;; esac
     case "${f##*/}" in
         *.sh) files+=("$REPO/$f") ;;
         *.*) ;;

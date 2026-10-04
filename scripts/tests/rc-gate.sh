@@ -137,7 +137,7 @@ producer() {
     test-registry-lock
   )
   # shell suites: the SLOW_FIRST ones are emitted early, the rest at step 5
-  for f in "$D"/comm/tests/test-*.sh; do
+  for f in "$D"/comm/tests/test-*.sh "$D"/agents/tests/test-*.sh; do
     case $(basename "$f" .sh) in
       test-comm-e2e-readers|test-inbox-lock-onehost|test-inbox-lock-twohost|test-registry-twohost|test-registry-lock-twohost) ;;
       *) SHELL_ALL+=("$f") ;;

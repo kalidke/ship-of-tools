@@ -34,7 +34,7 @@ on:
     # comm/** added alongside the "Test sot-comm disambiguation" step below
     # (PR #148 Codex review F10) — without it, a comm-only change (like the
     # one that added that step) would never trigger this workflow at all.
-    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", "agents/**", ".github/workflows/rust.yml"]
   workflow_dispatch: {}
 
 concurrency:
@@ -235,9 +235,6 @@ jobs:
           # folder that lists a handle is one whose own box can file for it.
           bash test-send-routes-to-relay.sh
           bash test-comm-matrix-verdict.sh
-          bash test-spawn-remote-no-local-row.sh
-          bash test-spawn-capsule-workspace.sh
-          bash test-despawn-resolve.sh
           bash test-status-floor.sh
           # The heartbeat waits on its context call in 50 ms ticks under a
           # 10 s bound, so a call that ends at once costs 50 ms, not a whole
@@ -269,6 +266,14 @@ jobs:
           bash test-registry-lock.sh
           # A second agent started inside a session (codex exec, claude -p) never acts as the row's handle.
           bash test-agent-layers.sh
+
+      - name: Test agents CLIs (hermetic)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: agents/tests
+        run: |
+          bash test-spawn-remote-no-local-row.sh
+          bash test-spawn-capsule-workspace.sh
+          bash test-despawn-resolve.sh
 
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the

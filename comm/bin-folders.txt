@@ -1,3 +1,4 @@
+agents/spawn
 comm/core/scripts
 comm/registry
 comm/adapters/claude/hooks

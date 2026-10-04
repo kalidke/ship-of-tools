@@ -24,7 +24,6 @@ suite. Part of messaging; charter: comm/CLAUDE.md.
 - `test-comm-poll-cursor.sh`: the read cursor is a line offset that survives a torn line, a cut-back file and a legacy stamp
 - `test-crlf-gh-auth.sh`: `sot-gh-auth.sh` reads JSON values correctly under a jq that writes CRLF
 - `test-crlf-jq-output.sh`: the comm scripts compare handles correctly under a jq that writes CRLF
-- `test-despawn-resolve.sh`: `comm-despawn.sh` resolves first, removes a registry row only after a confirmed destroy, and `comm-worktree-clean.sh` despawns once
 - `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip
 - `test-heartbeat-ctx-wait.sh`: the heartbeat hook's wait on `comm-context.sh` polls fast, is bounded and cleans up
 - `test-hub-files.sh`: the inbox append: one lock, both writers, fail closed, whole lines, routes and lock records
@@ -36,12 +35,10 @@ suite. Part of messaging; charter: comm/CLAUDE.md.
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
-- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm suite sources the guard first
+- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire and a hit files locally, never both
 - `test-sot-fe-reauth.sh`: `sot-fe reauth` moves only the row it runs in
 - `test-sot-fe-version.sh`: `sot-fe version` asks the daemon what build it is
-- `test-spawn-capsule-workspace.sh`: `comm-spawn.sh` never destroys a row it did not create
-- `test-spawn-remote-no-local-row.sh`: a spawn onto another box writes no registry row or inbox here
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
 ## Start here
@@ -50,7 +47,7 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
 
 ## Rules
 - Each suite sources `lib-home-guard.sh` before any command but `set`; `test-rm-guard.sh` fails a suite that does not,
-  and fails if it finds fewer than 29 comm suites.
+  and fails if it finds fewer than 29 suites under `comm/` and `agents/`.
 - Scripts run from the copy `guard_stage_bin` makes in the suite's work directory (`stage-bin.sh` fails on a missing or
   empty bin folder or a name two folders ship). Hooks and launchers run in-tree: the Stop hook runs
   `comm-turn-auditor.sh` when it sits beside it, so a suite that must not call a live model runs the hook from
@@ -58,6 +55,6 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
 - Five suites need peer hosts and are not hermetic: `test-comm-e2e-readers.sh`, `test-inbox-lock-onehost.sh`,
   `test-inbox-lock-twohost.sh`, `test-registry-twohost.sh` and `test-registry-lock-twohost.sh`.
 - CI runs the hermetic list in `.github/workflows/rust.yml`; `scripts/tests/rc-gate.sh` runs every `test-*.sh` here but
-  those five.
+  those five. The suites of the row-lifecycle CLIs are in `agents/tests/` and source this folder's guard.
 - A shell rule that has a Rust twin is checked by a text scan or a parity test here (`test-hub-files.sh` T13 over
   `inbox.rs`, `test-registry-lock.sh` t15 over `lock.rs`); change both arms in one commit.
