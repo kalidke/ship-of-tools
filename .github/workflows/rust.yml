@@ -196,7 +196,7 @@ jobs:
       # existing ubuntu leg rather than a dedicated job.
       - name: Test sot-comm disambiguation (hermetic)
         if: matrix.os == 'ubuntu-latest'
-        working-directory: comm/core/tests
+        working-directory: comm/tests
         run: |
           bash test-join-disambiguation.sh
           # C10 (isolation-plan.md §3): the one gate every endpoint value

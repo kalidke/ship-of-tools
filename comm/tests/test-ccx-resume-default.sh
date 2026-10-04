@@ -9,7 +9,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CCX="$(cd "$SCRIPT_DIR/../../adapters/codex/bin" && pwd)/ccx"
+CCX="$(cd "$SCRIPT_DIR/../adapters/codex/bin" && pwd)/ccx"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-ccx-resume-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }

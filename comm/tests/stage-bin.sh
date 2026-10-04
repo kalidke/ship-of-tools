@@ -8,7 +8,7 @@
 set -u
 [ $# -eq 1 ] && [ -n "$1" ] || { echo "usage: stage-bin.sh DEST" >&2; exit 2; }
 DEST="$1"
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" || exit 2
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || exit 2
 LIST="$ROOT/comm/bin-folders.txt"
 [ -f "$LIST" ] || { echo "stage-bin: FATAL no $LIST"; exit 1; }
 mkdir -p "$DEST" || { echo "stage-bin: FATAL cannot make $DEST"; exit 1; }

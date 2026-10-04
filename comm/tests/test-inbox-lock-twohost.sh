@@ -72,7 +72,7 @@ done
     echo "usage: test-inbox-lock-twohost.sh --peer HOST --expect local|wire  (a second box that mounts this home)" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
+RUST_DIR="$(cd "$SCRIPT_DIR/../../rust" && pwd)"
 WAIT=10
 
 DIR="$(mktemp -d "$HOME/.sot-inbox-lock-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }

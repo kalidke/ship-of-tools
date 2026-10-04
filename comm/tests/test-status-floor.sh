@@ -15,7 +15,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOKS_DIR="$(cd "$SCRIPT_DIR/../../adapters/claude/hooks" && pwd)"
+HOOKS_DIR="$(cd "$SCRIPT_DIR/../adapters/claude/hooks" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-status-test-XXXXXX")"
 [ -n "$WORK" ] && [ -d "$WORK" ] || { echo "mktemp failed" >&2; exit 1; }

@@ -53,7 +53,7 @@ if ! [[ "$ROUNDS" =~ ^[1-9][0-9]*$ ]] || { [ "$ONLY" != a-v3 ] && { [ -n "$ONLY"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
+RUST_DIR="$(cd "$SCRIPT_DIR/../../rust" && pwd)"
 DIR="$(mktemp -d "$HOME/.sot-registry-lock-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 guard_refuse_live_home "$DIR"
 LOCAL_PIDS=()

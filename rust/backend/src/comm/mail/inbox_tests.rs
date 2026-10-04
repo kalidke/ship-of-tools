@@ -572,7 +572,7 @@ fn a_host_uuid_is_its_canonical_uppercase_text() {
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../comm/core/tests/fixtures/inbox-lock-identity")
+        .join("../../comm/tests/fixtures/inbox-lock-identity")
 }
 
 // Identity parity — the fixture set `test-hub-files.sh` reads too: nfs4,

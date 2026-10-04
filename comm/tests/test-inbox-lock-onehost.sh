@@ -60,7 +60,7 @@ done
 [ -n "$HOST" ] || { echo "usage: test-inbox-lock-onehost.sh --host HOST  (a machine on this home whose mount is NFSv3)" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_DIR="$(cd "$SCRIPT_DIR/../../../rust" && pwd)"
+RUST_DIR="$(cd "$SCRIPT_DIR/../../rust" && pwd)"
 
 DIR="$(mktemp -d "$HOME/.sot-inbox-lock-1h-XXXXXX")" || { echo "FATAL: mktemp under \$HOME failed" >&2; exit 1; }
 LOCAL="$(mktemp -d "${TMPDIR:-/tmp}/sot-inbox-lock-1h-XXXXXX")" || exit 1

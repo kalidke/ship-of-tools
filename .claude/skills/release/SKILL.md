@@ -46,7 +46,7 @@ release from a fresh context.
 4. **Handoff current** — the cutting session's handoff (`dev/output/handoff-<handle>.md`)
    is current, and every defect known to the line is on the candidate's list.
 5. **The comm matrix has run, if this candidate carries any comm change**:
-   `comm/core/tests/comm-matrix.sh --boxes <a,b,c> [--expect <version>]`. The
+   `comm/tests/comm-matrix.sh --boxes <a,b,c> [--expect <version>]`. The
    hermetic suites gate a merge; the matrix gates the CANDIDATE, because a
    sender's receipt and an actual delivery are different facts and every comm
    outage so far has been the gap between them. A candidate carrying a comm

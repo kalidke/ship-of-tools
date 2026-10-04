@@ -86,7 +86,7 @@ idle_hook() {
 idle_hook_over() {
     jq -nc --arg p "$1" --argjson a "${2:-false}" '{transcript_path:$p, stop_hook_active:$a}' \
         | ( cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" \
-            CLAUDE_CODE_SESSION_ID="${HOOK_SESSION:-hub-files-test}" bash "$SCRIPT_DIR/../../adapters/claude/hooks/comm-status-idle.sh" )
+            CLAUDE_CODE_SESSION_ID="${HOOK_SESSION:-hub-files-test}" bash "$SCRIPT_DIR/../adapters/claude/hooks/comm-status-idle.sh" )
 }
 
 # The stubbed fsync failure, shell arm. A test-only perl module (loaded by

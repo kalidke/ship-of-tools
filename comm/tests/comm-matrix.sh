@@ -39,7 +39,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/../scripts/comm-lib.sh" || exit 2   # sot_host / INBOX_DIR
+source "$SCRIPT_DIR/../core/scripts/comm-lib.sh" || exit 2   # sot_host / INBOX_DIR
 
 MATRIX_WAIT="${SOT_MATRIX_WAIT:-25}"     # seconds to wait for the echoes
 MATRIX_POLL="${SOT_MATRIX_POLL:-0.5}"    # inbox re-read interval
