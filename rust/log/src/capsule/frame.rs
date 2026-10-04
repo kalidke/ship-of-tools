@@ -124,7 +124,7 @@ impl FrameCtx {
 /// `run_end_requested {reason}` lifecycle frame and IRREVOCABLY latch
 /// EndRun — idempotent past the first (step 4: first commit wins, a
 /// concurrent later request writes no second marker). Shared by BOTH of
-/// `run`'s action executors (`execute_actions!` and
+/// `run`'s action executors (`execute_actions` and
 /// `execute_teardown_actions!`) since a `shutdown` arriving during the
 /// final teardown poll must latch exactly the same way as one arriving
 /// mid-run — see this crate's `verify::leg_carries_run_end_marker` for

@@ -143,7 +143,7 @@
 //! [`crate::attach_proto::AttachProto`] — that module OWNS the
 //! connection/role/lockstep/pen/keepalive state machine; this loop only
 //! executes the [`crate::attach_proto::Action`]s it returns
-//! (`execute_actions!`) and feeds events back
+//! (`execute_actions`) and feeds events back
 //! (`connection_opened`/`frame`/`sent`/`tick`/`ground_reached`/
 //! `checkpoint_ready`/`take_committed`/`resize_outcome`/`input_outcome`).
 //! `flush_output`'s watermark now ALSO publishes committed bytes to
@@ -332,7 +332,7 @@ const RUN_END_REQUESTED_FEATURE: &str = "sot.capsule.run-end-requested-v1";
 /// protocol. Step 5 DELETES this channel's raw `Input`/`Resize` variants
 /// (ADR 0041 spec gate): the wire lane replaces both — real input and
 /// resize now arrive as `AttachClient::Input`/`Resize` frames, handled
-/// through `AttachProto` and `execute_actions!`'s `ForwardInput`/
+/// through `AttachProto` and `execute_actions`'s `ForwardInput`/
 /// `ApplyResize` arms, never through this channel. `Kill` stays: it is the
 /// step-4-visible primitive behind `EndRun` (ADR 0041 Lifecycle) that BOTH
 /// the mgmt lane's `shutdown` (via `Action::Shutdown`) and a caller that

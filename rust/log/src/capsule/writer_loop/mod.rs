@@ -5,7 +5,7 @@ use std::ops::ControlFlow;
 mod lanes;
 mod output_path;
 mod start;
-use lanes::execute_light_actions;
+use lanes::{execute_actions, execute_light_actions};
 use output_path::{eager_ground_check, flush_output, maybe_rotate, pace_output};
 use start::start;
 
@@ -133,125 +133,6 @@ pub fn run<P: Producer>(
         ControlFlow::Break(summary) => return Ok(summary),
     };
 
-    // The full action set -- everything `execute_light_actions` handles,
-    // delegated one line at a time (never re-expanding `flush_output`
-    // itself), PLUS the five action kinds only an inbound CLIENT frame can
-    // ever produce.
-    macro_rules! execute_actions {
-        ($seed:expr) => {{
-            let mut queue: VecDeque<AttachAction> = VecDeque::from($seed);
-            while let Some(action) = queue.pop_front() {
-                match action {
-                    light @ (AttachAction::Send { .. }
-                    | AttachAction::Close(_)
-                    | AttachAction::RecordRefusal { .. }
-                    | AttachAction::BeginCheckpoint { .. }) => {
-                        execute_light_actions(vec![light], &mut leg);
-                    }
-                    AttachAction::CommitTake { conn, controller_id, request_id } => {
-                        flush_output(&mut leg)?;
-                        leg.ctx.take_epoch += 1;
-                        leg.ctx.holder = Some(controller_id.clone());
-                        let f = leg.ctx.capsule_frame(
-                            Class::Lifecycle,
-                            json!({"kind": "take_state",
-                                   "take": {"take_epoch": leg.ctx.take_epoch, "holder": controller_id.clone()}}),
-                        );
-                        leg.w.append(&f, Commit::Immediate)?;
-                        leg.frames_written += 1;
-                        queue.extend(leg.attach_proto.take_committed(conn, controller_id, leg.ctx.take_epoch, request_id, Instant::now()));
-                    }
-                    AttachAction::ForwardInput {
-                        conn,
-                        controller_id,
-                        take_epoch,
-                        idem_key,
-                        payload,
-                        connection_authorized,
-                        request_id,
-                    } => {
-                        let outcome = run_input_wal(
-                            &mut leg.ctx,
-                            &mut leg.w,
-                            &mut leg.store,
-                            leg.producer.input(),
-                            &mut leg.frames_written,
-                            &controller_id,
-                            take_epoch,
-                            idem_key,
-                            &payload,
-                            connection_authorized,
-                        )?;
-                        leg = maybe_rotate(leg)?;
-                        queue.extend(leg.attach_proto.input_outcome(conn, outcome, request_id, Instant::now()));
-                    }
-                    AttachAction::ApplyResize { conn, cols, rows, request_id } => {
-                        // ADR 0041: "resize (driver-only) routes into the
-                        // step-4 exchange unchanged" -- same ordered
-                        // request -> one ResizePseudoConsole call (skipped
-                        // if out of budget) -> parser/geometry updated
-                        // only on success -> outcome shape step 4 already
-                        // built, now reachable from the wire too.
-                        flush_output(&mut leg)?;
-                        let req = leg.ctx.current_controller_frame(
-                            Class::ControlExchange,
-                            json!({"phase": "request", "kind_ns": "conpty/resize",
-                                   "to": {"kind": "producer"}, "body": {"cols": cols, "rows": rows}}),
-                        );
-                        let req_seq = req.seq;
-                        leg.w.append(&req, Commit::Immediate)?;
-                        leg.frames_written += 1;
-                        let in_budget =
-                            (MIN_COLS..=MAX_COLS).contains(&cols) && (MIN_ROWS..=MAX_ROWS).contains(&rows);
-                        let ok = if !in_budget {
-                            false
-                        } else {
-                            leg.resize_os_calls += 1;
-                            match leg.producer.resize(cols, rows) {
-                                Ok(()) => {
-                                    leg.parser.screen_mut().set_size(rows, cols);
-                                    true
-                                }
-                                Err(_) => false,
-                            }
-                        };
-                        let outcome_body = if ok {
-                            json!({"disposition": "ok", "cols": cols, "rows": rows})
-                        } else {
-                            json!({"disposition": "failed", "cols": cols, "rows": rows,
-                                   "reason": "outside the 2x2..512x256 budget, or ResizePseudoConsole failed"})
-                        };
-                        let out = leg.ctx.current_controller_frame(
-                            Class::ControlExchange,
-                            json!({"phase": "outcome", "kind_ns": "conpty/resize", "scope": "pty",
-                                   "target": format!("{}:{}", req_seq.epoch, req_seq.n), "body": outcome_body}),
-                        );
-                        leg.w.append(&out, Commit::Immediate)?;
-                        leg.frames_written += 1;
-                        leg = maybe_rotate(leg)?;
-                        queue.extend(leg.attach_proto.resize_outcome(conn, ok, cols, rows, request_id, Instant::now()));
-                    }
-                    AttachAction::RunEndRequested { reason } => {
-                        // Codex round-1 Blocker 1 discharge: record the
-                        // reason HERE, from the marker's own commit -- not
-                        // only from `Action::Shutdown` (ack-completion-
-                        // driven), which may never fire at all (a stalled
-                        // ack, a lost connection). `get_or_insert_with`
-                        // matches "first commit wins" (step 4): a
-                        // concurrent second request's reason never
-                        // overwrites the one that actually got latched.
-                        leg.shutdown_reason.get_or_insert_with(|| reason.clone());
-                        commit_run_end_marker(&mut leg.ctx, &mut leg.w, &mut leg.frames_written, &mut leg.run_end_latched, reason)?;
-                    }
-                    AttachAction::Shutdown { reason } => {
-                        leg.shutdown_requested = true;
-                        leg.shutdown_reason.get_or_insert(reason);
-                    }
-                }
-            }
-        }};
-    }
-
     // Drains every currently-available transport event (non-blocking, like
     // `commands.try_recv()` below) through `AttachProto`, executing
     // whatever it decides. Called every MAIN-LOOP iteration only: once this
@@ -268,29 +149,29 @@ pub fn run<P: Producer>(
                 match ev {
                     TransportEvent::ConnectionOpened(conn) => {
                         leg.splitters.insert(conn, wire::FrameSplitter::new());
-                        execute_actions!(leg.attach_proto.connection_opened(conn, Instant::now()));
+                        leg = execute_actions(leg.attach_proto.connection_opened(conn, Instant::now()), leg)?;
                     }
                     TransportEvent::Bytes(conn, bytes) => {
                         let Some(splitter) = leg.splitters.get_mut(&conn) else { continue };
                         let (frames, err) = splitter.feed(&bytes);
                         for f in frames {
-                            execute_actions!(leg.attach_proto.frame(conn, f, Instant::now()));
+                            leg = execute_actions(leg.attach_proto.frame(conn, f, Instant::now()), leg)?;
                         }
                         if err.is_some() {
                             leg.transport.0.close(conn);
                             leg.splitters.remove(&conn);
                             leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
-                            execute_actions!(leg.attach_proto.connection_closed(conn, Instant::now()));
+                            leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
                         }
                     }
                     TransportEvent::ConnectionClosed(conn) => {
                         leg.splitters.remove(&conn);
                         leg.pending_sends.retain(|&(c, _), _| c != conn); // finding 11
-                        execute_actions!(leg.attach_proto.connection_closed(conn, Instant::now()));
+                        leg = execute_actions(leg.attach_proto.connection_closed(conn, Instant::now()), leg)?;
                     }
                     TransportEvent::Sent(conn, id) => {
                         match leg.pending_sends.remove(&(conn, id)) {
-                            Some(marker) => execute_actions!(leg.attach_proto.sent(conn, marker, Instant::now())),
+                            Some(marker) => leg = execute_actions(leg.attach_proto.sent(conn, marker, Instant::now()), leg)?,
                             // Round-2 review, finding 7: legitimate ONLY
                             // for a connection this loop already forgot
                             // (closed, `pending_sends` purged by finding
@@ -533,7 +414,7 @@ pub fn run<P: Producer>(
             break 'main ExitKind::ProducerExited;
         }
         service_transport_events!();
-        execute_actions!(leg.attach_proto.tick(Instant::now()));
+        leg = execute_actions(leg.attach_proto.tick(Instant::now()), leg)?;
         eager_ground_check(&mut leg)?;
         // ADR 0041 EndRun step 2 / Codex round-1 Blocker 1 discharge: the
         // LATCH drives teardown, not the ack -- "ack completion only
