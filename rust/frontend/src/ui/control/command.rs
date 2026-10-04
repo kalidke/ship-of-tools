@@ -78,10 +78,21 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
         Some(truncate_caption(&collapsed))
     };
     match evt.cmd.as_str() {
-        "preview" | "reveal" => {
+        "preview" => {
             let workspace = str_arg("workspace")?;
             let path = str_arg("path")?;
             Some(FeCommand::Preview {
+                workspace,
+                path,
+                urgent: bool_arg("urgent") && directed,
+                roi: roi_arg(),
+                caption: caption_arg(),
+            })
+        }
+        "reveal" => {
+            let workspace = str_arg("workspace")?;
+            let path = str_arg("path")?;
+            Some(FeCommand::Reveal {
                 workspace,
                 path,
                 urgent: bool_arg("urgent") && directed,
@@ -209,10 +220,22 @@ pub(in crate::ui) enum FeCommand {
     /// the badge, the workspace switch, and re-previews, because the whole point
     /// is that it's still there when the user arrives. `None` retires the
     /// caption for that file (see `dispatch_fe_command`).
-    /// The wire verb `reveal` is the same command: it parses to `Preview` on
-    /// both routes.
-    #[serde(alias = "reveal")]
     Preview {
+        workspace: String,
+        path: String,
+        #[serde(default)]
+        urgent: bool,
+        #[serde(default)]
+        roi: Option<RoiRect>,
+        #[serde(default)]
+        caption: Option<String>,
+    },
+    /// ADR 0025 imperative reveal — v1 is identical to `Preview` (badge floor /
+    /// force-show + on-switch preview, `roi` carried through). Deep
+    /// tree-expand-and-select of the target row is a documented v1.1
+    /// follow-up; until then `reveal` reuses the preview path so a result
+    /// still reaches the user.
+    Reveal {
         workspace: String,
         path: String,
         #[serde(default)]
@@ -377,7 +400,7 @@ mod tests {
     }
 
     #[test]
-    fn route_reveal_maps_to_preview_with_urgent() {
+    fn route_reveal_maps_to_reveal_with_urgent() {
         // Directed so urgent is honoured (force-show is directed-only).
         let evt = fe_evt(
             "reveal",
@@ -385,7 +408,7 @@ mod tests {
             Some("fe@host-a"),
         );
         match route_fe_command(&evt, "fe@host-a") {
-            Some(FeCommand::Preview {
+            Some(FeCommand::Reveal {
                 workspace,
                 path,
                 urgent,
@@ -398,7 +421,7 @@ mod tests {
                 assert_eq!(roi, None);
                 assert_eq!(caption, None);
             }
-            other => panic!("expected Preview, got {other:?}"),
+            other => panic!("expected Reveal, got {other:?}"),
         }
     }
 
@@ -509,7 +532,7 @@ mod tests {
             None,
         );
         match route_fe_command(&evt, "fe@host-a") {
-            Some(FeCommand::Preview { roi, .. }) => assert_eq!(
+            Some(FeCommand::Reveal { roi, .. }) => assert_eq!(
                 roi,
                 Some(RoiRect {
                     x: 0,
@@ -518,7 +541,7 @@ mod tests {
                     h: 1
                 })
             ),
-            other => panic!("expected Preview, got {other:?}"),
+            other => panic!("expected Reveal, got {other:?}"),
         }
     }
 
@@ -545,10 +568,10 @@ mod tests {
             None,
         );
         match route_fe_command(&evt, "fe@host-a") {
-            Some(FeCommand::Preview { caption, .. }) => {
+            Some(FeCommand::Reveal { caption, .. }) => {
                 assert_eq!(caption.as_deref(), Some("hi"))
             }
-            other => panic!("expected Preview, got {other:?}"),
+            other => panic!("expected Reveal, got {other:?}"),
         }
     }
 

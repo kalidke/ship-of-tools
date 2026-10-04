@@ -283,6 +283,28 @@ impl State {
                     self.mark_pending_nav(host, workspace, path);
                 }
             }
+            FeCommand::Reveal {
+                workspace,
+                path,
+                urgent,
+                roi,
+                caption,
+            } => {
+                // reveal == preview: the same-ws preview path now performs the
+                // deep tree-expand-and-select (cursor follows the file, ancestor
+                // dirs expand async), so `reveal` and `preview` both drive the
+                // nav cursor onto the file — the BE need not pick the right verb
+                // or issue a separate cursor move. The cross-ws force-show/badge
+                // semantics are shared too, as is a `--roi` viewport aim (the
+                // sot-fe CLI attaches roi to either verb).
+                self.dispatch_fe_command(from_host, FeCommand::Preview {
+                    workspace,
+                    path,
+                    urgent,
+                    roi,
+                    caption,
+                });
+            }
             FeCommand::Relaunch { converge } => {
                 // Same exit codes the sentinel watcher produces; the supervisor
                 // (launch-sot.ps1 / sot-launch) respawns us. `ephemeral` FEs
