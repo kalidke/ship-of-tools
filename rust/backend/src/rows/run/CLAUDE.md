@@ -5,7 +5,8 @@ folder holds the phase vocabulary the daemon reports, the per-row observer that 
 headless attach client. Part of the daemon's rows subsystem; charter: `rust/backend/src/rows/CLAUDE.md`.
 
 ## Files
-- `mod.rs`: declares the three modules below
+- `mod.rs`: declares the four modules below
+- `end.rs`: ending a row's run (destroy_capsule_workspace and its outcome) and removing its tomls
 - `probe.rs`: the phase strings (`UNREACHABLE_PHASE`, `FOREIGN_PHASE`, `NEVER_STARTED_PHASE`), `phase_for_missing_pointer`, `phase_str`, `local_phase`
 - `observer.rs`: the per-row lifecycle observer task and `observe`
 - `headless.rs`: the daemon's own attach client: `type_into`, `write_and_enter`, `screen_of`, `HeadlessError`

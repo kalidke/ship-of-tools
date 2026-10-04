@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::handlers::remove_comm_agents_for_workspace;
+
 impl Workspaces {
     /// ADR 0042 amendment (owner rulings 2026-09-04 and 2026-09-06): is `ws`
     /// this daemon's default row in its INERT ANCHOR state -- the fallback
@@ -72,6 +74,72 @@ pub(crate) fn default_row_launch_seed(
         ),
         None => (false, "none".to_string(), String::new(), String::new()),
     }
+}
+
+/// After a default row's run is CONFIRMED ended (`confirmed_ended` from
+/// `default_row_end_response`), reset the row's `agent`/`agent_name` back
+/// to the inert-anchor shape and persist + broadcast the change — the
+/// ADR 0042 amendment invariant ("an anchor with no run is inert, and
+/// inert anchors are hidden") applied to the one path that used to leave
+/// a carried-over `agent` stuck forever (field defect, v0.6.0-rc.12: the
+/// owner once started an agent in this row before that rule existed, and
+/// nothing ever reset `agent` back to "none" once its run ended, so
+/// `Workspaces::is_inert_default_anchor` never went true again). A
+/// `false` confirmed_ended is a no-op: `default_row_end_response` already
+/// built the typed-error response for a `Kept` outcome, and neither the
+/// row nor its toml may change under a refusal.
+///
+/// ADR 0043 decision 35: also prunes the row's sot-comm registry entries,
+/// the same way `workspace.destroy`'s non-default path does below — a
+/// killed default-row agent can't run its own `comm-leave`, so without
+/// this its row lingered as a ghost `workspace.list` merges back in.
+///
+/// `held_guard` is `destroy_capsule_workspace`'s own row guard, carried
+/// through unexamined so it stays locked across the reset below too
+/// (ADR 0043 decision 33, Codex review round 2) — dropped only once this
+/// function returns, whichever arm it takes.
+pub(crate) async fn end_default_row_run(
+    workspaces: &Workspaces,
+    ws_events: &broadcast::Sender<WorkspaceChanged>,
+    workspace_id: &str,
+    slug: &str,
+    agent_name: &str,
+    confirmed_ended: bool,
+    _held_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+) {
+    if !confirmed_ended {
+        return;
+    }
+    let reg_agent = agent_name.to_string();
+    let reg_ws = workspace_id.to_string();
+    let reg_host = crate::workspaces::declared_host();
+    let comm_removed = tokio::task::spawn_blocking(move || {
+        remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
+    })
+    .await
+    .unwrap_or_default();
+    if !comm_removed.is_empty() {
+        tracing::info!(
+            removed = ?comm_removed,
+            slug = %slug,
+            "pruned sot-comm registry rows for the default row's ended run"
+        );
+    }
+    if let Some(reset) = workspaces.reset_agent_to_none(workspace_id) {
+        if let Err(e) = crate::workspaces::save(&reset) {
+            tracing::warn!(error = %e, workspace_id = %workspace_id,
+                "default row agent-reset toml persist failed; workspace is in-memory only");
+        }
+    }
+    // Live-push so the Sessions strip re-lists — the row's phase is
+    // derived fresh from the supervisor lane on every `workspace.list`
+    // call. `action` is informational only: every `workspace.changed`
+    // push just triggers an FE re-list.
+    let _ = ws_events.send(WorkspaceChanged {
+        action: "run_ended".into(),
+        slug: slug.to_string(),
+        workspace_id: workspace_id.to_string(),
+    });
 }
 
 #[cfg(test)]

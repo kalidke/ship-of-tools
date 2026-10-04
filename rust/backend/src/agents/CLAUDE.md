@@ -6,13 +6,14 @@ env a spawn carries. Part of the backend's agents subsystem; charter:
 agents/CLAUDE.md at the repo root (lands with the repo-root agents/ folder).
 
 ## Files
-- `mod.rs`: declares the six modules and the test support module.
+- `mod.rs`: declares the seven modules and the test support module.
 - `accounts.rs`: account discovery, the account name rules, `account_env`, and the shared links a named account gets.
 - `argv.rs`: the launch argv per agent kind (`agent_argv`, `agent_exec_argv`, `claude_resume_argv`) and the Unix path resolution of `claude` and `ccx`.
 - `env.rs`: the spawn env (`capsule_supervisor_env`, `account_spawn_env` for the account preparation, `agent_env`) and the list of nesting variables scrubbed from every spawn.
 - `folder_trust.rs`: the declared trusted-root prefix and the write of claude's per-folder trust record.
 - `awareness.rs`: the `SOT_*` awareness env stamped on every capsule producer, and the daemon's own endpoint path.
 - `memory.rs`: the auto-memory settings flag claude gets, and the proof that one shared store exists.
+- `ops.rs`: accounts.list
 - `support_tests.rs`: `touch_dir`, `touch_file`, `platform_spelling` and the env guard, shared by the tests of the other files.
 
 ## Start here

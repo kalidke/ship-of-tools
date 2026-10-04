@@ -59,7 +59,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - `workspace.rs`: the row's methods, `Phase`, `Observation`, `SupervisorIdentity`, the phase cell, `now_unix`
 - `registry.rs`: `Workspaces` insert, lookup, removal, observers, buses and the per-row guard
 - `gate.rs`: `RunGate`, `StartPermit`, `begin_start`, `close_gate_and_settle`
-- `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `default_row_launch_seed`
+- `anchor.rs`: the inert default anchor rule, `reset_agent_to_none`, `end_default_row_run`, `default_row_launch_seed`
 - `reauth/`: `workspace.reauth`, the accept half and the restart runner
 - `run/`: the phase strings, the lifecycle observer and the headless attach client
 - `spawn/`: launching a row's `sot-capsule supervise`: state-root checks, the detached spawn per OS, the Linux row scope

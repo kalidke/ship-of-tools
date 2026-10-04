@@ -1,5 +1,6 @@
 //! The daemon's view of a capsule row's run: its phase vocabulary, lifecycle observer and headless client.
 
+pub(crate) mod end;
 pub(crate) mod probe;
 
 /// One lifecycle observer per capsule row -- the SINGLE writer of `Workspace::phase`.
