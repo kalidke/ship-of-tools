@@ -80,7 +80,6 @@ and the launch path fails open: no update step can stop a window from starting.
 - `shutdown-sot.ps1`: ordered local teardown.
 ### Dev and docs
 - `restart-backend.sh`: loads a freshly built `sotd` into a running dev daemon.
-- `docs-media.sh`: headless docs stills and loops from the real window.
 - `docs-shots.sh`: the display-box screenshot matrix.
 ### Folders
 - `lib/`: `sot-daemon.sh`, sourced by the installer, the launcher and the rendered wrapper.

@@ -34,7 +34,7 @@ on:
     # comm/** added alongside the "Test sot-comm disambiguation" step below
     # (PR #148 Codex review F10) — without it, a comm-only change (like the
     # one that added that step) would never trigger this workflow at all.
-    paths: ["rust/**", "scripts/**", "comm/**", ".github/workflows/rust.yml"]
+    paths: ["rust/**", "scripts/**", "docs/tools/**", "comm/**", ".github/workflows/rust.yml"]
   workflow_dispatch: {}
 
 concurrency:

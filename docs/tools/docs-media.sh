@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # docs-media.sh — headless docs stills + motion loops from the REAL frontend.
 #
-#   scripts/docs-media.sh stills [name...]   # 1920x1080 PNG stills
-#   scripts/docs-media.sh loops  [name...]   # mp4 + webm + poster
-#   scripts/docs-media.sh features [name...] # one short loop per feature
-#   scripts/docs-media.sh all                # stills, loops and features
-#   scripts/docs-media.sh agent              # the agent takes: one real Claude Code session
-#   scripts/docs-media.sh agent-cut          # cut the kept agent takes into loops and stills
-#   scripts/docs-media.sh list               # the still + loop matrix
+#   docs/tools/docs-media.sh stills [name...]   # 1920x1080 PNG stills
+#   docs/tools/docs-media.sh loops  [name...]   # mp4 + webm + poster
+#   docs/tools/docs-media.sh features [name...] # one short loop per feature
+#   docs/tools/docs-media.sh all                # stills, loops and features
+#   docs/tools/docs-media.sh agent              # the agent takes: one real Claude Code session
+#   docs/tools/docs-media.sh agent-cut          # cut the kept agent takes into loops and stills
+#   docs/tools/docs-media.sh list               # the still + loop matrix
 #
 # Linux only, no display or GPU needed: the frontend renders through Mesa's
 # software Vulkan (lavapipe) into a private Xvfb, ffmpeg x11grab records the
@@ -33,7 +33,7 @@
 # (borderless fullscreen needs a window manager).
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURE="$REPO/docs/fixtures/DemoProject"
 OUT="$REPO/docs/src/assets/media"
 # sot + sotd + sot-capsule: SOT_MEDIA_BIN, else a build pinned for the docs

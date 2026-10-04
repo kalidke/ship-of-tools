@@ -7,13 +7,13 @@ changes make the published docs visually stale.
 ## Headless media pipeline
 
 ```bash
-scripts/docs-media.sh list                     # the still, loop and feature tables
-scripts/docs-media.sh stills [name...]         # PNG stills
-scripts/docs-media.sh loops [name...]          # sessions
-scripts/docs-media.sh features [name...]       # one short loop per feature
-scripts/docs-media.sh all                      # stills, loops and features
-scripts/docs-media.sh agent                    # the agent takes (real Claude Code)
-scripts/docs-media.sh agent-cut                # cut the kept agent takes
+docs/tools/docs-media.sh list                     # the still, loop and feature tables
+docs/tools/docs-media.sh stills [name...]         # PNG stills
+docs/tools/docs-media.sh loops [name...]          # sessions
+docs/tools/docs-media.sh features [name...]       # one short loop per feature
+docs/tools/docs-media.sh all                      # stills, loops and features
+docs/tools/docs-media.sh agent                    # the agent takes (real Claude Code)
+docs/tools/docs-media.sh agent-cut                # cut the kept agent takes
 ```
 
 What each still and loop shows, its key steps and its crop live in the

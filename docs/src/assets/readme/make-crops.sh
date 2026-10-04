@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the README stills: each is a crop of one region of a 1920x1080
 # docs still in ../media/ (itself a crop of the window, see STILL_CROP in
-# scripts/docs-media.sh). Re-run after the media stills are re-shot; adjust a
+# docs/tools/docs-media.sh). Re-run after the media stills are re-shot; adjust a
 # geometry (WxH+X+Y, in still pixels) if the region moved.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

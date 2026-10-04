@@ -7,8 +7,8 @@ the commit that changes the code it describes, and a design that is not built is
 ## Owns
 - `docs/`: the ADRs and their index, the manual (`src/`, `make.jl`, `Project.toml`), `INSTALL-AGENT.md`,
   `ENROLLING-A-HOST.md`, `USING.md`, `SCREENSHOTS.md`, `plan.md` and the demo project the screenshots are taken from.
-- Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, the media scripts
-  `scripts/docs-media.sh` and `scripts/docs-shots.sh`, and the publish guard (`.claude/settings.json`,
+- Outside this folder: `requirements.md` and `README.md` at the root, the root `CLAUDE.md`, the media script
+  `scripts/docs-shots.sh`, and the publish guard (`.claude/settings.json`,
   `.claude/hooks/`). Each folder's own `CLAUDE.md` belongs to the subsystem that owns that folder.
 
 ## Promises
@@ -22,14 +22,14 @@ the commit that changes the code it describes, and a design that is not built is
   `<kbd>` and on a link to a missing section id, and doctests run inside it with both documented modules loaded.
 - Published text names no private hostname, username or LAN detail; the publish guard scans commit, PR and issue
   text for them, and the screenshots are generated from `fixtures/DemoProject`, never from a private workspace.
-- Nothing below `docs/` carries a page: `adr/`, `fixtures/` and `src/` are described here, so `src/` holds only
+- Nothing below `docs/` carries a page: `adr/`, `fixtures/`, `tools/` and `src/` are described here, so `src/` holds only
   manual pages.
 
 ## Connections
 - `.github/workflows/CI.yml` (job `docs`) builds the manual with `make.jl` and deploys it on a push to `main`.
 - The root `CLAUDE.md` sends a reader to ADR 0017 (frontend restart) and ADR 0023 and ADR 0046 (session spawn and daemon
   boot); code comments and folder pages cite ADRs by number.
-- `scripts/docs-media.sh` and `scripts/docs-shots.sh` render the frontend against `fixtures/DemoProject`;
+- `docs/tools/docs-media.sh` and `scripts/docs-shots.sh` render the frontend against `fixtures/DemoProject`;
   `SCREENSHOTS.md` is their recipe.
 - `INSTALL-AGENT.md` is the runbook an agent follows to install; its engine is `scripts/install.sh` (distribution
   charter: scripts/CLAUDE.md).
@@ -39,6 +39,7 @@ the commit that changes the code it describes, and a design that is not built is
 - `CLAUDE.md` (repo root): the design and conventions page every session loads.
 - `docs/adr/`: the decision records.
 - `docs/fixtures/`: `DemoProject`, the fixture project for docs media.
+- `docs/tools/`: the docs media scripts: docs-media.sh, run by hand from SCREENSHOTS.md.
 - `docs/src/`: the manual's pages and assets (covered by this page: the Julia environment in `Project.toml` makes
   `docs/` a package root).
 
@@ -52,6 +53,7 @@ the commit that changes the code it describes, and a design that is not built is
 - `fixtures/`: `DemoProject`, the demo project the media are taken from.
 - `make.jl`: builds the manual and runs the built-site checks.
 - `plan.md`: the phase-1 implementation plan; staged into the manual as the roadmap.
+- `tools/`: the docs media scripts: docs-media.sh, run by hand from `SCREENSHOTS.md`.
 - `src/.vitepress/`: the VitePress site configuration and theme.
 - `src/assets/`: images, media and stylesheets the pages use.
 - `src/components/`: the Vue components that show a demo still or loop.
