@@ -2,6 +2,7 @@
 
 use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person_input};
 use crate::rows::ops::pty::handle_pty_open;
+use crate::rows::reauth::answer_workspace_reauth;
 use super::hello::admit_hello;
 use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
 use super::*;
@@ -164,28 +165,7 @@ where
         // path below (same reason `PTY_OPEN`'s arm writes its own) so
         // the kill cannot precede the ack.
         op::WORKSPACE_REAUTH => {
-            let (out, restart) =
-                crate::reauth::handle_workspace_reauth(frame.id, frame.payload, &workspaces).await?;
-            // Both halves of the ordering live in `write_accept_then`,
-            // which a test pins: the frame goes out first, and a write
-            // that fails rolls the record back before the `?` here ends
-            // the connection.
-            crate::reauth::write_accept_then(tx, &out, restart, |plan| {
-                // Detached: this connection is about to lose its peer,
-                // and the restart holds the row's guard for its whole
-                // duration wherever it runs.
-                tokio::spawn(async move {
-                    if let Err(e) =
-                        tokio::task::spawn_blocking(move || {
-                            crate::reauth::restart_blocking(plan, &crate::reauth::LiveSupervisor)
-                        })
-                        .await
-                    {
-                        tracing::warn!(error = %e, "workspace.reauth: the restart task panicked");
-                    }
-                });
-            })
-            .await?;
+            answer_workspace_reauth(tx, frame, workspaces).await?;
             return Ok(());
         }
         op::WORKSPACE_ACTIVATE => {

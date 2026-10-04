@@ -5,7 +5,7 @@ session is the thing replaced, so the order of steps is the design: validate, re
 Part of the daemon's rows subsystem; charter: rust/backend/src/rows/CLAUDE.md.
 
 ## Files
-- `mod.rs`: the accept half: `check`, `handle_workspace_reauth`, `write_accept_then`, `ReauthRestart` and its rollback
+- `mod.rs`: the accept half: `check`, `handle_workspace_reauth`, `write_accept_then`, `answer_workspace_reauth` (the connection's arm), `ReauthRestart` and its rollback
 - `restart.rs`: the restart runner: `restart_blocking`, `LiveSupervisor`, `RestartEffects`, the voyage mint and the settle wait
 - `restart_tests.rs`: the runner's effect order, revival and mint-licence cases, with the fake supervisor they drive
 - `support_tests.rs`: shared fixtures: the env guard and the seeded homes and rows

@@ -40,6 +40,7 @@ use anyhow::Result;
 use serde_json::json;
 use sot_protocol::{op, Frame, WorkspaceReauthRes};
 use std::path::{Path, PathBuf};
+use tokio::io::AsyncWrite;
 
 use crate::accounts::DiscoveredAccount;
 use crate::handlers::HandlerOutput;
@@ -439,6 +440,36 @@ pub async fn handle_workspace_reauth(
         _guard: guard,
     };
     Ok((out, Some(restart)))
+}
+
+/// Answers `workspace.reauth`: records the switch, writes the accept frame, then hands the restart to a detached task.
+pub(crate) async fn answer_workspace_reauth<W>(tx: &mut W, frame: Frame, workspaces: &Workspaces) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let (out, restart) =
+        crate::reauth::handle_workspace_reauth(frame.id, frame.payload, &workspaces).await?;
+    // Both halves of the ordering live in `write_accept_then`,
+    // which a test pins: the frame goes out first, and a write
+    // that fails rolls the record back before the `?` here ends
+    // the connection.
+    crate::reauth::write_accept_then(tx, &out, restart, |plan| {
+        // Detached: this connection is about to lose its peer,
+        // and the restart holds the row's guard for its whole
+        // duration wherever it runs.
+        tokio::spawn(async move {
+            if let Err(e) =
+                tokio::task::spawn_blocking(move || {
+                    crate::reauth::restart_blocking(plan, &crate::reauth::LiveSupervisor)
+                })
+                .await
+            {
+                tracing::warn!(error = %e, "workspace.reauth: the restart task panicked");
+            }
+        });
+    })
+    .await?;
+    return Ok(());
 }
 
 mod restart;
