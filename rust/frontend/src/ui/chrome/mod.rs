@@ -6,10 +6,12 @@ pub(crate) mod layout;
 mod panes;
 mod spill;
 mod status;
+mod strip;
 mod theme;
 
 pub(in crate::ui) use panes::*;
 pub(in crate::ui) use spill::*;
 pub(in crate::ui) use status::*;
+pub(in crate::ui) use strip::*;
 pub(in crate::ui) use theme::*;
 pub(in crate::ui) use layout::draw_wireframe;

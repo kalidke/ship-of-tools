@@ -10,6 +10,7 @@ the wireframe that frames the panes. Part of fe-ui; charter: rust/frontend/src/u
 - `status.rs`: status wrapping, the nav pane's pinned rows, the clock, battery and version labels, pane titles.
 - `spill.rs`: `NavSpillSeg`, `nav_spill_take` and cell-width truncation for the nav spill overlay.
 - `theme.rs`: RGB scaling, the contrast levers and the status-change flash.
+- `strip/`: the session strip at the bottom: its items, the ships drawn on the band, and the band's rows and text.
 
 ## Start here
 `panes.rs` for who has focus and which slot is shown; `status.rs` for what the bottom line and the nav pane's pinned
