@@ -118,3 +118,49 @@ pub(crate) fn force_os_foreground(window: &winit::window::Window) -> bool {
         ok
     }
 }
+
+/// Starts the one-shot relaunch-sentinel watcher thread (ADR 0017): on the
+/// sentinel it sets `flag` to 75 or 76 and wakes the window. `resumed` calls it.
+pub(crate) fn spawn_watcher(
+    sentinel: std::path::PathBuf,
+    flag: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    waker: std::sync::Arc<winit::window::Window>,
+) {
+    if let Err(e) = std::thread::Builder::new()
+        .name("sot-relaunch-watch".to_string())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            if sentinel.exists() {
+                // Read BEFORE removing: content picks 75 (plain
+                // relaunch) vs 76 (converge — relaunch-sot.ps1
+                // -Converge). Unreadable/empty content fails
+                // open to a plain relaunch.
+                // PowerShell 5.1's `-Encoding utf8` (the
+                // writer's ASCII path is preferred now, but a
+                // stale/foreign writer can still emit one)
+                // prepends a UTF-8 BOM (U+FEFF), which
+                // `trim_start()` does NOT strip (it's not
+                // Unicode whitespace) -- strip it explicitly
+                // first so a BOM-prefixed "converge" doesn't
+                // decode as a plain relaunch.
+                let is_converge = std::fs::read_to_string(&sentinel)
+                    .map(|s| {
+                        s.trim_start_matches('\u{feff}')
+                            .trim_start()
+                            .to_ascii_lowercase()
+                            .starts_with("converge")
+                    })
+                    .unwrap_or(false);
+                let _ = std::fs::remove_file(&sentinel);
+                flag.store(
+                    if is_converge { 76 } else { 75 },
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                waker.request_redraw();
+                break;
+            }
+        })
+    {
+        tracing::warn!(error = %e, "failed to spawn relaunch watcher");
+    }
+}

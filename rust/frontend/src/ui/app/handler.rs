@@ -75,45 +75,7 @@ impl ApplicationHandler for App {
                 // background thread (not the control-flow timer) keeps the
                 // interactive `Wait` power profile intact.
                 if let Some(sentinel) = relaunch_sentinel_path().filter(|_| !state.ephemeral) {
-                    let flag = state.relaunch_flag.clone();
-                    let waker = state.window.clone();
-                    if let Err(e) = std::thread::Builder::new()
-                        .name("sot-relaunch-watch".to_string())
-                        .spawn(move || loop {
-                            std::thread::sleep(std::time::Duration::from_millis(400));
-                            if sentinel.exists() {
-                                // Read BEFORE removing: content picks 75 (plain
-                                // relaunch) vs 76 (converge — relaunch-sot.ps1
-                                // -Converge). Unreadable/empty content fails
-                                // open to a plain relaunch.
-                                // PowerShell 5.1's `-Encoding utf8` (the
-                                // writer's ASCII path is preferred now, but a
-                                // stale/foreign writer can still emit one)
-                                // prepends a UTF-8 BOM (U+FEFF), which
-                                // `trim_start()` does NOT strip (it's not
-                                // Unicode whitespace) -- strip it explicitly
-                                // first so a BOM-prefixed "converge" doesn't
-                                // decode as a plain relaunch.
-                                let is_converge = std::fs::read_to_string(&sentinel)
-                                    .map(|s| {
-                                        s.trim_start_matches('\u{feff}')
-                                            .trim_start()
-                                            .to_ascii_lowercase()
-                                            .starts_with("converge")
-                                    })
-                                    .unwrap_or(false);
-                                let _ = std::fs::remove_file(&sentinel);
-                                flag.store(
-                                    if is_converge { 76 } else { 75 },
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                                waker.request_redraw();
-                                break;
-                            }
-                        })
-                    {
-                        tracing::warn!(error = %e, "failed to spawn relaunch watcher");
-                    }
+                    crate::relaunch::spawn_watcher(sentinel, state.relaunch_flag.clone(), state.window.clone());
                 }
                 // FE control-command watcher (ADR 0019): poll the fe-commands
                 // dir for JSON command files dropped by an in-terminal agent
