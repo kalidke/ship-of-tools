@@ -7,105 +7,6 @@
 //! writer loop (the U3 seam: a real named pipe on Windows) executes the
 //! [`Action`]s and feeds the [`AttachProto`] events back.
 //!
-//! ## Rework round (Codex adversarial review, U2)
-//!
-//! The first version of this file shipped six protocol blockers; this is
-//! the corrected version. What changed, and why — cited by finding number
-//! so the review thread and this code stay traceable to each other:
-//!
-//! - **Finding 4 (lockstep cleared early, by unrelated markers).** Every
-//!   accepted client request now allocates a [`RequestId`] ([`AttachProto::mark_outstanding`]
-//!   returns it); `Conn::outstanding_request` is `Option<RequestId>`, not a
-//!   bare bool. A reply's marker CARRIES the request id it answers
-//!   (`Reply`/`ReplyThenClose`/`ShutdownAck`'s `request_id`, a
-//!   `CheckpointChunk`'s `clears_request`), and [`AttachProto::sent`] only
-//!   clears the flag if it still names the SAME request
-//!   (`clear_outstanding_if_matches`) — never unconditionally, and never
-//!   before the reply's bytes are reported physically written. The
-//!   previous version cleared refusals immediately at decision time and let
-//!   a checkpoint's LAST chunk clear whatever request happened to be
-//!   outstanding on that connection at that moment, including one from an
-//!   unrelated LATER request (e.g. a `take` sent after the attach's own
-//!   reply had already cleared) — request correlation closes both holes.
-//! - **Finding 3 + 10 (checkpoint transfer loses output; doubles the
-//!   transient).** A `Watcher`'s checkpoint now streams ONE chunk at a
-//!   time ([`CheckpointProgress::Sending`] holds a shared `Arc<Vec<u8>>`
-//!   (round-2 review, finding 9: `Arc<[u8]>` always copies on conversion
-//!   from an owned `Vec`; `Arc<Vec<u8>>` moves it) plus
-//!   a cursor; [`AttachProto::sent`]'s `CheckpointChunk` arm requests the
-//!   NEXT chunk on every non-final completion) instead of materializing
-//!   every chunk up front — the peak transient is the one shared buffer
-//!   plus at most one in-flight chunk copy, not the buffer plus a second
-//!   complete copy of it. Live output committed while a watcher is not yet
-//!   `Done` now queues in `WatcherState::pending_post_watermark` (still
-//!   budget-accounted at enqueue time via `bytes_queued`) instead of being
-//!   silently dropped for that subscriber; the final chunk's completion
-//!   flushes it as ordinary `Output` sends.
-//! - **Finding 5 (progress deadline saw only live output).** Every
-//!   connection now tracks `outstanding_sends: u64` and
-//!   `last_send_progress: Instant`, updated by [`AttachProto::sent`] for
-//!   EVERY marker (chunks, replies, keepalives, shutdown acks — everything
-//!   a `make_send` ever emits), with the clock explicitly reset at the
-//!   empty→nonempty transition (not merely at each completion) so a queue
-//!   that stays empty for a long time is never penalized the instant one
-//!   item finally arrives. `tick`'s stall check is now `outstanding_sends >
-//!   0`, replacing the old watcher-only, live-byte-only check — a stalled
-//!   checkpoint, a non-reading mgmt client, a lost keepalive, and an
-//!   unconfirmed shutdown ack are now ALL bounded by the same 30 s rule,
-//!   which is what actually frees the checkpoint slot / admission-cap slot
-//!   a stalled connection was holding.
-//! - **Finding 6 (keepalive suspension: wrong scope) / round-2 finding 3
-//!   (nonce retirement lost across a same-connection retake).**
-//!   `tick_keepalive`'s original fix scoped suspension to the DRIVER
-//!   CONNECTION'S OWN in-flight transfer only — never to an unrelated
-//!   connection merely occupying the global slot. Round-2 review deleted
-//!   that whole suspend/freeze branch outright (with `DriverState.
-//!   last_tick`, which existed only to compute it): `take` already refuses
-//!   `CheckpointInFlight` until a connection's OWN transfer is `Done`, and
-//!   nothing ever moves a watcher's checkpoint backward out of `Done`, so
-//!   the branch was unreachable in every real path, not merely rare — kept
-//!   "for fidelity" is not a reason once deletion pressure is applied to
-//!   it. Separately, [`AttachProto::handle_keepalive_reply`] now retires a
-//!   nonce by CONNECTION, via `Conn::last_keepalive_nonce`, not by "is this
-//!   still the current `DriverState`": a same-connection retake used to
-//!   discard the outstanding nonce along with the rest of `DriverState`,
-//!   so that connection's own later late echo of it looked identical to a
-//!   fabricated one and was closed as `UnexpectedKeepalive` — a real
-//!   round-2 finding, reproduced by the reviewer's own state-machine probe.
-//!   Now: a nonce this connection was NEVER issued is a protocol violation
-//!   regardless of role (a watcher that was never driver echoing anything
-//!   is closed, not silently waved through); a nonce it WAS issued, echoed
-//!   after it stopped being the actionable one (demoted, retaken, or
-//!   already answered), is a recognized but no longer actionable late echo
-//!   — ignorable, not fatal.
-//! - **Finding 12 (ground-timeout demotion could exceed the non-watcher
-//!   cap).** `ground_timeout` now checks `non_watcher_count` against
-//!   [`NON_WATCHER_CAP`] before demoting a timed-out attach back to
-//!   `PostHello`; over cap, it closes the connection instead (still after
-//!   its `AttachRefused` reply is physically sent).
-//! - **Finding 7 (teardown revocation scope).** `self.teardown` is a new
-//!   flag ([`AttachProto::begin_teardown`]) covering ONLY producer-bound
-//!   admission: once set, `take`/`input`/`resize` are silently ignored
-//!   (the lockstep slot they briefly held is released immediately, since
-//!   no reply will ever come). `hello`/`attach`/mgmt `probe`/`status`/
-//!   `shutdown` are UNCHANGED by this flag — this module has no opinion on
-//!   when the caller stops feeding it events; see `capsule_win.rs`'s module
-//!   doc for the loop-side half of this (a reduced action-execution set
-//!   during teardown, since the ConPTY handle needed for `ApplyResize` is
-//!   gone by then regardless).
-//! - **Finding 15 (dead fields).** `WatcherState.controller_id` and
-//!   `DriverState.controller_id`/`take_epoch` are deleted — they had
-//!   producers but no consumers; the durable holder/epoch lives
-//!   capsule-side (`FrameCtx.holder`/`take_epoch` in `capsule_win.rs`), and
-//!   nothing here ever needed a second copy. UPDATE (ADR 0046 decision 3,
-//!   lane B3b1): `DriverState.controller_id`/`take_epoch` are reintroduced
-//!   — a v3 watcher's `PenSnapshot` needs the CURRENT driving connection's
-//!   controller, which is ephemeral, in-memory state this module already
-//!   owns (`self.driver`) and now has its first real consumer for; see
-//!   `DriverState`'s own doc for why this is still not a second copy of
-//!   the durable value. `WatcherState.controller_id` stays deleted —
-//!   nothing reads a per-watcher identity, only the current driver's.
-//!
 //! # What this module owns, and what it explicitly does not
 //!
 //! Owned: the connection registry and its role machine; lockstep (one
@@ -519,7 +420,7 @@ struct Conn {
 }
 
 /// ADR 0046 decision 3 (lane B3b1): `controller_id`/`take_epoch`
-/// reintroduced here — finding 15 (this module's own rework-round doc)
+/// reintroduced here — finding 15
 /// deleted them as dead fields with "producers but no consumers," since
 /// the durable holder/epoch lived only capsule-side (`FrameCtx::holder`/
 /// `take_epoch`). This lane is their first consumer: a v3 watcher's
