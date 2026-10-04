@@ -15,9 +15,9 @@
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
 mod accounts;
-mod ancestors;
 mod capsule_workspace;
 mod clients;
+mod comm;
 mod comm_inbox;
 mod comm_wake;
 mod comm_registry_lock;
@@ -27,7 +27,6 @@ use files::{concept, watcher};
 use files::io as file_io;
 use files::tree as files_mode;
 mod handlers;
-mod hub_link;
 mod http_serve;
 mod lane_bridge;
 mod lease;
@@ -52,6 +51,8 @@ use topology::{dial as topology_dial, set as topology_set, status as status_cli,
 mod update;
 mod workspaces;
 
+use comm::mail::hub_link;
+use comm::registry::ancestors;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
