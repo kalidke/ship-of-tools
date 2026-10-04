@@ -12,6 +12,7 @@
 
 #![cfg(all(unix, target_os = "linux"))]
 
+use crate::capsule::wall_ms;
 use crate::store::envelope::*;
 use crate::store::segment::{Commit, RetentionClass, SegmentIdentity, SegmentReader, SegmentState};
 use crate::store::voyage::{VoyageStore, SEG_DIR};
@@ -21,7 +22,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 pub const HELPER_PROTOCOL: u64 = 1;
 /// Features this adapter's segments declare. `json-f64-v1` always (semantic
@@ -188,10 +189,6 @@ pub enum OperatorCmd {
     Turn(String),
     Interrupt,
     Shutdown,
-}
-
-fn wall_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 fn random_hex32() -> Result<String> {

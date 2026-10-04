@@ -12,17 +12,10 @@
 //! Frame shapes mirror `tests/golden.rs`'s `fixture_frames()` exactly —
 //! those are proven writer- and verifier-legal.
 
+use sot_log::capsule::wall_ms;
 use sot_log::store::segment::Commit;
 use sot_log::store::voyage::VoyageStore;
 use sot_log::{Actor, ActorKind, Class, Derivation, Emitter, Envelope, FrameRef, RefKind, Seq, Source};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn wall_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
 
 /// Exit codes are part of the test contract: std's `Child::kill()` on
 /// Windows is `TerminateProcess(handle, 1)`, and a `main() -> Result` error

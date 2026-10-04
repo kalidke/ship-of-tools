@@ -6,9 +6,9 @@ the leg's runtime; its types, constants and `run` are re-exported as `sot_log::c
 subsystem; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: the leg's public types, limits and self status; re-exports `run`
+- `mod.rs`: the leg's public types, limits and self status; re-exports `run` and `wall_ms`
 - `output.rs`: commit pacing (`should_flush_output`, `output_wait`) and the bounded output budget (`OutputBudget`)
-- `frame.rs`: the frame factory `FrameCtx`, the run-end marker and the input WAL, with their tests
+- `frame.rs`: the frame factory `FrameCtx`, the run-end marker and the input WAL, and `wall_ms`, the frames' wall clock, with their tests
 - `writer_loop/`: `run`, the writer loop, one producer from spawn to sealed voyage
 - `producer/`: the `Producer` trait and its Unix and Windows implementations, plus the DA1 handshake
 

@@ -147,6 +147,7 @@ pub mod producer;
 mod writer_loop;
 use frame::*;
 use output::*;
+pub use frame::wall_ms;
 pub use writer_loop::run;
 
 const SEGMENT_MAX_BYTES: u64 = 64 * 1024 * 1024;
