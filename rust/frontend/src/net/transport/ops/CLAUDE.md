@@ -25,3 +25,5 @@ arm in `send_request`.
   inserts none is fire-and-forget, and its reply reaches the UI as `IncomingEvt::Event`:
   `send_toggle_hidden`, `send_workspace_activate`, `send_fe_presence`, `send_fe_sessions`,
   `send_repl_interrupt`, `send_monitor_unsubscribe`, `send_agent_send`.
+- `send_figure_get` alone inserts before it writes, so `PendingGuard`'s drop reports a figure whose
+  write failed (`FigureGetFailed`).
