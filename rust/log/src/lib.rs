@@ -8,260 +8,74 @@
 //! `codec_id` / `required_features` / version seams).
 
 pub use lane::attach_proto;
-// L1-unix LU2a (ADR 0043 "Decisions for LU2"): the ONE writer loop,
-// generic over `producer::Producer` -- the file that used to be
-// `capsule_win.rs`, renamed here once `ConptyProducer` (`producer_conpty.rs`)
-// took over its nine OS-facing call sites. Ungated: it now DRIVES both
-// producers below (LU2b: `producer_pty::PtyProducer` on Linux).
 pub mod capsule;
-// ADR 0043 "Decisions for LU2": the `Producer` trait (the writer loop's
-// own nine call sites into whatever OS primitive runs the child) plus
-// `ExitStatus`/`ParentLease` -- platform-neutral, ungated like
-// `transport`/`challenge`.
 pub use capsule::producer;
-// ADR 0043 "Decisions for LU2": `impl Producer for ConptyProducer`, the
-// Windows implementation -- self-gated (`#![cfg(windows)]`), matching
-// `conpty`/`capsule_win` before it. The Unix twin is `producer_pty`,
-// just below.
 #[cfg(windows)]
 pub use capsule::producer::conpty::producer as producer_conpty;
-// ADR 0043 "Decisions for LU2" LU2b: `impl Producer for PtyProducer`, the
-// Unix implementation -- a bare `openpty` fd plus a process-group kill
-// domain, self-gated (`#![cfg(unix)]`). Replaces the Linux `run` arm's
-// former, separate second writer loop (deleted with this lane) as the
-// Linux `run` arm's producer.
 #[cfg(unix)]
 pub use capsule::producer::pty as producer_pty;
-// ADR 0041 step 6, unit U0: the same-connection challenge's
-// platform-neutral core (the outcome vocabulary, the connection trait,
-// the wire half). L1-unix LU1a: ungated -- see the module's own doc.
 mod identity;
 pub use identity::challenge;
-// L1-unix LU1a: the Windows half of the same-connection challenge --
-// steps 1-3, the retained process-handle wrapper, and the raw-handle
-// extension trait. `pub`, matching `pipe_win`/`capsule_win`: Windows-only,
-// self-gated (see the module's own `#![cfg(windows)]`).
 #[cfg(windows)]
 pub use identity::challenge_win;
-// L1-unix LU1c (ADR 0043 decision 8): the Linux half of the same-
-// connection challenge -- SO_PEERCRED same-user check, race-free pidfd
-// pinning, and the retained-pidfd process handle. `pub`, matching
-// `challenge_win`: Linux-only, self-gated (see the module's own
-// `#![cfg(target_os = "linux")]`); a non-Linux Unix with no half of its
-// own fails closed at `socket_unix::connect_voyage_socket`'s own stub
-// instead.
 #[cfg(target_os = "linux")]
 pub use identity::challenge_unix;
-// M2 (ADR 0043 decision 8, the macOS lane): the macOS half of the same-
-// connection challenge -- ONE `LOCAL_PEERTOKEN` getsockopt, whose audit
-// token carries the peer's pid AND the kernel's own reuse generation
-// together, so none of the Linux half's pinning machinery has a twin
-// here. `pub`, matching its two siblings: macOS-only, self-gated (see
-// the module's own `#![cfg(target_os = "macos")]`); every OTHER
-// non-Linux Unix still fails closed at the stub.
 #[cfg(target_os = "macos")]
 pub use identity::challenge_macos;
-// L1-unix LU3a (ADR 0043 decision 19): the three seam traits landed
-// before any consumer uses them -- `Client` (blanket-implements
-// `challenge::ChallengeableConnection`), `PeerProcess`, `Endpoint`.
-// Ungated, like `challenge`/`transport`: this is the CONTRACT, not an
-// implementation -- the implementing types live in `pipe_win.rs`/
-// `socket_unix.rs`/`challenge_win.rs`/`challenge_unix.rs` themselves.
 mod lane;
 pub use lane::client;
-// ADR 0041 step 6, unit U2: the probe classifier (Stage A/B transition
-// table) `probe.rs` deliberately ships without — see that module's own
-// doc. Portable (L1-unix LU1a): makes no OS call of its own, so its unit
-// tests now run on every platform, not merely Windows.
 pub use supervisor::probe::classify;
 pub mod claude;
 #[cfg(windows)]
 pub use capsule::producer::conpty;
-// L1-unix, unit LU0: the platform-neutral transport contract (hoisted out
-// of `capsule_win`/`pipe_win`) -- deliberately NOT cfg-gated, unlike its
-// siblings below: `pipe_win`/`pipe_transport` are the Windows
-// implementation, a Unix implementation lands in LU1.
 pub use lane::transport;
-// ADR 0041 step 5, unit U3: the Windows named-pipe transport (server +
-// client). `pub`, matching `conpty`/`capsule_win`/`wire`: its tests live in
-// `tests/pipe_win.rs`, a separate integration-test crate that can only ever
-// reach `pub` items — the same reason those sibling modules are `pub`
-// rather than `pub(crate)`.
 #[cfg(windows)]
 pub use lane::pipe_win;
-// ADR 0041 step 5, unit U3 round 2: the thin bridge from `pipe_win`'s real
-// named-pipe transport to `transport`'s `Transport` trait. Lives in the
-// library (not the `sot-capsule` bin) for two reasons: `tests/e2e_pipe.rs`
-// needs to reach it, and the bin needs nothing from it beyond construction
-// -- one bridge, reused by both, rather than duplicated or made
-// unreachable from the test crate.
 #[cfg(windows)]
 pub use lane::pipe_transport;
-// L1-unix LU1b (ADR 0043): the Unix domain-socket transport server --
-// `SocketServer` (bind/accept, per-connection reader+writer threads, one
-// bounded events channel, byte-budgeted outbound, two-phase teardown).
-// `pub`, matching `pipe_win`: its tests live in `tests/socket_unix.rs`, a
-// separate integration-test crate that can only ever reach `pub` items.
-// Self-gated (`#![cfg(unix)]`), like `pipe_win` is self-gated to Windows.
 #[cfg(unix)]
 pub use lane::socket_unix;
-// L1-unix LU1b: the thin bridge from `socket_unix`'s real Unix-domain-
-// socket transport to `transport`'s `Transport` trait -- the Unix twin of
-// `pipe_transport`. Self-gated (`#![cfg(unix)]`).
 #[cfg(unix)]
 pub use lane::socket_transport;
-// ADR 0041 step 6, unit U0: fault-injection scaffolding for the probe
-// classifier's own (later) model test. NO classifier logic lives here —
-// see the module's own doc. Platform-neutral (L1-unix LU1a): the
-// mechanical outcome enums, the `ProbeOps` trait, and the scripted test
-// support -- the real OS-facing implementation is `probe_win`.
 pub use supervisor::probe;
-// L1-unix LU1a: the Windows half of the probe seam -- `RealProbeOps` and
-// `SpawnedChild`. `pub`, matching `probe`/`challenge_win`: Windows-only,
-// self-gated (see the module's own `#![cfg(windows)]`).
 #[cfg(windows)]
 pub use supervisor::probe::win as probe_win;
-// L1-unix LU3c: the Linux half of the probe seam -- `RealProbeOps` and
-// `SpawnedChild`, over pidfds. `pub`, matching `probe_win`: self-gated
-// (see the module's own `#![cfg(target_os = "linux")]`).
 #[cfg(target_os = "linux")]
 pub use supervisor::probe::unix as probe_unix;
-// The macOS half of the same seam -- `RealProbeOps` and `SpawnedChild`,
-// over a `kqueue` `EVFILT_PROC`/`NOTE_EXIT` knote. A separate module,
-// not a widened `probe_unix`: every mechanism there is a pidfd, and
-// Darwin has none. `pub`, matching its two siblings: self-gated (see the
-// module's own `#![cfg(target_os = "macos")]`).
 #[cfg(target_os = "macos")]
 pub use supervisor::probe::macos as probe_macos;
-// Crate-private (Codex review finding, capsule_win.rs round): ADR 0041's
-// "one private machine" ruling means this module's items are not part of
-// the crate's public API — `capsule_win.rs` is the only real caller and
-// reaches it via `crate::host_handshake::...`, which needs no `pub` beyond
-// the crate boundary. Not `#[cfg(windows)]`: its own tests are pure bytes
-// and run on every platform (see the module doc) — which is exactly why a
-// plain (non-test) build on a non-Windows target now has NO caller at all
-// for these now-private items (the only real caller, capsule_win.rs, is
-// windows-only): `cfg_attr` suppresses the resulting dead_code warning
-// there specifically, rather than losing it crate-wide or windows-only.
 use capsule::producer::host_handshake;
-// ADR 0041 step 6, unit U0 round-1: the three-state deadline race
-// `challenge::exchange_identity`'s bounded body uses. Portable -- no OS
-// dependency at all -- so its own tests run everywhere, not merely on
-// Windows. ADR 0045 decision 3: `pub`, widened from the original
-// crate-private (round-2 finding 7) -- `sot-protocol`'s own
-// `DaemonLaneEndpoint::dial` (`lane_client.rs`) is now a second,
-// EXTERNAL caller of `run_with_deadline`, bounding its own Unix-socket
-// connect the identical way `exchange_identity`'s wire round trip
-// already bounds itself; `run_with_deadline_traced` stays `pub(crate)`
-// -- only the traced variant tests reach.
 pub use identity::deadline;
 mod store;
 pub use store::envelope;
-// ADR 0041 step 6, unit U0 round-1 (blocker 3): the public facade over
-// fsutil::lock_supervisor -- fsutil itself is a private module, invisible
-// from any OTHER crate, including a future sot-capsule binary target.
 pub use supervisor::journal::fence;
-// ADR 0041 step 6, unit U0 round-1: a pipe lane's post-SID identity
-// exchange (encode request, decode reply) -- the one thing every
-// platform's own `challenge()` delegates per-lane, via
-// `challenge::exchange_identity`. Portable, like `deadline`.
 pub use identity::exchange;
-// ADR 0041 step 6, unit U3: the FE attach-only client's PURE state
-// machines (the six FE rulings from "Step 6 as specified") -- portable,
-// like `pointer`/`exchange`/`rollout`: no OS call, so it is genuinely
-// tested on every CI platform. The runtime that wires these to a real
-// `Endpoint` (Windows: `PipeEndpoint`; Linux and macOS: `SocketEndpoint`
-// -- one endpoint, per `client::PlatformEndpoint`'s own cfg; any other
-// platform: whatever the caller names, e.g. `sot-protocol`'s
-// `DaemonLaneEndpoint`) lives in `fe_client_io` (L1-unix LU3b: renamed
-// from `fe_client_win`, generic over `client::Endpoint` -- no platform
-// name in this module's own name anymore).
 pub use attach_client::rules as fe_client;
-// ADR 0045 decision 1: ungated. `FeAttachClient` is a state machine OVER
-// an `Endpoint` (decision 3), not a Windows/Linux primitive itself, so a
-// macOS frontend attaching through a caller-named `Endpoint` (e.g.
-// `DaemonLaneEndpoint`) needs the module too -- only the
-// `PlatformEndpoint`-typed default and the tests that construct it stay
-// cfg-gated, inside the module itself.
 mod attach_client;
 pub use attach_client::client as fe_client_io;
-// ADR 0046 decision 3 (lane B3a): the attach lane's transport half,
-// extracted out of `fe_client_io` into a reusable worker with an event
-// sink and bounded ingress — see that module's own top doc. Ungated for
-// the same reason `fe_client_io` is: a state machine over an `Endpoint`,
-// not a platform primitive itself.
 pub use attach_client::worker as attach_worker;
-// ADR 0041 step 6, unit U2: the supervisor's own durable operation
-// journal (`operation_id`/`.active`/`.terminal`, recovery-first
-// reconciliation) — portable, like `pointer`/`rollout`, since it reuses
-// `fsutil::publish_noreplace` rather than any OS-specific primitive.
 pub use supervisor::journal;
-// ADR 0041 step 6, unit U2: the parent-death lease a spawned capsule
-// checks as its first act after acquiring the writer fence — a named,
-// kernel-brokered mutex, Windows-only (L1-unix LU3c: the Linux
-// equivalent is an inherited `pipe2`, owned by `supervisor.rs` itself —
-// see that module's own doc; nothing here is ported). `pub`, matching
-// `challenge_win`/`probe_win`: `tests/supervisor.rs` needs to reach it.
 #[cfg(windows)]
 pub use supervisor::lease_win as lease;
-// ADR 0041 step 6, unit U0: `drawer.voyage` publication + validation.
-// Portable (no OS-specific code): reuses `fsutil::publish_noreplace`,
-// which already has both platform arms.
 pub use supervisor::journal::pointer;
 pub use store::record;
 pub use store::recovery;
-// ADR 0041 step 6, unit U1b: the reader-first rollout gate for a
-// feature-bearing segment (ADR 0039 registry) -- portable (no OS
-// dependency), like `pointer`/`exchange`.
 pub use store::rollout;
 pub use store::segment;
-// ADR 0041 step 6, unit U0 (promoted from the frontend's own paths.rs):
-// the per-machine state-dir resolution rule, owned here so every process
-// that needs it (today: the frontend) shares one rule instead of
-// drifting copies.
 mod host;
 pub use host::state_dir;
-// ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
-// and `endrun`/`reset` as fence-acquiring in-process callers. L1-unix
-// LU3c: ungated to `#![cfg(any(windows, target_os = "linux",
-// target_os = "macos"))]`, generic over `client::PlatformEndpoint`/
-// `transport::PlatformLaneServer` (the platform chosen once, by those
-// two aliases) rather than Windows-only —
-// `pub`, matching `probe_win`/`supervisor_client`, and
-// `tests/supervisor.rs` needs to reach it.
 pub mod supervisor;
-// ADR 0042 slice L1a: the small PRODUCTION supervisor-lane client for a
-// non-FE, non-test caller (the backend daemon's own capsule workspace
-// runtime) -- `pub`, matching `supervisor`/`fe_client_io`: generic over
-// `client::PlatformEndpoint` (L1-unix LU3b), so it now compiles on Linux
-// too, and `sot-backend` (a separate crate) needs to reach it.
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub use attach_client::supervisor_client;
 pub use store::verify;
 pub use store::voyage;
 pub use lane::wire;
-// Field-proven defect fix: hardens a process's own inherited stdio handles
-// against leaking into a spawned child — self-gated (`#![cfg(windows)]`).
 #[cfg(windows)]
 pub use host::winhandle;
 
 use host as fsutil;
 
-// ADR 0043 decision 33: the destroy proof's LEG half (`sot-backend`'s
-// `capsule_workspace::runtime::leg_absent`) needs the SAME bounded,
-// non-blocking writer-fence primitive `voyage.rs`'s own
-// `open_for_writing` uses on `writer.lock` -- `fsutil` itself stays
-// private (see `fence.rs`'s own doc on why a `pub fn` inside a private
-// module is unreachable from another crate), so this is its facade,
-// mirroring `fence::lock_supervisor`'s own one-function reach-through.
 pub use fsutil::lock_writer;
-// Windows session-pipe hardening fix: `sot-backend`'s session listener
-// (`server.rs::run_local`, bound through the `interprocess` crate, NOT
-// this module's own `pipe_win.rs` transport) needs the SAME protected,
-// owner-only descriptor `pipe_win.rs`'s pipe instances already carry --
-// one more `fsutil` reach-through, same shape as `lock_writer` above,
-// so the two pipe families share one SDDL string instead of a second
-// one drifting into existence beside it.
 #[cfg(windows)]
 pub use fsutil::owner_protected_pipe_descriptor;
 
