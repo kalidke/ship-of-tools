@@ -521,5 +521,24 @@ mod tests {
         assert_eq!(proxy_port_from_url("file:///tmp/x"), None);
         assert_eq!(proxy_port_from_url("127.0.0.1:1241"), None);
         assert_eq!(proxy_port_from_url("http://127.0.0.1:notaport/"), None);
+        // The backend's own cases.
+        assert_eq!(proxy_port_from_url("http://localhost:45817/app?x=1"), Some(45817));
+        assert_eq!(proxy_port_from_url("https://127.0.0.1:9000"), Some(9000));
+        assert_eq!(proxy_port_from_url("http://10.0.0.5:1241/"), None);
+        // Edge classes shared by every copy of the grammar.
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:65536/"), None);
+        assert_eq!(proxy_port_from_url("http://[::1]:80/"), None);
+        assert_eq!(proxy_port_from_url("HTTP://127.0.0.1:80/"), None);
+        assert_eq!(proxy_port_from_url("http://user@127.0.0.1:80/"), None);
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:80#x"), Some(80));
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:65535/"), Some(65535));
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:0080/"), Some(80));
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:+80/"), Some(80));
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:-1/"), None);
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:/"), None);
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:80:90/"), None);
+        assert_eq!(proxy_port_from_url("http://127.0.0.1:80?secret=t"), Some(80));
+        assert_eq!(proxy_port_from_url("http://LOCALHOST:80/"), None);
+        assert_eq!(proxy_port_from_url("https://localhost:80"), Some(80));
     }
 }
