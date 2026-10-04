@@ -18,6 +18,10 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   (pinned-checkout predicate)".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour, and the supervisor loop's
   ensure and lease order in launch-sot.ps1. Runs in the `rust.yml` step "Test local daemon launcher".
+- `test-local-daemon-fake.ps1`: dot-sourced by `test-local-daemon.ps1`: compiles the fake `sotd.exe` and defines
+  `Clear-FakeEnv`, `New-FakePrefix` and `Stop-FakeOn`.
+- `test-local-daemon-support.ps1`: dot-sourced by `test-local-daemon.ps1`: `Check`, the fixture and pipe helpers and
+  the test root.
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
   already applied, wrong target, lock held. Runs in the `rust.yml` step "Test sot-apply.ps1".
 - `test-topology-plan.ps1`: `Get-SotTopologyPlan` and `Invoke-SotTopologySync` (scripts/sot-hosts.ps1) against a fake
