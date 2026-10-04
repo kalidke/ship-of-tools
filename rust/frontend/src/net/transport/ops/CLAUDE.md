@@ -2,7 +2,8 @@
 
 Each op the window sends has a `send_<op>` here: it writes the request frame and records the
 `PendingKind` its reply needs. `send_request` (../request.rs) picks the function by `OutgoingReq`
-variant. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
+variant; for a reply, `handle_response_frame` (../reply.rs) removes the pending entry and calls
+`on_<op>` by `PendingKind`, which turns the frame into an `IncomingEvt`. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Files
 - `mod.rs`: declares the families and re-exports their functions to the transport
@@ -18,7 +19,8 @@ variant. Part of fe-net; charter: rust/frontend/src/net/CLAUDE.md.
 
 ## Start here
 A new op: its `OutgoingReq` variant (../request.rs), a `send_<op>` in its family's file, and one
-arm in `send_request`.
+arm in `send_request`; and an `on_<op>` with its `PendingKind` variant and arm in
+`handle_response_frame`.
 
 ## Rules
 - A `send_<op>` writes its frame, then inserts its `PendingKind` under the same id. A send that
@@ -27,3 +29,5 @@ arm in `send_request`.
   `send_repl_interrupt`, `send_monitor_unsubscribe`, `send_agent_send`.
 - `send_figure_get` alone inserts before it writes, so `PendingGuard`'s drop reports a figure whose
   write failed (`FigureGetFailed`).
+- `on_file_download` alone puts its entry back, with its open file, until the chunk marked eof (one
+  request id, many replies).

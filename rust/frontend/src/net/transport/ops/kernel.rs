@@ -1,4 +1,5 @@
 //! kernel.request ops: modules.list, project.scan, markdown.tokenize, file.parse, function.methods: the requests (send_<op>: write the frame, then record its PendingKind).
+//! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
 
@@ -139,4 +140,236 @@ pub(crate) async fn send_function_methods<W: AsyncWrite + Unpin>(
     .await?;
     pending.insert(id, PendingKind::FunctionMethods { module, name, workspace_id });
     Ok(())
+}
+
+pub(crate) fn on_modules_list(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    workspace_id: Option<String>,
+) {
+    // The KERNEL_REQUEST envelope returns the kernel's response
+    // payload verbatim. modules.list shape after Linux's
+    // 4e1c8c0 is `{modules: [{name, uuid, is_main, path}, ...]}`.
+    let modules: Vec<ModuleInfo> = frame
+        .payload
+        .get("modules")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let name = m.get("name").and_then(|n| n.as_str())?;
+                    let path = m.get("path").and_then(|p| p.as_str()).map(String::from);
+                    Some(ModuleInfo {
+                        name: name.to_string(),
+                        path,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if modules.is_empty() {
+        tracing::warn!(payload = %frame.payload, "modules.list returned no modules");
+    }
+    emit(IncomingEvt::ModulesList {
+        workspace_id,
+        modules,
+    });
+}
+
+pub(crate) fn on_project_scan(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    workspace_id: Option<String>,
+    generation: u64,
+) {
+    // KERNEL_REQUEST returns the kernel's response payload
+    // verbatim. project.scan shape is described in
+    // ShipToolsKernel.handle_project_scan: `{project_root,
+    // package_name, entry_file, modules: [...]}`.
+    let payload = frame.payload;
+    let project_root = payload
+        .get("project_root")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let package_name = payload
+        .get("package_name")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let entry_file = payload
+        .get("entry_file")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    if let Some(err) = payload.get("error").and_then(|v| v.as_str()) {
+        tracing::warn!(error = %err, "project.scan returned error");
+        emit(IncomingEvt::ProjectScan {
+            workspace_id,
+            project_root,
+            package_name,
+            entry_file,
+            modules: Vec::new(),
+            generation,
+        });
+    } else {
+        let modules = payload
+            .get("modules")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().map(parse_scan_module).collect())
+            .unwrap_or_default();
+        emit(IncomingEvt::ProjectScan {
+            workspace_id,
+            project_root,
+            package_name,
+            entry_file,
+            modules,
+            generation,
+        });
+    }
+}
+
+pub(crate) fn on_markdown_tokenize(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    lang: String,
+    source_hash: u64,
+) {
+    // Wire shape: `{ lang, spans: [{ start, end, kind }] }`.
+    // We echo `source_hash` from our pending state back to the
+    // chrome so it can route into the per-fence cache without
+    // the backend knowing about our hashing scheme.
+    let payload = frame.payload;
+    let spans = payload
+        .get("spans")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    let start = s.get("start")?.as_u64()? as usize;
+                    let end = s.get("end")?.as_u64()? as usize;
+                    let kind = s.get("kind")?.as_str()?.to_string();
+                    Some(MarkdownToken { start, end, kind })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    emit(IncomingEvt::MarkdownTokens {
+        lang,
+        source_hash,
+        spans,
+    });
+}
+
+pub(crate) fn on_file_parse(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    path: String,
+    workspace_id: Option<String>,
+) {
+    // `file.parse` returns either {ast_hash, path, definitions}
+    // or {error, code, ast_hash?} on parse failure. The hash
+    // is computed from raw bytes before the parser runs, so
+    // it's present even on parse failure; the definitions
+    // array is absent or empty in that case. Outright kernel
+    // errors (file missing / outside root) leave both absent;
+    // surface nothing then so the chrome stays neutral.
+    let hash = frame
+        .payload
+        .get("ast_hash")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let Some(ast_hash) = hash else {
+        // warn, not debug: this silently wedged the drift badge
+        // at "checking…" for a whole capture run before anyone
+        // saw the actual error payload (2026-07-02).
+        tracing::warn!(
+            %path,
+            payload = %frame.payload,
+            "file.parse returned no ast_hash — drift check failed, un-latching for retry"
+        );
+        emit(IncomingEvt::FileParseFailed { workspace_id, path });
+        return;
+    };
+    let definitions: Vec<DefinitionInfo> = frame
+        .payload
+        .get("definitions")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| {
+                    let name = d.get("name").and_then(|v| v.as_str())?.to_string();
+                    let kind = d
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let line = d.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let parent =
+                        d.get("parent").and_then(|v| v.as_str()).map(String::from);
+                    let ast_hash =
+                        d.get("ast_hash").and_then(|v| v.as_str()).map(String::from);
+                    Some(DefinitionInfo {
+                        name,
+                        kind,
+                        line,
+                        parent,
+                        ast_hash,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    emit(IncomingEvt::FileParsed {
+        workspace_id,
+        path,
+        ast_hash,
+        definitions,
+    });
+}
+
+pub(crate) fn on_function_methods(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    module: String,
+    name: String,
+    workspace_id: Option<String>,
+) {
+    // Reply shape: `{methods: [{module, name, file, line, sig, ast_hash}, ...]}`
+    // or `{error, code}` on bad_request / module_not_found /
+    // function_not_found. We surface an empty list in the
+    // error case so the chrome still applies (no children),
+    // rather than leaving the row in a "loading…" limbo.
+    let methods: Vec<MethodInfo> = frame
+        .payload
+        .get("methods")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    let sig = m.get("sig").and_then(|v| v.as_str())?.to_string();
+                    let file = m
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let line = m.get("line").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let ast_hash =
+                        m.get("ast_hash").and_then(|v| v.as_str()).map(String::from);
+                    Some(MethodInfo {
+                        sig,
+                        file,
+                        line,
+                        ast_hash,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(code) = frame.payload.get("code").and_then(|v| v.as_str()) {
+        tracing::warn!(%module, %name, code, "function.methods returned error");
+    }
+    emit(IncomingEvt::FunctionMethodsReceived {
+        workspace_id,
+        module,
+        name,
+        methods,
+    });
 }

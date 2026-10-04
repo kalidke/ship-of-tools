@@ -1,4 +1,5 @@
 //! repl.eval, repl.interrupt, repl.run_file: the requests (send_<op>: write the frame, then record its PendingKind).
+//! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
 
@@ -80,4 +81,65 @@ pub(crate) async fn send_repl_run_file<W: AsyncWrite + Unpin>(
     .await?;
     pending.insert(id, PendingKind::ReplRunFile { eval_id, path, fresh });
     Ok(())
+}
+
+pub(crate) fn on_repl_eval(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    eval_id: u64,
+) {
+    // Synchronous-collect per ADR 0009: the response carries
+    // the full frame list. Streamed delivery is a planned
+    // enhancement and shifts the routing
+    // off this path; this arm only needs to handle the
+    // collected-at-once payload.
+    match serde_json::from_value::<ReplEvalRes>(frame.payload) {
+        Ok(res) => {
+            emit(IncomingEvt::ReplEvalDone {
+                eval_id: res.eval_id,
+                elapsed_ms: res.elapsed_ms,
+                frames: res.frames,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, eval_id, "repl.eval res parse failed");
+        }
+    }
+}
+
+pub(crate) fn on_repl_run_file(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    eval_id: u64,
+    path: String,
+    fresh: bool,
+) {
+    // Success = `frames` present; error envelopes carry
+    // `{error, code}` per the handler contract. Same shape
+    // pattern as WorkspaceCreate / PlutoOpen above.
+    let payload = frame.payload;
+    let result = if payload.get("frames").is_some() {
+        match serde_json::from_value::<ReplRunFileRes>(payload) {
+            Ok(r) => Ok(ReplRunFileInfo {
+                eval_id: r.eval_id,
+                path: r.path,
+                fresh: r.fresh,
+                elapsed_ms: r.elapsed_ms,
+                project_dir: r.project_dir,
+                project_source: r.project_source,
+                frames: r.frames,
+            }),
+            Err(e) => Err(format!("repl.run_file res parse: {e}")),
+        }
+    } else {
+        let msg = payload
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        Err(msg)
+    };
+    let _ = path;
+    let _ = fresh;
+    emit(IncomingEvt::ReplRunFileDone { eval_id, result });
 }

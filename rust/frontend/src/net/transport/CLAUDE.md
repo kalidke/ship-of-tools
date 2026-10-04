@@ -10,7 +10,7 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `reply.rs`: reply matching: the pending entry per request id (`PendingKind`), `PendingGuard`, and `handle_response_frame`, which turns each reply into an `IncomingEvt`
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
 - `testdata/`: golden files for golden_tests.rs
-- `ops/`: one file per op family: the request each op writes
+- `ops/`: one file per op family: the request each op writes, and the event its reply becomes
 - `hello.rs`: the hello: its 30 s reply bound, the refusal type `HelloRefused`, the protocol-mismatch message, and the three steps of the hello (`send_hello`, `read_hello`, `accept_hello`)
 - `preamble.rs`: the connect preamble after the hello (tree.root, then preview.get of its root)
 

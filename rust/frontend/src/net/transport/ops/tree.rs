@@ -1,4 +1,5 @@
 //! tree.children, tree.root, nav.toggle_hidden, directory.list: the requests (send_<op>: write the frame, then record its PendingKind).
+//! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
 
@@ -103,4 +104,86 @@ pub(crate) async fn send_directory_list<W: AsyncWrite + Unpin>(
     .await?;
     pending.insert(id, PendingKind::DirectoryList);
     Ok(())
+}
+
+pub(crate) fn on_tree_children(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    parent_id: String,
+    workspace_id: Option<String>,
+) {
+    // Backend error frames ({error, code}) are legitimate
+    // responses — surface them instead of tripping the struct
+    // parse below ("missing field children") and dropping.
+    if let Some(err) = frame.payload.get("error").and_then(|v| v.as_str()) {
+        tracing::warn!(%parent_id, error = %err, "tree.children answered with error");
+        emit(IncomingEvt::TreeChildrenFailed {
+            workspace_id,
+            parent_id,
+            error: err.to_string(),
+        });
+        return;
+    }
+    match serde_json::from_value::<TreeChildrenRes>(frame.payload) {
+        Ok(res) => {
+            emit(IncomingEvt::TreeChildren {
+                workspace_id,
+                parent_id,
+                children: res.children,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, %parent_id, "tree.children res parse failed");
+            emit(IncomingEvt::TreeChildrenFailed {
+                workspace_id,
+                parent_id,
+                error: e.to_string(),
+            });
+        }
+    }
+}
+
+pub(crate) fn on_tree_root(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    workspace_id: Option<String>,
+) {
+    match serde_json::from_value::<TreeRootRes>(frame.payload) {
+        Ok(res) => {
+            emit(IncomingEvt::TreeRoot {
+                workspace_id,
+                root: res.node,
+                children: res.children,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "tree.root res parse failed");
+        }
+    }
+}
+
+pub(crate) fn on_directory_list(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    match serde_json::from_value::<sot_protocol::DirectoryListRes>(frame.payload) {
+        Ok(res) => {
+            let entries: Vec<DirEntry> = res
+                .entries
+                .into_iter()
+                .map(|e| DirEntry {
+                    name: e.name,
+                    path: e.path,
+                    has_children: e.has_children,
+                })
+                .collect();
+            emit(IncomingEvt::DirectoryList {
+                path: res.path,
+                entries,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "directory.list res parse failed");
+        }
+    }
 }

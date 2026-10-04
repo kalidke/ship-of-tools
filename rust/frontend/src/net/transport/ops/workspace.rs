@@ -1,4 +1,5 @@
 //! workspace.activate, .create, .list, .destroy, accounts.list, fe.presence, fe.sessions, pty.open, agent.send: the requests (send_<op>: write the frame, then record its PendingKind).
+//! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
 
@@ -228,4 +229,150 @@ pub(crate) async fn send_agent_send<W: AsyncWrite + Unpin>(
     // track neither, so no pending entry (an unmatched response id
     // is silently ignored).
     Ok(())
+}
+
+pub(crate) fn on_pty_open(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+    target: Option<String>,
+) {
+    // ADR 0042 slice L1b: a capsule row's `pty.open` is
+    // refused with `{error, code: "attach_direct",
+    // state_dir}` — this build's daemon has no tmux runtime,
+    // so that refusal is the ONLY reply `pty.open` ever
+    // gets; there is no size-confirmation success case left
+    // to parse. `target` is THIS request's own target (fix
+    // 1) — the chrome corrects/attaches that row, not
+    // whatever is currently selected.
+    if is_attach_direct(&frame.payload) {
+        emit(IncomingEvt::PtyAttachDirect { target });
+    } else {
+        let error = pty_open_failure_reason(&frame.payload);
+        tracing::warn!(?target, %error, payload = ?frame.payload, "pty.open res was not attach_direct");
+        emit(IncomingEvt::PtyOpenFailed { target, error });
+    }
+}
+
+pub(crate) fn on_workspace_create(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    // Backend returns either WorkspaceCreateRes on success
+    // or `{error, code}` on failure (no_such_path etc).
+    // Distinguish by presence of `workspace_id`.
+    let payload = frame.payload;
+    let result = if payload.get("workspace_id").is_some() {
+        match serde_json::from_value::<sot_protocol::WorkspaceCreateRes>(payload) {
+            Ok(r) => Ok(WorkspaceCreatedInfo {
+                workspace_id: r.workspace_id,
+                slug: r.slug,
+                label: r.label,
+                project_root: r.project_root,
+                session_name: r.session_name,
+            }),
+            Err(e) => Err(format!("workspace.create res parse: {e}")),
+        }
+    } else {
+        let msg = payload
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        Err(msg)
+    };
+    emit(IncomingEvt::WorkspaceCreated { result });
+}
+
+pub(crate) fn on_workspace_list(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    match serde_json::from_value::<WorkspaceListRes>(frame.payload) {
+        Ok(res) => {
+            let workspaces: Vec<WorkspaceInfo> = res
+                .workspaces
+                .into_iter()
+                .map(|w| WorkspaceInfo {
+                    workspace_id: w.workspace_id,
+                    slug: w.slug,
+                    label: w.label,
+                    project_root: w.project_root,
+                    session_name: w.session_name,
+                    kernel_running: w.kernel_running,
+                    is_default: w.is_default,
+                    agent: w.agent,
+                    autostart_claude: w.autostart_claude,
+                    agent_name: w.agent_name,
+                    agent_handle: w.agent_handle,
+                    task: w.task,
+                    agent_state: w.agent_state,
+                    agent_summary: w.agent_summary,
+                    agent_status_at: w.agent_status_at,
+                    repl_state: w.repl_state,
+                    runtime: w.runtime,
+                    phase: w.phase,
+                    account: w.account,
+                })
+                .collect();
+            emit(IncomingEvt::Workspaces { workspaces });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "workspace.list res parse failed");
+        }
+    }
+}
+
+// Per-session accounts (owner-simplified brief, 2026-09-15): a
+// daemon that has no `accounts.list` handler (old build) or
+// whose reply otherwise fails to parse as `AccountsListRes` is
+// treated as an empty list — default-only, no error surfaced.
+// The chrome hides the account choice entirely on an empty list.
+pub(crate) fn on_accounts_list(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    let accounts = serde_json::from_value::<sot_protocol::AccountsListRes>(frame.payload)
+        .map(|r| r.accounts)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| AccountInfo {
+            name: a.name,
+            kinds: a.kinds,
+            logged_in: a.logged_in.into_iter().collect(),
+        })
+        .collect();
+    emit(IncomingEvt::AccountsList { accounts });
+}
+
+pub(crate) fn on_workspace_destroy(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    // Same shape as WorkspaceCreate: success carries the
+    // canonical fields (workspace_id etc.), failure carries
+    // `{error, code}`. Distinguish by presence of
+    // `workspace_id` since the protocol re-uses the op
+    // response frame for both.
+    let payload = frame.payload;
+    let result = if payload.get("workspace_id").is_some() {
+        match serde_json::from_value::<sot_protocol::WorkspaceDestroyRes>(payload) {
+            Ok(r) => Ok(WorkspaceDestroyedInfo {
+                workspace_id: r.workspace_id,
+                slug: r.slug,
+                label: r.label,
+                tmux_killed: r.tmux_killed,
+                toml_removed: r.toml_removed,
+                kept: r.kept,
+            }),
+            Err(e) => Err(format!("workspace.destroy res parse: {e}")),
+        }
+    } else {
+        let msg = payload
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        Err(msg)
+    };
+    emit(IncomingEvt::WorkspaceDestroyed { result });
 }

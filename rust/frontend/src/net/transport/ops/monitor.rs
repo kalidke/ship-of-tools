@@ -1,4 +1,5 @@
 //! monitor.subscribe, monitor.unsubscribe, monitor.history: the requests (send_<op>: write the frame, then record its PendingKind).
+//! Their replies (on_<op>: the reply frame becomes an IncomingEvt).
 
 use super::*;
 
@@ -61,4 +62,31 @@ pub(crate) async fn send_monitor_history<W: AsyncWrite + Unpin>(
     .await?;
     pending.insert(id, PendingKind::MonitorHistory);
     Ok(())
+}
+
+pub(crate) fn on_monitor_subscribe(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    match serde_json::from_value::<MonitorSubscribeRes>(frame.payload) {
+        Ok(res) => {
+            emit(IncomingEvt::MonitorSubscribed {
+                hosts: res.hosts,
+                interval_s: res.interval_s,
+            });
+        }
+        Err(e) => tracing::warn!(error = %e, "monitor.subscribe res parse failed"),
+    }
+}
+
+pub(crate) fn on_monitor_history(
+    frame: Frame,
+    emit: &impl Fn(IncomingEvt),
+) {
+    match serde_json::from_value::<MonitorHistoryRes>(frame.payload) {
+        Ok(res) => {
+            emit(IncomingEvt::MonitorHistory { hosts: res.hosts });
+        }
+        Err(e) => tracing::warn!(error = %e, "monitor.history res parse failed"),
+    }
 }
