@@ -51,6 +51,7 @@ the commit that changes the code it describes, and a design that is not built is
 - `USING.md`: the entry page for a user with a local checkout.
 - `adr/`: the decision records and their `README.md` index.
 - `fixtures/`: `DemoProject`, the demo project the media are taken from.
+- `integration.md`: how the sixteen subsystems connect: one table of every connection, then six walk-throughs with a file and a function at every hop.
 - `make.jl`: builds the manual and runs the built-site checks.
 - `ownership.md`: the one table of who owns each state file, process, op, setting and lock, and the pairs of copies that remain.
 - `plan.md`: the phase-1 implementation plan; staged into the manual as the roadmap.

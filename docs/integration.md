@@ -1,0 +1,177 @@
+# docs/integration.md: how the subsystems connect
+
+Ship of Tools has sixteen subsystems, each with a charter page in the folder that owns most of it. This page is the one
+place that says how they connect: a table of every connection, then six walk-throughs that follow one action across
+processes with a file and a function at every hop. Each charter's `## Connections` points here and says only which rows
+it provides and which it uses.
+
+## Rules
+- This page is the only place a connection is described; a charter, a folder page or a comment names a connection by
+  its row here and does not describe it a second time.
+- A change to a connection changes its row here in the same commit.
+- The provider owns its row: the subsystem whose code the user calls, reads or is started by. The user changes only to
+  follow a change the provider makes.
+
+## Subsystems
+Each name below is the one used in the tables, with the folder of its charter page.
+
+| Subsystem | Charter | Subsystem | Charter |
+|---|---|---|---|
+| wire | `rust/protocol/CLAUDE.md` | messaging | `comm/CLAUDE.md` |
+| topology | `rust/protocol/src/topology/CLAUDE.md` | files | `rust/backend/src/files/CLAUDE.md` |
+| server | `rust/backend/src/server/CLAUDE.md` | sidecars | `rust/backend/src/sidecars/CLAUDE.md` |
+| lifecycle | `rust/backend/src/lifecycle/CLAUDE.md` | pages | `rust/backend/src/pages/CLAUDE.md` |
+| rows | `rust/backend/src/rows/CLAUDE.md` | fe-ui | `rust/frontend/src/ui/CLAUDE.md` |
+| agents | `agents/CLAUDE.md` | fe-net | `rust/frontend/src/net/CLAUDE.md` |
+| capsule | `rust/log/CLAUDE.md` | distribution | `scripts/CLAUDE.md` |
+| platform | `rust/log/src/host/CLAUDE.md` | records | `docs/CLAUDE.md` |
+
+## Connections
+Sorted by provider, in the order the Subsystems table lists them (down its left column, then its right). A wire op is
+written as the op name, a function as its Rust or shell name, a path from the repo root. The promise is the provider's,
+from its charter `## Promises`; where the charter has none for the row, the sentence comes from the provider's folder
+page (`Rules`), its `## Idea` or a code comment, and the row says which in its last words.
+
+| Provider | User | Carried by | The promise kept |
+|---|---|---|---|
+| wire | server, fe-net | `Frame`, `codec::read_frame`, `codec::write_frame` | An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB); `write_frame` fails with `EnvelopeTooLarge` before writing any byte, and a frame with `blob.len` is followed by exactly that many bytes. |
+| wire | server, fe-net | `hello` with `PROTOCOL_VERSION` (`protocol_gate`, `send_hello`) | Any incompatible change raises `PROTOCOL_VERSION`, and hello requires both sides to agree. |
+| wire | server, fe-net | the op names in `rust/protocol/src/ops/mod.rs` and their payload types in `rust/protocol/src/ops/` | A payload grows only by `#[serde(default)]` fields. |
+| wire | agents | `sot_hello_frame` in `comm/lib/comm-lib-client.sh` | Hello requires both sides to agree on `PROTOCOL_VERSION`; this writer's `"protocol":2` is kept equal by hand, as the comment above it says. |
+| wire | distribution | the `fe.lease` and `fe.leaving` lines in `scripts/sot-lease.ps1`, pinned by `launcher_bounds_match_ops` in `scripts/tests/installer-state.sh` | A payload grows only by `#[serde(default)]` fields. |
+| wire | distribution | `is_release_build`, read by `rust/backend/src/update.rs` and `rust/frontend/src/selfupdate.rs` | The version string is bare `X.Y.Z` only for a CI build on its clean release tag, and `is_release_build` is the only question policy may ask. |
+| topology | fe-net | `SshRecipe::new`, `is_plain_host_name` (checked by `parse_dial_arg`) | `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar. |
+| topology | fe-net, pages | `LinkGate` (`set_up` by fe-net alone; `is_up`, `spawn_async`, `probe` by the callers) | While a host's `LinkGate` is down, no gated spawn starts ssh. |
+| topology | capsule, fe-ui | `DaemonLaneEndpoint` (built from `lane_dial`, handed to `FeAttachClient::attach`) | A lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and can be cancelled; refusals come back typed; no ssh child outlives its client. |
+| topology | messaging | `SshRecipe` in `recipe_for` (the hub link) and `dial_and_call_tracked` (the comm forward) | `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar. |
+| topology | distribution | `sotd topology plan\|sync\|status`, read by `launch-sot.sh` and `Get-SotTopologyPlan` | A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal. |
+| topology | server | `TopologyStore`, the op `topology.set` (`handle_topology_set`) and the `topology.changed` bus | Only the daemon whose own file names it as hub applies `topology.set`; every other daemon refuses with `not_hub` (folder page). |
+| server | pages, rows, lifecycle | the first frame in `handle_connection`: `proxy.connect` to `handle_proxy_connect`, `lane.connect` to `handle_lane_connect`, `fe.lease` to `lease::hold`; `accepted_peer`, `pipe_bidirectional`, `reject` | A connection is admitted once, by the OS peer read at accept and then by its first frame (charter `## Idea`). |
+| server | rows, files, sidecars, pages, messaging, topology | the `match` in `dispatch` | A handler `Err` is one `handler_error` frame and the connection stays (`finish_dispatch`). |
+| server | fe-net | the op `hello` (`handle_hello`, `admit_hello`) | A pinged `fe` or `bridge` connection silent for 90 s is reaped (`ping_read_deadline`). |
+| server | topology | `sotd stdio-bridge` (`topology::stdio_bridge::run`) dialling the session socket or pipe | A peer that cannot drain a frame within 10 s plus 1 s per MiB of blob is dropped (`write_frame_to`). |
+| lifecycle | server | `startup::begin`, `lease::ticker`, `Leases::gone`, `shutdown::run` | The close stops accepting before it touches a row, ends rows without resuming any, counts each row not confirmed ended, and a backstop thread exits 1 at `SHUTDOWN_BOUND`. |
+| lifecycle | fe-ui | the ops `fe.lease`, `fe.leaving`, `fe.notice_seen` on a lease connection; the window half in `rust/frontend/src/lease.rs` (`notice`, `owed`, `leave_all`, `Leaving::poll`, `exit_intent`) | A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept (`lease::claim`). |
+| lifecycle | fe-net | `Leases::before_data_connection` | A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (`lease_exempt`). |
+| lifecycle | distribution | `fe.lease` and `fe.leaving` hand-written in `scripts/sot-lease.ps1`; exit codes 0 (`EXIT_REQUESTED_SHUTDOWN`) and 75 (`EXIT_UPDATE_RESTART`), the second only through `Leases::while_open` | A close that finishes exits 0; the update restart exits 75 and only while no shutdown has begun. |
+| lifecycle | sidecars, messaging, pages, topology | `ChildGuard`, `Signal`, `child_signal::fired`, `child_signal::process` | `fire()` is permanent: the signal is never reset for the life of the process. |
+| rows | lifecycle | `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`, `close_gate_and_settle`, `remove_row_files` | No start begins once the gate is closed: `begin_start` refuses after `close_gate_and_settle`, which then waits for the permits already out. |
+| rows | fe-ui, agents | the ops `workspace.create`, `workspace.destroy`, `workspace.list`, `pty.input`, `pty.screen` and the `workspace.changed` bus | Re-inserting a slug keeps its workspace id (`Workspaces::insert`). |
+| rows | capsule, topology | the op `lane.connect` (`handle_lane_connect`, `check_voyage_ownership`) | A voyage id given to `lane.connect` must be the target row's own (folder page `rust/backend/src/rows/ops/CLAUDE.md`). |
+| rows | messaging | `Workspace::agent_handle`, `set_agent_handle`, and the headless client `attach`, `type_and_pace`, `send_enter` in `rust/backend/src/rows/run/headless.rs` | Handle, account and agent change in place on the shared `Arc`, never through a replacing `insert`, so a destroyed row is not brought back. |
+| agents | rows | `agent_argv`, `agent_exec_argv`, `claude_recipe` | Every claude launcher passes `--permission-mode auto`, never `--dangerously-skip-permissions`. |
+| agents | rows | `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env` | Folder trust is written only for a row root under `[trust] root_prefix`, and an entry already accepted is never rewritten. |
+| agents | messaging | the shell daemon client in `comm/lib/comm-lib-client.sh`: `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input` | Every endpoint leaves the shell client through `_sot_emit_endpoint`; an explicit endpoint it refuses is fatal; `sot_relay_endpoint` never falls back to the local daemon. |
+| capsule | rows | `sot-capsule supervise` argv and exit codes 0, 69 (`EXIT_TERMINAL`), 70 (`EXIT_CONTENDED`) | `sot-capsule supervise` exits 0 (clean), 69 or 70 (the fence was already held). |
+| capsule | rows | the supervisor lane SOSV through `supervisor_client` (`query_status`, `stop`, `end_run`, `reset`) | One authority per state dir (`supervisor.lock`, taken by `lock_supervisor`). |
+| capsule | rows, fe-ui | `FeAttachClient` over the attach lane SOA0: headless typing in `rust/backend/src/rows/run/headless.rs`, the pane in `rust/frontend/src/ui/agent_pane/attach.rs` | Output is published only after its fsync; attach is ground-gated, so a viewer joins only at a parser ground boundary. |
+| capsule | rows | the files of a state dir: `drawer.voyage` (`pointer::validate`), the voyage `writer.lock` (`lock_writer`) | One writer per voyage (`lock_writer`); one authority per state dir (`lock_supervisor`). |
+| capsule | topology | the `Endpoint` trait (`connect_voyage_unchallenged`, `connect_supervisor_unchallenged`), implemented by `DaemonLaneEndpoint` | A reply on a local connection is trusted only after the challenge in `rust/log/src/identity/`. |
+| platform | every Rust subsystem | `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash` | `host_name` returns `Err`, never a guessed name. |
+| platform | server, capsule | `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor` | A lock is kernel-held and released on any death; a contended one fails within `RETRY_DEADLINE_MS` as "lock held". |
+| platform | server, capsule, topology | the peer challenge: `boot_identity`, `process_created`, `IdentityExchange` | The challenge's OS steps precede its wire steps and every step is bounded. |
+| messaging | rows | `remove_comm_agents_for_workspace` (the destroy prune), `handle_agent_join` | Every registry write is `registry_replace` under `with_lock` (scripts) or `with_comm_registry_lock` (daemon). |
+| messaging | fe-ui | work-state in the registry, published by `spawn_registry_poll` as `workspace.changed` and carried by `workspace.list` (`read_comm_agents`) | Every registry write is `registry_replace` under `with_lock` (scripts) or `with_comm_registry_lock` (daemon). |
+| messaging | agents | `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, run by `agents/spawn/comm-probe.sh` and `agents/spawn/comm-bootstrap.sh` | Only `comm-poll.sh` moves a cursor. |
+| files | fe-ui, fe-net | the ops `tree.root`, `tree.children`, `preview.get`, `file.read`, `file.write`, `file.delete`, `dir.create` | `file.write` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`). |
+| files | fe-ui | the `preview.changed` event | `preview.changed` is live-only and carries no revision. |
+| files | rows | `FilesMode` and `ConceptStore`, built for each row in `rust/backend/src/rows/workspace.rs`, and its `Watcher`, spawned in `rust/backend/src/rows/registry.rs` | The watcher never watches the daemon's own state, install or updates trees, never crosses a filesystem and never exceeds its budget (`watch_budget`). |
+| sidecars | files | `Kernel::request` with the kernel op `file.preview` | A kernel caller waits at most `KERNEL_REQUEST_TIMEOUT` (10 s, `Kernel::request`) and never spawns or kills. |
+| sidecars | fe-ui, fe-net | the ops `repl.eval`, `repl.run_file`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe` and the streams `repl.frame`, `monitor.tick` | A dead monitor source shows as a `stale` tick and respawns after 5 s. |
+| sidecars | pages | `bound_pluto_port`, read by `allowed_proxy_ports` | Callers submit and wait; they never spawn, kill or retry (charter `## Idea`). |
+| sidecars | rows | the per-row `Kernel` and `Repl` held by `Workspace` | `supervisor_loop` respawns a dead kernel with a backoff from 250 ms doubling to 30 s. |
+| pages | fe-ui, fe-net | the ops `video.open`, `docs.open`, `quarto.open` and `proxy.connect`; the window proxy `ensure_proxy_for_url` and `pipe_one` | `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound. |
+| pages | sidecars | `record_browser_port`, `revoke_browser_ports` | Nothing is served that an op did not grant. |
+| pages | files | `is_servable_video` | Nothing is served that an op did not grant: video by token (`register_video`). |
+| fe-ui | agents | the op `fe.command.send` and the `fe.command` event (`route_fe_command`), sent by `agents/sot-fe/sot-fe-request.sh` | Showing a result never steals the view: `route_fe_command` honours force-show only for a command addressed to this frontend. |
+| fe-ui | agents | a `sot_ui` envelope in an `agent.message` (`parse_nav_envelope`), sent by `agents/sot-fe/sot-nav.sh` through `comm-relay.sh send --all` | Daemon events are applied only on the UI thread, at the top of each frame (`State::drain_events`). |
+| fe-net | fe-ui | `OutgoingReq`, `IncomingEvt`, `HostTable` | Events carry the dial `HostKey`; the daemon's declared host is display only. |
+| fe-net | fe-ui, pages | `lane_dial` and `ResolvedDial` (read by `resolve_proxy_target` for the page proxy) | A lane dial follows the control connection's resolved selection and never re-derives it (`lane_dial`'s own comment). |
+| distribution | fe-ui | the sentinel `relaunch.request` and the exit codes 75 and 76, read by `spawn_watcher` in `rust/frontend/src/relaunch.rs` | The launch path never stops on an update: every update or freshness step logs and the window still starts. |
+| distribution | lifecycle | `deploy/sotd.service` (`ExecStartPre=-` apply, `Restart=on-failure`) and `sot-apply.sh` | Apply verifies everything before it mutates, restores on a failure after mutation and exits 0. |
+| distribution | agents, messaging | `install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl` | The comm installer publishes by copy then rename, prunes only names it recorded and writes `VERSION` last. |
+| distribution | records | `scripts/install.sh`, the engine of `docs/INSTALL-AGENT.md` | Install checksums verify before any write, and `install.json` is written last. |
+| records | distribution | `docs/make.jl`, run by the job `docs` of `.github/workflows/CI.yml` | The manual's built-site checks fail the build on a literal `<kbd>` and on a link to a missing section id. |
+| records | every subsystem | the publish guard `.claude/hooks/publish-guard.sh` on commit, PR and issue text | Published text names no private hostname, username or LAN detail. |
+
+## Walk-throughs
+Each hop gives the process and subsystem, the repo path and function, what crosses, and the promise that holds there.
+Where a hop fans out into several functions the first one named is the entry.
+
+### 1. Start the daemon
+1. daemon, server: `rust/backend/src/main.rs` `main`: argv. The pure subcommands (`--help`, `session-socket-path`, `ancestors`, `agent-exec`, `stdio-bridge`, `topology`, `status`, `--version`) are answered first and write no state, create no log and dial nothing.
+2. daemon, server: `rust/backend/src/main.rs` `apply_umask`: umask 077, then the boot refusals in order. `check_config_dir` (`rust/backend/src/rows/store/mod.rs`) exits 78; `secure_private_dir` (`rust/backend/src/paths.rs`) on the state dir exits 1.
+3. daemon, server: `rust/backend/src/main.rs` `open_private_log_file`: the log tee to `<state>/sotd.log`; then `parse_args`.
+4. daemon, server: `rust/backend/src/server/listen.rs` `refuse_live_socket`: an explicit `--socket` a live daemon answers on is refused before any side effect; never unlinks a socket a live daemon answers on.
+5. daemon, rows: `rust/backend/src/rows/spawn/detach.rs` `capsule_sibling_present`: refuses to boot (exit 1) when `sot-capsule` is missing beside `sotd`. Then `record_at_boot` (`rust/backend/src/comm/mail/mod.rs`) records the inbox lock manager, and on Linux `spawn_refresh_at_start` (`rust/backend/src/topology/relay_units.rs`) starts the hub's relay refresh.
+6. daemon, server: `rust/backend/src/server/mod.rs` `run`: the first act is the daemon lock. `take_daemon_lock` calls `lock_daemon` (`rust/backend/src/server/listen.rs`), which loops on `try_lock_daemon` (`rust/log/src/host/lock.rs`, file `<state>/daemon.lock`): refuses at once when a daemon answers on the socket, otherwise waits up to `DAEMON_LOCK_WAIT` for a predecessor still shutting down; exit 1 on either error.
+7. daemon, rows: `rust/backend/src/rows/store/mod.rs` `scan_disk`: loads the registered rows from the config dir (a failure here is a boot error); `seed_default_row` (`rust/backend/src/rows/anchor.rs`) registers the default row. Page listeners come up in `start_page_servers` (`rust/backend/src/pages/mod.rs`).
+8. daemon, lifecycle: `rust/backend/src/lifecycle/startup.rs` `begin`: reads `held.json` (`read_record`), plans from the record and this boot alone (`startup_plan`, Resume, Pending or Cleanup), builds `Leases` and acts on the plan before any listener binds. Resume and Pending spawn `resume_all` (`rust/backend/src/rows/run/resume.rs`); Cleanup spawns `cleanup`, which ends every row through `end_rows` and resumes none. `run` then spawns `lease::ticker`.
+9. daemon, server: `rust/backend/src/server/mod.rs` `run`: builds the topology store, `spawn_registry_poll`, the comm wake `wake::run`, `MonitorHub::start`, `update::spawn_periodic`, and the eight buses; one task per listener starts `run_local`.
+10. daemon, server: `rust/backend/src/server/listen.rs` `run_local`: `secure_socket_dir`, `refuse_live_socket` again for a stale file, the owner-only descriptor on Windows (`session_pipe_security_descriptor`), then `create_tokio` binds.
+11. daemon, server: `rust/backend/src/server/listen.rs` `accepted_peer`: for each accepted stream, reads the peer's pid and creation time from the OS before the stream is split (the peer is `Authenticated`, `Foreign` or `Undetermined`), then spawns `handle_connection`.
+12. daemon, server: `rust/backend/src/server/conn.rs` `handle_connection`: peeks the first frame. `proxy.connect`, `lane.connect` and `fe.lease` leave for their owners; anything else enters `serve_control`, where `handle_hello` (`rust/backend/src/server/hello.rs`) applies `protocol_gate` and refuses a mismatched protocol.
+13. daemon, server: `rust/backend/src/server/listen.rs` `run_local`: the accept loop selects `listener.accept()` against `Leases::gone`, so accepting stops at the deciding lease departure (walk-through 6).
+
+### 2. Spawn a row
+1. window, fe-ui: `rust/frontend/src/ui/session/picker.rs` `commit_workspace_create`: sends `OutgoingReq::WorkspaceCreate` with `send_to`; `send_workspace_create` (`rust/frontend/src/net/transport/ops/workspace.rs`) writes the `workspace.create` frame. A script spawns the same way: `agents/spawn/comm-spawn.sh` sends `workspace.create` through `sot_oneshot_request`.
+2. daemon, server: `rust/backend/src/server/dispatch.rs` `dispatch`: the `op::WORKSPACE_CREATE` arm calls `handle_workspace_create`.
+3. daemon, rows: `rust/backend/src/rows/ops/create.rs` `handle_workspace_create`: `check_create_root`, `resolve_create_agent`, `check_create_host`, which asks agents for the argv (`agent_argv` in `rust/backend/src/agents/argv.rs`) and checks the account (`account_env` in `rust/backend/src/agents/accounts.rs`); then `begin_start` (the run gate), `Workspaces::insert` and `store::save`.
+4. daemon, rows: `rust/backend/src/rows/ops/create.rs` `start_created_capsule`: takes the row guard (`capsule_guard`), then `start_supervisor` on a blocking thread; a failure rolls the row back and the op refuses with `capsule_spawn_failed`.
+5. daemon, rows: `rust/backend/src/rows/run/start.rs` `start_supervisor`: `begin_start`, `sot_capsule_exe`, then `spawn_and_watch`, which calls `spawn_detached_supervisor`.
+6. daemon, rows: `rust/backend/src/rows/spawn/detach.rs` `spawn_detached_supervisor`: `qualified_state_root`, the agents env (`account_spawn_env` and `capsule_supervisor_env` in `rust/backend/src/agents/env.rs`), argv `sot-capsule supervise <state_dir> --start ... -- <agent argv>`, and a detached spawn per OS (`spawn_detached`; on Linux inside a `systemd-run --user --scope` row scope). The daemon is never the supervisor's kill domain.
+7. supervisor, capsule: `rust/log/src/bin/sot-capsule.rs` `cmd_supervise` calls `supervise` (`rust/log/src/supervisor/mod.rs`) and `supervise_inner` (`rust/log/src/supervisor/main_loop.rs`): `lock_supervisor` first, exit 70 if contended; then binds the SOSV lane.
+8. supervisor to leg, capsule: `rust/log/src/supervisor/leg.rs` `build_run_command` spawns `sot-capsule run`; `rust/log/src/bin/sot-capsule.rs` `cmd_run` runs the agent on a pty (`PtyProducer`; ConPTY on Windows) and records it into the voyage.
+9. daemon, rows: `rust/backend/src/rows/run/start.rs` `settle_after_spawn`: one status round trip over SOSV (`supervisor_client`, bounded by `SPAWN_SETTLE_DEADLINE`), then `observe_with_adoption` and `install_watchdog`.
+10. daemon, rows: `rust/backend/src/rows/run/observer.rs` `ensure_running`: starts the row's one observer task, whose `observe` is the only writer of the row's phase (`Workspace::apply_phase_observation`).
+11. daemon, rows: `rust/backend/src/rows/ops/create.rs` `handle_workspace_create`: sends `WorkspaceChanged` on the bus; the connection writes it as `workspace.changed` (`write_workspace_changed` in `rust/backend/src/server/events.rs`).
+12. window, fe-ui: `rust/frontend/src/ui/control/replies.rs` `on_event`: a `workspace.changed` makes the window re-list with `OutgoingReq::WorkspaceList`.
+
+### 3. Open the window and attach to a row
+1. window, fe-net: `rust/frontend/src/net/dial.rs` `resolve_connections`: the connection set from `--dial` and `--socket` only; `parse_dial_arg` checks each host name with `is_plain_host_name` and refuses what does not match.
+2. window, fe-ui: `rust/frontend/src/ui/app/handler.rs` `resumed`: builds the window's `State`, then calls `spawn_transports` (`rust/frontend/src/net/hosts.rs`): one `transport::spawn` task per host on the `sot-transport` runtime.
+3. window, fe-net: `rust/frontend/src/net/transport/mod.rs` `connect_and_run`: for a local socket host, `Leases::before_data_connection` (`rust/frontend/src/lease.rs`) first opens the lease connection and writes `fe.lease`; for an ssh host `LinkGate::probe` starts the login that runs `sotd stdio-bridge`.
+4. daemon, lifecycle: `rust/backend/src/lifecycle/lease.rs` `hold`: the lease connection never enters the hello-gated loop; `Leases::grant` runs `claim` and grants only a peer whose pid, creation time and boot equal what `accepted_peer` read at accept; the reply is `FeLeaseRes`.
+5. window, fe-net: `rust/frontend/src/net/transport/mod.rs` `run_session`: `send_hello` writes `hello` with `PROTOCOL_VERSION`; the daemon answers in `handle_hello`; `read_hello` (limited by `HELLO_TIMEOUT`, 30 s) raises the host's `LinkGate` and `accept_hello` takes the reply; the preamble `tree.root` and `preview.get` follow.
+6. window, fe-ui: `rust/frontend/src/ui/session/replies.rs` `on_connected`: every host's own connect requests its own `workspace.list`; the daemon answers in `handle_workspace_list` (`rust/backend/src/rows/ops/list.rs`), which reads memory and one registry read and never a lane.
+7. window, fe-ui: `rust/frontend/src/ui/agent_pane/attach.rs` `spawn_pane_attach_term`: `lane_dial` (`rust/frontend/src/net/hosts.rs`) picks the dial the control connection resolved, builds a `DaemonLaneEndpoint` and calls `FeAttachClient::attach` (`rust/log/src/attach_client/client.rs`).
+8. attach worker, capsule: `rust/log/src/attach_client/worker/run.rs` `run_worker` calls `reach_supervisor` (`rust/log/src/attach_client/worker/episode.rs`), whose `dial_and_converge` runs `connect_supervisor_lane` and `converge_on_ready` (`rust/log/src/attach_client/worker/converge.rs`); `DaemonLaneEndpoint` opens a new daemon connection whose first frame is `lane.connect` with lane `supervisor`.
+9. daemon, rows: `rust/backend/src/rows/ops/lane_bridge.rs` `handle_lane_connect`: finds the row, runs `dial_and_authenticate` on a blocking thread, answers one frame `{ok, pid, created}` and becomes a byte pipe (`pipe_upstream`); it never decodes a lane frame after that.
+10. attach worker, capsule: `rust/log/src/attach_client/worker/converge.rs` `converge_on_ready`: once the supervisor answers Ready with the voyage id, `connect_voyage_unchallenged` opens the voyage lane as a second `lane.connect`, with `voyage_id`; the daemon's `check_voyage_ownership` compares it with the row's own `drawer.voyage` before any dial and refuses a mismatch (`voyage_mismatch`).
+11. attach worker, capsule: `rust/log/src/attach_client/worker/episode.rs` `attach_voyage`: `authenticate_server` proves the peer, `attach_lane_hello` (`converge.rs`) sends the SOA0 hello, then `attach_and_collect_checkpoint` reads the checkpoint (bounded by `CHECKPOINT_TRANSFER_BUDGET`); a viewer joins only at a ground boundary.
+12. window, fe-ui: `rust/frontend/src/ui/agent_pane/attach.rs` `pump_pane_attach_term`: each frame the window calls `FeAttachClient::pump`, which feeds the vt100 parser; the first screen is the checkpoint, then live output.
+
+### 4. Send a message and wake the receiver
+1. session shell, messaging: `comm/mail/comm-send.sh` `deliver`: after `sot_require_agent` and `_sot_identity_routable`, reads the target's row with `sot_registry_read`. A handle the registry cannot name execs `comm-relay.sh send`.
+2. session shell, messaging: `comm/lib/comm-lib-inbox.sh` `sot_inbox_append`: on a registry hit, a local append under flock on `inbox/<h>.lock`, only when this box's lock identity equals line 1 of `inbox-lock-manager` (`_sot_inbox_lock_ours`); `_sot_append_whole` writes one `\n`-terminated line.
+3. session shell, messaging: `comm/lib/comm-lib-inbox.sh` `sot_comm_file`: when this box cannot take the same lock, `_sot_inbox_append_via_daemon` builds a `comm.file` frame and sends it with `sot_oneshot_request` (`comm/lib/comm-lib-client.sh`), to the daemon from `sot_daemon_endpoint` or the hub from `sot_relay_endpoint`.
+4. session shell, messaging: `comm/mail/comm-relay.sh` `send_frame`: for a handle the hub lists, the same `sot_comm_file`; otherwise `agent.send` and a wait of 5 s for a filer's receipt, ending `NOT CONFIRMED` when none comes.
+5. daemon, messaging: `rust/backend/src/comm/mail/filer.rs` `handle_comm_file` calls `file_comm` and `comm_file_verdict`: the liveness checks, then `route` (`rust/backend/src/comm/mail/inbox.rs`) returns Local, Forward or Refuse. A guest daemon's Forward is `forward_comm_file` (`rust/backend/src/comm/mail/forward.rs`) over topology's `dial_and_call_tracked`.
+6. daemon, messaging: `rust/backend/src/comm/mail/inbox.rs` `file_frame`: `take_lock` on `inbox/<h>.lock`, then `append_line` writes the line and `sync_data`; the reply is `{ok:true}` only when the line is in the file, so the script prints `filed -> @h`; any refusal is `FAILED -> @h: <reason>` and nothing was appended.
+7. daemon, messaging: `rust/backend/src/comm/wake/mod.rs` `run`: every `TICK` (2 s) each capsule row with a declared handle goes to `check_row`; `scan` (`rust/backend/src/comm/wake/unread.rs`) counts the inbox against the cursor (`cursor_offset`) and `decide` picks Clear, Hold or Wake.
+8. daemon, messaging to rows: `rust/backend/src/comm/wake/attempt.rs` `wake_if_free`: only for a Ready row (`phase_of`) whose screen is a free prompt that holds still, it attaches headlessly (`attach` in `rust/backend/src/rows/run/headless.rs`), types `WAKE_LINE` with `type_and_pace` and presses Enter with `send_enter`. One line per batch.
+9. agent, messaging: `comm/lib/comm-lib-inbox.sh` `sot_cursor_write`: the woken agent runs `comm/mail/comm-poll.sh`, which reads the lines past the cursor under `sot_inbox_read_lock` (`sot_cursor_offset`, `sot_inbox_lines`), prints them and moves the cursor with `sot_cursor_write`; it is the only cursor writer. If the agent never polls, the Stop hook `comm/work_state/hooks/comm-status-idle.sh` holds the turn while directed mail is unread.
+
+### 5. Preview a file
+1. window, fe-ui: `rust/frontend/src/ui/preview/fetch.rs` `maybe_fire_preview`: when the Files tree cursor lands on a new node, `next_preview_gen` mints a generation and `OutgoingReq::PreviewGet` goes out through `State::send`.
+2. window, fe-net: `rust/frontend/src/net/transport/ops/preview.rs` `send_preview_get`: records `PendingKind::PreviewGet` with the generation, then writes `preview.get`.
+3. daemon, server: `rust/backend/src/server/dispatch.rs` `offload_preview_get`: runs the op on the off-loop job pool (at most 4 per connection) and hands it to `handle_preview_get`.
+4. daemon, files: `rust/backend/src/files/preview/mod.rs` `handle_preview_get` calls `build_preview_payload`: finds the row (`row_or_reply`), then `FilesMode::node_id_to_path` (`rust/backend/src/files/tree.rs`), whose `compose_node_path` refuses a `..` segment or an absolute path; a read follows links.
+5. daemon, files: `rust/backend/src/files/preview/mod.rs` `try_plugin_preview`: asks the row's kernel for a plugin preview with `Kernel::request("file.preview", ...)` (`rust/backend/src/sidecars/kernel.rs`), which waits at most `KERNEL_REQUEST_TIMEOUT`; no plugin match, or an unreachable kernel for a type the bytes-level reader can show, falls back to the bytes-level reader.
+6. kernel, sidecars: `julia/kernel/src/preview.jl` `handle_file_preview`: `file_type_for` (`core/src/ConceptExplorerCore.jl`) resolves the plugin and its `preview` method renders; the kernel never runs user code. The result comes back as one `res` for the request id.
+7. daemon, files: `rust/backend/src/files/preview/mod.rs` `handle_preview_get`: answers `PreviewGetRes` with a `BlobDescriptor` and the blob bytes after the envelope.
+8. window, fe-net: `rust/frontend/src/net/transport/ops/preview.rs` `on_preview_get`: turns the reply into `IncomingEvt::Preview`, echoing the generation, and the window applies it on its UI thread in `State::drain_events` (`rust/frontend/src/ui/events.rs`).
+9. window, fe-ui: `rust/frontend/src/ui/preview/replies.rs` `on_preview`: a reply counts only if `reply_is_current` (`rust/frontend/src/ui/preview/fetch.rs`) finds its generation, host and workspace current; otherwise it is dropped.
+
+### 6. Close the window
+1. window, fe-ui: `rust/frontend/src/ui/app/exit.rs` `request_quit`: `exit_intent` (`rust/frontend/src/lease.rs`) decides. The window's close button leaves with Close; the quit key asks first (`ConfirmQuit`); a relaunch leaves with Handover; a second close exits at once.
+2. window, lifecycle: `rust/frontend/src/ui/app/exit.rs` `leave` calls `Leases::leave_all` (`rust/frontend/src/lease.rs`): every held lease's holder task writes `fe.leaving` with the intent; `Leaving::poll` waits for the acks from `about_to_wait`.
+3. daemon, lifecycle: `rust/backend/src/lifecycle/lease.rs` `hold`: on `fe.leaving` calls `Leases::depart`; only the last lease's departure decides, and only a Close shuts down (`Decision::Shutdown`, `gone` set). Keep and Handover keep the rows; a Handover arms a persisted deadline that the ticker turns into a shutdown if no lease arrives.
+4. daemon, server: `rust/backend/src/server/listen.rs` `run_local`: the accept loop breaks on `Leases::gone`, drops the listener, unlinks the socket and calls `shutdown::run`, before any row is touched.
+5. daemon, lifecycle: `rust/backend/src/lifecycle/shutdown.rs` `run`: starts the backstop thread that exits 1 at `SHUTDOWN_BOUND`, calls `Leases::begin_close`, then `close_gate_and_settle` (`rust/backend/src/rows/gate.rs`) so no run starts.
+6. daemon, lifecycle: `rust/backend/src/lifecycle/shutdown.rs` `end_rows`: each capsule row through `end_row` and the drawer through `end_drawer`, concurrently, each retried while refused until the rows deadline; a row of another runtime is counted not ended and never touched.
+7. daemon, rows: `rust/backend/src/rows/run/end.rs` `destroy_capsule_workspace` calls `end_run` (`rust/backend/src/rows/run/end_run.rs`): a row is reported ended only when `absence_proof` and `leg_absent` find the supervisor fence and the voyage's writer lock both free. The anchor row's run is ended and kept (`end_default_row_run`); any other row's comm entries are pruned (`remove_comm_agents_for_workspace`) and its files removed (`remove_row_files`).
+8. daemon, lifecycle: `rust/backend/src/lifecycle/child_signal.rs` `fire`, called by `shutdown::run`: sets the permanent child signal; `live_children` is waited on for `CHILDREN_WAIT` (3 s); `Leases::finish_shutdown` writes the final `held.json`, with the count of rows not confirmed ended, through `write_or_delete`.
+9. daemon, lifecycle: `rust/backend/src/lifecycle/lease.rs` `answer_close`: answers the deciding window's `fe.leaving` with `FeLeavingRes{not_ended}` and, when the count is above 0, waits up to `NOTICE_ACK_WAIT` for `fe.notice_seen`.
+10. daemon, lifecycle: `rust/backend/src/lifecycle/shutdown.rs` `run` ends with `std::process::exit` of `EXIT_REQUESTED_SHUTDOWN` (0), which the unit's `Restart=on-failure` leaves down; the backstop's exit 1 would restart it and the next start finishes the close.
+11. window, fe-ui: `rust/frontend/src/ui/app/exit.rs` `finish_exit`: once `Leaving::poll` reports every ack in (or its wait ends), the event loop exits and the process runtime goes with it.
