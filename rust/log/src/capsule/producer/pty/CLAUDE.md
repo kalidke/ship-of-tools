@@ -5,10 +5,11 @@ open so the master reports end of output only when the loop closes it. Unix only
 subsystem; charter: rust/log/CLAUDE.md.
 
 ## Files
-- `mod.rs`: `PtyProducer`, its spawn helpers, `Drop`, `parent_lease_fd_broken` and the tests
+- `mod.rs`: `PtyProducer`, its helpers and `/proc` scanners, `Drop`, `parent_lease_fd_broken` and the tests
+- `verbs.rs`: `impl Producer for PtyProducer`, the nine verbs (`spawn` first)
 
 ## Start here
-`PtyProducer::spawn` for anything about how the child starts; the module doc for why each ordering is as it is.
+`PtyProducer::spawn` in `verbs.rs` for anything about how the child starts; the module doc for why each ordering is as it is.
 
 ## Rules
 - `spawn` checks the program resolves before forking (`executable_is_resolvable`), because the pre-exec fd close
