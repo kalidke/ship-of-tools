@@ -19,7 +19,7 @@ mod agents;
 mod capsule_workspace;
 mod clients;
 mod comm;
-mod comm_inbox;
+use comm::mail::inbox as comm_inbox;
 mod comm_wake;
 use comm::registry::lock as comm_registry_lock;
 mod durable;

@@ -430,13 +430,13 @@ case_the_wait_is_one_number_and_no_lease_survives() {
     grep -n 'flock -w' "$lib" | grep -qv 'SOT_INBOX_LOCK_WAIT_SECS' && { echo "  a flock wait not read from the one knob"; return 1; }
     # The Rust filer: the same knob, the same 10, no other wait outside its
     # tests, and no lease word outside a comment.
-    local rs="$SCRIPT_DIR/../../../rust/backend/src/comm_inbox.rs"
+    local rs="$SCRIPT_DIR/../../../rust/backend/src/comm/mail/inbox.rs"
     [ "$(grep -c 'pub const INBOX_LOCK_WAIT_DEFAULT_SECS: u64 = 10;' "$rs")" -eq 1 ] \
-        || { echo "  comm_inbox.rs does not default the wait to 10 exactly once"; return 1; }
+        || { echo "  inbox.rs does not default the wait to 10 exactly once"; return 1; }
     grep -q 'pub const INBOX_LOCK_WAIT_ENV: &str = "SOT_INBOX_LOCK_WAIT_SECS";' "$rs" \
-        || { echo "  comm_inbox.rs does not read the one knob"; return 1; }
+        || { echo "  inbox.rs does not read the one knob"; return 1; }
     sed '/^#\[cfg(test)\]/,$d' "$rs" | grep -nE 'from_secs\([0-9]' && { echo "  a wait literal in the filer"; return 1; }
-    grep -vE '^[[:space:]]*//' "$rs" | grep -niE 'stale|patience|reclaim|lease' && { echo "  a lease constant is spelled in comm_inbox.rs"; return 1; }
+    grep -vE '^[[:space:]]*//' "$rs" | grep -niE 'stale|patience|reclaim|lease' && { echo "  a lease constant is spelled in inbox.rs"; return 1; }
     return 0
 }
 

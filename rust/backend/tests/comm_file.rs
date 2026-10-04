@@ -10,7 +10,7 @@
 //! `SOT_TEST_INBOX_DIR` — a folder on the shared home, which is where
 //! in-process and cross-box exclusion have to be proved rather than assumed.
 
-#[path = "../src/comm_inbox.rs"]
+#[path = "../src/comm/mail/inbox.rs"]
 #[allow(dead_code)] // the forward's sentence is the binary's alone
 mod comm_inbox;
 
