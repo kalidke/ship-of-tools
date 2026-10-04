@@ -30,6 +30,7 @@ mod handlers;
 mod http_serve;
 mod lane_bridge;
 mod lease;
+mod lifecycle;
 mod paths;
 mod proxy;
 mod reauth;
@@ -42,9 +43,7 @@ use sidecars::{julia, kernel, mathjax, monitor, pluto};
 mod server;
 mod session;
 mod session_state;
-mod shutdown;
 mod site_serve;
-mod startup;
 mod topology;
 mod topology_cli;
 use topology::{dial as topology_dial, set as topology_set, status as status_cli, stdio_bridge, store as topology_store};
@@ -57,6 +56,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use lifecycle::{shutdown, startup};
 
 /// Restrict default file-creation permissions to owner-only (security
 /// review): without this, every file sotd creates — its own log, the
