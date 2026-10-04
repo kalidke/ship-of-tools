@@ -3,7 +3,7 @@
 use crate::client::Endpoint;
 use crate::fe_client::{
     FeDownBaseline, OutstandingSlot, QuitDispatcher,
-    ReconnectDecision, ReconnectState, TakeTransaction,
+    ReconnectState, TakeTransaction,
 };
 use crate::wire::{self};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -96,126 +96,10 @@ pub(super) fn run_worker<E: Endpoint>(
     'episodes: while !shutdown {
         emit(WorkerEvent::Status("connecting\u{2026}".to_string()));
 
-        // --- supervisor lane: hello (build identity) once, then converge
-        // on Ready (ADR 0043 decision 28) -------------------------------
-        let supervisor_ready = match connect_supervisor_lane::<E>(&endpoint, &lane) {
-            Ok((conn, _proven)) => {
-                match converge_on_ready::<E>(
-                    &endpoint,
-                    conn,
-                    FrameReader::new(),
-                    &lane,
-                    &cmd_rx,
-                    &mut reconnect,
-                    &mut held,
-                    &mut quit,
-                    &mut outstanding,
-                    first_attach_deadline,
-                    &viewed,
-                    &emit,
-                ) {
-                    ReadyOutcome::Ready { conn, sup_reader, voyage_id, voyage_conn } => {
-                        Some((conn, sup_reader, voyage_id, voyage_conn))
-                    }
-                    ReadyOutcome::Terminal(msg) => {
-                        emit(WorkerEvent::Terminal(msg));
-                        return;
-                    }
-                    ReadyOutcome::ShouldExit => {
-                        emit(WorkerEvent::ShouldExit);
-                        return;
-                    }
-                    ReadyOutcome::Shutdown => break 'episodes,
-                    ReadyOutcome::LaneDown => None,
-                }
-            }
-            Err(LaneError::Protocol(p)) if p.contains("version_skew") => {
-                // `classify_hello_refused_version_skew` is always `Terminal`
-                // (no `Retry` arm exists to discard it into) -- emit and
-                // return directly rather than matching a foregone answer.
-                reconnect.classify_hello_refused_version_skew();
-                emit(WorkerEvent::Terminal(
-                    "the row's supervisor refused this client (another lane protocol, or a supervisor from before the protocol-only gate); end the row and recreate it".to_string(),
-                ));
-                return;
-            }
-            Err(LaneError::Protocol(p)) if p.contains("foreign") => {
-                match reconnect.classify_foreign() {
-                    ReconnectDecision::Terminal(reason) => {
-                        emit(WorkerEvent::Terminal(format!("supervisor lane: {reason:?}")));
-                        return;
-                    }
-                    ReconnectDecision::Retry => unreachable!("classify_foreign is always terminal"),
-                }
-            }
-            Err(LaneError::Io(e)) if is_access_denied(&e) => {
-                emit(WorkerEvent::Terminal("supervisor lane: access denied".to_string()));
-                return;
-            }
-            // ADR 0045 decision 4: the two bridge-only outcomes beyond
-            // an ordinary `Io` — a refusal is terminal, its code named
-            // in the pane line; the two uncertain arms retry, clearing
-            // the health window's clock first so transport uncertainty
-            // is never charged to it.
-            Err(LaneError::Refused { code, detail }) => {
-                let msg = if code == "no_bridge" {
-                    "this daemon has no bridge — it predates the lane bridge (ADR 0045)".to_string()
-                } else {
-                    format!("daemon refused the lane ({code}): {detail}")
-                };
-                emit(WorkerEvent::Terminal(msg));
-                return;
-            }
-            Err(LaneError::LinkDown) => {
-                reconnect.clear_unresponsive();
-                match pause_for_link(&endpoint, &cmd_rx, &mut held, &viewed, &emit) {
-                    WaitOutcome::Shutdown => break 'episodes,
-                    WaitOutcome::Continue => continue 'episodes,
-                }
-            }
-            Err(e @ (LaneError::Unreachable(_) | LaneError::Undetermined(_))) => {
-                reconnect.clear_unresponsive();
-                let msg = match &e {
-                    LaneError::Unreachable(d) => format!("daemon unreachable — retrying ({d})"),
-                    LaneError::Undetermined(_) => "daemon could not identify the lane — retrying".to_string(),
-                    _ => unreachable!("matched above"),
-                };
-                emit(WorkerEvent::Status(msg));
-                match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
-                    WaitOutcome::Shutdown => break 'episodes,
-                    WaitOutcome::Continue => continue 'episodes,
-                }
-            }
-            Err(_) => None,
-        };
-
-        // Ruling (d), Codex review round finding 8: only when the
-        // supervisor lane is ALSO absent/unresponsive this round does the
-        // health window even get consulted -- a reachable voyage pipe
-        // (the capsule surviving headless) clears it unconditionally.
-        let (supervisor_conn, sup_reader, voyage, voyage_conn) = match supervisor_ready {
-            Some(v) => v,
-            None => {
-                // Finding 2: resolved FRESH here, not cached from the top
-                // of the episode -- `converge_on_ready` may have polled
-                // for a long while before reporting `LaneDown`/failing to
-                // connect at all. Decision 6: the probe uses `voyage_uuid`
-                // -- the voyage id the supervisor last reported to THIS
-                // client, carried across episodes -- never a pointer file.
-                match on_supervisor_absent_or_unresponsive::<E>(&endpoint, &mut reconnect, &lane, voyage_uuid.as_deref(), Instant::now()) {
-                    ReconnectDecision::Terminal(reason) => {
-                        emit(WorkerEvent::Terminal(format!("supervisor lane unreachable: {reason:?}")));
-                        return;
-                    }
-                    ReconnectDecision::Retry => {
-                        emit(WorkerEvent::Status("supervisor lane not answering \u{2014} retrying\u{2026}".to_string()));
-                        match wait_for_retry_or_shutdown(&cmd_rx, reconnect.retry_with_backoff(), &mut held) {
-                            WaitOutcome::Shutdown => break 'episodes,
-                            WaitOutcome::Continue => continue 'episodes,
-                        }
-                    }
-                }
-            }
+        let (supervisor_conn, sup_reader, voyage, voyage_conn) = match reach_supervisor::<E>(&endpoint, &lane, &cmd_rx, &mut reconnect, &mut held, &mut quit, &mut outstanding, first_attach_deadline, &viewed, &emit, &voyage_uuid) {
+            Ok(v) => v,
+            Err(EpisodeExit::Retry) => continue 'episodes,
+            Err(EpisodeExit::End) => return,
         };
 
         // A resize read while not attached is applied before this attach's
