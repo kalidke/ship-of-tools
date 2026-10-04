@@ -509,3 +509,33 @@ fn load_layered_reads_the_file_sot_keybindings_names() {
     assert!(!b.matches(Action::MaximizePane, &j, true, true, false));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Input class -> result of `strip_quotes`; the settings reader pins the same table.
+#[test]
+fn strip_quotes_table() {
+    let table: &[(&str, &str)] = &[
+        ("a", "a"),
+        ("\"a\"", "a"),
+        ("'a'", "a"),
+        (" \"a\" ", "a"),
+        (" a ", "a"),
+        ("\"a'", "\"a'"),
+        ("'a\"", "'a\""),
+        ("\"", "\""),
+        ("'", "'"),
+        ("\"a\"b\"", "a\"b"),
+        ("''x''", "'x'"),
+        ("", ""),
+        ("  ", ""),
+        ("\"\"", ""),
+        ("''", ""),
+    ];
+    for (input, want) in table {
+        assert_eq!(strip_quotes(input), *want, "strip_quotes({input:?})");
+        // The reader's paths: a bare value and a one-item list.
+        assert_eq!(parse_value(input), vec![want.to_string()], "parse_value({input:?})");
+        let listed = parse_value(&format!("[{input}]"));
+        let want_list = if input.trim().is_empty() { vec![] } else { vec![want.to_string()] };
+        assert_eq!(listed, want_list, "parse_value([{input:?}])");
+    }
+}

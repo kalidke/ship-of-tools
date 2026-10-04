@@ -249,3 +249,33 @@
         assert_ne!(Settings::load_layered().font_scale, Some(2.37));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Input class -> result of `strip_quotes`; the keybindings reader pins the same table.
+    #[test]
+    fn strip_quotes_table() {
+        let table: &[(&str, &str)] = &[
+            ("a", "a"),
+            ("\"a\"", "a"),
+            ("'a'", "a"),
+            (" \"a\" ", "a"),
+            (" a ", "a"),
+            ("\"a'", "\"a'"),
+            ("'a\"", "'a\""),
+            ("\"", "\""),
+            ("'", "'"),
+            ("\"a\"b\"", "a\"b"),
+            ("''x''", "'x'"),
+            ("", ""),
+            ("  ", ""),
+            ("\"\"", ""),
+            ("''", ""),
+        ];
+        for (input, want) in table {
+            assert_eq!(strip_quotes(input), *want, "strip_quotes({input:?})");
+            // The reader's path: `[sessions] new_session_root = <input>`.
+            let mut s = Settings::default();
+            s.merge_text(&format!("[sessions]\nnew_session_root = {input}\n"));
+            let want_root = if want.trim().is_empty() { None } else { Some(want.trim().to_string()) };
+            assert_eq!(s.new_session_root, want_root, "merge_text({input:?})");
+        }
+    }
