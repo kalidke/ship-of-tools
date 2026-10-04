@@ -124,38 +124,6 @@ const HOST_DIVIDER_GLYPH: &str = "⚙";
 
 
 
-/// Mirror of `backend/src/paths.rs::slug`. Kept here as a duplicate
-/// because the path-derivation rule needs to live in both backend (to
-/// pick its own socket from `--label`) and frontend (to pre-compute the
-/// tmux session name shown in Sessions mode before the daemon is even
-/// alive). Centralisation into the protocol crate is a phase-2.5 polish.
-#[allow(dead_code)] // last consumer (label prompt) removed in workspace-picker
-                    // commit; keep for the next user that needs the slug rule
-                    // on the frontend side without dragging in the protocol
-                    // crate
-fn slug_for_label(label: &str) -> String {
-    let mut out = String::with_capacity(label.len());
-    let mut last_dash = false;
-    for ch in label.chars() {
-        let c = ch.to_ascii_lowercase();
-        let keep = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
-        if keep {
-            out.push(c);
-            last_dash = c == '-';
-        } else if !last_dash && !out.is_empty() {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    if out.is_empty() {
-        "default".to_string()
-    } else {
-        out
-    }
-}
 
 
 
