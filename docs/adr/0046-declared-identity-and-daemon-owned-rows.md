@@ -227,6 +227,7 @@ tmux; a capsule-capable install needs no tmux.
      the lane's chunk size; a closed vocabulary: `reset`, `checkpoint`,
      `output`, `pen`, `geometry`, `dropped`. No base64 (a legal chunk,
      `wire.rs:296`, exceeds the 1 MiB envelope cap, `codec.rs:18`).
+   - **Not built:** the capsule serves attach v3; no client requests it.
    - **Attach proto v3 is REQUIRED for resident service.** The capsule
      emits to every watcher, in order, behind any still-transferring
      checkpoint (drained with the watcher's output after the final chunk,

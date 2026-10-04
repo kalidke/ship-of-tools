@@ -3,7 +3,9 @@
 **Status:** current — Accepted (2026-08-24). The contract for recording Claude agent
 sessions as ADR 0039 voyages. Implemented by the `adapters/claude-sdk-helper`
 Node package plus a `claude` producer adapter in the capsule; gated by the
-conformance rig in §8 before anything consumes these voyages.
+conformance rig in §8 before anything consumes these voyages. DORMANT: rows run
+claude as a raw-terminal producer; this SDK producer runs only in tests and CI's
+P2 e2e job. Keeping or retiring it is an open decision.
 **Date:** 2026-08-24
 
 > How this was designed: four adversarial review rounds against a working

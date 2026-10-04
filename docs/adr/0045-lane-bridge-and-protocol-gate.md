@@ -4,7 +4,7 @@
 f181d039 the same-day follow-up discharging a Codex review round as
 shape fixes. B3 (`lane.connect`, PR #234), B4a (`DaemonLaneEndpoint`, PR
 #235) and B4b (eight cross-process proofs) merged; B5 (the frontend, PR
-#236) is open, pending its Windows acceptance; B6 (the flip) not
+#236) is built: the frontend dials through `lane.connect`; B6 (the flip) not
 started. Decision 10 FIELD-PROVEN 2026-09-11 on a Windows frontend box
 against a scratch daemon: two capsule rows stayed ready with unchanged
 supervisor pids across a daemon rebuild (different build id, same lane
@@ -246,7 +246,7 @@ state tree blocks the voyage rename on Windows.
 | B3 | `lane.connect` op + `lane_bridge.rs`; depends on the lifecycle track's L1a for `resume_if_absent` and the per-row guard | Merged (PR #234) |
 | B4a | `DaemonLaneEndpoint`, the three `TransportError` variants | Merged (PR #235) |
 | B4b | Cross-process proofs over a test-owned TCP→Unix relay (Linux job) | Merged (eight cross-process proofs) |
-| B5 | The frontend: `DaemonLaneEndpoint` wiring, `state_dir` reads deleted | Open (PR #236), pending Windows acceptance |
+| B5 | The frontend: `DaemonLaneEndpoint` wiring, `state_dir` reads deleted | Built: the frontend dials through `lane.connect` (PR #236) |
 | B6 | The flip — after B5, B4b, and the lifecycle track's service-stop proofs | Not started |
 
 Order: B1 → (B2 ∥ lifecycle L1a) → B3 → B4a → B4b → B5 → B6.

@@ -38,6 +38,9 @@ Linux capsule path (the new socket module is platform-neutral code, wired
 only on Windows in P3); Sessions-mode rows for FE voyages; the catalog;
 remote attach (P4).
 
+**Dormant:** nothing launches a drawer supervisor; the window's Terminal
+drawer runs a local shell.
+
 ## The store port (fsutil's Windows arm)
 
 - **Volume preflight** (NTFS, local, via `GetVolumeInformationByHandleW`
@@ -1452,6 +1455,9 @@ assuming the transaction did. **Superseded by ADR 0045 decisions 7 and
 match, and a release carrying a lane bump upgrades by draining every
 capsule row with the old pair rather than by quiescing an old FE
 against a mismatched build.
+
+**Not built:** the rollout gate never shipped; production passes
+--assume-no-rollback-target on every start.
 
 **An upgrade is ONE atomic transaction.** The capsule image IS the
 supervisor image, so no image can be deferred on its own: "no capsule is
