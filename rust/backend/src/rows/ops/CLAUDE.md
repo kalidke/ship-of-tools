@@ -1,7 +1,7 @@
 # rust/backend/src/rows/ops: the row ops clients call (rows)
 
-The ops a client sends about a row: make one, end one, list them, switch the view to one, and type into or read the
-screen of a capsule row. Each handler takes the parsed payload and the registry and answers one frame; the row state they
+The ops a client sends about a row: make one, end one, list them, switch the view to one, and open, type into or read the
+screen of a capsule row's pane. Each handler takes the parsed payload and the registry and answers one frame; the row state they
 change lives in the parent folder. Part of the daemon's rows subsystem; charter: rust/backend/src/rows/CLAUDE.md.
 
 ## Files
@@ -12,7 +12,7 @@ change lives in the parent folder. Part of the daemon's rows subsystem; charter:
 - `destroy_tests.rs`: tests of `destroy.rs`: `workspace.destroy` on the default row, with the state-root fixtures they share
 - `lane_bridge.rs`: `lane.connect`, the byte pipe onto a row's supervisor or voyage lane after one answered frame
 - `list.rs`: `workspace.list` (the rows the window shows, with their comm state) and `workspace.activate`
-- `pty.rs`: `pty.input` and `pty.screen` through a capsule row's supervisor lane, and the test-only activation barrier and marker
+- `pty.rs`: `pty.open` (starts a capsule row's supervisor on attach, then answers `attach_direct`), `pty.input` and `pty.screen` through the supervisor lane, and the test-only activation barrier and marker
 
 ## Start here
 `create.rs::handle_workspace_create` for what a new row is; `destroy.rs::handle_workspace_destroy` for how one ends.

@@ -1,4 +1,4 @@
-//! pty.input and pty.screen: type into, or read the screen of, a capsule row through its supervisor lane.
+//! pty.open, pty.input and pty.screen: open a capsule row's pane, type into it, or read its screen, through its supervisor lane.
 //! Also the test-only activation barrier and marker that `pty.open`'s start-on-attach runs under.
 
 use anyhow::Context;
@@ -10,9 +10,14 @@ use sot_protocol::PtyCursor;
 use sot_protocol::PtyEnter;
 use sot_protocol::PtyInputReq;
 use sot_protocol::PtyInputRes;
+use sot_protocol::PtyOpenReq;
 use sot_protocol::PtyScreenReq;
 use sot_protocol::PtyScreenRes;
+use crate::handlers;
 use crate::handlers::HandlerOutput;
+use crate::server::write_frame_to;
+use tokio::io::AsyncWrite;
+use crate::workspaces::Workspace;
 use crate::workspaces::Workspaces;
 
 /// `PtyInputReq::origin` / `PtyScreenReq` share no size limit of their own
@@ -366,6 +371,132 @@ pub async fn handle_pty_screen(
     }
 }
 
+/// Answers `pty.open`: refuses a bad payload or target, starts the row's supervisor on attach and replies `attach_direct`.
+pub(crate) async fn handle_pty_open<W>(tx: &mut W, frame: Frame, workspaces: &Workspaces) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let req: PtyOpenReq = match serde_json::from_value(frame.payload) {
+        Ok(r) => r,
+        Err(e) => {
+            let payload = serde_json::json!({
+                "error": format!("pty.open payload: {e}"),
+                "code": "bad_request",
+            });
+            write_frame_to(tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                .await?;
+            return Ok(());
+        }
+    };
+    // Name validation (security review): an explicit `target`
+    // becomes the real tmux session name — a `|`-containing one
+    // would corrupt `tmux.rs`'s naive `|`-delimited
+    // `list-sessions`/`list-panes` parsing for every session, not
+    // just this one. `None` (the default target) is exempt: it's
+    // the hardcoded `DEFAULT_TMUX_TARGET` constant, not
+    // request-controlled.
+    if let Some(t) = req.target.as_deref() {
+        if !handlers::valid_name(t) {
+            let payload = serde_json::json!({
+                "error": format!(
+                    "invalid target {t:?} (want 1-64 chars of [A-Za-z0-9._-])"
+                ),
+                "code": "bad_target",
+            });
+            write_frame_to(tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+                .await?;
+            return Ok(());
+        }
+    }
+    let requested_target = req
+        .target
+        .as_deref()
+        .unwrap_or("");
+    // A row's agent pane is a capsule (ADR 0046): `pty.open`
+    // starts its supervisor when needed and answers
+    // `attach_direct` with the `state_dir` the frontend attaches
+    // to (L1b, the U3 client). An unknown target has nothing
+    // to attach to.
+    let Some(ws) = workspaces.workspace_for_tmux(requested_target) else {
+        let payload = serde_json::json!({
+            "error": format!("no workspace owns session {requested_target:?}"),
+            "code": "no_workspace",
+        });
+        write_frame_to(tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+            .await?;
+        return Ok(());
+    };
+    let state_root = sot_log::state_dir::sot_state_dir();
+    // `attach_direct` answers at once from memory, no
+    // lane probe here -- `ensure_started` runs
+    // fire-and-forget in the background under its own
+    // guard, so a stale cached `Ready` never blocks it.
+    {
+        start_on_attach(&ws, workspaces, &state_root);
+    }
+    let state_dir = state_root
+        .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
+        .map(|p| p.to_string_lossy().into_owned());
+    let payload = serde_json::json!({
+        "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
+        "code": "attach_direct",
+        "state_dir": state_dir,
+    });
+    write_frame_to(tx, &Frame::res(frame.id, op::PTY_OPEN, payload), None)
+        .await?;
+    return Ok(());
+}
+
+/// Starts the row's capsule supervisor in the background on attach, or records that no state root resolves.
+fn start_on_attach(ws: &Workspace, workspaces: &Workspaces, state_root: &Option<std::path::PathBuf>) {
+    match state_root.clone() {
+        None => {
+            ws.set_activation_error(Some(format!(
+                "could not resolve this machine's state root ({} unset)",
+                crate::capsule_workspace::STATE_ROOT_HINT
+            )));
+        }
+        Some(root) => {
+            let workspace_id = ws.workspace_id.clone();
+            let workspace_id_for_log = workspace_id.clone();
+            let agent_kind = ws.agent();
+            let agent_name = ws.agent_name();
+            let slug = ws.slug.clone();
+            let project_root = ws.project_root.clone();
+            let workspaces_for_start = workspaces.clone();
+            tokio::spawn(async move {
+                wait_for_test_activation_barrier().await;
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::capsule_workspace::ensure_started(
+                        &root,
+                        &workspace_id,
+                        &agent_kind,
+                        &agent_name,
+                        &slug,
+                        &project_root,
+                        crate::capsule_workspace::ActivationIntent::Selection,
+                        workspaces_for_start,
+                    )
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    Err(format!("capsule start-on-attach task panicked: {e}"))
+                });
+                match result {
+                    Ok(Some(())) => {
+                        tracing::info!(workspace_id = %workspace_id_for_log, "pty.open: capsule supervisor started on attach");
+                    }
+                    Ok(None) => {}
+                    Err(detail) => {
+                        tracing::warn!(workspace_id = %workspace_id_for_log, error = %detail, "pty.open: capsule supervisor start-on-attach failed");
+                    }
+                }
+                record_test_activation_marker("completions");
+            });
+        }
+    }
+}
+
 /// Writes one marker file per arrival/completion/wait-for-settle-cycle
 /// under `<barrier path>.<kind>/`, so a test can poll an exact count
 /// instead of inferring one from timing. `pub(crate)` -- also called
@@ -388,7 +519,7 @@ pub(crate) fn record_test_activation_marker(kind: &str) {
 /// `SOT_TEST_ACTIVATION_BARRIER` names a path, blocks until the test
 /// creates that file (not a guessed sleep), giving up past a 30s bound.
 /// No-op in production.
-pub(crate) async fn wait_for_test_activation_barrier() {
+async fn wait_for_test_activation_barrier() {
     let Ok(path) = std::env::var("SOT_TEST_ACTIVATION_BARRIER") else {
         return;
     };
