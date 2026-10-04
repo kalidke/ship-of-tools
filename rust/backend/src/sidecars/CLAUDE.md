@@ -24,8 +24,8 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   daemon samples itself (`without_local_sampler`).
 
 ## Connections
-- handlers.rs serves `repl.*`, `kernel.request`, `math.render` and `pluto.open`, and calls `Kernel::request` for plugin
-  previews.
+- ops.rs and repl/ serve `repl.*`, `kernel.request`, `math.render` and `pluto.open` (handlers.rs re-exports them), and
+  files/preview calls `Kernel::request` for plugin previews.
 - server.rs builds `MathJax`, `Pluto` and `MonitorHub` and serves `monitor.*` inline.
 - workspaces.rs holds a `Kernel` and a `Repl` per row.
 - The page proxy's allowlist (proxy.rs) reads `bound_pluto_port`.
@@ -38,7 +38,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `rust/backend/sidecars/mathjax/`: the MathJax script (`render.mjs`); never moved.
 
 ## Files
-- `mod.rs`: declares the six modules.
+- `mod.rs`: declares the seven modules.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.
@@ -46,6 +46,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `mathjax.rs`: the per-daemon MathJax child.
 - `monitor.rs`: the host monitor, one sampler per host.
 - `monitor_tests.rs`: the monitor's unit tests and roster-config tests.
+- `ops.rs`: kernel.request, math.render, pluto.open
 
 ## Start here
 kernel.rs `run_one_generation` for a kernel's life; julia.rs `resolve_bin` for which julia runs; monitor.rs `supervise`

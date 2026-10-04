@@ -4,5 +4,6 @@ pub(super) mod julia;
 pub(super) mod kernel;
 pub(super) mod mathjax;
 pub(super) mod monitor;
+pub(super) mod ops;
 pub(super) mod pluto;
 pub(super) mod repl;

@@ -24,7 +24,9 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
+pub(crate) mod execute;
 mod lifecycle;
+pub(crate) mod ops;
 mod supervisor;
 
 pub(crate) use lifecycle::ReplLifecycle;
