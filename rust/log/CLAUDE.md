@@ -42,7 +42,7 @@ lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries 
 - `src/store/`: the voyage store, its record codec, recovery and verifier.
 - `src/capsule/`: the leg, one producer recorded into its voyage.
 - `src/supervisor/`: the authority over a state dir's runs.
-- `src/lane/`: transport contract, client seam and platform bridges for the lanes.
+- `src/lane/`: transport contract, client seam and the platform bridge for the lanes.
 - `src/attach_client/`: one client for every viewer of a capsule.
 - `src/host/`: platform subsystem's folder: dirs, host name, durable publish, locks; the platform charter is
   `src/host/CLAUDE.md`.

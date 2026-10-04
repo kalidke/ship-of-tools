@@ -75,8 +75,9 @@ pub struct Workspace {
     pub slug: String,
     pub label: String,
     pub project_root: PathBuf,
-    /// The row's session name, `sot-be-<slug>` (`paths::session_name`):
-    /// the one stable token `pty.open` / `lane.connect` `target` address
+    /// The row's session name, `sot-be-<slug>` (`rows::session_name`; a row
+    /// loaded from a stored config keeps its stored name): the one stable
+    /// token `pty.open` / `lane.connect` `target` address
     /// the row by, the same for both runtimes, and for a `"tmux"`-runtime
     /// row the real tmux session's name. Fixed for the row's lifetime —
     /// the frontend keys its per-row UI state and the Sessions tree on it.

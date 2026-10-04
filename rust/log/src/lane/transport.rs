@@ -61,10 +61,8 @@ pub enum TransportEvent {
 }
 
 /// What the writer loop needs from a transport to deliver bytes and sever
-/// connections. The Windows transport (`platform_transport` over `pipe_win`)
-/// implements this over a named pipe; `capsule_win`'s tests implement it
-/// as an in-memory sink; the Unix transport (L1-unix) implements it over
-/// a Unix domain socket.
+/// connections. `platform_transport` implements this over the platform's
+/// lane server; `capsule_win`'s tests implement it as an in-memory sink.
 ///
 /// # Contract (round-2 review, finding 7)
 ///

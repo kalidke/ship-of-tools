@@ -1,5 +1,5 @@
 //! Shared test support for this crate's real-process integration suites
-//! (`capsule_workspaces/main.rs`, `lane_bridge/main.rs`): a real `sotd`, a real
+//! (those that declare it): a real `sotd`, a real
 //! `sot-capsule[.exe]` it spawns DETACHED, talking the actual wire
 //! protocol over a real local socket. Lifted out of `capsule_workspaces/main.rs`
 //! verbatim (ADR 0045 lane B4b) so `lane_bridge/main.rs`'s own cross-
@@ -8,7 +8,7 @@
 //! stand up the identical `Env`/wire-protocol fixture without a second,
 //! drifting copy. Not itself a `tests/*.rs` file (Cargo only auto-
 //! discovers direct children of `tests/` as integration-test binaries,
-//! never a file inside a subdirectory), so each of the two real binaries
+//! never a file inside a subdirectory), so each binary that uses it
 //! declares `mod support;` and gets its own compiled copy — no linkage
 //! between them, no shared process state.
 //!

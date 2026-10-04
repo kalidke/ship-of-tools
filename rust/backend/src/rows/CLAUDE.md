@@ -39,8 +39,11 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   ops, not through the file.
 
 ## Connections
-- In: every op finds its row through `Workspaces::resolve`, and the ops that answer a missing row with
-  `unknown_workspace` do it through `row_or_reply` (`mod.rs`); `ops/` creates, lists and destroys rows
+- In: ops find their row through `Workspaces::resolve` (`agent.join` through `capsule_guard` and
+  `set_agent_handle`). The fifteen handler sites that print an optional hint answer a missing row through
+  `row_or_reply` (`mod.rs`), and `server::reply::canonicalize_workspace_id` calls it for the offloaded ops;
+  `workspace.destroy`, `pty.input`, `pty.screen`, `repl.execute`, `agent.join`, `workspace.reauth` and `lane.connect`
+  write their own refusal. `ops/` creates, lists and destroys rows
   (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` calls `anchor::seed_default_row`,
   which inserts the default row.
 - Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),

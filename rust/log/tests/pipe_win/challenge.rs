@@ -322,7 +322,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
 /// directly), so a regression that stopped calling `authenticate_server`
 /// at all would still pass this test (nothing here proves enforcement
 /// happened) -- that is exactly why the failure-mapping unit tests in
-/// `lane/pipe_win/` itself (`map_peer_auth_outcome`) exist alongside it: they
+/// `lane/client.rs` (`map_peer_auth_outcome`) exist alongside it: they
 /// prove the CONSTRUCTOR's mapping logic in isolation, and this test
 /// proves the happy path stays usable end to end.
 #[test]

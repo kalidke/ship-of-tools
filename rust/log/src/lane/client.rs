@@ -201,9 +201,9 @@ pub type PlatformEndpoint = crate::lane::pipe_win::PipeEndpoint;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub type PlatformEndpoint = crate::lane::socket_unix::SocketEndpoint;
 
-/// U1a Codex round-1, minor cluster: a constructor-level failure-mapping
-/// test for `connect_voyage_pipe`'s own `map_peer_auth_outcome`, proving
-/// the mapping code the constructor actually runs -- not `challenge`/
+/// U1a Codex round-1, minor cluster: failure-mapping tests for
+/// `map_peer_auth_outcome`, the mapping both platforms' connects share, proving
+/// the mapping code the constructors actually run -- not `challenge`/
 /// `authenticate_server` directly, and not through a live pipe (a genuine
 /// OS-level Foreign/Undetermined through a real connection needs either a
 /// second real account or an unreliable timing race, neither
@@ -211,8 +211,8 @@ pub type PlatformEndpoint = crate::lane::socket_unix::SocketEndpoint;
 /// undetermined_when_step_one_itself_fails` in the integration test for
 /// the OS-call-failure case proven against a real, deliberately invalid
 /// handle instead). Lives here (not in `tests/pipe_win/`) because
-/// `map_peer_auth_outcome` is a private implementation detail with no
-/// reason to be `pub` merely for testability, and a pure mapping over
+/// `map_peer_auth_outcome` is `pub(super)`, with no reason to be `pub`
+/// merely for testability, and a pure mapping over
 /// already-constructed `PeerAuthOutcome` values needs no real pipe --
 /// exactly the kind of test this crate's OTHER pure-logic modules
 /// (`attach_proto`, `wire`, `exchange`) already keep inline.

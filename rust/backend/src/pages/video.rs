@@ -78,7 +78,8 @@ fn path_for_token(token: &str) -> Option<PathBuf> {
 }
 
 /// Video extensions this server will serve. Mirrors `ShipToolsVideoFile`'s
-/// `VIDEO_EXTENSIONS`.
+/// `VIDEO_EXTENSIONS`. The preview's size-gate exemption and bytes reader
+/// read this same list (through `is_servable_video`), so editing it moves them.
 const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v"];
 
 /// PREFERRED loopback port for the video server (env-overridable, default

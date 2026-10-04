@@ -1,4 +1,5 @@
-//! The writer loop's frame factory, the run-end marker and the input WAL.
+//! The writer loop's frame factory, the run-end marker and the input WAL, and `wall_ms`, the
+//! wall clock the capsule, `claude.rs` and the fault writer share.
 use super::*;
 
 /// Encodes a wire `idem_key` (16 raw bytes) as the lowercase hex32 shape
@@ -16,8 +17,6 @@ pub fn wall_ms() -> i64 {
 
 /// The writer loop's frame factory: sequential seq, capsule clocks, and the
 /// per-run refs (attached_to / input WAL) threaded through one small state.
-/// Identical in shape to `capsule/frame.rs`'s `FrameCtx` — duplicated, not
-/// shared (module doc).
 pub(super) struct FrameCtx {
     pub(super) epoch: u64,
     pub(super) next_n: u64,

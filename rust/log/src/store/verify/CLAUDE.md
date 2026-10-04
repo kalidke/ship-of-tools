@@ -6,7 +6,7 @@ It also holds the two per-leg readers the supervisor uses to decide a respawn an
 charter: rust/log/CLAUDE.md (a forward reference: that page is not yet at this commit).
 
 ## Files
-- `mod.rs`: the checklist's types (`VerifyMode`, `REGISTERED_FEATURES`, the frame objects it reads), `verify_voyage` and the payload and blob helpers.
+- `mod.rs`: the checklist's types (`VerifyMode`, `REGISTERED_FEATURES`, the `take_state` object it reads; the fact object is `dedupe::FactObj`), `verify_voyage` and the payload and blob helpers.
 - `pass.rs`: `verify_voyage_mode`, the pass over a voyage's segments, and the segment-level rules (listing, quiescence, header, turn closure).
 - `frame.rs`: the per-frame rules of the voyage walk, `check_frame` (their order) and `WalkState`, what the earlier frames established.
 - `lifecycle.rs`: the lifecycle frame rules (kind fields, kill-domain locator, take order, input_fact lattice)

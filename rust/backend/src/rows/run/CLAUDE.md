@@ -10,7 +10,7 @@ paths, and the headless attach client. Part of the daemon's rows subsystem; char
 - `end.rs`: ending a row's run (destroy_capsule_workspace and its outcome) and removing its tomls
 - `probe.rs`: the phase strings (`UNREACHABLE_PHASE`, `FOREIGN_PHASE`, `NEVER_STARTED_PHASE`), `phase_for_missing_pointer`, `phase_str`, `local_phase`, and `probe` / `phase_of`, the one status round trip
 - `observer.rs`: the per-row lifecycle observer task, `observe` and `observe_with_adoption`
-- `headless.rs`: the daemon's own attach client: `type_into`, `write_and_enter`, `screen_of`, `checkpointed` (the attach every caller waits on), `HeadlessError`
+- `headless.rs`: the daemon's own attach client: `type_into`, `write_and_enter`, `screen_of`, `checkpointed` (the checkpoint wait every attach goes through; it shuts the client down on failure), `HeadlessError`
 - `start.rs`: `spawn_and_watch`, `start_supervisor`, `reset_run` (the run gate) and `settle_after_spawn`
 - `activation.rs`: `ensure_started` (start on attach), `resume_if_absent`, `resume_locked`, `ActivationIntent`
 - `watchdog.rs`: `install_watchdog`, the exit classes (`LegOutcome`) and the restart budget (`RESTART_BACKOFFS`)

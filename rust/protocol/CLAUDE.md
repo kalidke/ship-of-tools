@@ -33,6 +33,8 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 ## Connections
 - Called in by the window's control transport and the daemon's connection loop (`read_frame`, `write_frame`, the op
   payloads), by the daemon's topology and bridge code, and by every binary's `--version` (`version_line`).
+- `loopback_port_from_url` is called by the window's page proxy (`ui/page_proxy.rs`, to arm a listener) and by the
+  daemon's REPL supervisor (`sidecars/repl/supervisor.rs`, to record a `browser` frame's port for the proxy allowlist).
 - It calls only sot-log (state directory derivation) at run time.
 
 ## Folders

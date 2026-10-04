@@ -161,7 +161,7 @@ fn send_and_wait_recorded(client: &mut Client, bytes: &[u8], deadline: Instant) 
 /// wait, then Enter as its own write — makes NO submission claim (a
 /// screen snapshot cannot prove one) and never retries either write.
 ///
-/// 1. [`type_into`]'s own size gate runs first, before any attach.
+/// 1. The size gate ([`size_gate`]) runs first, before any attach.
 /// 2. Writes the text — a hard error, never retried, on any failure.
 /// 3. PACES only (claims nothing): waits for the screen to hold still
 ///    `quiet_budget`, bounded overall at `pacing_budget`.
@@ -338,11 +338,12 @@ pub(crate) fn wait_for_checkpoint(client: &mut Client, deadline: Instant) -> Res
 
 #[cfg(test)]
 mod headless_size_gate_tests {
-    // Pure size-gate tests: `type_into` checks the payload length BEFORE
-    // ever attempting an attach, so these need no supervisor, no state
-    // dir on disk, and no real process at all — a nonexistent path is
-    // fine, and a real attach attempt against it would prove the test
-    // wrong (the size gate must short-circuit before that).
+    // Size-gate tests (no attach) and attach-failure tests against a
+    // state dir with no lane. `type_into` checks the payload length BEFORE
+    // ever attempting an attach, so the size-gate tests need no supervisor,
+    // no state dir on disk, and no real process at all — a nonexistent path
+    // is fine, and a real attach attempt there would prove the test wrong
+    // (the size gate must short-circuit before that).
     #[cfg(target_os = "linux")]
     use super::screen_of;
     use super::{enter_outcome, type_into, write_and_enter, HeadlessError};

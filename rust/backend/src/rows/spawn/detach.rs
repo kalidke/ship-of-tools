@@ -36,8 +36,7 @@ pub fn mode_flag(mode: StartMode) -> &'static str {
 /// ending a supervisor over `sot_log::attach_client::supervisor_client`. Platform
 /// chosen by exactly TWO forks inside (ADR 0043 decision 22): the
 /// capsule executable's name ([`CAPSULE_SIBLING_NAME`]) and the detach mechanism
-/// ([`spawn_detached`]'s two twins) — everything else below is
-/// byte-identical on both platforms. (A third fork, the adopted leg's
+/// ([`spawn_detached`]'s per-OS twins). (A third fork, the adopted leg's
 /// exit-status read, existed here before decision 33 deleted the
 /// adopted-leg watch entirely — a watchdog now exists only for a
 /// `Child` this daemon itself spawned.)
@@ -46,9 +45,7 @@ pub fn mode_flag(mode: StartMode) -> &'static str {
 /// ([`sot_capsule_exe`]). `not(windows)`, not `target_os = "linux"`: the
 /// extensionless name is a Unix fact, not a Linux one, and the release
 /// archive stages it next to `sotd` on the macOS leg exactly as it does
-/// on the Linux one — so this arm is already correct for the day `mod
-/// runtime`'s own gate widens, and gating it narrower would only make
-/// that day's diff bigger without naming an invariant of its own.
+/// on the Linux one.
 #[cfg(windows)]
 const CAPSULE_SIBLING_NAME: &str = "sot-capsule.exe";
 #[cfg(not(windows))]
@@ -110,11 +107,9 @@ const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 #[cfg(windows)]
 const ERROR_ACCESS_DENIED: i32 = 5;
 
-/// The capsule executable's own file name — the FIRST of the three
-/// forks decision 22 names. Resolved next to the daemon's own
-/// executable ("the `sot-capsule` binary path: next to the daemon's
-/// own executable (`current_exe().parent()`), which is where the
-/// install layout puts it", ADR 0042 L1a) on both platforms.
+/// The `sot-capsule` binary path: [`CAPSULE_SIBLING_NAME`] next to the
+/// daemon's own executable (`current_exe().parent()`), which is where the
+/// install layout puts it (ADR 0042 L1a).
 pub fn sot_capsule_exe() -> std::io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let dir = exe.parent().ok_or_else(|| {

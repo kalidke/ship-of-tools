@@ -7,7 +7,7 @@
 //
 // File discovery, in priority order:
 //   1. $SOT_SETTINGS  — explicit override path
-//   2. <repo-root>/.sot/settings.toml  — project-level
+//   2. the nearest .sot/settings.toml in the cwd or an ancestor  — project-level
 //   3. $HOME/.config/sot/settings.toml  — user-level
 //
 // File format (aspect-ratio-keyed presets,

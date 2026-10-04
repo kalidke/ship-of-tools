@@ -45,7 +45,7 @@
 //! test, and a test that does not flake needs a seam.
 //!
 //! Nothing but spaces may follow the NBSP, and the free test reads the cursor's row with dim cells blank
-//! (`headless::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
+//! (`screen::free_test_lines`): Claude Code draws its suggestion and placeholders dim, so they read empty,
 //! while a typed draft is not dim and reads not free wherever its cursor sits. The input must reach the main
 //! agent: no agents panel below the box, or a panel with no panel cursor and its one dot on main
 //! ([`panel_refusal`]); Claude Code's footer is not read. A pane too narrow for the wake line on the prompt's one

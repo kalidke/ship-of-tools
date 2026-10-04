@@ -1,4 +1,4 @@
-# rust/log/src/lane: the capsule's lanes: transport contract, client seam, platform bridges (capsule)
+# rust/log/src/lane: the capsule's lanes: transport contract, client seam, platform bridge (capsule)
 
 Bytes in, typed frames out. The capsule's three lockstep lanes (SOM0 management, SOA0 attach, SOSV supervisor) ride a
 byte transport chosen once per platform; this folder holds the contracts the leg, the supervisor and every client

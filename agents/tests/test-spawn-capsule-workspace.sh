@@ -140,9 +140,9 @@ entry() {
 # (comm-lib.sh sot_hello_frame); this session's ambient sot-comm env
 # would otherwise leak past the SOT_COMM_HOME override below.
 # It runs beneath a stand-in capsule (in_row), so comm-spawn's agent check
-# ends at that capsule and never depends on the runner's process tree: on a
-# hosted runner the tree has no capsule, and an OS=Windows_NT case reads its
-# top as a Windows walk, which Linux's /proc cannot finish (no winpid).
+# ends at that capsule and never depends on the runner's process tree, on
+# Linux: on a hosted runner the tree has no capsule, and an OS=Windows_NT case
+# reads its top as a Windows walk, which Linux's /proc cannot finish (no winpid).
 SPAWNN=0
 SPAWN_OUT=""; SPAWN_ERR=""; SPAWN_RC=0; SPAWN_HOME=""
 run_spawn() {

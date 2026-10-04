@@ -230,11 +230,11 @@ pub(in crate::ui) enum FeCommand {
         #[serde(default)]
         caption: Option<String>,
     },
-    /// ADR 0025 imperative reveal — v1 is identical to `Preview` (badge floor /
-    /// force-show + on-switch preview, `roi` carried through). Deep
-    /// tree-expand-and-select of the target row is a documented v1.1
-    /// follow-up; until then `reveal` reuses the preview path so a result
-    /// still reaches the user.
+    /// ADR 0025 imperative reveal — dispatched as `Preview` (badge floor /
+    /// force-show + on-switch preview, `roi` carried through). The
+    /// same-workspace preview path also does the deep tree-expand-and-select
+    /// of the target row (`drive_same_ws_open`, nav/files/reveal.rs), so
+    /// `reveal` and `preview` both move the nav cursor onto the file.
     Reveal {
         workspace: String,
         path: String,

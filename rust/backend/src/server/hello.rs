@@ -116,7 +116,8 @@ pub async fn handle_hello(
         project_root,
         label: label.map(str::to_string),
         // Includes the connection this hello answers — it registers in
-        // `handle_connection` before this handler runs (ADR 0010/0013).
+        // `admit_hello`, which dispatch's HELLO arm calls before this
+        // handler runs (ADR 0010/0013).
         clients_connected: clients.count(),
         // ADR 0030 §2: report our wire-contract protocol + product version so
         // the frontend can warn on a legacy backend (protocol 0) and surface

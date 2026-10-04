@@ -84,8 +84,7 @@ impl State {
     ///
     /// `session_name` is `Some(name)` when the caller already has the
     /// target name (Sessions-Enter, workspace.create reply); `None`
-    /// derives it from `paths::session_name(slug)` semantics —
-    /// i.e. `sot-be-<slug>`. The default workspace (`slug = None`)
+    /// derives it with `session_name_of(slug)` — i.e. `sot-be-<slug>`. The default workspace (`slug = None`)
     /// keeps the current BL pane target.
     ///
     /// `host` (ADR 0042 L2a) is the row/event's own connection — set as

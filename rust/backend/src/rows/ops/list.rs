@@ -129,7 +129,7 @@ pub async fn handle_workspace_list(
 /// updates (`active_workspace`, `server/conn.rs`'s `handle_connection`) is
 /// mutated by the CALLER, not here — this function only resolves
 /// `req.workspace_id` (again; the caller does the same resolve to learn
-/// what to store, mirroring how the `HELLO` arm computes the auth flag
+/// what to store, mirroring how the `HELLO` arm parses its payload
 /// inline before calling `handle_hello`) and echoes back the canonical id,
 /// or `None` when it didn't resolve. See `op::WORKSPACE_ACTIVATE` (ops/mod.rs)
 /// for the full design.

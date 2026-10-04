@@ -2,8 +2,9 @@
 
 The capsule is one process babysitting one producer and writing its voyage: the writer loop drives any
 `Producer` through the output budget, the input WAL, the run-end marker and the attach protocol. This folder is
-the leg's runtime; its types, constants and `run` are re-exported as `sot_log::capsule::*`. Part of the log
-subsystem; charter: rust/log/CLAUDE.md.
+the leg's runtime; its types, constants, `run` and `wall_ms` (the wall clock the capsule, the Claude producer
+and the fault writer share) are re-exported as `sot_log::capsule::*`. Part of the log subsystem; charter:
+rust/log/CLAUDE.md.
 
 ## Files
 - `mod.rs`: the leg's public types, limits and self status; re-exports `run` and `wall_ms`

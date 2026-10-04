@@ -96,8 +96,11 @@ sot_write_self_file() {
     return 0
 }
 
-# sot_raw_host VAR — set VAR to the host part of a self file's name: raw
-# `hostname -s`, case kept, $SOT_COMM_TEST_HOST first when set. Not sot_host.
+# sot_raw_host VAR — set VAR to the host part of an unpinned self file's name
+# (comm-context.sh) and of comm-despawn.sh's match of it: raw `hostname -s`,
+# case kept, $SOT_COMM_TEST_HOST first when non-empty. A capsule's pinned self
+# file is named by the daemon with its declared host, which is sot_host's rule.
+# VAR must not be _sot_rh or _sot_rc.
 sot_raw_host() {
     if [ -n "${SOT_COMM_TEST_HOST:-}" ]; then
         printf -v "$1" '%s' "$SOT_COMM_TEST_HOST"

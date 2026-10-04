@@ -59,7 +59,7 @@ const PANEL_RING: char = '\u{25ef}';
 /// two borders (a rule, optionally labelled); (d) after the glyph U+00A0, the main prompt's own mark (menus and
 /// dialog inputs draw an ASCII space), then nothing but spaces, or, where the NBSP is not required
 /// ([`NBSP_ON_WINDOWS`]), nothing but spaces at all; (e) the input reaches the main agent ([`panel_refusal`]); (f) the wake line fits on the prompt row ([`fits`]).
-/// The wake reads the cursor's row with dim cells blank (`headless::free_test_lines`), so Claude Code's dim
+/// The wake reads the cursor's row with dim cells blank (`screen::free_test_lines`), so Claude Code's dim
 /// suggestion or placeholder reads empty and a typed draft reads not free wherever its cursor sits. One frame
 /// cannot tell a working row, whose input box is live too; the hold in `wake_if_free` does.
 pub(super) fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Option<&'static str> {
@@ -172,7 +172,8 @@ fn panel_refusal(below: &[String]) -> Option<&'static str> {
     None
 }
 
-/// [`current_lines`] trimming ASCII spaces only: the no-break space after the
+/// The screen lines as the headless client reads them (`current_lines` in
+/// rows/run/headless.rs), trimming ASCII spaces only: the no-break space after the
 /// glyph is the main input prompt's own mark, and `trim_end` would strip it.
 pub(super) fn wake_lines(screen: &vt100_ctt::Screen) -> Vec<String> {
     let (_, cols) = screen.size();
