@@ -19,6 +19,7 @@
 
 pub(crate) mod highlight;
 mod buffer;
+mod prepare;
 pub(in crate::ui) mod media;
 mod replies;
 mod spans;

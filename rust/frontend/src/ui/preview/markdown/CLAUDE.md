@@ -16,6 +16,8 @@ placeholders for the pane to draw. Part of fe-ui; charter: rust/frontend/src/ui/
 - `highlight.rs`: tree-sitter highlighting service and scope-to-color mapping.
 - `testdata/`: the walk's golden output for a fixture that reaches every arm.
 - `replies.rs`: math and token replies for the markdown walk
+- `prepare.rs`: `State::prepare_media` (math rasterise and table buffers for a frame) and
+  `State::prepare_preview_text` (the text layer's prepare).
 
 ## Start here
 `MarkdownPreview` in mod.rs; `walk` in walk.rs for how the tree becomes spans.
@@ -31,3 +33,5 @@ placeholders for the pane to draw. Part of fe-ui; charter: rust/frontend/src/ui/
 - MathJax's ex units become pixels through `MATHJAX_EX_FACTOR` and the markdown body size (`build_math_metrics`).
 - Media rects come from the U+FFFC placeholders in `media_blocks` order, anchored at the md rect plus
   `EXTRA_TOP_PAD_PX` as the text pass is (`collect_media_paint_targets`).
+- Tables paint through the text layer's extra areas, shifted by one shared horizontal scroll that is clamped to the
+  widest table and clipped to the pane (`prepare_media`, `prepare_preview_text`).
