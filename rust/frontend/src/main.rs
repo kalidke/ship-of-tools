@@ -19,9 +19,9 @@ mod layout;
 mod lease;
 mod monitor_view;
 mod net;
+mod pages;
 mod paths;
 mod preview;
-mod proxy_listen;
 mod selfupdate;
 mod settings;
 mod state_persistence;
@@ -29,6 +29,7 @@ mod term;
 mod text;
 
 use net::{dial, state, transport};
+use pages as proxy_listen;
 use std::sync::mpsc;
 
 use anyhow::Result;
