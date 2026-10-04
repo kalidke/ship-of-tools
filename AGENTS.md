@@ -78,3 +78,4 @@ Then, as global rules for any repo:
 - Fail loud. A silent failure state (hung eval, swallowed error, quiet skip)
   is the house's cardinal sin.
 - Don't edit other repos without explicit permission.
+- Never push without the tree green.
