@@ -24,12 +24,13 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   daemon samples itself (`without_local_sampler`).
 
 ## Connections
-- ops.rs and repl/ serve `repl.*`, `kernel.request`, `math.render`, `pluto.open` and `monitor.*`, and
-  files/preview calls `Kernel::request` for plugin previews.
-- server/mod.rs builds `MathJax`, `Pluto` and `MonitorHub`; server/dispatch.rs serves `monitor.*` inline through ops.rs.
-- rows/workspace.rs holds a `Kernel` and a `Repl` per row.
-- The page proxy's allowlist (pages/proxy.rs) reads `bound_pluto_port`.
-- `paths::resource_dir` finds julia/kernel, julia/pluto and the MathJax script.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `Kernel::request`, `file.preview`,
+`repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`,
+`monitor.subscribe`, `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `bound_pluto_port`,
+`allowed_proxy_ports`, `Kernel`, `Repl`. Uses: `dispatch`, `ChildGuard`, `Signal`, `child_signal::fired`,
+`child_signal::process`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
+`host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
+`revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`.
 
 ## Folders
 - `core/`: the plugin ABI the kernel hosts.

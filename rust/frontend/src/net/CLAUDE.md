@@ -33,12 +33,16 @@ through the channel types below.
 - The gate goes down when the session ends, except after a hello refusal (`run_protocol`).
 
 ## Connections
-- In: `main.rs` makes one `outgoing_channel` per host and hands the sender and the `(HostKey, IncomingEvt)` fan-in
-  receiver to the window; the window's `resumed` calls `hosts::spawn_transports`, which calls `transport::spawn` once
-  per host.
-- Out: `Leases::before_data_connection` (`lease.rs`) before a pipe connection; `sot_protocol::topology::ssh_bridge` (`SshRecipe`,
-  `LinkGate`) for ssh hosts; `sot_protocol::topology::endpoint::is_plain_host_name` (`dial.rs`, `parse_dial_arg`) to check a `--dial` host name before
-  accepting it; the wire codec in `sot_protocol` (`codec::read_frame`, frame writes).
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `OutgoingReq`, `IncomingEvt`,
+`HostTable`, `lane_dial`, `ResolvedDial`. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
+`PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
+`SshRecipe::new`, `is_plain_host_name`, `LinkGate`, `Leases::before_data_connection`, `sot_state_dir`,
+`sot_config_dir`, `host_name`, `state_dir_hash`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`,
+`preview.get`, `preview.set_scale`, `image.crop`, `concept.read`, `concept.write`, `concept.list`, `file.read`,
+`file.write`, `file.delete`, `file.download`, `file.upload`, `dir.create`, `repl.eval`, `repl.run_file`,
+`repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
+`monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
+`proxy.connect`, `ensure_proxy_for_url`, `pipe_one`.
 
 ## Folders
 - `transport/`: the per-host connection task: connect, hello, the steady loop, reply matching.

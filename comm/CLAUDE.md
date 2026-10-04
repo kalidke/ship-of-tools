@@ -40,14 +40,16 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
   `comm-join.sh` still accepts `--name`, so the wake skips a handle that two rows declare.
 
 ## Connections
-- In: the capsule's env at spawn (`SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`); `agent.join` from
-  `comm-join.sh`; `comm.file` from `comm-send.sh` and `comm-relay.sh`; the Stop hook's `stop_at` mark.
-- Out: the wake types through the capsule's headless attach (`wake_if_free`); a guest daemon forwards `comm.file` to
-  the hub (`forward_comm_file`); the hub link reaches the hub over the topology's ssh recipe.
-- The installer (`install_comm` in `src/install.jl`, folders read by `src/comm_bin.jl`) installs the files of the folders
-  listed in `bin-folders.txt` flat into `~/.sot-comm/bin`, each part inside the file that sources it (`comm-lib.sh`,
-  `sot-fe`); a script change counts once installed (`update_comm`).
-- The work-state reaches the frontend only through `workspace.list`.
+Each connection is one row of docs/integration.md, owned by its provider. Provides:
+`remove_comm_agents_for_workspace`, `handle_agent_join`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
+`comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
+`agents/spawn/comm-bootstrap.sh`. Uses: `SshRecipe`, `recipe_for`, `dial_and_call_tracked`, `dispatch`, `ChildGuard`,
+`Signal`, `child_signal::fired`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
+`type_and_pace`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
+`capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
+`sot_pty_input`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot_state_dir`,
+`sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`, `install_comm`,
+`update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
 
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.

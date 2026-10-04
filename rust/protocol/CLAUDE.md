@@ -31,11 +31,12 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
   question policy may ask; the string is for people.
 
 ## Connections
-- Called in by the window's control transport and the daemon's connection loop (`read_frame`, `write_frame`, the op
-  payloads), by the daemon's topology and bridge code, and by every binary's `--version` (`version_line`).
-- `loopback_port_from_url` is called by the window's page proxy (`ui/page_proxy.rs`, to arm a listener) and by the
-  daemon's REPL supervisor (`sidecars/repl/supervisor.rs`, to record a `browser` frame's port for the proxy allowlist).
-- It calls only sot-log (state directory derivation) at run time.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `Frame`, `codec::read_frame`,
+`codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
+`sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `fe.lease`, `fe.leaving`, `scripts/sot-lease.ps1`,
+`launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`, `is_release_build`, `rust/backend/src/update.rs`,
+`rust/frontend/src/selfupdate.rs`, `version_line`, `--version`. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,
+`state_dir_hash`.
 
 ## Folders
 - `src/ops/`: the op payloads (wire); its page lists the families.

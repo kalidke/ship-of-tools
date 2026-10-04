@@ -34,14 +34,11 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 
 ## Connections
-- In this crate: the store, supervisor, lanes, conpty and capsule call `publish_noreplace`, `lock_writer`, `PinnedDir`
-  and `state_dir`.
-- Outside: `sot_log::host::state_dir` in the backend, frontend and protocol (about 75 uses); `sot_log::lock_writer` in the
-  backend's leg-absence proof; `sot_log::owner_protected_pipe_descriptor` for the daemon's session pipe;
-  `winhandle::harden_own_stdio` in the daemon's main.
-- Beside it: the backend's own platform files `rust/backend/src/paths.rs` and `rust/backend/src/durable.rs`.
-- Known twins: the backend's `paths.rs` state-root rule, the shell copies of the host-name rule, and the copy of
-  `REMOTE_FS_TYPES` in `scripts/install.sh` (`check_remote_fs`).
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_state_dir`, `sot_config_dir`,
+`host_name`, `state_dir_hash`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
+`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`,
+`durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `resource_dir`, `rust/backend/src/paths.rs`,
+`sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`. Uses: none.
 
 ## Folders
 - `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge; its folder is not at this commit, so

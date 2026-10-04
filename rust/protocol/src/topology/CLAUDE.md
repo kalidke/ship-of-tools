@@ -28,13 +28,14 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 
 ## Connections
-- In: the window's control transport is the only writer of `LinkGate`; the window's `parse_dial_arg` (which checks the host with `is_plain_host_name`) and the page
-  proxy read endpoints and the gate; sot-log's attach worker drives `DaemonLaneEndpoint` on its own threads; the
-  daemon's hub link and comm forward build logins with `SshRecipe`; `sotd topology
-  plan|sync|status|apply|relay-endpoint|relay-sockets` call the parser, the derivations and `relay_units`.
-- Out: the lane dial calls sot-log's client, challenge and transport (`Client`, `IdentityExchange`).
-- Shell twins: comm-lib-client.sh's `sot_ssh_bridge` spells the same ssh child, its `_sot_is_plain_host_name` the grammar of
-  `endpoint::is_plain_host_name`, and comm-lib-identity.sh's `sot_slug` the same slug; change each pair together.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `SshRecipe::new`,
+`is_plain_host_name`, `LinkGate`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,
+`sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
+`scripts/lib/sot-daemon.sh`, `TopologyStore`, `topology.set`, `topology.changed`, `sot_ssh_bridge`,
+`_sot_is_plain_host_name`, `comm/lib/comm-lib-client.sh`, `sot_slug`, `comm/lib/comm-lib-identity.sh`, `slug`. Uses:
+`dispatch`, `sotd stdio-bridge`, `ChildGuard`, `Signal`, `child_signal::fired`, `child_signal::process`,
+`lane.connect`, `Endpoint`, `DaemonLaneEndpoint`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
+`boot_identity`, `process_created`, `IdentityExchange`.
 
 ## Folders
 - `rust/protocol/src/topology/`: this folder.

@@ -26,13 +26,9 @@ the commit that changes the code it describes, and a design that is not built is
   manual pages.
 
 ## Connections
-- `.github/workflows/CI.yml` (job `docs`) builds the manual with `make.jl` and deploys it on a push to `main`.
-- The root `CLAUDE.md` sends a reader to ADR 0017 (frontend restart) and ADR 0023 and ADR 0046 (session spawn and daemon
-  boot); code comments and folder pages cite ADRs by number.
-- `docs/tools/docs-media.sh` renders the frontend against `fixtures/DemoProject`;
-  `SCREENSHOTS.md` is its recipe.
-- `INSTALL-AGENT.md` is the runbook an agent follows to install; its engine is `scripts/install.sh` (distribution
-  charter: scripts/CLAUDE.md).
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `docs/make.jl`,
+`.github/workflows/CI.yml`, `.claude/hooks/publish-guard.sh`. Uses: `sot-fe preview`, `docs/tools/docs-media.sh`,
+`scripts/install.sh`, `docs/INSTALL-AGENT.md`.
 
 ## Folders
 - `.claude/hooks/`: the publish guard, records' other home with the root `CLAUDE.md`.

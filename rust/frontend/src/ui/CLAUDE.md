@@ -46,18 +46,20 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   `about_to_wait`, app/handler.rs, and announced in input/global_keys.rs). Never add an always-redraw path that ignores it.
 
 ## Connections
-- In from fe-net: `(HostKey, IncomingEvt)` on one std mpsc fan-in into events.rs; `HostTable` (`State::hosts`) and
-  `frontend_identity` live in rust/frontend/src/net/.
-- Out through `State::send` and `send_to` (connections.rs): `OutgoingReq` on the per-host sender, routed by host.
-- Lifecycle (rust/frontend/src/lease.rs): `exit_intent` decides a quit, `State::request_quit` and `State::leave`
-  (app/exit.rs) call `Leases::leave_all`, and the process exits once each held lease's daemon acks or its wait ends.
-- Pages: page_proxy.rs `ensure_proxy_for_url` arms a local listener through the manager in rust/frontend/src/pages.rs.
-- Distribution: rust/frontend/src/relaunch.rs `spawn_watcher` sets the exit flag (75 relaunch, 76 converge) and wakes
-  the window.
-- Capsule: `FeAttachClient` (sot_log) in agent_pane/attach.rs, over the lane the control connection resolved.
-- main.rs resolves the dial set, builds the evt channel and one outgoing channel per host, then calls
-  `ui::App::new(...)` and `event_loop.run_app`; the window and `State` come later, in
-  `resumed` (app/handler.rs) through `State::new` (init/). Transport tasks start there (`net::hosts::spawn_transports`).
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `fe.command.send`, `fe.command`,
+`agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `comm-relay.sh send --all`.
+Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
+`workspace.create`, `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`,
+`workspace.changed`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
+`rust/frontend/src/ui/agent_pane/attach.rs`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
+`spawn_registry_poll`, `tree.root`, `tree.children`, `directory.list`, `nav.toggle_hidden`, `preview.get`,
+`preview.set_scale`, `image.crop`, `concept.read`, `concept.write`, `concept.list`, `file.read`, `file.write`,
+`file.delete`, `file.download`, `file.upload`, `dir.create`, `preview.changed`, `repl.eval`, `repl.run_file`,
+`repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`, `monitor.subscribe`,
+`monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `video.open`, `docs.open`, `quarto.open`,
+`proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`,
+`OutgoingReq`, `IncomingEvt`, `HostTable`, `lane_dial`, `ResolvedDial`, `--socket`, `--dial`, `--relaunched`,
+`relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`.
 
 ## Folders
 - `app/`: the winit application (`App`), event-loop callbacks, one frame (`frame.rs`) and the quit prompt and exit.

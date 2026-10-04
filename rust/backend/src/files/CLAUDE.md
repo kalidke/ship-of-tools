@@ -26,17 +26,13 @@ Per workspace row (built in `rows/workspace.rs`):
 - `preview.changed` is live-only and carries no revision.
 
 ## Connections
-- `preview/` serves `preview.get`, `preview.set_scale` and `image.crop`, and asks the kernel for plugin previews
-  (`file.preview`). `tree_ops.rs` serves `tree.root`, `tree.children`, `nav.toggle_hidden` and `directory.list`;
-  `concept_ops.rs` serves `concept.*`; `io_ops.rs` serves `file.read`, `file.write`, `file.delete` and `dir.create`;
-  `transfer.rs` serves `file.download` and `file.upload`. `server/dispatch.rs` calls them.
-- `preview/` takes "is this a video" from pages/video.rs's `is_servable_video`.
-- `rows/workspace.rs` builds the three per row; `server/mod.rs` creates the `preview.changed` bus and `server/events.rs`
-  filters it per connection (`preview_changed_visible`).
-- Confinement is also written in `confine.rs` (`path_within_root`) and again beside it
-  (`canonical_under_root`, for `pluto.open` and `docs.open`); the copies
-  here (`node_id_to_path_confined`, `target_to_path`) and the two rename-without-fsync writes (`write_file`,
-  `ConceptStore::write`) are separate on purpose.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `tree.root`, `tree.children`,
+`directory.list`, `nav.toggle_hidden`, `preview.get`, `preview.set_scale`, `image.crop`, `concept.read`,
+`concept.write`, `concept.list`, `file.read`, `file.write`, `file.delete`, `file.download`, `file.upload`,
+`dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
+`rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
+`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
+`is_servable_video`.
 
 ## Folders
 - `examples/preview/` (repo root): sample files that previews are tried on.

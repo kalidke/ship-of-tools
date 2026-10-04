@@ -30,14 +30,12 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 
 ## Connections
 
-- ops.rs serves `video.open`, `docs.open` and `quarto.open`; server/dispatch.rs calls them.
-- `server::run` binds the listeners at boot (`start_page_servers`); `handle_connection` hands a connection whose first frame is `proxy.connect` to
-  `handle_proxy_connect`.
-- rows/ops/lane_bridge.rs and lifecycle/lease.rs call `reject`, and lane_bridge.rs calls `pipe_bidirectional`, both defined in server/pipe.rs; proxy.rs imports the same two.
-- The REPL supervisor (sidecars/repl/) records and revokes browser ports (`record_browser_port`, `revoke_browser_ports`).
-- files/preview asks `is_servable_video` whether a path is a video (its size-gate exemption and the bytes reader's note).
-- clients.rs calls `remove_root` when a connection disconnects.
-- The window's page proxy (rust/frontend/src/pages.rs) dials `proxy.connect`.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `video.open`, `docs.open`,
+`quarto.open`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
+`is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`.
+Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
+`dispatch`, `ChildGuard`, `Signal`, `child_signal::fired`, `child_signal::process`, `sot_state_dir`, `sot_config_dir`,
+`host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`.
 
 ## Folders
 

@@ -35,18 +35,13 @@ lease, whether that computer's sessions end (ADR 0050).
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections
-- In from the server: `server::run` calls `startup::begin` before the listener binds, spawns `lease::ticker`; the peer
-  read at accept is the server's (`server::listen::accepted_peer`) and is handed, with a connection whose first frame
-  is `fe.lease`, to `lease::hold`. On `Leases::gone` the server calls `shutdown::run`.
-- Out to rows: `shutdown::end_row` and `end_drawer` call `rows::run::end::destroy_capsule_workspace`,
-  `rows::anchor::end_default_row_run`, `comm::registry::registry::remove_comm_agents_for_workspace`; `startup::forget_rows`
-  calls `rows::run::end::remove_row_files`; the plan calls `rows::run::resume::resume_all`; the drawer's end goes through
-  `rows::run::end_run::end_run`.
-- Child owners hold a `ChildGuard` or await `fired()` (`child_signal::process()` is passed in): `kernel`, `repl`, `pluto`,
-  `mathjax`, `monitor`, `hub_link`, the quarto run in `pages/ops.rs`, and `topology/dial.rs`.
-- `update.rs` exits through `Leases::while_open`.
-- The window: rust/frontend/src/lease.rs holds the lease connection (`notice`, `owed`, `leave_all`, `Leaving::poll`).
-  The Windows launcher holds a lease with hand-written frames (scripts/launch-sot.ps1).
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
+`Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
+`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `ChildGuard`, `Signal`,
+`child_signal::fired`, `child_signal::process`. Uses: `fe.lease`, `handle_connection`, `lease::hold`, `accepted_peer`,
+`reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
+`close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
+`durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`.
 
 ## Folders
 - `rust/backend/src/lifecycle/`: this folder.

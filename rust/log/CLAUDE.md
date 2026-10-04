@@ -29,14 +29,11 @@ lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries 
 - A reply on a local connection is trusted only after the challenge in `src/identity/`.
 
 ## Connections
-- In: the daemon starts `sot-capsule supervise <state_dir>` (one per row), which starts `sot-capsule run` (one leg at a
-  time), which runs the agent. The seams are argv, exit codes, a parent-death lease, the lanes and files in the state dir.
-- In: the daemon's capsule rows call the supervisor lane through `supervisor_client`, and its headless typing uses
-  `FeAttachClient`; the window's agent pane holds one too; sot-protocol's `DaemonLaneEndpoint` implements the lane's
-  `Endpoint`.
-- In: the daemon, frontend and protocol take state dirs, `host_name`, durable writes, locks and the peer challenge from
-  `src/host/` and `src/identity/`, for rows and for other uses.
-- Out: nothing; the crate depends on no other workspace crate, and uses rust/vt100 for terminal state.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
+`supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
+`rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`, `Endpoint`, `DaemonLaneEndpoint`. Uses:
+`DaemonLaneEndpoint`, `lane.connect`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
+`owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`.
 
 ## Folders
 - `src/store/`: the voyage store, its record codec, recovery and verifier.

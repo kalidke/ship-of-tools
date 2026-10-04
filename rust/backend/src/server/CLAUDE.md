@@ -40,11 +40,16 @@ this folder serve the same idea.
   `shutdown::run`).
 
 ## Connections
-- In: `main` calls `run` and `refuse_live_socket`; the lease and reauth code write through `write_frame_within` and
-  `write_frame_to`; `rows/run/activation.rs` calls `record_test_activation_marker` in `rows/ops/pty.rs`.
-- Out: `startup::begin` before bind, `shutdown::run` when accepting ends, each op's handler, `proxy`'s
-  `handle_proxy_connect`, `lane_bridge`'s `handle_lane_connect`, `lease::hold`, and `accepted_peer` (in `listen.rs`) at accept.
-  Frames are read by `codec::read_frame`, which allocates a blob of its declared length with no cap (a known defect).
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `proxy.connect`,
+`handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
+`fe.lease`, `lease::hold`, `accepted_peer`, `dispatch`, `hello`, `sotd stdio-bridge`, `write_frame_within`,
+`write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
+`PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
+`TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
+`shutdown::run`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,
+`set_watch_bus`, `set_monitor_hub`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
+`publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor`,
+`harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`.
 
 ## Folders
 The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clients.rs` (the roster) and `session.rs`

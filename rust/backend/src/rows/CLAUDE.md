@@ -39,18 +39,19 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
   ops, not through the file.
 
 ## Connections
-- In: ops find their row through `Workspaces::resolve` (`agent.join` through `capsule_guard` and
-  `set_agent_handle`; `pty.open` and `lane.connect` by target through `workspace_for_tmux`). The handlers that print
-  an optional hint answer a missing row through `row_or_reply` (`mod.rs`), and
-  `server::reply::canonicalize_workspace_id` calls it for the offloaded ops; `workspace.destroy`, `pty.input`,
-  `pty.screen`, `repl.execute`, `agent.join`, `workspace.reauth`, `lane.connect` and `pty.open` (`no_workspace`)
-  write their own refusal. `ops/` creates, lists and destroys rows
-  (`create::handle_workspace_create`, `destroy::handle_workspace_destroy`); `server::run` calls `anchor::seed_default_row`,
-  which inserts the default row.
-- Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),
-  writes observations (`run::observer::observe`) and installs the observer (`install_observer`); the lifecycle close calls
-  `close_gate_and_settle`.
-- Persistence: `store/` (`scan_disk`, `save`, `toml_path_for`) reads and writes the row toml.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `destroy_capsule_workspace`,
+`end_default_row_run`, `resume_all`, `close_gate_and_settle`, `remove_row_files`, `workspace.create`,
+`workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`,
+`lane.connect`, `Workspace::agent_handle`, `set_agent_handle`, `attach`, `type_and_pace`, `send_enter`,
+`rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`,
+`set_repl_frame_tx`, `set_watch_bus`, `set_monitor_hub`. Uses: `lane.connect`, `handle_connection`,
+`handle_lane_connect`, `pipe_bidirectional`, `reject`, `dispatch`, `write_frame_within`, `write_frame_to`,
+`agent_argv`, `agent_exec_argv`, `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`,
+`capsule_supervisor_env`, `sot-capsule supervise`, `supervisor_client`, `FeAttachClient`,
+`rust/backend/src/rows/run/headless.rs`, `rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`,
+`sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `durable::write`, `durable::remove`,
+`rust/backend/src/durable.rs`, `remove_comm_agents_for_workspace`, `handle_agent_join`, `FilesMode`, `ConceptStore`,
+`rust/backend/src/rows/workspace.rs`, `Watcher`, `rust/backend/src/rows/registry.rs`, `Kernel`, `Repl`.
 
 ## Folders
 - `ops/`: the row ops clients call

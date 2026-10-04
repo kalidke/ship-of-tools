@@ -42,19 +42,17 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   `BASH_SOURCE`, not `$0`. No test enforces the rule.
 
 ## Connections
-- Out, by op, over the daemon's wire through the shell client: `workspace.create` (`spawn/comm-spawn.sh`, and
-  `spawn/comm-probe.sh` for its probe rows), `workspace.list` (all four), `workspace.destroy`
-  (`spawn/comm-despawn.sh`), `pty.input` (`spawn/comm-bootstrap.sh`, `spawn/comm-probe.sh`), `version.query` (the
-  declared host a spawn lands on).
-- In: `comm-lib.sh` (sourced from the script's own folder, flat once installed), `comm-context.sh` (identity), and
-  `comm-join.sh`, `comm-relay.sh` and `comm-poll.sh` (run by `spawn/comm-probe.sh`'s responder).
-- The installer copies the files of `spawn/`, `worktree/` and `sot-fe/` and the code files directly in this folder flat into
-  `~/.sot-comm/bin` (`comm/bin-folders.txt`), sot-fe's parts inside `sot-fe`; the suites run from a staged copy of the
-  same list in the repo's form (`comm/tests/stage-bin.sh`).
-- `claude/` and `codex/` are installed by `src/sources.jl`: `claude/` is a skill root and `claude/bin` and `codex/bin`
-  are the launcher folders, copied into `~/.local/bin`; no CLAUDE.md in them is installed.
-- Messaging's scripts call none of this folder's scripts; `comm-worktree-new.sh` and `comm-worktree-clean.sh` call
-  `comm-spawn.sh` and `comm-despawn.sh` by their installed names.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `agent_argv`, `agent_exec_argv`,
+`claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env`,
+`comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
+`SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
+`sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `sot_ssh_bridge`, `_sot_is_plain_host_name`, `sot_slug`,
+`comm/lib/comm-lib-identity.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `version.query`, `workspace.create`,
+`workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`, `sot_host`,
+`comm/lib/comm-lib-base.sh`, `host_name`, `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`,
+`agents/spawn/comm-probe.sh`, `agents/spawn/comm-bootstrap.sh`, `fe.command.send`, `fe.command`,
+`agents/sot-fe/sot-fe-request.sh`, `sot_ui`, `agent.message`, `agents/sot-fe/sot-nav.sh`, `comm-relay.sh send --all`,
+`install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
 
 ## Folders
 - `spawn/`: the four row-lifecycle CLIs (see its page).

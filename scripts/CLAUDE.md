@@ -32,19 +32,17 @@ and the launch path fails open: no update step can stop a window from starting.
   (`install_comm` in `src/comm.jl`).
 
 ## Connections
-- Release to updater: a `v*` tag runs `.github/workflows/release.yml`; `rust/updater` fetches the assets and checks
-  `SHA256SUMS`, and `release.sh` orders tags with the updater's own `compare_versions` (`vercmp` example).
-- Updater to apply: the Rust stager writes `updates/pending-<target>.json` and a stage folder, and holds the
-  `updates/.lock` folder that `sot-apply.sh` and `sot-apply.ps1` also take. Callers of apply: the unit's
-  `ExecStartPre=-`, the rendered `sot-launch` wrapper, and `launch-sot.ps1` (`Invoke-PendingApply`).
-- Launch to daemon: `sotd session-socket-path`, `sotd topology plan|sync|status`, the `fe.lease` and `fe.leaving`
-  frames, and exit codes 0, 75 and 76 from the window.
-- Launch to window: arguments (`--socket`, `--dial`, `--relaunched`), the `relaunch.request` sentinel written by
-  `relaunch-sot.ps1` and watched by `rust/frontend/src/relaunch.rs`.
-- Install to launch: on Unix `install.sh` renders the `sot-launch` wrapper once and the wrapper reads
-  `lib/sot-daemon.sh` from `repo/current` at each start; on Windows `launch-sot.ps1` re-runs the install steps at
-  every launch.
-- Install to comm: `install.sh` and the launchers call `ShipTools.update_comm()`.
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `--socket`, `--dial`,
+`--relaunched`, `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, `deploy/sotd.service`,
+`sot-apply.sh`, `install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`,
+`scripts/install.sh`, `docs/INSTALL-AGENT.md`, `v*`, `.github/workflows/release.yml`, `rust/updater`, `SHA256SUMS`,
+`scripts/release.sh`, `compare_versions`, `updates/pending-<target>.json`, `updates/.lock`, `sot-apply.ps1`,
+`ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `fe.lease`,
+`fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
+`is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
+`sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
+`scripts/lib/sot-daemon.sh`, `Leases::while_open`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`,
+`docs/make.jl`, `.github/workflows/CI.yml`.
 
 ## Folders
 - `scripts/lib/`: the shared Unix launch library.
