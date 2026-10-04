@@ -26,12 +26,6 @@ param(
     # the manifest is found at <exe>\..\..\install.json, and the launcher
     # stages to <prefix>\bin\sot.exe.
     [string]$Prefix,
-    # Install role, as understood by the updater: local | remote | be-only.
-    # Windows is a frontend host talking to a remote backend (section 2b), and
-    # `remote` is also what gates the FE-side self-update: any other role means
-    # "the backend on this machine owns updates", which is never true here.
-    [ValidateSet('local', 'remote', 'be-only')]
-    [string]$Role = 'remote',
     # Repo clone that supplies the launcher + config (not the binaries).
     [string]$Repo,
     # The hub's ssh alias: recorded as "hub" (install.sh writes the same
@@ -112,7 +106,6 @@ New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 $body = @"
 {
   "schema": 1,
-  "role": "$Role",
   "prefix": "$(ConvertTo-JsonStr $Prefix)",
   "config": "$(ConvertTo-JsonStr $config)",
   "service": "none",
@@ -127,7 +120,7 @@ $body = @"
 # utf8 on PowerShell 5.1 writes one.
 [System.IO.File]::WriteAllText($manifest, $body, (New-Object System.Text.UTF8Encoding($false)))
 
-Write-Host "install-manifest: wrote $manifest (schema 1, role=$Role, version=$version, hub=$Hub)"
+Write-Host "install-manifest: wrote $manifest (schema 1, version=$version, hub=$Hub)"
 
 # First topology sync. `sotd topology sync` reads --hub only while no local
 # hosts.toml exists; afterwards the copy's own hub wins and the launcher
