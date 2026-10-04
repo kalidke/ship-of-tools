@@ -230,7 +230,7 @@ pub mod supervisor;
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 pub use attach_client::supervisor_client;
 pub mod verify;
-pub mod voyage;
+pub use store::voyage;
 pub mod wire;
 // Field-proven defect fix: hardens a process's own inherited stdio handles
 // against leaking into a spawned child — self-gated (`#![cfg(windows)]`).
