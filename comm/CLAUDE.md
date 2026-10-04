@@ -50,6 +50,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: launchers, hooks, skills, the Codex plugin.
 - `core/`: the reference client's scripts, `core/scripts/`, each sourcing `comm-lib.sh` from its own folder.
+- `mail/`: `comm-send.sh`, `comm-relay.sh` and `comm-poll.sh`, installed flat beside the core scripts.
 - `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
 - `work_state/`: `comm-status.sh`, `comm-turn-auditor.sh` and the status hooks (`work_state/hooks/`), the row colour's reduction.
@@ -64,11 +65,12 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - `adapters/`: Claude and Codex adapters (see Folders).
 - `bin-folders.txt`: the folders whose files install flat into `~/.sot-comm/bin`, one repo path per line.
 - `core/`: the reference client (see Folders).
+- `mail/`: the send, relay and poll scripts (see Folders).
 - `registry/`: the address book scripts (see Folders).
 - `tests/`: the suites and their stage (see Folders).
 - `work_state/`: the work-state scripts and hooks (see Folders).
 
 ## Start here
-For mail, `core/scripts/comm-send.sh` then `sot_inbox_append` in `comm-lib.sh`, and `rust/backend/src/comm/mail/inbox.rs`
+For mail, `mail/comm-send.sh` then `sot_inbox_append` in `comm-lib.sh`, and `rust/backend/src/comm/mail/inbox.rs`
 `file_frame` for the daemon's twin. For the address book, `comm-join.sh` and `registry_replace`. For work-state,
 `comm-status.sh`. For a change to where a script lives, `bin-folders.txt` and `tests/stage-bin.sh`.

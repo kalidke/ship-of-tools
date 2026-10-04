@@ -3,3 +3,4 @@ comm/core/scripts
 comm/registry
 comm/work_state
 comm/work_state/hooks
+comm/mail
