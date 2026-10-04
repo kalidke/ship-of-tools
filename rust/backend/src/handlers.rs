@@ -2140,7 +2140,6 @@ mod valid_name_tests {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod workspace_activate_read_tests {
     // End-to-end through the real async handler: `read: true` clears a
     // `done` row via the SAME workspace binding `workspace.list` uses;
