@@ -10,7 +10,7 @@
 //   2. <repo-root>/.sot/settings.toml  — project-level
 //   3. $HOME/.config/sot/settings.toml  — user-level
 //
-// File format (ADR 0014's layout rework — aspect-ratio-keyed presets,
+// File format (aspect-ratio-keyed presets,
 // no in-session reflow):
 //
 //   [layout]
