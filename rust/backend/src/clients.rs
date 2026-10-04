@@ -29,6 +29,18 @@
 // touches order correctly. See `touch_person_input` and
 // `snapshot_with_active`.
 
+use anyhow::Context;
+use anyhow::Result;
+use serde_json::json;
+use sot_protocol::op;
+use sot_protocol::FeCommandEvt;
+use sot_protocol::FeCommandSendReq;
+use sot_protocol::FeCommandSendRes;
+use sot_protocol::Frame;
+use tokio::sync::broadcast;
+
+use crate::handlers::HandlerOutput;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -460,6 +472,310 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// `version.query` (ADR 0030 §8 decision 31b, ADR 0043 decision 31): pure
+/// in-memory, no fan-out, no supervisor probe — this daemon's own version
+/// triple plus the roster of currently-attached frontends, sourced from
+/// their hellos. Never fails: an empty `clients` list from a daemon with
+/// zero OTHER attached frontends is a legitimate answer, not an error.
+///
+/// Each row also carries the connection's declared `host`/`role`/`instance`/
+/// `name` (ADR 0046 decision 1) plus `active`: ONE `snapshot_with_active()`
+/// call supplies both the roster and the winner from the same lock + the
+/// same `now` (2026-09-08 review, finding 6 — two separate reads could
+/// disagree under concurrent `fe.presence` traffic), and `active` is set by
+/// comparing SERIALS, never handles, so a duplicate-handle connection that
+/// isn't the winner is never marked active alongside it (finding 5).
+///
+/// Topology plan §B "on-demand re-read": this call also re-reads this
+/// daemon's `hosts.toml` (`TopologyStore::refresh`) so `hosts_toml_hash`
+/// is never stale by more than one hand edit, and — same as `topology.set`
+/// — broadcasts `topology.changed` if that re-read picked up a change
+/// nothing else had already announced. Never a file watcher (the file can
+/// be on a network filesystem); this op and `topology.*` are the only
+/// re-read triggers.
+pub async fn handle_version_query(
+    req_id: u64,
+    clients: &crate::clients::Clients,
+    topology: &crate::topology_store::TopologyStore,
+    topo_tx: &broadcast::Sender<crate::topology_store::TopologyChanged>,
+) -> Result<HandlerOutput> {
+    let refreshed = topology.refresh();
+    if refreshed.changed {
+        let _ = topo_tx.send(crate::topology_store::TopologyChanged {
+            hash: refreshed.hash.clone().unwrap_or_default(),
+        });
+    }
+    let daemon = sot_protocol::DaemonVersion {
+        app_version: sot_protocol::app_version(),
+        protocol: sot_protocol::PROTOCOL_VERSION,
+        lane_build: sot_log::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
+        lane_proto: sot_log::wire::SUPERVISOR_PROTO_V1,
+        host: crate::workspaces::declared_host(),
+        hosts_toml_hash: refreshed.hash.unwrap_or_default(),
+        uptime_s: clients.uptime().as_secs(),
+    };
+    let snap = clients.snapshot_with_active();
+    let client_rows = snap
+        .clients
+        .iter()
+        .map(|c| sot_protocol::ClientVersion {
+            client_id: c.client_id.clone(),
+            app_version: c.app_version.clone(),
+            protocol: c.protocol,
+            host: c.host.clone(),
+            role: c.role.clone(),
+            instance: c.instance.clone(),
+            name: c.name.clone(),
+            active: snap.is_active_serial(c.serial),
+            sessions: c.sessions.clone(),
+        })
+        .collect();
+    // Session-listing brief decision 2 / amendment 2: every box whose
+    // connection has since closed or been reaped, read at the SAME
+    // convention `Instant::now()` — `disconnected` lives outside
+    // `by_conn`, so this needs its own read regardless of `snap` above.
+    // Review blocker 1: `name` identifies a BOX, not a process (a second
+    // frontend on the same box exiting still leaves that box's `name`
+    // attached elsewhere), so an identity ALSO held by a still-connected
+    // row right now must not be reported disconnected — filtered against
+    // THIS SAME `snap`, never a second registry read.
+    let disconnected = clients
+        .disconnected_since(std::time::Instant::now())
+        .into_iter()
+        .filter(|(identity, _)| !snap.clients.iter().any(|c| c.name.as_deref() == Some(identity.as_str())))
+        .map(|(identity, age)| sot_protocol::DisconnectedBox {
+            identity,
+            since_s: age.as_secs(),
+        })
+        .collect();
+    let res = sot_protocol::VersionQueryRes {
+        daemon,
+        clients: client_rows,
+        disconnected,
+    };
+    Ok(vec![(
+        Frame::res(req_id, op::VERSION_QUERY, serde_json::to_value(res)?),
+        None,
+    )])
+}
+
+/// `fe.command.send` (ADR 0025): parse the imperative UI command, build an
+/// `FeCommandEvt { v:1, cmd, args, target }`, publish it onto the FE-command
+/// broadcast channel (each connection turns it into an `fe.command` evt), and
+/// ack. Structurally mirrors `handle_agent_send`.
+///
+/// 2026-09-08 review rework — an untargeted request (`target: None`) is
+/// resolved HERE, before publish, from ONE `Clients::snapshot_with_active()`
+/// call:
+/// - An active frontend exists: deliver to it EXCLUSIVELY, by connection
+///   serial (design point B — a bare handle string is not a reliable
+///   identity; `evt.target_serial` carries the serial for `server.rs`'s
+///   per-connection fan-out to filter on, while `evt.target` still carries
+///   the handle for the FE's own — now redundant but harmless —
+///   `route_fe_command` self-check).
+/// - No active frontend, and `cmd == "relaunch"`: publish NOTHING (design
+///   point E — an unresolved relaunch broadcast is a command nobody can
+///   safely execute; every FE refuses an undirected one anyway, so the
+///   daemon not sending it is strictly more honest, not less capable).
+/// - No active frontend, any other `cmd`: fall through to the pre-existing
+///   broadcast (`target` stays `None`, `target_serial` stays `None` — every
+///   connection's `route_fe_command` self-filter sees the badge floor,
+///   unchanged from before this design).
+///
+/// An explicit `target` from the caller is never touched, and delivery for
+/// it stays a handle-matched broadcast exactly as before (`target_serial`
+/// stays `None`, so every matching connection self-filters as today).
+///
+/// `resolved_target` on the ack (design point E) always mirrors the final
+/// `target` — `None` when nothing was resolved (whether or not something
+/// broadcast), so a caller like `sot-fe relaunch` can tell "no active
+/// frontend" apart from "delivered/broadcast" without inspecting `cmd`
+/// itself.
+///
+/// `delivered_to` (2026-09-09 field incident: a broadcast `open-url` acked
+/// `ok:true` twice while landing on a machine other than the one the owner
+/// was sitting at) is the count of ATTACHED FRONTENDS this command was
+/// actually published to, read off the SAME `snapshot_with_active()` call
+/// `resolved_target` was resolved from — never a second lock acquisition
+/// (`handle_version_query` sets the precedent). It counts what will
+/// ACTUALLY act, which is not always a handle count: a target resolved to
+/// the active frontend is delivered by SERIAL, so it is exactly 1 even when
+/// a second connection shares that handle; an explicit `--fe <handle>` stays
+/// a handle-matched broadcast, so its audience IS the handle count (0 when
+/// nothing carries it — the incident above); `target: None` counts every row
+/// with a non-empty declared `name` (the badge-floor broadcast's audience); the
+/// unresolved-relaunch early return below is `Some(0)` — it published
+/// nothing. This never changes WHAT gets published, only what the ack
+/// truthfully reports about it.
+pub async fn handle_fe_command_send(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    fe_tx: &broadcast::Sender<FeCommandEvt>,
+    clients: &crate::clients::Clients,
+) -> Result<HandlerOutput> {
+    let mut req: FeCommandSendReq =
+        serde_json::from_value(payload_json).context("fe.command.send payload")?;
+    let mut target_serial: Option<u64> = None;
+    let snap = clients.snapshot_with_active();
+    if req.target.is_none() {
+        if let Some(active) = snap.active() {
+            req.target = Some(active.handle.clone());
+            target_serial = Some(active.serial);
+        }
+    }
+    let resolved_target = req.target.clone();
+
+    if req.cmd == "relaunch" && req.target.is_none() {
+        tracing::info!(
+            cmd = %req.cmd,
+            delivered_to = 0,
+            "fe.command.send relay: relaunch has no active frontend and no explicit target — not publishing"
+        );
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_COMMAND_SEND,
+                serde_json::to_value(FeCommandSendRes {
+                    ok: true,
+                    resolved_target,
+                    delivered_to: Some(0),
+                })?,
+            ),
+            None,
+        )]);
+    }
+
+    let delivered_to = match (target_serial, resolved_target.as_deref()) {
+        // Resolved to the ACTIVE frontend: `server.rs` fans out on the
+        // SERIAL, so exactly that one CONNECTION acts — however many
+        // connections happen to share its handle (a relaunched frontend
+        // whose predecessor's connection has not been reaped yet is the
+        // real case). Counting handles here would over-report the audience
+        // of an exclusive delivery: the same lie in miniature that this
+        // field exists to end.
+        (Some(_), _) => 1,
+        // An explicit `--fe <host>` (`target = fe@<host>`) stays a
+        // name-matched broadcast — every frontend carrying that name
+        // self-filters as a match, so the name count IS the audience.
+        // Gated on `role`: a bridge/cli/agent's `name` never inflates a
+        // frontend-targeted count, even on a coincidental string match.
+        (None, Some(handle)) => snap
+            .clients
+            .iter()
+            .filter(|c| c.role == "fe" && c.name.as_deref() == Some(handle))
+            .count(),
+        // The badge floor: every attached, named frontend acts.
+        (None, None) => snap
+            .clients
+            .iter()
+            .filter(|c| c.role == "fe" && c.name.as_deref().is_some_and(|h| !h.is_empty()))
+            .count(),
+    };
+
+    tracing::info!(cmd = %req.cmd, target = ?req.target, delivered_to, "fe.command.send relay");
+    let evt = FeCommandEvt {
+        v: 1,
+        cmd: req.cmd,
+        args: req.args,
+        target: req.target,
+        target_serial,
+    };
+    // Fire-and-forget broadcast; send error means no subscribers, harmless.
+    let _ = fe_tx.send(evt);
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::FE_COMMAND_SEND,
+            serde_json::to_value(FeCommandSendRes {
+                ok: true,
+                resolved_target,
+                delivered_to: Some(delivered_to),
+            })?,
+        ),
+        None,
+    )])
+}
+
+/// `fe.presence` (2026-09-08 review rework, design point A): a person
+/// provided real input; ack only. Stamping happens in `server.rs`'s
+/// dispatch (it needs this connection's registered serial, which isn't
+/// visible from an op payload alone).
+pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
+    Ok(vec![(
+        Frame::res(
+            req_id,
+            op::FE_PRESENCE,
+            serde_json::to_value(sot_protocol::FePresenceRes { ok: true })?,
+        ),
+        None,
+    )])
+}
+
+/// `fe.sessions` (session-listing brief decision 2): a frontend declares
+/// the sot-comm handles its own box's daemon owns, so THIS daemon can list
+/// them. Unlike `fe.presence` (which needs no payload and stamps via
+/// `server.rs`'s dispatch loop, since the thing being stamped is the
+/// connection itself), the store happens here — the payload IS what's
+/// stored. An unregistered `serial` (`None`, pre-hello) is a harmless
+/// no-op ack, same as `touch_person_input`; a registered connection with
+/// NO declared hello `name` is refused (`unnamed_connection`) rather than
+/// stored — the `disconnected` map keys on that name, so a declaration
+/// with none could never be attributed to a box once its connection
+/// dropped. `declare_sessions` also clears that box's `disconnected`
+/// entry, if it had one — a box that just declared again is, by
+/// definition, not missing.
+pub async fn handle_fe_sessions(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    clients: &crate::clients::Clients,
+    serial: Option<u64>,
+) -> Result<HandlerOutput> {
+    let req: sot_protocol::FeSessionsReq =
+        serde_json::from_value(payload_json).context("fe.sessions payload")?;
+    let Some(serial) = serial else {
+        // Pre-hello (no connection registered yet): the same harmless
+        // no-op `touch_person_input` accepts, since there is nothing to
+        // store OR refuse against.
+        return Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_SESSIONS,
+                serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
+            ),
+            None,
+        )]);
+    };
+    // An unnamed connection is refused, not stored (session-listing
+    // brief): the `disconnected` map's identity IS the declared hello
+    // `name`, so a declarer with none could never be attributed to a
+    // box if its connection later dropped — better to refuse now than
+    // store a declaration that can never resurface as anything.
+    match clients.name_for(serial) {
+        Some(name) if !name.is_empty() => {
+            clients.declare_sessions(serial, req.sessions);
+            Ok(vec![(
+                Frame::res(
+                    req_id,
+                    op::FE_SESSIONS,
+                    serde_json::to_value(sot_protocol::FeSessionsRes { ok: true })?,
+                ),
+                None,
+            )])
+        }
+        _ => Ok(vec![(
+            Frame::res(
+                req_id,
+                op::FE_SESSIONS,
+                json!({
+                    "error": "this connection declared no name at hello, so its sessions cannot be attributed to a box",
+                    "code": "unnamed_connection",
+                }),
+            ),
+            None,
+        )]),
+    }
 }
 
 #[cfg(test)]

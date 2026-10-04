@@ -404,3 +404,324 @@
             "self_serial is always excluded, even if `to` names the requester's own handle"
         );
     }
+
+#[cfg(test)]
+mod fe_sessions_tests {
+    use super::{handle_fe_sessions, handle_version_query};
+    use crate::clients::Clients;
+
+    fn sessions_json() -> serde_json::Value {
+        serde_json::json!({
+            "sessions": [
+                {"handle": "agent@host-a", "state": "working", "summary": "", "status_at": ""}
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_named_connection_declares_and_is_stored() {
+        let clients = Clients::new();
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
+            .await
+            .expect("handler ok");
+        assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients[0].sessions.as_ref().map(|s| s.len()), Some(1));
+    }
+
+    /// Session-listing brief: an unnamed declarer cannot be attributed
+    /// to a box (the `disconnected` map keys on the declared `name`), so
+    /// it is refused rather than stored.
+    #[tokio::test]
+    async fn an_unnamed_connection_is_refused_not_stored() {
+        let clients = Clients::new();
+        let g = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, None);
+        let out = handle_fe_sessions(1, sessions_json(), &clients, Some(g.serial()))
+            .await
+            .expect("handler ok");
+        assert_eq!(
+            out[0].0.payload.get("code").and_then(|v| v.as_str()),
+            Some("unnamed_connection")
+        );
+        let snap = clients.snapshot_with_active();
+        assert_eq!(snap.clients[0].sessions, None, "refused, not stored");
+    }
+
+    /// Review blocker 1 (cut for rc9.8): `name` identifies a BOX, not a
+    /// process — a SECOND frontend on the same box (same declared name,
+    /// `instance` is what tells them apart, gpu.rs) can exit and leave a
+    /// stale `disconnected` entry for an identity a still-live connection
+    /// ALSO holds right now. That identity must list as attached, never
+    /// both attached and gone.
+    #[tokio::test]
+    async fn an_attached_box_with_a_stale_disconnected_entry_lists_sessions_never_not_connected() {
+        let clients = Clients::new();
+        let g1 = clients.register("c-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g1.serial(),
+            vec![sot_protocol::DeclaredSession {
+                handle: "agent-1@host-a".into(),
+                state: "working".into(),
+                summary: String::new(),
+                status_at: String::new(),
+            }],
+        );
+
+        // A second process on the SAME box, also declared, then gone —
+        // this is what leaves the stale `disconnected` entry behind.
+        let g2 = clients.register("c-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.declare_sessions(
+            g2.serial(),
+            vec![sot_protocol::DeclaredSession {
+                handle: "agent-2@host-a".into(),
+                state: "idle".into(),
+                summary: String::new(),
+                status_at: String::new(),
+            }],
+        );
+        drop(g2);
+
+        let (topo_tx, _rx) = tokio::sync::broadcast::channel(1);
+        let topology = crate::topology_store::TopologyStore::new(
+            std::env::temp_dir().join(format!("sot-fe-sessions-blocker1-test-{}", std::process::id())),
+        );
+        let out = handle_version_query(1, &clients, &topology, &topo_tx)
+            .await
+            .expect("handler ok");
+        let payload = &out[0].0.payload;
+
+        let disconnected = payload.get("disconnected").and_then(|v| v.as_array());
+        assert!(
+            disconnected.map(|a| a.is_empty()).unwrap_or(true),
+            "fe@host-a still has a live connection (g1), so it must not be reported disconnected: {payload}"
+        );
+        let clients_arr = payload.get("clients").and_then(|v| v.as_array()).expect("clients array");
+        assert!(
+            clients_arr.iter().any(|c| c.get("sessions").is_some_and(|s| !s.is_null())),
+            "the still-attached connection must keep listing its own sessions: {payload}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fe_command_send_tests {
+    use super::handle_fe_command_send;
+    use crate::clients::Clients;
+    use sot_protocol::FeCommandEvt;
+    use tokio::sync::broadcast;
+
+    fn req_json(cmd: &str, target: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "cmd": cmd,
+            "args": {"text": "hi"},
+            "target": target,
+        })
+    }
+
+    fn resolved_target_of(out: &super::HandlerOutput) -> Option<String> {
+        out[0]
+            .0
+            .payload
+            .get("resolved_target")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    fn delivered_to_of(out: &super::HandlerOutput) -> Option<usize> {
+        out[0]
+            .0
+            .payload
+            .get("delivered_to")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+    }
+
+    /// Two connections share one handle (a relaunched frontend whose
+    /// predecessor has not been reaped yet) and one of them is active.
+    /// Delivery is by SERIAL, so exactly one connection acts — and
+    /// `delivered_to` must say 1, not the handle's population. Counting
+    /// handles here would over-report an exclusive delivery.
+    #[tokio::test]
+    async fn untargeted_send_counts_the_exclusive_connection_not_the_shared_handle() {
+        let clients = Clients::new();
+        let stale = clients.register("c-stale", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(1),
+            "delivery is by serial: one connection acts even though two share the handle"
+        );
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(
+            evt.target_serial,
+            Some(active.serial()),
+            "the ACTIVE connection's serial, not the stale one sharing its handle"
+        );
+        assert_ne!(active.serial(), stale.serial(), "two distinct connections");
+    }
+
+    /// No `target` on the wire + an active client registered → the daemon
+    /// resolves delivery to that client's CONNECTION EXCLUSIVELY
+    /// (`target_serial`, design point B) — not merely its handle, which a
+    /// second connection could share.
+    #[tokio::test]
+    async fn untargeted_send_with_an_active_client_delivers_to_it_only() {
+        let clients = Clients::new();
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(1),
+            "exclusive delivery to the resolved handle -> exactly one attached frontend"
+        );
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(
+            evt.target.as_deref(),
+            Some("fe@host-a"),
+            "resolves to the active frontend, not a broadcast"
+        );
+        assert_eq!(
+            evt.target_serial,
+            Some(active.serial()),
+            "exclusive delivery is by SERIAL, not merely the handle string"
+        );
+        assert!(rx.try_recv().is_err(), "only one evt published");
+    }
+
+    /// With no active client (none registered a handle, or none touched
+    /// recently), an untargeted send falls through to today's behaviour
+    /// unchanged: `target`/`target_serial` stay `None`, which every
+    /// connection's `route_fe_command` self-filter reads as "broadcast, act".
+    /// `delivered_to` now says how big that broadcast's real audience is —
+    /// every attached, handle-bearing frontend (here, two), not just "some".
+    #[tokio::test]
+    async fn untargeted_send_with_no_active_client_broadcasts_as_before() {
+        let clients = Clients::new();
+        // Registered but never touched by a person -> no active frontend.
+        let _idle_a = clients.register("c-idle-a", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        let _idle_b = clients.register("c-idle-b", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-b".into()));
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out), None);
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(2),
+            "an undirected broadcast's delivered_to counts every attached frontend, not merely 0/1"
+        );
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert!(evt.target.is_none(), "no active frontend -> today's broadcast behaviour");
+        assert!(evt.target_serial.is_none());
+    }
+
+    /// An explicit `--fe <handle>` target is never overridden by the
+    /// active-frontend resolution, even when a different client is active,
+    /// and stays a handle-matched broadcast (`target_serial` unset).
+    ///
+    /// This is the exact shape of the 2026-09-09 field incident: no
+    /// attached connection has the handle "fe@host-explicit" (only
+    /// "fe@host-a" is registered), yet the ack was `ok:true` regardless —
+    /// `delivered_to == Some(0)` is the fix, the ground truth the old ack
+    /// could not report.
+    #[tokio::test]
+    async fn explicit_target_is_never_overridden_by_active_resolution() {
+        let clients = Clients::new();
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-explicit")), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-explicit"));
+        assert_eq!(
+            delivered_to_of(&out),
+            Some(0),
+            "ok:true but delivered to nobody -- the bug this field fixes"
+        );
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(evt.target.as_deref(), Some("fe@host-explicit"));
+        assert!(evt.target_serial.is_none(), "explicit --fe stays a handle-matched broadcast");
+    }
+
+    /// The happy-path mirror of the case above: an explicit `--fe <handle>`
+    /// that IS attached counts as delivered.
+    #[tokio::test]
+    async fn explicit_target_that_is_attached_delivers_to_it() {
+        let clients = Clients::new();
+        let _target = clients.register("c-target", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-target".into()));
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("notify", Some("fe@host-target")), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-target"));
+        assert_eq!(delivered_to_of(&out), Some(1));
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(evt.target.as_deref(), Some("fe@host-target"));
+    }
+
+    /// Design point E: an untargeted `relaunch` with NO active frontend
+    /// publishes NOTHING — a command nobody could safely act on anyway
+    /// (every FE refuses an undirected relaunch) — and the ack's
+    /// `resolved_target` is `None` so `sot-fe` can fail visibly instead of
+    /// reporting success for a no-op. `delivered_to` says the same thing
+    /// numerically: `Some(0)`, since nothing was published.
+    #[tokio::test]
+    async fn untargeted_relaunch_with_no_active_frontend_publishes_nothing() {
+        let clients = Clients::new();
+        let _idle = clients.register("c-idle", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out), None);
+        assert_eq!(delivered_to_of(&out), Some(0), "nothing was published, so nothing was delivered");
+        assert!(
+            rx.try_recv().is_err(),
+            "an unresolved relaunch must not publish ANYTHING, not even an untargeted broadcast"
+        );
+    }
+
+    /// A relaunch WITH an active frontend behaves like any other verb:
+    /// exclusive delivery by serial, `resolved_target` names the winner.
+    #[tokio::test]
+    async fn untargeted_relaunch_with_an_active_frontend_delivers_to_it_only() {
+        let clients = Clients::new();
+        let active = clients.register("c-active", "local", None, "0.6.0", 1, "fe".to_string(), None, None, Some("fe@host-a".into()));
+        clients.touch_person_input(active.serial());
+
+        let (tx, mut rx) = broadcast::channel::<FeCommandEvt>(8);
+        let out = handle_fe_command_send(1, req_json("relaunch", None), &tx, &clients)
+            .await
+            .expect("handler ok");
+        assert_eq!(resolved_target_of(&out).as_deref(), Some("fe@host-a"));
+        assert_eq!(delivered_to_of(&out), Some(1));
+
+        let evt = rx.try_recv().expect("exactly one evt published");
+        assert_eq!(evt.target_serial, Some(active.serial()));
+    }
+}
