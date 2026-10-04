@@ -577,6 +577,20 @@ mod tests {
     /// Program-path override per kernel project, so no test touches the process env.
     pub(super) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
 
+    /// The request line the kernel child reads: fields in declaration order.
+    #[test]
+    fn wire_request_line_is_pinned() {
+        let line = serde_json::to_string(&WireRequest {
+            v: 1,
+            id: 7,
+            kind: "req",
+            op: "x.y",
+            payload: &serde_json::json!({"a": [1, "b"]}),
+        })
+        .unwrap();
+        assert_eq!(line, r#"{"v":1,"id":7,"kind":"req","op":"x.y","payload":{"a":[1,"b"]}}"#);
+    }
+
     /// The shutdown signal kills the kernel child and the loop neither
     /// respawns nor leaves a guard counted.
     #[cfg(unix)]
