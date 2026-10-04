@@ -13,7 +13,7 @@ use super::*;
 /// because its agent is "none" and it is the daemon's default. Proves
 /// the inverse of the old claim: `pty.open` still answers
 /// `attach_direct` (the SAME response every capsule row gets, never a
-/// special error — see `server.rs`'s own `pty.open` handler), but
+/// special error — see `rows/ops/pty.rs`'s own `pty.open` handler), but
 /// nothing is ever spawned behind it — no state dir, no lane, the row's
 /// own phase never leaves "stopped".
 /// `capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after_end`
@@ -48,7 +48,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     let env = Env::new("dna");
     // Pre-write the default row's own toml as the INERT-ANCHOR agent,
     // "none" — the exact shape a fresh-boot default row seeds today on
-    // EVERY host (server.rs's 2026-09-04 amendment). Pre-writing it here
+    // EVERY host (`rows/anchor.rs`'s 2026-09-04 amendment). Pre-writing it here
     // keeps this test's precondition explicit and independent of that
     // default ever changing again.
     env.seed_default_capsule_toml("none");
@@ -69,7 +69,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     let default_workspace_id = default_row["workspace_id"].as_str().expect("workspace_id").to_string();
     let default_target = default_row["session_name"].as_str().expect("session_name").to_string();
 
-    // Same path arithmetic `capsule_workspace::state_dir_for` uses:
+    // Same path arithmetic `rows::spawn::state_root::state_dir_for` uses:
     // `<LOCALAPPDATA>\sot\workspaces\<workspace_id>` — `env.state_root` IS
     // the LOCALAPPDATA value this daemon was launched with (see
     // `Env::spawn_sotd`).
@@ -92,7 +92,7 @@ async fn capsule_default_workspace_with_no_agent_is_never_started_on_attach() {
     // `target` MUST be the row's own `session_name` — a targetless
     // `pty.open` addresses the drawer's own special SoT LLM terminal
     // (`pty::DEFAULT_TMUX_TARGET` == "sot-llm"), never a workspace row;
-    // `server.rs`'s `workspace_for_tmux(requested_target)` only resolves
+    // `rows/registry.rs`'s `workspace_for_tmux(requested_target)` only resolves
     // to this row when `target` matches its `session_name`. This is
     // exactly what the frontend sends attaching a capsule row — though
     // in practice the frontend never sends it for THIS row at all
@@ -204,7 +204,7 @@ async fn capsule_created_workspace_starts_on_attach_and_recovers_via_reset_after
     let workspace_id = row["workspace_id"].as_str().expect("workspace_id").to_string();
     let target = row["session_name"].as_str().expect("session_name").to_string();
 
-    // Same path arithmetic `capsule_workspace::state_dir_for` uses.
+    // Same path arithmetic `rows::spawn::state_root::state_dir_for` uses.
     let state_dir_path = env.state_root.join("sot").join("workspaces").join(&workspace_id);
 
     // Rule H: prove the "never started" precondition BEFORE `pty.open` —

@@ -6,14 +6,14 @@ use super::*;
 /// Whether an `end_run` outcome means the run is OVER, so a replacement
 /// supervisor may be spawned for this row. Exhaustive on purpose: a new
 /// `EndRunOutcome` variant must be classified here as deliberately as in
-/// `handlers.rs`'s `capsule_destroy_outcome_of`, which partitions the same
+/// `rows/run/end.rs`'s `capsule_destroy_outcome_of`, which partitions the same
 /// enum for the same underlying question ("does anything still hold this
 /// row?"). Anything not-over leaves the leg exactly as it is — still
 /// running on the old login — so the caller rolls the RECORD back to that
 /// same login: a row nobody could replace must not be a row whose record
 /// already says it was.
-fn run_ended(outcome: &crate::capsule_workspace::EndRunOutcome) -> Result<(), String> {
-    use crate::capsule_workspace::EndRunOutcome as O;
+fn run_ended(outcome: &crate::rows::run::end_run::EndRunOutcome) -> Result<(), String> {
+    use crate::rows::run::end_run::EndRunOutcome as O;
     match outcome {
         O::RecordVerified | O::RecordClosed | O::AlreadyEnded | O::Terminal | O::Unheld | O::Orphaned => Ok(()),
         O::Starting => Err("the supervisor was still starting".to_string()),
@@ -43,7 +43,7 @@ pub(crate) trait RestartEffects {
         state_dir: &Path,
         reason: &str,
         root_canonicalized: bool,
-    ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome>;
+    ) -> std::io::Result<crate::rows::run::end_run::EndRunOutcome>;
     fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String>;
     fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String>;
 }
@@ -65,14 +65,14 @@ impl RestartEffects for LiveSupervisor {
         state_dir: &Path,
         reason: &str,
         root_canonicalized: bool,
-    ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome> {
-        crate::capsule_workspace::end_run(state_dir, reason, root_canonicalized)
+    ) -> std::io::Result<crate::rows::run::end_run::EndRunOutcome> {
+        crate::rows::run::end_run::end_run(state_dir, reason, root_canonicalized)
     }
     fn spawn_replacement(&self, plan: &ReauthRestart) -> Result<&'static str, String> {
-        crate::capsule_workspace::start_supervisor(
+        crate::rows::run::start::start_supervisor(
             &plan.state_root,
             &plan.row.workspace_id,
-            crate::capsule_workspace::StartMode::Resume,
+            crate::rows::spawn::detach::StartMode::Resume,
             &plan.argv,
             &plan.row.project_root,
             &plan.row.agent_name(),
@@ -81,7 +81,7 @@ impl RestartEffects for LiveSupervisor {
         )
     }
     fn reset(&self, workspaces: &Workspaces, workspace_id: &str, state_dir: &Path) -> Result<String, String> {
-        crate::capsule_workspace::reset_run(workspaces, workspace_id, state_dir)
+        crate::rows::run::start::reset_run(workspaces, workspace_id, state_dir)
     }
 }
 
@@ -94,7 +94,7 @@ impl RestartEffects for LiveSupervisor {
 /// IS ended the record stands, whatever the replacement spawn does: every
 /// later start path reads the account off the registry.
 pub fn restart_blocking(plan: ReauthRestart, fx: &dyn RestartEffects) {
-    let state_dir = crate::capsule_workspace::state_dir_for(&plan.state_root, &plan.row.workspace_id);
+    let state_dir = crate::rows::spawn::state_root::state_dir_for(&plan.state_root, &plan.row.workspace_id);
     // Read off the ROW, not off a copy taken before the ack: what the
     // replacement actually spends is whatever the registry says when
     // `spawn_and_watch` resolves it, so naming that same value here keeps
@@ -227,7 +227,7 @@ enum MintRefusal {
 /// [`restart_blocking`] above reads as exactly the three effects it is.
 ///
 /// There is a SECOND reset in this tree — `ensure_started_locked`, in
-/// `capsule_workspace.rs`, reached when a selection finds the row resting
+/// `rows/run/activation.rs`, reached when a selection finds the row resting
 /// at `ended_no_respawn`. The two are deliberately not shared, and the next
 /// reader who finds two of them must not have to re-derive why:
 ///
@@ -257,7 +257,7 @@ fn mint_replacement_voyage(
     retired: Option<(u32, u64)>,
 ) -> Result<String, MintRefusal> {
     let report = wait_until_resting(fx, state_dir).map_err(MintRefusal::NeverAnswered)?;
-    let settled = crate::capsule_workspace::phase_str(report.phase);
+    let settled = crate::rows::run::probe::phase_str(report.phase);
     if let Err(detail) = ready_to_mint(report.phase, retired, (report.pid, report.created)) {
         return Err(MintRefusal::Refused { settled, detail });
     }
@@ -327,7 +327,7 @@ fn wait_until_resting(
 }
 
 /// Whether a phase is one the authority will stay at until somebody acts.
-/// The same partition `capsule_workspace`'s own `is_resting_phase` draws,
+/// The same partition `rows/run/activation.rs`'s own `is_resting_phase` draws,
 /// restricted to the phases a live supervisor can report over `status` —
 /// this caller has just spawned one and is holding its reply, so the
 /// "nothing is there" phases that function also admits cannot arise here.
@@ -379,7 +379,7 @@ fn ready_to_mint(
         P::Ready => Err("a leg is already live on this row, so the retire did not take; it runs on the login the switch moved away from".into()),
         other => Err(format!(
             "the replacement authority rests at {:?} rather than the phase a resumed run must rest at, and a reset is admissible only from ended_no_respawn",
-            crate::capsule_workspace::phase_str(other)
+            crate::rows::run::probe::phase_str(other)
         )),
     }
 }

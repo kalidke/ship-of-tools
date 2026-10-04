@@ -6,7 +6,7 @@ editor's file reads and saves, the `.concept/` annotation store and the watcher 
 shuttles bytes and versions; what a file means (previews, frontmatter, ASTs) is the kernel's and the client's.
 
 ## Owns
-Per workspace row (built in `workspaces.rs`):
+Per workspace row (built in `rows/workspace.rs`):
 - a `FilesMode` (tree.rs): the root and the `show_hidden` flag;
 - a `ConceptStore` (concept.rs) over `<root>/.concept`;
 - a `Watcher` (watcher.rs): non-recursive watches, up to a budget;
@@ -29,10 +29,10 @@ Per workspace row (built in `workspaces.rs`):
 - `preview/` serves `preview.get`, `preview.set_scale` and `image.crop`, and asks the kernel for plugin previews
   (`file.preview`). `tree_ops.rs` serves `tree.root`, `tree.children`, `nav.toggle_hidden` and `directory.list`;
   `concept_ops.rs` serves `concept.*`; `io_ops.rs` serves `file.read`, `file.write`, `file.delete` and `dir.create`;
-  `transfer.rs` serves `file.download` and `file.upload`. `handlers.rs` re-exports them for the dispatch in `server.rs`.
-- `workspaces.rs` builds the three per row; `server.rs` creates the `preview.changed` bus and filters it per connection
-  (`preview_changed_visible`).
-- Confinement is also written in `confine.rs` (`path_within_root`; `paths.rs` re-exports it) and again beside it
+  `transfer.rs` serves `file.download` and `file.upload`. `server/dispatch.rs` calls them.
+- `rows/workspace.rs` builds the three per row; `server/mod.rs` creates the `preview.changed` bus and `server/events.rs`
+  filters it per connection (`preview_changed_visible`).
+- Confinement is also written in `confine.rs` (`path_within_root`) and again beside it
   (`canonical_under_root`, for `pluto.open` and `docs.open`); the copies
   here (`node_id_to_path_confined`, `target_to_path`) and the two rename-without-fsync writes (`write_file`,
   `ConceptStore::write`) are separate on purpose.

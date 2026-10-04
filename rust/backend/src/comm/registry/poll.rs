@@ -2,11 +2,11 @@
 
 use tokio::sync::broadcast;
 
-use crate::workspaces::WorkspaceChanged;
+use crate::rows::WorkspaceChanged;
 
 /// Starts the task that polls the comm registry and publishes `agent_state` on the workspace bus when an agent's state changes.
 pub(crate) fn spawn_registry_poll(ws_events_tx: &broadcast::Sender<WorkspaceChanged>) {
-    if let Some(reg_path) = crate::handlers::comm_registry_path() {
+    if let Some(reg_path) = crate::comm::registry::registry::comm_registry_path() {
         let tx = ws_events_tx.clone();
         tokio::spawn(async move {
             let mut last: Option<String> = None;

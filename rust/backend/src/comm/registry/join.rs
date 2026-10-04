@@ -7,10 +7,11 @@ use sot_protocol::op;
 use sot_protocol::AgentJoinReq;
 use sot_protocol::AgentJoinRes;
 use sot_protocol::Frame;
-use crate::workspaces::WorkspaceChanged;
-use crate::workspaces::Workspaces;
+use crate::rows::WorkspaceChanged;
+use crate::rows::Workspaces;
 use tokio::sync::broadcast;
-use crate::handlers::{valid_name, HandlerOutput};
+use crate::paths::valid_name;
+use crate::server::reply::HandlerOutput;
 
 /// `agent.join` (ADR 0046 decision 1): a session inside `req.workspace_id`
 /// declares its sot-comm handle to this daemon — read by every later
@@ -104,7 +105,7 @@ pub async fn handle_agent_join(
     // re-deriving a value that already matches memory. Still under
     // `_held`: the save that recreates the toml must finish before a
     // waiting destroy can start deleting it.
-    if let Err(e) = crate::workspaces::save(&ws) {
+    if let Err(e) = crate::rows::store::save(&ws) {
         tracing::warn!(error = %e, workspace_id = %req.workspace_id, "agent.join: toml persist failed");
         return Ok(vec![(
             Frame::res(
@@ -137,15 +138,15 @@ pub async fn handle_agent_join(
 #[cfg(test)]
 mod agent_join_tests {
     use super::*;
-    use crate::handlers::comm_handle_for_workspace;
-    use crate::workspaces::Workspace;
+    use crate::comm::registry::registry::comm_handle_for_workspace;
+    use crate::rows::Workspace;
 
-    // `handle_agent_join` persists through `crate::workspaces::save` —
+    // `handle_agent_join` persists through `crate::rows::store::save` —
     // isolate every var `app_config_dir` reads (manager review, S18:
     // Windows persistence ignores XDG_CONFIG_HOME entirely and uses
     // LOCALAPPDATA/USERPROFILE instead — guarding only the Unix var let
     // this test module write into a real app-config root on Windows).
-    // Mirrors `workspaces.rs`'s own round-trip test's exact setup.
+    // Mirrors `rows/store/`'s own round-trip test's exact setup.
     struct EnvGuard {
         _serial: std::sync::MutexGuard<'static, ()>,
         xdg_config_home: Option<std::ffi::OsString>,
@@ -263,8 +264,8 @@ mod agent_join_tests {
         let mut ws = mk_ws(slug);
         ws.runtime = runtime.to_string();
         let id = workspaces.insert(ws).workspace_id.clone();
-        crate::workspaces::save(&workspaces.resolve(Some(&id)).unwrap()).expect("seed save");
-        let toml_path = crate::workspaces::toml_path_for(slug);
+        crate::rows::store::save(&workspaces.resolve(Some(&id)).unwrap()).expect("seed save");
+        let toml_path = crate::rows::store::toml_path_for(slug);
         assert!(toml_path.exists(), "test setup: the seed toml must exist");
 
         // 1 + 2: the row stays registered; take and hold its guard exactly
@@ -372,7 +373,7 @@ mod agent_join_tests {
         // Manager review (S7, Codex finding B9): ok:true must depend on
         // the save actually succeeding. Occupy the "sot" config
         // subdirectory with a plain FILE instead of a directory --
-        // `crate::workspaces::save`'s `create_dir_all` necessarily fails
+        // `crate::rows::store::save`'s `create_dir_all` necessarily fails
         // under it, regardless of the host-derived `workspaces-<host>`
         // segment.
         let (_g, dir) = env_guarded();

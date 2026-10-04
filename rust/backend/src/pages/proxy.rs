@@ -31,7 +31,7 @@ use tokio::net::TcpStream;
 /// lazily inside the user's REPL child where the daemon can't observe the
 /// bind, but the `BrowserView` URL it produces flows THROUGH the daemon as a
 /// repl frame on its way to the FE — the supervisor records the port off
-/// that frame (`repl.rs`), so the allowlist learns the ACTUAL bound port
+/// that frame (`sidecars/repl/supervisor.rs`), so the allowlist learns the ACTUAL bound port
 /// (ephemeral-fallback aware) with no protocol change and no trust in a
 /// static port number.
 ///
@@ -131,16 +131,16 @@ pub fn loopback_port_from_url(url: &str) -> Option<u16> {
 ///   serving flow needs no daemon release.
 pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     let mut ports = BTreeSet::new();
-    if let Some(p) = crate::pluto::bound_pluto_port() {
+    if let Some(p) = crate::sidecars::pluto::bound_pluto_port() {
         ports.insert(p);
     }
-    if let Some(p) = crate::http_serve::bound_video_port() {
+    if let Some(p) = crate::pages::video::bound_video_port() {
         ports.insert(p);
     }
-    if let Some(p) = crate::site_serve::bound_site_port() {
+    if let Some(p) = crate::pages::site::bound_site_port() {
         ports.insert(p);
     }
-    ports.extend(crate::site_serve::pool_assigned_ports());
+    ports.extend(crate::pages::site::pool_assigned_ports());
     {
         let m = BROWSER_PORTS.read().unwrap_or_else(|p| p.into_inner());
         for set in m.values() {
@@ -233,7 +233,7 @@ where
     pipe_bidirectional(rx, tx, upstream, &format!("port {}", req.port)).await
 }
 
-pub(crate) use crate::server::pipe::{pipe_bidirectional, reject};
+use crate::server::pipe::{pipe_bidirectional, reject};
 
 #[cfg(test)]
 mod tests {
@@ -267,11 +267,11 @@ mod tests {
         assert!(!ports.contains(&22));
         // NB: no assertion on pool ports (1237–1240) here — the docs pool is
         // allow-listed by ASSIGNED port (pool_assigned_ports, the tightening),
-        // which reads the process-global POOL that site_serve's own pool_tests
+        // which reads the process-global POOL that pages::site's own pool_tests
         // mutate in parallel; asserting emptiness here would race them (codex).
-        // The "assigned-only" behavior is covered by site_serve's pool_tests.
+        // The "assigned-only" behavior is covered by pages::site's pool_tests.
         // Similarly no assertion on the video/docs BOUND statics — the bind
-        // fallback tests in http_serve/site_serve set them in parallel; the
+        // fallback tests in pages::video/pages::site set them in parallel; the
         // fixed-port absences above are stable (ephemeral binds land ≥32768).
     }
 

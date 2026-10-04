@@ -59,7 +59,7 @@ use sot_protocol::slug;
 // `try_query_status`, `create_ready_workspace_then_stop_its_supervisor`, and
 // the anchored-pgrep leg-sweep machinery (`build_leg_pgrep_pattern` and
 // friends, `Env::leg_pgrep_pattern`) moved verbatim to `tests/support/mod.rs`
-// so `lane_bridge.rs`'s own cross-process proofs can reuse them without a
+// so `lane_bridge/main.rs`'s own cross-process proofs can reuse them without a
 // second, drifting copy. `mod support;` (not a `tests/*.rs` file itself —
 // Cargo only auto-discovers direct children of `tests/`) plus a glob import
 // brings every lifted item back into this file's own scope, unchanged.

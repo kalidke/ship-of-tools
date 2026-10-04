@@ -1,7 +1,7 @@
-// site_serve.rs — a static HTTP/1.1 server for opening an on-disk static site
+// pages/site/mod.rs — a static HTTP/1.1 server for opening an on-disk static site
 // or page (typically an `index.html`) in the OS browser with full fidelity.
 //
-// Sibling to `http_serve.rs` (the single-file, video-gated server). Where that
+// Sibling to `pages/video.rs` (the single-file, video-gated server). Where that
 // one serves one explicit file path by extension, this serves a whole DIRECTORY
 // TREE rooted at a CURRENT SITE ROOT that the `docs.open` handler sets per open:
 // the cursored file's own directory. Serving from the true site root is what
@@ -14,9 +14,9 @@
 // multi-site scheme is a later refinement (and root-relative links would still
 // force one-site-per-origin anyway).
 //
-// Why hand-rolled rather than axum/tower-http: same reasoning as http_serve —
+// Why hand-rolled rather than axum/tower-http: same reasoning as pages::video —
 // the backend has no HTTP stack and the need is narrow (GET a file under a root).
-// Range, content types and the empty-file case are shared with `http_serve`
+// Range, content types and the empty-file case are shared with `pages::video`
 // (`serve_file`), so a linked movie seeks the way a `video.open` one does.
 //
 // A `Site` splits two roots that used to be one. CONTENT root S is where
@@ -61,7 +61,7 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::http_serve::{content_type, serve_file, write_simple};
+use crate::pages::http::{content_type, serve_file, write_simple};
 
 /// Per-connection site roots, keyed by an unguessable per-open NONCE — not
 /// the connection serial. (Security review: the old scheme put the raw,
@@ -198,7 +198,7 @@ pub fn site_port() -> u16 {
 }
 
 /// The port the shared prefix server ACTUALLY bound (0 = not bound). Mirrors
-/// `http_serve::BOUND_PORT`: `site_port()` is only a preference — on a shared
+/// `pages::video::BOUND_PORT`: `site_port()` is only a preference — on a shared
 /// host another user's daemon may hold it, and `spawn` falls back to an
 /// ephemeral port. `docs.open` URLs and the ADR-0035 proxy allowlist must
 /// read this, never `site_port()`.
@@ -257,7 +257,7 @@ fn root_for(nonce: &str) -> Option<Arc<Site>> {
 /// Generate an unguessable token (32 lowercase hex chars = 128 bits from the
 /// OS CSPRNG), or `None` if the OS CSPRNG can't be read. Fails CLOSED
 /// (security review): a predictable token defeats the whole point of this
-/// scheme. Mirrors `http_serve`'s.
+/// scheme. Mirrors `pages::video`'s.
 fn random_token() -> Option<String> {
     let mut buf = [0u8; 16];
     if let Err(e) = getrandom::fill(&mut buf) {
@@ -458,8 +458,8 @@ fn cookie_value<'a>(cookie_hdr: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-mod links;
-pub(crate) use links::Site;
+pub(crate) mod links;
+use links::Site;
 use links::resolve_and_open;
 
 async fn handle_conn(mut stream: TcpStream, mode: ServeMode) -> Result<()> {

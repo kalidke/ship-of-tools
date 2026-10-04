@@ -1,4 +1,4 @@
-// topology_dial.rs — the one-shot blocking client `sotd topology set` (and
+// topology/dial.rs — the one-shot blocking client `sotd topology set` (and
 // `status`'s "cache diverged" line) use to reach a daemon over its
 // already-established endpoint spelling (`unix:`/`tcp:`/`pipe:`/`ssh:`, per
 // `topology::endpoint::local_endpoint`/`relay_endpoint`). No new credential: per
@@ -51,14 +51,14 @@ struct ChildGuard {
     /// Set for a forwarded call that a caller may cut short; see [`Track`].
     track: Option<std::sync::Arc<Track>>,
     /// Counts the child among the live ones until `Drop` has reaped it.
-    _live: Option<crate::shutdown::ChildGuard>,
+    _live: Option<crate::lifecycle::child_signal::ChildGuard>,
 }
 
 /// How a forwarding caller reaches the ssh child a dial thread owns: the
 /// child itself while its guard holds it unreaped, and a flag that tells a
 /// thread that has not spawned yet not to bother.
 pub(crate) struct Track {
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
     /// The dial thread's child while its guard holds it unreaped; `None` before the spawn and from the moment the
     /// guard starts reaping.
     child: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::process::Child>>>>,
@@ -66,7 +66,7 @@ pub(crate) struct Track {
 }
 
 impl Track {
-    pub(crate) fn new(sig: &'static crate::shutdown::Signal) -> Self {
+    pub(crate) fn new(sig: &'static crate::lifecycle::child_signal::Signal) -> Self {
         Self { sig, child: std::sync::Mutex::new(None), cancelled: std::sync::atomic::AtomicBool::new(false) }
     }
 
@@ -286,8 +286,6 @@ pub(crate) fn dial_and_call_tracked(
     Err(fold(&guard, format!("{endpoint}: no reply to {req_op} within 8 frames")))
 }
 
-pub(crate) use crate::comm::mail::forward::forward_comm_file;
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -481,7 +479,7 @@ pub(crate) mod tests {
     fn cancel_kills_the_tracked_child_through_its_own_handle() {
         // Other tests swap PATH under this lock; the child below is found through PATH.
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let track = std::sync::Arc::new(Track::new(sig));
         #[cfg(unix)]
         let mut cmd = std::process::Command::new("sleep");

@@ -14,11 +14,11 @@ use sot_protocol::FileReadRes;
 use sot_protocol::FileWriteReq;
 use sot_protocol::FileWriteRes;
 use sot_protocol::Frame;
-use crate::file_io;
-use crate::file_io::WriteResult;
+use crate::files::io;
+use crate::files::io::WriteResult;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
-use crate::handlers::HandlerOutput;
+use crate::rows::Workspaces;
+use crate::server::reply::HandlerOutput;
 
 /// Read a source file's full text for the in-frontend editor. Unlike
 /// `preview.get` (kernel-rendered), this is raw backend byte IO — no kernel
@@ -49,7 +49,7 @@ pub async fn handle_file_read(
         Err(out) => return Ok(out),
     };
 
-    match file_io::read_file(&path) {
+    match io::read_file(&path) {
         Ok(Some(r)) => {
             let res = FileReadRes {
                 node_id: req.node_id,
@@ -116,7 +116,7 @@ pub async fn handle_file_write(
         Err(out) => return Ok(out),
     };
 
-    match file_io::write_file(&path, &req.content, req.expected_version.as_deref()) {
+    match io::write_file(&path, &req.content, req.expected_version.as_deref()) {
         Ok(WriteResult::Written { version }) => {
             let res = FileWriteRes {
                 node_id: req.node_id.clone(),
@@ -164,7 +164,7 @@ pub async fn handle_file_write(
 
 /// Trash a file from Files-mode nav (FE Ctrl+D). v1 contract: directories are
 /// refused (`code: "is_directory"`) and nothing is ever hard-unlinked —
-/// `file_io::trash_file` goes to the system trash (`gio trash`) or falls back
+/// `io::trash_file` goes to the system trash (`gio trash`) or falls back
 /// to `<workspace_root>/.sot-trash/` (the response's `trash_path` says
 /// which). Bumps the session revision like file.write so the watcher and
 /// reconnecting clients refresh.
@@ -233,7 +233,7 @@ pub async fn handle_file_delete(
         )]);
     };
 
-    match file_io::trash_file(&path, &ws.project_root) {
+    match io::trash_file(&path, &ws.project_root) {
         Ok(trash_path) => {
             let res = FileDeleteRes {
                 node_id: req.node_id.clone(),
@@ -332,7 +332,7 @@ pub async fn handle_dir_create(
 /// `confined` selects the WRITE resolver (`node_id_to_path_confined`, the
 /// symlink escape guard — mutations can't leave the project root) vs the
 /// READ resolver (follows user symlinks, e.g. NAS mounts — see
-/// files_mode.rs).
+/// files/tree.rs).
 fn resolve_file_node(
     op_name: &'static str,
     req_id: u64,

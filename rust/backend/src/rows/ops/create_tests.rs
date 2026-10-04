@@ -4,7 +4,7 @@ use super::*;
 
 mod duplicate_root_tests {
     use super::find_other_workspace_with_root;
-    use crate::workspaces::{Workspace, Workspaces};
+    use crate::rows::{Workspace, Workspaces};
     use std::path::{Path, PathBuf};
 
     /// Unique on-disk dir per test (no tempfile dev-dep; pid + a counter keep
@@ -120,7 +120,8 @@ mod duplicate_root_tests {
 
 mod label_in_use_tests {
     use super::same_slug_row_in_use;
-    use crate::workspaces::{Observation, Phase, SupervisorIdentity, Workspace, Workspaces};
+    use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+    use crate::rows::{Workspace, Workspaces};
 
     fn row(label: &str, runtime: &str, observed: Option<Phase>) -> Workspace {
         let mut w = Workspace::from_label(
@@ -187,7 +188,7 @@ mod label_in_use_tests {
 mod refusal_tests {
     use super::handle_workspace_create;
     use crate::session::Session;
-    use crate::workspaces::{Workspace, Workspaces};
+    use crate::rows::{Workspace, Workspaces};
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
     use tokio::sync::broadcast;
@@ -212,7 +213,7 @@ mod refusal_tests {
         w
     }
 
-    /// Pins the two folders `workspaces::save` and the state root resolve under to the test's own folder, under the
+    /// Pins the two folders `rows::store::save` and the state root resolve under to the test's own folder, under the
     /// crate-wide env lock, and restores them on drop.
     struct EnvPinned {
         _serial: std::sync::MutexGuard<'static, ()>,

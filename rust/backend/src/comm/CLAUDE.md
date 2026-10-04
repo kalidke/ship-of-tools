@@ -15,4 +15,4 @@ delivery, of the address book and of the wake. Part of the backend; charter: com
 ## Rules
 - A folder here holds the daemon's side only; the scripts' side stays in the repo's `comm/`.
 - `sot_comm_home` is the one comm folder rule: `$SOT_COMM_HOME` when set and non-empty, else `$HOME/.sot-comm`, else
-  `$USERPROFILE/.sot-comm`, else none. `paths.rs` re-exports it.
+  `$USERPROFILE/.sot-comm`, else none.

@@ -5,7 +5,7 @@
 // a session here is filed with the frontend window open or closed. On it the
 // hub broadcasts every `agent.message`; this daemon files the ones whose `to`
 // its own comm folder lists, through the same function `comm.file` uses
-// (`handlers::file_comm`), and answers `agent.filed {id}`. Nothing else rides
+// (`comm::mail::filer::file_comm`), and answers `agent.filed {id}`. Nothing else rides
 // the link: only a positive claim exists (`op::AGENT_FILED`).
 //
 // The topology is read once at start, like the frontend's tunnel set: a box
@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -28,7 +28,7 @@ pub async fn run(workspaces: Workspaces) {
     if let Err(e) = tokio::task::spawn_blocking(move_fe_inbox).await.unwrap_or_else(|e| Err(e.to_string())) {
         tracing::warn!("hub link: the old frontend inbox was not moved: {e}");
     }
-    let self_host = crate::handlers::comm_self_host();
+    let self_host = crate::comm::mail::filer::comm_self_host();
     let recipe = match recipe_for(&self_host) {
         Ok(Some(r)) => r,
         Ok(None) => return,
@@ -39,7 +39,7 @@ pub async fn run(workspaces: Workspaces) {
     };
     let name = format!("sotd-{self_host}");
     tracing::info!(%recipe, %name, "hub link starting");
-    hold_link(&recipe, &self_host, &name, &workspaces, crate::shutdown::process()).await;
+    hold_link(&recipe, &self_host, &name, &workspaces, crate::lifecycle::child_signal::process()).await;
 }
 
 /// Keep the link up until `sig` fires; it never reconnects after.
@@ -48,7 +48,7 @@ async fn hold_link(
     self_host: &str,
     name: &str,
     workspaces: &Workspaces,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     let mut wait = BACKOFF_FLOOR;
     loop {
@@ -108,7 +108,7 @@ async fn link_once(
     self_host: &str,
     name: &str,
     workspaces: &Workspaces,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<(), String> {
     let mut child = spawn_link(recipe)?;
     let _child_guard = sig.guard();
@@ -191,7 +191,7 @@ where
             continue;
         }
         let req = hub_frame_req(from, to.clone(), text);
-        match crate::handlers::file_comm(req, workspaces).await {
+        match crate::comm::mail::filer::file_comm(req, workspaces).await {
             Ok(Ok(())) => {
                 tracing::info!(%to, %id, "hub link filed");
                 let filed = serde_json::json!({ "id": id });
@@ -220,7 +220,7 @@ fn hub_frame_req(from: String, to: String, text: String) -> sot_protocol::CommFi
 /// the frontend wrote it too, but `comm-listen` had already delivered that mail,
 /// so moving it would file it a second time.
 fn move_fe_inbox() -> Result<(), String> {
-    let (Some(dir), Some(home)) = (sot_log::host::state_dir::sot_state_dir(), crate::paths::sot_comm_home()) else {
+    let (Some(dir), Some(home)) = (sot_log::host::state_dir::sot_state_dir(), crate::comm::sot_comm_home()) else {
         return Ok(());
     };
     move_fe_inbox_if(cfg!(windows), &dir, &home).map(|n| {
@@ -260,7 +260,7 @@ fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
     let lines: Vec<&str> = text.split_inclusive('\n').filter(|l| l.ends_with('\n')).collect();
     let inbox_dir = home.join("inbox");
     std::fs::create_dir_all(&inbox_dir).map_err(|e| format!("create {}: {e}", inbox_dir.display()))?;
-    let own = crate::comm_inbox::lock_identity(&inbox_dir);
+    let own = crate::comm::mail::inbox::lock_identity(&inbox_dir);
     let mut moved_lines = 0;
     for h in &handles {
         // `sot_fe_cursor_offset`: a line count; unset, unreadable, non-numeric or past the end is 0.
@@ -280,7 +280,7 @@ fn move_fe_inbox_in(dir: &Path, home: &Path) -> Result<usize, String> {
                 continue;
             }
             let text = if o.contains_key("msg") { s("msg") } else { s("text") };
-            crate::comm_inbox::file_frame(&inbox_dir, s("from"), h, false, text, s("ts"), crate::comm_inbox::inbox_lock_wait(), &own)?;
+            crate::comm::mail::inbox::file_frame(&inbox_dir, s("from"), h, false, text, s("ts"), crate::comm::mail::inbox::inbox_lock_wait(), &own)?;
             moved_lines += 1;
         }
     }
@@ -303,7 +303,7 @@ fn registry_handles(home: &Path) -> Result<Vec<String>, String> {
     let agents = root.get("agents").and_then(|a| a.as_object()).ok_or_else(|| format!("{}: no agents object", path.display()))?;
     Ok(agents
         .iter()
-        .filter(|(h, e)| crate::handlers::valid_name(h) && e.get("host").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()))
+        .filter(|(h, e)| crate::paths::valid_name(h) && e.get("host").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()))
         .map(|(h, _)| h.clone())
         .collect())
 }
@@ -326,7 +326,7 @@ mod tests {
         std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display())).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
-        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
         let workspaces = Workspaces::new();
         let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", &workspaces, sig).await });
@@ -402,7 +402,7 @@ mod tests {
         std::fs::rename(dir.join("fe-inbox.jsonl"), dir.join("fe-inbox.jsonl.moving")).unwrap();
         let inbox = home.join("inbox");
         std::fs::create_dir_all(&inbox).unwrap();
-        crate::comm_inbox::file_frame(&inbox, "x", "a", false, "a-read", "1", Duration::from_secs(5), "none").unwrap();
+        crate::comm::mail::inbox::file_frame(&inbox, "x", "a", false, "a-read", "1", Duration::from_secs(5), "none").unwrap();
         assert!(move_fe_inbox_in(&dir, &home).is_ok());
         let a = msgs(&home, "a");
         for want in ["a-read", "a-unread"] {

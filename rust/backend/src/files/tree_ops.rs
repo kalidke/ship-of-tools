@@ -13,8 +13,8 @@ use sot_protocol::TreeChildrenRes;
 use sot_protocol::TreeRootReq;
 use sot_protocol::TreeRootRes;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
-use crate::handlers::HandlerOutput;
+use crate::rows::Workspaces;
+use crate::server::reply::HandlerOutput;
 
 pub async fn handle_tree_root(
     req_id: u64,

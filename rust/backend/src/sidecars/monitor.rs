@@ -7,7 +7,7 @@
 // tiered in-memory ring (so `monitor.history` can serve any window), and
 // broadcasts it as a live tick. Sampling is **always-on** for the life of the
 // backend so the drawer shows real history the moment it opens; per-connection
-// tick *delivery* is gated separately by `monitor.subscribe` in server.rs.
+// tick *delivery* is gated separately by `monitor.subscribe` in `server/dispatch.rs`.
 //
 // Failure is visible (ADR 0020 §5): when a source dies we broadcast a `stale`
 // tick and respawn after a backoff, so the frontend draws a gap, never a
@@ -530,7 +530,7 @@ async fn supervise(
     loop {
         let reason = match spawn_source(&host).await {
             Ok(mut child) => {
-                let _child_guard = crate::shutdown::ChildGuard::new();
+                let _child_guard = crate::lifecycle::child_signal::ChildGuard::new();
                 let mut stdout = child.stdout.take().map(|s| BufReader::new(s).lines());
                 let mut stderr = child.stderr.take().map(|s| BufReader::new(s).lines());
                 // ssh's own words for why the source died, kept only until
@@ -540,7 +540,7 @@ async fn supervise(
                     tokio::select! {
                         // The daemon is shutting down: nothing kills this child at
                         // `process::exit`, so it is killed here.
-                        _ = crate::shutdown::fired() => {
+                        _ = crate::lifecycle::child_signal::fired() => {
                             let _ = child.kill().await;
                             return;
                         }

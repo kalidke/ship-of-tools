@@ -1,7 +1,7 @@
 //! Boot resume: after a daemon restart, resume every registered capsule row whose voyage pointer exists, and log stray state directories.
 
 use super::activation::resume_locked;
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,7 +53,7 @@ pub const LANE_CONCURRENCY: usize = 4;
 /// process; deleted, the bare-shell fallback an earlier version used
 /// here).
 ///
-/// Runs off the startup critical path (finding 10): `server.rs`
+/// Runs off the startup critical path (finding 10): `server/mod.rs`
 /// calls this via `tokio::spawn`, never awaited, and every probe/spawn
 /// inside it is bounded to `LANE_CONCURRENCY` concurrent attempts via
 /// a semaphore — thousands of preserved workspaces cannot turn this
@@ -66,7 +66,7 @@ pub async fn resume_all(state_root: PathBuf, workspaces: Workspaces) {
     // resumes: `agent_argv("none", None)` is a real leg (the bare platform
     // shell). The predicate — and why its runtime term matters — is
     // `Workspaces::is_inert_default_anchor`.
-    let capsule_rows: Vec<Arc<crate::workspaces::Workspace>> = workspaces
+    let capsule_rows: Vec<Arc<crate::rows::Workspace>> = workspaces
         .list()
         .into_iter()
         .filter(|ws| ws.runtime == "capsule")
@@ -176,11 +176,11 @@ fn log_registryless_state_dirs(state_root: &Path, workspaces: &Workspaces) {
 /// A row that went through `workspace.create` and reached the
 /// registry always had a `start_supervisor` call succeed there (a
 /// failed spawn rolls the row and its toml back before either is
-/// persisted, `handlers.rs`'s create rollback), and that success is
+/// persisted, `rows/ops/create.rs`'s create rollback), and that success is
 /// exactly what creates the directory — but a row can ALSO reach the
 /// registry by a pre-seeded or hand-authored toml that has never been
 /// through `workspace.create` at all (a legitimate, tested shape:
-/// "Rule H" in `capsule_workspaces.rs`'s own integration suite), and
+/// "Rule H" in `tests/capsule_workspaces/`'s own integration suite), and
 /// reads identically here — no state dir, no pointer, "never started
 /// yet" — RIGHT UP UNTIL its first attach spawns it for real. This
 /// function cannot and does not try to tell the two apart (see

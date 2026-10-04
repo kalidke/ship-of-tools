@@ -179,7 +179,7 @@ fn proof_fields(pid: u32) -> [String; 4] {
         Some(l.to_str()?.strip_prefix("pid:[")?.strip_suffix(']')?.to_string())
     });
     let start = sot_log::identity::challenge_unix::process_start_ticks(pid).ok().map(|t| t.to_string());
-    [crate::comm_inbox::machine_id(), boot, pidns, start]
+    [crate::comm::mail::inbox::machine_id(), boot, pidns, start]
         .map(|f| f.unwrap_or_else(|| "-".into()))
 }
 

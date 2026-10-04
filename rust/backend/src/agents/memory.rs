@@ -35,7 +35,7 @@ fn settings_name_a_memory_dir(config_dir: &Path) -> bool {
 ///
 /// The flag names a single literal path, so it is only ever correct if
 /// every account really does land in one store. That is the COMMON CASE,
-/// not an invariant: [`crate::accounts::ensure_account_links`] leaves an
+/// not an invariant: [`crate::agents::accounts::ensure_account_links`] leaves an
 /// account's own `projects` alone when one is already there in any form
 /// ("it deliberately overrides the shared one, and is NEVER replaced"),
 /// and it links nothing at all while the default folder has no `projects`
@@ -61,7 +61,7 @@ fn shared_projects_root(
     home: &Path,
     child_config_dir: Option<&Path>,
 ) -> Result<PathBuf, &'static str> {
-    let spelled = crate::accounts::claude_config_dir(home, "").join("projects");
+    let spelled = crate::agents::accounts::claude_config_dir(home, "").join("projects");
     let Ok(kind) = std::fs::symlink_metadata(&spelled) else {
         return Err("there is no projects entry to resolve");
     };
@@ -100,7 +100,7 @@ fn shared_projects_root(
             _ => Err("the child's own config dir does not reach the shared store"),
         };
     }
-    for account in crate::accounts::discover_accounts(home) {
+    for account in crate::agents::accounts::discover_accounts(home) {
         // The default account IS the shared store -- it is what the others
         // link INTO, and `claude_config_dir` maps it back to the same
         // directory, so treating it as a rival store would make this
@@ -108,7 +108,7 @@ fn shared_projects_root(
         if account.name.is_empty() || account.name == "default" {
             continue;
         }
-        let theirs = crate::accounts::claude_config_dir(home, &account.name).join("projects");
+        let theirs = crate::agents::accounts::claude_config_dir(home, &account.name).join("projects");
         match std::fs::symlink_metadata(&theirs) {
             // Nothing there yet: the next spawn links it into the shared
             // store, so it cannot be a second store.
@@ -216,7 +216,7 @@ fn auto_memory_reason(
     child_config_dir: Option<&Path>,
 ) -> Result<String, &'static str> {
     // Name only a directory the session would derive for ITSELF. `cwd` is
-    // the workspace root as it arrived over the wire, which `handlers.rs`
+    // the workspace root as it arrived over the wire, which `rows/ops/create.rs`
     // checks with `.exists()` and nothing more: a trailing slash, a relative
     // spelling, a `.`/`..` component or a symlinked segment all reach here
     // unmodified, and each sanitises to a DIFFERENT flat name than the
@@ -271,7 +271,7 @@ fn auto_memory_reason(
         // guess overrides a deliberate choice. Two conservative reads instead,
         // either of which declines.
         None => {
-            if settings_name_a_memory_dir(&crate::accounts::claude_config_dir(home, "")) {
+            if settings_name_a_memory_dir(&crate::agents::accounts::claude_config_dir(home, "")) {
                 return Err("the default account's settings already name a directory");
             }
             // Review SHOULD-FIX 2: reading the default's file was NOT enough.
@@ -305,17 +305,17 @@ fn auto_memory_reason(
 /// matter: `settings.json` is a `SHARED_ENTRIES` name, so the ordinary layout
 /// is one symlink per account to the default's single file, which the caller
 /// has already read. A real file of its own is permitted — and permanent,
-/// because [`crate::accounts::ensure_account_links`] never replaces an entry
+/// because [`crate::agents::accounts::ensure_account_links`] never replaces an entry
 /// that is already there — and means that account's memory directory is its own
 /// business, not this launcher's.
 fn an_account_keeps_its_own_memory_dir(home: &Path) -> bool {
-    crate::accounts::discover_accounts(home)
+    crate::agents::accounts::discover_accounts(home)
         .into_iter()
         .any(|account| {
             if account.name.is_empty() || account.name == "default" {
                 return false;
             }
-            let dir = crate::accounts::claude_config_dir(home, &account.name);
+            let dir = crate::agents::accounts::claude_config_dir(home, &account.name);
             let keeps_its_own = std::fs::symlink_metadata(dir.join("settings.json"))
                 .map(|md| !md.file_type().is_symlink())
                 .unwrap_or(false);

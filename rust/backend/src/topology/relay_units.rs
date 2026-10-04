@@ -2,8 +2,6 @@
 //! converged with hosts.toml; unit text comes from `sot_protocol::topology`.
 
 use super::cli::self_host;
-#[cfg(target_os = "linux")]
-use crate::topology_cli;
 use sot_protocol::topology::{self, Topology};
 use std::path::{Path, PathBuf};
 
@@ -558,5 +556,5 @@ mod tests {
 /// user manager cannot keep it down.
 #[cfg(target_os = "linux")]
 pub(crate) fn spawn_refresh_at_start() {
-    let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(topology_cli::refresh_at_start);
+    let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(refresh_at_start);
 }

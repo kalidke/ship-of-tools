@@ -63,12 +63,12 @@ pub(super) fn lifecycle_begin_starting(
     // child's browser-served ports are revoked here, not only on its Dead
     // transition — a restart-raced stale supervisor's Dead is gen-rejected
     // (below), so this is the path that reliably clears them.
-    crate::proxy::revoke_browser_ports(browser_ports_key(workspace_id));
+    crate::pages::proxy::revoke_browser_ports(browser_ports_key(workspace_id));
     emit_lifecycle(frame_tx, workspace_id, ReplLifecycle::Starting);
     my_gen
 }
 
-/// Key for the per-workspace browser-served-port grants (`crate::proxy`).
+/// Key for the per-workspace browser-served-port grants (`crate::pages::proxy`).
 /// The legacy singleton REPL has no workspace id; give it a fixed key so its
 /// grants are still tracked and revoked.
 pub(super) fn browser_ports_key(workspace_id: &Option<String>) -> &str {

@@ -41,7 +41,7 @@ pub(super) async fn recv_watcher(
 ///   filter would break case (b) — that's why the frontend never used one,
 ///   and why this mirrors its rule instead of inventing a simpler one.
 ///
-/// Containment reuses `paths::path_within_root` (component-aware; correctly
+/// Containment reuses `crate::files::confine::path_within_root` (component-aware; correctly
 /// rejects the lookalike sibling `/a/wsx` against root `/a/ws`, and — unlike
 /// a bare `/`-only prefix check — handles a native Windows event path from
 /// `notify`, which is `\`-separated). `path_within_root` treats the root
@@ -69,7 +69,7 @@ fn preview_changed_visible(
     match ws.files_mode() {
         Ok(fm) => {
             let root = fm.root_path();
-            change.path != root && paths::path_within_root(&change.path, root)
+            change.path != root && crate::files::confine::path_within_root(&change.path, root)
         }
         Err(_) => false,
     }
@@ -176,8 +176,8 @@ where
 /// Awaits the next topology write (plan §B). Same shape as `recv_ws_events`
 /// — the channel is always present (created unconditionally in `run`).
 pub(super) async fn recv_topo_changed(
-    rx: &mut broadcast::Receiver<crate::topology_store::TopologyChanged>,
-) -> Result<crate::topology_store::TopologyChanged, broadcast::error::RecvError> {
+    rx: &mut broadcast::Receiver<crate::topology::store::TopologyChanged>,
+) -> Result<crate::topology::store::TopologyChanged, broadcast::error::RecvError> {
     rx.recv().await
 }
 
@@ -185,7 +185,7 @@ pub(super) async fn recv_topo_changed(
 /// Mirrors `write_workspace_changed`.
 pub(super) async fn write_topology_changed<W>(
     tx: &mut W,
-    change: Result<crate::topology_store::TopologyChanged, broadcast::error::RecvError>,
+    change: Result<crate::topology::store::TopologyChanged, broadcast::error::RecvError>,
 ) -> Result<bool>
 where
     W: tokio::io::AsyncWrite + Unpin,
@@ -451,7 +451,7 @@ where
 #[cfg(test)]
 mod agent_relay_wire_tests {
     use super::*;
-    use crate::workspaces::{AgentMessage, AgentReceipt};
+    use crate::comm::mail::bus::{AgentMessage, AgentReceipt};
 
     fn one_frame(buf: &[u8]) -> serde_json::Value {
         let line = String::from_utf8(buf.to_vec()).expect("utf8 frame");
@@ -529,8 +529,8 @@ mod tests {
     // test nothing.
     mod preview_changed_fanout {
         use super::super::preview_changed_visible;
-        use crate::watcher::{ChangeKind, PreviewChanged};
-        use crate::workspaces::{Workspace, Workspaces};
+        use crate::files::watcher::{ChangeKind, PreviewChanged};
+        use crate::rows::{Workspace, Workspaces};
         use std::path::PathBuf;
 
         fn change(workspace_id: Option<&str>, path: PathBuf) -> PreviewChanged {

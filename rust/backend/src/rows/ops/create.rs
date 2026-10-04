@@ -5,10 +5,11 @@ use anyhow::Result;
 use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
-use crate::handlers::{valid_name, HandlerOutput};
+use crate::paths::valid_name;
+use crate::server::reply::HandlerOutput;
 use crate::session::Session;
-use crate::workspaces::WorkspaceChanged;
-use crate::workspaces::Workspaces;
+use crate::rows::WorkspaceChanged;
+use crate::rows::Workspaces;
 use tokio::sync::broadcast;
 
 /// Duplicate-root gate lookup (ADR 0036 Phase 1): the first registered
@@ -26,8 +27,8 @@ use tokio::sync::broadcast;
 fn find_other_workspace_with_root(
     candidate_canon: &std::path::Path,
     incoming_slug: &str,
-    workspaces: &crate::workspaces::Workspaces,
-) -> Option<std::sync::Arc<crate::workspaces::Workspace>> {
+    workspaces: &crate::rows::Workspaces,
+) -> Option<std::sync::Arc<crate::rows::Workspace>> {
     workspaces.list().into_iter().find(|w| {
         w.slug != incoming_slug
             && !workspaces.is_inert_default_anchor(w)
@@ -49,10 +50,10 @@ fn find_other_workspace_with_root(
 fn same_slug_row_in_use(
     incoming_slug: &str,
     workspaces: &Workspaces,
-) -> Option<std::sync::Arc<crate::workspaces::Workspace>> {
+) -> Option<std::sync::Arc<crate::rows::Workspace>> {
     workspaces.list().into_iter().find(|w| {
         w.slug == incoming_slug
-            && (w.runtime != "capsule" || w.phase() != crate::workspaces::Phase::Stopped)
+            && (w.runtime != "capsule" || w.phase() != crate::rows::workspace::Phase::Stopped)
     })
 }
 
@@ -221,14 +222,14 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // ADR 0042 slice L1a, Codex review finding 9: validated BEFORE any
     // state mutation, whenever the resolved runtime is "capsule" (every
     // NEW workspace on Windows, or an explicitly requested one anywhere
-    // `capsule_workspace::runtime` compiles — ADR 0043 decision 22). `agent_argv` is
+    // the capsule runtime (`rows/run/`, `rows/spawn/`) compiles — ADR 0043 decision 22). `agent_argv` is
     // the same function the spawn itself uses, so this is the real
     // check, not a second guess at it — "codex" (no known launcher on
     // either platform) is refused here rather than silently launching a
     // bare shell nobody asked for. Codex's check is a plain file read (no
     // spawn), so this stays a direct call, no `spawn_blocking`.
     let capsule_argv: Vec<String> = if runtime == "capsule" {
-        match crate::capsule_workspace::agent_argv(&agent_kind, Some(project_root.as_path())) {
+        match crate::agents::argv::agent_argv(&agent_kind, Some(project_root.as_path())) {
             Ok(argv) => argv,
             Err(detail) => {
                 let payload = json!({
@@ -252,7 +253,7 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // capsule runtime, so there is no second, platform-shaped refusal for
     // this check to defer to.
     let capsule_state_root: Option<std::path::PathBuf> = if runtime == "capsule" {
-        match crate::capsule_workspace::qualified_state_root() {
+        match crate::rows::spawn::state_root::qualified_state_root() {
             Ok(root) => Some(root),
             Err(detail) => {
                 let payload = json!({
@@ -277,7 +278,7 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // again right before it spawns; this copy just gets a clean `code`
     // here instead of a rollback after a partial row insert.
     if let Some(root) = &capsule_state_root {
-        if crate::capsule_workspace::state_root_inside_project(root, &project_root) {
+        if crate::rows::spawn::state_root::state_root_inside_project(root, &project_root) {
             let payload = json!({
                 "error": format!(
                     "state root {root:?} lies inside the project root {project_root:?}: a \
@@ -294,7 +295,7 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // Accounts brief (v0.6.0): resolved once, HERE, and recorded on the
     // row — never re-derived later. `""`/absent is the default account,
     // a no-op. A non-default account is checked with the SAME pure
-    // resolver the spawn path itself calls ([`crate::accounts::account_env`]),
+    // resolver the spawn path itself calls ([`crate::agents::accounts::account_env`]),
     // so a create-time refusal and a later spawn-time one (the folder
     // vanishing in between) can never disagree. Refuses loudly, before
     // any state mutation (the same moment `capsule_argv`/the state-root
@@ -304,10 +305,10 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
     // surfacing `account_env`'s own exact-command message.
     let account: String = req.account.clone().unwrap_or_default();
     if !account.is_empty() && account != "default" {
-        let home = crate::accounts::account_home();
+        let home = crate::agents::accounts::account_home();
         let check = home
             .ok_or_else(|| "no home directory to resolve an account against".to_string())
-            .and_then(|home| crate::accounts::account_env(&agent_kind, &account, &home));
+            .and_then(|home| crate::agents::accounts::account_env(&agent_kind, &account, &home));
         if let Err(detail) = check {
             let payload = json!({
                 "error": detail,
@@ -324,7 +325,7 @@ fn check_create_host(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, agent_
 
 /// Starts the new row's capsule supervisor; a failure rolls the row back and refuses.
 async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateReq, workspaces: &Workspaces,
-    ws_handle: &std::sync::Arc<crate::workspaces::Workspace>, capsule_state_root: Option<std::path::PathBuf>,
+    ws_handle: &std::sync::Arc<crate::rows::Workspace>, capsule_state_root: Option<std::path::PathBuf>,
     capsule_argv: &Vec<String>, project_root: &std::path::PathBuf) -> std::result::Result<(), HandlerOutput> {
     {
     // ADR 0042 slice L1a, Codex review finding 1: the capsule spawn —
@@ -378,7 +379,7 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
         match capsule_state_root {
         None => Err(format!(
             "could not resolve this machine's state root ({} unset)",
-            crate::capsule_workspace::STATE_ROOT_HINT
+            crate::rows::spawn::state_root::STATE_ROOT_HINT
         )),
         // `&req.agent_name` verbatim (Codex round finding 2: no
         // synthesized default — a synthesized `<slug>-<host>` handed
@@ -403,10 +404,10 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
             // past that guard, so there is nothing to release on the
             // error path below beyond reporting it.
             tokio::task::spawn_blocking(move || {
-                crate::capsule_workspace::start_supervisor(
+                crate::rows::run::start::start_supervisor(
                     &state_root,
                     &workspace_id,
-                    crate::capsule_workspace::StartMode::Start,
+                    crate::rows::spawn::detach::StartMode::Start,
                     &capsule_argv,
                     &project_root,
                     &agent_name,
@@ -424,14 +425,14 @@ async fn start_created_capsule(req_id: u64, req: &sot_protocol::WorkspaceCreateR
         Ok(()) => {
             tracing::info!(workspace_id = %ws_handle.workspace_id, "workspace.create: capsule supervisor spawned");
             // Starts this row's lifecycle observer for its ongoing periodic poll.
-            crate::capsule_workspace::observer::ensure_running(&workspaces, &ws_handle);
+            crate::rows::run::observer::ensure_running(&workspaces, &ws_handle);
         }
         Err(detail) => {
             tracing::warn!(workspace_id = %ws_handle.workspace_id, error = %detail, "workspace.create: capsule spawn failed; rolling back");
             let _ = workspaces.remove_by_id(&ws_handle.workspace_id);
             for toml_path in [
-                crate::workspaces::toml_path_for(&ws_handle.slug),
-                crate::workspaces::legacy_toml_path_for(&ws_handle.slug),
+                crate::rows::store::toml_path_for(&ws_handle.slug),
+                crate::rows::store::legacy_toml_path_for(&ws_handle.slug),
             ] {
                 match std::fs::remove_file(&toml_path) {
                     Ok(()) => {}
@@ -486,7 +487,7 @@ pub async fn handle_workspace_create(
             Ok(host) => host,
             Err(out) => return Ok(out),
         };
-    let mut ws_seed = crate::workspaces::Workspace::from_label(
+    let mut ws_seed = crate::rows::Workspace::from_label(
         &req.label,
         project_root.clone(),
         autostart,
@@ -513,7 +514,7 @@ pub async fn handle_workspace_create(
         }
     };
     let ws_handle = workspaces.insert(ws_seed);
-    if let Err(e) = crate::workspaces::save(&ws_handle) {
+    if let Err(e) = crate::rows::store::save(&ws_handle) {
         tracing::warn!(error = %e, "workspace toml persist failed; workspace is in-memory only");
     }
 
@@ -522,7 +523,7 @@ pub async fn handle_workspace_create(
     // "capsule" for a NEW row, and since the macOS wiring lane the
     // capsule runtime carries no platform gate at all: one spawn path,
     // every host this daemon builds for. What differs per platform lives
-    // in `capsule_workspace`'s own leaf `cfg(unix)`/`cfg(windows)` arms,
+    // in the capsule runtime's own leaf `cfg(unix)`/`cfg(windows)` arms,
     // so a host with neither fails to COMPILE rather than quietly
     // creating a row it can never supervise.
     if let Err(out) = start_created_capsule(req_id, &req, workspaces, &ws_handle, capsule_state_root,

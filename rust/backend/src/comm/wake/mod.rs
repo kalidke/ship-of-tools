@@ -71,8 +71,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::capsule_workspace::headless::HeadlessError;
-use crate::workspaces::Workspaces;
+use crate::rows::run::headless::HeadlessError;
+use crate::rows::Workspaces;
 
 mod attempt;
 mod screen;
@@ -130,7 +130,7 @@ fn stop_hook_running(registry: &[u8], handle: &str, now_secs: u64) -> bool {
     let Some(at) = v.get("agents").and_then(|a| a.get(handle)).and_then(|e| e.get("stop_at")).and_then(|s| s.as_str()) else {
         return false;
     };
-    let iso = crate::handlers::iso8601_utc_from_secs;
+    let iso = crate::comm::registry::registry::iso8601_utc_from_secs;
     let bound = STOP_HOOK_BOUND.as_secs();
     at >= iso(now_secs.saturating_sub(bound)).as_str() && at <= iso(now_secs + 1).as_str()
 }
@@ -189,7 +189,7 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
             if prompt_glyphs(&agent, cfg!(windows)).is_empty() {
                 continue;
             }
-            let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
+            let state_dir = crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id);
             let home = comm_home.clone();
             let prior = woken.get(&handle).copied();
             let h = handle.clone();
@@ -268,14 +268,14 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
     // Only a Ready row is typed into: a row whose agent has ended can still
     // show a prompt-shaped last screen. (Nothing on the wake path restarts a
     // row; `wake_if_free` only attaches.)
-    let ready = crate::capsule_workspace::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
-    if crate::capsule_workspace::phase_of(state_dir) != ready {
+    let ready = crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
+    if crate::rows::run::probe::phase_of(state_dir) != ready {
         return Step::Skip;
     }
     let seen: std::cell::RefCell<(Option<&'static str>, String)> = Default::default();
     let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
-        let registry = crate::handlers::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
+        let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let reason = refused_on(l, c, a, cfg!(windows)).or_else(|| stop_hook_running(&registry, handle, now).then_some("stop hook running"));
         let border = c.and_then(|(row, _)| l.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn a_stop_mark_holds_only_inside_the_bound() {
         let now = 1_800_000_000;
-        let iso = crate::handlers::iso8601_utc_from_secs;
+        let iso = crate::comm::registry::registry::iso8601_utc_from_secs;
         let at = |off: i64| iso((now as i64 + off) as u64);
         let reg = |entry: &str| format!(r#"{{"agents":{{"h":{entry}}}}}"#).into_bytes();
         let mark = |off: i64| reg(&format!(r#"{{"floor":"user","stop_at":"{}"}}"#, at(off)));

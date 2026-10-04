@@ -8,15 +8,15 @@
 // (`Removable`); `Kept` still returns the typed
 // `capsule_end_not_reached` error, never the flat tmux-style refusal.
 use super::*;
-use crate::workspaces::Workspace;
+use crate::rows::Workspace;
 
-// Isolates `crate::workspaces::save`'s config dir -- `pin_local_
+// Isolates `crate::rows::store::save`'s config dir -- `pin_local_
 // state_root` below now pins `XDG_CONFIG_HOME` unconditionally
 // alongside state, so this is no longer "the one test below" that
 // reaches the reset+persist path for real: an `Orphaned` outcome
 // (this fix) can make ANY of them reach a real toml write or removal,
 // and every one now runs through the same scratch config root.
-// Same technique as `workspaces.rs`'s own `env_guarded`, serialized
+// Same technique as `rows/store/support_tests.rs`'s own `env_guarded`, serialized
 // under the crate-wide lock so this never races another module's
 // env-mutating test. Ungated since the macOS wiring lane: the
 // absence proof `seed_provably_unheld_state_dir` builds means
@@ -107,7 +107,7 @@ fn env_guarded() -> EnvGuard {
 /// (`state_dir.rs`'s own doc — only Windows derives config from the
 /// same `LOCALAPPDATA` root), so pinning state alone left config free
 /// to resolve to the real `$HOME/.config/sot` the instant any test
-/// through this fixture reached `crate::workspaces::save` or a toml
+/// through this fixture reached `crate::rows::store::save` or a toml
 /// removal — exactly the shape of the leaked row this whole fix
 /// exists to close: a scratch daemon whose state root was isolated
 /// but whose config directory was not, writing (and then, once a row
@@ -144,13 +144,13 @@ fn pin_local_state_root(dir: &std::path::Path) -> std::path::PathBuf {
 /// Replaces this module's old reliance on `mark_capsule_terminal`'s
 /// deleted unguarded fast path (Codex review, 2026-09-11: that path
 /// returned `Removable` on the daemon's own say-so alone, with no
-/// proof at all) — same technique `capsule_workspace`'s own
+/// proof at all) — same technique `rows/run/end_run.rs`'s own
 /// absence-proof unit tests use. Ungated since the macOS wiring
-/// lane: the body reaches `capsule_workspace::runtime`, which no
+/// lane: the body reaches the capsule runtime in `rows/run/` and `rows/spawn/`, which no
 /// longer carries a platform gate at its own root, so this fixture
 /// exists wherever the daemon does.
 fn seed_provably_unheld_state_dir(state_root: &std::path::Path, workspace_id: &str) {
-    let state_dir = crate::capsule_workspace::state_dir_for(state_root, workspace_id);
+    let state_dir = crate::rows::spawn::state_root::state_dir_for(state_root, workspace_id);
     std::fs::create_dir_all(&state_dir).expect("create the fake state dir");
     let voyage_id = "a1b2c3d4-e5f6-4890-9abc-def012345678";
     sot_log::supervisor::journal::pointer::publish(&state_dir, voyage_id).expect("publish the pointer");
@@ -242,7 +242,7 @@ async fn destroy(workspaces: &Workspaces, workspace_id: &str) -> serde_json::Val
 // `pin_local_state_root` now also isolates `XDG_CONFIG_HOME` (the
 // harness fix this same effort closes): once this scenario proves
 // `Orphaned` instead of merely refusing, the response path really
-// does reach `crate::workspaces::save`'s reset-persist write, which
+// does reach `crate::rows::store::save`'s reset-persist write, which
 // must never land under a real `~/.config/sot`.
 #[tokio::test]
 async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_flat_refusal() {
@@ -303,8 +303,8 @@ async fn default_capsule_workspace_with_no_state_dir_is_proven_orphaned_not_a_fl
 /// refusing. `SOT_RUNTIME_DIR` is pinned to a fresh, private (owner-
 /// only) scratch dir so the real socket path (`sot_log::lane::socket_unix::
 /// supervisor_socket_path`) never collides with a real session.
-/// `cfg(unix)`: the assertion target is `capsule_workspace::runtime::
-/// is_definitely_orphaned`'s refusing half, and `mod runtime` lost
+/// `cfg(unix)`: the assertion target is `rows::run::end_run::
+/// is_definitely_orphaned`'s refusing half, and the capsule runtime lost
 /// its platform gate in the macOS wiring lane — exactly the change
 /// this gate's predecessor said it would widen with. The socket half
 /// was never the constraint (`sot_log::lane::socket_unix` and
@@ -345,7 +345,7 @@ async fn a_reachable_listener_with_no_state_dir_still_refuses() {
     // The EXACT path `destroy_capsule_workspace` will dial: the same
     // canonical-root-then-join this fix's own destroy site uses, fed
     // to the SAME hash the production lane address is built from.
-    let state_dir = crate::capsule_workspace::state_dir_for(&canonical_root, &id);
+    let state_dir = crate::rows::spawn::state_root::state_dir_for(&canonical_root, &id);
     let h = sot_log::host::state_dir::state_dir_hash(&state_dir);
     let sock_path =
         sot_log::lane::socket_unix::supervisor_socket_path(&h).expect("runtime dir was just pinned");
@@ -408,10 +408,10 @@ async fn a_capsule_workspace_marked_terminal_still_needs_the_absence_proof() {
     // An epoch must begin before an observation about it is accepted,
     // so seed one before forcing the phase cell to Terminal.
     let ws = reg.resolve(Some(id.as_str())).expect("row just seeded");
-    let identity = crate::workspaces::SupervisorIdentity { pid: 1, created: 1 };
+    let identity = crate::rows::workspace::SupervisorIdentity { pid: 1, created: 1 };
     ws.begin_supervisor_epoch(identity);
-    ws.apply_phase_observation(crate::workspaces::Observation::Phase {
-        phase: crate::workspaces::Phase::Terminal,
+    ws.apply_phase_observation(crate::rows::workspace::Observation::Phase {
+        phase: crate::rows::workspace::Phase::Terminal,
         supervisor: identity,
         voyage: None,
     });
@@ -525,7 +525,7 @@ async fn default_row_confirmed_ended_resets_agent_persists_toml_and_broadcasts()
     assert_eq!(evt.slug, slug);
 
     // The toml: the reset was persisted, not just held in memory.
-    let toml_path = crate::workspaces::toml_path_for(&slug);
+    let toml_path = crate::rows::store::toml_path_for(&slug);
     let contents = std::fs::read_to_string(&toml_path)
         .unwrap_or_else(|e| panic!("toml must be persisted at {toml_path:?}: {e}"));
     assert!(

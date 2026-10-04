@@ -1,7 +1,7 @@
 //! Launching a row's `sot-capsule supervise` detached: start-mode flags, the sibling check and the spawn per OS.
 
-use crate::capsule_workspace::{capsule_supervisor_env, NESTING_ENV_VARS_TO_SCRUB};
-use crate::workspaces::StartPermit;
+use crate::agents::env::{capsule_supervisor_env, NESTING_ENV_VARS_TO_SCRUB};
+use crate::rows::gate::StartPermit;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -196,7 +196,7 @@ fn supervisor_stderr() -> Stdio {
 /// unqualified root exactly here rather than needing its own copy of
 /// the check. `state_dir` (a subdirectory of the qualified root) is
 /// deliberately NOT what gets checked — the root itself is, via a
-/// fresh resolution matching `handlers.rs`'s own earlier check for a
+/// fresh resolution matching `rows/ops/create.rs`'s own earlier check for a
 /// `workspace.create` (both resolve the SAME env-derived root, so they
 /// agree by construction, not by sharing a value across the wire).
 ///

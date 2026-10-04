@@ -11,10 +11,10 @@ use sot_protocol::ReplExecuteRes;
 use sot_protocol::ReplValueOut;
 use sot_protocol::StackFrame;
 use tokio::sync::broadcast;
-use crate::repl::ReplFrameMsg;
+use crate::sidecars::repl::ReplFrameMsg;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
-use crate::handlers::HandlerOutput;
+use crate::rows::Workspaces;
+use crate::server::reply::HandlerOutput;
 
 /// Backend-issued eval_id space for `repl.execute` runs (ADR 0033). Starts at
 /// 2^40 so it never collides with a frontend's small per-workspace
@@ -85,7 +85,7 @@ fn exec_err_frame(req_id: u64, run_id: &str, ws_id: &str, outcome: &str, msg: St
 }
 
 /// Builds the inner REPL op, its payload and the drawer display, refusing a `run_file` path outside the root.
-fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::workspaces::Workspace, eval_id: u64,
+fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::rows::Workspace, eval_id: u64,
     run_id: &str, ws_id: &str) -> std::result::Result<(&'static str, serde_json::Value, String), HandlerOutput> {
     Ok(match &req.input {
         ReplExecuteInput::RunFile { path } => {
@@ -168,7 +168,7 @@ fn build_exec_request(req_id: u64, req: &ReplExecuteReq, ws: &crate::workspaces:
 }
 
 /// Broadcasts the `started` control frame that pre-registers the run in the drawer.
-fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::workspaces::Workspace, workspaces: &Workspaces,
+fn announce_exec_started(req: &ReplExecuteReq, ws: &crate::rows::Workspace, workspaces: &Workspaces,
     eval_id: u64, run_id: &String, display: String) -> (String, broadcast::Sender<ReplFrameMsg>) {
     let origin = req.origin.clone().unwrap_or_else(|| "session".to_string());
     let frame_ws = ws.slug.clone();
@@ -294,7 +294,7 @@ fn split_exec_frames(frames: Vec<serde_json::Value>, error_out: &mut Option<Repl
 }
 
 /// Writes the image frames under the run's folder and returns their paths.
-async fn spill_exec_figures(ws: &crate::workspaces::Workspace, run_id: &String, image_frames: Vec<(String, String)>)
+async fn spill_exec_figures(ws: &crate::rows::Workspace, run_id: &String, image_frames: Vec<(String, String)>)
     -> Vec<String> {
     let mut figures: Vec<String> = Vec::new();
     if !image_frames.is_empty() {

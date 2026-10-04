@@ -11,8 +11,8 @@ use sot_protocol::ConceptWriteReq;
 use sot_protocol::ConceptWriteRes;
 use sot_protocol::Frame;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
-use crate::handlers::HandlerOutput;
+use crate::rows::Workspaces;
+use crate::server::reply::HandlerOutput;
 
 pub async fn handle_concept_read(
     req_id: u64,

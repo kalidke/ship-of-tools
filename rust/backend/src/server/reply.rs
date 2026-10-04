@@ -127,8 +127,8 @@ pub(super) fn finish_dispatch(
     op_name: &str,
     req_id: u64,
     started: std::time::Instant,
-    result: Result<handlers::HandlerOutput>,
-) -> handlers::HandlerOutput {
+    result: Result<HandlerOutput>,
+) -> HandlerOutput {
     let service_ms = started.elapsed().as_millis() as u64;
     if service_ms >= SLOW_REQUEST_MS {
         tracing::info!(op = %op_name, id = req_id, service_ms, "slow request");
@@ -169,7 +169,7 @@ pub(super) type OutTx = mpsc::Sender<(Frame, Option<Vec<u8>>)>;
 /// never blocked by the cap — only how many jobs run at once, once already
 /// queued. `pty.*` ops never touch this semaphore at all — they dispatch
 /// INLINE, which is what keeps them served
-/// even while every slot here is busy (see `switch_latency.rs`'s
+/// even while every slot here is busy (see `switch_latency/main.rs`'s
 /// `pty_not_starved::pty_screen_is_served_while_a_real_slow_kernel_request_is_pending`
 /// test).
 pub(super) const OFFLOOP_CONCURRENCY: usize = 4;
@@ -208,7 +208,7 @@ pub(super) fn spawn_job<F>(
     op_name: String,
     fut: F,
 ) where
-    F: std::future::Future<Output = Result<handlers::HandlerOutput>> + Send + 'static,
+    F: std::future::Future<Output = Result<HandlerOutput>> + Send + 'static,
 {
     let started = std::time::Instant::now();
     jobs.spawn(async move {

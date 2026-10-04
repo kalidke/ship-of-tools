@@ -62,7 +62,7 @@ async fn preview_get_on_a_bounded_output_file_surfaces_kernel_unavailable_fast()
 /// serves.
 #[tokio::test]
 async fn concurrent_requests_share_one_generation_and_only_the_supervisor_respawns() {
-    // N = `OFFLOOP_CONCURRENCY` (server.rs): gen 1 holds all N, so N may not exceed it.
+    // N = `OFFLOOP_CONCURRENCY` (`server/reply.rs`): gen 1 holds all N, so N may not exceed it.
     const N: u64 = 4;
     let n = N.to_string();
     let stub_dir = tempfile::tempdir().expect("stub dir");

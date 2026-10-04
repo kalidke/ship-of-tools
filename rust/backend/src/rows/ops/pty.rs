@@ -13,12 +13,12 @@ use sot_protocol::PtyInputRes;
 use sot_protocol::PtyOpenReq;
 use sot_protocol::PtyScreenReq;
 use sot_protocol::PtyScreenRes;
-use crate::handlers;
-use crate::handlers::HandlerOutput;
-use crate::server::write_frame_to;
+use crate::paths;
+use crate::server::reply::HandlerOutput;
+use crate::server::reply::write_frame_to;
 use tokio::io::AsyncWrite;
-use crate::workspaces::Workspace;
-use crate::workspaces::Workspaces;
+use crate::rows::Workspace;
+use crate::rows::Workspaces;
 
 /// `PtyInputReq::origin` / `PtyScreenReq` share no size limit of their own
 /// — this one is `origin`'s: ADR 0042 amendment §1, "≤128 bytes, else
@@ -31,7 +31,7 @@ const MAX_PTY_INPUT_ORIGIN_LEN: usize = 128;
 /// capsule arms, which are the only readers.
 const CAPSULE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Bounds for [`crate::capsule_workspace::headless::write_and_enter`]'s
+/// Bounds for [`crate::rows::run::headless::write_and_enter`]'s
 /// pacing wait — never a confirmation, only pacing.
 const CAPSULE_WRITE_QUIET_BUDGET: std::time::Duration = std::time::Duration::from_millis(300);
 const CAPSULE_WRITE_PACING_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
@@ -40,12 +40,12 @@ const CAPSULE_WRITE_PACING_BUDGET: std::time::Duration = std::time::Duration::fr
 /// closure reports — computed OFF the async runtime (the phase probe and
 /// the headless client both make blocking IPC calls), then translated to a
 /// response frame back on the async side. Ungated, like
-/// `capsule_workspace::headless` itself (macOS wiring lane): one variant
+/// `rows::run::headless` itself (macOS wiring lane): one variant
 /// set, one outcome shape, on every host this daemon builds for.
 enum CapsuleOpOutcome<T> {
     Ok(T),
     NotReady(&'static str),
-    Headless(crate::capsule_workspace::headless::HeadlessError),
+    Headless(crate::rows::run::headless::HeadlessError),
 }
 
 /// Translates a [`CapsuleOpOutcome::Headless`] error into the typed error
@@ -60,7 +60,7 @@ enum CapsuleOpOutcome<T> {
 /// too: both cases mean the same thing, "we do not know if this landed in
 /// the record," and the daemon never retries either one on its own).
 fn headless_error_payload(
-    e: crate::capsule_workspace::headless::HeadlessError,
+    e: crate::rows::run::headless::HeadlessError,
     fail_code: &'static str,
 ) -> serde_json::Value {
     let code = if e.phase == "record" { "capsule_input_unknown" } else { fail_code };
@@ -147,7 +147,7 @@ pub async fn handle_pty_input(
                     let payload = json!({
                         "error": format!(
                             "could not resolve this machine's state root ({} unset)",
-                            crate::capsule_workspace::STATE_ROOT_HINT
+                            crate::rows::spawn::state_root::STATE_ROOT_HINT
                         ),
                         "code": "capsule_input_failed",
                         "phase": "attach",
@@ -155,7 +155,7 @@ pub async fn handle_pty_input(
                     return Ok(vec![(Frame::res(req_id, op::PTY_INPUT, payload), None)]);
                 };
                 let state_dir =
-                    crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
+                    crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id);
                 let enter = req.enter;
                 // The ORIGINAL payload length — `PtyInputRes::bytes`'s own
                 // doc ("the enter byte, if requested, is not counted"), so
@@ -175,7 +175,7 @@ pub async fn handle_pty_input(
                 let project_root = ws.project_root.clone();
                 let workspaces_for_resume = workspaces.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
-                    let phase = match crate::capsule_workspace::resume_if_absent(
+                    let phase = match crate::rows::run::activation::resume_if_absent(
                         &state_root,
                         &workspace_id,
                         &agent_kind,
@@ -187,17 +187,17 @@ pub async fn handle_pty_input(
                         Ok(phase) => phase,
                         Err(e) => {
                             tracing::warn!(workspace_id = %workspace_id, error = %e, "pty.input: resume_if_absent failed");
-                            crate::capsule_workspace::UNREACHABLE_PHASE
+                            crate::rows::run::probe::UNREACHABLE_PHASE
                         }
                     };
                     let ready_phase =
-                        crate::capsule_workspace::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
+                        crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
                     // Split write+pace+enter: `write_and_enter`'s own doc.
                     if enter {
-                        match crate::capsule_workspace::headless::write_and_enter(
+                        match crate::rows::run::headless::write_and_enter(
                             &state_dir,
                             &controller_id,
                             &bytes,
@@ -210,7 +210,7 @@ pub async fn handle_pty_input(
                         }
                     } else {
                         let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
-                        match crate::capsule_workspace::headless::type_into(&state_dir, &controller_id, &bytes, deadline) {
+                        match crate::rows::run::headless::type_into(&state_dir, &controller_id, &bytes, deadline) {
                             Ok(_n) => CapsuleOpOutcome::Ok(PtyEnter::NotSent),
                             Err(e) => CapsuleOpOutcome::Headless(e),
                         }
@@ -276,7 +276,7 @@ pub async fn handle_pty_screen(
                     let payload = json!({
                         "error": format!(
                             "could not resolve this machine's state root ({} unset)",
-                            crate::capsule_workspace::STATE_ROOT_HINT
+                            crate::rows::spawn::state_root::STATE_ROOT_HINT
                         ),
                         "code": "capsule_screen_failed",
                         "phase": "attach",
@@ -284,7 +284,7 @@ pub async fn handle_pty_screen(
                     return Ok(vec![(Frame::res(req_id, op::PTY_SCREEN, payload), None)]);
                 };
                 let state_dir =
-                    crate::capsule_workspace::state_dir_for(&state_root, &ws.workspace_id);
+                    crate::rows::spawn::state_root::state_dir_for(&state_root, &ws.workspace_id);
                 // A pure watcher never takes, so this id never lands in any
                 // input record — it exists only because `FeAttachClient::
                 // attach`'s signature takes one; a fixed, self-describing
@@ -300,7 +300,7 @@ pub async fn handle_pty_screen(
                 let project_root = ws.project_root.clone();
                 let workspaces_for_resume = workspaces.clone();
                 let outcome = tokio::task::spawn_blocking(move || {
-                    let phase = match crate::capsule_workspace::resume_if_absent(
+                    let phase = match crate::rows::run::activation::resume_if_absent(
                         &state_root,
                         &workspace_id,
                         &agent_kind,
@@ -312,16 +312,16 @@ pub async fn handle_pty_screen(
                         Ok(phase) => phase,
                         Err(e) => {
                             tracing::warn!(workspace_id = %workspace_id, error = %e, "pty.screen: resume_if_absent failed");
-                            crate::capsule_workspace::UNREACHABLE_PHASE
+                            crate::rows::run::probe::UNREACHABLE_PHASE
                         }
                     };
                     let ready_phase =
-                        crate::capsule_workspace::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
+                        crate::rows::run::probe::phase_str(sot_log::lane::wire::SupervisorPhase::Ready);
                     if phase != ready_phase {
                         return CapsuleOpOutcome::NotReady(phase);
                     }
                     let deadline = std::time::Instant::now() + CAPSULE_OP_DEADLINE;
-                    match crate::capsule_workspace::headless::screen_of(
+                    match crate::rows::run::headless::screen_of(
                         &state_dir,
                         &controller_id,
                         deadline,
@@ -390,7 +390,7 @@ where
     };
     // Name validation (security review).
     if let Some(t) = req.target.as_deref() {
-        if !handlers::valid_name(t) {
+        if !paths::valid_name(t) {
             let payload = serde_json::json!({
                 "error": format!(
                     "invalid target {t:?} (want 1-64 chars of [A-Za-z0-9._-])"
@@ -429,7 +429,7 @@ where
         start_on_attach(&ws, workspaces, &state_root);
     }
     let state_dir = state_root
-        .map(|root| crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id))
+        .map(|root| crate::rows::spawn::state_root::state_dir_for(&root, &ws.workspace_id))
         .map(|p| p.to_string_lossy().into_owned());
     let payload = serde_json::json!({
         "error": "this workspace's agent pane is a capsule; attach directly instead of pty.open",
@@ -447,7 +447,7 @@ fn start_on_attach(ws: &Workspace, workspaces: &Workspaces, state_root: &Option<
         None => {
             ws.set_activation_error(Some(format!(
                 "could not resolve this machine's state root ({} unset)",
-                crate::capsule_workspace::STATE_ROOT_HINT
+                crate::rows::spawn::state_root::STATE_ROOT_HINT
             )));
         }
         Some(root) => {
@@ -461,14 +461,14 @@ fn start_on_attach(ws: &Workspace, workspaces: &Workspaces, state_root: &Option<
             tokio::spawn(async move {
                 wait_for_test_activation_barrier().await;
                 let result = tokio::task::spawn_blocking(move || {
-                    crate::capsule_workspace::ensure_started(
+                    crate::rows::run::activation::ensure_started(
                         &root,
                         &workspace_id,
                         &agent_kind,
                         &agent_name,
                         &slug,
                         &project_root,
-                        crate::capsule_workspace::ActivationIntent::Selection,
+                        crate::rows::run::activation::ActivationIntent::Selection,
                         workspaces_for_start,
                     )
                 })

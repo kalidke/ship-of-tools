@@ -1,7 +1,7 @@
 #![cfg(target_os = "linux")]
 //! The daemon's link to the hub (0031 B2): a real hub `sotd` and a real
 //! `sotd` for a `frontend = true` host, joined by a stub `ssh` that relays
-//! to the hub's socket with `nc -U` (the `lane_bridge.rs` pattern). The
+//! to the hub's socket with `nc -U` (the `lane_bridge/main.rs` pattern). The
 //! hub's `agent.message` broadcast reaches the guest, which files for the
 //! handles its own registry lists and answers `agent.filed`.
 //!

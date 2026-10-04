@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 const READ_CHUNK: usize = 64 * 1024;
 
 /// Content-Type by extension: the static-site table plus the video rows.
-/// Shared with `site_serve`; falls back to a generic stream type so the
+/// Shared with `pages::site`; falls back to a generic stream type so the
 /// browser still treats an unknown file as opaque bytes. Serving a video type
 /// is still gated by `is_servable_video`, so this table serves nothing new.
 pub(crate) fn content_type(path: &Path) -> &'static str {

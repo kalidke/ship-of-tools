@@ -4,7 +4,7 @@
 //! a test-owned TCP -> Unix relay standing in for the loopback tunnel a
 //! remote `DaemonLaneEndpoint::LaneDial::Tcp` dials in production
 //! (`sot-protocol`'s own `lane_client.rs`, lane B4a). Shares `Env` and
-//! the wire-protocol round-trip helpers with `capsule_workspaces.rs` via
+//! the wire-protocol round-trip helpers with `capsule_workspaces/main.rs` via
 //! `tests/support/mod.rs` (a pure lift there, no behavior change).
 //!
 //! Decision 11's own words are what each test below proves piece by
@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, UnixStream};
 
-/// Mirrors `capsule_workspaces.rs`'s own `SERIAL`: this file's real
+/// Mirrors `capsule_workspaces/main.rs`'s own `SERIAL`: this file's real
 /// `sotd`/`sot-capsule` processes share the same per-process
 /// `SOT_RUNTIME_DIR` env var `Env::new` sets, so parallel tests within
 /// THIS binary would race it exactly the same way.
@@ -53,7 +53,7 @@ fn wake_flag_for_test() -> (Arc<AtomicBool>, Box<dyn Fn() + Send + 'static>) {
 /// Creates a `runtime: "capsule"` workspace and polls it to `"ready"`,
 /// returning its id and the `session_name` `lane.connect`'s own `target`
 /// names — `workspace.create`'s reply already carries it (mirrors
-/// `capsule_workspaces.rs`'s own `lane_connect_supervisor_pipes_hello_
+/// `capsule_workspaces/lane_connect.rs`'s own `lane_connect_supervisor_pipes_hello_
 /// and_status` fixture).
 async fn create_ready_capsule_row(env: &Env, conn: &mut Conn, next_id: &mut u64, label: &str) -> (String, String) {
     let create_req = serde_json::json!({
@@ -70,7 +70,7 @@ async fn create_ready_capsule_row(env: &Env, conn: &mut Conn, next_id: &mut u64,
     (workspace_id, target)
 }
 
-/// [`capsule_workspaces.rs`'s own `kill_supervisor_only`], reproduced
+/// [`capsule_workspaces/main.rs`'s own `kill_supervisor_only`], reproduced
 /// here (not moved — only `Env` and the wire helpers were): SIGKILL every
 /// process matching this env's own anchored `supervise` pattern, then
 /// poll it gone. Simulates the authority crashing outright, never a
@@ -88,7 +88,7 @@ fn kill_supervisor_only(state_root: &Path) {
     assert!(poll_until_no_process_matches(&pattern, BOUND), "a supervisor process still matches {pattern:?} after SIGKILL");
 }
 
-/// [`capsule_workspaces.rs`'s own `count_matching_processes`] twin —
+/// [`capsule_workspaces/main.rs`'s own `count_matching_processes`] twin —
 /// needed here to prove "exactly one new supervise process," not merely
 /// "at least one."
 fn count_matching_processes(pattern: &str) -> std::io::Result<usize> {

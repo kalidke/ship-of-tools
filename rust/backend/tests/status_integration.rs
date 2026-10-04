@@ -1,6 +1,6 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! `sotd status` (topology plan §E) against a REAL daemon this box starts
-//! and stops — the live half's own proof, complementing `status_cli`'s
+//! and stops — the live half's own proof, complementing `topology::status`'s
 //! fixture-only unit tests (`report`/`render_text`/`render_json`, which
 //! never touch a daemon at all). `mod support;` reuses `Env` for the tmp
 //! dirs and bounded teardown; the daemon itself is spawned BY HAND here
@@ -21,7 +21,7 @@ use support::{call, poll_until, sotd_exe, try_connect, Env, TEST_STATE_HOST};
 const BOUND: Duration = Duration::from_secs(20);
 
 /// Real-process tests share one CI runner; serialize them like every other
-/// file in this crate that spawns a real `sotd` (`capsule_workspaces.rs`'s
+/// file in this crate that spawns a real `sotd` (`capsule_workspaces/main.rs`'s
 /// own `SERIAL`). One test today, but the convention is free insurance
 /// against a future second test racing `Env::new`'s process-wide
 /// `SOT_RUNTIME_DIR` env var.
@@ -109,7 +109,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     assert!(frame.payload.get("error").is_none(), "fe.presence refused: {:?}", frame.payload);
 
     // `sotd status --json` — a SEPARATE, real one-shot process (the same
-    // binary, the same env), not a library call into `status_cli` — this
+    // binary, the same env), not a library call into `topology::status` — this
     // is the actual CLI a launcher or the `sot-status` skill would run.
     let mut status_cmd = tokio::process::Command::new(sotd_exe());
     status_cmd

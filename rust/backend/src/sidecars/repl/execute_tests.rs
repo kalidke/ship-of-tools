@@ -72,7 +72,7 @@ fn scratch_dir() -> PathBuf {
 fn add_row(workspaces: &Workspaces, base: &Path, label: &str) -> (String, PathBuf) {
     let root = base.join(label);
     std::fs::create_dir_all(&root).unwrap();
-    let ws = crate::workspaces::Workspace::from_label(label, root.clone(), false, "none".into(), String::new(), String::new());
+    let ws = crate::rows::Workspace::from_label(label, root.clone(), false, "none".into(), String::new(), String::new());
     let id = ws.workspace_id.clone();
     workspaces.insert(ws);
     (id, root)

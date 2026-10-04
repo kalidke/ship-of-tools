@@ -298,7 +298,7 @@ pub fn own_disk(dir: &Path, own_identity: &str) -> bool {
     #[cfg(target_os = "linux")]
     return own_identity.starts_with("local ");
     #[cfg(target_os = "macos")]
-    return matches!(crate::capsule_workspace::macos_only::mounted_locally(dir), Ok(true));
+    return matches!(crate::rows::spawn::state_root::macos_only::mounted_locally(dir), Ok(true));
     #[cfg(windows)]
     return windows_volume_fixed(dir).is_some_and(|(fixed, canonical)| windows_own_disk(fixed, &canonical));
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

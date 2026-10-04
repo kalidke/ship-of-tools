@@ -96,7 +96,7 @@ async fn capsule_attach_on_ended_row_serializes_under_the_guard() {
     );
     // Every capsule `pty.open` (success included) carries the same
     // informational `"error"` hint text alongside `"code": "attach_direct"`
-    // (`server.rs`) — the CODE is the success/failure signal, never
+    // (`rows/ops/pty.rs`) — the CODE is the success/failure signal, never
     // `"error"`'s mere presence.
     assert_eq!(res_a.payload["code"], "attach_direct", "first concurrent pty.open on an ended row: {:?}", res_a.payload);
     assert_eq!(res_b.payload["code"], "attach_direct", "second concurrent pty.open on an ended row: {:?}", res_b.payload);

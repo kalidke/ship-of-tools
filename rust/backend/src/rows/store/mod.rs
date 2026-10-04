@@ -143,7 +143,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             .get("session_name")
             .or_else(|| kv.get("tmux_session"))
             .cloned()
-            .unwrap_or_else(|| paths::session_name(&label));
+            .unwrap_or_else(|| super::session_name(&label));
         let created = kv
             .get("created")
             .and_then(|s| s.parse::<i64>().ok())
@@ -213,7 +213,7 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
     let session_name = backend
         .get("tmux_session")
         .cloned()
-        .unwrap_or_else(|| paths::session_name(&label));
+        .unwrap_or_else(|| super::session_name(&label));
     let workspace_id = backend
         .get("session_id")
         .cloned()
@@ -360,7 +360,7 @@ fn sessions_dir() -> PathBuf {
 /// sibling of `paths::state_dir()`'s `state` under the same
 /// `%LOCALAPPDATA%\sot` root, chosen so neither collides with the capsule
 /// runtime's own `workspaces\<id>` subtree
-/// (`capsule_workspace::state_dir_for`). Mirrors
+/// (`rows::spawn::state_root::state_dir_for`). Mirrors
 /// `sot_log::host::state_dir::sot_state_dir`'s own precedent of ignoring
 /// `XDG_*` on Windows in favour of `%LOCALAPPDATA%` (its module doc:
 /// letting a second env var win on Windows is exactly how the FE/capsule

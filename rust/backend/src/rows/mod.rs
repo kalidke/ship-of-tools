@@ -16,12 +16,12 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 
 use tokio::sync::broadcast;
 
-use crate::concept::ConceptStore;
-use crate::files_mode::FilesMode;
-use crate::kernel::Kernel;
+use crate::files::concept::ConceptStore;
+use crate::files::tree::FilesMode;
+use crate::sidecars::kernel::Kernel;
 use crate::paths::slug;
-use crate::repl::{Repl, ReplFrameMsg};
-use crate::watcher::{PreviewChanged, Watcher};
+use crate::sidecars::repl::{Repl, ReplFrameMsg};
+use crate::files::watcher::{PreviewChanged, Watcher};
 
 use gate::RunGate;
 use workspace::PhaseCell;
@@ -174,7 +174,7 @@ struct Inner {
     /// (`set_monitor_hub`); each connection clones it out to subscribe and the
     /// `monitor.*` ops query its history. `None` only before startup wires it
     /// (and in the `Default` impl used by tests).
-    monitor_hub: Option<crate::monitor::MonitorHub>,
+    monitor_hub: Option<crate::sidecars::monitor::MonitorHub>,
     /// The shared preview.changed bus for per-workspace watcher spawns
     /// (2026-07-10 multiwatch). Installed once at startup via
     /// `set_watch_bus`, before workspace registration; `None` in tests. No

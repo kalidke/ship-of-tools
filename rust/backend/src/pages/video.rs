@@ -1,4 +1,4 @@
-// http_serve.rs — a tiny loopback HTTP/1.1 static file server with byte-range
+// pages/video.rs — a tiny loopback HTTP/1.1 static file server with byte-range
 // support, used to stream video files to the OS browser's native HTML5 <video>
 // player (ADR 0018, revised). The frontend's `o` key asks the backend for a
 // `video.open` URL.
@@ -8,7 +8,7 @@
 // `Range: bytes=` header so the browser can seek. ~200 lines on tokio beats
 // pulling in the hyper/tower tree. Browsers send single-range requests for
 // <video>; multipart ranges fall back to a full 200. `content_type`,
-// `parse_range`, `serve_file` and `write_simple` are shared with `site_serve`,
+// `parse_range`, `serve_file` and `write_simple` are shared with `pages::site`,
 // so the two servers cannot disagree about Range or an empty file.
 //
 // Scope/security: binds 127.0.0.1 only. Serves only files whose extension is a known video type, and only
@@ -29,13 +29,13 @@ use anyhow::{Context, Result};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 
-pub(crate) use super::http::{content_type, serve_file, write_simple};
+use super::http::{content_type, serve_file, write_simple};
 
 /// Live video grants: `token -> absolute path`, plus insertion order so the
 /// oldest grant can be evicted once `MAX_GRANTS` is exceeded (a session that
 /// pops out many videos shouldn't grow this forever). `BTreeMap`/`VecDeque`
 /// `::new()` are both const, so this initializes without lazy init — same
-/// shape as `site_serve`'s `SITE_ROOTS`.
+/// shape as `pages::site`'s `SITE_ROOTS`.
 struct Grants {
     by_token: BTreeMap<String, PathBuf>,
     order: VecDeque<String>,

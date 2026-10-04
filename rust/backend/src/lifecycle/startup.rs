@@ -14,8 +14,8 @@ use std::sync::Arc;
 use sot_protocol::ops::lease as bounds;
 use tokio::sync::broadcast;
 
-use crate::lease::{self, Leases, StartPlan};
-use crate::workspaces::{Workspace, WorkspaceChanged, Workspaces};
+use crate::lifecycle::lease::{self, Leases, StartPlan};
+use crate::rows::{Workspace, WorkspaceChanged, Workspaces};
 
 /// The daemon's leases, built from the record before any connection is
 /// accepted, so no grant can rewrite the record from a state that lacks
@@ -35,7 +35,7 @@ pub(crate) fn begin(
         tracing::warn!(
             "capsule workspace resume-scan skipped: could not resolve this machine's state root \
              ({} unset)",
-            crate::capsule_workspace::STATE_ROOT_HINT
+            crate::rows::spawn::state_root::STATE_ROOT_HINT
         );
         return Arc::new(Leases::new(own_boot.ok(), None, None, false));
     };
@@ -56,10 +56,10 @@ pub(crate) fn begin(
     tracing::info!(?plan, "start plan from the held record");
     match plan {
         StartPlan::Resume => {
-            tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
+            tokio::spawn(crate::rows::run::resume::resume_all(state_root, workspaces.clone()));
         }
         StartPlan::Pending { until_ms } => {
-            tokio::spawn(crate::capsule_workspace::resume_all(state_root, workspaces.clone()));
+            tokio::spawn(crate::rows::run::resume::resume_all(state_root, workspaces.clone()));
             if let Err(e) = leases.install_pending(until_ms) {
                 tracing::error!("the pending start's deadline was not written: {e}");
             }
@@ -80,7 +80,7 @@ pub(crate) fn begin(
 fn forget_rows(workspaces: &Workspaces, ids: &[String]) -> Vec<String> {
     let mut unremoved = Vec::new();
     for ws in workspaces.list().into_iter().filter(|ws| ids.contains(&ws.workspace_id)) {
-        if !crate::handlers::remove_row_files(&ws.slug) {
+        if !crate::rows::run::end::remove_row_files(&ws.slug) {
             tracing::error!(workspace_id = %ws.workspace_id, "a forgotten row's registration would not go; the next start drops it again");
             unremoved.push(ws.workspace_id.clone());
         }
@@ -99,8 +99,8 @@ async fn cleanup(
     workspaces: Workspaces,
     ws_events: broadcast::Sender<WorkspaceChanged>,
 ) {
-    let deadline = tokio::time::Instant::now() + crate::shutdown::shutdown_bound();
-    let report = crate::shutdown::end_rows(rows, &workspaces, &ws_events, &state_root, deadline).await;
+    let deadline = tokio::time::Instant::now() + crate::lifecycle::shutdown::shutdown_bound();
+    let report = crate::lifecycle::shutdown::end_rows(rows, &workspaces, &ws_events, &state_root, deadline).await;
     tracing::info!(
         ended = report.ended.len(),
         not_ended = report.not_ended,
@@ -120,7 +120,7 @@ mod tests {
     use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
     use sot_protocol::ops::{FeLeaseReq, LeaseOutcome};
 
-    use crate::lease::HeldRecord;
+    use crate::lifecycle::lease::HeldRecord;
 
     /// The config env this test points at a tempdir, put back on drop.
     struct EnvBack(Vec<(&'static str, Option<OsString>)>);
@@ -152,7 +152,7 @@ mod tests {
         let stuck = row("stuck");
         let gone = row("gone");
         // A directory where the registration file goes: it will not go.
-        std::fs::create_dir_all(crate::workspaces::toml_path_for(&stuck.slug)).unwrap();
+        std::fs::create_dir_all(crate::rows::store::toml_path_for(&stuck.slug)).unwrap();
 
         let own = sot_log::identity::challenge::boot_identity().expect("this host's boot");
         let state = tempfile::tempdir().unwrap();

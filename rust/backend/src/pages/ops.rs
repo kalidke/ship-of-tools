@@ -14,9 +14,10 @@ use sot_protocol::QuartoOpenRes;
 use sot_protocol::VideoOpenReq;
 use sot_protocol::VideoOpenRes;
 
-use crate::handlers::{canonicalize_and_workspace_root, HandlerOutput};
+use crate::files::confine::canonicalize_and_workspace_root;
+use crate::server::reply::HandlerOutput;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 
 /// `docs.open`'s site-root walk (v0.6.6): starting from `start` (a subpage's
 /// own directory), climb toward the OUTERMOST ancestor — bounded by
@@ -90,7 +91,7 @@ async fn find_site_root(
 /// `video.open` — return a loopback HTTP URL for the cursored video file so
 /// the frontend can hand it to the OS browser's HTML5 <video> (native
 /// hardware decode + smooth playback, far better than streaming decoded frames
-/// in-pane). The backend's `http_serve` server (spawned at startup) serves the
+/// in-pane). The backend's `pages::video` server (spawned at startup) serves the
 /// file with byte-range support; the launcher SSH-forwards the port. ADR 0018.
 pub async fn handle_video_open(
     req_id: u64,
@@ -101,7 +102,7 @@ pub async fn handle_video_open(
     tracing::info!(path = %req.path, "video.open");
 
     let path = std::path::Path::new(&req.path);
-    if !crate::http_serve::is_servable_video(path) {
+    if !crate::pages::video::is_servable_video(path) {
         let payload = json!({
             "error": format!("not a servable video file: {}", req.path),
             "code": "not_video",
@@ -121,12 +122,12 @@ pub async fn handle_video_open(
 
     // Register this ONE file under an opaque token rather than handing the
     // frontend a URL that embeds the raw filesystem path (security review:
-    // the http_serve port has no auth of its own, so a URL shaped like
+    // the pages::video port has no auth of its own, so a URL shaped like
     // `http://127.0.0.1:1235/<abs-path>` let any local user GET any
     // owner-readable video — or, worse, anything else that path pointed at).
     // `None` means the CSPRNG read failed — fail closed rather than mint a
     // guessable token (security review).
-    let Some(token) = crate::http_serve::register_video(path.to_path_buf()) else {
+    let Some(token) = crate::pages::video::register_video(path.to_path_buf()) else {
         let payload = json!({
             "error": "could not mint a secure grant token (system RNG unavailable) — try again",
             "code": "rng_unavailable",
@@ -138,7 +139,7 @@ pub async fn handle_video_open(
     // built on the preferred port would send this user's grant token to the
     // OTHER user's video server — "no such grant" for the user, token leak
     // to a stranger's process (2026-07-23 shared-host incident).
-    let Some(port) = crate::http_serve::bound_video_port() else {
+    let Some(port) = crate::pages::video::bound_video_port() else {
         let payload = json!({
             "error": "video server is not running (both preferred and ephemeral binds failed at startup) — check the daemon log",
             "code": "video_server_down",
@@ -158,11 +159,11 @@ pub async fn handle_video_open(
 /// browser with full CSS/JS/sub-page fidelity. (Op name is legacy from the
 /// Documenter first cut; it now serves any directory, not just
 /// `docs/build`.) `req.path` is the cursored file's absolute backend path;
-/// the handler roots the `site_serve` server at that file's **site root**
+/// the handler roots the `pages::site` server at that file's **site root**
 /// (not just its own directory — see the rooting rule below) and returns the
 /// URL. The launcher SSH-forwards the port. ADR 0024.
 ///
-/// Confined to the workspace's project root (security review): `site_serve`'s
+/// Confined to the workspace's project root (security review): `pages::site`'s
 /// port has no auth of its own, so rooting it at an arbitrary absolute
 /// directory would let `docs.open` turn it into a general-purpose file server
 /// for anything the daemon's owner can read, reachable by any local user.
@@ -192,7 +193,7 @@ pub async fn handle_video_open(
 /// `data-roots` file gets a URL space starting at the repo top instead, so
 /// `../../data/x.mp4` reaches the link folder; the returned path is then
 /// prefixed with the content root's place below it (`Site::url_path`). What is
-/// served does not widen; see `site_serve.rs`.
+/// served does not widen; see `pages/site/mod.rs`.
 pub async fn handle_docs_open(
     req_id: u64,
     payload_json: serde_json::Value,
@@ -211,9 +212,9 @@ pub async fn handle_docs_open(
     };
 
     // The requesting connection's serial keys its per-connection site root
-    // internally (ADR 0029); `site_serve::set_root` mints the unguessable
+    // internally (ADR 0029); `pages::site::set_root` mints the unguessable
     // nonce that actually becomes the URL's first path segment (security
-    // review — see site_serve.rs). `None` only if hello hasn't registered
+    // review — see `pages/site/mod.rs`). `None` only if hello hasn't registered
     // the connection yet — it always precedes docs.open in practice.
     let serial = match serial {
         Some(s) => s,
@@ -347,12 +348,12 @@ pub async fn handle_docs_open(
     // The site: content root `root`, and a URL space that reaches a tracked
     // data link's folder when the page rides the shared prefix server (a
     // root-relative site keeps its own origin, so it is never widened).
-    let site = crate::site_serve::Site::open(root, ws_root, !root_relative).await;
+    let site = crate::pages::site::links::Site::open(root, ws_root, !root_relative).await;
     let rel = site.url_path(&rel);
     let mut pool_port: Option<(u16, String)> = None;
     let mut site = Some(site);
     if root_relative {
-        match crate::site_serve::assign_pool_port(serial, site.take().expect("site")) {
+        match crate::pages::site::assign_pool_port(serial, site.take().expect("site")) {
             Some(assigned) => pool_port = Some(assigned),
             None => {
                 return Ok(err(
@@ -362,8 +363,8 @@ pub async fn handle_docs_open(
                          connections), or a secure token couldn't be minted \
                          — close another root-relative site, reconnect, or retry",
                         entry.display(),
-                        crate::site_serve::pool_in_use(),
-                        crate::site_serve::POOL_SIZE,
+                        crate::pages::site::pool_in_use(),
+                        crate::pages::site::POOL_SIZE,
                     ),
                     "root_relative_pool_busy",
                 ));
@@ -377,11 +378,11 @@ pub async fn handle_docs_open(
         // authenticates the FIRST request; the pool server then sets an
         // HttpOnly cookie so later same-page asset fetches — which can't
         // carry a query string — authenticate via the cookie instead. See
-        // site_serve.rs's `ServeMode::Pool` auth check.
+        // `pages/site/mod.rs`'s `ServeMode::Pool` auth check.
         format!(
             "http://127.0.0.1:{}/{}?secret={}",
             port,
-            crate::site_serve::encode_url_path(&rel),
+            crate::pages::site::encode_url_path(&rel),
             secret,
         )
     } else {
@@ -390,7 +391,7 @@ pub async fn handle_docs_open(
         // nonce `set_root` minted (security review — not the raw serial).
         // `None` means the CSPRNG read failed — fail closed rather than mint
         // a guessable nonce.
-        let Some(nonce) = crate::site_serve::set_root(serial, site.take().expect("site")) else {
+        let Some(nonce) = crate::pages::site::set_root(serial, site.take().expect("site")) else {
             return Ok(err(
                 "could not mint a secure site token (system RNG unavailable) — try again".into(),
                 "rng_unavailable",
@@ -399,7 +400,7 @@ pub async fn handle_docs_open(
         // ACTUAL bound port, never the preferred `site_port()` — same
         // reasoning as `video.open` above: on a shared host the preferred
         // port may belong to another user's daemon.
-        let Some(port) = crate::site_serve::bound_site_port() else {
+        let Some(port) = crate::pages::site::bound_site_port() else {
             return Ok(err(
                 "static-site server is not running (both preferred and ephemeral binds failed at startup) — check the daemon log".into(),
                 "site_server_down",
@@ -409,7 +410,7 @@ pub async fn handle_docs_open(
             "http://127.0.0.1:{}/{}/{}",
             port,
             nonce,
-            crate::site_serve::encode_url_path(&rel),
+            crate::pages::site::encode_url_path(&rel),
         )
     };
 
@@ -449,7 +450,7 @@ async fn run_quarto(
     file_name: &std::ffi::OsStr,
     out_name: &str,
     execute: bool,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> std::io::Result<Option<std::process::Output>> {
     use tokio::io::AsyncReadExt;
     let mut cmd = tokio::process::Command::new(program);
@@ -551,7 +552,7 @@ pub async fn handle_quarto_open(
     let out_name = format!("__sot-qmd-{req_id}.html");
     let html_path = parent.join(&out_name);
 
-    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, crate::shutdown::process()).await {
+    let output = match run_quarto("quarto", parent, file_name, &out_name, req.execute, crate::lifecycle::child_signal::process()).await {
         Ok(Some(o)) => o,
         Ok(None) => {
             let _ = tokio::fs::remove_file(&html_path).await;
@@ -630,10 +631,10 @@ mod find_site_root_tests {
     // `docs.open`'s site-root walk (v0.6.6), tested directly against real
     // temp directories rather than through the full handler: `find_site_root`
     // is a pure path-and-filesystem function with no `Session`/`Workspaces`/
-    // `site_serve` dependency, so it's the cheap, isolated place to pin the
+    // `pages::site` dependency, so it's the cheap, isolated place to pin the
     // walk's boundary behaviour. `handle_docs_open` end to end has no
     // existing test harness in this crate (no test binds the real
-    // `site_serve` listener `bound_site_port()` requires) — out of scope to
+    // `pages::site` listener `bound_site_port()` requires) — out of scope to
     // add here; see the report for what that leaves unverified.
     use super::find_site_root;
 
@@ -745,7 +746,7 @@ mod quarto_shutdown_tests {
         let stub = dir.path().join("stub-quarto");
         std::fs::write(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display())).unwrap();
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
             run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await

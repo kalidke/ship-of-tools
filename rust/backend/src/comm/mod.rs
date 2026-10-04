@@ -8,9 +8,9 @@ use std::path::PathBuf;
 
 /// The sot-comm home directory (`~/.sot-comm` by default) — ONE resolver
 /// (Codex round finding 8), shared by the daemon's own registry reads
-/// (`handlers::comm_registry_path`, used on every platform for
+/// (`comm::registry::registry::comm_registry_path`, used on every platform for
 /// `workspace.list`) and the env it hands a spawned capsule
-/// (`capsule_workspace::capsule_supervisor_env`, which ALSO injects
+/// (`agents::env::capsule_supervisor_env`, which ALSO injects
 /// `SOT_COMM_HOME` explicitly into the child so the scripts and the
 /// daemon can never resolve two different homes for the same box).
 /// `SOT_COMM_HOME` wins outright when set (an explicit override, used

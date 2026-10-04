@@ -2,16 +2,16 @@
 //! Switch-latency Phase 1: proves a slow request no longer head-of-line-
 //! blocks a later cheap request's reply on the SAME connection — through
 //! the real wire protocol against a real `sotd`, mirroring
-//! `capsule_workspaces.rs`'s own real-process posture (no protocol
+//! `capsule_workspaces/main.rs`'s own real-process posture (no protocol
 //! doubles, no mocked `handle_connection`). Gated off macOS like that file:
 //! the daemon's default-row boot path shells out to a real `tmux` server on
 //! Linux unless `SOT_TMUX_SOCK` isolates it, and macOS CI runners don't ship
 //! `tmux` by default (the project's own "macOS leg runs every Unix test"
-//! lesson — `capsule_workspaces.rs`'s header carries the same gate for the
+//! lesson — `capsule_workspaces/main.rs`'s header carries the same gate for the
 //! same reason).
 //!
 //! `concept.read` is the op made deterministically slow here, via the
-//! test-only `SOT_TEST_SLOW_CONCEPT_READ_MS` knob (`server.rs`,
+//! test-only `SOT_TEST_SLOW_CONCEPT_READ_MS` knob (`server/conn.rs`,
 //! `test_slow_concept_read_delay`): no existing op is slow on demand without
 //! something this sandbox can't assume (a real Julia kernel for
 //! `preview.get`'s plugin path, a large file already on disk for its
@@ -70,7 +70,7 @@ fn sotd_exe() -> PathBuf {
 /// state, its default row's tmux server) redirected there too — this test
 /// must never read or write the developer's real `~/.config/sot`, real
 /// state dir, or real tmux server. Isolation recipe copied verbatim from
-/// `capsule_workspaces.rs`'s own `Env::spawn_sotd`, trimmed to what this
+/// `support/env.rs`'s own `Env::spawn_sotd`, trimmed to what this
 /// test actually needs: no capsule state-root qualification, no
 /// `sot-capsule` dependency, no `SERIAL` lock — every env var below is set
 /// only on the CHILD via `.env(...)`, never on this test process itself, so
@@ -224,7 +224,7 @@ impl Env {
 impl Drop for Env {
     fn drop(&mut self) {
         // Best-effort, bounded by nothing but a signal + a wait — mirrors
-        // `capsule_workspaces.rs`'s own teardown philosophy without pulling
+        // `capsule_workspaces/main.rs`'s own teardown philosophy without pulling
         // in its full bounded-async machinery for a single, short-lived
         // test: kill the daemon, then this env's own isolated tmux server
         // (never the developer's real one — a different socket entirely).
@@ -477,7 +477,7 @@ mod dead_kernel;
 
 /// Pane traffic must never wait behind kernel.request running off-loop.
 /// `pty.screen` against an UNKNOWN `workspace_id` is the op used: it
-/// answers inline (never touches `job_sem` — see `server.rs`'s
+/// answers inline (never touches `job_sem` — see `server/dispatch.rs`'s
 /// `op::PTY_SCREEN` arm) and fails fast with no tmux/shell-out at all,
 /// which keeps this test's only variable the ONE thing under test (does the
 /// connection's dispatch loop serve it promptly) rather than coupling to a

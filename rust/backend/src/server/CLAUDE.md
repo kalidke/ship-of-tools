@@ -41,7 +41,7 @@ this folder serve the same idea.
 
 ## Connections
 - In: `main` calls `run` and `refuse_live_socket`; the lease and reauth code write through `write_frame_within` and
-  `write_frame_to`; `rows/run/activation.rs` calls `record_test_activation_marker`, re-exported here from `rows/ops/pty.rs`.
+  `write_frame_to`; `rows/run/activation.rs` calls `record_test_activation_marker` in `rows/ops/pty.rs`.
 - Out: `startup::begin` before bind, `shutdown::run` when accepting ends, each op's handler, `proxy`'s
   `handle_proxy_connect`, `lane_bridge`'s `handle_lane_connect`, `lease::hold`, and `accepted_peer` (in `listen.rs`) at accept.
   Frames are read by `codec::read_frame`, which allocates a blob of its declared length with no cap (a known defect).
@@ -51,7 +51,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 (the revision ring).
 
 ## Files
-- `mod.rs`: the entry: `run` boots the buses and the roster, and the re-exports
+- `mod.rs`: the entry: `run` boots the buses and the roster
 - `hello.rs`: the hello handshake (protocol gate, hello reply and its replay) and the roster entry (`admit_hello`)
 - `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek (`handle_connection`), the control loop (`serve_control`) and its select (`select_once`)

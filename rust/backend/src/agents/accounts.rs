@@ -220,7 +220,7 @@ pub fn account_home() -> Option<PathBuf> {
 /// `.claude-auth` for a named one. The ONE place that mapping lives:
 /// [`account_env`] hands it to the child as `CLAUDE_CONFIG_DIR`,
 /// [`ensure_account_links`] links the shared entries into it, and
-/// [`crate::reauth::check`] resolves the target account's transcripts
+/// [`crate::rows::reauth::check`] resolves the target account's transcripts
 /// under it. Never validates the name — a caller that takes one off the
 /// wire checks it first ([`check_account_name`]).
 pub fn claude_config_dir(home: &Path, account: &str) -> PathBuf {
@@ -234,7 +234,7 @@ pub fn claude_config_dir(home: &Path, account: &str) -> PathBuf {
 /// The load-bearing half: resolve `agent_kind`'s account env additions
 /// for `account`, against `home` — pure (no `std::env` read: `home` is
 /// explicit) so `workspace.create`'s fast-failure check and the real
-/// spawn path ([`crate::capsule_workspace::runtime::spawn_detached_supervisor`])
+/// spawn path ([`crate::rows::spawn::detach::spawn_detached_supervisor`])
 /// share this ONE rule rather than a copy each could drift from.
 ///
 /// `account` empty (or literally `"default"`) returns no additions at
@@ -297,7 +297,7 @@ fn make_shared_link(target: &Path, link: &Path, target_is_dir: bool) -> std::io:
 /// Link `home/.claude-auth/<account>` up to the default `home/.claude`
 /// folder for every [`SHARED_ENTRIES`] name (see the module doc for the
 /// sharing ruling this implements). Called once, from the spawn path
-/// ([`crate::capsule_workspace::runtime::spawn_detached_supervisor`]),
+/// ([`crate::rows::spawn::detach::spawn_detached_supervisor`]),
 /// right after [`account_env`] succeeds, so a folder made with a bare
 /// `mkdir` is fully linked on its very first session — no separate
 /// installer step to forget, and nothing here writes to the DEFAULT

@@ -120,14 +120,14 @@ impl Workspaces {
 
     /// Install the server-monitoring hub. Called once at startup, right after
     /// `MonitorHub::start`, before any connection is accepted.
-    pub fn set_monitor_hub(&self, hub: crate::monitor::MonitorHub) {
+    pub fn set_monitor_hub(&self, hub: crate::sidecars::monitor::MonitorHub) {
         let mut g = self.inner.write().expect("workspaces lock");
         g.monitor_hub = Some(hub);
     }
 
     /// Clone the server-monitoring hub, if installed. `None` before startup
     /// wires it (or in tests) so callers degrade gracefully.
-    pub fn monitor_hub(&self) -> Option<crate::monitor::MonitorHub> {
+    pub fn monitor_hub(&self) -> Option<crate::sidecars::monitor::MonitorHub> {
         let g = self.inner.read().expect("workspaces lock");
         g.monitor_hub.clone()
     }
@@ -228,7 +228,7 @@ impl Workspaces {
     /// [`set_agent_handle`](Self::set_agent_handle) — the row keeps its
     /// id, slug, root, session name and declared handle, and every later
     /// spawn path reads the new value from the registry at spawn time
-    /// (`capsule_workspace::runtime::spawn_and_watch`). `None` when the
+    /// (`rows::run::start::spawn_and_watch`). `None` when the
     /// row is not registered; the caller persists the toml itself.
     pub fn set_account(&self, workspace_id: &str, account: &str) -> Option<Arc<Workspace>> {
         let ws = {
@@ -476,7 +476,7 @@ mod tests {
     /// same-slug reinsert silently reset it to "tmux" regardless of what
     /// the caller passed — exactly the "id-preserving refresh" a second
     /// `workspace.create` for an existing capsule workspace's slug is
-    /// (`handlers.rs`'s own duplicate-root gate comment names this case),
+    /// (`rows/ops/create.rs`'s own duplicate-root gate comment names this case),
     /// which still sets `runtime = "capsule"` on every call.
     #[test]
     fn registry_reinsert_takes_the_new_runtime_not_metas_default() {

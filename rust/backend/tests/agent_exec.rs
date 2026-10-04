@@ -3,7 +3,7 @@
 //! directly as a subprocess. No daemon, no socket: `agent-exec` is a
 //! pure-subcommand arm answered before any of that starts (`main.rs`),
 //! so this suite is a plain `Command::output()` proof, not a wire-
-//! protocol one (contrast `tests/capsule_workspaces.rs`).
+//! protocol one (contrast `tests/capsule_workspaces/main.rs`).
 //!
 //! The fake `claude` is a printing stub (a shell script), not the
 //! unlaunchable one `tests/support/mod.rs::seed_fake_unlaunchable_claude`

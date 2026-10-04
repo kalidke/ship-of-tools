@@ -14,7 +14,7 @@ pub fn forward_comm_file(
     self_host: &str,
     req: &sot_protocol::CommFileReq,
     within: std::time::Duration,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<serde_json::Value, String> {
     let payload = serde_json::to_value(req).map_err(|e| e.to_string())?;
     let (tx, rx) = std::sync::mpsc::channel();
@@ -62,7 +62,7 @@ mod tests {
             let pid_file = dir.path().join("pid");
             write_ssh_script(dir.path(), &format!("echo $$ > '{}'\nexec sleep 30\n", pid_file.display()));
             prepend_to_path(dir.path());
-            let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+            let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
             let within = std::time::Duration::from_secs(if by_shutdown { 20 } else { 1 });
             let firer = std::thread::spawn({
                 let pid_file = pid_file.clone();

@@ -24,11 +24,11 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
   daemon samples itself (`without_local_sampler`).
 
 ## Connections
-- ops.rs and repl/ serve `repl.*`, `kernel.request`, `math.render`, `pluto.open` and `monitor.*` (handlers.rs re-exports all but `monitor.*`), and
+- ops.rs and repl/ serve `repl.*`, `kernel.request`, `math.render`, `pluto.open` and `monitor.*`, and
   files/preview calls `Kernel::request` for plugin previews.
-- server.rs builds `MathJax`, `Pluto` and `MonitorHub`; server/dispatch.rs serves `monitor.*` inline through ops.rs.
-- workspaces.rs holds a `Kernel` and a `Repl` per row.
-- The page proxy's allowlist (proxy.rs) reads `bound_pluto_port`.
+- server/mod.rs builds `MathJax`, `Pluto` and `MonitorHub`; server/dispatch.rs serves `monitor.*` inline through ops.rs.
+- rows/workspace.rs holds a `Kernel` and a `Repl` per row.
+- The page proxy's allowlist (pages/proxy.rs) reads `bound_pluto_port`.
 - `paths::resource_dir` finds julia/kernel, julia/pluto and the MathJax script.
 
 ## Folders

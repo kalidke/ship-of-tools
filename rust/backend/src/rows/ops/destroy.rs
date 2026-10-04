@@ -5,10 +5,13 @@ use anyhow::Result;
 use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
-use crate::handlers::{HandlerOutput, CapsuleDestroyOutcome, ALREADY_REMOVED, capsule_end_not_reached_payload, default_row_end_response, destroy_capsule_workspace, end_default_row_run, remove_comm_agents_for_workspace, remove_row_files};
+use crate::server::reply::HandlerOutput;
+use crate::rows::run::end::{CapsuleDestroyOutcome, ALREADY_REMOVED, capsule_end_not_reached_payload, default_row_end_response, destroy_capsule_workspace, remove_row_files};
+use crate::rows::anchor::end_default_row_run;
+use crate::comm::registry::registry::remove_comm_agents_for_workspace;
 use crate::session::Session;
-use crate::workspaces::WorkspaceChanged;
-use crate::workspaces::Workspaces;
+use crate::rows::WorkspaceChanged;
+use crate::rows::Workspaces;
 use tokio::sync::broadcast;
 
 pub async fn handle_workspace_destroy(
@@ -145,7 +148,7 @@ pub async fn handle_workspace_destroy(
     // teardown above.
     let reg_agent = agent_name.clone();
     let reg_ws = workspace_id.clone();
-    let reg_host = crate::workspaces::declared_host();
+    let reg_host = crate::rows::store::declared_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
         remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })

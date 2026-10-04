@@ -1,8 +1,8 @@
 //! Shared test support for this crate's real-process integration suites
-//! (`capsule_workspaces.rs`, `lane_bridge.rs`): a real `sotd`, a real
+//! (`capsule_workspaces/main.rs`, `lane_bridge/main.rs`): a real `sotd`, a real
 //! `sot-capsule[.exe]` it spawns DETACHED, talking the actual wire
-//! protocol over a real local socket. Lifted out of `capsule_workspaces
-//! .rs` verbatim (ADR 0045 lane B4b) so `lane_bridge.rs`'s own cross-
+//! protocol over a real local socket. Lifted out of `capsule_workspaces/main.rs`
+//! verbatim (ADR 0045 lane B4b) so `lane_bridge/main.rs`'s own cross-
 //! process proofs — an attach client reaching a capsule row THROUGH a
 //! daemon in the middle, over a test-owned TCP\u{2192}Unix relay — can
 //! stand up the identical `Env`/wire-protocol fixture without a second,
@@ -15,7 +15,7 @@
 //! Every wait below is a BOUNDED poll or `tokio::time::timeout` for an
 //! external, observable fact — never a sleep-and-hope, and never an
 //! unbounded read/write/kill/wait (Codex review finding 13, carried over
-//! from `capsule_workspaces.rs`'s own header).
+//! from `capsule_workspaces/main.rs`'s own header).
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -28,12 +28,12 @@ use interprocess::local_socket::GenericFilePath;
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
 /// A4b: production's own aim rule, one source — [`arm_scope_guard`]
-/// refuses exactly what `capsule_workspace::row_scope` refuses.
+/// refuses exactly what `rows::spawn::row_scope` refuses.
 #[cfg(target_os = "linux")]
 #[path = "../../src/rows/spawn/row_scope_aim.rs"]
 pub mod row_scope_aim;
 
-/// The daemon's comm-registry poller (server.rs, the ADE state-nav live
+/// The daemon's comm-registry poller (`comm/registry/poll.rs`, the ADE state-nav live
 /// refresh) reads `<comm home>/registry.json` every 1.5s and broadcasts a
 /// `workspace.changed` evt on any change; `paths::sot_comm_home` resolves
 /// SOT_COMM_HOME, then HOME/.sot-comm, then USERPROFILE in that order. A
@@ -67,15 +67,15 @@ pub fn sotd_exe() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
 /// The capsule executable's own file name for this platform — mirrors
-/// `capsule_workspace::runtime`'s own `CAPSULE_EXE` fork.
+/// `rows::spawn::detach`'s own `CAPSULE_EXE` fork.
 #[cfg(windows)]
 pub const CAPSULE_EXE_NAME: &str = "sot-capsule.exe";
-/// macOS lane: `not(windows)`, matching `capsule_workspace::runtime`'s
+/// macOS lane: `not(windows)`, matching `rows::spawn::detach`'s
 /// own `CAPSULE_EXE` — the extensionless name is a Unix fact, and a
 /// Linux-only gate here failed the whole `--tests` build on macOS.
 #[cfg(not(windows))]
 // Dead on a host with no capsule runtime in the daemon yet (macOS, until
-// `capsule_workspace::runtime`'s gate widens): every consumer of this
+// the capsule runtime's gate widens): every consumer of this
 // name is itself gated to the platforms that have one.
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub const CAPSULE_EXE_NAME: &str = "sot-capsule";

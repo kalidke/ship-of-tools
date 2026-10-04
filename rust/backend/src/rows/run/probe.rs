@@ -89,8 +89,8 @@ pub fn phase_str(phase: sot_log::lane::wire::SupervisorPhase) -> &'static str {
 }
 
 /// Converts to the local `Phase` (R10); [`phase_str`] stays for the wire mapping.
-pub(crate) fn local_phase(phase: sot_log::lane::wire::SupervisorPhase) -> crate::workspaces::Phase {
-    use crate::workspaces::Phase;
+pub(crate) fn local_phase(phase: sot_log::lane::wire::SupervisorPhase) -> crate::rows::workspace::Phase {
+    use crate::rows::workspace::Phase;
     use sot_log::lane::wire::SupervisorPhase as SP;
     match phase {
         SP::Starting => Phase::Starting,
@@ -102,8 +102,8 @@ pub(crate) fn local_phase(phase: sot_log::lane::wire::SupervisorPhase) -> crate:
 }
 
 /// One status round trip: wire string plus the identity-carrying `Observation` it implies. BLOCKING.
-pub fn probe(state_dir: &Path) -> (&'static str, crate::workspaces::Observation) {
-    use crate::workspaces::{Observation, SupervisorIdentity};
+pub fn probe(state_dir: &Path) -> (&'static str, crate::rows::workspace::Observation) {
+    use crate::rows::workspace::{Observation, SupervisorIdentity};
     if let Some(phase) =
         super::phase_for_missing_pointer(sot_log::supervisor::journal::pointer::pointer_path(state_dir).is_file())
     {

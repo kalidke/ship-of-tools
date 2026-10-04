@@ -15,7 +15,7 @@ pub(super) fn platform_spelling(p: &std::path::Path) -> PathBuf {
 }
 
 // Serialized under the crate-wide `paths::ENV_TEST_LOCK` (mirrors
-// `workspaces.rs`'s own `EnvGuard` exactly — see that module's
+// `rows/store/support_tests.rs`'s own `EnvGuard` exactly — see that module's
 // comment: `cargo test` runs in parallel within one process, and
 // several modules' resolvers read the SAME env vars, HOME included).
 pub(super) struct SelfFileEnvGuard {

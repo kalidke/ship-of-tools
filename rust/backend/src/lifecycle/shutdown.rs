@@ -18,9 +18,9 @@ use tokio::time::Instant;
 
 use sot_protocol::ops::lease as bounds;
 
-use crate::handlers::CapsuleDestroyOutcome;
-use crate::lease::Leases;
-use crate::workspaces::{Workspace, WorkspaceChanged, Workspaces};
+use crate::rows::run::end::CapsuleDestroyOutcome;
+use crate::lifecycle::lease::Leases;
+use crate::rows::{Workspace, WorkspaceChanged, Workspaces};
 
 /// How often a refused end is tried again.
 const RETRY_EVERY: Duration = Duration::from_secs(1);
@@ -148,7 +148,7 @@ pub(crate) async fn end_rows(
 ) -> EndReport {
     let drawer = drawer_is_target(state_root);
     let anchor = workspaces.default_id();
-    let limit = Arc::new(tokio::sync::Semaphore::new(crate::capsule_workspace::LANE_CONCURRENCY));
+    let limit = Arc::new(tokio::sync::Semaphore::new(crate::rows::run::resume::LANE_CONCURRENCY));
     let mut joins = Vec::with_capacity(rows.len() + 1);
     for ws in rows {
         let is_anchor = anchor.as_deref() == Some(ws.workspace_id.as_str());
@@ -212,7 +212,7 @@ async fn end_row(
     let (agent, agent_name) = (ws.agent(), ws.agent_name());
     let (agent_ref, name_ref) = (agent.as_str(), agent_name.as_str());
     let ended = retry_until(deadline, move || async move {
-        let (outcome, held) = crate::handlers::destroy_capsule_workspace(
+        let (outcome, held) = crate::rows::run::end::destroy_capsule_workspace(
             &ws.workspace_id,
             REASON,
             agent_ref,
@@ -239,7 +239,7 @@ async fn end_row(
     };
     if is_anchor {
         let end =
-            crate::handlers::end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, &agent_name, true, held);
+            crate::rows::anchor::end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, &agent_name, true, held);
         if tokio::time::timeout_at(deadline, end).await.is_err() {
             tracing::warn!(workspace_id = %ws.workspace_id, "window closed: the anchor's end_default_row_run was still running at the deadline; not ended");
             return Ended::Not;
@@ -249,16 +249,16 @@ async fn end_row(
     // The ended agent cannot run its own comm-leave; prune its registry
     // rows, as `workspace.destroy` does.
     let (reg_agent, reg_ws, reg_host) =
-        (agent_name.clone(), ws.workspace_id.clone(), crate::workspaces::declared_host());
+        (agent_name.clone(), ws.workspace_id.clone(), crate::rows::store::declared_host());
     let prune = tokio::task::spawn_blocking(move || {
-        crate::handlers::remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
+        crate::comm::registry::registry::remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     });
     if tokio::time::timeout_at(deadline, prune).await.is_err() {
         tracing::warn!(workspace_id = %ws.workspace_id, "window closed: the comm prune was still running at the deadline; not ended");
         return Ended::Not;
     }
     let slug = ws.slug.clone();
-    let ended = forget_unless_removed(ws.workspace_id.clone(), deadline, || crate::handlers::remove_row_files(&slug)).await;
+    let ended = forget_unless_removed(ws.workspace_id.clone(), deadline, || crate::rows::run::end::remove_row_files(&slug)).await;
     let _ = workspaces.remove_by_id(&ws.workspace_id);
     drop(held);
     let _ = ws_events.send(WorkspaceChanged {
@@ -281,11 +281,11 @@ async fn end_drawer(state_root: PathBuf, deadline: Instant) -> Ended {
         let state_root = state_root.clone();
         async move {
             match tokio::task::spawn_blocking(move || {
-                crate::capsule_workspace::end_run(&state_root, REASON, root_canonicalized)
+                crate::rows::run::end_run::end_run(&state_root, REASON, root_canonicalized)
             })
             .await
             {
-                Ok(Ok(o)) => confirmed(crate::handlers::capsule_destroy_outcome_of(o)).map(|_| ()),
+                Ok(Ok(o)) => confirmed(crate::rows::run::end::capsule_destroy_outcome_of(o)).map(|_| ()),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(join_err) => Err(format!("end_run task panicked: {join_err}")),
             }
@@ -356,12 +356,12 @@ where
     }
 }
 
-pub(crate) use super::child_signal::{fire, fired, live_children, process, ChildGuard, Signal};
+use super::child_signal::{fire, live_children};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capsule_workspace::EndRunOutcome as O;
+    use crate::rows::run::end_run::EndRunOutcome as O;
 
     #[tokio::test(start_paused = true)]
     async fn end_with_retry_table() {
@@ -370,7 +370,7 @@ mod tests {
         let mut script = vec![O::Starting, O::Starting, O::RecordVerified].into_iter();
         let got = retry_until(deadline, || {
             let o = script.next().expect("no attempt after a confirmed end");
-            async move { confirmed(crate::handlers::capsule_destroy_outcome_of(o)) }
+            async move { confirmed(crate::rows::run::end::capsule_destroy_outcome_of(o)) }
         })
         .await;
         assert_eq!(got, Ok(true));
@@ -380,7 +380,7 @@ mod tests {
         let mut tries = 0;
         let got = retry_until(deadline, || {
             tries += 1;
-            async { confirmed(crate::handlers::capsule_destroy_outcome_of(O::NotEnded("refused".into()))) }
+            async { confirmed(crate::rows::run::end::capsule_destroy_outcome_of(O::NotEnded("refused".into()))) }
         })
         .await;
         assert_eq!(got, Err("refused".to_string()));

@@ -10,7 +10,7 @@ use sot_protocol::FileDownloadReq;
 use sot_protocol::FileUploadAck;
 use sot_protocol::FileUploadReq;
 use sot_protocol::Frame;
-use crate::handlers::HandlerOutput;
+use crate::server::reply::HandlerOutput;
 
 /// `file.download` — stream a backend-host file to the frontend in <=1 MiB
 /// `FileChunk` frames (bytes as each frame's trailing blob), all sharing

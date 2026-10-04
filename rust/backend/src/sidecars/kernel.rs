@@ -243,7 +243,7 @@ impl Kernel {
         self.inner
             .supervisor_started
             .get_or_init(|| async move {
-                tokio::spawn(supervisor_loop(kernel_project, project_root, status, crate::shutdown::process()));
+                tokio::spawn(supervisor_loop(kernel_project, project_root, status, crate::lifecycle::child_signal::process()));
             })
             .await;
     }
@@ -281,7 +281,7 @@ async fn supervisor_loop(
     kernel_project: PathBuf,
     project_root: PathBuf,
     status: watch::Sender<Status>,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     let mut backoff: Option<Duration> = None;
     loop {
@@ -320,7 +320,7 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
         return Ok((bin.clone(), "test stub"));
     }
     let _ = kernel_project;
-    crate::julia::resolve_bin()
+    crate::sidecars::julia::resolve_bin()
 }
 
 /// Resolve + spawn one child, fold `kernel.hello` into the same
@@ -339,7 +339,7 @@ async fn run_one_generation(
     kernel_project: &Path,
     project_root: &Path,
     status: &watch::Sender<Status>,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> (bool, String) {
     let (julia_bin, source) = match julia_bin(kernel_project) {
         Ok(v) => v,
@@ -591,7 +591,7 @@ mod tests {
         let project = dir.path().join("kp");
         std::fs::create_dir(&project).unwrap();
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
-        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (status, _keep) = watch::channel(Status::Starting);
         let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
         let began = std::time::Instant::now();

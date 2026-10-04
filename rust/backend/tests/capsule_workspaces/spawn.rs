@@ -265,7 +265,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 
     // Poll workspace.list across a window comfortably longer than the
     // daemon's own contention-retry bound (private to
-    // capsule_workspace.rs, ~25s) — the row must NEVER read "terminal"
+    // `rows/run/`, ~25s) — the row must NEVER read "terminal"
     // (this test's own regression proof) throughout.
     let observe_deadline = Instant::now() + Duration::from_secs(45);
     while Instant::now() < observe_deadline {
@@ -296,7 +296,7 @@ async fn capsule_supervisor_spawn_survives_fence_contention_without_marking_term
 /// self-exiting `TERMINAL_EXIT_GRACE` (2s) later with no external `stop`
 /// ever required -- so by the time a `workspace.list` poll (or a user)
 /// ever observes phase "terminal", the authority process has almost
-/// always ALREADY exited. Before this PR, `capsule_workspace::end_run`'s
+/// always ALREADY exited. Before this PR, `rows::run::end_run::end_run`'s
 /// wrapper only ever handled a LIVE lane answering `phase: Terminal`
 /// (sending it `stop` and reporting a confirmed end); a lane that had
 /// already gone fully silent by the time `workspace.destroy` reached it
@@ -421,7 +421,7 @@ async fn capsule_row_with_an_unlaunchable_agent_reaches_terminal_and_is_destroya
 
     let env = Env::new("ult");
     // Pre-write the default row's own toml with `agent = "claude"` BEFORE
-    // boot -- `server.rs`'s fresh-boot seed already picks this agent on
+    // boot -- `rows/anchor.rs`'s fresh-boot seed already picks this agent on
     // Windows, but pre-writing it here makes the precondition explicit
     // and independent of that default ever changing.
     env.seed_default_capsule_toml("claude");

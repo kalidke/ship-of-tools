@@ -51,14 +51,13 @@ libc = "0.2"
 uuid = { workspace = true }
 
 # ADR 0046 decision 2 R3: the watchdog's own zero-network identity read
-# of a child it just spawned itself (`capsule_workspace::runtime::
-# spawned_identity`) needs `HANDLE` to call `sot_log::identity::challenge_win::
+# of a child it just spawned itself needs `HANDLE` to call `sot_log::identity::challenge_win::
 # creation_filetime_bits` directly -- the same version already pinned
 # under `[target.'cfg(windows)'.dev-dependencies]` below, promoted to a
 # real (non-dev) dependency since production code now names the type too.
 [target.'cfg(windows)'.dependencies]
-# `Win32_System_Registry`: comm_inbox.rs's machine id (`MachineGuid`).
-# `Win32_System_Diagnostics_ToolHelp` + `Win32_System_Threading`: ancestors.rs's
+# `Win32_System_Registry`: comm/mail/inbox.rs's machine id (`MachineGuid`).
+# `Win32_System_Diagnostics_ToolHelp` + `Win32_System_Threading`: comm/registry/ancestors.rs's
 # process snapshot and per-process creation times; `Wdk_System_Threading`: its
 # command-line query.
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Wdk_System_Threading"] }
@@ -68,21 +67,21 @@ name = "sotd"
 path = "src/main.rs"
 
 [dev-dependencies]
-# `start_paused` test runtime (site_serve's bind-fallback test collapses the
+# `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
 tokio = { workspace = true, features = ["test-util"] }
-# ADR 0042 slice L1a: `tests/capsule_workspaces.rs`'s own isolated
+# ADR 0042 slice L1a: `tests/capsule_workspaces/main.rs`'s own isolated
 # project/state/config roots (matching `sot-log`'s own dev-dependency use).
 tempfile = { workspace = true }
 
-# ADR 0043 decision 32: `tests/capsule_workspaces.rs`'s own Windows-only
+# ADR 0043 decision 32: `tests/capsule_workspaces/main.rs`'s own Windows-only
 # breakaway-containment test stands up a real job object, assigns the
 # spawned `sotd` to it directly (`AssignProcessToJobObject`/`CreateJobObjectW`),
 # and confirms the contained supervisor via `OpenProcess`/`IsProcessInJob` —
 # `sot-log` already depends on `windows-sys` with these same features, but a
 # dependency is not transitively `use`-able, so the test needs its own.
 # `Win32_Storage_FileSystem`/`Win32_Security`/`Win32_Security_Authorization`
-# added for `server.rs`'s own session-pipe ACL test (the `GetSecurityInfo`/
+# added for `server/listen.rs`'s own session-pipe ACL test (the `GetSecurityInfo`/
 # SDDL round-trip `sot-log`'s `tests/pipe_win/` already uses for its twin
 # test on the voyage/supervisor pipes) — same feature set that crate's own
 # Cargo.toml lists for the identical purpose.
@@ -96,7 +95,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Security_Authorization",
 ] }
 
-# ADR 0043 decision 32 (lane L2): `tests/capsule_workspaces.rs` names its
+# ADR 0043 decision 32 (lane L2): `tests/capsule_workspaces/main.rs` names its
 # scratch `systemd-run --user --unit` uniquely per run (same reasoning as
 # the Windows dev-dependency just above).
 [target.'cfg(target_os = "linux")'.dev-dependencies]

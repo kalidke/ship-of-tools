@@ -16,7 +16,7 @@ pub(crate) async fn start_page_servers() {
     // allowlist follow the ACTUAL port. Serves only video files, 127.0.0.1
     // only. The warn below now fires only when even the ephemeral bind fails
     // — an exhausted-ports / broken-loopback host, not the collision class.
-    if let Err(e) = crate::http_serve::spawn(crate::http_serve::video_port()).await {
+    if let Err(e) = crate::pages::video::spawn(crate::pages::video::video_port()).await {
         tracing::warn!(error = %e, "video http server failed to start; `o` on a video won't work");
     }
 
@@ -26,12 +26,12 @@ pub(crate) async fn start_page_servers() {
     // sub-paths) in the OS browser with full fidelity. Same preferred-then-
     // ephemeral bind story as the video server above. 127.0.0.1 only;
     // workspace-agnostic.
-    if let Err(e) = crate::site_serve::spawn(crate::site_serve::site_port()).await {
+    if let Err(e) = crate::pages::site::spawn(crate::pages::site::site_port()).await {
         tracing::warn!(error = %e, "static-site server failed to start; `W` won't work");
     }
     // ADR 0029 Option B: the dedicated-port pool for root-relative sites
     // (an example project's __site etc.). Taken range ports fall back to
     // ephemeral ones; only a failed ephemeral bind shrinks the pool —
     // docs.open reports "slots busy" when none are assignable.
-    crate::site_serve::spawn_pool().await;
+    crate::pages::site::spawn_pool().await;
 }

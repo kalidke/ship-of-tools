@@ -6,7 +6,7 @@ use super::start::{reset_run, start_supervisor};
 use super::{FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
 use crate::agents::argv::agent_argv;
 use crate::rows::spawn::detach::StartMode;
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 use std::path::Path;
 use std::time::Duration;
 
@@ -63,15 +63,14 @@ fn is_resting_phase(phase: &str, watchdog_owns_it: bool) -> bool {
 /// The guard-HELD body shared by [`resume_if_absent`] (which takes
 /// the row's guard itself, around this whole call), [`ensure_started`]
 /// (which already holds it for its own whole call, on the
-/// `UNREACHABLE_PHASE` arm), and `handlers.rs`'s
+/// `UNREACHABLE_PHASE` arm), and `rows/run/end.rs`'s
 /// `destroy_capsule_workspace` (which holds the SAME row guard
 /// across this call and its own following `end_run`, so it must
 /// reach this guard-free inner directly rather than through
 /// [`resume_if_absent`] — a second `blocking_lock` on a guard this
 /// caller already holds would deadlock) — ADR 0043 decision 33.
 /// `pub` for that cross-module reach; still crate-internal in effect
-/// (`mod runtime` itself is private, re-exported only within this
-/// crate via `capsule_workspace`'s own `pub use runtime::*`).
+/// (the module is crate-private).
 /// Rechecks, now that the guard is actually held: the row is still
 /// registered (`Err` — "unknown workspace" — a concurrent remover
 /// could have removed it while this call waited for the lock); if
@@ -99,7 +98,7 @@ pub fn resume_locked(
     let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
         return Err("unknown workspace".to_string());
     };
-    if ws.phase() == crate::workspaces::Phase::Terminal {
+    if ws.phase() == crate::rows::workspace::Phase::Terminal {
         return Ok(super::phase_str(sot_log::lane::wire::SupervisorPhase::Terminal));
     }
     let state_dir = super::state_dir_for(state_root, workspace_id);
@@ -134,7 +133,7 @@ pub fn resume_locked(
 /// (that call itself refuses to mint an orphan guard entry, Codex
 /// review 2026-09-11 — no lock to even take); [`resume_locked`]'s own
 /// doc has what the SECOND recheck, once the lock is actually held,
-/// covers. Headless callers (`handlers.rs`'s `pty.input`/
+/// covers. Headless callers (`rows/ops/pty.rs`'s `pty.input`/
 /// `pty.screen`) use this in place of a bare [`phase_of`] read so a
 /// row whose supervisor died between two ops resumes itself rather
 /// than answering `NotReady` forever; `pty.open`'s own attach path
@@ -201,7 +200,7 @@ pub fn ensure_started(
     // Round-9 BLOCKER: the identity of the fresh authority THIS
     // activation itself spawned to retire an ended row, carried
     // across passes -- see `ensure_started_locked`'s own doc for why.
-    let mut own_spawn: Option<crate::workspaces::SupervisorIdentity> = None;
+    let mut own_spawn: Option<crate::rows::workspace::SupervisorIdentity> = None;
     loop {
         let held = guard.blocking_lock();
         // Rechecked under the guard -- a concurrent remover could have removed the row while this call waited.
@@ -238,7 +237,7 @@ pub fn ensure_started(
                 // can wait for (or count) this loop's own progress
                 // instead of guessing a sleep duration. No-op unless
                 // `SOT_TEST_ACTIVATION_BARRIER` is set.
-                crate::server::record_test_activation_marker("waitforsettle");
+                crate::rows::ops::pty::record_test_activation_marker("waitforsettle");
                 reprobes += 1;
                 if reprobes > ACTIVATION_MAX_REPROBES {
                     // The budget is spent: report the phase as the
@@ -299,7 +298,7 @@ fn ensure_started_locked(
     project_root: &Path,
     intent: ActivationIntent,
     workspaces: Workspaces,
-    own_spawn: &mut Option<crate::workspaces::SupervisorIdentity>,
+    own_spawn: &mut Option<crate::rows::workspace::SupervisorIdentity>,
 ) -> LockedStep {
     let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
         return LockedStep::Done(Err("unknown workspace".to_string()));
@@ -418,7 +417,7 @@ fn ensure_started_locked(
             // before this could even read it, say) must CLEAR the
             // old identity too, or a later pass could wrongly credit
             // this attempt with a PRIOR pass's now-dead spawn.
-            use crate::workspaces::Observation;
+            use crate::rows::workspace::Observation;
             *own_spawn = match probe(&state_dir) {
                 (_, Observation::Phase { supervisor, .. }) => Some(supervisor),
                 _ => None,

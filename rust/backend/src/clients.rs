@@ -39,7 +39,7 @@ use sot_protocol::FeCommandSendRes;
 use sot_protocol::Frame;
 use tokio::sync::broadcast;
 
-use crate::handlers::HandlerOutput;
+use crate::server::reply::HandlerOutput;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -433,7 +433,7 @@ impl Drop for ClientGuard {
         // by serial, so this drops exactly the departing connection's entry — the
         // only cleanup site needed (the ADR-0027 reaper guarantees we reach Drop
         // even for half-open / hung peers, so this inherits its coverage).
-        crate::site_serve::remove_root(self.serial);
+        crate::pages::site::remove_root(self.serial);
         tracing::info!(
             client_id = %self.client_id,
             connections = count,
@@ -474,12 +474,12 @@ fn distinct_client_ids(by_conn: &HashMap<u64, ClientInfo>) -> String {
 pub async fn handle_version_query(
     req_id: u64,
     clients: &crate::clients::Clients,
-    topology: &crate::topology_store::TopologyStore,
-    topo_tx: &broadcast::Sender<crate::topology_store::TopologyChanged>,
+    topology: &crate::topology::store::TopologyStore,
+    topo_tx: &broadcast::Sender<crate::topology::store::TopologyChanged>,
 ) -> Result<HandlerOutput> {
     let refreshed = topology.refresh();
     if refreshed.changed {
-        let _ = topo_tx.send(crate::topology_store::TopologyChanged {
+        let _ = topo_tx.send(crate::topology::store::TopologyChanged {
             hash: refreshed.hash.clone().unwrap_or_default(),
         });
     }
@@ -488,7 +488,7 @@ pub async fn handle_version_query(
         protocol: sot_protocol::PROTOCOL_VERSION,
         lane_build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
         lane_proto: sot_log::lane::wire::SUPERVISOR_PROTO_V1,
-        host: crate::workspaces::declared_host(),
+        host: crate::rows::store::declared_host(),
         hosts_toml_hash: refreshed.hash.unwrap_or_default(),
         uptime_s: clients.uptime().as_secs(),
     };
@@ -547,7 +547,7 @@ pub async fn handle_version_query(
 /// call:
 /// - An active frontend exists: deliver to it EXCLUSIVELY, by connection
 ///   serial (design point B — a bare handle string is not a reliable
-///   identity; `evt.target_serial` carries the serial for `server.rs`'s
+///   identity; `evt.target_serial` carries the serial for `server/events.rs`'s
 ///   per-connection fan-out to filter on, while `evt.target` still carries
 ///   the handle for the FE's own — now redundant but harmless —
 ///   `route_fe_command` self-check).
@@ -624,7 +624,7 @@ pub async fn handle_fe_command_send(
     }
 
     let delivered_to = match (target_serial, resolved_target.as_deref()) {
-        // Resolved to the ACTIVE frontend: `server.rs` fans out on the
+        // Resolved to the ACTIVE frontend: `server/events.rs` fans out on the
         // SERIAL, so exactly that one CONNECTION acts — however many
         // connections happen to share its handle (a relaunched frontend
         // whose predecessor's connection has not been reaped yet is the
@@ -675,7 +675,7 @@ pub async fn handle_fe_command_send(
 }
 
 /// `fe.presence` (2026-09-08 review rework, design point A): a person
-/// provided real input; ack only. Stamping happens in `server.rs`'s
+/// provided real input; ack only. Stamping happens in `server/dispatch.rs`'s
 /// dispatch (it needs this connection's registered serial, which isn't
 /// visible from an op payload alone).
 pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
@@ -692,7 +692,7 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
 /// `fe.sessions` (session-listing brief decision 2): a frontend declares
 /// the sot-comm handles its own box's daemon owns, so THIS daemon can list
 /// them. Unlike `fe.presence` (which needs no payload and stamps via
-/// `server.rs`'s dispatch loop, since the thing being stamped is the
+/// `server/dispatch.rs`'s dispatch loop, since the thing being stamped is the
 /// connection itself), the store happens here — the payload IS what's
 /// stored. An unregistered `serial` (`None`, pre-hello) is a harmless
 /// no-op ack, same as `touch_person_input`; a registered connection with

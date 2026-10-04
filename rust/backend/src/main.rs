@@ -12,49 +12,25 @@
 // directory is the access control. Its one field use was the 2026-07-11
 // twin-daemon split-brain. See ADR 0010's 0.4.0 update block.
 
-mod accounts;
 mod agents;
-mod capsule_workspace;
 mod clients;
 mod comm;
-use comm::mail::inbox as comm_inbox;
-use comm::wake as comm_wake;
-use comm::registry::lock as comm_registry_lock;
 mod durable;
 mod files;
-use files::{concept, watcher};
-use files::io as file_io;
-use files::tree as files_mode;
-mod handlers;
-use rows::ops::lane_bridge;
 mod lifecycle;
 mod pages;
 mod paths;
-use rows::reauth;
 mod rows;
-#[cfg(target_os = "linux")]
-use rows::spawn::row_scope_aim;
-use agents::awareness;
-mod sidecars;
-use sidecars::{julia, kernel, mathjax, monitor, pluto, repl};
 mod server;
 mod session;
-use pages::site as site_serve;
+mod sidecars;
 mod topology;
-use topology::{cli as topology_cli, dial as topology_dial, set as topology_set, status as status_cli, stdio_bridge, store as topology_store};
 mod update;
-mod workspaces;
 
-use comm::mail::hub_link;
-use comm::registry::ancestors;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use lifecycle::{lease, shutdown, startup};
-
-use pages::proxy;
-use pages::video as http_serve;
 
 /// Restrict default file-creation permissions to owner-only (security
 /// review): without this, every file sotd creates — its own log, the
@@ -201,10 +177,10 @@ fn help_for(args: &[String]) -> Option<&'static str> {
         return None;
     }
     Some(match first.as_str() {
-        "topology" => topology_cli::USAGE,
-        "status" => status_cli::USAGE,
-        "stdio-bridge" => stdio_bridge::USAGE,
-        "ancestors" => ancestors::USAGE,
+        "topology" => topology::cli::USAGE,
+        "status" => topology::status::USAGE,
+        "stdio-bridge" => topology::stdio_bridge::USAGE,
+        "ancestors" => comm::registry::ancestors::USAGE,
         _ => SOTD_HELP,
     })
 }
@@ -226,24 +202,24 @@ mod help_tests {
             ("--socket --help", SOTD_HELP),
             ("session-socket-path --help", SOTD_HELP),
             ("agent-exec --help", SOTD_HELP),
-            ("ancestors --help", ancestors::USAGE),
-            ("ancestors --from 1 --help", ancestors::USAGE),
-            ("stdio-bridge --help", stdio_bridge::USAGE),
-            ("stdio-bridge --host a --help", stdio_bridge::USAGE),
-            ("status --help", status_cli::USAGE),
-            ("topology --help", topology_cli::USAGE),
-            ("topology plan --help", topology_cli::USAGE),
-            ("topology status --help", topology_cli::USAGE),
-            ("topology relay-endpoint --help", topology_cli::USAGE),
-            ("topology relay-sockets --help", topology_cli::USAGE),
-            ("topology sync --help", topology_cli::USAGE),
-            ("topology apply --help", topology_cli::USAGE),
-            ("topology apply --yes --help", topology_cli::USAGE),
-            ("topology apply --help --yes", topology_cli::USAGE),
-            ("topology set --help", topology_cli::USAGE),
-            ("topology set add --help", topology_cli::USAGE),
-            ("topology set add h --help", topology_cli::USAGE),
-            ("topology set remove --help", topology_cli::USAGE),
+            ("ancestors --help", comm::registry::ancestors::USAGE),
+            ("ancestors --from 1 --help", comm::registry::ancestors::USAGE),
+            ("stdio-bridge --help", topology::stdio_bridge::USAGE),
+            ("stdio-bridge --host a --help", topology::stdio_bridge::USAGE),
+            ("status --help", topology::status::USAGE),
+            ("topology --help", topology::cli::USAGE),
+            ("topology plan --help", topology::cli::USAGE),
+            ("topology status --help", topology::cli::USAGE),
+            ("topology relay-endpoint --help", topology::cli::USAGE),
+            ("topology relay-sockets --help", topology::cli::USAGE),
+            ("topology sync --help", topology::cli::USAGE),
+            ("topology apply --help", topology::cli::USAGE),
+            ("topology apply --yes --help", topology::cli::USAGE),
+            ("topology apply --help --yes", topology::cli::USAGE),
+            ("topology set --help", topology::cli::USAGE),
+            ("topology set add --help", topology::cli::USAGE),
+            ("topology set add h --help", topology::cli::USAGE),
+            ("topology set remove --help", topology::cli::USAGE),
         ];
         for (argv, want) in rows {
             for flag in ["--help", "-h"] {
@@ -303,7 +279,7 @@ async fn main() -> Result<()> {
             }
             // `sotd ancestors [--from <pid>]` (Windows only): comm-lib.sh reads it to count
             // the agents above a comm script. A pure query like the arms around it.
-            "ancestors" => std::process::exit(ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
+            "ancestors" => std::process::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
             "agent-exec" => agents::ops::agent_exec(),
             // The last inch of a cross-host dial: connect to THIS box's
             // own endpoint for a label and shuttle stdin/stdout. Sits in
@@ -313,14 +289,14 @@ async fn main() -> Result<()> {
             // printed would land on the byte stream it owns.
             "stdio-bridge" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(stdio_bridge::run(&args));
+                std::process::exit(topology::stdio_bridge::run(&args));
             }
             // The declared topology (`hosts.toml` v2): what this box
             // derives from it — the launcher's tunnel/dial plan, the relay
             // endpoint, the declared table, a fetch of the hub's copy.
             "topology" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology_cli::run(&args));
+                std::process::exit(topology::cli::run(&args));
             }
             // `sotd status` (topology plan §E): declared + LIVE, fanned out
             // to every reachable daemon concurrently — unlike `topology`
@@ -329,7 +305,7 @@ async fn main() -> Result<()> {
             // a plain synchronous query.
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(status_cli::run(&args).await);
+                std::process::exit(topology::status::run(&args).await);
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
@@ -342,10 +318,10 @@ async fn main() -> Result<()> {
 
     apply_umask();
 
-    // First reach of `workspaces::app_config_dir` is the registry load far
+    // First reach of `rows::store::app_config_dir` is the registry load far
     // below; refuse here, before any state is created, rather than panic
     // mid-request (or fall back to a shared directory).
-    if let Err(msg) = workspaces::check_config_dir() {
+    if let Err(msg) = rows::store::check_config_dir() {
         eprintln!("sotd: {msg}");
         std::process::exit(78);
     }
@@ -366,7 +342,7 @@ async fn main() -> Result<()> {
     // session records. Checked here, at the very top of startup, before
     // `open_private_log_file` below (or anything else) ever touches it —
     // every daemon gets this, not only one that goes on to create a
-    // capsule row (`capsule_workspace::qualified_state_root` applies the
+    // capsule row (`rows::spawn::state_root::qualified_state_root` applies the
     // SAME check again per row create/attach, as defense in depth
     // against the directory being altered after this boot-time check).
     // A symlink or a foreign owner is refused outright. A mode that lets
@@ -410,10 +386,10 @@ async fn main() -> Result<()> {
     let opts = parse_args().context("parsing command-line arguments")?;
 
     // A second daemon pointed at a live daemon's socket refuses here,
-    // before any startup side effect (`server::refuse_live_socket`).
+    // before any startup side effect (`server::listen::refuse_live_socket`).
     #[cfg(unix)]
     if let Some(path) = opts.socket.as_deref() {
-        server::refuse_live_socket(path)?;
+        server::listen::refuse_live_socket(path)?;
     }
 
     // Finding 1, v0.6.5 macOS field report: refuse to serve a capsule row
@@ -428,7 +404,7 @@ async fn main() -> Result<()> {
     // running the old copy (see that script's own re-exec-the-staged-copy
     // comment for the case this DOES cover).
     if let Ok(exe) = std::env::current_exe() {
-        if !capsule_workspace::capsule_sibling_present(&exe) {
+        if !rows::spawn::detach::capsule_sibling_present(&exe) {
             let msg = format!(
                 "sotd: sot-capsule is missing next to sotd ({}); this install was upgraded by a pre-0.6 apply — re-run the installer: fetch docs/INSTALL-AGENT.md from main and follow it",
                 exe.display()
@@ -468,7 +444,7 @@ pub struct Opts {
     /// Optional human-friendly label for this backend. When set, `--socket`
     /// defaults to `paths::session_socket_path(label)` per ADR 0013.
     pub label: Option<String>,
-    /// `--adopt-legacy-registry` (`workspaces::scan_disk`'s own gate):
+    /// `--adopt-legacy-registry` (`rows::store::scan_disk`'s own gate):
     /// `false` unless passed, so a scratch/test daemon can never steal a
     /// box's pending legacy adoption (field-proven). Only
     /// `sot-local-daemon.ps1` passes it.

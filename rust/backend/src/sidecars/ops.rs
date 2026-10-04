@@ -15,11 +15,12 @@ use sot_protocol::MonitorHistoryRes;
 use sot_protocol::MonitorSubscribeRes;
 use sot_protocol::PlutoOpenReq;
 use sot_protocol::PlutoOpenRes;
-use crate::mathjax::MathJax;
-use crate::pluto::Pluto;
+use crate::sidecars::mathjax::MathJax;
+use crate::sidecars::pluto::Pluto;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
-use crate::handlers::{HandlerOutput, canonicalize_within_any_workspace};
+use crate::rows::Workspaces;
+use crate::server::reply::HandlerOutput;
+use crate::files::confine::canonicalize_within_any_workspace;
 
 pub async fn handle_kernel_request(
     req_id: u64,
@@ -58,7 +59,7 @@ pub async fn handle_kernel_request(
         // (Modules mode, any other kernel.request consumer) can distinguish
         // it from a live request that failed for some other reason (bad op,
         // a real wire/protocol error).
-        Err(e) => match e.downcast_ref::<crate::kernel::KernelUnavailable>() {
+        Err(e) => match e.downcast_ref::<crate::sidecars::kernel::KernelUnavailable>() {
             Some(unavailable) => json!({
                 "error": format!("Julia kernel unavailable: {unavailable}"),
                 "code": "kernel_unavailable",

@@ -1,6 +1,6 @@
 //! A row's own systemd scope: capture, remembered list, and the aimed kill at destroy.
 
-use crate::row_scope_aim::{aim, prefix};
+use crate::rows::spawn::row_scope_aim::{aim, prefix};
 use sot_log::host::state_dir::state_dir_hash;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -221,7 +221,7 @@ mod tests {
     fn scope_aim_refuses_everything_but_this_rows_scope() {
         let state = tempfile::tempdir().expect("tempdir");
         let h = state_dir_hash(state.path());
-        for (target, own, accepted) in crate::row_scope_aim::aim_table(&h) {
+        for (target, own, accepted) in crate::rows::spawn::row_scope_aim::aim_table(&h) {
             let verdict = aim(&target, &own, &h);
             assert_eq!(
                 verdict.is_ok(),
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn scope_file_left_by_a_killed_daemon_is_ended_by_the_next_end() {
-        use crate::capsule_workspace::EndRunOutcome;
+        use crate::rows::run::end_run::EndRunOutcome;
         let root = tempfile::tempdir().unwrap();
         let _root = FakeRoot::at(root.path());
         for (events, ends) in [("populated 0\n", true), ("populated 1\n", false)] {
@@ -406,7 +406,7 @@ mod tests {
             // Only the file: no in-process state names this scope.
             std::fs::write(state.path().join(SCOPES_FILE), format!("{rel}\n")).unwrap();
 
-            let outcome = crate::capsule_workspace::end_run(state.path(), "test reason", true);
+            let outcome = crate::rows::run::end_run::end_run(state.path(), "test reason", true);
             assert_eq!(std::fs::read_to_string(dir.join("cgroup.kill")).unwrap(), "1", "{events}: not killed");
             if ends {
                 assert!(matches!(outcome, Ok(EndRunOutcome::Unheld)), "{events}: {outcome:?}");

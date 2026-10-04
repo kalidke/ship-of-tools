@@ -1,4 +1,4 @@
-// topology_set.rs — the `topology.set` op handler (plan §B "Editing the
+// topology/set.rs — the `topology.set` op handler (plan §B "Editing the
 // master list"). Authorisation is the dial itself: whoever can reach this
 // daemon's socket may send this op — the 0700 socket and ssh identity are
 // the only gate, no second credential asked here.
@@ -18,9 +18,10 @@ use sot_protocol::topology::TopologyEdit;
 use sot_protocol::{op, Frame, TopologySetRes};
 use tokio::sync::broadcast;
 
-use crate::handlers::HandlerOutput;
-use crate::topology_store::{TopologyChanged, TopologyStore};
-use crate::workspaces::{Phase, Workspaces};
+use crate::server::reply::HandlerOutput;
+use crate::topology::store::{TopologyChanged, TopologyStore};
+use crate::rows::workspace::Phase;
+use crate::rows::Workspaces;
 
 /// Any registered row whose supervisor phase means "actually running" —
 /// the guard behind refusing to remove/un-daemon a host out from under
@@ -38,7 +39,7 @@ fn refused(req_id: u64, error: impl Into<String>, code: &str) -> HandlerOutput {
     )]
 }
 
-/// `me` is this daemon's own declared host (`crate::workspaces::
+/// `me` is this daemon's own declared host (`crate::rows::store::
 /// declared_host()` at the call site — threaded in rather than read here
 /// so the handler stays a pure function of its arguments, independent of
 /// the process-global `OnceLock`). `hello_host` is the REQUESTING
@@ -93,7 +94,7 @@ pub async fn handle_topology_set(
     // hub checks its OWN rows only (plan §B: it cannot see another
     // daemon's rows; a non-hub box's `sotd topology set` CLI does the
     // equivalent check against ITS OWN local daemon before ever dialing
-    // the hub — see `topology_cli::run`).
+    // the hub — see `topology::cli::run`).
     let clears_own_daemon = match &req.edit {
         TopologyEdit::RemoveHost { name } => name == me,
         TopologyEdit::SetFlag { name, key, value } => name == me && key == "daemon" && !*value,
@@ -119,7 +120,7 @@ pub async fn handle_topology_set(
         return Ok(refused(req_id, e, "invalid"));
     }
 
-    if let Err(e) = crate::topology_store::write_atomic(store.path(), &text) {
+    if let Err(e) = crate::topology::store::write_atomic(store.path(), &text) {
         return Ok(refused(req_id, e, "io"));
     }
 
@@ -140,7 +141,8 @@ pub async fn handle_topology_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::{Observation, SupervisorIdentity, Workspace};
+    use crate::rows::workspace::{Observation, SupervisorIdentity};
+    use crate::rows::Workspace;
     use std::path::PathBuf;
 
     fn tempdir(tag: &str) -> PathBuf {

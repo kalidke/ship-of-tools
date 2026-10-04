@@ -197,7 +197,7 @@ impl Workspace {
     }
 
     /// Whether a watchdog currently owns this row's restarts — see the
-    /// field's own doc. Read by [`crate::capsule_workspace::runtime::
+    /// field's own doc. Read by [`crate::rows::run::activation::
     /// resume_locked`] before ever spawning a resume.
     pub(crate) fn watchdog_owner(&self) -> Option<u64> {
         *self.watchdog_owner.lock().unwrap_or_else(|e| e.into_inner())
@@ -402,7 +402,7 @@ impl Workspace {
         self.repl
             .get()
             .map(|r| r.state().as_str())
-            .unwrap_or(crate::repl::ReplLifecycle::NotStarted.as_str())
+            .unwrap_or(crate::sidecars::repl::lifecycle::ReplLifecycle::NotStarted.as_str())
     }
 }
 
@@ -423,7 +423,7 @@ impl Workspace {
         task: String,
     ) -> Self {
         let slug = paths::slug(label);
-        let session_name = paths::session_name(label);
+        let session_name = super::session_name(label);
         let workspace_id = format!(
             "ws-{slug}-{:x}",
             std::process::id() as u64 ^ now_unix() as u64
@@ -432,7 +432,7 @@ impl Workspace {
         // supported case (capsule-comm-identity fix, Codex round finding
         // 2): no synthesized default is written here. A capsule with no
         // explicit `agent_name` gets no `SOT_COMM_NAME` pin either
-        // (`capsule_workspace::capsule_supervisor_env`); comm-join.sh's
+        // (`agents::env::capsule_supervisor_env`); comm-join.sh's
         // own #148 auto-disambiguating derivation decides its handle, via
         // the `SOT_COMM_SELF_FILE` that spawn pins.
         Workspace::meta_only(

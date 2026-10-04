@@ -203,7 +203,7 @@ impl Env {
     /// Spawn a real `sotd` rooted at this env's project/state/config —
     /// `sot_log::host::state_dir::sot_state_dir()` reads `%LOCALAPPDATA%` on
     /// Windows / `$XDG_STATE_HOME` on Linux directly (no daemon CLI flag
-    /// exists for it), and `workspaces.rs`'s own registry root reads
+    /// exists for it), and `rows/store/`'s own registry root reads
     /// `%XDG_CONFIG_HOME%`/`$XDG_CONFIG_HOME` on the respective platform —
     /// all overridden here so this process's capsule state and workspace
     /// registry both live under the SAME temp root a second `sotd` launch
@@ -212,7 +212,7 @@ impl Env {
     /// the platform this daemon actually runs on only ever reads its own
     /// pair, so setting the other platform's var too is harmless.
     /// `SOT_SELF_HOST` is pinned so the per-host registry dir
-    /// (`workspaces::declared_host`, which otherwise falls back to the
+    /// (`rows::store::declared_host`, which otherwise falls back to the
     /// real hostname) is a fixed, known name —
     /// `seed_default_capsule_toml` below has to compute the SAME path
     /// from the test side to pre-write a toml this daemon will read.
@@ -259,13 +259,13 @@ impl Env {
     /// than `state_root`, which is why `config_root` is its own separate
     /// temp dir, not a subdirectory of `state_root`). Getting this
     /// arithmetic wrong silently seeds the pre-written toml at a path
-    /// `workspaces::load_toml` never scans.
+    /// `rows::store::load_toml` never scans.
     #[cfg(windows)]
     pub fn app_config_dir(&self) -> PathBuf {
         self.state_root.join("sot").join("config")
     }
     /// macOS lane: `not(windows)`, mirroring the SHIPPED
-    /// `workspaces::app_config_dir`, whose non-Windows arm is
+    /// `rows::store::app_config_dir`, whose non-Windows arm is
     /// `sot_log::host::state_dir::sot_config_dir()` (`$XDG_CONFIG_HOME`, else
     /// `$HOME/.config`) on every Unix, macOS included — so the Linux gate
     /// here was narrower than the behaviour it mirrors.
@@ -276,14 +276,14 @@ impl Env {
 
     /// Pre-write an ARBITRARY capsule row's own toml BEFORE `spawn_sotd`
     /// boots the daemon, with `runtime = "capsule"` and the given
-    /// `agent` — the same registry path `workspaces::save`/`load_toml`
+    /// `agent` — the same registry path `rows::store::save`/`load_toml`
     /// use (`<app config dir>/workspaces-<SOT_SELF_HOST>/<slug>.toml`,
     /// [`Env::app_config_dir`]). Only `workspace_id`/`slug`/`project_root`
     /// are required for `load_toml` to treat this as canonical
-    /// (`workspaces.rs`'s own doc); every other field the daemon needs
+    /// (`rows/store/`'s own doc); every other field the daemon needs
     /// defaults sensibly.
     ///
-    /// 2026-09-04 amendment: `scan_disk` (`workspaces.rs`, which loads
+    /// 2026-09-04 amendment: `scan_disk` (`rows/store/`, which loads
     /// this toml) runs BEFORE the daemon's own default-row seed logic
     /// and has no spawn side effect of its own (`scan_dir` only ever
     /// calls `reg.insert`) — so a NON-default slug pre-written this way
@@ -311,7 +311,7 @@ impl Env {
     /// [`seed_capsule_toml`] specialized to the DEFAULT row: slug
     /// computed the same way the daemon computes it (`--project-root`'s
     /// own basename run through `sot_protocol::slug`; no `--label` is
-    /// ever passed in this file) so `server.rs`'s own boot seed resolves
+    /// ever passed in this file) so `rows/anchor.rs`'s own boot seed resolves
     /// THIS pre-written row as "the existing default" rather than
     /// minting a fresh one. Before the 2026-09-04 amendment this is what
     /// made a capsule default row runnable on a CI runner at all (the
@@ -574,7 +574,7 @@ impl Env {
     /// LU4 review round 2, F4 (anchor tightened round 3, G2): the
     /// anchored `pgrep`/`pkill` pattern for every real leg THIS env's own
     /// daemon could ever have spawned, covering EITHER subcommand
-    /// (`capsule_workspace.rs`'s own two spawn sites) against this env's
+    /// (`rows/spawn/detach.rs`'s own two spawn sites) against this env's
     /// own `state_root` (every workspace's own `state_dir_for` nests
     /// under it, `state_root.join("workspaces").join(workspace_id)`, so
     /// anchoring on the ROOT alone covers every row this `Env` could ever

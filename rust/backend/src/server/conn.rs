@@ -109,10 +109,10 @@ pub(super) async fn handle_connection<R, W>(
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
-    topology_store: Arc<crate::topology_store::TopologyStore>,
-    topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
+    topology_store: Arc<crate::topology::store::TopologyStore>,
+    topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
     peer_identity: sot_log::identity::challenge::PeerAuthOutcome,
-    leases: Arc<crate::lease::Leases>,
+    leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -147,7 +147,7 @@ where
         Ok((f, blob)) => {
             if f.kind == Kind::Req && f.op == op::PROXY_CONNECT {
                 tracing::info!("proxy.connect — leaving control loop for a raw pipe");
-                return crate::proxy::handle_proxy_connect(
+                return crate::pages::proxy::handle_proxy_connect(
                     buffered,
                     tx,
                     f,
@@ -155,13 +155,13 @@ where
                 .await;
             }
             // ADR 0045 decision 2: peeked on every host, exactly like
-            // `lane_bridge.rs` itself is compiled on every host (macOS
+            // `rows/ops/lane_bridge.rs` itself is compiled on every host (macOS
             // wiring lane) — one attach path, local or remote, with no
             // platform where `lane.connect` silently falls through to
             // the "unknown op" answer instead.
             if f.kind == Kind::Req && f.op == op::LANE_CONNECT {
                 tracing::info!("lane.connect — leaving control loop for a raw pipe");
-                return crate::lane_bridge::handle_lane_connect(
+                return crate::rows::ops::lane_bridge::handle_lane_connect(
                     buffered,
                     tx,
                     f,
@@ -174,7 +174,7 @@ where
             if f.kind == Kind::Req && f.op == op::FE_LEASE {
                 tracing::info!(?peer_identity, "fe.lease — a lease connection");
                 let state_root = sot_log::host::state_dir::sot_state_dir();
-                return crate::lease::hold(
+                return crate::lifecycle::lease::hold(
                     buffered,
                     tx,
                     f,
@@ -208,8 +208,8 @@ async fn serve_control<R, W>(
     ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
     agent_receipt_tx: broadcast::Sender<AgentReceipt>, fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>, clients: Clients,
-    topology_store: Arc<crate::topology_store::TopologyStore>,
-    topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>, leases: Arc<crate::lease::Leases>,
+    topology_store: Arc<crate::topology::store::TopologyStore>,
+    topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>, leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -226,7 +226,7 @@ where
     let mut client_guard: Option<crate::clients::ClientGuard> = None;
     // This connection's own declared host (`HelloReq.host`, ADR 0046
     // decision 1), captured at hello — `topology.set`'s "can't remove
-    // yourself" refusal reads it (server.rs, `op::TOPOLOGY_SET`).
+    // yourself" refusal reads it (`server/dispatch.rs`, `op::TOPOLOGY_SET`).
     let mut hello_host: Option<String> = None;
     // This connection's own declared sot-comm name (`HelloReq.name`, the
     // same value `Clients::receivers_for` reports), captured at hello:
@@ -436,7 +436,7 @@ async fn select_once<R, W, F>(
     out_rx: &mut mpsc::Receiver<(Frame, Option<Vec<u8>>)>,
     watcher_rx: &mut Option<broadcast::Receiver<PreviewChanged>>,
     ws_events_rx: &mut broadcast::Receiver<WorkspaceChanged>,
-    topo_changed_rx: &mut broadcast::Receiver<crate::topology_store::TopologyChanged>,
+    topo_changed_rx: &mut broadcast::Receiver<crate::topology::store::TopologyChanged>,
     agent_events_rx: &mut broadcast::Receiver<AgentMessage>, agent_receipt_rx: &mut broadcast::Receiver<AgentReceipt>,
     fe_command_rx: &mut broadcast::Receiver<FeCommandEvt>, repl_frame_rx: &mut broadcast::Receiver<ReplFrameMsg>,
     monitor_rx: &mut Option<broadcast::Receiver<HostLatest>>, jobs: &mut JoinSet<()>,
@@ -518,7 +518,7 @@ where
 
 /// `ping` (topology plan §F step 2): a bare liveness ack, no side effect
 /// beyond answering. Resetting this connection's read deadline is done in
-/// `server.rs`'s dispatch loop, ON EVERY frame it reads from an `fe`/
+/// `server/dispatch.rs`'s dispatch loop, ON EVERY frame it reads from an `fe`/
 /// `bridge` connection (not only `ping` ones) — this handler stays a pure
 /// echo so it needs no registry access, unlike `fe.presence`.
 pub async fn handle_ping(req_id: u64) -> Result<HandlerOutput> {

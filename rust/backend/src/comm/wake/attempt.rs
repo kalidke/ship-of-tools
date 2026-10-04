@@ -2,7 +2,7 @@
 
 use super::*;
 use super::screen::{free_test_lines, held_rows, wake_lines};
-use crate::capsule_workspace::headless::{attach, send_enter, type_and_pace, wait_for_checkpoint, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
+use crate::rows::run::headless::{attach, send_enter, type_and_pace, wait_for_checkpoint, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
 #[derive(Debug, PartialEq, Eq)]

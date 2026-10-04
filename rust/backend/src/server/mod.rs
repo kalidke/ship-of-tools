@@ -1,4 +1,4 @@
-// server.rs — listener orchestration + transport-agnostic per-connection task.
+// server/mod.rs — listener orchestration + transport-agnostic per-connection task.
 //
 // Spawns the local-socket listener (interprocess) per the Opts the user
 // passed. Each accepted stream gets split into AsyncRead/AsyncWrite halves
@@ -21,18 +21,18 @@ use sot_protocol::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::clients::{ClientGuard, Clients};
-use crate::files_mode::FilesMode;
-use crate::handlers;
-use crate::mathjax::MathJax;
+use crate::files::tree::FilesMode;
+use crate::sidecars::mathjax::MathJax;
 use crate::paths;
 use crate::pages::start_page_servers;
-use crate::pluto::Pluto;
-use crate::repl::ReplFrameMsg;
+use crate::sidecars::pluto::Pluto;
+use crate::sidecars::repl::ReplFrameMsg;
 use crate::session::Session;
-use crate::watcher::PreviewChanged;
-use crate::workspaces::{AgentMessage, AgentReceipt};
-use crate::workspaces::WorkspaceChanged;
-use crate::workspaces::{self, Workspaces};
+use crate::files::watcher::PreviewChanged;
+use crate::comm::mail::bus::{AgentMessage, AgentReceipt};
+use crate::rows::WorkspaceChanged;
+use crate::rows::store;
+use crate::rows::Workspaces;
 use crate::Opts;
 use tokio::sync::{broadcast, mpsc, Semaphore};
 use tokio::task::JoinSet;
@@ -45,10 +45,7 @@ pub(crate) mod pipe;
 pub(crate) mod listen;
 pub(super) mod reply;
 
-pub(crate) use crate::rows::ops::pty::record_test_activation_marker;
-#[cfg(unix)]
-pub(crate) use listen::refuse_live_socket;
-pub(crate) use reply::{write_frame_to, write_frame_within};
+use reply::write_frame_to;
 use listen::{run_local, take_daemon_lock};
 use crate::comm::registry::poll::spawn_registry_poll;
 use crate::rows::anchor::seed_default_row;
@@ -67,9 +64,9 @@ pub async fn run(opts: Opts) -> Result<()> {
     // `pty::awareness_env` for every pane/capsule this daemon ever spawns
     // (SOT_SOCKET only — the declared host is never pinned into a spawned
     // child's env; see `awareness_env`'s own doc).
-    let _ = crate::workspaces::declared_host();
+    let _ = crate::rows::store::declared_host();
     if let Some(path) = opts.socket.as_deref() {
-        crate::awareness::set_own_endpoint(path);
+        crate::agents::awareness::set_own_endpoint(path);
     }
 
     let session = Session::new();
@@ -89,17 +86,17 @@ pub async fn run(opts: Opts) -> Result<()> {
     // A plain "no toml found" is already fail-soft inside `scan_disk`
     // (`Ok(0)`, never `Err`) — the only realistic source of an `Err` here
     // is the Windows legacy-config-dir migration's refuse-and-record path
-    // (`workspaces::migrate_legacy_windows_config_dir`'s doc): a rename
+    // (`rows::store::migrate::migrate_legacy_windows_config_dir`'s doc): a rename
     // that fails partway leaves the registry split across the old and new
     // roots, and continuing with whatever landed at the new root (empty or
     // partial) would silently seed a fresh registry beside a stranded one.
     // So this is a boot error, not a warning.
-    let n = workspaces::scan_disk(&workspaces, opts.adopt_legacy_registry)
+    let n = store::scan_disk(&workspaces, opts.adopt_legacy_registry)
         .context("scanning the workspace registry")?;
     tracing::info!(count = n, "workspaces scanned from disk");
     // The daemon holds the link to the hub and files for its own comm folder
     // (0031 Part 3); a box with no such link returns at once.
-    tokio::spawn(crate::hub_link::run(workspaces.clone()));
+    tokio::spawn(crate::comm::mail::hub_link::run(workspaces.clone()));
     // Held until `run` returns: the boot-time row object keeps its watcher and children alive, as before the cut.
     let _default_ws = seed_default_row(&opts, &files_mode, &workspaces);
 
@@ -150,8 +147,8 @@ pub async fn run(opts: Opts) -> Result<()> {
     // resume (`startup::begin`). Here because a Cleanup's ends publish on
     // the workspace bus, and before any listener binds, so the record is
     // in the leases before the first grant.
-    let leases = crate::startup::begin(sot_log::host::state_dir::sot_state_dir(), &workspaces, &ws_events_tx);
-    tokio::spawn(crate::lease::ticker(leases.clone()));
+    let leases = crate::lifecycle::startup::begin(sot_log::host::state_dir::sot_state_dir(), &workspaces, &ws_events_tx);
+    tokio::spawn(crate::lifecycle::lease::ticker(leases.clone()));
 
     // Topology write path (plan §B "Editing the master list"): one store
     // per daemon holding the last successfully parsed `hosts.toml`, and a
@@ -160,10 +157,10 @@ pub async fn run(opts: Opts) -> Result<()> {
     // (and every `topology.*` op) re-reads the file on-demand and publishes
     // the same way when it notices a hand edit nobody else already announced
     // — never a file watcher (the file can live on a network filesystem).
-    let topology_store = std::sync::Arc::new(crate::topology_store::TopologyStore::new(
+    let topology_store = std::sync::Arc::new(crate::topology::store::TopologyStore::new(
         sot_protocol::topology::locate().unwrap_or_else(|| PathBuf::from("hosts.toml")),
     ));
-    let (topo_changed_tx, _topo_changed_rx) = broadcast::channel::<crate::topology_store::TopologyChanged>(16);
+    let (topo_changed_tx, _topo_changed_rx) = broadcast::channel::<crate::topology::store::TopologyChanged>(16);
 
     // ADE state-nav live refresh: poll the sot-comm registry and publish a
     // `workspace.changed` whenever an agent's work-state actually changes, so the
@@ -177,9 +174,9 @@ pub async fn run(opts: Opts) -> Result<()> {
     // Comm wake (0031 B3): types the unread-mail line into rows at a free
     // prompt. Needs the comm home and this machine's capsule state root.
     if let (Some(comm_home), Some(state_root)) =
-        (crate::paths::sot_comm_home(), sot_log::host::state_dir::sot_state_dir())
+        (crate::comm::sot_comm_home(), sot_log::host::state_dir::sot_state_dir())
     {
-        tokio::spawn(crate::comm_wake::run(comm_home, state_root, workspaces.clone(), crate::comm_wake::TICK));
+        tokio::spawn(crate::comm::wake::run(comm_home, state_root, workspaces.clone(), crate::comm::wake::TICK));
     }
 
     // Agent-relay bus: parallel to the workspace bus, typed `AgentMessage`.
@@ -213,7 +210,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // subscribe and the `monitor.*` ops can reach it. Sampling runs for the
     // life of the backend so the drawer shows real history the moment it opens;
     // per-connection tick delivery is gated by `monitor.subscribe`.
-    let monitor_hub = crate::monitor::MonitorHub::start(crate::monitor::load_hosts());
+    let monitor_hub = crate::sidecars::monitor::MonitorHub::start(crate::sidecars::monitor::load_hosts());
     workspaces.set_monitor_hub(monitor_hub);
 
     // Connected-frontend registry (ADR 0010/0013 multi-frontend). Shared

@@ -476,7 +476,7 @@ mod fe_sessions_tests {
         drop(g2);
 
         let (topo_tx, _rx) = tokio::sync::broadcast::channel(1);
-        let topology = crate::topology_store::TopologyStore::new(
+        let topology = crate::topology::store::TopologyStore::new(
             std::env::temp_dir().join(format!("sot-fe-sessions-blocker1-test-{}", std::process::id())),
         );
         let out = handle_version_query(1, &clients, &topology, &topo_tx)

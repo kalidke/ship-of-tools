@@ -1,7 +1,7 @@
 //! Whether a captured screen is a free prompt: the glyph, box, panel and typed-line tests, and the rows the wake holds.
 
 use super::*;
-use crate::capsule_workspace::headless::Client;
+use crate::rows::run::headless::Client;
 
 /// The rule drawn above and below Claude Code's input box.
 const RULE: char = '\u{2500}';

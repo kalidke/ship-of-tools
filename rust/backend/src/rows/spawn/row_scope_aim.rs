@@ -1,5 +1,5 @@
 // row_scope_aim.rs — A4b: the one gate before any write to a row scope's
-// `cgroup.kill`. Dependency-free on purpose: `capsule_workspace::row_scope`
+// `cgroup.kill`. Dependency-free on purpose: `rows::spawn::row_scope`
 // uses it through `mod`, and `tests/support/mod.rs` includes this same file
 // by `#[path]`, so a test's kill guard can never aim wider than production.
 
@@ -35,7 +35,7 @@ pub(crate) fn aim(rel: &str, own_rel: &str, hash: &str) -> Result<(), String> {
 }
 
 /// The aim rule's one table, `(target, own, accepted)`: `row_scope`'s unit
-/// test runs it against [`aim`], and `tests/capsule_workspaces.rs` runs it
+/// test runs it against [`aim`], and `tests/capsule_workspaces/main.rs` runs it
 /// against the test scope guard through `tests/support`'s copy of this file.
 #[cfg(test)]
 pub(crate) fn aim_table(h: &str) -> Vec<(String, String, bool)> {

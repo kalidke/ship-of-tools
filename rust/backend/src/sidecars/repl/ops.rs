@@ -5,8 +5,8 @@ use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
 use crate::session::Session;
-use crate::workspaces::Workspaces;
-use crate::handlers::HandlerOutput;
+use crate::rows::Workspaces;
+use crate::server::reply::HandlerOutput;
 
 pub async fn handle_repl_eval(
     req_id: u64,
@@ -310,7 +310,7 @@ pub async fn handle_repl_interrupt(
     // closes the remaining race: even a stale `ready` reading cannot respawn.
     let state = repl.state();
     let result = match state {
-        crate::repl::ReplLifecycle::Ready => {
+        crate::sidecars::repl::ReplLifecycle::Ready => {
             repl.request_if_running("repl.interrupt", payload_json).await
         }
         _ => Ok(None),
@@ -322,7 +322,7 @@ pub async fn handle_repl_interrupt(
             // `ready` reaching here means the state read raced a child death
             // (request_if_running found the sender closed) — name that fact
             // so the note isn't self-contradictory ("no child" + "ready").
-            let note = if state == crate::repl::ReplLifecycle::Ready {
+            let note = if state == crate::sidecars::repl::ReplLifecycle::Ready {
                 "no running repl child (repl_state=ready but supervisor sender closed — child just exited)".to_string()
             } else {
                 format!("no running repl child (repl_state={})", state.as_str())

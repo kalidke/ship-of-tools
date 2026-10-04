@@ -7,9 +7,11 @@ use sot_protocol::op;
 use sot_protocol::CommFileReq;
 use sot_protocol::CommFileRes;
 use sot_protocol::Frame;
-use crate::workspaces::Phase;
-use crate::workspaces::Workspaces;
-use crate::handlers::{comm_handle_for_workspace, iso8601_utc_from_secs, read_registry_fresh, unix_now_secs, valid_name, HandlerOutput};
+use crate::rows::workspace::Phase;
+use crate::rows::Workspaces;
+use crate::comm::registry::registry::{comm_handle_for_workspace, iso8601_utc_from_secs, read_registry_fresh, unix_now_secs};
+use crate::paths::valid_name;
+use crate::server::reply::HandlerOutput;
 
 /// File one frame into THIS daemon's comm folder (`comm.file`, 0031 B1): the
 /// hub files for its own home, and a guest on the hub's folder files only on
@@ -55,35 +57,35 @@ pub(crate) async fn file_comm(
                     && comm_handle_for_workspace(ws) == req.to
             })
         };
-        let home = crate::paths::sot_comm_home();
+        let home = crate::comm::sot_comm_home();
         let self_host = comm_self_host();
         let topology = sot_protocol::topology::load();
         // Recomputed at every filing: a remount changes it under a running daemon.
         let own = home
             .as_deref()
-            .map_or_else(|| "none".to_string(), |h| crate::comm_inbox::lock_identity(&h.join("inbox")));
-        let own_disk = home.as_deref().is_some_and(|h| crate::comm_inbox::own_disk(&h.join("inbox"), &own));
+            .map_or_else(|| "none".to_string(), |h| crate::comm::mail::inbox::lock_identity(&h.join("inbox")));
+        let own_disk = home.as_deref().is_some_and(|h| crate::comm::mail::inbox::own_disk(&h.join("inbox"), &own));
         let filer = Filer {
             role: if comm_topology_hub(&topology, &self_host) || own_disk {
-                crate::comm_inbox::Role::Hub
+                crate::comm::mail::inbox::Role::Hub
             } else {
-                crate::comm_inbox::Role::Guest
+                crate::comm::mail::inbox::Role::Guest
             },
             own,
-            machine_id: crate::comm_inbox::machine_id(),
+            machine_id: crate::comm::mail::inbox::machine_id(),
             self_host: self_host.clone(),
         };
         let forward = |fwd: &CommFileReq| {
-            let within = crate::comm_inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
+            let within = crate::comm::mail::inbox::inbox_lock_wait() + COMM_FORWARD_SLACK;
             let endpoint = match &topology {
                 Ok(Some((_, t))) => sot_protocol::topology::relay_endpoint(t, &self_host),
                 Ok(None) => Err("no hosts.toml names a hub".to_string()),
-                Err(e) => return Err(crate::comm_inbox::refusal::hosts_toml_unreadable(e)),
+                Err(e) => return Err(crate::comm::mail::inbox::refusal::hosts_toml_unreadable(e)),
             };
-            let endpoint = endpoint.map_err(|e| crate::comm_inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
-            crate::topology_dial::forward_comm_file(&endpoint, &self_host, fwd, within, crate::shutdown::process()).map_err(|e| {
+            let endpoint = endpoint.map_err(|e| crate::comm::mail::inbox::refusal::hub_did_not_answer("the relay endpoint", &e))?;
+            crate::comm::mail::forward::forward_comm_file(&endpoint, &self_host, fwd, within, crate::lifecycle::child_signal::process()).map_err(|e| {
                 let e = e.strip_prefix(&format!("{endpoint}: ")).unwrap_or(&e);
-                crate::comm_inbox::refusal::hub_did_not_answer(&endpoint, e)
+                crate::comm::mail::inbox::refusal::hub_did_not_answer(&endpoint, e)
             })
         };
         comm_file_verdict(
@@ -94,7 +96,7 @@ pub(crate) async fn file_comm(
             &req,
             unix_now_secs(),
             comm_stale_secs(),
-            crate::comm_inbox::inbox_lock_wait(),
+            crate::comm::mail::inbox::inbox_lock_wait(),
         )
     })
     .await
@@ -126,7 +128,7 @@ pub(crate) fn comm_topology_hub(
 
 /// Who this daemon is to its comm folder at one filing.
 struct Filer {
-    role: crate::comm_inbox::Role,
+    role: crate::comm::mail::inbox::Role,
     /// This daemon's own lock manager for `inbox/`.
     own: String,
     /// This machine's id, which a record's line 2 names when it wrote it.
@@ -135,7 +137,7 @@ struct Filer {
 }
 
 /// `comm.file`'s verdict against the comm folder it is handed. In order: `to`
-/// is a handle; the route (`comm_inbox::route`) — a forward returns the hub's
+/// is a handle; the route (`comm::mail::inbox::route`) — a forward returns the hub's
 /// answer verbatim, a refusal is `file_failed`; this folder LISTS `to`
 /// (`.agents[to].host` non-empty — the question `comm-send.sh` and
 /// `comm-relay.sh`'s `_registry_target` ask, and deliberately not whether the
@@ -162,11 +164,11 @@ fn comm_file_verdict(
     let Some(home) = comm_home else {
         return Err(not_here());
     };
-    let record_path = home.join(crate::comm_inbox::LOCK_RECORD);
+    let record_path = home.join(crate::comm::mail::inbox::LOCK_RECORD);
     let record = std::fs::read_to_string(&record_path).ok();
-    use crate::comm_inbox::Route;
+    use crate::comm::mail::inbox::Route;
     let (own, mid) = (filer.own.as_str(), filer.machine_id.as_deref());
-    match crate::comm_inbox::route(filer.role, own, mid, record.as_deref(), req.forwarded, &filer.self_host, &record_path) {
+    match crate::comm::mail::inbox::route(filer.role, own, mid, record.as_deref(), req.forwarded, &filer.self_host, &record_path) {
         Route::Local => {}
         Route::Forward => {
             let answer = forward(&CommFileReq { forwarded: true, ..req.clone() }).map_err(|e| ("file_failed".to_string(), e))?;
@@ -205,7 +207,7 @@ fn comm_file_verdict(
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
     }
     let ts = iso8601_utc_from_secs(now_secs);
-    crate::comm_inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait, own)
+    crate::comm::mail::inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait, own)
         .map_err(|e| ("file_failed".into(), e))
 }
 
@@ -261,7 +263,7 @@ mod comm_file_tests {
         d
     }
 
-    fn filer(role: crate::comm_inbox::Role, own: &str) -> Filer {
+    fn filer(role: crate::comm::mail::inbox::Role, own: &str) -> Filer {
         Filer { role, own: own.into(), machine_id: Some("m".into()), self_host: "hub-a".into() }
     }
 
@@ -278,7 +280,7 @@ mod comm_file_tests {
     }
 
     fn file(home: Option<&std::path::Path>, to: &str, row: bool) -> Verdict {
-        file_as(home, &filer(crate::comm_inbox::Role::Hub, "local m"), &req(to), row)
+        file_as(home, &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &req(to), row)
     }
 
     fn err(code: &str, text: &str) -> Verdict {
@@ -303,7 +305,7 @@ mod comm_file_tests {
         let d = home();
         let req: CommFileReq =
             serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "all", "broadcast": true})).unwrap();
-        assert_eq!(file_as(Some(d.path()), &filer(crate::comm_inbox::Role::Hub, "local m"), &req, false), Ok(()));
+        assert_eq!(file_as(Some(d.path()), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &req, false), Ok(()));
         let line = std::fs::read_to_string(d.path().join("inbox/fresh.jsonl")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!((v["to"].as_str(), v["repo"].as_str()), (Some(""), Some("daemon")));
@@ -506,7 +508,7 @@ mod comm_file_tests {
     fn a_guest_with_a_mismatch_forwards_and_returns_the_hubs_answer() {
         let d = home();
         let guest = Filer {
-            role: crate::comm_inbox::Role::Guest,
+            role: crate::comm::mail::inbox::Role::Guest,
             own: "nfs4 A:/x".into(),
             machine_id: Some("m-b".into()),
             self_host: "guest-b".into(),

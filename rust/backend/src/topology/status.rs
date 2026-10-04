@@ -3,13 +3,13 @@
 //! fused with observed (asked of every daemon this box can reach).
 //!
 //! Deliberately a SEPARATE subcommand from `sotd topology status`
-//! (`topology_cli.rs`), not a fold-in: that command is a pure, offline read
+//! (`topology/cli.rs`), not a fold-in: that command is a pure, offline read
 //! of the declared file — no network I/O, no timeout, no concurrency, safe
 //! to run from a shell profile on every login. This one fans out to every
 //! reachable daemon at once, each probe under its own hard timeout
 //! ([`PROBE_TIMEOUT`]), which needs the daemon's own tokio runtime (`sotd`
 //! is already `#[tokio::main]`) — a genuinely different runtime shape, so
-//! it earns its own module rather than growing `topology_cli`'s pure-query
+//! it earns its own module rather than growing `topology::cli`'s pure-query
 //! arm a network stack.
 //!
 //! Split three ways so the derivation logic (declared list + raw per-host
@@ -330,7 +330,7 @@ pub fn render_json(r: &Report) -> String {
 // ─── I/O: gather (the only part `report`/`render_text` above never touch) ─
 
 /// One host's probe, run on a blocking thread (the wire client
-/// (`topology_dial::dial_and_call`) is plain blocking `std::net`/
+/// (`topology::dial::dial_and_call`) is plain blocking `std::net`/
 /// `std::os::unix::net` I/O, same as every other CLI caller of it) under
 /// [`PROBE_TIMEOUT`]. `spawn_blocking`'s own thread is not cancelled on
 /// timeout — nothing here awaits it further, so a truly wedged connect can
@@ -347,7 +347,7 @@ async fn probe_one(endpoint: String, self_host: String) -> Probe {
 }
 
 fn probe_blocking(endpoint: &str, self_host: &str) -> Probe {
-    let v = match crate::topology_dial::dial_and_call(endpoint, self_host, sot_protocol::op::VERSION_QUERY, serde_json::json!({})) {
+    let v = match crate::topology::dial::dial_and_call(endpoint, self_host, sot_protocol::op::VERSION_QUERY, serde_json::json!({})) {
         Ok(v) => v,
         Err(e) => return Probe::Unreachable(e),
     };
@@ -358,7 +358,7 @@ fn probe_blocking(endpoint: &str, self_host: &str) -> Probe {
     // A daemon that answers version.query but not workspace.list still
     // gets an `Up` row (build/host/clients are real) — rows just read as
     // empty rather than sinking the whole probe to `Unreachable`.
-    let rows = crate::topology_dial::dial_and_call(endpoint, self_host, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}))
+    let rows = crate::topology::dial::dial_and_call(endpoint, self_host, sot_protocol::op::WORKSPACE_LIST, serde_json::json!({}))
         .ok()
         .and_then(|v| serde_json::from_value::<sot_protocol::ops::WorkspaceListRes>(v).ok())
         .map(|r| r.workspaces)
@@ -388,7 +388,7 @@ async fn gather(topo: &Topology, self_host: &str) -> BTreeMap<String, Probe> {
     out
 }
 
-/// `sotd status [--json]` — entry point. Async (unlike `topology_cli::run`)
+/// `sotd status [--json]` — entry point. Async (unlike `topology::cli::run`)
 /// because `gather` needs the daemon's own tokio runtime for concurrency.
 pub async fn run(args: &[String]) -> i32 {
     let json = args.iter().any(|a| a == "--json");

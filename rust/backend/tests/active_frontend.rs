@@ -1,14 +1,14 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! "Active frontend" (2026-09-08 review rework): server-level regression
 //! tests through the REAL wire protocol against a real `sotd`, mirroring
-//! `switch_latency.rs`'s own real-process posture (no protocol doubles, no
+//! `switch_latency/main.rs`'s own real-process posture (no protocol doubles, no
 //! mocked `handle_connection`). Gated off macOS like that file and
-//! `capsule_workspaces.rs`: the daemon's default-row boot path shells out to
+//! `capsule_workspaces/main.rs`: the daemon's default-row boot path shells out to
 //! a real `tmux` server on Linux unless `SOT_TMUX_SOCK` isolates it, and
 //! macOS CI runners don't ship `tmux` by default.
 //!
-//! Two properties the unit tests in `clients.rs`/`handlers.rs` can't reach
-//! because they never go through `server.rs`'s real dispatch loop:
+//! Two properties the unit tests in `clients.rs` can't reach
+//! because they never go through `server/dispatch.rs`'s real dispatch loop:
 //!
 //! 1. Ordinary navigation/typing ops (`tree.root`, `preview.get`,
 //!    `workspace.activate{read:true}`, `pty.write`) — EVERY op an earlier
@@ -43,7 +43,7 @@ const ABSENCE_WAIT: Duration = Duration::from_millis(800);
 /// One isolated `sotd`, rooted at a fresh temp project, with every path it
 /// could touch OUTSIDE that tempdir (workspace-registry config, per-machine
 /// state, its default row's tmux server) redirected there too — copied from
-/// `switch_latency.rs`'s own `Env::spawn`, trimmed to what this file needs
+/// `switch_latency/main.rs`'s own `Env::spawn`, trimmed to what this file needs
 /// (no slow-op knob).
 struct Env {
     _tmp: tempfile::TempDir,

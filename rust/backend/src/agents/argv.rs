@@ -84,7 +84,7 @@ fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> V
             .filter(|v| !v.is_empty())
             .map(PathBuf::from);
         if let Some(json) = memory_cwd
-            .zip(crate::accounts::account_home())
+            .zip(crate::agents::accounts::account_home())
             .and_then(|(cwd, home)| {
                 auto_memory_settings(&home, cwd, child_config_dir.as_deref())
             })

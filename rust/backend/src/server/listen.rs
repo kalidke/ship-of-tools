@@ -84,7 +84,7 @@ pub(super) async fn take_daemon_lock(opts: &crate::Opts) -> Result<Option<sot_lo
             tracing::warn!(
                 "daemon lock skipped, running unfenced: could not resolve this machine's state root \
                  ({} unset)",
-                crate::capsule_workspace::STATE_ROOT_HINT
+                crate::rows::spawn::state_root::STATE_ROOT_HINT
             );
             None
         }
@@ -161,9 +161,9 @@ pub(super) async fn run_local(
     fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>,
     clients: Clients,
-    topology_store: Arc<crate::topology_store::TopologyStore>,
-    topo_changed_tx: broadcast::Sender<crate::topology_store::TopologyChanged>,
-    leases: Arc<crate::lease::Leases>,
+    topology_store: Arc<crate::topology::store::TopologyStore>,
+    topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
+    leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()> {
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -213,7 +213,7 @@ pub(super) async fn run_local(
             accepted = listener.accept() => accepted.context("accept on sot socket")?,
             () = leases.gone() => break tokio::time::Instant::now(),
         };
-        let peer_identity = crate::lease::accepted_peer(&stream);
+        let peer_identity = crate::server::listen::accepted_peer(&stream);
         let le = leases.clone();
         let s = session.clone();
         let mj = mathjax.clone();
@@ -254,7 +254,7 @@ pub(super) async fn run_local(
         }
         _ => {}
     }
-    crate::shutdown::run(leases, workspaces, ws_events_tx, decided).await
+    crate::lifecycle::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 
 /// The connecting process, read from the OS at accept, before the stream

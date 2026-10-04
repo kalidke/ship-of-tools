@@ -1,4 +1,4 @@
-//! lane_bridge.rs — ADR 0045 decision 2: `lane.connect`, the daemon-side
+//! rows/ops/lane_bridge.rs — ADR 0045 decision 2: `lane.connect`, the daemon-side
 //! half of "one attach path: through the daemon, local or remote"
 //! (decision 1). A dedicated connection whose first frame is
 //! `lane.connect` becomes, after one reply, a raw byte pipe onto the
@@ -12,7 +12,7 @@
 //! (steps 4-5 of the challenge) over the pipe, bound against the `pid`/
 //! `created` this module reports from ITS OWN dial (steps 1-3).
 //!
-//! Ungated, exactly like `capsule_workspace.rs`'s own `mod runtime`
+//! Ungated, exactly like the capsule runtime in `rows/spawn/detach.rs`
 //! (macOS wiring lane): the capsule runtime is this daemon's runtime on
 //! every host it builds for, so `lane.connect` is answered the same way
 //! everywhere. What differs per platform is one leaf — `pipe_upstream`'s
@@ -31,7 +31,7 @@ use sot_log::lane::transport::TransportError;
 use sot_protocol::{codec, op, Frame, LaneConnectReq};
 use tokio::io::{AsyncBufRead, AsyncWrite};
 
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 
 /// The two lanes `lane.connect` can name. The voyage id rides the
 /// variant itself (Codex review, 2026-09-11) rather than a second
@@ -148,21 +148,21 @@ fn dial_and_authenticate(
             Err(e) if e.is_endpoint_absent() => {
                 let is_terminal = workspaces
                     .resolve(Some(workspace_id.as_str()))
-                    .map(|ws| ws.phase() == crate::workspaces::Phase::Terminal)
+                    .map(|ws| ws.phase() == crate::rows::workspace::Phase::Terminal)
                     .unwrap_or(false);
                 if is_terminal {
                     return Err(DialFail::Absent { kind: absent_kind(&e), detail: "the row is terminal".into() });
                 }
                 // `ensure_started` holds the row's own guard for its whole
                 // duration, so a racing `lane.connect` waits for this same attempt.
-                if let Err(detail) = crate::capsule_workspace::ensure_started(
+                if let Err(detail) = crate::rows::run::activation::ensure_started(
                     &root,
                     &workspace_id,
                     &agent_kind,
                     &agent_name,
                     &slug,
                     &project_root,
-                    crate::capsule_workspace::ActivationIntent::Reconnect,
+                    crate::rows::run::activation::ActivationIntent::Reconnect,
                     workspaces.clone(),
                 ) {
                     return Err(DialFail::Absent { kind: absent_kind(&e), detail: format!("resume failed: {detail}") });
@@ -209,7 +209,7 @@ where
     let req: LaneConnectReq = match serde_json::from_value(frame.payload) {
         Ok(r) => r,
         Err(e) => {
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "bad_request", &format!("{e}")).await;
+            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "bad_request", &format!("{e}")).await;
         }
     };
 
@@ -217,25 +217,25 @@ where
         ("supervisor", _) => Lane::Supervisor,
         ("voyage", Some(voyage_id)) => Lane::Voyage(voyage_id),
         _ => {
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "bad_lane", "lane must be \"supervisor\" or \"voyage\" (voyage requires voyage_id)").await;
+            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "bad_lane", "lane must be \"supervisor\" or \"voyage\" (voyage requires voyage_id)").await;
         }
     };
 
     let Some(ws) = workspaces.workspace_for_tmux(&req.target) else {
-        return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
+        return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "unknown_workspace", &format!("no workspace targets {:?}", req.target)).await;
     };
 
     let Some(root) = sot_log::host::state_dir::sot_state_dir() else {
-        return crate::proxy::reject(
+        return crate::server::pipe::reject(
             &mut tx,
             id,
             op::LANE_CONNECT,
             "dial_failed",
-            &format!("could not resolve this machine's state root ({} unset)", crate::capsule_workspace::STATE_ROOT_HINT),
+            &format!("could not resolve this machine's state root ({} unset)", crate::rows::spawn::state_root::STATE_ROOT_HINT),
         )
         .await;
     };
-    let state_dir = crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id);
+    let state_dir = crate::rows::spawn::state_root::state_dir_for(&root, &ws.workspace_id);
 
     let workspace_id = ws.workspace_id.clone();
     let agent_kind = ws.agent();
@@ -265,16 +265,16 @@ where
             return reject_lane_absent(&mut tx, id, &kind, &detail).await;
         }
         Err(DialFail::VoyageMismatch) => {
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "voyage_mismatch", "voyage_id is not this row's own current voyage").await;
+            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "voyage_mismatch", "voyage_id is not this row's own current voyage").await;
         }
         Err(DialFail::Foreign) => {
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "foreign", "the peer behind this lane failed identity authentication").await;
+            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "foreign", "the peer behind this lane failed identity authentication").await;
         }
         Err(DialFail::Undetermined) => {
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "undetermined", "peer identity authentication could not be completed").await;
+            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "undetermined", "peer identity authentication could not be completed").await;
         }
         Err(DialFail::Other(detail)) => {
-            return crate::proxy::reject(&mut tx, id, op::LANE_CONNECT, "dial_failed", &detail).await;
+            return crate::server::pipe::reject(&mut tx, id, op::LANE_CONNECT, "dial_failed", &detail).await;
         }
     };
 
@@ -311,7 +311,7 @@ where
 
 /// Convert the blocking client this dial produced into an async duplex
 /// stream on the daemon's own Tokio runtime, then hand off to
-/// [`crate::proxy::pipe_bidirectional`] — the SAME pipe body
+/// [`crate::server::pipe::pipe_bidirectional`] — the SAME pipe body
 /// `proxy.connect` uses, generic over the upstream type. `cfg(unix)`,
 /// not `cfg(target_os = "linux")`: `socket_unix::SocketClient` is one
 /// implementation for every Unix (`client.rs`'s own `PlatformEndpoint`
@@ -326,7 +326,7 @@ where
     let std_stream = conn.into_stream();
     std_stream.set_nonblocking(true)?;
     let upstream = tokio::net::UnixStream::from_std(std_stream)?;
-    crate::proxy::pipe_bidirectional(rx, tx, upstream, what).await
+    crate::server::pipe::pipe_bidirectional(rx, tx, upstream, what).await
 }
 
 /// Windows twin of the Unix `pipe_upstream` above: the pipe handle was
@@ -344,5 +344,5 @@ where
     use std::os::windows::io::IntoRawHandle;
     let owned = conn.into_handle();
     let upstream = unsafe { tokio::net::windows::named_pipe::NamedPipeClient::from_raw_handle(owned.into_raw_handle())? };
-    crate::proxy::pipe_bidirectional(rx, tx, upstream, what).await
+    crate::server::pipe::pipe_bidirectional(rx, tx, upstream, what).await
 }

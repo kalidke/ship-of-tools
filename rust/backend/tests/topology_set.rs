@@ -8,7 +8,7 @@
 //!
 //! Everything ELSE about `topology.set`'s refusal matrix (not_hub,
 //! remove_hub, remove_self, has_running_rows, invalid) is exercised at the
-//! handler level in `src/topology_set.rs`'s own unit tests — cheaper, and
+//! handler level in `src/topology/set.rs`'s own unit tests — cheaper, and
 //! this file's job is narrower: prove the real daemon binary actually
 //! dispatches `topology.set`, writes tmp+rename to the real file on disk,
 //! and broadcasts `topology.changed` to a SEPARATE connection, over the

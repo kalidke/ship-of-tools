@@ -1,7 +1,7 @@
 //! The hello handshake: the protocol gate, the hello reply with its revision replay and the roster entry.
 
 use super::*;
-use crate::handlers::HandlerOutput;
+use crate::server::reply::HandlerOutput;
 use sot_protocol::{HelloReq, HelloRes};
 
 /// Outcome of the FE↔BE protocol handshake gate (ADR 0030 §2).
@@ -106,7 +106,7 @@ pub async fn handle_hello(
     // they're connected — the one declared host (ADR 0046 decision 1),
     // resolved once at boot, never recomputed per hello. `root_path` is
     // the configured --project-root (absolute, canonicalised on startup).
-    let host = Some(crate::workspaces::declared_host());
+    let host = Some(crate::rows::store::declared_host());
     let project_root = Some(files_mode.root_path().display().to_string());
 
     let res = HelloRes {

@@ -105,8 +105,8 @@ impl ConceptStore {
         if !self.root.exists() {
             return Ok(out);
         }
-        if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&self.root) {
-            if !crate::paths::path_within_root(&canon, &self.project_root) {
+        if let Some(canon) = crate::files::confine::canonicalize_existing_ancestor(&self.root) {
+            if !crate::files::confine::path_within_root(&canon, &self.project_root) {
                 return Err(anyhow!(
                     ".concept resolves outside the project root (symlink?): {:?}",
                     self.root
@@ -148,7 +148,7 @@ impl ConceptStore {
             s.push(".md");
             p = PathBuf::from(s);
         }
-        // Symlink escape guard (security review), mirrors `files_mode`'s
+        // Symlink escape guard (security review), mirrors `files::tree`'s
         // identical check: canonicalize the longest EXISTING ancestor and
         // confirm it's still under the canonical PROJECT root — not
         // literally `self.root` (`.concept/` itself might not exist yet on a
@@ -156,8 +156,8 @@ impl ConceptStore {
         // requiring `.concept/` to already exist avoids false-rejecting the
         // very first concept write, while still catching a symlinked
         // `.concept` dir itself, since canonicalizing walks through it too).
-        if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
-            if !crate::paths::path_within_root(&canon, &self.project_root) {
+        if let Some(canon) = crate::files::confine::canonicalize_existing_ancestor(&p) {
+            if !crate::files::confine::path_within_root(&canon, &self.project_root) {
                 return Err(anyhow!(
                     "target resolves outside the project root (symlink?): {target}"
                 ));
@@ -211,7 +211,7 @@ mod tests {
     /// Per-test scratch project dir, removed on drop. A REAL directory (not
     /// the old fake `"/p"` string) is required now: `target_to_path`'s
     /// symlink-escape guard canonicalizes, which needs the root to actually
-    /// exist. Mirrors `files_mode.rs`'s `Tmp` helper.
+    /// exist. Mirrors `files/tree.rs`'s `Tmp` helper.
     struct Tmp(PathBuf);
     impl Tmp {
         fn new() -> Self {

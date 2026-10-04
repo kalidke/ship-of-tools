@@ -1,5 +1,5 @@
 // julia.rs — resolve the real `julia` binary the daemon spawns, shared by
-// kernel.rs, repl.rs, and pluto.rs (each keeps its own supervisor; only
+// kernel.rs, repl/mod.rs, and pluto.rs (each keeps its own supervisor; only
 // resolution is shared — one function, no privileged caller).
 //
 // Invariant: never spawn a PATH candidate this resolver has not verified is
@@ -78,7 +78,7 @@ pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
     ))
 }
 
-/// For callers that don't need the resolution failure reason (`repl.rs`,
+/// For callers that don't need the resolution failure reason (`repl/mod.rs`,
 /// `pluto.rs` — simpler supervisors than the kernel's, unchanged by this
 /// module beyond sharing this resolver) and want the OLD "just give me a
 /// string" ergonomics: falls back to bare `"julia"` on any resolution

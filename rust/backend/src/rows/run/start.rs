@@ -5,7 +5,8 @@ use super::probe::probe;
 use super::watchdog::{identity_of, install_watchdog};
 use super::UNREACHABLE_PHASE;
 use crate::rows::spawn::detach::{sot_capsule_exe, spawn_detached_supervisor, StartMode};
-use crate::workspaces::{StartPermit, Workspaces};
+use crate::rows::gate::StartPermit;
+use crate::rows::Workspaces;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -109,7 +110,7 @@ pub fn spawn_and_watch(
 /// (`Workspaces::capsule_guard`) for this whole call — every one does:
 /// `ensure_started` and `resume_if_absent`/`resume_locked` take it at
 /// their own entry, `workspace.create` and `resume_all` take it
-/// around their own call site (`handlers.rs`, this module's
+/// around their own call site (`rows/ops/create.rs`, this module's
 /// `resume_all`). With the guard already held by every caller, at
 /// most one spawn attempt per row can ever be in flight.
 ///
@@ -185,7 +186,7 @@ fn spawn_settle_deadline() -> Duration {
 }
 
 /// Waits under the caller's guard for a spawn to settle, polling until [`spawn_settle_deadline`] (timeout WARNS). BLOCKING.
-pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::workspaces::Observation) {
+pub(super) fn settle_after_spawn(state_dir: &Path, workspace_id: &str) -> (&'static str, crate::rows::workspace::Observation) {
     let settle = spawn_settle_deadline();
     let starting_phase = super::phase_str(sot_log::lane::wire::SupervisorPhase::Starting);
     let deadline = Instant::now() + settle;
@@ -253,7 +254,7 @@ mod tests {
     fn every_run_start_path_takes_a_permit() {
         let mut faults = Vec::new();
 
-        let reg = crate::workspaces::Workspaces::new();
+        let reg = crate::rows::Workspaces::new();
         assert!(reg.close_gate_and_settle(std::time::Instant::now()));
         let root = tempfile::tempdir().unwrap();
         let refusal = "workspace ws-gate-1 cannot start: this computer's backend is shutting down".to_string();

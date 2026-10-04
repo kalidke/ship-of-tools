@@ -15,15 +15,13 @@ use anyhow::{Context, Result};
 /// `XDG_STATE_HOME`, `HOME`, `LOCALAPPDATA`, `USERPROFILE`, `SystemDrive`,
 /// `SOT_SELF_HOST`, ...) — `cargo test` runs tests in parallel within one
 /// process by default, and several DIFFERENT modules
-/// (`paths::state_dir_tests`, `workspaces::tests`)
+/// (`paths::state_dir_tests`, `rows::store::tests`)
 /// each exercise resolvers that read the SAME vars. One shared lock, not
 /// one per module (Codex review, PR #175: two separate mutexes — this
-/// file's own and `workspaces.rs`'s — meant a test in one module could
+/// file's own and `rows/store/`'s — meant a test in one module could
 /// still race a test in the other over the same env vars).
 #[cfg(test)]
 pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-pub(crate) use crate::files::confine::{canonicalize_existing_ancestor, path_within_root};
 
 /// Resolve a REPO-ROOT-RELATIVE resource path (e.g. `julia/kernel`,
 /// `rust/backend/sidecars/mathjax/render.mjs`) for both deployment layouts
@@ -96,7 +94,7 @@ pub fn simplify_verbatim(p: std::path::PathBuf) -> std::path::PathBuf {
         // (or hand-edited raw) carries this prefix with one fewer leading
         // backslash than the true verbatim form once `toml_unquote` runs:
         // its leading `\\` reads as one escaped backslash, halving `\\?\`
-        // to `\?\`. Accept that shape too (workspaces.rs `toml_unquote`).
+        // to `\?\`. Accept that shape too (`rows/store/codec.rs`'s `toml_unquote`).
         if let Some(rest) = s.strip_prefix(r"\?\") {
             let b = rest.as_bytes();
             if b.len() >= 2 && b[1] == b':' {
@@ -134,7 +132,7 @@ mod verbatim_tests {
 
     #[test]
     fn strips_single_backslash_drive_verbatim() {
-        // The shape `toml_unquote` (workspaces.rs) produces for a raw,
+        // The shape `toml_unquote` (`rows/store/codec.rs`) produces for a raw,
         // never-escaped legacy write of `\\?\C:\...`: its leading `\\`
         // reads as one escaped backslash, halving the prefix to `\?\`.
         assert_eq!(
@@ -207,11 +205,9 @@ mod non_windows_noop_tests {
 /// the moved doc comments/tests.
 pub use sot_protocol::{current_uid, local_daemon_label, runtime_sot_dir, session_socket_path, slug};
 
-pub(crate) use crate::rows::session_name;
-
 /// Resolves the Windows per-machine state root, or fails startup with a
 /// clear message. On Windows this is the ONLY root `state_dir()` below and
-/// `workspaces::app_config_dir` derive from — no POSIX (`XDG_*`/`HOME`/
+/// `rows::store::app_config_dir` derive from — no POSIX (`XDG_*`/`HOME`/
 /// `/tmp`) fallback chain is reachable on this platform any more (Codex
 /// review, PR #175: silently falling back to a `$HOME`-shaped path on
 /// Windows — which depends on which shell launched the daemon — is
@@ -230,23 +226,21 @@ pub(crate) fn windows_state_root() -> PathBuf {
     })
 }
 
-pub(crate) use crate::comm::sot_comm_home;
-
 /// `${XDG_STATE_HOME:-~/.local/state}/sot` — private, persistent runtime
 /// artifacts sotd owns itself (its log file today; a natural home for more
 /// later). Security review: this replaces relying on the LAUNCHER to
 /// redirect stdout to a world-readable `/tmp/sotd.log` — sotd now owns a
 /// private copy of its own log regardless of how it's launched. Falls back
 /// to `/tmp/.local/state/sot` if `$HOME` is unset (very rare; parallels
-/// `workspaces::config_dir`'s fallback) — Unix only; see `windows_state_root`
+/// `rows::store::app_config_dir`'s fallback) — Unix only; see `windows_state_root`
 /// for the Windows resolution (`%LOCALAPPDATA%\sot\state`, joined with
-/// `state` so it sits beside `workspaces::app_config_dir`'s `config`
+/// `state` so it sits beside `rows::store::app_config_dir`'s `config`
 /// without colliding with the capsule runtime's own `workspaces\<id>`
-/// subtree — `capsule_workspace::state_dir_for`). Unlike the config
+/// subtree — `rows::spawn::state_root::state_dir_for`). Unlike the config
 /// registry, this log directory holds no durable data worth migrating — a
 /// fresh one on first post-fix boot is fine, so there is no Windows
 /// migration step here (contrast
-/// `workspaces::migrate_legacy_windows_config_dir`).
+/// `rows::store::migrate::migrate_legacy_windows_config_dir`).
 pub fn state_dir() -> PathBuf {
     #[cfg(windows)]
     return windows_state_root().join("state");

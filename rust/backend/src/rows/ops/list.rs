@@ -6,10 +6,11 @@ use anyhow::Result;
 use serde_json::json;
 use sot_protocol::op;
 use sot_protocol::Frame;
-use crate::handlers::{HandlerOutput, clear_comm_unread, comm_handle_for_workspace, host_matches, read_comm_agents};
-use crate::workspaces::Workspaces;
+use crate::server::reply::HandlerOutput;
+use crate::comm::registry::registry::{clear_comm_unread, comm_handle_for_workspace, host_matches, read_comm_agents};
+use crate::rows::Workspaces;
 #[cfg(test)]
-use crate::workspaces::Workspace;
+use crate::rows::Workspace;
 
 pub async fn handle_workspace_list(
     req_id: u64,
@@ -23,7 +24,7 @@ pub async fn handle_workspace_list(
     // absent/malformed; every lookup below then falls back to empty strings.
     // On a blocking thread: the read's retry sleeps after a failed read.
     let comm_agents = tokio::task::spawn_blocking(read_comm_agents).await.ok().flatten();
-    let host = crate::workspaces::declared_host();
+    let host = crate::rows::store::declared_host();
     // Pull `.agents[agent_name].<field>` as an owned String, "" if anything is
     // missing or not a string. LU5d2: `agent_name` here is a handle the caller
     // (below) already bound to THIS workspace — by the
@@ -66,17 +67,17 @@ pub async fn handle_workspace_list(
             // A row with no state dir at all reads NEVER_STARTED_PHASE
             // ("stopped") exactly like a row that simply hasn't been
             // attached yet — deliberately NOT distinguished here (Fable
-            // review, capsule_workspaces.rs's own "Rule H": a pre-seeded,
+            // review, `tests/capsule_workspaces/`'s own "Rule H": a pre-seeded,
             // never-`workspace.create`d row is indistinguishable from a
             // truly orphaned one by any fact this list can cheaply check,
             // and a wire-visible claim otherwise would be dishonest for
-            // exactly that row shape). `capsule_workspace::runtime::
+            // exactly that row shape). `rows::run::resume::
             // log_orphaned_state_dirs` still names such rows once at
             // boot, as an operator diagnostic only; `workspace.destroy`'s
             // own real proof (a live lane connect) is what actually
             // decides whether one is removable.
             let state_dir = sot_log::host::state_dir::sot_state_dir().map(|root| {
-                crate::capsule_workspace::state_dir_for(&root, &ws.workspace_id)
+                crate::rows::spawn::state_root::state_dir_for(&root, &ws.workspace_id)
                     .to_string_lossy()
                     .into_owned()
             });
@@ -125,7 +126,7 @@ pub async fn handle_workspace_list(
 }
 
 /// `workspace.activate` — builds the ack. The connection-local state this
-/// updates (`active_workspace`, `server.rs`'s `handle_connection`) is
+/// updates (`active_workspace`, `server/conn.rs`'s `handle_connection`) is
 /// mutated by the CALLER, not here — this function only resolves
 /// `req.workspace_id` (again; the caller does the same resolve to learn
 /// what to store, mirroring how the `HELLO` arm computes the auth flag
@@ -147,7 +148,7 @@ pub async fn handle_workspace_activate(
     // below is sent unconditionally, whatever this does or doesn't clear.
     if req.read {
         if let Some(ws) = resolved_ws.clone() {
-            let host = crate::workspaces::declared_host();
+            let host = crate::rows::store::declared_host();
             let _ = tokio::task::spawn_blocking(move || clear_comm_unread(&ws, &host)).await;
         }
     }

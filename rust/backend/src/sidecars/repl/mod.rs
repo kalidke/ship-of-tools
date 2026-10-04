@@ -1,4 +1,4 @@
-// repl.rs — supervisor for the persistent Julia REPL child.
+// sidecars/repl/mod.rs — supervisor for the persistent Julia REPL child.
 //
 // Per ADR 0009 the REPL is a separate `julia` process the backend keeps
 // alive. The frontend sends code to evaluate; the REPL responds with a
@@ -21,18 +21,18 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 pub(crate) mod execute;
-mod lifecycle;
+pub(crate) mod lifecycle;
 pub(crate) mod ops;
 mod supervisor;
 
-pub(crate) use lifecycle::ReplLifecycle;
+use lifecycle::ReplLifecycle;
 use lifecycle::{LifecycleCell, SharedLifecycle};
 use supervisor::{spawn_supervisor, spawn_supervisor_with_project};
 
 /// One streamed REPL frame relayed off the supervisor onto the per-backend
 /// broadcast bus. The supervisor reads each `repl.frame` evt line off the
 /// Julia child's stdout and fans it out here; every connection subscribes and
-/// writes a `repl.frame` evt frame. Mirrors `workspaces::AgentMessage` — a
+/// writes a `repl.frame` evt frame. Mirrors `comm::mail::bus::AgentMessage` — a
 /// small Clone+Debug payload type over a `broadcast::channel`. `workspace_id`
 /// is the originating workspace (None = the legacy singleton REPL). `frame` is
 /// the opaque `{kind, ...}` object the Julia shim emitted, passed through

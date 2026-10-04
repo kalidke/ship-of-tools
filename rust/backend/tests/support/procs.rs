@@ -164,7 +164,7 @@ pub fn poll_until_no_process_matches(pattern: &str, timeout: Duration) -> bool {
     }
 }
 /// Drains `pipe` to EOF or `bound`, whichever comes first — mirrors
-/// `capsule_workspace::runtime::drain_stderr_bounded` (production, Codex
+/// `rows::spawn::detach::drain_stderr_bounded` (production, Codex
 /// SHOULD-FIX: a wrapper that has already exited can still leave stderr
 /// inherited by a still-running grandchild, and a plain `read_to_string`
 /// then blocks until EVERY holder of the pipe's write end closes it, not
@@ -267,7 +267,7 @@ pub async fn assert_scope_empties(rel: &str, within: Duration) {
 
 /// ADR 0043 decision 32, test 1's own SKIP gate: does THIS test runner
 /// have a `systemd --user` manager reachable at all? Same capability
-/// question `capsule_workspace::runtime::user_scope_available` answers in
+/// question `rows::spawn::detach::user_scope_available` answers in
 /// production, duplicated here rather than exposed from `sot-backend`
 /// (that function is private to its own crate) — the two probes are a
 /// handful of lines each and answer the same question for genuinely

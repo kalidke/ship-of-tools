@@ -1,8 +1,9 @@
 //! One lifecycle observer per capsule row, the single writer of a row's phase cell.
 
 use super::probe::{local_phase, phase_for_missing_pointer};
-use crate::capsule_workspace::state_dir_for;
-use crate::workspaces::{Observation, SupervisorIdentity, Workspace, Workspaces};
+use crate::rows::spawn::state_root::state_dir_for;
+use crate::rows::workspace::{Observation, SupervisorIdentity};
+use crate::rows::{Workspace, Workspaces};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,8 +19,8 @@ pub(crate) fn observe(ws: &Workspace, observation: Observation) {
 }
 
 /// Adopts the observation's supervisor as this row's epoch if it differs, then feeds it (guarded callers only).
-pub(super) fn observe_with_adoption(ws: &crate::workspaces::Workspace, observation: crate::workspaces::Observation) {
-    if let crate::workspaces::Observation::Phase { supervisor, .. } = &observation {
+pub(super) fn observe_with_adoption(ws: &crate::rows::Workspace, observation: crate::rows::workspace::Observation) {
+    if let crate::rows::workspace::Observation::Phase { supervisor, .. } = &observation {
         if ws.current_supervisor() != Some(*supervisor) {
             ws.begin_supervisor_epoch(*supervisor);
         }
@@ -92,7 +93,8 @@ fn poll_once(state_dir: &Path, persistent: &mut sot_log::attach_client::supervis
 #[cfg(test)]
 mod observer_tests {
     use super::observe;
-    use crate::workspaces::{Observation, Phase, SupervisorIdentity, Workspace, Workspaces};
+    use crate::rows::workspace::{Observation, Phase, SupervisorIdentity};
+    use crate::rows::{Workspace, Workspaces};
     use std::path::PathBuf;
 
     /// A registered capsule row with its epoch begun at `supervisor` (RA).

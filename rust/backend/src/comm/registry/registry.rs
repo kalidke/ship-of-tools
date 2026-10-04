@@ -1,7 +1,7 @@
 //! The daemon's side of the comm registry (registry.json): fresh reads, the lock, pruning and unread clears,
 //! which entry is a row's, and the UTC stamps comm writes.
 
-use crate::workspaces::Workspace;
+use crate::rows::Workspace;
 
 /// ISO-8601 UTC instant (e.g. `2026-05-29T14:30:05Z`) without pulling in
 /// chrono — the backend has no time crate, so format the civil date from
@@ -50,21 +50,21 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// Resolve the sot-comm registry path: `<sot-comm home>/registry.json`,
 /// via the ONE shared resolver (`paths::sot_comm_home`, Codex round
-/// finding 8 — the same one `capsule_workspace::capsule_supervisor_env`
+/// finding 8 — the same one `agents::env::capsule_supervisor_env`
 /// injects as `SOT_COMM_HOME` into a spawned capsule's env, so the daemon
 /// and the scripts can never disagree about where `~/.sot-comm` is).
 /// Returns `None` only when the resolver itself found nothing (no
 /// `SOT_COMM_HOME`, `HOME`, or `USERPROFILE`) — every other failure is
 /// the caller's to treat as "absent" (empty strings).
 pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
-    let mut p = crate::paths::sot_comm_home()?;
+    let mut p = crate::comm::sot_comm_home()?;
     p.push("registry.json");
     Some(p)
 }
 
 /// Read a capsule row's own pinned self-file back to learn its sot-comm
 /// handle — `comm-join.sh`'s auto-disambiguating derivation writes it
-/// there (`capsule_workspace::capsule_supervisor_env`'s doc: `SOT_COMM_
+/// there (`agents::env::capsule_supervisor_env`'s doc: `SOT_COMM_
 /// SELF_FILE`, `<comm_home>/self/<host>__<workspace_id>.txt`). Manager
 /// review (S5, Codex finding B8): this is the FALLBACK `comm_handle_for_
 /// workspace` reaches for once a row's declared `agent_handle` (ADR 0046
@@ -74,10 +74,10 @@ pub(crate) fn comm_registry_path() -> Option<std::path::PathBuf> {
 /// Empty (never "unknown") on any read failure — an absent/unreadable
 /// file is the ordinary case for a workspace nothing has joined yet.
 fn capsule_comm_handle(workspace_id: &str) -> String {
-    let Some(comm_home) = crate::paths::sot_comm_home() else {
+    let Some(comm_home) = crate::comm::sot_comm_home() else {
         return String::new();
     };
-    let host = crate::workspaces::declared_host();
+    let host = crate::rows::store::declared_host();
     let self_file = comm_home.join("self").join(format!("{host}__{workspace_id}.txt"));
     std::fs::read_to_string(&self_file)
         .ok()
@@ -191,7 +191,7 @@ pub(crate) fn comm_handle_for_workspace(ws: &Workspace) -> String {
 }
 
 /// Take the sot-comm registry lock (`<comm_home>/.registry.lock`, a file
-/// naming its holder: `comm_registry_lock`, the same lock as `comm-lib.sh`'s
+/// naming its holder: `comm::registry::lock`, the same lock as `comm-lib.sh`'s
 /// `with_lock`), run `f` with the registry and tmp-file paths, and release
 /// the lock on every exit path. THE ONE lock helper —
 /// `remove_comm_agents_for_workspace` and `clear_comm_unread` both call this,
@@ -221,7 +221,7 @@ fn with_comm_registry_lock<T>(
     // contains a panic, but a plain "release after the call" would leave the
     // lock behind on unwind, and every later writer would wedge closed. The
     // held lock's `Drop` runs on unwind too.
-    let _held = match crate::comm_registry_lock::acquire(&dir.join(".registry.lock"), bound) {
+    let _held = match crate::comm::registry::lock::acquire(&dir.join(".registry.lock"), bound) {
         Ok(held) => held,
         Err(e) => {
             tracing::warn!("comm registry lock: {e}");
@@ -240,7 +240,7 @@ fn with_comm_registry_lock<T>(
 /// ordinarily-brief contention.
 const COMM_PRUNE_LOCK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// `clear_comm_unread`'s lock bound: `server.rs`'s `handle_connection`
+/// `clear_comm_unread`'s lock bound: `server/conn.rs`'s `handle_connection`
 /// awaits every handler inline, so a long spin here would stall the whole
 /// `workspace.activate` reply — bounded much tighter than the prune above.
 const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::from_secs(1);

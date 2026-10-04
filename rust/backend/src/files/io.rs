@@ -1,4 +1,4 @@
-// file_io.rs — raw source-file read/write for the in-frontend editor.
+// files/io.rs — raw source-file read/write for the in-frontend editor.
 //
 // The kernel renders *previews*; this is the *editor's* path: it shuttles raw
 // file bytes plus a content version, so a save can detect that the file changed

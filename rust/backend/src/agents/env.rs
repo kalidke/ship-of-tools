@@ -36,14 +36,14 @@ pub const NESTING_ENV_VARS_TO_SCRUB: &[&str] = &[
 /// either slash spelling for a drive-letter-absolute path) to hand a
 /// capsule's producer env, so its own comm scripts resolve the EXACT SAME
 /// home this builds `SOT_COMM_SELF_FILE` from below — Codex round finding
-/// 8: ONE resolver ([`crate::paths::sot_comm_home`], also what the
-/// daemon's own registry reads use, `handlers::comm_registry_path`),
+/// 8: ONE resolver ([`crate::comm::sot_comm_home`], also what the
+/// daemon's own registry reads use, `comm::registry::registry::comm_registry_path`),
 /// injected into the child explicitly rather than left to each side's own
 /// HOME/USERPROFILE guess landing on two different answers. `None` when
 /// the resolver itself found nothing (matches comm-lib.sh: nothing to
 /// pin).
 fn capsule_comm_home_str() -> Option<String> {
-    Some(crate::paths::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
+    Some(crate::comm::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
 }
 
 /// The `SOT_*` awareness env a capsule supervisor spawn stamps on its
@@ -55,7 +55,7 @@ fn capsule_comm_home_str() -> Option<String> {
 /// this fixes). Bare `SOT_SOCKET` (ADR 0046 decision 1, S4: no typed
 /// prefix, Unix only), `SOT_WORKSPACE`/`SOT_WORKSPACE_ID` (and
 /// `SOT_WORKSPACE_ROOT`/
-/// `SOT_SESSION`/`SOT_MANUAL`) reuse [`crate::awareness::awareness_env`]
+/// `SOT_SESSION`/`SOT_MANUAL`) reuse [`crate::agents::awareness::awareness_env`]
 /// verbatim — ONE builder, not a second copy that could drift — keyed on
 /// `slug` (Codex round finding 1: the frontend keys results and the
 /// active workspace by SLUG, not the internal `ws-<slug>-<hex>` id;
@@ -74,9 +74,9 @@ fn capsule_comm_home_str() -> Option<String> {
 /// slot: `comm-join.sh`'s #148 auto-disambiguating derivation decides the
 /// handle and writes it there. The session inside the capsule now also
 /// DECLARES it via `agent.join` over this same pinned `SOT_SOCKET`
-/// (`Workspace.agent_handle`, `handlers::handle_agent_join`); a declared
+/// (`Workspace.agent_handle`, `comm::registry::join::handle_agent_join`); a declared
 /// `agent_handle` wins when present, but the daemon's OWN read-back of
-/// that same file (`handlers::capsule_comm_handle`) stays as the
+/// that same file (`comm::registry::registry::capsule_comm_handle`) stays as the
 /// FALLBACK for a row with no declaration yet (manager review, S5) —
 /// deleted only with family H once every row has cycled onto `agent.join`.
 /// Pure (no I/O beyond env reads): exercised by
@@ -84,12 +84,12 @@ fn capsule_comm_home_str() -> Option<String> {
 /// [`runtime::spawn_detached_supervisor`], its only caller, is gated to
 /// Windows and Linux only.
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
-    let mut env = crate::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
+    let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
         env.push(("SOT_COMM_NAME".to_string(), agent_name.to_string()));
     }
     if let Some(comm_home) = capsule_comm_home_str() {
-        let host = crate::workspaces::declared_host();
+        let host = crate::rows::store::declared_host();
         let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
@@ -135,16 +135,16 @@ pub(crate) fn account_spawn_env(
     // "no retry, marking terminal" arm) matches `qualified_state_root`'s
     // own classification just above: both are operator-fixable, not
     // transient.
-    match crate::accounts::account_home() {
+    match crate::agents::accounts::account_home() {
         Some(home) => {
-            let extra = crate::accounts::account_env(agent_kind, account, &home)
+            let extra = crate::agents::accounts::account_env(agent_kind, account, &home)
                 .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
             // Accounts brief: link the shared entries now that account_env
             // has proved the folder exists (sharing ruling: accounts.rs
             // module doc). Same refusal shape as account_env's own error
             // just above; ensure_account_links itself no-ops for an empty
             // account or "default", so no guard is needed here.
-            crate::accounts::ensure_account_links(&home, account)
+            crate::agents::accounts::ensure_account_links(&home, account)
                 .map_err(|msg| std::io::Error::new(ErrorKind::Unsupported, msg))?;
             // Trusted-folder brief: with a root under the prefix the
             // owner declared, pre-answer claude's folder-trust dialog
@@ -156,11 +156,11 @@ pub(crate) fn account_spawn_env(
             // before this existed, and a row that will not start is
             // worse. Claude rows only -- no other agent has this dialog.
             if agent_kind == "claude" {
-                if let Err(msg) = crate::accounts::ensure_folder_trusted(
+                if let Err(msg) = crate::agents::folder_trust::ensure_folder_trusted(
                     &home,
                     account,
                     cwd,
-                    crate::accounts::trusted_root_prefix().as_deref(),
+                    crate::agents::folder_trust::trusted_root_prefix().as_deref(),
                 ) {
                     tracing::warn!(
                         workspace_id,
@@ -286,7 +286,7 @@ mod tests {
         // listener per process) and process-global (`OnceLock`), so this
         // pins the value itself here rather than trusting whatever another
         // test in this binary may have already set it to.
-        crate::awareness::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
+        crate::agents::awareness::set_own_endpoint(Path::new("/fake-home/.local/state/sot/session.sock"));
         let _guard = self_file_env_guarded();
         std::env::set_var("SOT_SELF_HOST", "testhost");
         std::env::set_var("SOT_COMM_HOME", "/fake-home/.sot-comm");

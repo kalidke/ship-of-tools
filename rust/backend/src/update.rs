@@ -28,8 +28,8 @@ use tokio::sync::broadcast;
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
-use crate::handlers::HandlerOutput;
-use crate::lease::Leases;
+use crate::server::reply::HandlerOutput;
+use crate::lifecycle::lease::Leases;
 
 /// Default release repo. Overridable via `SOT_UPDATE_REPO` for testing against
 /// a fork.

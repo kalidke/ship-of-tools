@@ -9,9 +9,10 @@ use sot_protocol::AgentFiledRes;
 use sot_protocol::AgentSendReq;
 use sot_protocol::AgentSendRes;
 use sot_protocol::Frame;
-use crate::workspaces::AgentMessage;
+use crate::comm::mail::bus::AgentMessage;
 use tokio::sync::broadcast;
-use crate::handlers::{iso8601_utc_now, HandlerOutput};
+use crate::comm::registry::registry::iso8601_utc_now;
+use crate::server::reply::HandlerOutput;
 
 /// Relay one agent-to-agent message (`agent.send`). Parse the request,
 /// snapshot the roster's `receivers_for` the target BEFORE publishing
@@ -83,7 +84,7 @@ pub async fn handle_agent_send(
 pub async fn handle_agent_filed(
     req_id: u64,
     payload_json: serde_json::Value,
-    receipt_tx: &broadcast::Sender<crate::workspaces::AgentReceipt>,
+    receipt_tx: &broadcast::Sender<crate::comm::mail::bus::AgentReceipt>,
     filer_name: Option<&str>,
 ) -> Result<HandlerOutput> {
     let req: AgentFiledReq = serde_json::from_value(payload_json).context("agent.filed payload")?;
@@ -101,7 +102,7 @@ pub async fn handle_agent_filed(
         )]);
     };
     tracing::info!(id = %req.id, %filer, "agent.filed receipt");
-    let _ = receipt_tx.send(crate::workspaces::AgentReceipt {
+    let _ = receipt_tx.send(crate::comm::mail::bus::AgentReceipt {
         id: req.id,
         filer: filer.to_string(),
     });

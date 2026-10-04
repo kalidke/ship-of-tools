@@ -2,7 +2,7 @@
 
 use super::support_tests::*;
 use super::*;
-use crate::accounts::claude_config_dir;
+use crate::agents::accounts::claude_config_dir;
 
 fn refusal_of(
     runtime: &str,
@@ -12,7 +12,7 @@ fn refusal_of(
     resume: &str,
     home: &Path,
 ) -> Refusal {
-    let accounts = crate::accounts::discover_accounts(home);
+    let accounts = crate::agents::accounts::discover_accounts(home);
     check(runtime, agent_kind, current_account, account, resume, home, &accounts)
         .err()
         .expect("this case must be refused")
@@ -109,7 +109,7 @@ fn a_logged_in_account_on_a_claude_capsule_row_is_accepted() {
     let home = home_with(true, &[("team", true)]);
     seed_transcript(&claude_config_dir(home.path(), "team"), "sid");
     seed_transcript(&claude_config_dir(home.path(), ""), "sid");
-    let accounts = crate::accounts::discover_accounts(home.path());
+    let accounts = crate::agents::accounts::discover_accounts(home.path());
     assert!(check("capsule", "claude", "", "team", "sid", home.path(), &accounts).is_ok());
     // …and back to the default login, which is an account like any other.
     assert!(check("capsule", "claude", "team", "default", "sid", home.path(), &accounts).is_ok());

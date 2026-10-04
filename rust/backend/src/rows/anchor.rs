@@ -2,9 +2,9 @@
 
 use super::*;
 
-use crate::handlers::remove_comm_agents_for_workspace;
+use crate::comm::registry::registry::remove_comm_agents_for_workspace;
 use crate::paths;
-use crate::workspaces;
+use crate::rows::store;
 
 impl Workspaces {
     /// ADR 0042 amendment (owner rulings 2026-09-04 and 2026-09-06): is `ws`
@@ -110,7 +110,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
             tracing::warn!(
                 workspace_id = %existing.workspace_id,
                 agent = %existing.agent(),
-                toml = %workspaces::toml_path_for(&existing.slug).display(),
+                toml = %store::toml_path_for(&existing.slug).display(),
                 "default workspace carries an agent, so it lists and starts as an ordinary session \
                  (a pre-2026-09-04 seed, or a deliberate choice); to make it the inert anchor: stop \
                  the daemon, set agent = \"none\" and autostart_claude = false in that toml, start again"
@@ -133,7 +133,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
     let existing_agent = existing_default.as_ref().map(|e| e.agent());
     let existing_agent_name = existing_default.as_ref().map(|e| e.agent_name());
     let (seed_autostart, seed_agent, seed_agent_name, seed_task) =
-        workspaces::default_row_launch_seed(existing_default.as_deref().map(|e| {
+        default_row_launch_seed(existing_default.as_deref().map(|e| {
             (
                 e.autostart_claude,
                 existing_agent.as_deref().unwrap_or_default(),
@@ -174,7 +174,7 @@ pub(crate) fn seed_default_row(opts: &crate::Opts, files_mode: &FilesMode, works
         .resolve(Some(&paths::slug(&default_label)))
         .expect("default workspace just inserted");
     workspaces.set_default(&default_ws.workspace_id);
-    if let Err(e) = workspaces::save(&default_ws) {
+    if let Err(e) = store::save(&default_ws) {
         tracing::warn!(error = %e, "could not persist default workspace toml");
     } else {
         tracing::info!(
@@ -222,7 +222,7 @@ pub(crate) async fn end_default_row_run(
     }
     let reg_agent = agent_name.to_string();
     let reg_ws = workspace_id.to_string();
-    let reg_host = crate::workspaces::declared_host();
+    let reg_host = crate::rows::store::declared_host();
     let comm_removed = tokio::task::spawn_blocking(move || {
         remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
     })
@@ -236,7 +236,7 @@ pub(crate) async fn end_default_row_run(
         );
     }
     if let Some(reset) = workspaces.reset_agent_to_none(workspace_id) {
-        if let Err(e) = crate::workspaces::save(&reset) {
+        if let Err(e) = crate::rows::store::save(&reset) {
             tracing::warn!(error = %e, workspace_id = %workspace_id,
                 "default row agent-reset toml persist failed; workspace is in-memory only");
         }

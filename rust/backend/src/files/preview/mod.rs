@@ -10,12 +10,12 @@ use sot_protocol::Frame;
 use sot_protocol::PreviewGetReq;
 use sot_protocol::PreviewGetRes;
 
-use crate::files_mode::mime_for_path;
-use crate::handlers::HandlerOutput;
-use crate::kernel::Kernel;
+use crate::files::tree::mime_for_path;
+use crate::server::reply::HandlerOutput;
+use crate::sidecars::kernel::Kernel;
 use crate::session::Session;
-use crate::workspaces::Workspace;
-use crate::workspaces::Workspaces;
+use crate::rows::Workspace;
+use crate::rows::Workspaces;
 
 pub(crate) mod crop;
 pub(crate) mod scale;
@@ -472,7 +472,7 @@ async fn try_plugin_preview(
             // wire/protocol error) keeps the existing silent fallback: raw
             // bytes are still a reasonable thing to show for, say, Julia
             // source.
-            if let Some(unavailable) = e.downcast_ref::<crate::kernel::KernelUnavailable>() {
+            if let Some(unavailable) = e.downcast_ref::<crate::sidecars::kernel::KernelUnavailable>() {
                 if is_bounded_output_plugin(path) {
                     tracing::warn!(
                         %node_id,

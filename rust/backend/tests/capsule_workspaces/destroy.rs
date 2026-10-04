@@ -133,7 +133,7 @@ async fn capsule_destroy_after_adoption_leaves_no_respawn() {
 /// ADR 0043 decision 33's destroy proof, exercised end to end: a row
 /// whose SUPERVISOR alone died (the leg survives headless) is still
 /// destroyable. `destroy_capsule_workspace`'s own pre-step
-/// (`capsule_workspace::resume_locked`, under the SAME row guard
+/// (`rows::run::activation::resume_locked`, under the SAME row guard
 /// `end_run` then runs under) re-establishes the authority first, so
 /// `end_run` finds a real lane to ask — the fence/leg proof
 /// (`leg_absent`) never needs to fire at all.

@@ -1,4 +1,4 @@
-// topology_store.rs — the daemon's live view of the declared topology file
+// topology/store.rs — the daemon's live view of the declared topology file
 // (`sot_protocol::topology`, grammar v2). ON-DEMAND re-read (mtime+size),
 // never a file watcher: plan §B "Editing the master list" is explicit that
 // `notify` misses writes on a network filesystem, exactly the reason
@@ -122,7 +122,7 @@ impl TopologyStore {
     }
 }
 
-/// tmp + rename (the installer's own pattern — mirrors `topology_cli::
+/// tmp + rename (the installer's own pattern — mirrors `topology::cli::
 /// write_atomic`, factored here so `topology.set` and `sotd topology sync`
 /// share the one implementation).
 pub(crate) fn write_atomic(dest: &Path, text: &str) -> Result<(), String> {

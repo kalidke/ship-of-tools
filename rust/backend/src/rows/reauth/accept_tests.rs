@@ -2,7 +2,7 @@
 
 use super::support_tests::*;
 use super::*;
-use crate::accounts::claude_config_dir;
+use crate::agents::accounts::claude_config_dir;
 
 /// The peer the ordering rule turns on, in its two states: one that
 /// accepts what it is handed, one that is already GONE (the dead or
@@ -90,7 +90,7 @@ async fn the_record_carries_the_new_account_before_the_replacement_is_spawned() 
     assert_eq!(after.agent_handle(), "row-declared-handle");
     assert_eq!(after.agent(), "claude");
 
-    let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug))
+    let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug))
         .expect("the row's toml is persisted, not just held in memory");
     assert!(toml.contains("account       = \"team\""), "{toml}");
     assert!(toml.contains("agent_handle  = \"row-declared-handle\""), "{toml}");
@@ -122,7 +122,7 @@ async fn the_accept_is_answered_before_the_leg_is_touched() {
     assert!(restart.is_some(), "the effect is deferred to the caller, after the write");
 
     let state_root = sot_log::host::state_dir::sot_state_dir().expect("pinned state root");
-    let state_dir = crate::capsule_workspace::state_dir_for(&state_root, &id);
+    let state_dir = crate::rows::spawn::state_root::state_dir_for(&state_root, &id);
     assert!(
         !state_dir.exists(),
         "the accept path must not have dialed, created or ended anything: {state_dir:?}"
@@ -133,7 +133,7 @@ async fn the_accept_is_answered_before_the_leg_is_touched() {
 // ORDERING 3: the accept frame is PHYSICALLY WRITTEN before anything is
 // handed the plan that can end the leg — the dispatcher's whole
 // contract, pinned here rather than left to two adjacent statements in
-// `server.rs`.
+// `server/dispatch.rs`.
 #[tokio::test]
 async fn the_accept_frame_is_on_the_wire_before_the_restart_is_handed_the_plan() {
     let _g = env_guarded();
@@ -163,7 +163,7 @@ async fn the_accept_frame_is_on_the_wire_before_the_restart_is_handed_the_plan()
     );
     // Nothing rolled back: this is the accept that was read.
     assert_eq!(reg.resolve(Some(&id)).unwrap().account(), "team");
-    let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+    let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug)).unwrap();
     assert!(toml.contains("account       = \"team\""), "{toml}");
 }
 
@@ -190,7 +190,7 @@ async fn an_accept_that_cannot_be_written_rolls_the_record_back() {
 
     let after = reg.resolve(Some(&id)).expect("the row itself survives");
     assert_eq!(after.account(), "", "the record is back on the login the live leg spends");
-    let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+    let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug)).unwrap();
     assert!(toml.contains("account       = \"\""), "{toml}");
     assert!(toml.contains("agent_handle  = \"row-declared-handle\""), "{toml}");
 }

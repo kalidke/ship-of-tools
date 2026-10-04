@@ -45,7 +45,7 @@ const TEST_DEADLINE_MS: u64 = 500;
 /// One isolated `sotd`, rooted at a fresh temp project, with every path it
 /// could touch OUTSIDE that tempdir redirected there too -- copied from
 /// `active_frontend.rs`'s own `Env::spawn` (itself copied from
-/// `switch_latency.rs`), trimmed to what this file needs plus the
+/// `switch_latency/main.rs`), trimmed to what this file needs plus the
 /// `SOT_TEST_PING_READ_DEADLINE_MS` override this lane adds.
 struct Env {
     _tmp: tempfile::TempDir,
@@ -71,7 +71,7 @@ impl Env {
         std::fs::create_dir_all(&config_root).expect("mkdir config_root");
 
         // The daemon polls `<comm home>/registry.json` every 1.5s and broadcasts a
-        // `workspace.changed` evt on every change (server.rs, the ADE state-nav
+        // `workspace.changed` evt on every change (`comm/registry/poll.rs`, the ADE state-nav
         // refresh). `paths::sot_comm_home` resolves SOT_COMM_HOME, then
         // HOME/.sot-comm, then USERPROFILE -- so unless all three are pinned here a
         // test daemon watches the REAL registry, and any live row on the developer's

@@ -45,8 +45,7 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - Out: `run/` takes the guard and a `StartPermit` (`run::start::start_supervisor`, `run::start::reset_run`),
   writes observations (`run::observer::observe`) and installs the observer (`install_observer`); the lifecycle close calls
   `close_gate_and_settle`.
-- Persistence: `store/` (`scan_disk`, `save`, `toml_path_for`) reads and writes the row toml; `workspaces.rs`
-  re-exports the names callers still reach as `crate::workspaces::`.
+- Persistence: `store/` (`scan_disk`, `save`, `toml_path_for`) reads and writes the row toml.
 
 ## Folders
 - `ops/`: the row ops clients call

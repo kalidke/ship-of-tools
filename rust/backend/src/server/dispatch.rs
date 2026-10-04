@@ -14,8 +14,8 @@ pub(super) async fn dispatch<W>(
     label: &Arc<Option<String>>, workspaces: &Workspaces, ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
     agent_events_tx: &broadcast::Sender<AgentMessage>, agent_receipt_tx: &broadcast::Sender<AgentReceipt>,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>, clients: &Clients,
-    topology_store: &Arc<crate::topology_store::TopologyStore>,
-    topo_changed_tx: &broadcast::Sender<crate::topology_store::TopologyChanged>, leases: &Arc<crate::lease::Leases>,
+    topology_store: &Arc<crate::topology::store::TopologyStore>,
+    topo_changed_tx: &broadcast::Sender<crate::topology::store::TopologyChanged>, leases: &Arc<crate::lifecycle::lease::Leases>,
     client_guard: &mut Option<crate::clients::ClientGuard>, hello_host: &mut Option<String>,
     hello_name: &mut Option<String>, is_long_lived_role: &mut bool, deadline_armed: &mut bool,
     read_deadline: &mut tokio::time::Instant, active_workspace: &mut Option<String>, monitor_subscribed: &mut bool,
@@ -34,10 +34,10 @@ where
     // SLOW_REQUEST_MS so the culprit op is identified, never inferred
     // from a neighbouring log line.
     let dispatch_started = std::time::Instant::now();
-    let dispatched: Result<handlers::HandlerOutput> = match frame.op.as_str() {
+    let dispatched: Result<crate::server::reply::HandlerOutput> = match frame.op.as_str() {
         op::HELLO => {
             admit_hello(&frame, clients, client_guard, is_long_lived_role, hello_host, hello_name);
-            handlers::handle_hello(
+            crate::server::hello::handle_hello(
                 frame.id,
                 frame.payload,
                 &session,
@@ -48,14 +48,14 @@ where
             .await
         }
         op::TREE_ROOT => {
-            handlers::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
+            crate::files::tree_ops::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
         }
         op::TREE_CHILDREN => {
-            handlers::handle_tree_children(frame.id, frame.payload, &session, &workspaces)
+            crate::files::tree_ops::handle_tree_children(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::NAV_TOGGLE_HIDDEN => {
-            handlers::handle_nav_toggle_hidden(frame.id, frame.payload, &session, &workspaces)
+            crate::files::tree_ops::handle_nav_toggle_hidden(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::PREVIEW_GET => {
@@ -63,7 +63,7 @@ where
             return Ok(());
         }
         op::PREVIEW_SET_SCALE => {
-            handlers::handle_preview_set_scale(frame.id, frame.payload, &session, &workspaces)
+            crate::files::preview::scale::handle_preview_set_scale(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::IMAGE_CROP => {
@@ -71,14 +71,14 @@ where
             return Ok(());
         }
         op::MATH_RENDER => {
-            handlers::handle_math_render(frame.id, frame.payload, &session, &mathjax).await
+            crate::sidecars::ops::handle_math_render(frame.id, frame.payload, &session, &mathjax).await
         }
         op::PLUTO_OPEN => {
-            handlers::handle_pluto_open(frame.id, frame.payload, &session, &pluto, &workspaces)
+            crate::sidecars::ops::handle_pluto_open(frame.id, frame.payload, &session, &pluto, &workspaces)
                 .await
         }
         op::VIDEO_OPEN => {
-            handlers::handle_video_open(frame.id, frame.payload, &session).await
+            crate::pages::ops::handle_video_open(frame.id, frame.payload, &session).await
         }
         op::DOCS_OPEN => {
             // Per-connection site root (ADR 0029): this connection's serial
@@ -86,17 +86,17 @@ where
             // segment. `None` only before hello registers the guard, which
             // always precedes docs.open in practice.
             let serial = client_guard.as_ref().map(|g| g.serial());
-            handlers::handle_docs_open(frame.id, frame.payload, &session, serial, &workspaces)
+            crate::pages::ops::handle_docs_open(frame.id, frame.payload, &session, serial, &workspaces)
                 .await
         }
         op::QUARTO_OPEN => {
-            handlers::handle_quarto_open(frame.id, frame.payload, &session).await
+            crate::pages::ops::handle_quarto_open(frame.id, frame.payload, &session).await
         }
-        op::FILE_UPLOAD => handlers::handle_file_upload(frame.id, frame.payload).await,
+        op::FILE_UPLOAD => crate::files::transfer::handle_file_upload(frame.id, frame.payload).await,
         op::FILE_DOWNLOAD => {
             // Streams chunk frames straight to the socket (bounded memory),
             // so it writes its own frames and skips the response-write below.
-            handlers::stream_file_download(tx, frame.id, frame.payload).await?;
+            crate::files::transfer::stream_file_download(tx, frame.id, frame.payload).await?;
             return Ok(());
         }
         op::KERNEL_REQUEST => {
@@ -108,44 +108,44 @@ where
             return Ok(());
         }
         op::CONCEPT_WRITE => {
-            handlers::handle_concept_write(frame.id, frame.payload, &session, &workspaces)
+            crate::files::concept_ops::handle_concept_write(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::CONCEPT_LIST => {
-            handlers::handle_concept_list(frame.id, frame.payload, &session, &workspaces)
+            crate::files::concept_ops::handle_concept_list(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::FILE_READ => {
-            handlers::handle_file_read(frame.id, frame.payload, &session, &workspaces).await
+            crate::files::io_ops::handle_file_read(frame.id, frame.payload, &session, &workspaces).await
         }
         op::FILE_WRITE => {
-            handlers::handle_file_write(frame.id, frame.payload, &session, &workspaces).await
+            crate::files::io_ops::handle_file_write(frame.id, frame.payload, &session, &workspaces).await
         }
         op::FILE_DELETE => {
-            handlers::handle_file_delete(frame.id, frame.payload, &session, &workspaces).await
+            crate::files::io_ops::handle_file_delete(frame.id, frame.payload, &session, &workspaces).await
         }
         op::DIR_CREATE => {
-            handlers::handle_dir_create(frame.id, frame.payload, &session, &workspaces).await
+            crate::files::io_ops::handle_dir_create(frame.id, frame.payload, &session, &workspaces).await
         }
         op::REPL_EVAL => {
-            handlers::handle_repl_eval(frame.id, frame.payload, &session, &workspaces).await
+            crate::sidecars::repl::ops::handle_repl_eval(frame.id, frame.payload, &session, &workspaces).await
         }
         op::REPL_RUN_FILE => {
-            handlers::handle_repl_run_file(frame.id, frame.payload, &session, &workspaces)
+            crate::sidecars::repl::ops::handle_repl_run_file(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::REPL_INTERRUPT => {
-            handlers::handle_repl_interrupt(frame.id, frame.payload, &session, &workspaces)
+            crate::sidecars::repl::ops::handle_repl_interrupt(frame.id, frame.payload, &session, &workspaces)
                 .await
         }
         op::REPL_EXECUTE => {
-            handlers::handle_repl_execute(frame.id, frame.payload, &session, &workspaces).await
+            crate::sidecars::repl::execute::handle_repl_execute(frame.id, frame.payload, &session, &workspaces).await
         }
         op::DIRECTORY_LIST => {
-            handlers::handle_directory_list(frame.id, frame.payload, &session).await
+            crate::files::tree_ops::handle_directory_list(frame.id, frame.payload, &session).await
         }
         op::WORKSPACE_CREATE => {
-            handlers::handle_workspace_create(
+            crate::rows::ops::create::handle_workspace_create(
                 frame.id,
                 frame.payload,
                 &session,
@@ -155,9 +155,9 @@ where
             .await
         }
         op::WORKSPACE_LIST => {
-            handlers::handle_workspace_list(frame.id, frame.payload, &workspaces).await
+            crate::rows::ops::list::handle_workspace_list(frame.id, frame.payload, &workspaces).await
         }
-        op::ACCOUNTS_LIST => handlers::handle_accounts_list(frame.id, frame.payload).await,
+        op::ACCOUNTS_LIST => crate::agents::ops::handle_accounts_list(frame.id, frame.payload).await,
         // ADR 0046 decision 6: the ONE op whose reply must be written
         // before its effect runs, because the caller IS the session
         // being replaced.
@@ -189,10 +189,10 @@ where
                     .map(|ws| ws.workspace_id.clone())
                     .unwrap_or_else(|| hinted.unwrap_or_default().to_string()),
             );
-            handlers::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
+            crate::rows::ops::list::handle_workspace_activate(frame.id, frame.payload, &workspaces).await
         }
         op::AGENT_SEND => {
-            handlers::handle_agent_send(
+            crate::comm::mail::relay::handle_agent_send(
                 frame.id,
                 frame.payload,
                 &agent_events_tx,
@@ -206,7 +206,7 @@ where
             // here and nowhere else — the request body cannot name one
             // (ADR 0048). `hello_name` is the same local `hello_host`
             // is kept as, recorded before `register` consumes the req.
-            handlers::handle_agent_filed(
+            crate::comm::mail::relay::handle_agent_filed(
                 frame.id,
                 frame.payload,
                 &agent_receipt_tx,
@@ -215,14 +215,14 @@ where
             .await
         }
         op::COMM_FILE => {
-            handlers::handle_comm_file(frame.id, frame.payload, &workspaces).await
+            crate::comm::mail::filer::handle_comm_file(frame.id, frame.payload, &workspaces).await
         }
         op::AGENT_JOIN => {
-            handlers::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)
+            crate::comm::registry::join::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)
                 .await
         }
         op::FE_COMMAND_SEND => {
-            handlers::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx, &clients)
+            crate::clients::handle_fe_command_send(frame.id, frame.payload, &fe_command_tx, &clients)
                 .await
         }
         op::FE_PRESENCE => {
@@ -231,10 +231,10 @@ where
             // `touch_person_input`'s doc for why every other op that
             // used to stamp it was removed instead of patched.
             touch_person_input(&clients, &client_guard);
-            handlers::handle_fe_presence(frame.id).await
+            crate::clients::handle_fe_presence(frame.id).await
         }
         op::FE_SESSIONS => {
-            handlers::handle_fe_sessions(
+            crate::clients::handle_fe_sessions(
                 frame.id,
                 frame.payload,
                 &clients,
@@ -254,30 +254,30 @@ where
                 *deadline_armed = true;
                 *read_deadline = tokio::time::Instant::now() + ping_read_deadline();
             }
-            handlers::handle_ping(frame.id).await
+            crate::server::conn::handle_ping(frame.id).await
         }
         op::UPDATE_CHECK => crate::update::handle_update_check(frame.id).await,
         op::UPDATE_APPLY => {
             crate::update::handle_update_apply(frame.id, &fe_command_tx, &leases).await
         }
         op::VERSION_QUERY => {
-            handlers::handle_version_query(frame.id, &clients, &topology_store, &topo_changed_tx)
+            crate::clients::handle_version_query(frame.id, &clients, &topology_store, &topo_changed_tx)
                 .await
         }
         op::TOPOLOGY_SET => {
-            crate::topology_set::handle_topology_set(
+            crate::topology::set::handle_topology_set(
                 frame.id,
                 frame.payload,
                 &topology_store,
                 &workspaces,
-                &crate::workspaces::declared_host(),
+                &crate::rows::store::declared_host(),
                 hello_host.as_deref(),
                 &topo_changed_tx,
             )
             .await
         }
         op::WORKSPACE_DESTROY => {
-            handlers::handle_workspace_destroy(
+            crate::rows::ops::destroy::handle_workspace_destroy(
                 frame.id,
                 frame.payload,
                 &session,
@@ -299,13 +299,13 @@ where
                 .as_ref()
                 .map(|g| g.client_id().to_string())
                 .unwrap_or_default();
-            handlers::handle_pty_input(frame.id, frame.payload, &workspaces, &default_controller_id)
+            crate::rows::ops::pty::handle_pty_input(frame.id, frame.payload, &workspaces, &default_controller_id)
                 .await
         }
         op::PTY_SCREEN => {
             // ADR 0042 amendment (2026-09-07): a watcher-only read —
             // no controller id needed, it never takes the pen.
-            handlers::handle_pty_screen(frame.id, frame.payload, &workspaces).await
+            crate::rows::ops::pty::handle_pty_screen(frame.id, frame.payload, &workspaces).await
         }
         op::MONITOR_SUBSCRIBE => {
             // Open this connection's live tick delivery (sampling is
@@ -364,7 +364,7 @@ where
         req_id,
         op_name,
         async move {
-            handlers::handle_preview_get(req_id, payload, &session, &workspaces).await
+            crate::files::preview::handle_preview_get(req_id, payload, &session, &workspaces).await
         },
     );
     return Ok(());
@@ -402,7 +402,7 @@ where
         req_id,
         op_name,
         async move {
-            handlers::handle_image_crop(req_id, payload, &session, &workspaces).await
+            crate::files::preview::crop::handle_image_crop(req_id, payload, &session, &workspaces).await
         },
     );
     return Ok(());
@@ -417,7 +417,7 @@ where
     W: AsyncWrite + Unpin,
 {
     // Off-loop: this op used to await
-    // `handlers::handle_kernel_request(...)` INLINE, in this
+    // `sidecars::ops::handle_kernel_request(...)` INLINE, in this
     // same per-connection dispatch loop that
     // also carries this connection's `pty` byte stream — a
     // `kernel.request` against a dead/slow kernel held up
@@ -449,7 +449,7 @@ where
         req_id,
         op_name,
         async move {
-            handlers::handle_kernel_request(req_id, payload, &session, &workspaces)
+            crate::sidecars::ops::handle_kernel_request(req_id, payload, &session, &workspaces)
                 .await
         },
     );
@@ -490,7 +490,7 @@ where
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
-            handlers::handle_concept_read(req_id, payload, &session, &workspaces).await
+            crate::files::concept_ops::handle_concept_read(req_id, payload, &session, &workspaces).await
         },
     );
     return Ok(());

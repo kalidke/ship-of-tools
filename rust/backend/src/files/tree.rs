@@ -1,4 +1,4 @@
-// files_mode.rs — Files-mode tree walking + filesystem-backed previews.
+// files/tree.rs — Files-mode tree walking + filesystem-backed previews.
 //
 // Per requirements.md: Files mode is the simplest of the seven mode roots.
 // Col 1 = parent dir, Col 2 = current dir, Col 3 = contents. For the backend
@@ -151,8 +151,8 @@ impl FilesMode {
     /// [`node_id_to_path`]).
     pub fn node_id_to_path_confined(&self, node_id: &str) -> Result<PathBuf> {
         let p = self.compose_node_path(node_id)?;
-        if let Some(canon) = crate::paths::canonicalize_existing_ancestor(&p) {
-            if !crate::paths::path_within_root(&canon, &self.root) {
+        if let Some(canon) = crate::files::confine::canonicalize_existing_ancestor(&p) {
+            if !crate::files::confine::path_within_root(&canon, &self.root) {
                 return Err(anyhow!(
                     "node id resolves outside the project root (symlink?): {node_id}"
                 ));

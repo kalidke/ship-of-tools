@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 /// Outcome of [`runtime::end_run`] — the daemon's own portable
 /// vocabulary over `sot_log::attach_client::supervisor_client::EndRunOutcome` (never
-/// that raw, platform-specific type crossing into `handlers.rs`). Defined
-/// here, outside `runtime`, so `handlers.rs`'s outcome→response
+/// that raw, platform-specific type crossing into `rows/run/end.rs`). Defined
+/// here, apart from the platform-specific spawn code, so `rows/run/end.rs`'s outcome→response
 /// mapping stays plain and unit-testable on every platform; `end_run`'s
 /// own real lane call is the only step gated to Windows and Linux only.
 #[derive(Debug, Clone)]

@@ -1,8 +1,6 @@
 //! accounts.list (the accounts this daemon's home holds, discovered fresh on every call) and `sotd agent-exec`.
 
-#[cfg(unix)]
-use crate::capsule_workspace;
-use crate::handlers::HandlerOutput;
+use crate::server::reply::HandlerOutput;
 use anyhow::Result;
 use sot_protocol::op;
 use sot_protocol::Frame;
@@ -18,8 +16,8 @@ use std::path::PathBuf;
 /// there.
 pub async fn handle_accounts_list(req_id: u64, _payload_json: serde_json::Value) -> Result<HandlerOutput> {
     use sot_protocol::{AccountEntry, AccountsListRes};
-    let accounts = crate::accounts::account_home()
-        .map(|home| crate::accounts::discover_accounts(&home))
+    let accounts = crate::agents::accounts::account_home()
+        .map(|home| crate::agents::accounts::discover_accounts(&home))
         .unwrap_or_default();
     let res = AccountsListRes {
         accounts: accounts
@@ -56,17 +54,17 @@ pub(crate) fn agent_exec() -> ! {
     {
         let kind = std::env::args().nth(2).unwrap_or_default();
         let flags: Vec<String> = std::env::args().skip(3).collect();
-        let argv = match capsule_workspace::agent_exec_argv(&kind, &flags) {
+        let argv = match crate::agents::argv::agent_exec_argv(&kind, &flags) {
             Ok(argv) => argv,
             Err(msg) => {
                 eprintln!("sotd agent-exec: {msg}");
                 std::process::exit(2);
             }
         };
-        for var in capsule_workspace::NESTING_ENV_VARS_TO_SCRUB {
+        for var in crate::agents::env::NESTING_ENV_VARS_TO_SCRUB {
             std::env::remove_var(var);
         }
-        for (k, v) in capsule_workspace::agent_env(
+        for (k, v) in crate::agents::env::agent_env(
             std::env::var_os("PATH").as_deref(),
             std::env::var_os("HOME").map(PathBuf::from).as_deref(),
         ) {

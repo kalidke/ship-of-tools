@@ -4,12 +4,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::paths::simplify_verbatim;
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 
 /// Canonicalize the longest EXISTING ancestor of `p`, walking up past
 /// components that don't exist yet (e.g. a `file.write`/`concept.write`
 /// target that hasn't been created). Used by the workspace-confinement
-/// symlink-escape guards in `files_mode.rs` and `concept.rs`: string-level
+/// symlink-escape guards in `files/tree.rs` and `files/concept.rs`: string-level
 /// `..`/absolute-path checks on a node id can't catch a symlink INSIDE the
 /// root pointing outside it (a real risk on NFS-shared homes, where a
 /// symlink can legitimately cross machines/mounts). A target that doesn't
@@ -110,7 +110,7 @@ mod tests {
     /// A plain (non-verbatim) Windows path — what a `notify` watcher event
     /// actually carries (`to_string_lossy()` off the raw OS path, never
     /// canonicalized to `\\?\...`). This wasn't exercised until the
-    /// preview.changed per-connection fan-out filter (server.rs
+    /// preview.changed per-connection fan-out filter (`server/events.rs`'s
     /// `preview_changed_visible`) started depending on `path_within_root` for
     /// exactly this shape — the OLD filter did a bare `/`-only string
     /// `strip_prefix`, which a `\`-separated event path never matched at all.

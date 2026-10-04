@@ -1,14 +1,14 @@
 //! Shared fixtures for the reauth tests: the env guard and the seeded homes and rows.
 
 use super::*;
-use crate::accounts::claude_config_dir;
-use crate::workspaces::Workspace;
+use crate::agents::accounts::claude_config_dir;
+use crate::rows::Workspace;
 
 /// Restores every variable these tests pin, under the crate-wide
 /// serialization every env-mutating test module here shares
 /// (`paths::ENV_TEST_LOCK`) — `HOME`/`USERPROFILE` because
 /// `accounts::account_home` reads them, `XDG_CONFIG_HOME` because
-/// `workspaces::save` writes under it, and `XDG_STATE_HOME`/
+/// `rows::store::save` writes under it, and `XDG_STATE_HOME`/
 /// `LOCALAPPDATA` because the accept path resolves this machine's
 /// state root.
 pub(super) struct EnvGuard {

@@ -1,7 +1,7 @@
 //! Ending a row's run: destroy_capsule_workspace under the row's guard, the outcome it reports, and
 //! the durable removal of the row's tomls.
 
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 use serde_json::json;
 
 /// ADR 0042 slice L1a (Codex review finding 3): whether a capsule
@@ -9,7 +9,7 @@ use serde_json::json;
 /// `workspace.destroy`.
 pub(crate) enum CapsuleDestroyOutcome {
     /// The run was CONFIRMED ended (`RecordVerified`/`RecordClosed`/
-    /// `AlreadyEnded` — see `capsule_workspace::EndRunOutcome`) — the row
+    /// `AlreadyEnded` — see `rows::run::end_run::EndRunOutcome`) — the row
     /// may be removed; the state directory never is. Human-readable
     /// (never the raw, Windows-only `EndRunOutcome` type) so this enum
     /// stays portable and unit-testable.
@@ -26,11 +26,11 @@ pub(crate) enum CapsuleDestroyOutcome {
 /// What `workspace.destroy` answers for [`CapsuleDestroyOutcome::AlreadyRemoved`].
 pub(crate) const ALREADY_REMOVED: &str = "workspace was removed before its capsule run could be ended";
 
-/// Maps a `capsule_workspace::EndRunOutcome` to whether `workspace.destroy`
+/// Maps a `rows::run::end_run::EndRunOutcome` to whether `workspace.destroy`
 /// may remove the row. Pure/portable so it's unit-testable without a real
 /// Windows lane.
-pub(crate) fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutcome) -> CapsuleDestroyOutcome {
-    use crate::capsule_workspace::EndRunOutcome as O;
+pub(crate) fn capsule_destroy_outcome_of(o: crate::rows::run::end_run::EndRunOutcome) -> CapsuleDestroyOutcome {
+    use crate::rows::run::end_run::EndRunOutcome as O;
     match o {
         O::RecordVerified => CapsuleDestroyOutcome::Removable("run ended and verified".to_string()),
         O::RecordClosed => CapsuleDestroyOutcome::Removable(
@@ -69,7 +69,7 @@ pub(crate) fn capsule_destroy_outcome_of(o: crate::capsule_workspace::EndRunOutc
 /// own kept-not-deleted branch) supplies its own honest text.
 /// `agent_kind`/`agent_name`/`slug`/`project_root` are `ws`'s own fields,
 /// passed through (rather than re-resolved) so this can call
-/// `capsule_workspace::resume_locked` — the guard-free inner
+/// `rows::run::activation::resume_locked` — the guard-free inner
 /// `resume_if_absent` itself uses — under the SAME row guard `end_run`
 /// then runs under (ADR 0043 decision 33's own resume-before-end
 /// destroy caller): a row whose supervisor died leaves a live LEG behind
@@ -108,7 +108,7 @@ pub(crate) async fn destroy_capsule_workspace(
                 CapsuleDestroyOutcome::Kept {
                     detail: format!(
                         "could not resolve this machine's state root ({} unset)",
-                        crate::capsule_workspace::STATE_ROOT_HINT
+                        crate::rows::spawn::state_root::STATE_ROOT_HINT
                     ),
                 },
                 None,
@@ -141,7 +141,7 @@ pub(crate) async fn destroy_capsule_workspace(
                 (state_root, false)
             }
         };
-        let state_dir = crate::capsule_workspace::state_dir_for(&state_root, workspace_id);
+        let state_dir = crate::rows::spawn::state_root::state_dir_for(&state_root, workspace_id);
         let reason = reason.to_string();
         let workspace_id = workspace_id.to_string();
         let agent_kind = agent_kind.to_string();
@@ -167,7 +167,7 @@ pub(crate) async fn destroy_capsule_workspace(
             // Without the resume, its membership recheck still runs, so the
             // "row already gone" arm below holds for an end with no resume.
             let resumed = if resume_first {
-                crate::capsule_workspace::resume_locked(
+                crate::rows::run::activation::resume_locked(
                     &state_root,
                     &workspace_id,
                     &agent_kind,
@@ -201,7 +201,7 @@ pub(crate) async fn destroy_capsule_workspace(
                 // never handed back to this caller — so a timeout stays
                 // non-removable: `Kept` with an honest code
                 // (`supervisor_starting`), never a guess.
-                Ok(phase) if phase == crate::capsule_workspace::UNREACHABLE_PHASE => {
+                Ok(phase) if phase == crate::rows::run::probe::UNREACHABLE_PHASE => {
                     return (
                         Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, "supervisor_starting")),
                         Some(held),
@@ -230,7 +230,7 @@ pub(crate) async fn destroy_capsule_workspace(
                     );
                 }
             }
-            let result = crate::capsule_workspace::end_run(&state_dir, &reason, root_canonicalized);
+            let result = crate::rows::run::end_run::end_run(&state_dir, &reason, root_canonicalized);
             (result, Some(held))
         })
         .await;
@@ -330,8 +330,8 @@ pub(crate) fn default_row_end_response(
 /// its directory sync failed (logged).
 pub(crate) fn remove_row_files(slug: &str) -> bool {
     remove_registration(&[
-        crate::workspaces::toml_path_for(slug),
-        crate::workspaces::legacy_toml_path_for(slug),
+        crate::rows::store::toml_path_for(slug),
+        crate::rows::store::legacy_toml_path_for(slug),
     ])
 }
 
@@ -357,7 +357,7 @@ mod destroy_outcome_tests {
     // `Kept`, never a fabricated "was not running" success.
     #[test]
     fn starting_outcome_maps_to_a_retryable_kept_not_not_running() {
-        let outcome = capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::Starting);
+        let outcome = capsule_destroy_outcome_of(crate::rows::run::end_run::EndRunOutcome::Starting);
         match outcome {
             CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Kept { detail } => {
@@ -375,7 +375,7 @@ mod destroy_outcome_tests {
     #[test]
     fn already_ended_outcome_is_removable_and_distinct_from_record_verified() {
         let outcome =
-            capsule_destroy_outcome_of(crate::capsule_workspace::EndRunOutcome::AlreadyEnded);
+            capsule_destroy_outcome_of(crate::rows::run::end_run::EndRunOutcome::AlreadyEnded);
         match outcome {
             CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
@@ -396,7 +396,7 @@ mod destroy_outcome_tests {
     // to `Kept`.
     #[test]
     fn record_verified_and_closed_are_removable_not_ended_is_kept() {
-        use crate::capsule_workspace::EndRunOutcome as O;
+        use crate::rows::run::end_run::EndRunOutcome as O;
         for outcome in [O::RecordVerified, O::RecordClosed] {
             assert!(
                 matches!(
@@ -422,7 +422,7 @@ mod destroy_outcome_tests {
     // whole variant closes: an unendable capsule row).
     #[test]
     fn terminal_outcome_is_removable_not_kept() {
-        use crate::capsule_workspace::EndRunOutcome as O;
+        use crate::rows::run::end_run::EndRunOutcome as O;
         match capsule_destroy_outcome_of(O::Terminal) {
             CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {
@@ -442,7 +442,7 @@ mod destroy_outcome_tests {
     // never `Kept`.
     #[test]
     fn unheld_outcome_is_removable_not_kept() {
-        use crate::capsule_workspace::EndRunOutcome as O;
+        use crate::rows::run::end_run::EndRunOutcome as O;
         match capsule_destroy_outcome_of(O::Unheld) {
             CapsuleDestroyOutcome::AlreadyRemoved => unreachable!("never an end_run mapping"),
             CapsuleDestroyOutcome::Removable(detail) => {

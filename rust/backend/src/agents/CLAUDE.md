@@ -19,8 +19,7 @@ agents/CLAUDE.md at the repo root (lands with the repo-root agents/ folder).
 ## Start here
 `account_env` in `accounts.rs` for what a spawn sets for an account; `ensure_folder_trusted` in `folder_trust.rs` for the
 trust record; `agent_argv` in `argv.rs` for a spawn's argv, and `agent_exec_argv` for `sotd agent-exec`, which `ccb`
-execs. The old path `crate::accounts::` (rust/backend/src/accounts.rs) re-exports the accounts and folder-trust files
-whole; callers reach the argv and env items through `crate::capsule_workspace::`.
+execs.
 
 ## Rules
 - A named account never shares the login: only the names in `SHARED_ENTRIES` are linked, by `ensure_account_links`.

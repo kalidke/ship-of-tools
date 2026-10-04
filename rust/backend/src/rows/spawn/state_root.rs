@@ -3,15 +3,15 @@
 use std::path::{Path, PathBuf};
 
 /// The env-var hint named in every "could not resolve this machine's
-/// state root" error text (`server.rs`'s boot resume-scan and `pty.open`
-/// start-on-attach; `handlers.rs`'s create/destroy/list capsule gates) —
+/// state root" error text (`server/mod.rs`'s boot resume-scan and `pty.open`
+/// start-on-attach; `rows/ops/`'s create/destroy/list capsule gates) —
 /// ONE shared constant so the two platforms' wording can never drift out
 /// of step with `sot_log::host::state_dir::sot_state_dir`'s own actual
 /// resolution order (`%LOCALAPPDATA%` on Windows; `$XDG_STATE_HOME` or
 /// `$HOME` elsewhere). LU5a: the non-Windows arm is `not(windows)`, not
 /// `target_os = "linux"` — [`qualified_state_root`]'s own BODY is
 /// portable (it must at least TYPECHECK on every host `mod
-/// capsule_workspace` compiles for, macOS included) and references this
+/// the capsule runtime compiles for, macOS included) and references this
 /// constant unconditionally, so it must exist wherever that function's
 /// body does; the text is identical to what the Linux-only arm already
 /// said, since `sot_state_dir`'s own resolution order is the same on
@@ -36,12 +36,12 @@ pub fn state_dir_for(state_root: &Path, workspace_id: &str) -> PathBuf {
 
 /// ADR 0043 decision 23: the ONE seam a capsule launch passes through
 /// before it is ever allowed to touch disk on the row's behalf — called by
-/// `handlers.rs`'s `workspace.create` so it can refuse an unqualified root
+/// `rows/ops/create.rs`'s `workspace.create` so it can refuse an unqualified root
 /// BEFORE any row persists, and again by [`runtime::spawn_detached_supervisor`]
 /// — the one mechanism every later launch (attach start-on-attach, boot
 /// resume, the watchdog's own restart) shares. This FUNCTION is portable
 /// (no platform gate on the item
-/// itself — every host `mod capsule_workspace` compiles for must be able
+/// itself — every host the capsule runtime compiles for must be able
 /// to typecheck it), but every real CALLER stays gated to Windows and
 /// Linux exactly like the capsule runtime's own availability elsewhere in
 /// this module — macOS never actually calls this (`allow(dead_code)`
@@ -130,7 +130,7 @@ pub fn qualified_state_root() -> Result<PathBuf, String> {
 pub fn state_root_inside_project(state_dir: &Path, project_root: &Path) -> bool {
     let state_dir = std::fs::canonicalize(state_dir).unwrap_or_else(|_| state_dir.to_path_buf());
     let project_root = std::fs::canonicalize(project_root).unwrap_or_else(|_| project_root.to_path_buf());
-    crate::paths::path_within_root(&state_dir, &project_root)
+    crate::files::confine::path_within_root(&state_dir, &project_root)
 }
 
 /// LU5a: the daemon's OWN volatile-filesystem deny list plus the raw

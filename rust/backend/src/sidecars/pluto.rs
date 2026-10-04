@@ -43,7 +43,7 @@ struct Submission {
 
 impl Pluto {
     pub fn new(project_dir: PathBuf, start_script: PathBuf) -> Self {
-        let julia_bin = crate::julia::resolve_bin_or_bare();
+        let julia_bin = crate::sidecars::julia::resolve_bin_or_bare();
         Self {
             inner: Arc::new(PlutoInner {
                 project_dir,
@@ -96,7 +96,7 @@ impl Pluto {
             &self.inner.julia_bin,
             &self.inner.project_dir,
             &self.inner.start_script,
-            crate::shutdown::process(),
+            crate::lifecycle::child_signal::process(),
         )
         .await?;
         *guard = Some(tx.clone());
@@ -108,7 +108,7 @@ async fn spawn_supervisor(
     julia_bin: &str,
     project_dir: &Path,
     start_script: &Path,
-    sig: &'static crate::shutdown::Signal,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<mpsc::Sender<Submission>> {
     if !start_script.exists() {
         return Err(anyhow!(
@@ -224,8 +224,8 @@ async fn supervisor_task(
     mut stdin: ChildStdin,
     mut stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
     mut submit_rx: mpsc::Receiver<Submission>,
-    _child_guard: crate::shutdown::ChildGuard,
-    sig: &'static crate::shutdown::Signal,
+    _child_guard: crate::lifecycle::child_signal::ChildGuard,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     // FIFO of in-flight oneshots. Pluto's serial line protocol replies
     // to each OPEN in order; we pop the matching reply on each URL/ERR.
@@ -321,7 +321,7 @@ mod port_parse_tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         let script = dir.path().join("start.jl");
         std::fs::write(&script, "").unwrap();
-        let sig: &'static crate::shutdown::Signal = Box::leak(Box::new(crate::shutdown::Signal::new()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await.map(|_| ()) });
         let began = std::time::Instant::now();

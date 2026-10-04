@@ -11,7 +11,7 @@
 // small async dispatcher debounces per-path bursts (editors typically save 2–4
 // events for one logical save) and fans out to per-connection subscribers via
 // a broadcast channel — each connection filters to what ITS active workspace
-// can use before writing a frame (`preview_changed_visible`, server.rs).
+// can use before writing a frame (`preview_changed_visible`, `server/events.rs`).
 //
 // NOT bumped onto the session ring (2026-09 rework): a reconnecting client
 // already unconditionally re-fetches tree.root + preview.get for whatever
@@ -68,7 +68,7 @@ use anyhow::{Context, Result};
 use notify::{RecursiveMode, Watcher as NotifyWatcher};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::files_mode::FilesMode;
+use crate::files::tree::FilesMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {

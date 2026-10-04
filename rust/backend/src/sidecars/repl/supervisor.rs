@@ -41,7 +41,7 @@ pub(super) fn spawn_supervisor(
     lifecycle: SharedLifecycle,
 ) -> Result<mpsc::Sender<Submission>> {
     let repl_project = Repl::repl_project();
-    let julia_bin = crate::julia::resolve_bin_or_bare();
+    let julia_bin = crate::sidecars::julia::resolve_bin_or_bare();
     if !repl_project.exists() {
         return Err(anyhow!(
             "repl project missing at {}",
@@ -99,7 +99,7 @@ pub(super) fn spawn_supervisor_with_project(
     lifecycle: SharedLifecycle,
 ) -> Result<mpsc::Sender<Submission>> {
     let repl_project = Repl::repl_project();
-    let julia_bin = crate::julia::resolve_bin_or_bare();
+    let julia_bin = crate::sidecars::julia::resolve_bin_or_bare();
     if !repl_project.exists() {
         return Err(anyhow!(
             "repl project missing at {}",
@@ -199,7 +199,7 @@ async fn supervisor_task(
     lifecycle: SharedLifecycle,
     my_gen: u64,
 ) {
-    let _child_guard = crate::shutdown::ChildGuard::new();
+    let _child_guard = crate::lifecycle::child_signal::ChildGuard::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
     // cleared when its `done` frame routes. On child death each survivor gets
@@ -219,7 +219,7 @@ async fn supervisor_task(
             biased;
             // The daemon is shutting down: nothing kills this child at
             // `process::exit`, so it is killed here.
-            _ = crate::shutdown::fired() => {
+            _ = crate::lifecycle::child_signal::fired() => {
                 let _ = child.kill().await;
                 break;
             }
@@ -241,7 +241,7 @@ async fn supervisor_task(
                         &frame_tx,
                         &workspace_id,
                     ) {
-                        crate::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+                        crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
                     }
                     return;
                 };
@@ -375,7 +375,7 @@ async fn supervisor_task(
         &frame_tx,
         &workspace_id,
     ) {
-        crate::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
+        crate::pages::proxy::revoke_browser_ports(browser_ports_key(&workspace_id));
     }
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow!("repl terminated")));
@@ -478,9 +478,9 @@ fn route_line(
             if let Some(port) = frame
                 .get("url")
                 .and_then(Value::as_str)
-                .and_then(crate::proxy::loopback_port_from_url)
+                .and_then(crate::pages::proxy::loopback_port_from_url)
             {
-                crate::proxy::record_browser_port(browser_ports_key(&workspace_id), port);
+                crate::pages::proxy::record_browser_port(browser_ports_key(&workspace_id), port);
             }
         }
         // Tee into a `repl.execute` collector, loss-free, before the frame goes

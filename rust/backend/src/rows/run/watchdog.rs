@@ -5,7 +5,7 @@ use super::probe::phase_of;
 use super::start::settle_after_spawn;
 use super::UNREACHABLE_PHASE;
 use crate::rows::spawn::detach::{spawn_detached_supervisor, StartMode};
-use crate::workspaces::Workspaces;
+use crate::rows::Workspaces;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -142,7 +142,7 @@ fn watchdog_may_act(workspace_id: &str, state_dir: &Path, workspaces: &Workspace
         tracing::debug!(workspace_id = %workspace_id, "capsule supervisor watchdog: row no longer registered; stopping");
         return false;
     };
-    if ws.phase() == crate::workspaces::Phase::Terminal {
+    if ws.phase() == crate::rows::workspace::Phase::Terminal {
         return false;
     }
     if phase_of(state_dir) != UNREACHABLE_PHASE {
@@ -163,9 +163,9 @@ fn watchdog_may_act(workspace_id: &str, state_dir: &Path, workspaces: &Workspace
 /// anything other than `Phase` must clear the previous leg's
 /// identity too, or a later terminal mark could be credited to a
 /// prior, now-dead spawn.
-pub(super) fn identity_of(observation: &crate::workspaces::Observation) -> Option<crate::workspaces::SupervisorIdentity> {
+pub(super) fn identity_of(observation: &crate::rows::workspace::Observation) -> Option<crate::rows::workspace::SupervisorIdentity> {
     match observation {
-        crate::workspaces::Observation::Phase { supervisor, .. } => Some(*supervisor),
+        crate::rows::workspace::Observation::Phase { supervisor, .. } => Some(*supervisor),
         _ => None,
     }
 }
@@ -184,16 +184,16 @@ fn next_watchdog_owner() -> u64 {
 /// ever answering its lane, which `sot-capsule supervise` does on
 /// every bootstrap failure (it returns `EXIT_TERMINAL` from three
 /// sites ahead of its own accept loop) — marks
-/// [`crate::workspaces::Observation::TerminalUnclaimed`] instead, so
+/// [`crate::rows::workspace::Observation::TerminalUnclaimed`] instead, so
 /// the row still latches `terminal` rather than reading `stopped`
 /// and re-spawning the same instant failure on every attach.
-fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: Option<crate::workspaces::SupervisorIdentity>) {
+fn observe_terminal(workspaces: &Workspaces, workspace_id: &str, identity: Option<crate::rows::workspace::SupervisorIdentity>) {
     if let Some(ws) = workspaces.resolve(Some(workspace_id)) {
         let observation = match identity {
             Some(supervisor) => {
-                crate::workspaces::Observation::Phase { phase: crate::workspaces::Phase::Terminal, supervisor, voyage: None }
+                crate::rows::workspace::Observation::Phase { phase: crate::rows::workspace::Phase::Terminal, supervisor, voyage: None }
             }
-            None => crate::workspaces::Observation::TerminalUnclaimed,
+            None => crate::rows::workspace::Observation::TerminalUnclaimed,
         };
         super::observer::observe(&ws, observation);
     }
@@ -250,7 +250,7 @@ pub(super) fn install_watchdog(
     agent_name: String,
     slug: String,
     child: Child,
-    initial_identity: Option<crate::workspaces::SupervisorIdentity>,
+    initial_identity: Option<crate::rows::workspace::SupervisorIdentity>,
     workspaces: Workspaces,
 ) {
     tokio::spawn(async move {

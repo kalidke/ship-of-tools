@@ -36,7 +36,7 @@ const TRUSTED_ROOT_PREFIX_KEY: &str = "root_prefix";
 /// every session simply gets the dialog. A daemon that needs a different
 /// answer writes its own `[trust]` table in its own config directory.
 pub fn trusted_root_prefix() -> Option<PathBuf> {
-    declared_root_prefix(&crate::workspaces::app_config_dir())
+    declared_root_prefix(&crate::rows::store::app_config_dir())
 }
 
 /// Read the declaration out of `<config_dir>/settings.toml`. Read at every
@@ -101,7 +101,7 @@ pub fn claude_trust_file(home: &Path, account: &str) -> PathBuf {
 ///
 /// Pure in the same sense as [`account_env`] -- `home` and `prefix` are
 /// arguments, never read from the environment here -- so the one caller
-/// ([`crate::capsule_workspace::runtime::spawn_detached_supervisor`])
+/// ([`crate::rows::spawn::detach::spawn_detached_supervisor`])
 /// resolves the declaration once and the tests need no process state.
 /// Called where the config dir is prepared, which is why a first spawn
 /// and a leg resumed after a reauth need no case of their own: the

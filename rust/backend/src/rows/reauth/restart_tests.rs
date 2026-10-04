@@ -28,7 +28,7 @@ struct FakeSupervisor {
     /// `phase_rests` accepts, so the wait returns on its first poll and
     /// no test ever sleeps on the real 30 s deadline.
     status: std::sync::Mutex<std::collections::VecDeque<(u32, u64, sot_log::lane::wire::SupervisorPhase)>>,
-    end_run: Result<crate::capsule_workspace::EndRunOutcome, String>,
+    end_run: Result<crate::rows::run::end_run::EndRunOutcome, String>,
     spawn: Result<&'static str, String>,
     reset: Result<String, String>,
 }
@@ -46,7 +46,7 @@ impl FakeSupervisor {
             status: std::sync::Mutex::new(
                 [(1111, 800, P::EndedNoRespawn), (4242, 900, P::EndedNoRespawn)].into_iter().collect(),
             ),
-            end_run: Ok(crate::capsule_workspace::EndRunOutcome::RecordVerified),
+            end_run: Ok(crate::rows::run::end_run::EndRunOutcome::RecordVerified),
             spawn: Ok("starting"),
             reset: Ok("voyage-1".to_string()),
         }
@@ -86,7 +86,7 @@ impl RestartEffects for FakeSupervisor {
         _state_dir: &Path,
         _reason: &str,
         _root_canonicalized: bool,
-    ) -> std::io::Result<crate::capsule_workspace::EndRunOutcome> {
+    ) -> std::io::Result<crate::rows::run::end_run::EndRunOutcome> {
         self.record.lock().unwrap().push(Effect::EndRun);
         self.end_run.clone().map_err(std::io::Error::other)
     }
@@ -159,7 +159,7 @@ async fn an_end_run_that_cannot_run_spawns_nothing_and_rolls_the_record_back() {
         "",
         "the record is back on the login the live leg still spends"
     );
-    let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+    let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug)).unwrap();
     assert!(toml.contains("account       = \"\""), "{toml}");
 }
 
@@ -178,7 +178,7 @@ async fn an_end_run_that_did_not_end_the_run_spawns_nothing_and_rolls_the_record
 
     let (_payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
     let mut fake = FakeSupervisor::healthy();
-    fake.end_run = Ok(crate::capsule_workspace::EndRunOutcome::Starting);
+    fake.end_run = Ok(crate::rows::run::end_run::EndRunOutcome::Starting);
     restart_blocking(restart.expect("the fixture reaches the accept"), &fake);
 
     assert_eq!(
@@ -191,7 +191,7 @@ async fn an_end_run_that_did_not_end_the_run_spawns_nothing_and_rolls_the_record
         "",
         "the record is back on the login the live leg still spends"
     );
-    let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+    let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug)).unwrap();
     assert!(toml.contains("account       = \"\""), "{toml}");
 }
 
@@ -218,7 +218,7 @@ async fn a_spawn_that_fails_leaves_the_record_on_the_new_account() {
         "team",
         "the leg is ended; the record must name the login the next start will spend"
     );
-    let toml = std::fs::read_to_string(crate::workspaces::toml_path_for(&slug)).unwrap();
+    let toml = std::fs::read_to_string(crate::rows::store::toml_path_for(&slug)).unwrap();
     assert!(toml.contains("account       = \"team\""), "{toml}");
 }
 
@@ -359,7 +359,7 @@ fn only_settled_phases_end_the_wait() {
 // the same partition `capsule_destroy_outcome_of` makes for removal.
 #[test]
 fn only_an_ended_run_licenses_a_replacement_spawn() {
-    use crate::capsule_workspace::EndRunOutcome as O;
+    use crate::rows::run::end_run::EndRunOutcome as O;
     for over in [O::RecordVerified, O::RecordClosed, O::AlreadyEnded, O::Terminal, O::Unheld, O::Orphaned] {
         assert!(run_ended(&over).is_ok(), "{over:?}");
     }
