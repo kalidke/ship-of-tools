@@ -20,7 +20,7 @@ pub(super) fn execute_light_actions<P: Producer>(seed: Vec<AttachAction>, leg: &
         match action {
             AttachAction::Send { conn, frame_bytes, marker } => {
                 let id = leg.transport.0.send(conn, frame_bytes);
-                // Round-2 review, finding 7: the Transport contract
+                // the Transport contract
                 // (this trait's own doc) requires every outstanding
                 // (conn, id) to be unique -- a reused id before its
                 // predecessor's completion is reported would
@@ -59,7 +59,7 @@ pub(super) fn execute_light_actions<P: Producer>(seed: Vec<AttachAction>, leg: &
                 // vt100 fork build refuses anything newer
                 // outright, and its own pinned
                 // `wire::MAX_CHECKPOINT_LEN` predates the ring
-                // too (Codex round on #194, finding 1). Never
+                // too. Never
                 // silently downgrade a v2 connection; only ever
                 // an explicitly negotiated v1 one gets the
                 // legacy shape.
@@ -136,7 +136,7 @@ pub(super) fn execute_actions<'t, P: Producer>(seed: Vec<AttachAction>, mut leg:
                 leg = apply_resize(conn, cols, rows, request_id, &mut queue, leg)?;
             }
             AttachAction::RunEndRequested { reason } => {
-                // Codex round-1 Blocker 1 discharge: record the
+                // record the
                 // reason HERE, from the marker's own commit -- not
                 // only from `Action::Shutdown` (ack-completion-
                 // driven), which may never fire at all (a stalled
@@ -215,7 +215,7 @@ fn apply_resize<'t, P: Producer>(
 // Per-pass event quota: a client flood can refill the bounded transport
 // channel as fast as this loop drains it, and an UNBOUNDED while-let
 // would then starve output commits, tick, and the exit checks
-// indefinitely (review finding). The quota bounds one pass; the next
+// indefinitely. The quota bounds one pass; the next
 // loop iteration resumes immediately, so nothing is dropped -- only
 // interleaved.
 const TRANSPORT_EVENTS_PER_PASS: usize = 64;
@@ -258,10 +258,9 @@ pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> 
             TransportEvent::Sent(conn, id) => {
                 match leg.pending_sends.remove(&(conn, id)) {
                     Some(marker) => leg = execute_actions(leg.attach_proto.sent(conn, marker, Instant::now()), leg)?,
-                    // Round-2 review, finding 7: legitimate ONLY
+                    // legitimate ONLY
                     // for a connection this loop already forgot
-                    // (closed, `pending_sends` purged by finding
-                    // 11's own retain) -- a late completion racing
+                    // (closed) -- a late completion racing
                     // the close. For a connection STILL active
                     // (still in `splitters`), an unmatched `Sent`
                     // is a transport contract violation: a
@@ -274,7 +273,7 @@ pub(super) fn service_transport_events<'t, P: Producer>(mut leg: Leg<'t, P>) -> 
                     ),
                 }
             }
-            // Round-2 e2e review, finding 4: a terminal transport
+            // a terminal transport
             // failure gets the SAME orderly self-end as an
             // externally requested EndRun -- no future connection
             // can ever be admitted, so continuing to run would
@@ -324,15 +323,15 @@ pub(super) fn execute_teardown_actions<P: Producer>(seed: Vec<AttachAction>, leg
                 // poll (ADR 0041 EndRun step 4's "accepted in the
                 // final service poll" case) still latches the SAME
                 // way -- mgmt keeps being serviced through both
-                // teardown phases (finding 7), and this is the one
+                // teardown phases, and this is the one
                 // place that knows whether the marker already
                 // committed. Same reason-recording discipline as
-                // the main loop's own arm (Codex round-1 Blocker 1).
+                // the main loop's own arm.
                 leg.shutdown_reason.get_or_insert_with(|| reason.clone());
                 commit_run_end_marker(&mut leg.ctx, &mut leg.w, &mut leg.frames_written, &mut leg.run_end_latched, reason)?;
             }
             AttachAction::Shutdown { reason } => {
-                // Round-2 review deletion residue: `shutdown_requested`
+                // `shutdown_requested`
                 // is only ever READ inside the main `'main: loop`
                 // (the `if shutdown_requested { break 'main ... }`
                 // check) -- which has already exited by the time
@@ -361,11 +360,11 @@ pub(super) fn execute_teardown_actions<P: Producer>(seed: Vec<AttachAction>, leg
 /// As `service_transport_events`, but dispatching through
 /// `execute_teardown_actions` -- used by BOTH teardown phases so mgmt
 /// traffic and `Sent` completions keep flowing right up until the pipe
-/// is closed (finding 7).
+/// is closed.
 pub(super) fn service_transport_events_teardown<P: Producer>(leg: &mut Leg<'_, P>) -> Result<()> {
     // Same per-pass quota as `service_transport_events`, same reason --
     // teardown's own deadlines must not be defeatable by a client
-    // flood refilling the channel mid-drain (review finding).
+    // flood refilling the channel mid-drain.
     let mut quota = TRANSPORT_EVENTS_PER_PASS;
     while quota > 0 {
         quota -= 1;
@@ -407,7 +406,7 @@ pub(super) fn service_transport_events_teardown<P: Producer>(leg: &mut Leg<'_, P
                 }
             }
             TransportEvent::TransportFatal(detail) => {
-                // Round-2 e2e review, finding 4, teardown-phase
+                // teardown-phase
                 // analog of `AttachAction::Shutdown`'s own
                 // teardown-time arm just above: `shutdown_requested`
                 // is dead here (already left `'main`), but a fatal
@@ -429,7 +428,7 @@ pub(super) fn service_transport_events_teardown<P: Producer>(leg: &mut Leg<'_, P
 }
 
 
-// U1a Codex round-1, Major 6 discharge: the ack-grace window's own
+// the ack-grace window's own
 // drain -- STOP ADMITTING new connections or new request bytes once
 // the final ordinary teardown poll is behind us, so a request that
 // slips in with, say, 50ms left in the grace can never be credited

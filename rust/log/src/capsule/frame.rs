@@ -2,10 +2,7 @@
 use super::*;
 
 /// Encodes a wire `idem_key` (16 raw bytes) as the lowercase hex32 shape
-/// ADR 0039's `input` frame requires. Step 5 deletes the capsule's own
-/// `random_idem_key` generator from the production path — capsule-generated
-/// idem keys are gone now that the CLIENT supplies one per wire input — but
-/// the hex encoding itself is still needed, for the frame's JSON payload.
+/// ADR 0039's `input` frame requires.
 fn hex_idem_key(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -73,9 +70,7 @@ impl FrameCtx {
     }
     /// A controller-actor frame declaring EXACTLY `(controller_id,
     /// take_epoch)` — a thin constructor, not itself the source of which
-    /// epoch is honest. Round-2 review deletion residue: this doc used to
-    /// say a stale `input` is "honestly attributed to whatever it
-    /// claimed", describing behavior finding 1 already replaced. Every
+    /// epoch is honest. Every
     /// real call site (`run_input_wal`) now passes the COMMITTED
     /// `ctx.take_epoch`, never the wire-claimed one — a stale input's
     /// CLAIMED epoch is recorded only inside the `refused_stale_epoch`
@@ -292,7 +287,7 @@ pub(super) fn run_input_wal(
         e.intent = Some(intent_seq);
     }
 
-    // The "immediately before the PTY write" recheck (finding 2): stated as
+    // The "immediately before the PTY write" recheck: stated as
     // an assertion, not a second decision branch -- see this function's own
     // doc for why a DIFFERENT answer here is impossible in this
     // single-threaded loop, and why the lattice forbids acting as if it
@@ -350,8 +345,7 @@ mod tests {
     // against a plain SegmentWriter/FrameCtx pair -- no real ConPTY run
     // needed for the one property this function owns (the lane operation
     // semantics -- `failed {record_append}`, the hold release, the leg
-    // replacement -- are U2's; `tests/capsule_win.rs` proves the ack
-    // ordering end to end against a real capsule run).
+    // replacement -- are U2's).
 
     fn run_end_marker_writer(dir: &std::path::Path, name: &str) -> (VoyageStore, SegmentWriter) {
         let root = dir.join(name);
@@ -443,7 +437,7 @@ mod tests {
         assert_eq!(frames_written, 0);
     }
 
-    /// Codex round-1 Major 5 discharge: a post-write, fsync-reported
+    /// a post-write, fsync-reported
     /// failure (the write itself already durable — see
     /// `SegmentWriter::inject_fault_on_next_append_sync`'s own doc) must
     /// still propagate as a failure to THIS caller (no latch, ADR 0039's

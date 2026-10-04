@@ -22,7 +22,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
         leg = service_transport_events(leg)?;
         leg = execute_actions(leg.attach_proto.tick(Instant::now()), leg)?;
         eager_ground_check(&mut leg)?;
-        // ADR 0041 EndRun step 2 / Codex round-1 Blocker 1 discharge: the
+        // ADR 0041 EndRun step 2: the
         // LATCH drives teardown, not the ack -- "ack completion only
         // ACCELERATES teardown". `shutdown_requested` alone (the OLD,
         // ack-completion-only trigger via `AttachAction::Shutdown`, and the
@@ -37,7 +37,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
             break 'main ExitKind::Requested;
         }
         match commands.try_recv() {
-            // Major 6 discharge: `Command::Kill` is the direct-caller/
+            // `Command::Kill` is the direct-caller/
             // supervisor own-behalf EndRun primitive (this module's own
             // doc on `Command`) -- it must carry a reason and route
             // through the SAME commit/latch transition as a wire
@@ -122,7 +122,7 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Codex review (PR #227): `ReaderGone` (an explicit send,
+                // `ReaderGone` (an explicit send,
                 // including from a panic unwind — see its own doc) and a
                 // bare channel disconnect are the SAME condition now — the
                 // reader thread is gone without having sent a terminal
@@ -133,11 +133,9 @@ pub(super) fn main_loop<'t, P: Producer>(commands: &mpsc::Receiver<Command>, mut
                 ));
             }
         }
-        // Codex review (PR #227): checked here, after the match rather
+        // checked here, after the match rather
         // than only inside its `Timeout` arm, so a transport wake (or any
-        // other non-`Timeout` result) can never starve this deadline —
-        // continuous transport activity every `recv_timeout` call used to
-        // mean `last_commit.elapsed()` was never even read.
+        // other non-`Timeout` result) can never starve this deadline.
         if should_flush_output(leg.last_commit.elapsed(), leg.pending_bytes, leg.last_output.elapsed(), leg.last_fsync.elapsed()) {
             flush_output(&mut leg)?;
         }
@@ -154,13 +152,7 @@ pub(super) fn reap_domain<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t
     //
     // Phase A: terminate the job, then REAP-POLL `ActiveProcesses` WHILE
     // STILL SERVICING `output_rx` (committing frames, answering the
-    // handshake) AND the transport (mgmt/Sent, per finding 7) — review
-    // finding, the blocker: the previous version polled the job with
-    // nobody draining the channel, so a reader already blocked in
-    // `OutputBudget::reserve` (or a DA1 only this loop could answer) could
-    // leave `hOutput` undrained right when `ClosePseudoConsole` needed it
-    // drained, and Microsoft's own docs say a pre-24H2 build's close can
-    // wait indefinitely under exactly that condition.
+    // handshake) AND the transport (mgmt/Sent).
     leg.producer.terminate_domain()?;
     let reap_deadline = Instant::now() + TEARDOWN_REAP_TIMEOUT;
     loop {
@@ -183,7 +175,7 @@ pub(super) fn reap_domain<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t
             Ok(ReaderEvent::TransportActivity) => {
                 // Switch-latency Phase 1 (c): same wake, same channel, as
                 // the main loop's own arm -- mgmt/`Sent` traffic keeps
-                // being serviced through teardown (finding 7), so it gets
+                // being serviced through teardown, so it gets
                 // the same early wake here rather than waiting out
                 // `TEARDOWN_REAP_POLL`. `service_transport_events_teardown`
                 // at this loop's own top does the actual draining.
@@ -206,7 +198,7 @@ pub(super) fn reap_domain<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<Leg<'t
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {} // just recheck active_processes
             Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Codex review (PR #227): see the main loop's identical arm
+                // see the main loop's identical arm
                 // — `ReaderGone` and a bare disconnect are the same "reader
                 // thread is gone without a terminal Done" condition. The one
                 // exception: after a terminal `Done` this teardown already
@@ -249,7 +241,7 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
             service_transport_events_teardown(&mut leg)?;
             execute_teardown_actions(leg.attach_proto.tick(Instant::now()), &mut leg)?;
             eager_ground_check(&mut leg)?;
-            // Codex review (PR #227): checked here, unconditionally, every
+            // checked here, unconditionally, every
             // iteration — mirroring Phase A's `reap_deadline` just above and
             // the main loop's own commit-deadline fix — rather than only
             // inside the `Timeout` arm below, where continuous transport
@@ -270,7 +262,7 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
                     leg.wake_pending.store(false, Ordering::Release);
                 }
                 Ok(ReaderEvent::Done(_)) => {
-                    // Round-2 review, finding 5: service transport ONE more
+                    // service transport ONE more
                     // time at the exact instant EOF ends this drain, so a
                     // status/mgmt request that arrived just after the last
                     // loop-top poll still gets answered while the pipe is
@@ -284,7 +276,7 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Ok(ReaderEvent::ReaderGone) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    // Codex review (PR #227): see the main loop's identical arm.
+                    // see the main loop's identical arm.
                     return Err(Error::State(
                         "capsule_win: the reader thread ended without a terminal Done event during drain".into(),
                     ));
@@ -293,8 +285,8 @@ pub(super) fn drain_output<'t, P: Producer>(mut leg: Leg<'t, P>) -> Result<(Leg<
         }
     } else {
         // The one thing the skipped drain's own EOF arm owes is the
-        // final transport service at the EOF instant (round-2 finding
-        // 5) -- pay it here instead, so a mgmt request that arrived
+        // final transport service at the EOF instant
+        // -- pay it here instead, so a mgmt request that arrived
         // just after the last loop-top poll is still answered while the
         // pipe is provably live.
         service_transport_events_teardown(&mut leg)?;
@@ -312,7 +304,7 @@ pub(super) fn ack_grace<P: Producer>(leg: &mut Leg<'_, P>) -> Result<()> {
     // physically written (removing its entry from `pending_sends`) before
     // this capsule's own transport goes away.
     //
-    // U1a Codex round-1, Major 6 discharge: this window drains ONLY what
+    // this window drains ONLY what
     // is ALREADY pending (`Sent`/`ConnectionClosed`, via
     // `drain_pending_sends_only`) — it admits NOTHING new
     // (`ConnectionOpened`/fresh `Bytes` are closed outright, never reaching
@@ -349,7 +341,7 @@ pub(super) fn join_workers<P: Producer>(
     // enough. `shutdown_all` is idempotent (U1a): `ShutdownGuard`'s own
     // `Drop`, still ahead on every path, is a safe no-op the second time.
     //
-    // Codex round-1 Blocker 3 discharge: ONE absolute aggregate deadline,
+    // ONE absolute aggregate deadline,
     // shared by the transport's OWN internal joins (accepted/reaper/every
     // connection worker, all cancellation-first per `Transport::
     // shutdown_all`'s own doc) AND this module's closer/reader threads —
@@ -365,9 +357,7 @@ pub(super) fn join_workers<P: Producer>(
     // Expiry is TERMINAL: `run` must not seal-and-succeed, nor release the
     // writer fence (via `store`'s own drop), past a teardown that could
     // not prove every worker stopped — an `Err` here propagates before
-    // `w.seal`/`store.advance_chain` are ever reached, and `store` (the
-    // fence) still drops via its own destructor on this return path,
-    // exactly as any other early `?` in this function already does.
+    // `w.seal`/`store.advance_chain` are ever reached.
     let teardown_deadline = Instant::now() + TEARDOWN_AGGREGATE_DEADLINE;
     let transport_ok = leg.transport.0.shutdown_all(teardown_deadline);
     let closer_ok = join_within(closer_handle, teardown_deadline);
@@ -384,7 +374,7 @@ pub(super) fn join_workers<P: Producer>(
 
 pub(super) fn seal_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u64, mut leg: Leg<'_, P>) -> Result<ExitSummary> {
     // Step 5: the producer's own exit status, raw and unsigned end-to-end
-    // for the Windows `Code` case (review finding: a Unix-style `i32` cast
+    // for the Windows `Code` case (a Unix-style `i32` cast
     // would turn a high-bit NTSTATUS-shaped code negative for no reason).
     // `wait()` first establishes the honesty-bound precondition
     // `exit_status_after_confirmed_exit`'s own doc requires —
@@ -400,7 +390,7 @@ pub(super) fn seal_run<P: Producer>(exit_kind: ExitKind, producer_uptime_ms: u64
 
     // The mgmt `shutdown` reason, if that is what drove this EndRun (ADR
     // 0041: "the reason string is recorded in producer_dead's detail").
-    // `producer_uptime_ms` (N1, captured well above, at the exit_kind
+    // `producer_uptime_ms` (captured well above, at the exit_kind
     // boundary -- NOT recomputed here, past all the teardown machinery
     // this point sits after) is an ADDITIVE, free-form diagnostic field
     // -- like `reason` already is -- not a registered ADR 0039 feature:

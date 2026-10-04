@@ -46,7 +46,7 @@ struct BudgetState {
     /// unit test PROVE a reserve entered the wait before releasing or
     /// cancelling — without it, a test's release can win the race to the
     /// first bound check and pass without ever exercising the wake path,
-    /// so a missing `notify_all` could escape (review finding).
+    /// so a missing `notify_all` could escape.
     #[cfg(test)]
     waiters: u32,
 }
@@ -80,10 +80,7 @@ impl OutputBudget {
     /// Reader-thread-only: reserves `n` bytes BEFORE the read that will
     /// produce them, blocking while `outstanding + n` would exceed the
     /// budget — never after the read, and never against `outstanding`
-    /// alone (review finding: the previous version reserved AFTER
-    /// reading and checked only the current total, so one over-budget
-    /// chunk plus one already-in-flight chunk could both slip past the
-    /// nominal bound). Returns `false` if the budget was (or became, while
+    /// alone. Returns `false` if the budget was (or became, while
     /// waiting) cancelled — the reader must stop immediately, WITHOUT
     /// reserving, and never call `read()` again.
     pub(super) fn reserve(&self, n: u64) -> bool {
@@ -110,7 +107,7 @@ impl OutputBudget {
 
     /// Writer-loop-only: releases exactly `n` bytes once they have been
     /// accounted for (a frame appended, or reservation given back unused).
-    /// Checked, not saturating (review finding): a mismatch here is this
+    /// Checked, not saturating: a mismatch here is this
     /// module's own bookkeeping bug and must panic loudly, never silently
     /// absorb the discrepancy.
     pub(super) fn release(&self, n: u64) {
@@ -122,7 +119,7 @@ impl OutputBudget {
 
     /// Cancels the budget — every future and currently-blocked `reserve`
     /// call returns `false` immediately. Called from `BudgetCancelGuard`'s
-    /// `Drop` on every exit from `run` (review finding: a reader blocked in
+    /// `Drop` on every exit from `run` (a reader blocked in
     /// `reserve` must never be able to outlive the writer loop that is the
     /// only thing that would otherwise ever release it).
     fn cancel(&self) {

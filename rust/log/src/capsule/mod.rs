@@ -10,15 +10,6 @@
 //! `producer_pty.rs`'s `PtyProducer` (Unix), a bare `openpty` fd plus a
 //! process group.
 //!
-//! This module was `capsule_win.rs` before LU2a — Windows-only, alongside
-//! a SEPARATE, independently maintained Linux loop (its own file,
-//! `#![cfg(target_os = "linux")]`, the Linux `run` arm's own
-//! implementation through LU2a). LU2b deletes that file outright rather
-//! than reconciling it — even the parts that read identically between the
-//! two (the base64 encoder, the frame-context helper) stayed duplicated,
-//! not shared, since unifying THOSE was no longer this unit's problem
-//! once the writer loop itself was unified.
-//!
 //! Three properties this module adds over the legacy Linux capsule, all
 //! pinned by ADR 0041 "Step 4 as specified":
 //! - a live `vt100_ctt` parser tracks the producer's screen for a later
@@ -32,27 +23,14 @@
 //! - spawn failure and BOTH teardown entry points (an externally requested
 //!   kill, or the producer exiting on its own) are handled by ONE
 //!   compensation path / ONE orchestrator, so a segment is always sealed
-//!   whenever the producer ever actually ran or a spawn was attempted —
-//!   the Linux capsule's own known gap (a bare `?` on `spawn_on_pty` that
-//!   escapes unsealed) is deliberately NOT inherited. An unexpected PRE-close
+//!   whenever the producer ever actually ran or a spawn was attempted. An
+//!   unexpected PRE-close
 //!   reader failure is the one case that still bails unsealed on purpose
 //!   (see "Reader errors" below) — that is ADR 0039's crash shape, not a
 //!   gap.
 //!
-//! ## Discharge round (Codex adversarial review, capsule_win.rs unit)
-//!
-//! The first version of this file shipped a real teardown deadlock and six
-//! other findings; this is the corrected version. What changed, and why:
-//!
 //! - **Teardown is now a PHASE of the ordered loop, not a pause in it.**
-//!   The first version polled `ActiveProcesses` and called `close_pty()`
-//!   WITHOUT draining the output channel, so a reader already blocked in
-//!   `OutputBudget::reserve` (or a DA1 only the writer loop could answer)
-//!   could leave `hOutput` undrained right when `ClosePseudoConsole` needed
-//!   it drained — Microsoft documents that pre-24H2 build's close as
-//!   capable of waiting indefinitely under exactly that condition, and the
-//!   old `TEARDOWN_DRAIN_TIMEOUT` couldn't detect it because its clock
-//!   started AFTER the (blocking) close call returned. Now: the reap-poll
+//!   Now: the reap-poll
 //!   keeps servicing the output channel (committing frames, answering the
 //!   handshake) WHILE it polls; `close_pty()` runs on a dedicated CLOSER
 //!   thread so the writer loop keeps draining concurrently with the call
@@ -75,7 +53,7 @@
 //!   records only the FIRST match ever observed for a run; every later
 //!   match (a hostile or broken producer's repeat queries) is counted, not
 //!   re-answered and not re-recorded, closing the unbounded-frame-spam
-//!   amplification the first version had no defense against.
+//!   amplification.
 //! - **Exit status is raw and unsigned end-to-end.** `conpty.rs`'s
 //!   `exit_code` had a real bug — even after a caller had *already*
 //!   confirmed the process exited, it still mapped a genuine raw exit code
@@ -99,24 +77,12 @@
 //!   returns an `Err` with nothing further written (ADR 0039's crash
 //!   shape: recovery seals whatever valid prefix already committed). After
 //!   `close_pty()` has been called, both a graceful EOF and a broken pipe
-//!   are the ordinary, expected end of the drain. The `ReaderClosedUnexpectedly`
-//!   `ExitKind` variant is gone — it named a failure as if it were a
-//!   legitimate way for a run to end successfully, which it never was.
-//! - **`run` no longer owns stdin.** (Historical, step 4: at the time this
-//!   applied to a `Command` enum that still carried `Input`/`Resize`
-//!   alongside `Kill`, and to a bin harness that forwarded raw stdin bytes
-//!   as `Command::Input` — step 5 later DELETED both, see "Step 5 (U2)"
-//!   below; only `Kill` remains on `Command` today, and the bin harness has
-//!   no stdin thread at all any more.) The first version of THIS file read
-//!   the real process stdin internally, which (a) is process-global state a
-//!   reusable library function has no business owning, and (b) meant
-//!   "teardown revokes admission" was really just "teardown discards what
-//!   it already accepted" — the thread kept enqueueing regardless. The fix
+//!   are the ordinary, expected end of the drain.
+//! - **`run` no longer owns stdin.** The fix
 //!   that survives step 5: `run` takes exactly the caller-owned channel a
 //!   caller feeds (today `commands: mpsc::Receiver<Command>` for `Kill`;
 //!   the wire's own events are polled through `Transport::try_recv_event`
-//!   instead of a second channel parameter, round-2 e2e review's own
-//!   deletion pressure — see that method's doc) — it owns none of the
+//!   instead of a second channel parameter — see that method's doc) — it owns none of the
 //!   sources that feed them. Admission revocation is real: once the main
 //!   loop is left
 //!   for teardown, `commands` is never read from again — not
@@ -149,17 +115,6 @@
 //! `flush_output`'s watermark now ALSO publishes committed bytes to
 //! existing subscribers and, on a ground boundary, promotes any pending
 //! attach — the watermark barrier the ADR requires, one loop step.
-//!
-//! Four things this unit DELETES, per the ADR 0041 step-5 spec gate: the
-//! preamble's automatic `"local"` take grant (the null-holder revoke is now
-//! the whole preamble — the first driver ever is a pipe `take`);
-//! `Command::Input`/`Command::Resize` (the wire lane replaces both —
-//! `Command::Kill` stays, driven by either a direct caller or the wire's
-//! mgmt `shutdown`); the bin harness's Windows stdin-forwarding thread and
-//! its stdout echo mirroring (pipe fan-out is the real subscriber path now;
-//! a bare `--echo` mirror duplicates that for no one); and the capsule's own
-//! `random_idem_key` generator (the CLIENT supplies `idem_key` on the wire —
-//! `hex_idem_key` still exists, for encoding it, not generating one).
 
 use crate::attach_proto::{
     Action as AttachAction, AttachProto, ConnId, InputOutcome, MgmtStatus, SentMarker,
@@ -167,7 +122,7 @@ use crate::attach_proto::{
 use crate::envelope::*;
 use crate::producer::{ExitStatus, ParentLease, Producer};
 use crate::host_handshake::{self, HostHandshake};
-// Codex round-1 Blocker 3 discharge: the SAME shared-deadline poll-join
+// the SAME shared-deadline poll-join
 // primitive and the SAME pinned aggregate bound `pipe_win.rs` uses for its
 // own worker joins -- one mechanism, one constant, reused here for this
 // module's closer/reader thread joins rather than a second bespoke copy.
@@ -257,8 +212,7 @@ const READER_END_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// terminal event after the closer thread's `close_pty()` call is spawned.
 /// Starts the moment that thread is spawned — CONCURRENTLY with the
 /// (possibly blocking, pre-24H2) close, not after it returns, which is
-/// exactly what the previous version got wrong (review finding, the
-/// blocker) and why this bound can now actually do its job: a hang in
+/// exactly what the previous version got wrong and why this bound can now actually do its job: a hang in
 /// `ClosePseudoConsole` itself no longer prevents this deadline from firing.
 const TEARDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 const TEARDOWN_DRAIN_POLL: Duration = Duration::from_millis(200);
@@ -300,7 +254,7 @@ pub struct CapsuleConfig {
     /// The reader-first rollout gate's input (ADR 0041 "Upgrade and
     /// version skew"; see `crate::rollout`) — TYPED, identity-bound
     /// evidence, never an `Option` a caller could pass `None` into as an
-    /// implicit "no rollback target" (Codex round-1 Major 9): `run`
+    /// implicit "no rollback target": `run`
     /// refuses to open a segment declaring
     /// `sot.capsule.run-end-requested-v1` unless this evidence
     /// affirmatively clears it. The SPAWNER constructs this — a real
@@ -339,8 +293,7 @@ const RUN_END_REQUESTED_FEATURE: &str = "sot.capsule.run-end-requested-v1";
 /// bypasses the pipe entirely (the bin harness, a supervisor) can drive.
 /// `run` owns none of the sources that feed this channel — a caller is
 /// responsible for keeping the `Sender` alive for as long as it wants
-/// commands serviced (review finding: a previous version read stdin
-/// itself, which made "teardown revokes admission" not really true).
+/// commands serviced.
 #[derive(Debug, Clone)]
 pub enum Command {
     /// An EXTERNALLY REQUESTED end. Never inferred from an exit code, a
@@ -393,10 +346,7 @@ pub struct ExitSummary {
 
 /// The reader thread's own event stream: producer output, or its ONE
 /// terminal event. `Done` carries a real `Result` rather than an
-/// undifferentiated EOF (review finding: the previous version collapsed
-/// every read error into the same signal a graceful close produces, so an
-/// unexpected pre-close failure could silently become a normal, sealed
-/// success). Kept SEPARATE from the caller's `Command` channel — see the
+/// undifferentiated EOF. Kept SEPARATE from the caller's `Command` channel — see the
 /// module doc's stdin-ownership point — so during teardown this loop can
 /// keep servicing this channel while never touching that one again, which
 /// is what makes "teardown revokes admission" literally true rather than
@@ -418,7 +368,7 @@ enum ReaderEvent {
     /// unconditionally, every iteration) is what actually drains and
     /// processes whatever the transport queued.
     TransportActivity,
-    /// Codex review (PR #227): the reader thread's `tx` is no longer the
+    /// the reader thread's `tx` is no longer the
     /// channel's only real sender — `Transport::set_wake`'s callback holds
     /// a clone too (above) — so a bare channel disconnect can no longer be
     /// trusted to mean "the reader thread dropped its sender". This event

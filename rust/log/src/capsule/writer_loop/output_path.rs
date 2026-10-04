@@ -23,7 +23,7 @@ pub(super) fn spawn_reader<P: Producer>(
     let mut reader = producer.take_output();
     let budget = Arc::clone(&output_budget);
     std::thread::spawn(move || {
-        // Codex review (PR #227): a drop guard, not another explicit
+        // a drop guard, not another explicit
         // send at the bottom of this closure — the two designed exits
         // already send `Done` and return, but a `read()`/`budget` call
         // panicking partway through would skip any send placed after
@@ -51,7 +51,7 @@ pub(super) fn spawn_reader<P: Producer>(
                     let _ = tx.send(ReaderEvent::Done(Ok(())));
                     return;
                 }
-                // Review round 2 (R4): a signal-interrupted read is not
+                // a signal-interrupted read is not
                 // an end of stream on ANY platform -- the ConPTY
                 // producer never actually produces this (Windows has
                 // no equivalent signal-delivery-during-read

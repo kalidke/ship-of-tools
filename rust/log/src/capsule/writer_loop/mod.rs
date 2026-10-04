@@ -126,16 +126,13 @@ pub fn run<P: Producer>(
         ControlFlow::Break(summary) => return Ok(summary),
     };
     let (mut leg, exit_kind) = main_loop(&commands, leg)?;
-    // N1 (Codex review round 3, owner-corrected): captured HERE, the
+    // captured HERE, the
     // instant the main loop concludes for EITHER exit kind -- NOT after
     // the teardown machinery below (job reap, ConPTY drain, the
     // aggregate deadline, a final wait), which alone can outlast the
     // producer's own life and would otherwise pollute this measurement
     // with exactly the capsule-side latency the supervisor's own
-    // anti-flap counter must never see (an earlier version of this fix
-    // measured it at the LATE producer_dead-detail-construction site
-    // below, reproducing the identical bug it exists to close, just
-    // moved inside this process instead of the supervisor's). For
+    // anti-flap counter must never see. For
     // ProducerExited the producer is already dead by definition; for
     // Requested it is about to be forcibly killed by
     // `producer.terminate_domain()` a few lines into teardown, with no
@@ -144,7 +141,7 @@ pub fn run<P: Producer>(
     flush_output(&mut leg)?;
 
     // Producer-bound admission (take/input/resize) is revoked from here on
-    // (finding 7) — but mgmt (probe/status/shutdown) and Sent completions
+    // — but mgmt (probe/status/shutdown) and Sent completions
     // keep being serviced through BOTH phases below, via
     // `service_transport_events_teardown`, until the pipe closes (see that
     // function's own doc for why, and `execute_teardown_actions` for the

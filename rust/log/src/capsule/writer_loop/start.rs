@@ -6,29 +6,17 @@ pub(super) fn start<'t, P: Producer>(
     config: &CapsuleConfig,
     transport: &'t mut dyn Transport,
 ) -> Result<ControlFlow<ExitSummary, (Leg<'t, P>, std::thread::JoinHandle<()>, Instant)>> {
-    // A platform this build has no real `self_status` for (any Unix that
-    // is neither Linux nor macOS) must refuse BEFORE any durable side
-    // effect: without this, such a call would bind the transport, open a
-    // segment and commit `take_state`, and only then fail on
-    // `Unsupported` — an unsupported call must not change history. On
-    // Windows, Linux and macOS the real `self_status` succeeds, so this
-    // is a no-op and nothing about any of those paths moves.
     #[cfg(not(windows))]
     let _ = self_status(config.survival)?;
     let mut store = open_store(config)?;
 
-    // Finding 7 (round-1) / round-2 finding 4: `shutdown_all` must run
+    // `shutdown_all` must run
     // before the writer lock releases (`store`'s own drop) on EVERY exit
     // path from this point on, not only the success one -- an RAII guard
     // is the only way to guarantee that regardless of which `?` returns
-    // early below. Declared AFTER `store`: Rust drops locals in REVERSE
-    // declaration order, so this guard's `Drop` (closing the pipe) runs
+    // early below. Declared AFTER `store`: this guard's `Drop` (closing the pipe) runs
     // BEFORE `store`'s (releasing the lock). Constructed HERE, immediately
-    // after `store` itself and BEFORE `seal_survivor()?` -- round-2 review
-    // caught the guard originally sitting AFTER that call: a failure
-    // there would have returned early with the lock already held (via
-    // `store`) but the guard never built, releasing the lock with the
-    // pipe still live. Every fallible operation from this point on that
+    // after `store` itself and BEFORE `seal_survivor()?`. Every fallible operation from this point on that
     // runs while the lock is held must stay AFTER the guard, not before
     // it.
     //
@@ -57,7 +45,7 @@ pub(super) fn start<'t, P: Producer>(
     // `pid`/`created` are OS values it must never compute itself.
     let attach_proto = AttachProto::new(self_status(config.survival)?);
     let splitters: HashMap<ConnId, wire::FrameSplitter> = HashMap::new();
-    // Finding 11: keyed by (conn, id), not id alone -- a transport's send
+    // keyed by (conn, id), not id alone -- a transport's send
     // ids are only ever meaningful scoped to the connection that issued
     // them (a real transport may recycle ids across connections), and
     // every entry for a connection is purged the moment it closes (see
@@ -87,7 +75,7 @@ pub(super) fn start<'t, P: Producer>(
         Err(reason) => return seal_spawn_failure(reason, ctx, w, &mut store, frames_written, segments_sealed)
             .map(ControlFlow::Break),
     };
-    // N1 (Codex review round 3): the supervisor's own anti-flap counter
+    // the supervisor's own anti-flap counter
     // must judge stability on the PRODUCER's lifetime, never on how long
     // this capsule process's own teardown (job reap, ConPTY drain,
     // aggregate deadline, final wait) happens to take afterward -- those
@@ -110,8 +98,7 @@ pub(super) fn start<'t, P: Producer>(
     let parser = vt100_ctt::Parser::new(config.rows, config.cols, CAPSULE_SCROLLBACK_ROWS);
     let handshake = HostHandshake::new();
     // ADR 0041's model is ONE host handshake, at startup — answer and
-    // record only the first match ever observed; count the rest (the
-    // amplification fix, review finding).
+    // record only the first match ever observed; count the rest.
     let dsr_answered = false;
     let handshake_suppressed_matches: u64 = 0;
     let resize_os_calls: u64 = 0;
@@ -142,7 +129,6 @@ pub(super) fn start<'t, P: Producer>(
     // the unrelated `PRE_ADMISSION_TIMEOUT` deadline to fire on a `hello`
     // the loop never got a chance to even see.
     //
-    // Round-2 review, finding 10 (the fairness claim below was overstated):
     // `pace_output` sleeps 1 ms per `GROUP_COMMIT_BYTES` of output
     // processed. The first version used `yield_now` (`SwitchToThread`),
     // which offers a ready thread ON THE CURRENT PROCESSOR a chance and
@@ -263,7 +249,7 @@ fn bind_transport(
     transport: &mut ShutdownGuard<'_>,
 ) -> Result<(mpsc::Sender<ReaderEvent>, mpsc::Receiver<ReaderEvent>, Arc<AtomicBool>)> {
     // Switch-latency Phase 1 (c): ONE channel for producer output, the
-    // reader thread's own death (`ReaderGone`, Codex review PR #227), and
+    // reader thread's own death (`ReaderGone`), and
     // transport activity — the reader thread (spawned later once
     // `producer` exists) and its own `ReaderGoneGuard` are two of this
     // channel's three senders, so this loop's own `output_rx.
