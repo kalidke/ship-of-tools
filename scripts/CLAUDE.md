@@ -101,17 +101,17 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
 - A dev clone's prelude re-execs only when `launch-sot.ps1` itself changed (`Invoke-SelfUpdatePrelude`), so a pull that
   changes only a helper takes effect at the next launch, while a converge compares every listed file.
 - The launch path fails open. `sot-apply.sh` and `sot-apply.ps1` exit 0 by contract, the unit's
-  `ExecStartPre=-` tolerates a missing script, and `launch-sot.sh` runs without `set -e`; `installer-state.sh`'s
+  `ExecStartPre=-` tolerates a missing script, and `launch-sot.sh` runs without `set -e`; `installer-apply.sh`'s
   `failed_apply_keeps_old_record_and_pending` and `test-sot-apply.ps1` pin the contract.
 - Files are published whole: written beside the destination under a name of their own, then renamed
   (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`; `Set-SotFolderTrust` on Windows). The
-  `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-state.sh` pin it.
+  `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-apply.sh` pin it.
 - Socket and pipe paths come from `sotd session-socket-path`; no script builds one.
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and
   the handover bound, all in `rust/protocol/src/ops.rs`) are pinned by `launcher_bounds_match_ops` in
   `tests/installer-state.sh`; change both sides together.
 - `sot_install_copy` has three byte-equal copies (`lib/sot-daemon.sh`, `install.sh`, `sot-apply.sh`), pinned by
-  `one_copy_helper` in `tests/installer-state.sh`; edit all three.
+  `one_copy_helper` in `tests/installer-apply.sh`; edit all three.
 - `.sh` files are POSIX sh plus `local` (`sot-apply.sh` runs under dash, macOS ships bash 3.2); `.ps1` files are Windows
   PowerShell 5.1 with ASCII-only string literals, parsed under 5.1 by the "Parse PowerShell scripts" step of
   `.github/workflows/rust.yml`.

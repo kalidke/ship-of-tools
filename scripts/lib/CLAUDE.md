@@ -19,7 +19,7 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
 - `render_sotd_unit` and `render_sot_launch` write beside the destination under a name of the shell's own pid and move
   it in, so a failed write leaves the old file whole and returns 1.
 - `sot_install_copy` is byte-equal to the copies in `scripts/install.sh` and `scripts/sot-apply.sh`; edit all three
-  (`one_copy_helper` in `scripts/tests/installer-state.sh`). `sot_unit_owner_path` and `sot_wrapper_owner_prefix` are
+  (`one_copy_helper` in `scripts/tests/installer-apply.sh`). `sot_unit_owner_path` and `sot_wrapper_owner_prefix` are
   copies of `installer_unit_owner_path` and `installer_wrapper_owner_prefix` in `install.sh`, pinned equal by
   `owner_helpers_agree`.
 - `SOT_LAUNCH_WAIT_S` equals `lease::LAUNCH_WAIT` in `rust/protocol/src/ops.rs` (`launcher_bounds_match_ops`). The
