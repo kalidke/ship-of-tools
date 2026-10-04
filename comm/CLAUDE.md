@@ -52,6 +52,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - `core/`: the reference client's scripts, `core/scripts/`, each sourcing `comm-lib.sh` from its own folder.
 - `registry/`: the address book scripts: identity, join, leave, list, self-audit, lock recovery, session start.
 - `tests/`: the hermetic suites that prove the scripts, run from a staged flat bin (see its page).
+- `work_state/`: `comm-status.sh`, `comm-turn-auditor.sh` and the status hooks (`work_state/hooks/`), the row colour's reduction.
 - `rust/backend/src/comm/mail/`: the daemon's delivery: `comm.file` (`file_comm`), `agent.send` and `agent.filed`
   (`relay.rs`), the `agent.message` and `agent.receipt` buses, the hub link (`run`), and the append (`file_frame`).
 - `rust/backend/src/comm/registry/`: the daemon's address book: `agent.join` (`handle_agent_join`), the registry lock
@@ -65,6 +66,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - `core/`: the reference client (see Folders).
 - `registry/`: the address book scripts (see Folders).
 - `tests/`: the suites and their stage (see Folders).
+- `work_state/`: the work-state scripts and hooks (see Folders).
 
 ## Start here
 For mail, `core/scripts/comm-send.sh` then `sot_inbox_append` in `comm-lib.sh`, and `rust/backend/src/comm/mail/inbox.rs`

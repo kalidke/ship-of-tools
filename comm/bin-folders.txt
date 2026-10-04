@@ -1,5 +1,5 @@
 agents/spawn
 comm/core/scripts
 comm/registry
-comm/adapters/claude/hooks
-comm/adapters/codex/hooks
+comm/work_state
+comm/work_state/hooks

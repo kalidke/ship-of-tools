@@ -53,7 +53,7 @@ done
     echo "usage: test-comm-e2e-readers.sh --peer HOST --v3-host HOST  (a v4 peer and a v3 host that mount this home)" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOK="$(cd "$SCRIPT_DIR/../adapters/claude/hooks" && pwd)/comm-status-idle.sh"
+HOOK="$(cd "$SCRIPT_DIR/../work_state/hooks" && pwd)/comm-status-idle.sh"
 HERE="$(hostname -s)"
 PACED="${E2E_PACED:-30}"; BURST="${E2E_BURST:-30}"; QUIET="${E2E_QUIET_SECS:-60}"
 unset SOT_COMM_HOOKS SOT_COMM_TEST_HOST

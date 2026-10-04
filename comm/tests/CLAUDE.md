@@ -51,7 +51,7 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
 - Scripts run from the copy `guard_stage_bin` makes in the suite's work directory (`stage-bin.sh` fails on a missing or
   empty bin folder or a name two folders ship). Hooks and launchers run in-tree: the Stop hook runs
   `comm-turn-auditor.sh` when it sits beside it, so a suite that must not call a live model runs the hook from
-  `comm/adapters/claude/hooks`, where no auditor sits beside it.
+  `comm/work_state/hooks`, where no auditor sits beside it.
 - Five suites need peer hosts and are not hermetic: `test-comm-e2e-readers.sh`, `test-inbox-lock-onehost.sh`,
   `test-inbox-lock-twohost.sh`, `test-registry-twohost.sh` and `test-registry-lock-twohost.sh`.
 - CI runs the hermetic list in `.github/workflows/rust.yml`; `scripts/tests/rc-gate.sh` runs every `test-*.sh` here but
