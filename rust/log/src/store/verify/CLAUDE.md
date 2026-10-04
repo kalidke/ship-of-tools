@@ -7,7 +7,7 @@ charter: rust/log/CLAUDE.md (a forward reference: that page is not yet at this c
 
 ## Files
 - `mod.rs`: the checklist's types (`VerifyMode`, `REGISTERED_FEATURES`, the frame objects it reads), `verify_voyage` and the payload and blob helpers.
-- `pass.rs`: `verify_voyage_mode`, the whole checklist pass over a voyage.
+- `pass.rs`: `verify_voyage_mode`, the pass over a voyage's segments, and the segment-level rules (listing, quiescence, header, turn closure).
 - `leg.rs`: `leg_carries_run_end_marker` and `leg_producer_uptime_ms`, the per-leg readers, with their tests.
 - `support_tests.rs`: the `store` test helper shared by the test files.
 - `features_tests.rs`: tests of feature opt-ins, spilled frames, turn closure, f64 gates, rotation and attached_to.
@@ -18,7 +18,7 @@ charter: rust/log/CLAUDE.md (a forward reference: that page is not yet at this c
 
 ## Rules
 - `VerifyMode::Complete` is the only certifying mode (`verify_voyage` uses it); `AllowOpenTip` is for a live writer's own use.
-- A segment declaring a feature not in `REGISTERED_FEATURES` is refused whole (`verify_voyage_mode`; test
+- A segment declaring a feature not in `REGISTERED_FEATURES` is refused whole (`check_segment_header`; test
   `unknown_feature_name_refuses_the_whole_segment`).
 - The leg readers err loud on a mismatched or malformed segment and never answer "no marker" for one
   (`leg_carries_run_end_marker`).
