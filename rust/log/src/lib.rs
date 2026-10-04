@@ -211,7 +211,8 @@ pub use store::segment;
 // the per-machine state-dir resolution rule, owned here so every process
 // that needs it (today: the frontend) shares one rule instead of
 // drifting copies.
-pub mod state_dir;
+mod host;
+pub use host::state_dir;
 // ADR 0041 step 6, unit U2: the authority -- `sot-capsule supervise`,
 // and `endrun`/`reset` as fence-acquiring in-process callers. L1-unix
 // LU3c: ungated to `#![cfg(any(windows, target_os = "linux",
@@ -233,9 +234,10 @@ pub mod voyage;
 pub mod wire;
 // Field-proven defect fix: hardens a process's own inherited stdio handles
 // against leaking into a spawned child — self-gated (`#![cfg(windows)]`).
-pub mod winhandle;
+#[cfg(windows)]
+pub use host::winhandle;
 
-mod fsutil;
+use host as fsutil;
 
 // ADR 0043 decision 33: the destroy proof's LEG half (`sot-backend`'s
 // `capsule_workspace::runtime::leg_absent`) needs the SAME bounded,
