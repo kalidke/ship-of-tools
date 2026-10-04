@@ -150,11 +150,18 @@ jobs:
         run: .\scripts\tests\test-topology-plan.ps1
         working-directory: .
 
-      - name: Parse shell launchers
+      - name: Parse shell scripts
         if: matrix.os == 'ubuntu-latest'
-        working-directory: scripts
+        working-directory: .
         run: |
-          for f in *.sh; do bash -n "$f" && echo "ok: $f"; done
+          shopt -s globstar nullglob
+          rc=0; n=0
+          for f in scripts/**/*.sh docs/tools/*.sh; do
+            n=$((n + 1))
+            if bash -n "$f"; then echo "ok: $f"; else echo "PARSE ERROR: $f"; rc=1; fi
+          done
+          [ "$n" -gt 0 ] || { echo "no shell scripts found"; rc=1; }
+          exit "$rc"
 
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
