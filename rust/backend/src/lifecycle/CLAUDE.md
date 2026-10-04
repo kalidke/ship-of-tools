@@ -52,10 +52,11 @@ lease, whether that computer's sessions end (ADR 0050).
 - `rust/frontend/src/lease.rs`: a file, the window's half.
 
 ## Files
-- `mod.rs`: declares the two modules.
-- `shutdown.rs`: the close, its backstop, the row ends and the child signal.
+- `child_signal.rs`: the process-wide `fired` flag and the live-child count.
+- `mod.rs`: declares the three modules.
+- `shutdown.rs`: the close, its backstop and the row ends.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 
 ## Start here
-`startup::begin` for what a start does; `shutdown::run` for the close and its order; the child signal (`Signal`,
-`ChildGuard`) in `shutdown.rs` before a change to how a child is owned.
+`startup::begin` for what a start does; `shutdown::run` for the close and its order; `child_signal.rs` before a change
+to how a child is owned.
