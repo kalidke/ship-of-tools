@@ -37,7 +37,7 @@ impl State {
                     // force-show eligible; Some(other) = ignore) and
                     // maps cmd→FeCommand (None = bad target / unknown
                     // cmd / missing arg). `urgent` rides on the
-                    // mapped Preview/Reveal; the idle gate is applied
+                    // mapped Preview; the idle gate is applied
                     // in dispatch_fe_command, not here.
                     if let Some(cmd) = route_fe_command(&evt, &self_comm_handle()) {
                         tracing::info!(cmd = %evt.cmd, target = ?evt.target,

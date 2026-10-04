@@ -797,8 +797,8 @@ struct State {
     /// non-disruptively. Latest-wins per workspace. When the user later
     /// *switches* to the workspace, `switch_to_workspace` drives the
     /// pending preview and clears the entry, so a result always reaches
-    /// the user — never dropped. `dispatch_fe_command`'s `Preview`/`Reveal`
-    /// arms reuse `mark_pending_nav` too.
+    /// the user — never dropped. `dispatch_fe_command`'s `Preview`
+    /// arm reuses `mark_pending_nav` too.
     /// ADR 0042 L2a codex review, item E: keyed by `WsKey`, not a bare
     /// slug. The `nav.preview` ENVELOPE itself carries no host field, but
     /// the EVENT delivering it does (`event_host`, tagged by whichever
