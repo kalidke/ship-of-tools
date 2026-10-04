@@ -12,7 +12,6 @@ mod chrome;
 mod cli;
 mod download;
 mod edit_buffer;
-mod gpu;
 mod help;
 mod keybindings;
 mod layout;
@@ -27,6 +26,8 @@ mod settings;
 mod state_persistence;
 mod term;
 mod text;
+mod ui;
+use ui as gpu;
 
 use net::{dial, state, transport};
 use pages as proxy_listen;
