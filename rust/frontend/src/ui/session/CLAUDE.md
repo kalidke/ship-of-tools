@@ -6,7 +6,7 @@ rust/frontend/src/ui/CLAUDE.md. The record is ADR 0042, 0044 and 0025.
 
 ## Files
 - `mod.rs`: declares the files below and re-exports their names to `ui`.
-- `workspace_key.rs`: the (host, slug) key: `ws_key_of`, `lifecycle_key_of`, and `State`'s current, active, caption, reply and lifecycle keys.
+- `workspace_key.rs`: the (host, slug) key: `ws_key_of`, `lifecycle_key_of`, `is_default_workspace_name`, and `State`'s current, active, caption, reply and lifecycle keys.
 - `workspace_list.rs`: `workspace.list` into the strip: `fresh_workspace_caches`, `declared_sessions_from`, `activity_order`, and `State`'s `rebuild_workspace_caches`, `resort_strip`.
 - `snapshot.rs`: `WorkspaceUiSnapshot` and `WorkspaceReplSnapshot`, saved and restored by `State`'s snapshot and restore methods.
 - `switch.rs`: `State::switch_to_workspace` and `cycle_workspace`.

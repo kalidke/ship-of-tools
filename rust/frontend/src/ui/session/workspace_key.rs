@@ -19,6 +19,11 @@ pub(in crate::ui) fn ws_key_of(workspace_id: Option<&str>, default_slug: Option<
     }
 }
 
+/// Whether an fe-command's `workspace` argument names the daemon-default workspace: `""`, `"default"` or `"<default>"`.
+pub(in crate::ui) fn is_default_workspace_name(name: &str) -> bool {
+    name.is_empty() || name == "default" || name == "<default>"
+}
+
 /// Slug storage key for a `lifecycle` repl.frame evt's workspace hint (core
 /// of `lifecycle_store_key`, free-function for unit tests — the `ws_key_of`
 /// pattern). The hint is the Repl supervisor's identity: a CANONICAL
@@ -81,7 +86,7 @@ impl State {
     /// look up, or a caption addressed to the default workspace is stored
     /// under a key nothing reads.
     pub(in crate::ui) fn caption_ws_key(&self, workspace: &str) -> String {
-        let is_default = workspace.is_empty() || workspace == "default" || workspace == "<default>";
+        let is_default = is_default_workspace_name(workspace);
         if is_default {
             "<default>".to_string()
         } else {
@@ -196,6 +201,16 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_workspace_names() {
+        for name in ["", "default", "<default>"] {
+            assert!(is_default_workspace_name(name), "{name:?}");
+        }
+        for name in ["Default", " default", "default ", "<Default>", "defaults", "x"] {
+            assert!(!is_default_workspace_name(name), "{name:?}");
+        }
+    }
 
     #[test]
     fn lifecycle_key_translates_canonical_id_to_slug() {
