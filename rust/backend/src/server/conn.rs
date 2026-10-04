@@ -133,8 +133,8 @@ where
 
     // ADR 0035: a proxy connection announces itself with `proxy.connect` as
     // its VERY FIRST frame and then becomes a raw byte pipe — it must never
-    // enter the multiplexed control loop below (where it would be
-    // hello-gated and could head-of-line-block pty/repl traffic). Peek that
+    // enter the multiplexed control loop below (where it would
+    // share the loop with requests and could head-of-line-block pty/repl traffic). Peek that
     // one frame here, before the persistent read future is armed. On
     // proxy.connect, hand the (buffered) reader + write half straight to the
     // pipe and return. Otherwise, remember the frame and feed it to the loop
@@ -169,7 +169,7 @@ where
                 .await;
             }
             // A lease (1.2) is a connection of its own: it never enters
-            // the hello-gated loop, the reaper or any handler.
+            // the connection's request loop, the reaper or any handler.
             if f.kind == Kind::Req && f.op == op::FE_LEASE {
                 tracing::info!(?peer_identity, "fe.lease — a lease connection");
                 let state_root = sot_log::host::state_dir::sot_state_dir();

@@ -392,7 +392,7 @@ pub mod op {
     /// A capsule row's supervisor or voyage lane, piped through the row's
     /// OWN daemon (ADR 0045 decision 2). Sent as the FIRST frame on a
     /// DEDICATED connection — the `proxy.connect` peek, never inside the
-    /// hello-gated control loop: `LaneConnectReq { target, lane,
+    /// connection's request loop: `LaneConnectReq { target, lane,
     /// voyage_id?, token? }`. The daemon resolves `target` (the row's
     /// `session_name`, as `pty.open` addresses it) to a capsule
     /// workspace, dials that row's lane locally, resumes an absent
