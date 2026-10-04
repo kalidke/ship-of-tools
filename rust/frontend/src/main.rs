@@ -10,7 +10,6 @@
 
 mod chrome;
 mod cli;
-mod download;
 use ui::chrome::layout;
 mod lease;
 use ui::drawer::monitor as monitor_view;
@@ -26,6 +25,7 @@ use ui::drawer::terminal::pty as term;
 mod text;
 mod ui;
 use ui as gpu;
+use ui::download;
 use ui::preview;
 use ui::preview::editor::buffer as edit_buffer;
 

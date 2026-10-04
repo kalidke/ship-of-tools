@@ -2,11 +2,12 @@
 
 Each (mode, workspace) has its own tree, and a reply goes into the tree its key names, never into whatever is on
 screen. This folder holds the mode, the store that parks the trees not on screen, the tree view, and the Modules,
-Sessions and Hosts trees. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md. The Files tree's own code still
-lives in mod.rs.
+Sessions and Hosts trees, and in files/ what the Files tree does to files. Part of fe-ui; charter:
+rust/frontend/src/ui/CLAUDE.md. The rest of the Files tree's code still lives in mod.rs.
 
 ## Files
 - `mod.rs`: declares the files below and re-exports their names to `ui`.
+- `files/`: Files mode's file operations, the create and delete prompts, reveal, paths, transfers and listing refreshes.
 - `tree_store.rs`: `Mode`, `TreeScope`, `TreeKey`, `TreeStore`, and `State`'s `swap_active_tree` and `enter_mode`.
 - `tree.rs`: `TreeRow` and `TreeView` (rows, cursor, expand and collapse, merging replies), `try_expand_selected`.
 - `tree_tests.rs`: the `TreeView` tests, `set_root` and `apply_children`.
