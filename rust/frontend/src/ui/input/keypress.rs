@@ -1,8 +1,20 @@
 //! One keypress, from the key event to the layer that takes it.
 
 use super::*;
+use std::ops::ControlFlow::{self, Break, Continue};
 use winit::event::KeyEvent;
 use winit::keyboard::ModifiersState;
+
+/// One keypress as `keyboard_input` resolved it; every layer reads it, none resolves it again.
+#[derive(Clone, Copy)]
+pub(in crate::ui) struct KeyPress<'a> {
+    pub(in crate::ui) event: &'a KeyEvent,
+    pub(in crate::ui) action: Option<Action>,
+    pub(in crate::ui) ctrl: bool,
+    pub(in crate::ui) alt: bool,
+    pub(in crate::ui) shift: bool,
+    pub(in crate::ui) super_: bool,
+}
 
 pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventLoop, modifiers: ModifiersState, event: KeyEvent, is_synthetic: bool) {
     if is_synthetic {
@@ -36,6 +48,13 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
     let context = state.help_context();
     let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
         Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
+    let key = KeyPress { event: &event, action, ctrl, alt, shift, super_ };
+    let _ = route_key(state, event_loop, key, label, context, was_destroy_pending);
+}
+
+/// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
+fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
+    let KeyPress { event, action, ctrl, alt, shift, super_ } = key;
     // The Ctrl+Q prompt owns the keyboard while it is open: it
     // reads every key before any global binding (`prompt_takes_key`).
     if let Some(NavPrompt::ConfirmQuit { keep }) = &state.nav_prompt {
@@ -49,16 +68,16 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             QuitPromptStep::Leave(i) => state.leave(event_loop, i, 0),
             QuitPromptStep::Ignore => {}
         }
-        return;
+        return Break(());
     }
     if !event.repeat && action == Some(Action::ToggleHelpDrawer) {
         if state.drawer == DrawerContent::Help { state.close_help_drawer(); }
         else { state.open_help_drawer(context); }
-        return;
+        return Break(());
     }
     if action == Some(Action::ToggleHelp) {
         tracing::debug!(repeat = event.repeat, peek = state.help.peek.is_some(), ?context, "context help requested");
-        if event.repeat { return; }
+        if event.repeat { return Break(()); }
         if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl {
             state.close_help_drawer();
         } else if let Some(peek) = state.help.peek.take() {
@@ -67,11 +86,11 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             state.help.peek = Some(help::Peek { context, started: std::time::Instant::now() });
             state.window.request_redraw();
         }
-        return;
+        return Break(());
     }
     if state.help.peek.take().is_some() {
         state.window.request_redraw();
-        if event.logical_key == Key::Named(NamedKey::Escape) { return; }
+        if event.logical_key == Key::Named(NamedKey::Escape) { return Break(()); }
     }
     // Browsing Help consumes its own input; no typed search leaks into Julia.
     if state.drawer == DrawerContent::Help && state.focus == PaneFocus::Repl
@@ -112,7 +131,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             _ => {}
         }
         state.window.request_redraw();
-        return;
+        return Break(());
     }
 
     tracing::info!(
@@ -144,7 +163,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
         state.reconnect_now.notify_waiters();
         state.last_key = Some(label);
         state.window.request_redraw();
-        return;
+        return Break(());
     }
     // F5 handled above (manual reconnect). F11: borderless
     // fullscreen toggle — standard cross-platform key for
@@ -173,7 +192,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
         }
         state.last_key = Some(label);
         state.window.request_redraw();
-        return;
+        return Break(());
     }
     // Ctrl+= / Ctrl+- / Ctrl+0: global font scale. Intercepted
     // first so they reach this handler even in LLM focus
@@ -189,21 +208,21 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             state.persist_resume_state();
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         if action == Some(Action::FontScaleDown) {
             state.apply_text_scale(state.text_scale_mult - 0.1);
             state.persist_resume_state();
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         if action == Some(Action::FontScaleReset) {
             state.apply_text_scale(1.0);
             state.persist_resume_state();
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
     }
     // Ctrl+Arrow: spatial pane focus move (4-way grid). The
@@ -248,7 +267,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 action.expect("dir implies a resolved focus action"),
             ));
             state.window.request_redraw();
-            return;
+            return Break(());
         }
     }
     // Tab is intentionally NOT a focus switcher: it would
@@ -275,12 +294,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
         if action == Some(Action::WorkspaceCycleNext) {
             state.cycle_workspace(1, true);
             state.last_key = Some(label);
-            return;
+            return Break(());
         }
         if action == Some(Action::WorkspaceCyclePrev) {
             state.cycle_workspace(-1, true);
             state.last_key = Some(label);
-            return;
+            return Break(());
         }
     }
     // Maximise / restore the focused pane via Alt+= (maximise)
@@ -298,7 +317,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             state.maximized = true;
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         if state.maximized
             && action == Some(Action::RestoreLayout)
@@ -306,7 +325,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             state.maximized = false;
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         // Esc also exits wide-preview — the same "get me back"
         // gesture as un-maximize. Ordered after the maximize
@@ -328,7 +347,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             state.wide_preview = false;
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         // Wide-preview toggle (layout.wide_preview, default
         // Alt++ — the shifted neighbour of Alt+= maximize):
@@ -345,7 +364,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             }
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         // Ctrl+Shift+S: whole-window selfie to a timestamped PNG.
         // Handled here in the global-chord region so it fires from
@@ -357,7 +376,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             state.selfie_pending = Some(selfie_path());
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
         // Ctrl+J: toggle the REPL drawer (ADR 0014 layout
         // rework). VS Code's panel-toggle convention; reads
@@ -432,7 +451,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             }
             state.last_key = Some(label);
             state.window.request_redraw();
-            return;
+            return Break(());
         }
     }
     // Alt+Up / Alt+Down: fine-grained one-row scroll in the
@@ -447,24 +466,24 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             (PaneFocus::Repl, Some(Action::ScrollLineUp)) => {
                 state.repl_scroll = state.repl_scroll.saturating_add(row_step as u16);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             (PaneFocus::Repl, Some(Action::ScrollLineDown)) => {
                 state.repl_scroll = state.repl_scroll.saturating_sub(row_step as u16);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             (PaneFocus::Preview, Some(Action::ScrollLineUp)) => {
                 state.preview_scroll =
                     state.preview_scroll.saturating_sub(row_step as u16);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             (PaneFocus::Preview, Some(Action::ScrollLineDown)) => {
                 state.preview_scroll =
                     state.preview_scroll.saturating_add(row_step as u16);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             _ => {}
         }
@@ -484,9 +503,9 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
     {
         let step = state.preview_md.body_em().max(8.0);
         match action {
-            Some(Action::TableLeft) => { state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0); state.window.request_redraw(); return; }
-            Some(Action::TableRight) => { state.md_table_scroll_px += step; state.window.request_redraw(); return; }
-            Some(Action::TableReset) => { state.md_table_scroll_px = 0.0; state.window.request_redraw(); return; }
+            Some(Action::TableLeft) => { state.md_table_scroll_px = (state.md_table_scroll_px - step).max(0.0); state.window.request_redraw(); return Break(()); }
+            Some(Action::TableRight) => { state.md_table_scroll_px += step; state.window.request_redraw(); return Break(()); }
+            Some(Action::TableReset) => { state.md_table_scroll_px = 0.0; state.window.request_redraw(); return Break(()); }
             _ => {}
         }
     }
@@ -531,19 +550,19 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     && action == Some(Action::SessionCreateCodex)
                 {
                     state.picker_confirm_selected("codex");
-                    return;
+                    return Break(());
                 }
                 if !event.repeat
                     && action == Some(Action::SessionCreateBare)
                 {
                     state.picker_confirm_selected("none");
-                    return;
+                    return Break(());
                 }
                 if !event.repeat
                     && action == Some(Action::SessionCreate)
                 {
                     state.picker_confirm_selected("claude");
-                    return;
+                    return Break(());
                 }
                 // Per-session accounts (owner-simplified brief,
                 // 2026-09-15): Tab cycles the account choice.
@@ -553,33 +572,33 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     && action == Some(Action::SessionAccountNext)
                 {
                     state.picker_cycle_account();
-                    return;
+                    return Break(());
                 }
                 match action {
                     Some(Action::NavDown) => {
                         state.picker_cursor_down();
-                        return;
+                        return Break(());
                     }
                     Some(Action::NavUp) => {
                         state.picker_cursor_up();
-                        return;
+                        return Break(());
                     }
                     Some(Action::NavExpand) if !event.repeat => {
                         state.picker_drill_in();
-                        return;
+                        return Break(());
                     }
                     Some(Action::NavCollapse | Action::PickerParent)
                         if !event.repeat =>
                     {
                         state.picker_ascend();
-                        return;
+                        return Break(());
                     }
                     Some(Action::Cancel) if !event.repeat => {
                         state.picker_cancel();
-                        return;
+                        return Break(());
                     }
                     _ => {
-                        return;
+                        return Break(());
                     }
                 }
             }
@@ -603,12 +622,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         _ if action == Some(Action::DeleteConfirm) && !event.repeat =>
                         {
                             state.confirm_delete_file();
-                            return;
+                            return Break(());
                         }
                         _ => {
                             // 'n'/'N'/Esc/any other key → cancel.
                             state.cancel_nav_prompt();
-                            return;
+                            return Break(());
                         }
                     }
                 }
@@ -623,15 +642,15 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         } else {
                             state.confirm_create_file();
                         }
-                        return;
+                        return Break(());
                     }
                     _ if action == Some(Action::Cancel) && !event.repeat => {
                         state.cancel_nav_prompt();
-                        return;
+                        return Break(());
                     }
                     Key::Named(NamedKey::Backspace) => {
                         state.nav_prompt_backspace();
-                        return;
+                        return Break(());
                     }
                     Key::Character(s) => {
                         // A character key with a modifier other
@@ -643,10 +662,10 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                                 state.nav_prompt_push_char(c);
                             }
                         }
-                        return;
+                        return Break(());
                     }
                     _ => {
-                        return;
+                        return Break(());
                     }
                 }
             }
@@ -664,7 +683,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 && action == Some(Action::Quit)
             {
                 state.request_quit(event_loop, ExitReason::QuitKey);
-                return;
+                return Break(());
             }
             // Ctrl+C: copy the cursored row's file path to the
             // OS clipboard. Only fires for `files:`-prefixed
@@ -680,7 +699,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             {
                 state.last_key = Some(label);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             // Ctrl+N: open the new-file-or-folder prompt. Files
             // mode only, and only when the cursor sits on a
@@ -696,7 +715,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             {
                 state.last_key = Some(label);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             // Ctrl+D: open the delete-confirm prompt. Files mode
             // only, and only when the cursor sits on a deletable
@@ -711,7 +730,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
             {
                 state.last_key = Some(label);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             match action {
                 Some(Action::NavDown) => {
@@ -745,7 +764,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         // cursor to that host's node (ADR
                         // 0015's relaunch flow is deleted).
                         state.pick_host_under_cursor();
-                        return;
+                        return Break(());
                     }
                     if is_enter && matches!(state.mode, Mode::Sessions) {
                         let row = state.tree.rows.get(state.tree.selected);
@@ -758,7 +777,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                                     .map(str::to_string)
                                     .unwrap_or_else(|| state.active_host.clone());
                                 state.begin_create_session(host);
-                                return;
+                                return Break(());
                             }
                             Some("session") | Some("pane") => {
                                 if let Some(session_name) =
@@ -894,10 +913,10 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 Some(Action::SessionDestroy) if !event.repeat =>
                 {
                     let Some(row) = state.tree.rows.get(state.tree.selected) else {
-                        return;
+                        return Break(());
                     };
                     if row.node.kind != "session" {
-                        return;
+                        return Break(());
                     }
                     let target_id = row
                         .node
@@ -927,7 +946,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                             "destroy: row has no workspace_id (refresh `s` and retry)"
                                 .to_string();
                         state.window.request_redraw();
-                        return;
+                        return Break(());
                     };
                     let target: WsKey = (target_host.clone(), target_id.clone());
                     if was_destroy_pending.as_ref() == Some(&target) {
@@ -1011,12 +1030,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 Some(Action::RunFresh | Action::RunCurrent) if !event.repeat =>
                 {
                     let Some(abs) = state.cursored_files_path() else {
-                        return;
+                        return Break(());
                     };
                     if !abs.ends_with(".jl") {
                         tracing::debug!(path = %abs,
                             "`r`/`R` ignored — not a .jl file");
-                        return;
+                        return Break(());
                     }
                     let fresh = action == Some(Action::RunFresh);
                     let basename = abs
@@ -1133,7 +1152,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 state.repl_scroll = 0;
                 state.status = "repl · scrollback cleared".to_string();
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             // Paste shortcut (Ctrl+V / Cmd+V / Shift+Insert):
             // read the OS clipboard. The Terminal drawer gets it
@@ -1159,7 +1178,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 }
                 state.last_key = Some(label);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             // G4: when the drawer is showing the local terminal,
             // every keystroke is forwarded to its PTY and the
@@ -1196,12 +1215,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         _ if action == Some(Action::ScrollPageUp) => {
                             scroll_drawer_ring(state, page_step);
                             state.window.request_redraw();
-                            return;
+                            return Break(());
                         }
                         _ if action == Some(Action::ScrollPageDown) => {
                             scroll_drawer_ring(state, -page_step);
                             state.window.request_redraw();
-                            return;
+                            return Break(());
                         }
                         _ => {}
                     }
@@ -1222,7 +1241,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     state.last_key = Some(label);
                     state.window.request_redraw();
                 }
-                return;
+                return Break(());
             }
             // Scrollback navigation intercepts before any
             // input-buffer arms, so PgUp/PgDn / Ctrl+u/d
@@ -1242,25 +1261,25 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     let new = (state.repl_scroll as i32 + page_step).max(0);
                     state.repl_scroll = new as u16;
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 _ if action == Some(Action::ScrollPageDown) => {
                     let new = (state.repl_scroll as i32 - page_step).max(0);
                     state.repl_scroll = new as u16;
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 _ if action == Some(Action::PreviewHalfUp) => {
                     let new = (state.repl_scroll as i32 + h / 2).max(0);
                     state.repl_scroll = new as u16;
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 _ if action == Some(Action::PreviewHalfDown) => {
                     let new = (state.repl_scroll as i32 - h / 2).max(0);
                     state.repl_scroll = new as u16;
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 // Ctrl+C interrupts a running eval (repl.interrupt).
                 // Only dispatched when something is actually in
@@ -1288,7 +1307,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     }
                     state.repl_scroll = 0;
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 // Up/Down walk REPL history. Allowed to repeat
                 // so hold-to-walk feels natural. Returns
@@ -1300,7 +1319,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         state.repl_scroll = 0;
                         state.window.request_redraw();
                     }
-                    return;
+                    return Break(());
                 }
                 _ if action == Some(Action::ReplHistoryNext) => {
                     if let Some(next) = state.history_step_forward() {
@@ -1308,7 +1327,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         state.repl_scroll = 0;
                         state.window.request_redraw();
                     }
-                    return;
+                    return Break(());
                 }
                 _ => {}
             }
@@ -1423,7 +1442,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         }
                     }
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 // Stale banner intercepts before edit keys
                 // too — r reloads from disk (discards
@@ -1476,7 +1495,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     }
                     state.rebuild_edit_preview();
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
                 // Track whether the buffer changed so we
                 // only rebuild `preview_edit` when needed.
@@ -1507,7 +1526,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                             state.maybe_fire_preview();
                         }
                         state.window.request_redraw();
-                        return;
+                        return Break(());
                     }
                     _ if action == Some(Action::EditSave) => {
                         let content = edit.full_content();
@@ -1690,7 +1709,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 let _ = buf_changed;
                 state.rebuild_edit_preview();
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             // Page transport for paginated previews (ADR 0021):
             // n/p and PgDn/PgUp re-fire preview.get for the
@@ -1738,7 +1757,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                             }
                             state.last_key = Some(label);
                             state.window.request_redraw();
-                            return;
+                            return Break(());
                         }
                     }
                 }
@@ -1890,7 +1909,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                     state.maybe_reraster_page();
                     state.last_key = Some(label);
                     state.window.request_redraw();
-                    return;
+                    return Break(());
                 }
             }
             match action {
@@ -2092,14 +2111,14 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                 state.copy_llm_selection();
                 state.last_key = Some(label);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             let is_paste_shortcut = !event.repeat && action == Some(Action::Paste);
             if is_paste_shortcut {
                 forward_clipboard_paste_to_llm(state);
                 state.last_key = Some(label);
                 state.window.request_redraw();
-                return;
+                return Break(());
             }
             // PgUp/PgDn page the REMOTE pane's scrollback from
             // the keyboard: tmux owns the ring (our vt100 ring
@@ -2159,7 +2178,7 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
                         }
                         state.last_key = Some(label);
                         state.window.request_redraw();
-                        return;
+                        return Break(());
                     }
                     // `capsule_alt_screen`: fall through to the
                     // raw-byte forward below, exactly like the
@@ -2185,4 +2204,5 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
     }
     state.last_key = Some(label);
     state.window.request_redraw();
+    Continue(())
 }
