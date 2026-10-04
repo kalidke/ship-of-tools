@@ -11,7 +11,6 @@
 mod chrome;
 mod cli;
 mod download;
-mod edit_buffer;
 mod help;
 mod keybindings;
 mod layout;
@@ -20,7 +19,6 @@ mod monitor_view;
 mod net;
 mod pages;
 mod paths;
-mod preview;
 mod selfupdate;
 use ui::persist::settings;
 use ui::persist::resume as state_persistence;
@@ -28,6 +26,8 @@ mod term;
 mod text;
 mod ui;
 use ui as gpu;
+use ui::preview;
+use ui::preview::editor::buffer as edit_buffer;
 
 use net::{dial, state, transport};
 use pages as proxy_listen;

@@ -17,6 +17,8 @@
 // `resize`; redraws after a window resize must call `resize` so the buffer
 // re-shapes against the new width.
 
+pub(crate) mod highlight;
+
 use std::collections::HashMap;
 
 use comrak::{

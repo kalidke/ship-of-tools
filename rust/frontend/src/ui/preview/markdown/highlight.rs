@@ -113,7 +113,7 @@ impl HighlightService {
         // "all keywords" and is wrong. The call also filters out
         // captures whose name isn't in our list.
         const JULIA_HIGHLIGHTS: &str =
-            include_str!("../../queries/julia-highlights.scm");
+            include_str!("../../../../queries/julia-highlights.scm");
 
         fn build(
             language: tree_sitter::Language,

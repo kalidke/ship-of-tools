@@ -10,8 +10,11 @@
 //   png.rs    — image::load_from_memory → RGBA8 → wgpu texture → quad
 //   (svg.rs, markdown.rs land in subsequent spike steps)
 
-pub mod highlight;
-pub mod markdown;
-pub mod png;
-pub mod quad;
-pub mod svg;
+pub(crate) mod image;
+pub(crate) mod markdown;
+pub(crate) mod editor;
+#[path = "../../preview/quad.rs"]
+pub(crate) mod quad;
+
+pub(crate) use image::{png, svg};
+pub(crate) use markdown::highlight;
