@@ -20,5 +20,5 @@ turns into a screen the window paints. Part of fe-ui; charter: rust/frontend/src
 - The attach-only backend exists only on Windows (`State::spawn_attach_term`).
 - The emulator owns the scrollback offset, written only on a user action (`scroll_ring`).
 - A Command chord never reaches the pty as text (`key_to_pty_bytes`; macOS delivers Cmd+letter as a plain character).
-- The shell starts the first time the drawer shows the Terminal, and a failed spawn closes the drawer
-  (`pump_drawer_terminals`).
+- Off the Windows attach-only backend, the shell starts the first time the drawer shows the Terminal, and a failed
+  spawn closes the drawer (`pump_drawer_terminals`).

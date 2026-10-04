@@ -23,4 +23,4 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - A harness instance (`ephemeral`) starts neither watcher thread (`resumed`).
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
-  then capture, submit, present and the acks.
+  then the capture's staging, submit, present, the acks and the capture's write.

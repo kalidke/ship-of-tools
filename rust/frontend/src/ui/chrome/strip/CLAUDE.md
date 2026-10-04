@@ -6,7 +6,8 @@ constants and pure functions of cell sizes and labels, so the geometry is unit-t
 strip's frame, in `State` methods. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 
 ## Files
-- `mod.rs`: declares the files and re-exports their items to the window code in `ui/`.
+- `mod.rs`: declares the files; re-exports `band`, `hull` and `items` to the window code in `ui/`. `draw` is only
+  declared.
 - `items.rs`: `StripItem`, label truncation and badging, item widths, cursor positions, gaps and divider offsets.
 - `hull.rs`: `StripMark` and its kinds, the hull's constants and vertical placement, scroll culling, box-name ink.
 - `band.rs`: the band's reserved rows, the scroll target and animation constants, and `session_strip_lines`.

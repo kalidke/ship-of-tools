@@ -6,7 +6,9 @@ closure paints from it (`ChromeView`) and how the result becomes pixels (`pixels
 rust/frontend/src/ui/CLAUDE.md.
 
 ## Files
-- `mod.rs`: declares the files and re-exports their items to the window code in `ui/`.
+- `mod.rs`: declares the files; re-exports `panes`, `spill`, `status`, `strip`, `theme` and `draw_wireframe` to the
+  window code in `ui/`. `draw`, `pixels`, `nav_body`, `view` and `replies` are only declared; `ChromeView` and `NavRow`
+  are imported by name.
 - `panes.rs`: `PaneFocus`, `DrawerContent`, `SpatialDir`, `PaneRects`, `maximize_slot`, and `State::set_focus`.
 - `layout.rs`: pane geometry for a layout preset (`LayoutGeom`) and `draw_wireframe`, which paints the box-drawing frame.
 - `status.rs`: status wrapping, the nav pane's pinned rows, the clock, battery and version labels, pane titles.
@@ -33,4 +35,4 @@ rows say; `layout.rs` for where the panes sit; `draw_chrome` in draw.rs for what
 - While a leave line shows, nothing is maximized (`maximize_slot`).
 - The nav pane's pinned rows are kept whole or dropped whole (`nav_pinned_rows`).
 - The chrome draw reads only its `ChromeView`, the ratatui frame and the tree rows, and writes only the view's outs
-  (`ChromeView::paint`).
+  and `nav_spill_segs_out` (`ChromeView::paint`).

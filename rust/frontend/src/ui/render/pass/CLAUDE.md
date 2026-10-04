@@ -17,7 +17,7 @@ image is placed, zoomed or clipped; `paint_chrome_text` and `paint_overlays` in 
 
 ## Rules
 - A draw that scissors to a pane resets the scissor to the whole surface before it returns, so no later draw is clipped
-  (`paint_preview_png`, `paint_figure_bands`, `paint_media_blocks`).
+  (`paint_preview_png`, `paint_figure_bands`, `paint_repl_figures`, `paint_media_blocks`).
 - A batch of rects is one `Quad::render_many`; a per-rect `render` loop would leave only the last rect in the quad's
   vertex buffer (`paint_code_panels`, `paint_code_borders`, `paint_strike_lines`).
 - The image view's ROI is recomputed every frame from the pane geometry, and cleared when no image shows
