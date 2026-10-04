@@ -1,0 +1,35 @@
+# src: the sot-comm installer package, ShipTools (distribution)
+
+`ShipTools` installs and updates sot-comm: it copies the repo's `comm/` tree to the runtime home, each CLI's
+adapter to that CLI's folders, and wires the Claude work-state hooks into settings.json. The files are flat in
+src/ on purpose: `COMM_SRC` and `_repo_commit` find the repo from `@__DIR__`. Part of distribution; charter:
+scripts/CLAUDE.md.
+
+## Files
+- `ShipTools.jl`: the module, the installer overview comment, and the `include` order.
+- `sources.jl`: `COMM_SRC`, the repo's comm/ folder.
+- `homes.jl`: the resolved runtime homes (`comm_home`, `codex_home`, `claude_home`).
+- `publish.jl`: atomic publish (`install_file`), staging names, marker reaping, the skill-install stage collector.
+- `comm_bin.jl`: the shipped bin names, the install record and its pruning, `COMM_DEPRECATED_BIN`.
+- `skills.jl`: the shared skills installer, the orphan sweep, `COMM_DEPRECATED_SKILLS`.
+- `launchers.jl`: launcher scripts into ~/.local/bin, `COMM_DEPRECATED_LAUNCHERS`.
+- `claude_hooks.jl`: account discovery and the settings.json hook merge and stale-hook removal.
+- `codex.jl`: the CODEX_HOME profile check, the JSON top-level key guard, the marketplace payloads.
+- `adapters.jl`: `_install_adapter`, the Claude and Codex arms.
+- `install.jl`: `COMM_PROTOCOL_VERSION`, `_repo_commit`, `install_comm`, `update_comm`.
+
+## Start here
+`install_comm` in install.jl, then `_install_adapter` in adapters.jl.
+
+## Rules
+- Publish only through `install_file` (copy, then rename), never `cp` or `mv` with `force=true`.
+- Prune only names recorded or listed (`_prune_comm_bin`).
+- Remove `VERSION` first and write it last (`install_comm`).
+- Never drop a hook that is not ours, and never create a settings.json under ~/.claude-auth
+  (`_claude_settings_targets`, `_remove_stale_comm_hooks!`).
+- Retire a file through `COMM_DEPRECATED_*` in the same commit.
+- `_is_account_name` matches the daemon's `is_account_name` character for character.
+- The skill-install path holds at most seven definitions (host tag, staging name, liveness probe, marker reaper,
+  stage collector, orphan sweep, shared skills installer). An eighth comes only by deleting one.
+- `_pid_alive` returns true off Unix, so nothing is reaped there. Never give it an age threshold.
+- The tests are in test/.
