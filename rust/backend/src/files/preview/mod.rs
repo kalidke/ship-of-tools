@@ -67,26 +67,11 @@ const PREVIEW_DOWNSAMPLE_TRIGGER: usize = 20 * 1024 * 1024;
 /// rather than OOM the daemon; a multi-gigapixel monster wants tiled decode.
 const MAX_PREVIEW_DECODE_ALLOC: u64 = 4 * 1024 * 1024 * 1024;
 
-/// Streaming-decode media (video) whose preview plugin produces a bounded
-/// payload — a poster frame + metadata — regardless of input size, because it
-/// shells out to ffmpeg rather than reading the file into the payload. Used to
-/// exempt these from the input-size gate in `try_plugin_preview`. Keep in sync
-/// with `ShipToolsVideoFile`'s `VIDEO_EXTENSIONS`.
-fn is_streaming_media(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
-        Some("mp4" | "webm" | "mov" | "mkv" | "m4v")
-    )
-}
-
 /// Extensions whose preview plugin produces BOUNDED output regardless of input
 /// size, so the `PREVIEW_BYTE_CAP` input gate in `try_plugin_preview` must NOT
 /// skip them. The gate proxies "big input → big output", which is FALSE here:
 ///
-/// - **video** (`is_streaming_media`): ffmpeg poster + metadata, never reads the
+/// - **video** (`is_servable_video`): ffmpeg poster + metadata, never reads the
 ///   container into the payload.
 /// - **HDF5** (`.h5`/`.hdf5`/`.hdf`): the `HDF5Preview` plugin walks group/dataset
 ///   *metadata only* (names, shapes, dtypes, attrs) and never reads dataset
@@ -98,7 +83,7 @@ fn is_streaming_media(path: &std::path::Path) -> bool {
 /// per-FileType whether output is bounded, instead of duplicating extension
 /// knowledge here — but that's a bigger change than this urgent fix warrants.)
 fn is_bounded_output_plugin(path: &std::path::Path) -> bool {
-    if is_streaming_media(path) {
+    if crate::pages::video::is_servable_video(path) {
         return true;
     }
     matches!(
@@ -563,7 +548,7 @@ fn read_bytes_preview(path: &std::path::Path, node_id: &str) -> std::io::Result<
     // the ShipToolsVideoFile kernel plugin isn't loaded (or the kernel is down).
     // Don't ship the raw container (the frontend can't render it and it may be
     // huge); surface why instead of a silent blank pane.
-    if is_streaming_media(path) {
+    if crate::pages::video::is_servable_video(path) {
         tracing::warn!(%node_id, "video reached bytes-level reader — video plugin not loaded");
         let msg = "# video preview unavailable\n\nNo plugin decoded this video — the `ShipToolsVideoFile` kernel plugin isn't loaded (or the kernel is down). Ensure the kernel env has it (`Pkg.develop(path=\"julia/plugins/video-file\")`) and that `ffmpeg`/`ffprobe` are on PATH.\n".to_string();
         return Ok(("text/markdown".to_string(), msg.into_bytes()));

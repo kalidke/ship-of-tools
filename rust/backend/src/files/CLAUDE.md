@@ -30,6 +30,7 @@ Per workspace row (built in `rows/workspace.rs`):
   (`file.preview`). `tree_ops.rs` serves `tree.root`, `tree.children`, `nav.toggle_hidden` and `directory.list`;
   `concept_ops.rs` serves `concept.*`; `io_ops.rs` serves `file.read`, `file.write`, `file.delete` and `dir.create`;
   `transfer.rs` serves `file.download` and `file.upload`. `server/dispatch.rs` calls them.
+- `preview/` takes "is this a video" from pages/video.rs's `is_servable_video`.
 - `rows/workspace.rs` builds the three per row; `server/mod.rs` creates the `preview.changed` bus and `server/events.rs`
   filters it per connection (`preview_changed_visible`).
 - Confinement is also written in `confine.rs` (`path_within_root`) and again beside it

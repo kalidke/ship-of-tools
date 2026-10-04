@@ -35,6 +35,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   `handle_proxy_connect`.
 - rows/ops/lane_bridge.rs and lifecycle/lease.rs call `reject`, and lane_bridge.rs calls `pipe_bidirectional`, both defined in server/pipe.rs; proxy.rs imports the same two.
 - The REPL supervisor (sidecars/repl/) records and revokes browser ports (`record_browser_port`, `revoke_browser_ports`).
+- files/preview asks `is_servable_video` whether a path is a video (its size-gate exemption and the bytes reader's note).
 - clients.rs calls `remove_root` when a connection disconnects.
 - The window's page proxy (rust/frontend/src/pages.rs) dials `proxy.connect`.
 
