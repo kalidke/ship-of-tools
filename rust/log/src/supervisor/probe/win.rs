@@ -4,8 +4,7 @@
 //! over an actual named pipe and spawned child, and [`SpawnedChild`], the
 //! owned, not-yet-challenged child handle Stage A's A1-A3 observations are
 //! about. No decision logic — just the mechanical OS calls the classifier
-//! drives through `ProbeOps`. A `probe_unix.rs` counterpart is a later
-//! L1-unix unit.
+//! drives through `ProbeOps`.
 
 #![cfg(windows)]
 
@@ -28,11 +27,6 @@ pub struct SpawnedChild {
 }
 
 impl SpawnedChild {
-    // L1-unix LU3c: `RealProbeOps` has had a real in-crate consumer
-    // (`supervisor.rs`) since U2 landed -- the `#[allow(dead_code)]` this
-    // constructor and `RealProbeOps` itself carried, pending that
-    // consumer, is stale and removed on both (this lane gives
-    // `probe_unix::RealProbeOps` the identical real consumer on Linux).
     fn from_child(child: std::process::Child) -> Self {
         use std::os::windows::io::IntoRawHandle;
         // `into_raw_handle` consumes `child`, transferring ownership of
@@ -61,7 +55,7 @@ impl SpawnedChild {
 
     /// This CHILD's own `(pid, creation time)`, read directly off the
     /// handle THIS episode spawned — independent of anything a challenge
-    /// over its pipe observed (Codex review round 1, finding 10). A4's
+    /// over its pipe observed. A4's
     /// own transition ("alive, within cutoff, challenge proves it") never
     /// compared the challenged server's identity against the child that
     /// was actually spawned: a stale, orphaned capsule left over from a
@@ -95,7 +89,7 @@ impl SpawnedChild {
 /// behavior, so this is what's available today (a later unit may want a
 /// non-retrying variant for the classifier's own 500ms-spaced probe loop).
 ///
-/// # `pub(crate)`, not `pub` (U1a Codex round-1, Blocker 2)
+/// # `pub(crate)`, not `pub`
 ///
 /// An earlier version of this type was `pub`, which made the UNCHALLENGED
 /// connection it hands back through `ConnectOutcome::Connected` a public
@@ -114,10 +108,9 @@ impl SpawnedChild {
 /// trait (`ProbeOps`) and the scripted implementation (`ScriptedProbeOps`,
 /// already gated behind `cfg(test)`/`test-support`) at their current
 /// visibility is unaffected: neither one hands back a real, unauthenticated
-/// `PipeClient` to anything outside this crate. L1-unix LU3c: `sot-capsule
+/// `PipeClient` to anything outside this crate. `sot-capsule
 /// supervise` (`supervisor.rs`) is that consumer, on Windows exactly as
-/// on Linux — the `#[allow(dead_code)]` this type carried pending it is
-/// stale and removed.
+/// on Linux.
 pub(crate) struct RealProbeOps;
 
 impl ProbeOps for RealProbeOps {

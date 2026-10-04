@@ -3,7 +3,7 @@
 //! fence"). `fsutil` itself is a private module — invisible from ANY
 //! other crate, including a future `sot-capsule` binary target, which
 //! Cargo treats as a SEPARATE crate from this package's library even
-//! though they share one `Cargo.toml` (ADR 0041 U0 round-1 blocker 3: a
+//! though they share one `Cargo.toml` (a
 //! `pub fn` inside a private module is unreachable from outside the
 //! defining crate no matter how public the function itself is) — so this
 //! is the one place outside `fsutil` that ANY external caller may take
@@ -74,22 +74,9 @@ mod tests {
         }
     }
 
-    /// The real concurrent SAME-PROCESS race (round-1 required test;
-    /// restored in round 3 with a sound observation after a round-2
-    /// false positive).
+    /// The real concurrent SAME-PROCESS race.
     ///
-    /// ROUND-3 CORRECTED DIAGNOSIS: the round-2 windows-latest CI failure
-    /// was NOT a Windows primitive gap (that claim is refuted — Microsoft's
-    /// own `LockFileEx` documentation, the normative MS-FSA conflict
-    /// algorithm, and Rust std's own Windows implementation all describe
-    /// unconditional conflict checking, no same-process exception; an
-    /// independent `fsutil` audit found no false-`Ok` path either). It was
-    /// a genuine bug in THAT test's own observation: it moved the holder
-    /// COUNT's decrement to after `drop(guard)`, so a fully correct
-    /// handoff — thread A releases, thread B legitimately acquires and
-    /// increments while A's decrement hasn't run yet — read as "2
-    /// concurrent holders" even though the kernel lock was NEVER granted
-    /// to two callers at once. A lifetime counter samples an interval that
+    /// A lifetime counter samples an interval that
     /// can outlive the real ownership window; it is not a valid witness.
     ///
     /// This version uses NO counter at all: every racing thread's
@@ -153,8 +140,7 @@ mod tests {
     /// shape `tests/pipe_win.rs`'s own cross-process challenge test
     /// uses).
     ///
-    /// Protocol, closing the round-3 review's two gaps in the prior
-    /// version: (1) NO-BARRIER — signal ready, then wait for the parent's
+    /// Protocol: (1) NO-BARRIER — signal ready, then wait for the parent's
     /// `go` file, so all children attempt their FIRST acquisition at
     /// genuinely the same time instead of racing sequential `CreateProcess`
     /// scheduling; (2) MARKER-REMOVED-BEFORE-DROP — the winner does not
@@ -208,8 +194,7 @@ mod tests {
         }
     }
 
-    /// The real cross-process race (round-1 required test; hardened in
-    /// round 3 per review): production-topology coverage for the ONE
+    /// The real cross-process race: production-topology coverage for the ONE
     /// guarantee this fence actually needs to provide (see
     /// `lock_supervisor`'s own doc) -- two separate OS processes, not
     /// threads. Forces genuine contention with a parent-issued start

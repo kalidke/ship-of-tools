@@ -150,7 +150,7 @@ mod tests {
         assert!(reconcile_reset(dir.path(), "op-3", &rogue, Some(&old), Some(&aside)).is_err());
 
         // Row 2: pointer ABSENT with the evidence rename PRESENT --
-        // resume from publication. Codex review round 2: the row's own
+        // resume from publication. The row's own
         // setup must actually MATERIALIZE the file it claims exists.
         std::fs::remove_file(pointer::pointer_path(dir.path())).unwrap();
         let third = uuid::Uuid::now_v7().to_string();

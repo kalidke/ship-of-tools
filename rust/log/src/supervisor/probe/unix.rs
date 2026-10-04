@@ -18,7 +18,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// F4 (Codex review round): bounds [`SpawnedChild::from_child`]'s own
+/// Bounds [`SpawnedChild::from_child`]'s own
 /// failure-path reap — matches `producer_pty::PtyProducer`'s own `Drop`
 /// bound (`REAP_BOUND`), the same shape for the same reason (a leader
 /// stuck in an uninterruptible kernel wait must never block the caller
@@ -33,9 +33,8 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// # Reaping (ADR 0043 decision 21)
 ///
 /// `SIGCHLD` is set to `SIG_DFL` at the start of `supervisor::
-/// supervise_inner` (F2, Codex review round — never merely assumed) and
-/// stays there for this whole process's life — an ignored `SIGCHLD`
-/// would auto-reap and re-open the pid-reuse window `pidfd_open` right
+/// supervise_inner` and stays there for this whole process's life — an
+/// ignored `SIGCHLD` would auto-reap and re-open the pid-reuse window `pidfd_open` right
 /// after `spawn` depends on staying closed. This type's own `pidfd` is
 /// what makes that safe: the child stays a retained zombie, its pid unrecycled, until
 /// [`Self::wait`] observes the exit and reaps it THEN — "reaps on the
@@ -151,9 +150,7 @@ impl SpawnedChild {
     }
 
     /// This CHILD's own `(pid, creation time)`, read independently of
-    /// anything a challenge over its pipe observed (Codex review round 1,
-    /// finding 10 — carried over verbatim from `probe_win::
-    /// SpawnedChild::identity`'s own doc): the same start-time identity
+    /// anything a challenge over its pipe observed: the same start-time identity
     /// `challenge_unix` reports for a PEER.
     pub fn identity(&self) -> std::io::Result<(u32, u64)> {
         Ok((self.pid as u32, self.start_ticks))

@@ -31,20 +31,15 @@ pub(in crate::supervisor) fn reconcile_journal_on_startup(state_dir: &Path) -> c
                 // after the journal record was accepted but BEFORE it
                 // ever called `end_run_over_mgmt_lane` leaves the
                 // capsule never asked to end; jumping straight to
-                // `retry_until_writer_resolved` (as an earlier version
-                // did) only waits for a writer that was never told to
+                // `retry_until_writer_resolved`
+                // only waits for a writer that was never told to
                 // go away and so never resolves. `on_closed: None` —
                 // recovery has no live connection to signal through;
                 // the journal itself carries the result for a later
-                // `query`. N3 (Codex review round 4): retried right
+                // `query`. Retried right
                 // here, in THIS worker (already bounded from OUTSIDE by
                 // RECOVERY_WATCHDOG, exactly as `spawn_end_run`'s own
-                // retry is bounded by ENDING_WATCHDOG) — an earlier
-                // version discarded a recovered `PendingWriter` outright
-                // and returned `ended=false`, so startup would go on to
-                // adopt/respawn right over a writer whose own EndRun was
-                // still genuinely outstanding, leaving the operation
-                // `Accepted` forever with nothing left to ever retry it.
+                // retry is bounded by ENDING_WATCHDOG).
                 match reissue_and_reconcile_end_run(
                     state_dir,
                     Some(&op_id),
@@ -66,7 +61,7 @@ pub(in crate::supervisor) fn reconcile_journal_on_startup(state_dir: &Path) -> c
                 reconcile_reset(state_dir, &op_id, new_voyage, old_voyage.as_deref(), aside.as_deref())?;
             }
             journal::ActiveOp::Stop => {
-                // N5 (Codex review round 3): a Stop's effect is process
+                // A Stop's effect is process
                 // exit; a crash after admission means the effect
                 // already happened. Finish it as the terminal fact it
                 // always was — loud (`?`) if that write itself fails —
@@ -90,7 +85,7 @@ pub(in crate::supervisor) fn reconcile_journal_on_startup(state_dir: &Path) -> c
 mod tests {
     use super::*;
 
-    /// N5 (Codex review round 3): a crashed authority's own
+    /// A crashed authority's own
     /// admitted-but-unfinished `Stop` is FINISHED as terminal `Stopping`
     /// by the next restart's recovery pass — loud on failure, via the
     /// bare `?` `reconcile_journal_on_startup` already propagates.

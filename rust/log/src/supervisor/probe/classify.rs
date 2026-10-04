@@ -13,7 +13,7 @@
 //! itself, so the SAME transition logic is driven scripted-only by a
 //! model test (no real OS object touched) and for real by
 //! `crate::probe_win::RealProbeOps` (Windows) / `crate::probe_unix::RealProbeOps` (Linux) — see `tests/supervisor.rs`.
-//! Portable (L1-unix LU1a): this module makes no OS call of its own —
+//! Portable: this module makes no OS call of its own —
 //! everything platform-specific is behind [`ProbeOps`] — so its unit
 //! tests (against `ScriptedProbeOps`) now run on every CI platform, not
 //! merely on Windows.
@@ -58,8 +58,7 @@ pub enum ProbeOutcome<Process> {
     /// B1: no owned spawn attempt this episode; a proven, already-live
     /// server.
     Adopted(Process),
-    /// B2/B3/B4/B6, or A4's own identity mismatch (Codex review round 1,
-    /// finding 10): a well-formed wrong answer, an access-denied connect,
+    /// B2/B3/B4/B6, or A4's own identity mismatch: a well-formed wrong answer, an access-denied connect,
     /// or a challenge that proved SOME process but not the one this
     /// episode's own spawn produced — a stale, orphaned capsule from a
     /// prior crash, still bound under the same voyage id, answering
@@ -142,8 +141,7 @@ pub fn probe_owned_spawn<O: ProbeOps>(
             ConnectOutcome::Connected(conn) => {
                 let deadline = clamped_challenge_deadline(ops.now(), readiness_cutoff);
                 if let ChallengeOutcome::Proven(process) = ops.challenge(&conn, deadline) {
-                    // A4's own identity check (Codex review round 1,
-                    // finding 10): a `Proven` challenge only proves the
+                    // A4's own identity check: a `Proven` challenge only proves the
                     // reply's pid/creation matched what the OS
                     // independently observed on THAT connection — it says
                     // nothing about whether the answering server is the
@@ -163,12 +161,7 @@ pub fn probe_owned_spawn<O: ProbeOps>(
                             // spawned child is now UNTRACKED (this
                             // function is about to return without ever
                             // handing it back) — terminate it AND CONFIRM
-                            // it actually died (Codex review round 2,
-                            // finding M8: an earlier version discarded
-                            // `kill_child`'s own failure and never waited,
-                            // so a kill that silently failed could leave
-                            // an unproven process running with nothing
-                            // left to supervise it). Reuses A3's own
+                            // it actually died. Reuses A3's own
                             // KILL+WAIT escalation — an unconfirmed kill
                             // here is exactly as severe as it is there.
                             match kill_and_wait(ops, &child, kill_wait_bound) {
@@ -371,7 +364,7 @@ mod tests {
         assert!(ops.all_exhausted());
     }
 
-    /// A4's own identity check (Codex review round 1, finding 10): a
+    /// A4's own identity check: a
     /// challenge can prove SOME process without that process being the
     /// one this episode itself spawned — a stale, orphaned capsule from a
     /// prior crash, still bound under the same voyage id, answering
@@ -388,7 +381,7 @@ mod tests {
         ops.push_spawned_identity(Ok((111, 222)));
         ops.push_proven_identity((999, 888)); // a DIFFERENT process answered
         // The untracked child must be terminated AND its death confirmed
-        // (Codex review round 2, finding M8: kill alone is not enough).
+        // (kill alone is not enough).
         ops.push_kill_child(Ok(()));
         ops.push_wait_child(WaitOutcome::Exited);
         let readiness = ops.now() + Duration::from_secs(60);
@@ -397,7 +390,7 @@ mod tests {
         assert!(ops.all_exhausted());
     }
 
-    /// Codex review round 2, finding M8: a kill/wait failure during the
+    /// A kill/wait failure during the
     /// A4 identity-mismatch cleanup is AT LEAST as severe as A3's own
     /// KILL+WAIT row (an unconfirmed kill leaves an untracked process
     /// that might still be alive) — it escalates to `KillOrWaitFailed`,

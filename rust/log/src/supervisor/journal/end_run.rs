@@ -4,7 +4,7 @@ use crate::supervisor::*;
 
 // ---------------------------------------------------------------------
 // EndRun over the voyage's own mgmt lane, and its reconciliation via the
-// leg's own durable marker (ADR 0041; Codex review round 2, B3/B4)
+// leg's own durable marker (ADR 0041)
 // ---------------------------------------------------------------------
 
 pub(in crate::supervisor) enum EndRunOutcome {
@@ -13,9 +13,7 @@ pub(in crate::supervisor) enum EndRunOutcome {
     Pending,
     /// The challenge succeeded and the shutdown request reached the
     /// process. `Ended` covers BOTH a read-back ack AND an ack whose
-    /// own write or read timed out/failed (Codex review round 3
-    /// deletion candidate, applied — a former separate `AckUnknown`
-    /// variant): every downstream caller already treated the two
+    /// own write or read timed out/failed: every downstream caller already treated the two
     /// identically (`finish_end_run_with_process`'s own wait+marker
     /// sequence doesn't care whether the shutdown was CONFIRMED
     /// acknowledged or merely PROBABLY delivered — it proves the
@@ -44,8 +42,7 @@ pub(in crate::supervisor) fn end_run_over_mgmt_lane(h: &str, voyage_id: &str, re
         ChallengeOutcome::Proven(process) => {
             let request = wire::encode_mgmt_request(&wire::MgmtRequest::Shutdown { reason: reason.to_string() })
                 .map_err(|e| err_state(format!("encoding shutdown request: {e}")))?;
-            // N7 (Codex review round 3): this write was UNBOUNDED --
-            // the exchange machinery already has a cancellable deadline
+            // The exchange machinery already has a cancellable deadline
             // primitive (`crate::supervisor_client::read_one_frame`,
             // just below, already uses it for its own read); reused
             // here rather than a second one, on the SAME "request write
@@ -58,12 +55,7 @@ pub(in crate::supervisor) fn end_run_over_mgmt_lane(h: &str, voyage_id: &str, re
             }
             // The ack itself is read for wire-protocol hygiene (drain
             // what the peer sends), but its outcome no longer branches
-            // anything — see `Ended`'s own doc above. L1-unix LU3b:
-            // `read_one_frame` moved to `supervisor_client` with
-            // `send_and_read`/`err_state` (the dependency now points
-            // server -> client-helpers, the right way round) but stays
-            // reachable here since this mechanism function is not one of
-            // the pieces this lane generalizes (LU3c's job).
+            // anything — see `Ended`'s own doc above.
             let _ = crate::supervisor_client::read_one_frame(&conn, Instant::now() + END_RUN_ACK_READ_BOUND);
             Ok(EndRunOutcome::Ended(process))
         }
@@ -85,9 +77,9 @@ enum WriterLiveness {
     Ambiguous,
 }
 
-/// N2 (Codex review round 3): pipe absence is NOT writer absence. The
+/// Pipe absence is NOT writer absence. The
 /// capsule removes the pipe NAME before its final writes, seal, and
-/// writer-fence release (`capsule_win.rs`'s own teardown order) — so a
+/// writer-fence release — so a
 /// restarted supervisor that trusted pipe-silence alone could
 /// `mark_closed`/`verify_voyage` an open chain tip while the original
 /// writer still owns the fence and can append MORE history underneath
@@ -137,7 +129,7 @@ pub(in crate::supervisor) enum EndRunReconciliation {
     /// respawn/adopt logic decides, live or recovered, identically.
     /// `journal::finish` has ALREADY been called (`Failed{record_append}`).
     PreBarrierFailed,
-    /// N3 (Codex review round 3): the writer is still `Alive`, or its
+    /// The writer is still `Alive`, or its
     /// liveness is `Ambiguous` — NEITHER `Ended` NOR `PreBarrierFailed`.
     /// The operation stays ACTIVE, untouched (no journal mutation at
     /// all) — never released, never respawned over. A live caller
@@ -186,7 +178,7 @@ pub(in crate::supervisor) fn finish_end_run_with_process(
             matches!(process.wait(KILL_WAIT_BOUND), Ok(true))
         }
     };
-    // Single-owner reaping (review round), every Unix: whichever `wait`
+    // Single-owner reaping every Unix: whichever `wait`
     // call above actually confirmed the exit (the graceful one, or the
     // terminate-then-wait fallback), `process` is never read again past
     // this point — reap it now, explicitly (see `ChallengedProcess::reap`'s
@@ -219,13 +211,10 @@ pub(in crate::supervisor) fn finish_end_run_with_process(
 /// handle at all (recovery, or the live path's Absent/Foreign/Pending/
 /// error outcomes — B4: "Foreign/Pending/mgmt errors during EndRun still
 /// run marker reconciliation"). Proves the writer is gone FIRST (B3),
-/// and — N3/N8 — can return `PendingWriter` (never releasing the hold)
+/// and can return `PendingWriter` (never releasing the hold)
 /// or, when the writer IS proven gone and `on_closed` is given, still
 /// signal `RecordClosed` through it exactly as the WITH-process path
-/// does (N8: an earlier version hardcoded `None` here for every call
-/// site, so a client's deferred EndRun reply could wait forever once
-/// this — not [`finish_end_run_with_process`] — was the path that
-/// actually closed the record).
+/// does.
 pub(in crate::supervisor) fn finish_end_run_without_process(
     state_dir: &Path,
     op_id: Option<&str>,
@@ -308,7 +297,7 @@ fn reconcile_via_marker(
 mod tests {
     use super::*;
 
-    /// N3 (Codex review round 3): a writer whose liveness cannot be
+    /// A writer whose liveness cannot be
     /// disproven (here: `writer.lock` genuinely HELD, with no pipe
     /// bound at all for this voyage — the same "pipe absent" state a
     /// real post-teardown window produces) must be `PendingWriter`,

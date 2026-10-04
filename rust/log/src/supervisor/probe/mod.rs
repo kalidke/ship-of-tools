@@ -1,5 +1,5 @@
 //! Fault-injection scaffolding for the probe classifier's own model test
-//! (a LATER unit — ADR 0041 "The probe", the Stage A/B transition table
+//! (ADR 0041 "The probe", the Stage A/B transition table
 //! under "Lifecycle"). This module ships NO decision logic and NO
 //! classifier: only a seam, behind one trait, over every kind of
 //! OS-facing operation that table consults — spawn, wait/kill on the
@@ -12,14 +12,13 @@
 //! scripted test support (`ScriptedProbeOps` and its dummy types) — the
 //! REAL implementation over actual OS objects (`RealProbeOps`,
 //! `SpawnedChild`) is necessarily platform-specific and lives in
-//! `probe_win.rs` today; a `probe_unix.rs` counterpart is a later L1-unix
-//! unit.
+//! `probe_win.rs` today.
 //!
 //! U0 SCOPE: the seam and both implementations (real and scripted). Which
 //! observation MEANS `READY`/`ABSENT`/`FOREIGN`/`PENDING`/... is the
-//! classifier's own call (a later unit) and is deliberately absent here.
+//! classifier's own call and is deliberately absent here.
 //!
-//! # Round-1 review: associated types, not concrete OS objects
+//! # Associated types, not concrete OS objects
 //!
 //! `ProbeOps` is generic over three associated types (`Conn`,
 //! `SpawnedChild`, `Process`) rather than hard-wiring `PipeClient` /
@@ -84,8 +83,7 @@ pub enum FenceProbe {
 /// mechanical observation.
 pub trait ProbeOps {
     /// A live connection — `PipeClient` for the real impl, a cheap dummy
-    /// marker for the scripted impl. No trait bound here (round-2 finding
-    /// 7): only `ProbeOps::challenge`'s REAL implementation needs
+    /// marker for the scripted impl. No trait bound here: only `ProbeOps::challenge`'s REAL implementation needs
     /// `crate::challenge::ChallengeableConnection`, and it already knows its own concrete
     /// `Conn` type, so the bound would only ever force a placeholder
     /// implementation on every OTHER impl for no reason.
@@ -125,7 +123,7 @@ pub trait ProbeOps {
     /// process.
     fn terminate(&self, process: &Self::Process) -> std::io::Result<()>;
 
-    /// A4's own identity check (Codex review round 1, finding 10): the
+    /// A4's own identity check: the
     /// OWNED child's own `(pid, creation time)`, read independently of
     /// whatever a challenge over its pipe observed. `Err` means the
     /// identity could not even be read (the handle itself failed an OS
@@ -150,8 +148,7 @@ pub trait ProbeOps {
 }
 
 // ---------------------------------------------------------------------
-// Test-only scaffolding: gated out of the production API (round-1 minor
-// finding 9). `cfg(test)` covers this crate's OWN unit tests; `feature =
+// Test-only scaffolding: gated out of the production API. `cfg(test)` covers this crate's OWN unit tests; `feature =
 // "test-support"` additionally covers a SEPARATE integration-test crate
 // in `tests/` within this same package, which can enable it via a
 // self-referential `[dev-dependencies]` entry (see Cargo.toml) — the
@@ -160,7 +157,7 @@ pub trait ProbeOps {
 // ---------------------------------------------------------------------
 
 /// A cheap placeholder connection for [`ScriptedProbeOps`] — never
-/// touches the OS, and (round-2 finding 7) never implements
+/// touches the OS, and never implements
 /// [`crate::challenge::ChallengeableConnection`] at all: only `ProbeOps::challenge`
 /// consumes that trait, and only the REAL implementation (over a real
 /// `PipeClient`) ever needs it, so requiring it of every `ProbeOps::Conn`
@@ -185,7 +182,7 @@ pub struct DummyProcess;
 
 /// Scripted `ProbeOps` for a model test to drive one row of the probe
 /// classifier's transition table at a time, touching NO real OS object —
-/// EXISTS so that test (a later unit) can force each Stage A/B
+/// EXISTS so that test can force each Stage A/B
 /// observation deterministically instead of arranging real OS races.
 /// Each queue drains in order; a call past the end of its queue panics
 /// loudly — a test that runs out of script under-specified its own
@@ -380,8 +377,7 @@ mod tests {
         assert_eq!(ops.now(), t0 + Duration::from_secs(120));
     }
 
-    /// The model-test scaffolding proof (ADR 0041 U0 round-1 required
-    /// test): every A1-A5/B0-B9 row is drivable through `ScriptedProbeOps`
+    /// The model-test scaffolding proof: every A1-A5/B0-B9 row is drivable through `ScriptedProbeOps`
     /// alone, with NO real pipe, process, or challenge anywhere, and
     /// every queue is exhausted by the end — proving the seam is total
     /// over the classifier's own transition table without shipping any
@@ -401,8 +397,7 @@ mod tests {
         ops.push_wait_child(WaitOutcome::Exited);
         assert_eq!(ops.wait_child(&child, Duration::from_secs(1)), WaitOutcome::Exited);
 
-        // A3: WAIT_FAILED, or the readiness cutoff expired -> KILL+WAIT
-        // (round-2 finding 5: BOTH halves of the row, not kill alone).
+        // A3: WAIT_FAILED, or the readiness cutoff expired -> KILL+WAIT.
         // The wait-failure half:
         ops.push_wait_child(WaitOutcome::WaitFailed);
         assert_eq!(ops.wait_child(&child, Duration::from_secs(1)), WaitOutcome::WaitFailed);

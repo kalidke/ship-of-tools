@@ -17,7 +17,7 @@
 //! anything but `Valid`; this module itself makes no such decision — it
 //! only tells the caller which case it is.
 //!
-//! Validation is BYTE-EXACT (ADR 0041 U0 round-1 finding 7): the read is
+//! Validation is BYTE-EXACT: the read is
 //! bounded to one byte past the canonical length (so an oversized file is
 //! rejected without ever loading it into memory), no whitespace is
 //! trimmed (a file wrapping a valid UUID in whitespace is exactly as
@@ -109,7 +109,7 @@ pub fn validate(state_dir: &Path) -> PointerState {
 /// canonical-UUID check this crate uses everywhere a voyage id's shape
 /// must be pinned to exactly one spelling (this pointer's own content,
 /// and `pipe_win::validate_voyage_id`'s pipe-name guard, which delegates
-/// here — ADR 0041 U0 round-1 minor finding 9: one implementation, not
+/// here — one implementation, not
 /// two that can drift). `Uuid::parse_str` alone accepts strictly more
 /// shapes (uppercase hex, the 32-hex-digit "simple" form, braced GUIDs,
 /// `urn:uuid:...`) than either caller ever accepts; round-tripping
@@ -204,7 +204,7 @@ mod tests {
         }
     }
 
-    /// Concurrent FIRST publication (round-1 required test): several
+    /// Concurrent FIRST publication: several
     /// threads racing `publish` over the SAME absent pointer must produce
     /// exactly one winner — the no-clobber rename is what arbitrates, so
     /// this proves that arbitration under REAL contention, not merely by
@@ -275,7 +275,7 @@ mod tests {
         assert!(matches!(validate(dir.path()), PointerState::Corrupt));
     }
 
-    /// Round-1 finding 7: whitespace surrounding an otherwise-valid UUID
+    /// Whitespace surrounding an otherwise-valid UUID
     /// must be rejected, not silently trimmed — the byte-exact rule and
     /// the ADR's own "empty or not canonical is CORRUPT" both demand it.
     #[test]
@@ -288,7 +288,7 @@ mod tests {
         assert!(matches!(validate(dir.path()), PointerState::Corrupt));
     }
 
-    /// Round-1 finding 7: invalid UTF-8 is malformed CONTENT (`Corrupt`),
+    /// Invalid UTF-8 is malformed CONTENT (`Corrupt`),
     /// never `OtherIo` — a corrupt byte sequence is not an operational
     /// I/O failure.
     #[test]
@@ -303,7 +303,7 @@ mod tests {
         assert!(matches!(validate(dir.path()), PointerState::Corrupt));
     }
 
-    /// Round-1 finding 7: a file over the canonical length is rejected
+    /// A file over the canonical length is rejected
     /// WITHOUT reading it in full — this test's own file is small enough
     /// to load either way, but the assertion is on the OUTCOME
     /// (`Corrupt`, never treated as a truncatable/valid prefix).

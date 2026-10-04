@@ -13,17 +13,10 @@
 //! place a state can be wrong: whichever of these two files is actually
 //! on disk.
 //!
-//! `ActiveOp` is a TAGGED enum (Codex review round 1, simplicity audit):
-//! an earlier version carried three independently-optional fields
-//! (`intended_new_voyage`, `old_voyage`, `end_run_epoch`), which admitted
-//! impossible combinations and let an `end_run` recorded with no known
-//! epoch be silently misrecovered as a bare `stop` (recovery discriminated
-//! on "which optional field is populated", and an absent `end_run_epoch`
-//! looked identical to a `stop`'s own all-`None` shape). One tag, one
-//! shape per op, no combination to get wrong.
+//! `ActiveOp` is a TAGGED enum. One tag, one shape per op, no
+//! combination to get wrong.
 //!
-//! # `<key>` is `sha256_hex(operation_id)`, not the id itself (Codex
-//! review round 2, finding M7)
+//! # `<key>` is `sha256_hex(operation_id)`, not the id itself
 //!
 //! An earlier version filed records under the WIRE-VALIDATED operation
 //! id directly (charset-restricted, ≤64 bytes, `.`/`..` rejected at
@@ -41,7 +34,7 @@
 //! Wire-level validation is unchanged and unrelated — it protects the
 //! PROTOCOL's own id shape, not this module's file-naming scheme.
 //!
-//! # No schema migration (Codex review round 2, finding M6)
+//! # No schema migration
 //!
 //! This journal format has never shipped before this branch merged — no
 //! `state_dir` created by an earlier build can contain one of these
@@ -54,9 +47,7 @@
 //! Portable (no OS-specific code): reuses [`crate::fsutil::publish_noreplace`],
 //! which already has both platform arms, like `pointer.rs`/`rollout.rs`.
 //!
-//! Single-writer by construction (Codex-anticipated simplification, named
-//! so a reviewer does not go looking for arbitration logic that would
-//! otherwise seem missing): every write here happens only while the
+//! Single-writer by construction: every write here happens only while the
 //! caller holds `supervisor.lock` — ADR 0041's "ONE AUTHORITY" — so two
 //! processes never race a write to this journal. Durability against a
 //! CRASH mid-write is the property this module provides; there is no
@@ -80,9 +71,8 @@ const JOURNAL_DIR_NAME: &str = "supervisor-journal";
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// A journal record file is a small, fixed-shape JSON document — never
-/// legitimately large. Bounds the read BEFORE parsing (Codex review
-/// round 2, finding M5), so a corrupted or maliciously large file fails
-/// fast on size alone rather than being loaded in full first.
+/// legitimately large. Bounds the read BEFORE parsing, so a corrupted or
+/// maliciously large file fails fast on size alone rather than being loaded in full first.
 const MAX_JOURNAL_RECORD_BYTES: u64 = 16 * 1024;
 
 /// `sha256_hex(operation_id)` — see the module doc's own section on why
@@ -120,10 +110,7 @@ fn closed_path(state_dir: &Path, operation_id: &str) -> PathBuf {
 /// decides by comparing against [`read_active`]'s answer. `sot_log::wire`
 /// owns the canonical BYTE encoding ([`wire::canonical_supervisor_op_bytes`]);
 /// `supervisor.rs` SHA-256s those bytes into the hex string this module
-/// only stores and compares (Codex review round 1, finding 6 — an
-/// earlier version hashed `format!("{op:?}")`, Rust's `Debug` output,
-/// which carries no stability guarantee across compiler or dependency
-/// versions).
+/// only stores and compares.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveRecord {
     pub operation_id: String,
@@ -132,8 +119,7 @@ pub struct ActiveRecord {
 }
 
 impl ActiveRecord {
-    /// Semantic validation beyond "parses as JSON" (Codex review round
-    /// 2, finding M5): `digest` must be the exact shape a real SHA-256
+    /// Semantic validation beyond "parses as JSON": `digest` must be the exact shape a real SHA-256
     /// hex digest has; every voyage id must be the canonical
     /// lowercase-hyphenated UUID text [`crate::pointer::canonical_voyage_id`]
     /// requires everywhere else in this crate; `reset`'s `aside` must be
@@ -251,11 +237,7 @@ pub enum ActiveOp {
 /// `record_closed` is likewise not a member — it is the SEPARATE,
 /// INTERMEDIATE [`mark_closed`]/[`is_closed`] milestone `end_run` alone
 /// passes through on its way to `record_verified` or `failed`, never
-/// itself an operation's LAST word (Codex review round 1, simplicity
-/// audit: an earlier version's `RecordClosed` terminal variant duplicated
-/// that milestone and was reachable only through an invalid
-/// "pipe-absent, fabricate success" shortcut this crate no longer takes —
-/// see `supervisor.rs`'s own EndRun reconciliation). `refused` is
+/// itself an operation's LAST word. `refused` is
 /// likewise deleted: every wire-level refusal (`stale_voyage`,
 /// `id_conflict`) is minted BEFORE the journal is ever touched (ADR:
 /// "with NO MUTATION"), so no durable record has ever needed this shape.
@@ -277,7 +259,7 @@ pub enum TerminalRecord {
 /// a residue directory that was never durably anchored by an EARLIER,
 /// crashed first call. Without this, the very first `begin` under a
 /// fresh state-dir can lose the entire journal directory across a crash
-/// (Codex review finding 5) — undoing "`operation_id` is durable for
+/// — undoing "`operation_id` is durable for
 /// MUTATING ops only" at its own root.
 pub fn ensure_dir(state_dir: &Path) -> Result<()> {
     let dir = journal_dir(state_dir);
@@ -323,10 +305,7 @@ pub fn begin(state_dir: &Path, operation_id: &str, record: &ActiveRecord) -> Res
 /// `begin` already created the journal directory, but `finish` had no
 /// business trusting that: it is a public, independently callable
 /// function, and a bare `std::fs::File::create` against a temp name under
-/// a directory that does not yet exist fails PATH-not-FOUND on Windows
-/// (the real cause of a CI failure once diagnosed as AV-transient — Codex
-/// review round 1, CI finding (a) — not a retry-worthy timing window at
-/// all, but a genuinely missing directory).
+/// a directory that does not yet exist fails PATH-not-FOUND on Windows.
 pub fn finish(state_dir: &Path, operation_id: &str, record: &TerminalRecord) -> Result<()> {
     ensure_dir(state_dir)?;
     let target = terminal_path(state_dir, operation_id);
@@ -365,11 +344,9 @@ pub fn mark_closed(state_dir: &Path, operation_id: &str) -> Result<()> {
     match publish_json(&journal_dir(state_dir), &closed_path(state_dir, operation_id), &ClosedMarker {}) {
         Ok(()) => Ok(()),
         Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // Codex review round 3, N11/M5: `AlreadyExists` alone does
-            // NOT prove a valid prior close -- a directory or corrupt
-            // file at this path races `publish_noreplace` into this
-            // SAME branch, and until now that made `mark_closed` treat
-            // it as a successful idempotent no-op regardless. Validate
+            // `AlreadyExists` alone does NOT prove a valid prior close --
+            // a directory or corrupt file at this path races
+            // `publish_noreplace` into this SAME branch. Validate
             // the pre-existing target exactly as `is_closed` does
             // (`read_json`'s own regular-file + size-cap + schema +
             // parse checks) before trusting this collision; a genuinely
@@ -389,17 +366,14 @@ pub fn mark_closed(state_dir: &Path, operation_id: &str) -> Result<()> {
 }
 
 /// The `.closed` file's own content — an empty, versioned record like
-/// every other journal file, not a bare "file exists" convention (Codex
-/// review round 2, finding M5: a directory, or any other filesystem
-/// entry, used to count as closed because [`is_closed`] only ever
-/// checked `metadata` — a regular, PARSEABLE file is now required).
+/// every other journal file, not a bare "file exists" convention (a
+/// regular, PARSEABLE file is now required).
 #[derive(Serialize, Deserialize)]
 struct ClosedMarker {}
 
 /// `true` iff [`mark_closed`] has been called for `operation_id`. A
 /// present-but-unparseable or non-file `.closed` entry is a loud `Err`,
-/// never silently treated as "not yet closed" (Codex review round 2,
-/// finding M5).
+/// never silently treated as "not yet closed".
 pub fn is_closed(state_dir: &Path, operation_id: &str) -> Result<bool> {
     Ok(read_json::<ClosedMarker>(&closed_path(state_dir, operation_id))?.is_some())
 }
@@ -463,7 +437,7 @@ pub fn read_active(state_dir: &Path, operation_id: &str) -> Result<Option<Active
 /// (this module stores neither), per the ADR: "the COMMAND reply arrives
 /// at `record_closed`, and `record_verified` follows through `query`".
 /// A PRESENT but unparseable terminal file is a loud `Err`, never
-/// silently treated as absent (Codex review finding 5) — the same
+/// silently treated as absent — the same
 /// "malformed journal → loud stop" rule [`active_operations`] itself
 /// enforces.
 pub fn read_terminal(state_dir: &Path, operation_id: &str) -> Result<Option<TerminalRecord>> {
@@ -477,8 +451,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         Err(e) => return Err(e.into()),
     };
     // A non-regular-file entry (a directory, in practice) at a journal
-    // path is corruption, not "absent" (Codex review round 2, finding
-    // M5) -- `std::fs::read` would itself error opening a directory on
+    // path is corruption, not "absent" -- `std::fs::read` would itself error opening a directory on
     // most platforms, but naming the actual condition is clearer than
     // whatever generic I/O message that produces.
     if !meta.is_file() {
@@ -509,8 +482,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 /// one — ADR 0041's "reconciles every ACTIVE journal entry against the
 /// world", which the authority runs FIRST: under `supervisor.lock`,
 /// before pointer discovery, before start-mode authorization, and before
-/// admitting any new command. "No valid terminal one" is deliberate
-/// (Codex review finding 5): this reads and PARSES the terminal file via
+/// admitting any new command. "No valid terminal one" is deliberate:
+/// this reads and PARSES the terminal file via
 /// [`read_terminal`] rather than a bare existence check, so a malformed
 /// terminal file is this function's own loud `Err` — never silently
 /// treated as either "terminal, skip it" or "no terminal yet, still
@@ -519,9 +492,8 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 ///
 /// Recovers each id from the `.active` record's OWN `operation_id` field
 /// (the filename is a hash — see the module doc), and refuses a filename
-/// whose key does not match that field's own hash as corruption (Codex
-/// review round 2, finding M7) — never silently trusted or silently
-/// skipped.
+/// whose key does not match that field's own hash as corruption — never
+/// silently trusted or silently skipped.
 pub fn active_operations(state_dir: &Path) -> Result<Vec<String>> {
     let dir = journal_dir(state_dir);
     let mut out = Vec::new();

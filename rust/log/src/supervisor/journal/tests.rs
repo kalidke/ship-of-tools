@@ -43,9 +43,7 @@ fn unknown_operation_reads_as_none_for_both_files() {
 }
 
 /// An `end_run` recorded with NO known epoch is still, structurally,
-/// an `end_run` — never recoverable as a bare `stop` the way three
-/// independently-optional fields used to allow (Codex review
-/// simplicity audit).
+/// an `end_run` — never recoverable as a bare `stop`.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn an_epoch_less_end_run_is_never_shaped_like_a_stop() {
@@ -98,10 +96,8 @@ fn finish_then_read_terminal_round_trips_and_leaves_the_id_out_of_active_operati
 /// terminal fact without ever journaling an `.active` record for the
 /// SAME id first (`supervisor.rs`'s own `reconcile_reset`, resuming a
 /// reset purely from the pointer's own on-disk state). Regression for
-/// a real bug (Codex review round 1, CI failure (a)): `finish` used to
-/// skip `ensure_dir`, so this exact call failed `PATH_NOT_FOUND` on
-/// Windows — misdiagnosed as an AV-scan transient before the missing
-/// `create_dir_all` was found.
+/// a real bug: `finish` used to skip `ensure_dir`, so this exact call
+/// failed `PATH_NOT_FOUND` on Windows.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn finish_creates_the_journal_directory_with_no_prior_begin() {
@@ -148,7 +144,7 @@ fn active_operations_on_a_never_touched_state_dir_is_empty() {
     assert!(active_operations(dir.path()).unwrap().is_empty());
 }
 
-/// Codex review round 1 finding 5 / round 2 finding M5: a malformed
+/// A malformed
 /// `.terminal` file must be a loud stop for BOTH `read_terminal`
 /// directly and `active_operations`' own scan — never silently
 /// treated as "no terminal, still active" or "terminal, skip it".
@@ -238,7 +234,7 @@ fn ensure_dir_is_idempotent_and_safe_to_call_repeatedly() {
     assert!(journal_dir(dir.path()).is_dir());
 }
 
-// --- Codex review round 2, finding M5: semantic validation ---
+// --- semantic validation ---
 
 #[cfg(any(target_os = "linux", windows))]
 #[test]
@@ -286,7 +282,7 @@ fn a_reset_with_old_voyage_but_no_aside_is_refused() {
 
 /// A `.closed` marker must be a regular, parseable file — a
 /// directory sitting at the same path (however that got there) must
-/// never silently count as closed (Codex review round 2, finding M5).
+/// never silently count as closed.
 #[test]
 fn a_directory_at_the_closed_path_is_a_loud_error_not_silently_closed() {
     let dir = tempfile::tempdir().unwrap();
@@ -294,8 +290,7 @@ fn a_directory_at_the_closed_path_is_a_loud_error_not_silently_closed() {
     assert!(is_closed(dir.path(), "op-1").is_err());
 }
 
-/// Injective, tamper-evident filenames (Codex review round 2, finding
-/// M7): the file key is the operation id's own hash, not the id
+/// Injective, tamper-evident filenames: the file key is the operation id's own hash, not the id
 /// itself, so Windows case-folding or reserved device names never
 /// alias two distinct ids to the same journal object.
 #[cfg(any(target_os = "linux", windows))]
@@ -326,7 +321,7 @@ fn a_journal_file_with_an_unrecognized_schema_version_is_a_loud_error() {
     assert!(read_active(dir.path(), "op-1").is_err());
 }
 
-/// Codex review round 3, N11/M5: `mark_closed`'s `AlreadyExists`
+/// `mark_closed`'s `AlreadyExists`
 /// branch used to trust the collision blindly — a DIRECTORY at the
 /// `.closed` path (which `publish_noreplace` also refuses with
 /// `AlreadyExists`, same as a pre-existing file) would be silently
