@@ -4,6 +4,7 @@
 
 mod durable;
 pub mod state_dir;
+mod volume;
 pub mod winhandle;
 
 #[cfg(windows)]
@@ -127,3 +128,4 @@ mod tests {
 }
 
 pub use durable::*;
+pub use volume::*;
