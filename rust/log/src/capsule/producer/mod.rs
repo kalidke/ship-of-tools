@@ -36,6 +36,11 @@ use crate::Result;
 use std::io::{Read, Write};
 use std::time::Duration;
 
+pub mod conpty;
+pub mod pty;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod host_handshake;
+
 /// A producer's own raw exit status (ADR 0043 decision 13). Windows
 /// always yields `Code` and keeps the raw DWORD unsigned end-to-end (a
 /// high-bit NTSTATUS is never sign-flipped — see

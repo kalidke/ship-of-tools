@@ -18,18 +18,20 @@ pub mod capsule;
 // own nine call sites into whatever OS primitive runs the child) plus
 // `ExitStatus`/`ParentLease` -- platform-neutral, ungated like
 // `transport`/`challenge`.
-pub mod producer;
+pub use capsule::producer;
 // ADR 0043 "Decisions for LU2": `impl Producer for ConptyProducer`, the
 // Windows implementation -- self-gated (`#![cfg(windows)]`), matching
 // `conpty`/`capsule_win` before it. The Unix twin is `producer_pty`,
 // just below.
-pub mod producer_conpty;
+#[cfg(windows)]
+pub use capsule::producer::conpty::producer as producer_conpty;
 // ADR 0043 "Decisions for LU2" LU2b: `impl Producer for PtyProducer`, the
 // Unix implementation -- a bare `openpty` fd plus a process-group kill
 // domain, self-gated (`#![cfg(unix)]`). Replaces the Linux `run` arm's
 // former, separate second writer loop (deleted with this lane) as the
 // Linux `run` arm's producer.
-pub mod producer_pty;
+#[cfg(unix)]
+pub use capsule::producer::pty as producer_pty;
 // ADR 0041 step 6, unit U0: the same-connection challenge's
 // platform-neutral core (the outcome vocabulary, the connection trait,
 // the wire half). L1-unix LU1a: ungated -- see the module's own doc.
@@ -73,7 +75,8 @@ pub use lane::client;
 // tests now run on every platform, not merely Windows.
 pub mod classify;
 pub mod claude;
-pub mod conpty;
+#[cfg(windows)]
+pub use capsule::producer::conpty;
 // L1-unix, unit LU0: the platform-neutral transport contract (hoisted out
 // of `capsule_win`/`pipe_win`) -- deliberately NOT cfg-gated, unlike its
 // siblings below: `pipe_win`/`pipe_transport` are the Windows
@@ -135,8 +138,7 @@ pub mod probe_macos;
 // for these now-private items (the only real caller, capsule_win.rs, is
 // windows-only): `cfg_attr` suppresses the resulting dead_code warning
 // there specifically, rather than losing it crate-wide or windows-only.
-#[cfg_attr(not(windows), allow(dead_code))]
-mod host_handshake;
+use capsule::producer::host_handshake;
 // ADR 0041 step 6, unit U0 round-1: the three-state deadline race
 // `challenge::exchange_identity`'s bounded body uses. Portable -- no OS
 // dependency at all -- so its own tests run everywhere, not merely on

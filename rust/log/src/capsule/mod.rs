@@ -187,6 +187,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod frame;
 mod output;
+pub mod producer;
 mod writer_loop;
 use frame::*;
 use output::*;

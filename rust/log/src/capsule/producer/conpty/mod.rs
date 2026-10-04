@@ -46,6 +46,8 @@ use windows_sys::Win32::System::Threading::{
     PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTUPINFOEXW,
 };
 
+pub mod producer;
+
 /// One ConPTY/job operation that failed — a spawn STAGE (`"CreatePipe(in)"`,
 /// `"CreateProcessW"`, ...) or a later RUNTIME call (`"TerminateJobObject"`,
 /// `"ResizePseudoConsole"`, ...) — with the raw Win32/HRESULT error
