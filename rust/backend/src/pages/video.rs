@@ -270,3 +270,18 @@ mod grant_token_tests {
         assert_ne!(a, b);
     }
 }
+
+#[cfg(test)]
+mod video_ext_tests {
+    use super::*;
+
+    #[test]
+    fn servable_video_is_the_five_extensions_in_any_case() {
+        for p in ["a.mp4", "A.MP4", "b.WebM", "c.mov", "d.MKV", "e.m4v"] {
+            assert!(is_servable_video(Path::new(p)), "{p} should be servable");
+        }
+        for p in ["clip.avi", "song.mp3", "x.gif", "noext", "mp4"] {
+            assert!(!is_servable_video(Path::new(p)), "{p} should not be servable");
+        }
+    }
+}
