@@ -2,6 +2,8 @@
 //! converged with hosts.toml; unit text comes from `sot_protocol::topology`.
 
 use super::cli::self_host;
+#[cfg(target_os = "linux")]
+use crate::topology_cli;
 use sot_protocol::topology::{self, Topology};
 use std::path::{Path, PathBuf};
 
@@ -548,4 +550,13 @@ mod tests {
         assert!(!called && !dir.join("sot-host-relay-remote-a@.service").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The hub keeps its generated relay units equal to this binary's text.
+/// refresh_at_start acts only in sotd.service's main process, never in a
+/// hand-started daemon, and the daemon never waits on it, so a wedged
+/// user manager cannot keep it down.
+#[cfg(target_os = "linux")]
+pub(crate) fn spawn_refresh_at_start() {
+    let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(topology_cli::refresh_at_start);
 }

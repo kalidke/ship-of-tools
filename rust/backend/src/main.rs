@@ -491,12 +491,8 @@ async fn main() -> Result<()> {
 
     comm::mail::record_at_boot();
 
-    // The hub keeps its generated relay units equal to this binary's text.
-    // refresh_at_start acts only in sotd.service's main process, never in a
-    // hand-started daemon, and the daemon never waits on it, so a wedged
-    // user manager cannot keep it down.
     #[cfg(target_os = "linux")]
-    let _ = std::thread::Builder::new().name("relay-refresh".into()).spawn(topology_cli::refresh_at_start);
+    topology::relay_units::spawn_refresh_at_start();
 
     server::run(opts).await
 }
