@@ -4,8 +4,7 @@
 //! `sot-conpty-helper --script [repeats] --drip`
 //!
 //! Minimal helper binary for `conpty.rs`'s containment test (ADR 0041
-//! §"Containment and the owned ConPTY layer") and `capsule_win.rs`'s
-//! backpressure test (step 4). Prints its own PID as `pid:<n>\n`, then:
+//! §"Containment and the owned ConPTY layer"). Prints its own PID as `pid:<n>\n`, then:
 //!
 //! - top-level invocation (no `--child`): spawns ITSELF again with
 //!   `--child`, via a plain `std::process::Command` — no special job or
@@ -50,7 +49,7 @@
 //! fidelity property under test must hold regardless of where the actual
 //! cut falls, precisely because this helper does not engineer one.
 //!
-//! `--drip` (ADR 0041 step 5, U3 round 2's e2e pipe test) replaces
+//! `--drip` (ADR 0041 step 5) replaces
 //! `--linger`'s silent post-emission sleep with ACTIVE, deterministic
 //! output: after `repeats` copies of the script block, this helper writes
 //! one short line every ~200 ms, forever, instead of going quiet. A named-

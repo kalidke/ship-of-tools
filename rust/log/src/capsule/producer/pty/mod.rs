@@ -1,25 +1,23 @@
 //! `impl Producer for PtyProducer` — a bare Unix `openpty` + process group
 //! behind the [`crate::producer::Producer`] trait (ADR 0043 "Decisions for
-//! LU2" LU2b, review round), the Unix twin of `producer_conpty.rs`'s
-//! `ConptyProducer`. `spawn`'s `pre_exec` body is `capsule_legacy.rs`'s own
-//! `spawn_on_pty` carried over VERBATIM (after its own new leading step —
+//! LU2" LU2b), the Unix twin of `producer_conpty.rs`'s
+//! `ConptyProducer`. `spawn`'s `pre_exec` body
+//! (after its own new leading step —
 //! see the second point below): new session, slave becomes the controlling
 //! tty, stdio duped onto it, every inherited fd ≥ 3 closed before exec (the
 //! flock rationale is unchanged — see the comment at the call site). Three
-//! things are genuinely NEW here, all decision-driven; all three were
-//! REVISED once by a Codex review round after the first landing (each
-//! point below says what changed and why):
+//! things are genuinely NEW here, all decision-driven:
 //!
 //! - **The output side reports EOF only after the loop closes it, BY
 //!   CONSTRUCTION (decision 12).** The first version held a flag+condvar
 //!   gate over the master's own EIO/EOF, releasing it only when
-//!   `close_output_side` ran. Review finding: `EIO` on the master means "no
+//!   `close_output_side` ran. `EIO` on the master means "no
 //!   slave is open RIGHT NOW", not "the child is gone" — a child that
 //!   closes its own stdio and reopens its controlling tty (legal, real
 //!   producer behavior) yields `EIO` MID-RUN, and the gate then treated
 //!   that first `EIO` as terminal, silently losing every byte written
-//!   after the reopen (a verified voyage with zero producer frames, in the
-//!   reviewer's own repro). FIX: the capsule itself keeps ONE slave
+//!   after the reopen (a verified voyage with zero producer frames).
+//!   FIX: the capsule itself keeps ONE slave
 //!   `OwnedFd` (opened alongside the master in `spawn`, `CLOEXEC`, never
 //!   read from or written to) for as long as the run lasts. With the
 //!   capsule ALSO holding a slave open, the master never sees `EOF`/`EIO`
@@ -41,7 +39,7 @@
 //!   `pre_exec` does, closing that window; immediately after, it checks
 //!   `getppid() == expected_ppid` (`expected_ppid` is `std::process::id()`,
 //!   captured before `Command::spawn` and moved into the closure) and
-//!   exits immediately if it differs. Review round 2 (R6): PDEATHSIG is
+//!   exits immediately if it differs. PDEATHSIG is
 //!   documented (`prctl(2)`) as tracking the death of the SPAWNING
 //!   THREAD specifically, not the whole process — in THIS binary the
 //!   spawner is always the process's own MAIN thread (`spawn` is never
@@ -107,16 +105,7 @@
 //!   site, and it is the only difference this deletion leaves standing.
 //! - **Exit is OBSERVED without reaping; the leader is reaped EXACTLY ONCE,
 //!   LAST, in `Drop`; domain emptiness is judged by LIVE members, never by
-//!   reaped-ness (decision 13/14).** The first version's `wait` called
-//!   `Child::try_wait`, which REAPS on success — freeing the pid
-//!   immediately, so a LATER `killpg`/`domain_is_empty` call could silently
-//!   address a RECYCLED pid in an unrelated process group; and a leader
-//!   that had already exited (and been reaped) made `Drop` skip `killpg` on
-//!   the theory that "the child isn't running", stranding any surviving
-//!   descendant in the same group. Separately, the old `domain_is_empty`'s
-//!   `killpg(pgid, 0) == ESRCH` check read a group containing only zombie
-//!   descendants (dead, but not yet reaped by their own parent) as "not
-//!   empty", even though nothing left in it could ever run again. FIX:
+//!   reaped-ness (decision 13/14).**
 //!   `wait` observes the leader's exit with `waitid(P_PID, pid, ..,
 //!   WEXITED | WNOHANG | WNOWAIT)` — `WNOWAIT` is the whole point: it
 //!   reports the exit WITHOUT consuming it, so the leader's pid (and its
@@ -139,8 +128,7 @@
 //!   cannot separate, and taking it for "empty" would seal a capsule over
 //!   a live descendant; a Unix that can enumerate neither now refuses the
 //!   question, which `capsule::run`'s own fail-closed top already makes
-//!   unreachable. Review round 2 refined the Linux scan further (see
-//!   `domain_is_empty`'s own doc): a per-PROCESS state field alone can lie
+//!   unreachable. A per-PROCESS state field alone can lie
 //!   (a process whose main thread alone has exited still shows `Z` while
 //!   its worker threads run; a non-UTF-8 `comm` byte used to make the
 //!   whole entry unreadable and get silently skipped) — the scan now
@@ -148,12 +136,7 @@
 //!   by its OWN TASKS, not its own single state field. The leader is
 //!   reaped in `Drop`, and ONLY there: `killpg(SIGKILL)` (harmless if
 //!   already dead), then a BOUNDED, `EINTR`-retrying, non-blocking
-//!   (`WNOHANG`) poll of `waitpid` — never the original version's raw
-//!   blocking call, which review round 2 found discarded `EINTR`
-//!   entirely (a non-restarting signal handler anywhere in the process
-//!   made the child NEVER get reaped, reproduced on every run) and could
-//!   hang the whole capsule's own exit indefinitely on a leader stuck in
-//!   an uninterruptible kernel wait. `Drop` is safe to run in every
+//!   (`WNOHANG`) poll of `waitpid`. `Drop` is safe to run in every
 //!   state, because until its own reap succeeds (or its bound expires)
 //!   the pgid stays pinned by the unreaped leader, alive or zombie.
 //!
@@ -188,7 +171,7 @@ mod verbs;
 #[cfg(target_os = "linux")]
 const PR_SET_PDEATHSIG: libc::c_int = 1;
 
-/// `Drop`'s own reap bound (review round 2, R3): after `killpg(SIGKILL)`,
+/// `Drop`'s own reap bound: after `killpg(SIGKILL)`,
 /// only a task stuck in an uninterruptible kernel wait (`D` state — a
 /// stuck NFS mount, say) can outlive a bounded, `WNOHANG`-polled reap
 /// attempt. Leaving that one unreaped past this bound is safe: nothing
@@ -229,12 +212,11 @@ fn is_executable_file(path: &std::path::Path) -> bool {
 /// One producer under a Unix pty — `openpty` for the terminal, a plain
 /// process group (via `setsid` in `pre_exec`) as the kill domain. See the
 /// module doc for the three decision-driven pieces (the held slave, PDEATHSIG
-/// ordering, deferred reaping); everything else mirrors `capsule_legacy.rs`'s
-/// own `spawn_on_pty`/`PtyChild` almost verbatim.
+/// ordering, deferred reaping).
 pub struct PtyProducer {
     writer: File,
     reader_fd: Option<OwnedFd>,
-    /// The capsule's own held slave (decision 12, review round) — `CLOEXEC`,
+    /// The capsule's own held slave (decision 12) — `CLOEXEC`,
     /// never read from or written to. Its PRESENCE, not its content, is
     /// the whole point: as long as this is `Some`, the master can never
     /// see `EOF`/`EIO`, regardless of what the child does with its own
@@ -264,7 +246,7 @@ pub struct PtyProducer {
 /// may itself contain spaces or parens, so this finds the LAST `)` first
 /// (same device `challenge_unix.rs`'s own `/proc/pid/stat` parser uses)
 /// and treats everything after it as field 3 onward. Operates on raw
-/// BYTES throughout (review round 2, R1): `comm` itself is never
+/// BYTES throughout: `comm` itself is never
 /// decoded, so a non-UTF-8 byte inside it can never make this fail.
 /// `None` only if the buffer contains no `)` at all (a stat file that
 /// vanished mid-read, or genuinely malformed).
@@ -362,12 +344,7 @@ impl Drop for PtyProducer {
         unsafe {
             libc::killpg(self.pid, libc::SIGKILL);
         }
-        // Review round 2 (R3): the FIRST version called a raw, blocking
-        // `waitpid(.., 0)` and discarded its result -- a non-restarting
-        // signal handler anywhere in this process turns that call into
-        // `EINTR`, and a discarded `EINTR` means the child is NEVER
-        // reaped (reproduced on every run of the reviewer's own repro).
-        // Separately, a leader stuck in an uninterruptible kernel wait
+        // A leader stuck in an uninterruptible kernel wait
         // (state `D`) can outlive `SIGKILL` entirely, which would block
         // this destructor -- and therefore the whole capsule's own exit
         // -- indefinitely. FIX: poll `waitpid(pid, WNOHANG)` every 10ms,
@@ -522,9 +499,7 @@ mod parent_lease_tests {
     }
 }
 
-/// Direct, same-file tests against `PtyProducer` itself (the review
-/// round's own repro shapes for the held-slave drop behavior and the
-/// live-member domain scan) — these need `self.pid` and the `Producer`
+/// Direct, same-file tests against `PtyProducer` itself — these need `self.pid` and the `Producer`
 /// trait's own methods directly, without a whole `capsule::run` loop
 /// around them; `tests/capsule.rs`'s own `unix_only` module covers the
 /// full-loop-level property (`output_after_a_slave_reopen_is_recorded`).
@@ -532,11 +507,7 @@ mod parent_lease_tests {
 /// the macOS CI leg once and failed for want of `/proc`); the reader-strand
 /// test needs no `/proc` and runs on every Unix.
 ///
-/// Review round 2 (R7): the descendant-finding helper no longer reads the
-/// LEADER's own `/proc/<pid>/task/<pid>/children` — that file empties out
-/// the INSTANT the leader exits (a live child is reparented away right
-/// then, not merely once the leader is later reaped), so it raced the
-/// leader's own exit in the first version of these tests. Finding a
+/// Finding a
 /// descendant by scanning ALL of `/proc` for a process whose OWN pgrp
 /// equals the leader's pid works identically whether the leader is still
 /// alive, already a zombie, or already reaped — a process's pgrp does not
@@ -638,7 +609,7 @@ mod drop_and_domain_tests {
         }
     }
 
-    /// Review round, F1/F4's own repro shape: a reader blocked on a
+    /// A reader blocked on a
     /// `take_output()` `File` must NOT be stranded forever by an early
     /// `Drop` (a panicking `run`, or any path that skips
     /// `close_output_side`/teardown entirely). `sleep 600` as the
@@ -704,8 +675,7 @@ mod drop_and_domain_tests {
         reader.join().unwrap();
     }
 
-    /// Review round, F3/F5/F6's own repro shape (refined by round 2, R7):
-    /// after the LEADER has already exited (and this producer has
+    /// After the LEADER has already exited (and this producer has
     /// deliberately NOT reaped it — see the module doc's third point), a
     /// surviving DESCENDANT in the same process group must still be
     /// killed by `Drop` alone, with no `terminate_domain`/
@@ -737,13 +707,7 @@ mod drop_and_domain_tests {
         );
     }
 
-    /// Review round 2 (R7): replaces the first round's
-    /// `domain_is_empty_ignores_zombie_descendants`, which relied on an
-    /// inherently transient state (a zombie descendant with no live
-    /// members left at all — its own parent's eventual death reparents
-    /// it to a reaper that may collect it at any time, so the window in
-    /// which `domain_is_empty` could even be asked about it is not
-    /// deterministic). The UNREAPED ZOMBIE LEADER is the deterministic
+    /// The UNREAPED ZOMBIE LEADER is the deterministic
     /// case of the identical property this producer's own `domain_is_empty`
     /// must get right: a live leader means "not empty"; the SAME leader,
     /// killed and left an unreaped zombie (this producer's own contract

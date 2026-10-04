@@ -325,10 +325,6 @@ impl AnonymousJob {
 /// process object is fully released, so "open it later" can silently name
 /// a DIFFERENT process. A held handle keeps the object (and its exit
 /// status) alive and addressable regardless of PID reuse elsewhere.
-/// (Review finding: an earlier version of this module closed both
-/// `pi.hThread` and `pi.hProcess` immediately, since neither `terminate`
-/// nor `active_processes` needs a process handle — true, but exit-STATUS
-/// recording does.)
 #[derive(Debug)]
 pub struct PrimaryProcess(OwnedHandle);
 
@@ -342,7 +338,7 @@ impl PrimaryProcess {
     /// `Ok(true)`: the process signaled (exited) within `timeout`.
     /// `Ok(false)`: the timeout elapsed; still running.
     pub fn wait(&self, timeout: std::time::Duration) -> Result<bool> {
-        // ADR 0041 U0 round-1 finding 8: capped at u32::MAX - 1, never the
+        // Capped at u32::MAX - 1, never the
         // literal Win32 INFINITE -- see fsutil::duration_to_wait_ms's doc.
         let ms = crate::fsutil::duration_to_wait_ms(timeout);
         match unsafe { WaitForSingleObject(self.raw(), ms) } {
@@ -369,11 +365,6 @@ impl PrimaryProcess {
     /// that ambiguity is already resolved by the CALLER's own prior
     /// observation, not by this method — so it makes no attempt to
     /// disambiguate and returns whatever the OS reports, unconditionally.
-    /// (Review finding: an earlier version mapped raw 259 to `None` even
-    /// when called after a confirmed exit, silently turning a legitimate
-    /// exit code into an absent one. The name is the fix: calling this
-    /// method IS the caller asserting the precondition, so there is no
-    /// "maybe still running" case left for a return type to encode.)
     pub fn exit_code_after_confirmed_exit(&self) -> Result<u32> {
         let mut code: u32 = 0;
         if unsafe { GetExitCodeProcess(self.raw(), &mut code) } == 0 {
@@ -591,8 +582,7 @@ impl Drop for AttributeList {
 /// which is explicitly the next unit's writer loop's job, not this
 /// primitives layer's.
 ///
-/// HONESTY BOUND (review finding: an earlier version of this doc overclaimed
-/// here): dropping a `ConptySpawn` without calling `job.terminate()` /
+/// HONESTY BOUND: dropping a `ConptySpawn` without calling `job.terminate()` /
 /// `pty.close_pty()` explicitly is BEST-EFFORT, not a safety guarantee.
 /// `OwnedHandle`'s `CloseHandle` (for `job` and `process`) is unconditional
 /// and fine. `Pseudoconsole`'s Drop is NOT unconditionally fine: on

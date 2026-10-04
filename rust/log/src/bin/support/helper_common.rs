@@ -6,9 +6,7 @@
 //! another crate could `use` (a `src/bin/*.rs` file has none), so
 //! `#[path = "support/helper_common.rs"] mod helper_common;` is the
 //! ordinary way two sibling binaries in one package share source without
-//! a real dependency edge — unlike `capsule.rs`/`capsule_legacy.rs`
-//! (which deliberately shared NOTHING, see that module's own doc),
-//! byte-for-byte identity is the whole point here, so sharing is
+//! a real dependency edge — byte-for-byte identity is the whole point here, so sharing is
 //! required, not merely convenient. Lives in a `support/` subdirectory,
 //! not directly under `src/bin/`, for the same reason
 //! `tests/support/transports.rs` does: Cargo auto-discovers every loose

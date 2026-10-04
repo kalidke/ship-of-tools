@@ -7,16 +7,14 @@
 //! frame factory, the output budget, the input WAL, the run-end marker,
 //! the `AttachProto` service path, `ShutdownGuard`, rotation and sealing
 //! are all platform-neutral and never touch this trait at all — only the
-//! nine verbs below do, each copied verbatim from `capsule.rs`'s own
-//! former (pre-LU2a) call sites into the ConPTY producer, nothing
-//! invented. No `kind()` method: `producer_kind` stays a plain config
+//! nine verbs below do. No `kind()` method: `producer_kind` stays a plain config
 //! string the caller sets, never derived from this trait.
 //!
 //! **The EOF contract (decision 12) is universal, with no knob.** The
 //! output side's own OS behavior differs — ConPTY keeps its output
 //! handle open regardless of the child's lifetime until explicitly
 //! closed; a Unix pty master returns `EOF`/`EIO` the instant the LAST
-//! slave fd closes (review round: NOT precisely "when the child dies" —
+//! slave fd closes (NOT precisely "when the child dies" —
 //! a child that closes its own stdio and reopens its controlling tty
 //! yields `EIO` mid-run too, which is why `producer_pty.rs`'s own
 //! `PtyProducer` keeps a slave descriptor held in the CAPSULE itself for
@@ -127,7 +125,7 @@ pub trait Producer: Send + Sized {
     fn terminate_domain(&self) -> Result<()>;
 
     /// Whether the containment domain is empty — every process in it
-    /// dead (exited or killed). Review round 2: NOT "reaped" — a Unix
+    /// dead (exited or killed). NOT "reaped" — a Unix
     /// leader may stay an unreaped zombie for as long as this producer
     /// lives (its exit is observed, deliberately, without consuming it;
     /// see `producer_pty.rs`'s own module doc), and only dropping the

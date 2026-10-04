@@ -19,9 +19,7 @@ impl Producer for PtyProducer {
         // A DELIBERATE, DOCUMENTED deviation from a literal "just call
         // `Command::spawn`" implementation (reported per the brief's own
         // instruction for an impossible-as-written combination): the
-        // `close_range` call in `pre_exec` below (carried over verbatim
-        // from `capsule_legacy.rs`, for the flock race its own comment
-        // documents) closes EVERY fd >= 3 in the CHILD before `execve` is
+        // `close_range` call in `pre_exec` below closes EVERY fd >= 3 in the CHILD before `execve` is
         // ever attempted — including the anonymous, `CLOEXEC`-marked pipe
         // `std::process::Command`'s OWN fallback fork+exec path uses to
         // report a POST-FORK failure (a failed `execve` included) back to
@@ -56,7 +54,7 @@ impl Producer for PtyProducer {
         if !executable_is_resolvable(&argv[0]) {
             return Err(Error::Io(io::Error::from_raw_os_error(libc::ENOENT)));
         }
-        // F2 (review round): captured BEFORE `Command::spawn` and moved
+        // Captured BEFORE `Command::spawn` and moved
         // into `pre_exec` — the child's own first act verifies against
         // THIS value (`getppid()` at that point), not against whatever
         // `getppid()` a later, racing read of `std::process::id()` might
@@ -64,7 +62,7 @@ impl Producer for PtyProducer {
         // portable non-Linux-unix equivalent exists.
         #[cfg(target_os = "linux")]
         let expected_ppid = std::process::id() as libc::pid_t;
-        // R2 (review round 2): establish the disposition the pid PIN
+        // Establish the disposition the pid PIN
         // depends on, rather than assuming it. `wait`'s own
         // `waitid(.., WNOWAIT)` (see the module doc's third point) needs
         // a RETAINED zombie to observe; if `SIGCHLD` is `SIG_IGN` (or
@@ -158,7 +156,7 @@ impl Producer for PtyProducer {
         // contract. Every call below is.
         unsafe {
             cmd.pre_exec(move || {
-                // F2 (review round): PDEATHSIG armed FIRST, before
+                // PDEATHSIG armed FIRST, before
                 // anything else — closes the window in which the
                 // spawning THREAD could die before arming ever ran. Then
                 // verify the parent is STILL the one that forked us: if
@@ -191,9 +189,7 @@ impl Producer for PtyProducer {
                 // path it can take, `SIGKILL` included. See the module
                 // doc's own "macOS gets NO twin" point for the argument
                 // and for the macOS CI test that pins it.
-                // Verbatim from `capsule_legacy.rs`'s own `spawn_on_pty`
-                // (ADR 0043 decision 14 carries it into this producer
-                // as-is, after the new leading step above): new session;
+                // New session;
                 // slave becomes the controlling tty; stdio on it.
                 if libc::setsid() < 0 {
                     return Err(io::Error::last_os_error());
@@ -308,11 +304,10 @@ impl Producer for PtyProducer {
     }
 
     fn exit_status_after_confirmed_exit(&self) -> Result<ExitStatus> {
-        // Review round 2 (R5): the trait's own doc allows confirmation
+        // The trait's own doc allows confirmation
         // via EITHER `wait` or `domain_is_empty` -- a caller that
         // confirmed only through the latter would never have populated
-        // this cache at all, and the first version of this method
-        // panicked in that case. FIX: observe once, on demand, exactly
+        // this cache at all. FIX: observe once, on demand, exactly
         // like `wait` itself does (`waitid(.., WNOWAIT)`, never
         // reaping); if that ALSO finds nothing (a genuine precondition
         // violation by the caller), return a loud `Err`, never panic.
@@ -347,7 +342,7 @@ impl Producer for PtyProducer {
     }
 
     #[cfg(target_os = "linux")]
-    /// Live-member scan (decision 13/14; refined in review round 2, R1):
+    /// Live-member scan (decision 13/14):
     /// a zombie leader (deliberately unreaped until `Drop`, per the
     /// module doc) or a zombie descendant must NOT count against
     /// emptiness — only `/proc`'s own per-TASK state field reliably

@@ -12,20 +12,16 @@
 //! parser's cursor position too, which it deliberately does not do.
 //!
 //! Pure bytes, no OS/IO dependency, deliberately NOT `#[cfg(windows)]`: the
-//! only real caller is `capsule_win.rs`, but the state machine itself has
+//! state machine itself has
 //! nothing platform-specific in it, and gating its tests to the windows
 //! CI legs would only make them run less often for no reason — they run on
 //! every platform instead.
 //!
-//! CRATE-PRIVATE (Codex review finding, capsule_win.rs round): the ADR's
+//! CRATE-PRIVATE: the ADR's
 //! "one private machine" ruling for the host-facing handshake means this
 //! module's items must not be part of the crate's PUBLIC API even though
 //! the file itself is public in the sense of being its own translation
-//! unit — `capsule_win.rs` is the only real caller and reaches it via
-//! `crate::host_handshake::...`, which needs no `pub` beyond the crate
-//! boundary. An earlier version marked everything `pub`; that was never
-//! exercised by an external caller and just widened the ABI surface for no
-//! reason.
+//! unit.
 //!
 //! WHY THIS FILE EXISTS despite the step-4 spec gate's "no separate
 //! reusable DSR module" ruling — the tension is real and resolved
@@ -33,9 +29,7 @@
 //! neutral module premised on the WRONG model (scanning producer output
 //! for child queries). This is the corrected model's machine — host-facing
 //! handshake only — and it lives in its own file for exactly one reason:
-//! `capsule_win.rs` is `#![cfg(windows)]` at file level, so anything inside
-//! it can only ever be tested on the two windows CI legs, while this
-//! machine's whole risk surface (carry across arbitrary splits) is pure
+//! this machine's whole risk surface (carry across arbitrary splits) is pure
 //! bytes that a Linux dev fleet can regression-test on every native run.
 //! Test reach earns the file; reusability is still not claimed — one
 //! consumer, and the name says what it is, not "DSR".
@@ -46,15 +40,13 @@
 //! existing "queries don't straddle chunks" shortcut is named in the ADR
 //! as exactly the assumption this must not repeat.
 //!
-//! `feed` returns a MATCH COUNT, not reply bytes (Codex review finding):
+//! `feed` returns a MATCH COUNT, not reply bytes:
 //! the reply is always the same fixed `DA1_REPLY` constant regardless of
 //! which of the two forms matched, so the caller needs only "how many
 //! matched in this chunk" to decide what to do — and per ADR 0041's
 //! model (conhost asks ONCE, at startup), the caller's policy is to answer
 //! and record only the FIRST match ever observed for a run, suppressing
-//! (but counting) any later ones. That policy belongs to `capsule_win.rs`
-//! (it needs run-lifetime state this pure module deliberately doesn't
-//! carry), not here — this module only ever reports what it saw.
+//! (but counting) any later ones. This module only ever reports what it saw.
 
 /// DA1's fixed reply: `ESC [ ? 1 ; 0 c` — a conservative VT101-class
 /// identity, not negotiated per session (pinned by the step-4 spec gate).

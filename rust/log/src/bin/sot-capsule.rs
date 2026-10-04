@@ -16,17 +16,11 @@
 /// figure is a real budget-table computation a real supervisor owns; this
 /// bin is a manual-testing harness with no supervisor yet, so it states a
 /// single generous constant rather than inventing that computation here).
-/// Neutral (ADR 0043 "Decisions for LU2" LU2b: renamed from the
-/// Windows-only `MAX_PIPE_INSTANCES` now that ONE `cmd_run` drives both
-/// platforms' own transport constructor with it).
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 const MAX_TRANSPORT_CONNECTIONS: u32 = 8;
 
 /// `run`, plus (ADR 0041 step 6 U2) `supervise`/`endrun`/`reset` — see
-/// each subcommand's own function for its usage line. L1-unix LU3c: ONE
-/// `main` for both platforms now (collapsing the former Windows-only
-/// `supervise`/`endrun`/`reset`/`build-id` main and the separate
-/// Linux-only `run`/`claude` main into one dispatch) — `claude` (ADR
+/// each subcommand's own function for its usage line. `claude` (ADR
 /// 0040's own, unrelated producer) is the ONLY Linux-only subcommand,
 /// since it has no Windows counterpart. `run` is `cfg(unix)`: its
 /// producer and transport are the Unix ones, and a macOS supervisor
@@ -45,8 +39,7 @@ sot-capsule claude <voyage_root> <voyage_id> <helper-main.js> <expected-sdk-vers
     match args.first().map(String::as_str) {
         // The lane build id this binary will answer the supervisor hello
         // with -- a diagnostic only since ADR 0045 decision 7 (the lane
-        // gate is the protocol integer, not this value; the pre-spawn
-        // `check_pair` probe that used to read it is deleted).
+        // gate is the protocol integer, not this value).
         Some("build-id") => println!("{}", sot_log::exchange::SUPERVISOR_LANE_BUILD_ID),
         #[cfg(windows)]
         Some("run") => cmd_run::<sot_log::producer_conpty::ConptyProducer, _, _>(&args[1..], |n| {
@@ -119,7 +112,7 @@ where
     // harness default, not an ADR-pinned one.
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
-    // Codex round-2b Blocker 4: the ONE explicit, honestly-named operator
+    // The ONE explicit, honestly-named operator
     // override that lets this manual-testing harness run at all before
     // U4's release-apply transaction exists — see the refusal message
     // below for what it actually asserts.
@@ -138,9 +131,7 @@ where
     // ADR 0042 slice L1a: supplied by the spawner (`--start`/`--resume`'s
     // own supervisor, via `build_run_command`'s `--survival`), defaulting
     // to `Normal` for a bare manual invocation. ADR 0043 decision 32:
-    // honored verbatim on both platforms now -- no clamp, so the
-    // "explicit vs. default" distinction an `Option` used to carry is
-    // immaterial (Codex review) -- the value itself is all downstream
+    // honored verbatim on both platforms now -- no clamp -- the value itself is all downstream
     // code ever needs.
     let mut survival = sot_log::wire::Survival::Normal;
     loop {
@@ -223,14 +214,11 @@ where
     }
     let argv: Vec<String> = rest[1..].to_vec();
 
-    // ADR 0041 "Upgrade and version skew" reader-first rollout gate
-    // (Codex round-2b Blocker 4 discharge, superseding round-1 Major 9's
-    // hardcoded default): this manual-testing harness has no supervisor/
+    // ADR 0041 "Upgrade and version skew" reader-first rollout gate:
+    // this manual-testing harness has no supervisor/
     // release-apply transaction (U4) and therefore NO REAL evidence to
     // construct. The honest pre-U4 posture is FAIL CLOSED, naming U4 as
-    // the reason — hardcoding `NoRollbackTarget` fabricated evidence and
-    // recreated exactly the "missing means first install" default-through
-    // Major 9 was supposed to remove, only under a typed name. Absent the
+    // the reason. Absent the
     // explicit override, this binary refuses before ever constructing a
     // config or opening a segment. `sot-capsule supervise` (U2, Windows;
     // LU3 on Unix) is in the exact same "no real evidence" position and
@@ -294,10 +282,7 @@ where
             ));
             // Reinterpretation to a process exit code happens ONLY here,
             // at the actual OS process-exit boundary — everywhere else in
-            // this crate the value stays a raw, unsigned DWORD on Windows
-            // (review finding: an earlier version cast it to i32 well
-            // before this point, which would have turned a high-bit
-            // NTSTATUS-shaped code negative for no reason). ADR 0043
+            // this crate the value stays a raw, unsigned DWORD on Windows. ADR 0043
             // decision 13: `Signal` is the real Unix shape for a signal
             // death, mapped `128 + n` (the POSIX shell convention); on
             // Windows it stays unreachable but mapped the same honest way.
@@ -346,7 +331,7 @@ fn cmd_supervise(args: &[String]) {
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
     let mut assume_no_rollback_target = false;
-    // ADR 0042 slice L1a (Codex review finding 7): the spawner's own
+    // ADR 0042 slice L1a: the spawner's own
     // breakaway outcome, threaded into every leg via `SuperviseConfig`
     // (see that field's own doc) — defaults to `Normal` for a bare
     // manual invocation, matching every existing caller of this CLI that
@@ -473,16 +458,12 @@ fn cmd_reset(args: &[String]) {
     std::process::exit(sot_log::supervisor::reset(&state_dir, voyage));
 }
 
-// ADR 0041 U0 round-1 blocker 3: `sot_log::fence::lock_supervisor` must be
+// `sot_log::fence::lock_supervisor` must be
 // reachable from THIS binary crate -- Cargo treats `src/bin/sot-capsule.rs`
 // as a SEPARATE crate from the package's own library even though they share
-// one Cargo.toml, so a `pub fn` hidden inside a private library module (the
-// ORIGINAL `fsutil::lock_supervisor`) was invisible here. This test is the
-// actual proof: it calls the public facade from the real consumer Codex
-// named, not merely from the library's own test suite. L1-unix LU3c:
-// `fence::lock_supervisor` is portable (no `#[cfg(windows)]` of its own)
-// and always was, so this test's former `windows` gate was never load-
-// bearing -- ungated to plain `cfg(test)`, proven on Linux too now.
+// one Cargo.toml. This test is the
+// actual proof: it calls the public facade from the real consumer,
+// not merely from the library's own test suite.
 #[cfg(test)]
 mod tests {
     #[test]
