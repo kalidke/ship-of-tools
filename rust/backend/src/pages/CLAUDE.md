@@ -10,7 +10,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 ## Owns
 
 - The video listener and its token grants (`video.rs`).
-- The site prefix and pool listeners and their tables (today `rust/backend/src/site_serve.rs`, not yet here), the
+- The site prefix and pool listeners and their tables (`site/`), the
   `git` child of a site open, and the `<config>/data-roots` read.
 - `proxy.connect` and its loopback allowlist (`proxy.rs`).
 
@@ -26,7 +26,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   port once per streak.
 - A connection's sites go when it disconnects (`remove_root`).
 - `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
-  declared data root (site_serve.rs `resolve_and_open`).
+  declared data root (`site/` `resolve_and_open`).
 
 ## Connections
 
@@ -40,8 +40,9 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 
 ## Folders
 
-None yet. Elsewhere: rust/backend/src/site_serve.rs (the site server) and rust/frontend/src/proxy_listen.rs (the
-window's page proxy).
+- `site/`: the static-site server: grant tables, listeners, the request and the link rule.
+
+Elsewhere: rust/frontend/src/proxy_listen.rs (the window's page proxy).
 
 ## Files
 
@@ -49,6 +50,7 @@ window's page proxy).
 - `mod.rs`: declares the folder's modules.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records, `pipe_bidirectional` and `reject`.
+- `site/`: the static-site server (own page).
 - `video.rs`: the video listener, its token grants and the request handler.
 
 ## Start here

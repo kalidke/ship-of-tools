@@ -42,7 +42,7 @@ use sidecars::{julia, kernel, mathjax, monitor, pluto, repl};
 mod server;
 mod session;
 mod session_state;
-mod site_serve;
+use pages::site as site_serve;
 mod topology;
 use topology::{cli as topology_cli, dial as topology_dial, set as topology_set, status as status_cli, stdio_bridge, store as topology_store};
 mod update;
