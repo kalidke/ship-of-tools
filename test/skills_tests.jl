@@ -160,9 +160,12 @@ end
         write(joinpath(launchers, "ccdemo"), "#!/bin/sh\n")
         write(joinpath(launchers, "CLAUDE.md"), "page")
         dst = joinpath(home, "dst", "skills")
-        withenv("HOME" => home) do
+        # On Windows Julia's `homedir()` reads USERPROFILE, so the home is set there as well.
+        withenv("HOME" => home, "USERPROFILE" => home, "HOMEDRIVE" => splitdrive(home)[1],
+                "HOMEPATH" => splitdrive(home)[2]) do
             ShipTools._install_skills(skills, dst)
             ShipTools._install_launchers(launchers)
+            @test homedir() == home
         end
         @test isfile(joinpath(dst, "demo", "SKILL.md"))
         @test isfile(joinpath(dst, "demo", "sub", "ref.md"))
