@@ -115,9 +115,6 @@ async fn read_owned<R: AsyncRead + Unpin>(
 
 /// Generic over the AsyncRead/AsyncWrite halves (a relic of the two-transport
 /// era that keeps this testable against in-memory duplex streams).
-/// `expected_token` is always `None` since 0.4.0 removed the TCP listener —
-/// the local socket's access check happened at the socket path; the param and
-/// the hello `token` wire field survive for cross-version compat.
 
 /// Stamp this connection's `last_person_input_at` if it has registered.
 /// Call ONLY from the `fe.presence` op arm (2026-09-08 review rework,
@@ -142,7 +139,6 @@ pub(super) async fn handle_connection<R, W>(
     rx: R,
     mut tx: W,
     session: Session,
-    expected_token: Arc<Option<String>>,
     mathjax: MathJax,
     pluto: Pluto,
     files_mode: Arc<FilesMode>,
@@ -199,7 +195,7 @@ where
                     buffered,
                     tx,
                     f,
-                    expected_token.as_deref(),
+                    None,
                 )
                 .await;
             }
@@ -214,7 +210,7 @@ where
                     buffered,
                     tx,
                     f,
-                    expected_token.as_deref(),
+                    None,
                     &workspaces,
                 )
                 .await;
@@ -229,7 +225,7 @@ where
                     tx,
                     f,
                     peer_identity,
-                    expected_token.as_deref(),
+                    None,
                     &leases,
                     state_root.as_deref(),
                 )
@@ -296,16 +292,6 @@ where
     let mut is_long_lived_role = false;
     let mut deadline_armed = false;
     let mut read_deadline = tokio::time::Instant::now();
-
-    // Per-connection auth state (ADR 0010 hardening). The token gate on `hello`
-    // is not sufficient on its own: nothing forces a client to send hello, and
-    // the dispatch loop below serves file.read / repl.eval / file.download /
-    // agent.send with no handshake — so a token-configured backend was still
-    // fully reachable by simply skipping hello. Starts `true` ONLY in open-config
-    // mode (no token configured); when a token IS configured it starts `false`
-    // and flips to `true` only on a hello whose token matches. Every non-hello
-    // op is gated on this flag.
-    let mut authenticated = expected_token.is_none();
 
     // This connection's active workspace, made EXPLICIT via `workspace.activate`
     // (`op::WORKSPACE_ACTIVATE`) — the frontend's single "switch chrome" entry
@@ -427,58 +413,42 @@ where
                     }
                 }
                 change = recv_watcher(&mut watcher_rx) => {
-                    if authenticated {
-                        write_preview_changed(
-                            &mut tx,
-                            change,
-                            transport,
-                            active_workspace.as_deref(),
-                            &workspaces,
-                        )
-                        .await?;
-                    }
+                    write_preview_changed(
+                        &mut tx,
+                        change,
+                        transport,
+                        active_workspace.as_deref(),
+                        &workspaces,
+                    )
+                    .await?;
                     continue;
                 }
                 wsc = recv_ws_events(&mut ws_events_rx) => {
-                    // Auth gate (ADR 0010 hardening): never push evt frames to an
-                    // unauthenticated connection. Drain the channel, drop the frame.
-                    if authenticated {
-                        write_workspace_changed(&mut tx, wsc, transport).await?;
-                    }
+                    write_workspace_changed(&mut tx, wsc, transport).await?;
                     continue;
                 }
                 tpc = recv_topo_changed(&mut topo_changed_rx) => {
-                    if authenticated {
-                        write_topology_changed(&mut tx, tpc, transport).await?;
-                    }
+                    write_topology_changed(&mut tx, tpc, transport).await?;
                     continue;
                 }
                 msg = recv_agent_msg(&mut agent_events_rx) => {
-                    if authenticated {
-                        write_agent_message(&mut tx, msg, transport).await?;
-                    }
+                    write_agent_message(&mut tx, msg, transport).await?;
                     continue;
                 }
                 rcp = recv_agent_receipt(&mut agent_receipt_rx) => {
-                    if authenticated {
-                        write_agent_receipt(&mut tx, rcp, transport).await?;
-                    }
+                    write_agent_receipt(&mut tx, rcp, transport).await?;
                     continue;
                 }
                 fc = recv_fe_command(&mut fe_command_rx) => {
-                    if authenticated {
-                        write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
-                    }
+                    write_fe_command(&mut tx, fc, transport, client_guard.as_ref().map(|g| g.serial())).await?;
                     continue;
                 }
                 rf = recv_repl_frame(&mut repl_frame_rx) => {
-                    if authenticated {
-                        write_repl_frame(&mut tx, rf, transport).await?;
-                    }
+                    write_repl_frame(&mut tx, rf, transport).await?;
                     continue;
                 }
                 tick = recv_monitor(&mut monitor_rx) => {
-                    if authenticated && monitor_subscribed {
+                    if monitor_subscribed {
                         write_monitor_tick(&mut tx, tick, transport).await?;
                     }
                     continue;
@@ -520,21 +490,6 @@ where
 
         if frame.kind != Kind::Req {
             tracing::debug!(?frame.kind, op = %frame.op, transport, "ignoring non-req frame");
-            continue;
-        }
-
-        // Auth gate (ADR 0010 hardening). With a token configured, every op
-        // except `hello` requires a prior token-valid hello on THIS connection.
-        // Without this, the token is trivially bypassable: a client skips the
-        // handshake and calls file.read / repl.eval / file.download / agent.send
-        // directly, and the dispatch loop below serves them regardless.
-        if !authenticated && frame.op.as_str() != op::HELLO {
-            tracing::warn!(op = %frame.op, ?peer, "op rejected: unauthenticated (no token-valid hello)");
-            let payload = serde_json::json!({
-                "error": "authentication required: send a token-valid hello first",
-                "code": "unauthenticated",
-            });
-            write_frame_to(&mut tx, &Frame::res(frame.id, &frame.op, payload), None).await?;
             continue;
         }
 
@@ -593,26 +548,11 @@ where
                         }
                     }
                 }
-                // Flip the per-connection auth flag based on THIS hello's token
-                // (recomputed on every hello so a reconnect re-auths). Open-config
-                // mode has `expected_token == None`, so this stays true. Mirrors
-                // the same check `handle_hello` uses to shape its response frame.
-                authenticated = match expected_token.as_deref() {
-                    None => true,
-                    Some(expected) => {
-                        let presented =
-                            serde_json::from_value::<sot_protocol::HelloReq>(frame.payload.clone())
-                                .ok()
-                                .and_then(|r| r.token)
-                                .unwrap_or_default();
-                        handlers::constant_time_eq(presented.as_bytes(), expected.as_bytes())
-                    }
-                };
                 handlers::handle_hello(
                     frame.id,
                     frame.payload,
                     &session,
-                    expected_token.as_ref(),
+                    &None,
                     &files_mode,
                     label.as_deref(),
                     &clients,

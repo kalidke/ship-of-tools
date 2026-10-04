@@ -134,7 +134,6 @@ fn session_pipe_security_descriptor(
 pub(super) async fn run_local(
     socket_path: PathBuf,
     session: Session,
-    token: Arc<Option<String>>,
     mathjax: MathJax,
     pluto: Pluto,
     files_mode: Arc<FilesMode>,
@@ -202,7 +201,6 @@ pub(super) async fn run_local(
         let peer_identity = crate::lease::accepted_peer(&stream);
         let le = leases.clone();
         let s = session.clone();
-        let tok = token.clone();
         let mj = mathjax.clone();
         let pl = pluto.clone();
         let fm = files_mode.clone();
@@ -220,7 +218,7 @@ pub(super) async fn run_local(
         tokio::spawn(async move {
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
-                rx, tx, s, tok, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe,
+                rx, tx, s, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe,
                 cl, tps, tpe, "local", None, peer_identity, le,
             )
             .await

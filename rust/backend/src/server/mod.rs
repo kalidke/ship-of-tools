@@ -435,7 +435,6 @@ pub async fn run(opts: Opts) -> Result<()> {
 
     if let Some(path) = opts.socket {
         let s = session.clone();
-        let tok = Arc::new(None);
         let mj = mathjax.clone();
         let pl = pluto.clone();
         let fm = files_mode.clone();
@@ -453,7 +452,7 @@ pub async fn run(opts: Opts) -> Result<()> {
         let le = leases.clone();
         tasks.push(tokio::spawn(async move {
             run_local(
-                path, s, tok, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
+                path, s, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe, cl, tps,
                 tpe, le,
             )
             .await
