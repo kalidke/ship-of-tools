@@ -29,8 +29,8 @@
 //!
 //! **Search order** (the only one): `$SOT_HOSTS` when set (tests, scratch
 //! daemons), else `<config dir>/hosts.toml` where the config dir is
-//! `sot_log::host::state_dir::sot_config_dir` (`~/.config/sot`,
-//! `%LOCALAPPDATA%\sot\config`). No repo-local layer: the hub's own copy is
+//! `sot_log::host::state_dir::sot_config_dir` (`$XDG_CONFIG_HOME/sot` when set, else
+//! `~/.config/sot`; `%LOCALAPPDATA%\sot\config` on Windows). No repo-local layer: the hub's own copy is
 //! canonical and every other box's copy is a `topology sync` fetch of it.
 //!
 //! The TOML subset accepted is exactly the grammar above: `[section]`

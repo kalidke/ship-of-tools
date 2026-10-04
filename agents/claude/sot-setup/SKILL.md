@@ -267,7 +267,7 @@ SSH" variant.)
 template: `.sot/hosts.toml.example`). The hub's own copy is canonical; a frontend
 box fetches it with `sotd topology sync --hub <ssh-alias>` (the launcher runs
 that at every launch), so write nothing by hand there. Search order: `$SOT_HOSTS`,
-else `~/.config/sot/hosts.toml` (Windows: `%LOCALAPPDATA%\sot\config\hosts.toml`).
+else `$XDG_CONFIG_HOME/sot/hosts.toml` when that is set, else `~/.config/sot/hosts.toml` (Windows: `%LOCALAPPDATA%\sot\config\hosts.toml`).
 On the hub itself, write:
 ```toml
 hub = "myserver"
