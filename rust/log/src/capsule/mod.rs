@@ -455,8 +455,7 @@ enum ReaderEvent {
 /// Per-platform sibling (ADR 0043 decision 16: "per-platform siblings,
 /// not knobs") — the Linux sibling just below is
 /// `(getpid, challenge_unix::self_start_ticks())` and the macOS one
-/// `(getpid, challenge_macos::self_pidversion())`; any OTHER Unix fails
-/// closed (no instance identity exists there yet).
+/// `(getpid, challenge_macos::self_pidversion())`.
 #[cfg(windows)]
 fn self_status(survival: Survival) -> Result<MgmtStatus> {
     use windows_sys::Win32::Foundation::FILETIME;
@@ -515,13 +514,3 @@ fn self_status(survival: Survival) -> Result<MgmtStatus> {
         .map_err(|e| Error::State(format!("capsule: self_pidversion failed: {e}")))?;
     Ok(MgmtStatus { pid, created: u64::from(created), survival })
 }
-
-/// Any OTHER Unix (ADR 0043 decision 16): no instance identity exists
-/// there — no `/proc` start ticks, no audit token — so every caller of
-/// `run` fails closed here rather than fabricating a status this
-/// platform has no real answer for.
-#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-fn self_status(_survival: Survival) -> Result<MgmtStatus> {
-    Err(Error::Unsupported("self_status: this unix has no instance identity"))
-}
-

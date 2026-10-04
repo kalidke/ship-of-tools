@@ -473,12 +473,6 @@ fn cmd_reset(args: &[String]) {
     std::process::exit(sot_log::supervisor::reset(&state_dir, voyage));
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn main() {
-    eprintln!("sot-capsule requires Linux, macOS or Windows (ADR 0039 P1 Linux; ADR 0041 P3 Windows; ADR 0043 macOS) -- this platform has no supervisor half");
-    std::process::exit(2);
-}
-
 // ADR 0041 U0 round-1 blocker 3: `sot_log::fence::lock_supervisor` must be
 // reachable from THIS binary crate -- Cargo treats `src/bin/sot-capsule.rs`
 // as a SEPARATE crate from the package's own library even though they share
