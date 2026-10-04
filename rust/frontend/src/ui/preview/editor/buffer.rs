@@ -6,7 +6,6 @@
 //   - Cursor motion: ArrowLeft/Right (char), Up/Down (visual line via
 //     logical-line proxy), Home, End, Ctrl+Home, Ctrl+End, PgUp, PgDn
 //   - Enter inserts a literal `\n`
-//   - No selection, no undo/redo, no find/replace, no syntax highlighting
 //
 // The body is a `String` (UTF-8). Cursor is a byte index aligned to a
 // `char` boundary. All mutating ops uphold that invariant; the helpers
