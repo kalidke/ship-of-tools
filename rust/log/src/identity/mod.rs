@@ -8,3 +8,5 @@ pub mod challenge_win;
 pub mod deadline;
 pub mod exchange;
 pub(crate) mod exit_watch_macos;
+// Decision 0031: whose OS account is on the far end of an accepted loopback TCP connection.
+pub mod peer_owner;
