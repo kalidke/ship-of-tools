@@ -297,10 +297,10 @@ impl State {
             .ordered_hosts()
             .into_iter()
             .map(|host| {
-                let connected = self.host_connected.get(&host).copied().unwrap_or(false);
+                let connected = self.hosts.host_connected.get(&host).copied().unwrap_or(false);
                 let has_list = self.workspace_lists.contains_key(&host);
                 let is_active = host == self.active_host;
-                let display = host_label(&self.declared_host, &host);
+                let display = host_label(&self.hosts.declared_host, &host);
                 host_tree_node(&host, display, connected, has_list, is_active)
             })
             .collect();

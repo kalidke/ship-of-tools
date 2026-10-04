@@ -140,7 +140,7 @@ impl State {
         // connected fires no new `Connected` event, so without this
         // `self.host` kept showing whatever the PREVIOUSLY active host
         // had declared until its own next reconnect.
-        self.host = Some(host_label(&self.declared_host, &self.active_host).to_string());
+        self.host = Some(host_label(&self.hosts.declared_host, &self.active_host).to_string());
         // ADR 0042 L2a: preview_fatal is a lazily-rebuilt PROJECTION of
         // protocol_mismatch for whichever host is active (rebuild_fatal_overlay
         // only refills it when it's None) -- an active-host switch must

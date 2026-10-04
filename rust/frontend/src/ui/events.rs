@@ -22,7 +22,7 @@ impl State {
                 crate::transport::IncomingEvt::Connected {
                     session_id,
                     revision,
-                    // Already recorded into `self.declared_host` above,
+                    // Already recorded into `self.hosts.declared_host` above,
                     // before this match, keyed by `event_host` -- read
                     // back through `host_label` below rather than a
                     // second binding of the same payload field.
@@ -314,10 +314,10 @@ impl State {
         // signal, just watching the two evts that already exist.
         match &evt {
             crate::transport::IncomingEvt::Connected { .. } => {
-                self.host_connected.insert(event_host.clone(), true);
+                self.hosts.host_connected.insert(event_host.clone(), true);
             }
             crate::transport::IncomingEvt::Disconnected { .. } => {
-                self.host_connected.insert(event_host.clone(), false);
+                self.hosts.host_connected.insert(event_host.clone(), false);
             }
             _ => {}
         }

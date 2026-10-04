@@ -144,7 +144,17 @@ impl State {
                 initial_bl_pane_target(resume_matches_last_host, &persisted_geom, &active_host),
             active_workspace_id:
                 initial_active_workspace_id(cli, resume_matches_last_host, &persisted_geom),
-            host_connected: HashMap::new(),
+            hosts: crate::net::hosts::HostTable {
+                host_connected: HashMap::new(),
+                // Filled by `resumed()` from the same `PendingTransport` list
+                // `conns` came from, before that list is consumed spawning
+                // each host's transport task — empty here only briefly.
+                host_transports: HashMap::new(),
+                host_resolved_dial: HashMap::new(),
+                link_gates: HashMap::new(),
+                declared_host: HashMap::new(),
+                reconnect_now: Arc::new(tokio::sync::Notify::new()),
+            },
             workspace_lists: HashMap::new(),
             pending_destroy_target: None,
             host: None,
@@ -186,18 +196,11 @@ impl State {
             pending_start_path: cli.start_path.clone(),
             start_path_fired: None,
             conns,
-            // Filled by `resumed()` from the same `PendingTransport` list
-            // `conns` came from, before that list is consumed spawning
-            // each host's transport task — empty here only briefly.
-            host_transports: HashMap::new(),
             leases,
             #[cfg(windows)]
             own_state_root: crate::paths::sot_state_dir().map(|d| sot_log::state_dir::state_dir_hash(&d)),
             not_ended_shown: None,
             leaving: None,
-            host_resolved_dial: HashMap::new(),
-            link_gates: HashMap::new(),
-            declared_host: HashMap::new(),
             last_declared_sessions: None,
             active_host,
             monitor_hub,
@@ -292,7 +295,6 @@ impl State {
             current_md_node_id: None,
             current_md_workspace_id: None,
             needs_md_reflow: false,
-            reconnect_now: Arc::new(tokio::sync::Notify::new()),
             // ADR 0035: each host's `Connected` evt (remote + proxy) adds it
             // here; `resumed()` spawns the listener manager.
             proxy_capable_hosts: std::collections::HashSet::new(),

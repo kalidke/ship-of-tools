@@ -17,8 +17,8 @@ through the channel types below.
 - The only writes of `sot_protocol::ssh_bridge::LinkGate`: up at any hello reply (`run_session`), down when the session
   ends (`run_protocol`).
 - The window's identity (`identity::FrontendIdentity`, `identity::frontend_identity`) and the per-host helpers
-  (`hosts::resolve_default_host`, `hosts::lane_dial`) live here; the per-host table is still a set of `State` fields in
-  the UI module, which move here later.
+  (`hosts::resolve_default_host`, `hosts::lane_dial`) live here; the per-host table is `hosts::HostTable`, held by the
+  window's `State` as `hosts` and written from `ui/`.
 
 ## Promises
 - Events carry the dial `HostKey`; the daemon's declared host is display only (`IncomingEvt` tagging in `transport`).
@@ -40,7 +40,7 @@ through the channel types below.
 
 ## Files
 - `dial.rs`: the connection set from `--dial` and `--socket`.
-- `hosts.rs`: per-host connection helpers: the default and monitor host, a not-yet-spawned transport, the lane dial.
+- `hosts.rs`: per-host connection helpers: the default and monitor host, a not-yet-spawned transport, the lane dial, and `HostTable`, the per-host connection table.
 - `identity.rs`: this frontend's one declared identity and its `fe@<host>` address.
 - `mod.rs`: declares the five parts.
 - `state.rs`: the persisted reconnect memory, one `session-<host>.json` per host.

@@ -357,47 +357,8 @@ struct State {
         tokio::sync::mpsc::UnboundedSender<OutgoingReq>,
     )>,
     // net/hosts.rs (fe-net): the per-host connection table.
-    /// Per-host connection status, derived from each connection's own
-    /// `Connected`/`Disconnected`/`ProtocolMismatch` events (ADR 0042 L2a —
-    /// no new wire signal). Absent or `false` = unreachable (never
-    /// connected, or currently reconnecting); `true` = connected. The
-    /// Sessions tree's host nodes read this to badge status and grey an
-    /// unreachable host's (retained) workspace rows.
-    host_connected: HashMap<crate::dial::HostKey, bool>,
-    /// ADR 0045 decision 1: each host's own `TransportConfig` (its
-    /// `lane.connect` bridge dial), so the session pane's capsule attach
-    /// can reach THAT row's daemon — never a supervisor socket or a
-    /// state-dir path directly. Filled once, from the same
-    /// `PendingTransport` list `conns` is built from, before `resumed()`
-    /// consumes it (`spawn_pane_attach_term` is the only reader).
-    host_transports: HashMap<crate::dial::HostKey, crate::transport::TransportConfig>,
-    /// ADR 0045 decision 1 (Codex review, lane B5 discharge): which
-    /// transport each host's CONTROL connection actually resolved to
-    /// (`ResolvedDial`'s own doc) — recorded from every `Connected` evt,
-    /// consulted by `lane_dial`/`spawn_pane_attach_term` so the capsule
-    /// lane dials the SAME endpoint, never a second independent guess.
-    /// Absent for a host that hasn't connected yet.
-    host_resolved_dial: HashMap<crate::dial::HostKey, ResolvedDial>,
-    /// One link gate per host (`sot_protocol::ssh_bridge::LinkGate`): the
-    /// host's control transport writes it, and every other site that starts
-    /// an ssh login to the host (lane dials, the page proxy) asks it.
-    /// Always taken through `entry().or_default()`, so there is exactly one.
-    link_gates: HashMap<crate::dial::HostKey, sot_protocol::ssh_bridge::LinkGate>,
-    /// ADR 0046 decision 1 (revised): the daemon's own declared identity
-    /// for each dial — `HostKey` stays the stable dial label. Read by
-    /// `host_label` (display: Hosts mode, Sessions labels, the status
-    /// line, log lines) AND, since the session-listing brief, by the
-    /// `Workspaces`/`Connected` event arms to decide whether a dial is
-    /// the LOCAL daemon (its declared host equals `frontend_identity().host`)
-    /// — the only thing that gates `fe.sessions`. Absent for a host that
-    /// hasn't completed hello yet.
-    declared_host: HashMap<crate::dial::HostKey, String>,
-    /// F5 fires this to collapse the transport's exponential-backoff
-    /// sleep and attempt an immediate reconnect — useful when wifi
-    /// flickers and the user knows it's back before the current
-    /// backoff cycle would have noticed. Held on State (not App) so
-    /// the keyboard handler reaches it via &mut state.
-    reconnect_now: Arc<tokio::sync::Notify>,
+    /// fe-net's per-host connection table (F/net/hosts.rs).
+    hosts: crate::net::hosts::HostTable,
     // lease.rs (lifecycle): the window's leases and its leave.
     leases: Arc<crate::lease::Leases>,
     /// This window's own state root, as the daemon names it in a granted

@@ -27,7 +27,7 @@ impl State {
         // must not overwrite what the status line shows for the
         // host the user is actually looking at.
         if event_host == self.active_host {
-            self.host = Some(host_label(&self.declared_host, &event_host).to_string());
+            self.host = Some(host_label(&self.hosts.declared_host, &event_host).to_string());
             self.daemon_root_basename = project_root.as_deref().and_then(|p| {
                 p.rsplit(['/', '\\'])
                     .next()

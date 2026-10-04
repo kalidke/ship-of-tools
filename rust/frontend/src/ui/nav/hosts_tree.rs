@@ -175,10 +175,10 @@ impl State {
         self.ordered_hosts()
             .into_iter()
             .map(|name| {
-                let connected = self.host_connected.get(&name).copied().unwrap_or(false);
+                let connected = self.hosts.host_connected.get(&name).copied().unwrap_or(false);
                 let is_active = name == self.active_host;
                 let is_default = default_name == Some(name.as_str());
-                let display = host_label(&self.declared_host, &name);
+                let display = host_label(&self.hosts.declared_host, &name);
                 hosts_mode_row(&name, display, connected, is_active, is_default)
             })
             .collect()

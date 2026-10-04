@@ -270,14 +270,14 @@ impl State {
         // hasn't resolved a transport yet" (transient — a `Connected` evt
         // may land any moment; leaves `pane_dial_error` untouched so the
         // ordinary reconnect retry, gated on it below, stays enabled).
-        let Some(config) = self.host_transports.get(host) else {
+        let Some(config) = self.hosts.host_transports.get(host) else {
             let msg = format!("'{host}' has no transport configured");
             self.pane_dial_error = Some(msg.clone());
             self.status = msg;
             self.pane_hold = None;
             return false;
         };
-        let Some(resolved) = self.host_resolved_dial.get(host).cloned() else {
+        let Some(resolved) = self.hosts.host_resolved_dial.get(host).cloned() else {
             self.status = format!("'{host}' not yet connected — capsule attach waiting");
             self.pane_hold = None;
             return false;
@@ -285,7 +285,7 @@ impl State {
         // ADR 0045 decision 1 (Codex review): dials the SAME endpoint the
         // control transport already resolved for this host — never a
         // second, independent preference guess (`lane_dial`'s own doc).
-        let gate = self.link_gates.entry(host.clone()).or_default().clone();
+        let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
         let Some((dial, token)) = lane_dial(config, resolved, &gate) else {
             let msg = format!("'{host}' has no usable transport for its resolved connection");
             self.pane_dial_error = Some(msg.clone());

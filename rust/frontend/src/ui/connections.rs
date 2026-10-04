@@ -83,7 +83,7 @@ impl State {
     /// prevents two dials from ever reaching the same daemon in the first
     /// place, restored for exactly this reason.
     pub(in crate::ui) fn record_declared_host(&mut self, label: &HostKey, declared: String) {
-        self.declared_host.insert(label.clone(), declared);
+        self.hosts.declared_host.insert(label.clone(), declared);
     }
 }
 

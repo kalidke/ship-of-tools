@@ -33,12 +33,12 @@ impl ApplicationHandler for App {
                     // consumes `transports` — the session pane's capsule
                     // attach (`spawn_pane_attach_term`) reads this to build
                     // that row's own daemon dial.
-                    state.host_transports = transports
+                    state.hosts.host_transports = transports
                         .iter()
                         .map(|(host, config, _)| (host.clone(), config.clone()))
                         .collect();
                     for (host, config, req_rx) in transports {
-                        let gate = state.link_gates.entry(host.clone()).or_default().clone();
+                        let gate = state.hosts.link_gates.entry(host.clone()).or_default().clone();
                         crate::transport::spawn(
                             rt,
                             host,
@@ -46,7 +46,7 @@ impl ApplicationHandler for App {
                             evt_tx.clone(),
                             req_rx,
                             state.window.clone(),
-                            state.reconnect_now.clone(),
+                            state.hosts.reconnect_now.clone(),
                             gate,
                             state.leases.clone(),
                         );

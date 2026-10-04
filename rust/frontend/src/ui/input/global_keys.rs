@@ -110,7 +110,7 @@ pub(in crate::ui) fn window_chords(state: &mut State, key: KeyPress<'_>, label: 
         // them (arbitrary which); `notify_waiters()` wakes
         // every task CURRENTLY awaiting it, matching "reconnect
         // now" meaning every connection, not a coin flip.
-        state.reconnect_now.notify_waiters();
+        state.hosts.reconnect_now.notify_waiters();
         state.last_key = Some(label);
         state.window.request_redraw();
         return Break(());

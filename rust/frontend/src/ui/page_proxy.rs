@@ -110,8 +110,8 @@ impl State {
         let target = Self::resolve_proxy_target(
             host,
             &self.proxy_capable_hosts,
-            &self.host_resolved_dial,
-            &self.host_transports,
+            &self.hosts.host_resolved_dial,
+            &self.hosts.host_transports,
         );
         let (recipe, token) = match &target {
             ProxyTarget::NotNeeded => return true,
@@ -123,7 +123,7 @@ impl State {
             }
             ProxyTarget::Dial(recipe, token) => (recipe.clone(), token.clone()),
         };
-        let gate = self.link_gates.entry(host.clone()).or_default().clone();
+        let gate = self.hosts.link_gates.entry(host.clone()).or_default().clone();
         let Some(tx) = self.proxy_listener_tx.as_ref() else {
             return false; // past NotNeeded a proxy IS needed, and there's no manager to arm one
         };

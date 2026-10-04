@@ -42,7 +42,7 @@ impl State {
                 (logo_w, logo_h)
             });
             let items: Vec<StripItem> = strip_items(&self.workspace_slugs, |h| {
-                strip_truncate(host_label(&self.declared_host, h))
+                strip_truncate(host_label(&self.hosts.declared_host, h))
             });
             // Every wheel is full size, and the layout reserves exactly that
             // and nothing more: which ship you steer is spent in the box name's
@@ -216,7 +216,7 @@ impl State {
             &item_positions,
             &item_widths,
             &self.active_host,
-            |h| self.host_connected.get(h).copied().unwrap_or(false),
+            |h| self.hosts.host_connected.get(h).copied().unwrap_or(false),
             wheel_w,
             self.cell_w,
             hull_h,

@@ -28,7 +28,7 @@ impl State {
         // recorded `Local` and disarmed its proxy). There is no
         // "peer address unavailable" arm to port: a recipe
         // cannot fail to be observed the way `peer_addr()` could.
-        self.host_resolved_dial.insert(event_host.clone(), resolved.clone());
+        self.hosts.host_resolved_dial.insert(event_host.clone(), resolved.clone());
         // ADR 0035: arm the proxy for THIS host only when its own
         // daemon can proxy (capability) AND this FE actually
         // connected to it remotely (not the local pipe). Keyed
@@ -270,7 +270,7 @@ impl State {
             // shorthand expands to `tracing::field::display`
             // and a same-named local does not play well with
             // that macro's hygiene.)
-            let shown = host_label(&self.declared_host, &event_host);
+            let shown = host_label(&self.hosts.declared_host, &event_host);
             tracing::info!(host = %shown, %reason, "non-active host disconnected");
         }
     }
@@ -515,7 +515,7 @@ impl State {
         // changed since the last send, tell every OTHER
         // connection so a hub that never sees this box's rows
         // directly can list them.
-        if self.declared_host.get(&event_host) == Some(&frontend_identity().host) {
+        if self.hosts.declared_host.get(&event_host) == Some(&frontend_identity().host) {
             if let Some(rows) = self.workspace_lists.get(&event_host) {
                 let sessions = declared_sessions_from(rows);
                 if self.last_declared_sessions.as_ref() != Some(&sessions) {
