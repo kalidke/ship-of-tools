@@ -8,8 +8,9 @@ use super::*;
 /// preserved across switches: each (mode, scope) keeps its own tree in
 /// `TreeStore`, and `enter_mode` swaps the parked view (cursor, expansion,
 /// scroll) back in while the refetch refreshes it in place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub(in crate::ui) enum Mode {
+    #[default]
     Files,
     Modules,
     Sessions,

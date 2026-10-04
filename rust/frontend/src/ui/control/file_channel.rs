@@ -15,12 +15,7 @@ impl State {
         let Some(path) = fe_state_path() else {
             return;
         };
-        let mode = match self.mode {
-            Mode::Files => "files",
-            Mode::Modules => "modules",
-            Mode::Sessions => "sessions",
-            Mode::Hosts => "hosts",
-        };
+        let mode = self.mode.label();
         let focus = match self.focus {
             PaneFocus::NavTree => "nav",
             PaneFocus::Preview => "preview",

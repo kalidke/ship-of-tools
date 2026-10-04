@@ -1,4 +1,5 @@
 //! Contextual help is a view of the dispatch catalog, never a second shortcut list.
+use crate::ui::nav::Mode;
 use crate::ui::input::keybindings::{Action, ActionSpec, KeyBindings, Scope, ACTIONS};
 use ratatui::{
     layout::Rect,
@@ -19,14 +20,6 @@ pub enum Pane {
     Monitor,
     Agent,
     Help,
-}
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Mode {
-    #[default]
-    Files,
-    Modules,
-    Sessions,
-    Hosts,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Confirmation {

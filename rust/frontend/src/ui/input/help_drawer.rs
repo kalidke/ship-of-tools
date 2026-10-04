@@ -25,8 +25,7 @@ impl State {
         let file = if pane == help::Pane::Preview { self.previewed_files_path() }
             else if pane == help::Pane::Nav { self.cursored_files_path() } else { None };
         help::Context {
-            pane, mode: match self.mode { Mode::Files => help::Mode::Files, Mode::Modules => help::Mode::Modules,
-                Mode::Sessions => help::Mode::Sessions, Mode::Hosts => help::Mode::Hosts },
+            pane, mode: self.mode,
             file, image: self.preview_png.is_some(),
             pages: self.preview_page.is_some_and(|(_, count)| count > 1),
             editable: self.preview_png.is_none() && self.previewed_files_path().is_some()

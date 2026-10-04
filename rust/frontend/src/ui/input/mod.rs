@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(crate) mod help;
+pub(in crate::ui) mod help;
 pub(crate) mod keybindings;
 mod help_drawer;
 mod paste;
