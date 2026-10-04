@@ -16,6 +16,10 @@
 //! directory: the test backend, and a manual sideload path for air-gapped
 //! machines (`SOT_UPDATE_FETCHER=dir:/path`).
 
+pub mod archive;
+pub mod hash;
+pub mod sums;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

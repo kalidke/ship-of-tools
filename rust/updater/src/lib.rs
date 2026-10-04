@@ -20,9 +20,7 @@
 //! A stage is complete iff its ready manifest parses and matches the wanted
 //! identity — never because a marker file merely exists.
 
-pub mod archive;
 pub mod fetch;
-pub mod hash;
 pub mod identity;
 pub mod lock;
 pub mod manifest;
@@ -31,8 +29,9 @@ pub mod platform;
 pub mod prepare;
 pub mod select;
 pub mod semver;
-pub mod sums;
 pub mod unique;
+
+pub use fetch::{archive, hash, sums};
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
