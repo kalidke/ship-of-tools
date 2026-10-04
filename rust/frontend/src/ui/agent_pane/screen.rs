@@ -1,19 +1,5 @@
 //! Which screen the agent pane paints: the held, client and blank choice, the reason overlay and the discard notice.
 
-/// DELETIONS (Codex review, lane B5 discharge): `WorkspaceRuntime` and
-/// both `workspace_runtime` caches (`State`'s own and its staging
-/// `FreshWorkspaceCaches` twin) are gone — a write-only cache with no
-/// reader (ADR 0042 shrink round rule A retired its one reader,
-/// `try_attach_capsule_pane`, and ADR 0045 decision 1's `pty.open` +
-/// `PtyAttachDirect` path never consulted it either) named no invariant
-/// worth a field. `WsAutostart`/`workspace_autostart` (and the
-/// `session_name_key` helper that built its key) went the same way
-/// post-notmux: the old FE autostart-on-attach launch it fed
-/// (`pending_autostart` → `advance_autostart_scan` →
-/// `autostart_claude_in_pane`) is retired in favor of the BE tmux
-/// start-command wrapper (`attach_session_to_bl`'s own doc), which left
-/// it write-only too.
-
 /// ADR 0042 slice L1b fix 2, narrowed post-notmux: which state the
 /// session pane's input routes to RIGHT NOW — tracked independently of
 /// `Option<FeAttachClient>` because "no client yet" is genuinely

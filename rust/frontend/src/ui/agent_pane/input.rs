@@ -27,9 +27,6 @@ impl State {
         }
     }
 
-    /// Persist the current PNG view-state (zoom + centre) under its
-    /// `(parent_dir, dims)` key so a sibling render of the same size
-    /// can restore it on the next preview load.
     /// Convert a physical-pixel cursor position into LLM-pane cell coords
     /// `(row, col)`. `strict` rejects positions outside the pane rect
     /// (used for mouse-down — don't start a selection on click outside);

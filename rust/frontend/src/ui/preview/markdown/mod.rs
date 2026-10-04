@@ -245,10 +245,6 @@ struct Ctx {
     /// bits of `Attrs::metadata` so the chrome can group per-line rects
     /// back into per-block panels. Zero means "not inside a block".
     code_block_id: usize,
-    /// GFM ~~strike~~ — cosmic-text Attrs doesn't expose a real strike
-    /// channel, so the Text arm appends U+0336 (combining long stroke
-    /// overlay) after every non-space char in any Text descendant of a
-    /// Strikethrough node. Approximation, but renders visibly.
     strike: bool,
     /// List-nesting depth — incremented by each List ancestor so nested
     /// Items render with leading whitespace proportional to depth.

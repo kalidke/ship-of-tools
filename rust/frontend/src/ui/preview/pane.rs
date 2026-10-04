@@ -109,7 +109,6 @@ pub(in crate::ui) fn resolve_preview_changed(
     files_node_id_under_root(event_path?, known_active_root?)
 }
 
-/// Test SVG used as a placeholder until kernel-driven previews land. Mimics
 /// Offline-mode markdown placeholder. The real preview content comes from
 /// the backend via `preview.get` once transport connects; this string is
 /// only what the pane shows when no connection resolved.
