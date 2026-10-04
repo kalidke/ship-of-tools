@@ -353,9 +353,6 @@ impl TreeView {
 }
 
 impl State {
-    /// Drain incoming transport events and apply them. Called at the top of
-    /// each redraw — `request_redraw` from the transport task is what makes
-    /// drains actually happen.
     /// Dispatch an expand request for the currently-selected row, mirroring
     /// what the Enter/Right keyboard arm does. Returns true when a request
     /// was queued; callers can use that to chain (e.g. `--auto-expand`

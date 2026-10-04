@@ -2,9 +2,7 @@
 // feature (the `d` key in NavTree). Pairs with the backend `file.download`
 // op (chunked trailing-blob streaming). This module owns the "where + under
 // what name does a downloaded file land locally" decision; the destination
-// directory comes from `Settings::download_dir()` and the transport /
-// chunk-reassembly half is wired in transport.rs / gpu.rs once the backend
-// op lands.
+// directory comes from `Settings::download_dir()`.
 
 use std::path::{Path, PathBuf};
 

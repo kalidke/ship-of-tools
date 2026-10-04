@@ -348,11 +348,6 @@ impl State {
         true
     }
 
-    /// Sessions-mode (B4): finalize the typed label. Derives the tmux
-    /// session name + project directory via the same slug rule the
-    /// backend uses (paths::slug) so a `--label foo` daemon and the
-    /// frontend agree on the name. `cwd = $SOT_PROJECTS_ROOT/<label>`
-    /// (defaults to `$HOME/julia_dev/<label>` on Linux).
     /// Sessions-mode (ADR 0013): if the selected row is a session or a
     /// pane, return the session name (panes have a `session` payload).
     /// `None` for any other row kind.
