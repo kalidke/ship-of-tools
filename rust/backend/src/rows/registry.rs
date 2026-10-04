@@ -37,9 +37,6 @@ impl Workspaces {
                     ws.agent_name(),
                     ws.task.clone(),
                 );
-                // `meta_only` defaults `runtime` to "tmux" — the incoming
-                // `ws`'s own value (not that default) is the new metadata
-                // that should win here, same as every other field above.
                 w.runtime = ws.runtime.clone();
                 w.account = Mutex::new(ws.account());
                 w

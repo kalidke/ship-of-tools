@@ -174,13 +174,6 @@ struct Inner {
     /// `monitor.*` ops query its history. `None` only before startup wires it
     /// (and in the `Default` impl used by tests).
     monitor_hub: Option<crate::monitor::MonitorHub>,
-    /// Pane-derived agent work-state cache (ADE state-nav), keyed by
-    /// `session_name`. A background task (spawned in `server::run`) captures
-    /// each workspace's live claude pane every ~2s and writes the derived
-    /// activity ("working" / "idle" / "" for no-claude) here. `workspace.list`
-    /// reads it as the authoritative working/idle signal — the `Stop`-hook
-    /// `comm-status idle` only ever reports idle, so an actively-generating
-    /// agent reads idle without this. Empty until the first capture tick.
     /// The shared preview.changed bus for per-workspace watcher spawns
     /// (2026-07-10 multiwatch). Installed once at startup via
     /// `set_watch_bus`, before workspace registration; `None` in tests. No
