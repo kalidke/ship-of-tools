@@ -387,7 +387,7 @@ async fn one_batch_gives_one_line() {
 }
 
 /// Two rows declaring one handle: a wake aimed by a guess would type into
-/// someone else's session, so neither is woken (`comm_wake::run`).
+/// someone else's session, so neither is woken (`comm::wake::run`).
 #[tokio::test]
 async fn two_rows_on_one_handle_are_not_woken() {
     let _serial = SERIAL.lock().await;

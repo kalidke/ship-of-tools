@@ -16,7 +16,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - `supervisor_loop` respawns a dead kernel with a backoff from 250 ms doubling to 30 s.
 - Pluto and MathJax respawn on the next call after a death (`ensure_supervisor`).
 - The shutdown signal kills every child: kernel and Pluto select on the `Signal` passed in, MathJax and the monitor on
-  `crate::shutdown::fired()`.
+  `crate::lifecycle::child_signal::fired()`.
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
 - A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason is logged once per change
   (`should_log`).

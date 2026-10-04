@@ -6,7 +6,7 @@ process-wide signal, every exit is bounded on the OS clock, and the last window 
 lease, whether that computer's sessions end (ADR 0050).
 
 ## Owns
-- The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lease`, the file
+- The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lifecycle::lease`, the file
   `lease.rs` here).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
@@ -42,7 +42,7 @@ lease, whether that computer's sessions end (ADR 0050).
   `rows::anchor::end_default_row_run`, `comm::registry::registry::remove_comm_agents_for_workspace`; `startup::forget_rows`
   calls `rows::run::end::remove_row_files`; the plan calls `rows::run::resume::resume_all`; the drawer's end goes through
   `rows::run::end_run::end_run`.
-- Child owners hold a `ChildGuard` or await `fired()` (`shutdown::process()` is passed in): `kernel`, `repl`, `pluto`,
+- Child owners hold a `ChildGuard` or await `fired()` (`child_signal::process()` is passed in): `kernel`, `repl`, `pluto`,
   `mathjax`, `monitor`, `hub_link`, the quarto run in `pages/ops.rs`, and `topology/dial.rs`.
 - `update.rs` exits through `Leases::while_open`.
 - The window: rust/frontend/src/lease.rs holds the lease connection (`notice`, `owed`, `leave_all`, `Leaving::poll`).
