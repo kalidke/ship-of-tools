@@ -7,8 +7,8 @@
 # rust\target\release without hitting the running-exe file lock. On a green
 # build we drop the relaunch sentinel; the frontend's watcher notices it and
 # exits with code 75, and launch-sot.ps1 re-stages + respawns with
-# --relaunched (reopening the Terminal drawer and running the resume command,
-# default `claude --permission-mode auto --continue /sot-session-start`).
+# --relaunched (which reopens the Terminal drawer on a plain
+# shell; ADR 0041 retired the resume command).
 #
 # Build failures leave the app running untouched — nothing is signalled.
 #

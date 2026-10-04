@@ -833,7 +833,7 @@ if (-not $localDaemonReady) {
 # live — Windows locks a running .exe, so building in place would fail the
 # link step. On exit code 75 ("rebuild done, relaunch me") we re-stage the
 # fresh binary and respawn it with --relaunched (which reopens the Terminal
-# drawer and runs the resume command). Exit code 76 ("converge") does the
+# drawer). Exit code 76 ("converge") does the
 # same respawn but FIRST re-runs Invoke-SelfUpdatePrelude + Invoke-
 # FreshnessPass + Invoke-LocalDaemonEnsure -- relaunch-sot.ps1 -Converge
 # writes `converge` as the sentinel file's content instead of a bare
@@ -843,8 +843,8 @@ if (-not $localDaemonReady) {
 # A converge that finds the launcher code on disk changed re-invokes the
 # launcher in this process instead of finishing the pass (ADR 0017, 0.6.6).
 #
-# SOT_REPO_DIR lets the frontend find the local repo (Terminal cwd for
-# `claude --continue`, and the build dir for the relaunch helper).
+# SOT_REPO_DIR lets the frontend find the local repo (the Terminal
+# drawer's cwd, and the build dir for the relaunch helper).
 $RelaunchExitCode = 75
 $ConvergeExitCode = 76
 # The supervisor holds a lease on the local daemon across every window-less
@@ -935,7 +935,7 @@ $relaunchNext = [bool]$Relaunched
 $splashDismissed = $false
 Write-SupLog "supervisor start (relaunched=$Relaunched) depth=$global:SotLauncherDepth ws=$([int]([System.Diagnostics.Process]::GetCurrentProcess().WorkingSet64 / 1MB))MB code=$(if ($script:launcherCodeId) { $script:launcherCodeId } else { 'unknown' })"
 # A supervisor rolls back AT MOST ONCE, matching the Unix supervisor's $ROLLED
-# in scripts/install.sh. What it actually guards is narrow: a Remove-Item that
+# in scripts/lib/sot-daemon.sh. What it actually guards is narrow: a Remove-Item that
 # failed to clear the marker, and a converge that applies again after a
 # rollback. It is not protection against walking backwards through releases --
 # that cannot happen here, since a rollback clears the marker twice over and
@@ -978,7 +978,7 @@ try {
         # release has proven itself. That is the rule the Unix supervisor
         # already states in as many words — "Roll back ONLY inside the
         # just-applied health window — an unrelated crash weeks later must not
-        # downgrade a healthy release" (scripts/install.sh).
+        # downgrade a healthy release" (scripts/lib/sot-daemon.sh).
         #
         # The bound is two hours rather than the Unix half-hour, because the
         # Windows timeline differs in one direction: on the just-applied path
@@ -1099,7 +1099,7 @@ try {
         Write-SupLog "frontend pid=$($frontend.Id) exited code=$($frontend.ExitCode) uptime=$([int]$feUptime.TotalSeconds)s -> relaunchNext=$relaunchNext converge=$convergeRequested"
 
         # A healthy run closes the crash-loop health window -- the twin of
-        # scripts/install.sh's `[ "$RUNTIME" -ge 60 ] && rm -f "$MARKER"`, same
+        # scripts/lib/sot-daemon.sh's `[ "$RUNTIME" -ge 60 ] && rm -f "$MARKER"`, same
         # number so the two platforms keep one rule. Once this release has run
         # properly once, a later fast exit is not its fault, and nothing may be
         # rolled back on its account.

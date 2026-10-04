@@ -438,7 +438,7 @@ function Restore-Previous([string]$why) {
 # Stale-aside binaries from an earlier apply (below): a copy still pinned
 # by a live capsule supervisor at the time fails Remove-Item silently and
 # is simply left for next time -- same sweep launch-sot.ps1 runs for its
-# dev-tree rebuild (~1486-1500).
+# dev-tree rebuild (Invoke-FreshnessPass, sot-freshness.ps1).
 Get-ChildItem -Path (Join-Path $BinDir '*-stale-*.exe') -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
@@ -463,8 +463,8 @@ foreach ($b in @('sot.exe', 'sotd.exe', 'sot-capsule.exe')) {
             # Renaming a mapped image IS allowed though (the running
             # process keeps executing the renamed file until it exits), so
             # free the canonical path that way instead of giving up -- the
-            # same move launch-sot.ps1 makes for its dev-tree rebuild
-            # (~1486-1500). .prev already holds a copy taken above, so
+            # same move Invoke-FreshnessPass (sot-freshness.ps1) makes for the
+            # dev-tree rebuild. .prev already holds a copy taken above, so
             # -Rollback is unaffected.
             $staleName = "$([System.IO.Path]::GetFileNameWithoutExtension($b))-stale-$(Get-Date -Format 'yyyyMMdd-HHmmss').exe"
             try {

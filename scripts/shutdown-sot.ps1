@@ -33,7 +33,7 @@
 #
 # The remote `sotd` is LEFT RUNNING on purpose (persistent-backend model, ADR
 # 0010/0013): workspaces, tmux sessions, kernel + REPL survive an FE detach so
-# `claude --continue` resumes. This tears down only the LOCAL frontend + its
+# a returning window finds them still running. This tears down only the LOCAL frontend + its
 # transport - and, per step 5, the LOCAL sotd - never remote state.
 #
 # The LOCAL sotd's own capsule WORKSPACES end with it: when the frontend's
