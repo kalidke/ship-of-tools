@@ -8,7 +8,7 @@ daemon's rows subsystem; charter: `rust/backend/src/rows/CLAUDE.md`.
 ## Files
 - `mod.rs`: declares the folder's modules and carries the row-scope doc
 - `state_root.rs`: `STATE_ROOT_HINT`, `state_dir_for`, `qualified_state_root`, `state_root_inside_project` and the per-OS volume probes
-- `detach.rs`: `StartMode`, the supervise flags, the `sot-capsule` sibling check and `spawn_detached_supervisor` with its three `spawn_detached` arms
+- `detach.rs`: the supervise flags over `sot_log::supervisor::StartMode`, the `sot-capsule` sibling check and `spawn_detached_supervisor` with its three `spawn_detached` arms
 - `row_scope.rs` (Linux): the row's scope record, `capture`, `listed` and the aimed `end`
 - `row_scope_aim.rs` (Linux): `aim`, the pure rule that decides which scope may be killed; no dependencies
 

@@ -5,6 +5,7 @@ use crate::rows::gate::StartPermit;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use sot_log::supervisor::StartMode;
 #[cfg(target_os = "linux")]
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
@@ -29,16 +30,6 @@ pub fn mode_flag(mode: StartMode) -> &'static str {
         StartMode::Start => "--start",
         StartMode::Resume => "--resume",
     }
-}
-
-/// Mirrors `sot_log::supervisor::StartMode` (portable re-statement: that
-/// type lives in a platform-gated module, and this crate's own pure
-/// tests need to name a mode without pulling in a platform-specific
-/// type).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartMode {
-    Start,
-    Resume,
 }
 
 /// The daemon's capsule runtime — spawning, watching, querying, and

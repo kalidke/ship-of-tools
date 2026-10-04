@@ -4,8 +4,9 @@ use super::observer::observe_with_adoption;
 use super::probe::phase_of;
 use super::start::settle_after_spawn;
 use super::UNREACHABLE_PHASE;
-use crate::rows::spawn::detach::{spawn_detached_supervisor, StartMode};
+use crate::rows::spawn::detach::spawn_detached_supervisor;
 use crate::rows::Workspaces;
+use sot_log::supervisor::{StartMode, EXIT_CLEAN, EXIT_CONTENDED, EXIT_TERMINAL};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -29,22 +30,6 @@ pub const RESTART_BACKOFFS: [std::time::Duration; 5] = [
 pub const MAX_RESTARTS_PER_WINDOW: usize = 5;
 
 pub const RESTART_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// `sot-capsule supervise`'s own clean-exit code (`EXIT_CLEAN`).
-const EXIT_CLEAN: i32 = 0;
-/// `sot-capsule supervise`'s own terminal-failure exit code
-/// (`EXIT_TERMINAL`) — unconditionally terminal to
-/// [`wait_and_classify`], never restarted (rule F, shrink round).
-const EXIT_TERMINAL: i32 = 69;
-/// `sot-capsule supervise`'s own fence-contention exit code
-/// (`sot_log::supervisor::EXIT_CONTENDED` — see that const's own doc
-/// for the full reasoning): the authority fence was already held by
-/// a LIVE supervisor. Distinct from [`EXIT_TERMINAL`] in
-/// [`wait_and_classify`] — NEVER a failure of this workspace's own
-/// run, only proof some other leg (almost always the previous
-/// authority for this SAME state dir, still finishing its own
-/// teardown) currently holds the fence.
-const EXIT_CONTENDED: i32 = 70;
 
 /// What one leg's exit means for the watchdog's own decision —
 /// ADR 0042 L1a, Codex review finding 6; rule F (shrink round)

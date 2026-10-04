@@ -5,7 +5,7 @@ use super::probe::probe;
 use super::start::{reset_run, start_supervisor};
 use super::{FOREIGN_PHASE, NEVER_STARTED_PHASE, UNREACHABLE_PHASE};
 use crate::agents::argv::agent_argv;
-use crate::rows::spawn::detach::StartMode;
+use sot_log::supervisor::StartMode;
 use crate::rows::Workspaces;
 use std::path::Path;
 use std::time::Duration;

@@ -72,7 +72,7 @@ impl RestartEffects for LiveSupervisor {
         crate::rows::run::start::start_supervisor(
             &plan.state_root,
             &plan.row.workspace_id,
-            crate::rows::spawn::detach::StartMode::Resume,
+            sot_log::supervisor::StartMode::Resume,
             &plan.argv,
             &plan.row.project_root,
             &plan.row.agent_name(),
