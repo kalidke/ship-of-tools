@@ -16,6 +16,7 @@
 //! fixtures and the crash/fault harness — those exercise the writer and
 //! recovery paths, not this reader-side pass.
 
+use crate::store::dedupe::FactObj;
 use crate::store::envelope::{
     validate_blob_ref, validate_str128, ActorKind, BlobRef, Class, ExchangePhase, InputContent,
     InputFactKind, LifecycleKind, RefKind, Seq,
@@ -33,15 +34,6 @@ struct TakeObj {
     take_epoch: u64,
     #[serde(default)]
     holder: Option<String>,
-}
-
-/// `lifecycle.kind=input_fact`'s `fact` object.
-#[derive(Deserialize)]
-struct FactObj {
-    input: Seq,
-    fact: InputFactKind,
-    #[serde(default)]
-    intent: Option<Seq>,
 }
 
 /// Per-idem_key WAL state (ADR 0039 "Input WAL + dedupe" lattice).

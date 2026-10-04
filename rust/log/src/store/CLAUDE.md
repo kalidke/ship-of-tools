@@ -35,6 +35,7 @@ open-time repair may do; `voyage.rs` `VoyageStore::open_prepared` for anything t
 - One writer per voyage: `VoyageStore::open_prepared` pins the root (`host::PinnedDir`), takes `writer.lock` through the
   pin and checks the parent-death lease before it reads any history.
 - The dedupe index is folded in that same walk and fails closed on history it cannot trust (`dedupe::walk_segment`).
+  The fold and the verifier parse an `input_fact`'s `fact` object with the one `dedupe::FactObj`.
 - The layout names are `voyage::SEG_DIR`, `BLOBS_DIR` and `WRITER_LOCK`; code joins these, and tests spell the literals
   because the layout is part of the format.
 - A blob is published temp, fsync, no-clobber rename; a collision with different bytes is loud

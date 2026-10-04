@@ -56,6 +56,15 @@ pub(crate) fn parse_idem_key(s: &str) -> Option<IdemKey> {
     Some(out)
 }
 
+/// `lifecycle.kind=input_fact`'s `fact` object, parsed by the fold and the verifier.
+#[derive(serde::Deserialize)]
+pub(super) struct FactObj {
+    pub(super) input: Seq,
+    pub(super) fact: InputFactKind,
+    #[serde(default)]
+    pub(super) intent: Option<Seq>,
+}
+
 /// Walks one segment's frames EXACTLY ONCE (finding 9: the previous version
 /// traversed `reader.frames` a second time for this, even though there was
 /// only ever one disk read/decode; `open_for_writing`'s max-take-epoch
@@ -125,8 +134,8 @@ pub(super) fn walk_segment(
             continue;
         }
         // Round-2 review, finding 6: the fold goes fully TYPED and
-        // fallible here -- `serde_json::from_value` into the same shape
-        // `store/verify/mod.rs`'s own `FactObj` deserializes (`input: Seq, fact:
+        // fallible here -- `serde_json::from_value` into the one `FactObj`
+        // the fold and the verifier both parse (`input: Seq, fact:
         // InputFactKind, intent: Option<Seq>`), so a missing/malformed
         // `fact` object, a missing/non-object `input` seq, or an unknown
         // fact-kind string are ALL a single `Err` instead of three
@@ -134,13 +143,6 @@ pub(super) fn walk_segment(
         // enum (`#[serde(rename_all = "snake_case")]`), so an
         // unrecognized string fails the deserialize itself -- no separate
         // catch-all arm needed anymore.
-        #[derive(serde::Deserialize)]
-        struct FactObj {
-            input: Seq,
-            fact: InputFactKind,
-            #[serde(default)]
-            intent: Option<Seq>,
-        }
         let fact_value = p.get("fact").ok_or_else(|| {
             Error::Schema(format!("frame {:?}: input_fact is missing its fact object", f.seq))
         })?;
