@@ -453,6 +453,9 @@ mod request;
 pub(crate) use request::OutgoingReq;
 use request::send_request;
 
+mod ops;
+use ops::*;
+
 mod reply;
 use reply::{handle_response_frame, PendingGuard, PendingKind};
 
