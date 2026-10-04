@@ -475,6 +475,9 @@ async fn restart_with_holders_no_lease_shuts_down() {
 /// #1: a handover's deadline is the one recorded before the restart; a
 /// lease inside it keeps everything running. Without one, the shutdown's
 /// decision (the record losing its deadline) is timed, not the daemon's exit.
+/// The restart must land inside the countdown; the test says so when it
+/// does not. A deadline that passes while the daemon is down is
+/// `handover_passed_while_down_cleans_up`.
 #[tokio::test]
 async fn handover_countdown_survives_restart() {
     let _serial = SERIAL.lock().await;
@@ -495,6 +498,12 @@ async fn handover_countdown_survives_restart() {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         env.spawn_sotd_with_env(&[("SOT_TEST_HANDOVER_BOUND_MS", &bound)]);
+        let _ = poll_until(|| try_connect(&env.socket_path), BOUND, "the restarted daemon's socket").await;
+        assert!(
+            now_ms() < until,
+            "the restart's start ran at or after the deadline; this test needs it inside the \
+             countdown (a start after a passed handover plans Cleanup and stays up, ADR 0050 Start 2-3)"
+        );
         assert_adopted(&env, &row, "a pending handover").await;
         if lease_in_time {
             let mut conn = granted_lease(&env).await;
@@ -509,6 +518,9 @@ async fn handover_countdown_survives_restart() {
             // Timed at the decision, not the exit: shutdown step 1 clears the
             // record's deadline before any row is ended; ending rows is the
             // runner's time, not the deadline's.
+            // The poll is bounded, so a deadline never acted on after the
+            // restart fails the test, and one acted on 3 s or more late fails
+            // `at < until + 3000`.
             let at = poll_until(
                 || async {
                     let text = match std::fs::read_to_string(record_path(&env)) {
@@ -540,6 +552,35 @@ async fn handover_countdown_survives_restart() {
             assert!(!row_toml(&env, &row.slug).exists(), "the shutdown left the row registered");
         }
     }
+}
+
+/// ADR 0050 Start 2-3: a handover deadline that passed while the daemon was
+/// down plans Cleanup at the next start: the row is ended without a resume,
+/// the deadline is cleared, and the daemon stays up.
+#[tokio::test]
+async fn handover_passed_while_down_cleans_up() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("handpast");
+    env.spawn_sotd();
+    let row = ready_row(&env, "handpast-row", None).await;
+    env.kill_daemon_bounded().await;
+    let rec = serde_json::json!({
+        "v": 1,
+        "boot": sot_log::identity::challenge::boot_identity().unwrap_or_default(),
+        "holders": [],
+        "handover_until_ms": now_ms().saturating_sub(1000),
+        "closing": false,
+        "not_ended": 0,
+        "forget": [],
+    });
+    std::fs::create_dir_all(state_dir(&env)).unwrap();
+    std::fs::write(record_path(&env), serde_json::to_vec(&rec).unwrap()).unwrap();
+
+    env.spawn_sotd();
+    assert_ended_and_forgotten(&env, &row, "a handover that passed while the daemon was down").await;
+    poll_until(|| async { read_record(&env).is_none().then_some(()) }, BOUND, "the Cleanup to clear the passed deadline").await;
+    assert!(wait_exit(&env, Duration::from_secs(2)).is_none(), "a start after a passed handover exited instead of staying up");
+    env.kill_daemon_bounded().await;
 }
 
 /// #26: a row whose registration will not go is never resumed: it is
