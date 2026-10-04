@@ -8,12 +8,13 @@ hand-over it serves.
 - `mod.rs`: `App` and its constructor; `FRAME_BUDGET` and `NAV_FIRE_DEBOUNCE`, the frame pacing constants.
 - `exit.rs`: the Ctrl+Q prompt's key table, `request_quit`, `leave` and `finish_exit`, and `redraw_exits`.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
+- `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
 
 ## Start here
-`window_event` in handler.rs for which winit event goes where and for the redraw arm; `keyboard_input` and `route_key`
-in ui/input/keypress.rs and the pointer functions in ui/input/mouse.rs for any input change; `about_to_wait` for
-wake-up scheduling and the `[display] fullscreen_vsync_pin` setting; `request_quit` in exit.rs for how the window
-closes.
+`redraw` in frame.rs for the order of one frame; `window_event` in handler.rs for which winit event goes where and for
+the redraw arm; `keyboard_input` and `route_key` in ui/input/keypress.rs and the pointer functions in ui/input/mouse.rs
+for any input change; `about_to_wait` for wake-up scheduling and the `[display] fullscreen_vsync_pin` setting;
+`request_quit` in exit.rs for how the window closes.
 
 ## Rules
 - Every user quit goes through `request_quit`: `exit_intent` asks on Ctrl+Q and leaves at once on the close button.
@@ -21,3 +22,5 @@ closes.
 - A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`).
 - A harness instance (`ephemeral`) starts neither watcher thread (`resumed`).
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
+- A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
+  then capture, submit, present and the acks.

@@ -17,8 +17,8 @@ rust/frontend/src/ui/CLAUDE.md. ADRs 0003, 0011 and 0012 give the design.
   `finish_capture`).
 
 ## Start here
-`text.rs` for how text is shaped and drawn; `quad.rs` for bitmaps; `surface.rs` for the cell grid. The render-pass order is still in `State::redraw`
-in ../mod.rs.
+`text.rs` for how text is shaped and drawn; `quad.rs` for bitmaps; `surface.rs` for the cell grid. The render-pass order is in `State::redraw`
+in ../app/frame.rs.
 
 ## Rules
 - Chrome text and markdown shape with one `FontSystem`, lent by `TextLayer::font_system_mut`.

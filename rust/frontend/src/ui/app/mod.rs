@@ -3,6 +3,7 @@
 use super::*;
 
 mod exit;
+mod frame;
 mod handler;
 
 pub(in crate::ui) use exit::*;
