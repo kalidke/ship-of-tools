@@ -75,6 +75,8 @@ try {
             Set-Content -LiteralPath (Join-Path $Dir 'launch-sot.ps1') -Value '# launcher stand-in' -Encoding ascii
             Set-Content -LiteralPath (Join-Path $Dir 'sot-hosts.ps1') -Value $HostsText -Encoding ascii
             Set-Content -LiteralPath (Join-Path $Dir 'sot-install-layout.ps1') -Value '# layout stand-in' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $Dir 'sot-freshness.ps1') -Value '# freshness stand-in' -Encoding ascii
+            Set-Content -LiteralPath (Join-Path $Dir 'sot-lease.ps1') -Value '# lease stand-in' -Encoding ascii
         }
         $tagA = Join-Path $root 'tags\A'
         $tagB = Join-Path $root 'tags\B'
@@ -82,7 +84,7 @@ try {
         New-ScriptsDir (Join-Path $tagB 'scripts') '# hosts B'
         $idA = Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagA 'scripts')
         $idB = Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')
-        Check '3: the id is three SHA-256 hashes joined by -' ($idA -cmatch '^[0-9A-F]{64}-[0-9A-F]{64}-[0-9A-F]{64}$') "got '$idA'"
+        Check '3: the id is five SHA-256 hashes joined by -' ($idA -cmatch '^[0-9A-F]{64}(-[0-9A-F]{64}){4}$') "got '$idA'"
         Check '3: the same files give the same id' ($idA -ceq (Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagA 'scripts'))) 'the id changed between two reads'
         Check '3: a change to a dot-sourced file changes the id' ($idA -cne $idB) 'tags A and B share an id'
         $cur = Join-Path $root 'current'

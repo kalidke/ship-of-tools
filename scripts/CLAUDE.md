@@ -8,7 +8,7 @@ and the launch path fails open: no update step can stop a window from starting.
 ## Owns
 - The release cut and CI: `release.sh`, `tests/rc-gate.sh`, `.github/`.
 - Install: `install.sh` (Linux and macOS); on Windows `install-shortcut.ps1` then `install-manifest.ps1`, plus
-  `Initialize-InstallLayout` inside `launch-sot.ps1`.
+  `Initialize-InstallLayout` (in `sot-install-layout.ps1`, run by `launch-sot.ps1`).
 - Update discovery and staging: `rust/updater`, `rust/backend/src/update.rs` (the `update.check` and `update.apply`
   ops), `rust/frontend/src/selfupdate.rs`.
 - Apply: `sot-apply.sh`, `sot-apply.ps1`.
@@ -71,11 +71,13 @@ and the launch path fails open: no update step can stop a window from starting.
 ### Launch (Unix)
 - `launch-sot.sh`: reads the topology plan, ensures the local daemon and execs the window with `--dial` arguments.
 ### Launch (Windows)
-- `launch-sot.ps1`: the supervisor: self-update, install layout, apply, local daemon, leases, respawn loop.
+- `launch-sot.ps1`: the supervisor: self-update, apply, handover, local daemon, respawn loop; it dot-sources the helper files below.
 - `launch-splash.ps1`: the launch progress window.
 - `sot-local-daemon.ps1`: starts and stops this computer's `sotd`.
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`.
-- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target and the launcher code id.
+- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id and the first-launch install layout.
+- `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
+- `sot-lease.ps1`: opens a lease on this computer's daemon and hands every lease over to the window.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
 - `shutdown-sot.ps1`: ordered local teardown.
 ### Dev and docs
@@ -93,8 +95,12 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
 ## Rules
 - Entry-point paths are an interface and do not move: `install.sh` fetches `scripts/install.sh` of its own tag
   (the prelude before step 0), shortcuts run `repo\current\scripts\launch-sot.ps1`, and `Get-SotLauncherCodeId` hashes
-  `launch-sot.ps1`, `sot-hosts.ps1` and `sot-install-layout.ps1` (`tests/test-install-layout.ps1` section 3). A new
-  launcher file joins that list.
+  `launch-sot.ps1`, `sot-hosts.ps1`, `sot-install-layout.ps1`, `sot-freshness.ps1` and `sot-lease.ps1`
+  (`tests/test-install-layout.ps1` section 3). A new launcher file joins that list.
+- Every file `launch-sot.ps1` dot-sources is in `Get-SotLauncherCodeId`'s list and in the converge parse loop of
+  `launch-sot.ps1`.
+- A dev clone's prelude re-execs only when `launch-sot.ps1` itself changed (`Invoke-SelfUpdatePrelude`), so a pull that
+  changes only a helper takes effect at the next launch, while a converge compares every listed file.
 - The launch path fails open. `sot-apply.sh` and `sot-apply.ps1` exit 0 by contract, the unit's
   `ExecStartPre=-` tolerates a missing script, and `launch-sot.sh` runs without `set -e`; `installer-state.sh`'s
   `failed_apply_keeps_old_record_and_pending` and `test-sot-apply.ps1` pin the contract.

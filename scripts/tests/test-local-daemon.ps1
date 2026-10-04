@@ -147,6 +147,8 @@ try {
     foreach ($f in @(
             (Join-Path $repo 'scripts\sot-local-daemon.ps1'),
             (Join-Path $repo 'scripts\launch-sot.ps1'),
+            (Join-Path $repo 'scripts\sot-freshness.ps1'),
+            (Join-Path $repo 'scripts\sot-lease.ps1'),
             (Join-Path $repo 'scripts\shutdown-sot.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon.ps1')
         )) {
@@ -582,6 +584,8 @@ public static class FakeSotd
     $launchPath = Join-Path $repo 'scripts\launch-sot.ps1'
     $launchTokens = $null; $launchErrs = $null
     $launchAst = [System.Management.Automation.Language.Parser]::ParseFile($launchPath, [ref]$launchTokens, [ref]$launchErrs)
+    $leasePath = Join-Path $repo 'scripts\sot-lease.ps1'
+    $leaseAst = [System.Management.Automation.Language.Parser]::ParseFile($leasePath, [ref]$null, [ref]$null)
     function Test-HasLoopAncestor($node) {
         $p = $node.Parent
         while ($p) {
@@ -663,7 +667,7 @@ public static class FakeSotd
         try {
         Write-Host "`n=== 11. ConvergeLeaseHandover: the lease line, the handover line, the refusal warning ===" -ForegroundColor Cyan
         foreach ($fname in @('Get-SotBootId', 'Open-SotLease', 'Close-SotLeases')) {
-            $fn = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
+            $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             Check "11: $fname is defined" ($null -ne $fn) 'function not found'
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
         }
@@ -1028,10 +1032,10 @@ try {
     }
     $old16 = @($launchAst.FindAll({ param($n) ($n -is [System.Management.Automation.Language.VariableExpressionAst]) -and $n.Extent.Text -eq '$script:convergeLeases' }, $true))
     Check '16d: no script-scoped lease list remains' ($old16.Count -eq 0) "found $($old16.Count) uses of `$script:convergeLeases"
-    $sets16 = @($launchAst.FindAll({ param($n)
+    $sets16 = @(foreach ($ast16 in @($launchAst, $leaseAst)) { $ast16.FindAll({ param($n)
         ($n -is [System.Management.Automation.Language.AssignmentStatementAst]) -and
         $n.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals -and
-        $n.Left.Extent.Text -eq '$global:SotLeases' }, $true))
+        $n.Left.Extent.Text -eq '$global:SotLeases' }, $true) })
     $bad16 = @($sets16 | Where-Object {
         $q = $_.Parent; $ok = $false
         while ($q) {
@@ -1043,10 +1047,10 @@ try {
     Check '16d: $global:SotLeases is set only when unset, or by Close-SotLeases' (($sets16.Count -ge 2) -and ($bad16.Count -eq 0)) "assignments $($sets16.Count), unguarded $($bad16.Count): $(@($bad16 | ForEach-Object { $_.Extent.Text }) -join ' | ')"
     if ($compiled) {
         foreach ($fname in @('Get-SotBootId', 'Open-SotLease')) {
-            $fn = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
+            $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
         }
-        $closeFn16 = $launchAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Close-SotLeases' }, $true)
+        $closeFn16 = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq 'Close-SotLeases' }, $true)
         $LeaseReplyWaitMs = 5000
         $HandoverBoundSeconds = 60
         function Write-SupLog { param([string]$Message) }

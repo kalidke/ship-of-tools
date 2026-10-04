@@ -758,6 +758,7 @@ check "sot-local-daemon.ps1 daemon-lock wait is ops.rs DAEMON_LOCK_WAIT" "$OPS_L
 OPS_RS="$(dirname "$0")/../../rust/protocol/src/ops/lease.rs"
 OPS_NAMES="$(dirname "$0")/../../rust/protocol/src/ops/mod.rs"
 PS_LAUNCH="$(dirname "$0")/../launch-sot.ps1"
+PS_LEASE="$(dirname "$0")/../sot-lease.ps1"
 OPS_LEASE_MS="$(sed -n 's/.*pub const LEASE_REPLY_WAIT: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$OPS_RS")"
 OPS_HANDOVER="$(sed -n 's/.*pub const HANDOVER_BOUND: Duration = Duration::from_secs(\([0-9]*\)).*/\1/p' "$OPS_RS")"
 PS_LEASE_MS="$(sed -n 's/^\$LeaseReplyWaitMs = \([0-9]*\).*/\1/p' "$PS_LAUNCH")"
@@ -766,8 +767,8 @@ check "launch-sot.ps1 lease reply wait is ops.rs LEASE_REPLY_WAIT in ms" "$((OPS
 check "launch-sot.ps1 handover bound is ops.rs HANDOVER_BOUND" "$OPS_HANDOVER" "$PS_HANDOVER"
 OPS_FE_LEASE="$(sed -n 's/.*pub const FE_LEASE: &str = "\([^"]*\)".*/\1/p' "$OPS_NAMES")"
 OPS_FE_LEAVING="$(sed -n 's/.*pub const FE_LEAVING: &str = "\([^"]*\)".*/\1/p' "$OPS_NAMES")"
-check "launch-sot.ps1 names the fe.lease op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEASE\"" "$PS_LAUNCH" && echo yes || echo no)"
-check "launch-sot.ps1 names the fe.leaving op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEAVING\"" "$PS_LAUNCH" && echo yes || echo no)"
+check "sot-lease.ps1 names the fe.lease op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEASE\"" "$PS_LEASE" && echo yes || echo no)"
+check "sot-lease.ps1 names the fe.leaving op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEAVING\"" "$PS_LEASE" && echo yes || echo no)"
 # The golden lease line: the launcher's literal and ops.rs's test line (backslashes stripped)
 # share the prefix and the sorted payload keys, in order.
 LEASE_PREFIX='{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"'
@@ -777,7 +778,7 @@ in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then 
     printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | grep -qF '","created":' && \
         printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | sed 's/.*","created":/","created":/' | grep -qF ',"pid":' && echo yes || echo no
 }
-check "launch-sot.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LAUNCH" 0)"
+check "sot-lease.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LEASE" 0)"
 check "ops.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
 
 # ---------------------------------------------------------------------------
