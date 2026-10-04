@@ -87,8 +87,6 @@ include("tokenize.jl")
 function dispatch(io::IO, state::KernelState, id, op, payload)
     if op == "kernel.hello"
         handle_hello(io, state, id, payload)
-    elseif op == "modules.list"
-        handle_modules_list(io, state, id, payload)
     elseif op == "file.parse"
         handle_file_parse(io, state, id, payload)
     elseif op == "file.preview"
@@ -121,37 +119,6 @@ function handle_hello(io::IO, state::KernelState, id, _payload)
         :project_root => state.project_root,
     )
     write_envelope(io, "res", id, "kernel.hello", res)
-end
-
-"""
-    handle_modules_list
-
-Returns the modules currently loaded in this kernel image. For phase 1 this
-is `Main` + everything visible from `Base.loaded_modules`. The frontend can
-use this to seed Modules-mode's left column.
-
-Each entry carries `path` when `Base.pathof(mod)` resolves to a source
-file — that's how the frontend gets from a module name to a `file.parse`
-target without a separate `module.locate` op. `null` for built-ins and
-modules with no on-disk source (stdlib / synthetic).
-"""
-function handle_modules_list(io::IO, state::KernelState, id, _payload)
-    pairs = sort!(collect(Base.loaded_modules); by = p -> string(p.first.name))
-    mods = Dict[]
-    for (pkgid, mod) in pairs
-        path = try
-            Base.pathof(mod)
-        catch
-            nothing
-        end
-        push!(mods, Dict(
-            :name => string(pkgid.name),
-            :uuid => string(pkgid.uuid),
-            :is_main => (pkgid.name == :Main),
-            :path => path === nothing ? nothing : String(path),
-        ))
-    end
-    write_envelope(io, "res", id, "modules.list", Dict(:modules => mods))
 end
 
 """

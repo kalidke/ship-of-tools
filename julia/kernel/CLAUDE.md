@@ -6,7 +6,7 @@ environment. Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md 
 
 ## Files
 - `Project.toml`: the package, its plugin dependencies and `[sources]` paths.
-- `src/ShipToolsKernel.jl`: the serve loop, `dispatch`, hello, `file.parse` and the envelope writer, plus the ops no client sends (modules.list, function.methods).
+- `src/ShipToolsKernel.jl`: the serve loop, `dispatch`, hello, `file.parse` and the envelope writer, plus the one op no reachable client path sends (function.methods).
 - `src/definitions.jl`: top-level definitions of a parsed source with per-entity AST hashes.
 - `src/preview.jl`: `file.preview` and the lazy loading of built-in plugins.
 - `src/project_scan.jl`: `project.scan`, the static module tree of a project.
