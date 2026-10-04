@@ -8,6 +8,8 @@ mod pinned_dir;
 pub mod state_dir;
 mod volume;
 pub mod winhandle;
+#[cfg(windows)]
+mod winsec;
 
 #[cfg(windows)]
 use crate::Error;
@@ -133,3 +135,5 @@ pub use durable::*;
 pub use lock::*;
 pub use pinned_dir::*;
 pub use volume::*;
+#[cfg(windows)]
+pub use winsec::*;
