@@ -290,26 +290,8 @@ pub(crate) fn dial_and_call_tracked(
 pub(crate) mod tests {
     use super::*;
 
-    /// Round-2 item 4's `PATH` guard, restoring the exact original value
-    /// on drop -- same shape as `julia.rs`'s own `EnvGuard`, copied
-    /// rather than shared because that one is private to its module.
     #[cfg(unix)]
-    pub(crate) struct EnvGuard(&'static str, Option<std::ffi::OsString>);
-    #[cfg(unix)]
-    impl EnvGuard {
-        pub(crate) fn capture(key: &'static str) -> Self {
-            Self(key, std::env::var_os(key))
-        }
-    }
-    #[cfg(unix)]
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match self.1.take() {
-                Some(v) => std::env::set_var(self.0, v),
-                None => std::env::remove_var(self.0),
-            }
-        }
-    }
+    use crate::paths::EnvGuard;
 
     #[cfg(unix)]
     #[test]

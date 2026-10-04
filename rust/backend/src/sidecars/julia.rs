@@ -250,7 +250,7 @@ fn candidates_on_path(exe_name: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::paths::ENV_TEST_LOCK;
+    use crate::paths::{EnvGuard, ENV_TEST_LOCK};
 
     // --- is_windows_apps_alias_path (portable path predicate) -------------
 
@@ -375,21 +375,6 @@ mod tests {
     }
 
     // --- resolve_bin (full precedence chain, env-mutating) ------------------
-
-    struct EnvGuard(&'static str, Option<std::ffi::OsString>);
-    impl EnvGuard {
-        fn capture(key: &'static str) -> Self {
-            Self(key, std::env::var_os(key))
-        }
-    }
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match self.1.take() {
-                Some(v) => std::env::set_var(self.0, v),
-                None => std::env::remove_var(self.0),
-            }
-        }
-    }
 
     #[test]
     fn env_guard_restores_a_set_variable_and_unsets_an_unset_one() {

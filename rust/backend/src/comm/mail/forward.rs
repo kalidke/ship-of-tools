@@ -46,7 +46,8 @@ pub fn forward_comm_file(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::topology::dial::tests::{prepend_to_path, wait_for_marker, write_ssh_script, EnvGuard};
+    use crate::paths::EnvGuard;
+    use crate::topology::dial::tests::{prepend_to_path, wait_for_marker, write_ssh_script};
 
     /// A forwarded comm.file call is cut short by its own timeout or by the
     /// shutdown signal, and either way the ssh child dies and is no longer counted.

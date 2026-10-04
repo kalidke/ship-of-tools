@@ -23,6 +23,25 @@ use anyhow::{Context, Result};
 #[cfg(test)]
 pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Restores one variable on drop, to its value at `capture` or unset.
+#[cfg(test)]
+pub(crate) struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+#[cfg(test)]
+impl EnvGuard {
+    pub(crate) fn capture(key: &'static str) -> Self {
+        Self(key, std::env::var_os(key))
+    }
+}
+#[cfg(test)]
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        match self.1.take() {
+            Some(v) => std::env::set_var(self.0, v),
+            None => std::env::remove_var(self.0),
+        }
+    }
+}
+
 /// Resolve a REPO-ROOT-RELATIVE resource path (e.g. `julia/kernel`,
 /// `rust/backend/sidecars/mathjax/render.mjs`) for both deployment layouts
 /// (ADR 0030 §4). Resolution order, first EXISTING path wins:
