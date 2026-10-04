@@ -8,15 +8,9 @@ license.workspace = true
 [dependencies]
 sot-protocol = { path = "../protocol" }
 sot-updater = { path = "../updater" }
-# ADR 0042 slice L1a: the capsule workspace runtime (Windows-only in this
-# unit) calls `sot_log::host::state_dir`/`supervisor_client`. Unconditional, not
-# `[target.'cfg(windows)'.dependencies]`, matching how `sot-frontend`
-# already depends on this same crate (its own `paths::sot_state_dir`
-# delegates to `sot_log::host::state_dir::sot_state_dir` on every platform) --
-# sot-log's own Cargo.toml already confines its Windows-only pieces
-# (`windows-sys`, `vt100-ctt`) to `[target.'cfg(windows)'.dependencies]`,
-# so a non-Windows build of THIS crate pulls in nothing new merely by
-# depending on the library.
+# `sot_log::host::state_dir` (rows/ops/pty.rs) and
+# `sot_log::attach_client::supervisor_client` (rows/reauth/restart.rs) are used
+# on every platform, so the dependency is unconditional.
 sot-log = { path = "../log" }
 # The comm wake reads a cell's dim attribute off the capsule screen (`comm::wake::screen::free_test_lines`).
 vt100-ctt = "0.17"

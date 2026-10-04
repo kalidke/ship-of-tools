@@ -317,8 +317,8 @@ pub(super) fn run_input_wal(
     Ok(InputOutcome::Recorded)
 }
 
-/// Minimal base64 (standard alphabet, padded) — duplicated from
-/// `capsule/`; see the module doc.
+/// Minimal base64 encoder (standard alphabet, padded) for the `bytes_b64`
+/// field of the writer loop's producer frame (`handle_output`).
 pub(super) mod base64_engine {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     pub fn encode_b64(data: &[u8]) -> String {

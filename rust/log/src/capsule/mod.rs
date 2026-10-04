@@ -104,7 +104,7 @@
 //! ## Step 5 (U2): the pipe protocol through this loop
 //!
 //! `run` gains a transport-event channel ([`TransportEvent`]/[`Transport`],
-//! the U3 seam — a real named pipe on Windows, or a test transport here)
+//! implemented by `lane::platform_transport::PlatformTransport`)
 //! serviced every MAIN-LOOP iteration through
 //! [`crate::lane::attach_proto::AttachProto`] — that module OWNS the
 //! connection/role/lockstep/pen/keepalive state machine; this loop only
