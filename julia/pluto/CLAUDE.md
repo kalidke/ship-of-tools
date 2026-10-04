@@ -15,6 +15,5 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
   `OPEN <abspath>`.
 - Every request needs the session secret, and every URL carries it before `id` (`edit_url`).
 - The port is 1234 or ephemeral (`pick_port`), and the daemon learns it only from `READY`.
-- `pick_port` has a twin, `wgl_pick_port`, in julia/repl.
 
 Record: ADR 0035.

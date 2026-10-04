@@ -154,13 +154,15 @@ wglshow(surface(-10:0.4:10, -10:0.4:10, (x, y) -> sin(sqrt(x^2 + y^2));
                 axis = (; type = Axis3)))
 ```
 
-`wglshow` serves the figure over Bonito on a loopback port (`SOT_WGL_PORT`,
-falling back to an OS-assigned one) and returns a `BrowserView` — which makes
+`wglshow` serves the figure over Bonito on a loopback port the OS assigns, at an
+address with a secret in it (another account on the box that finds the port gets
+nothing), and returns a `BrowserView` — which makes
 the frontend open the figure in your OS browser, no URL to copy. On a remote
 backend the page and its WebSocket ride the daemon proxy over the control
 connection (ADR 0035) — no dedicated forward — so pan/zoom/rotate work
 whether the backend is local or remote. The server lives as long as the
-REPL, and calling `wglshow` again replaces it.
+REPL, and calling `wglshow` again replaces it at the same address while
+its port is free.
 
 WGLMakie and Bonito are resolved from *your own* project env at call time
 (`using WGLMakie` first) — Ship of Tools ships no plotting dependency of its own,

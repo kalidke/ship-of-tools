@@ -274,21 +274,22 @@ const DR = ShipToolsRepl
         empty!(DR.ANNOUNCED_BROWSER_URLS)
     end
 
-    @testset "wgl_pick_port: preferred when free, ephemeral fallback when taken" begin
-        # Grab an ephemeral port to use as a known-free preferred: close it,
-        # then wgl_pick_port should return it verbatim.
-        srv = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", 0))
-        _, free_port = Sockets.getsockname(srv)
-        close(srv)
-        @test ShipToolsRepl.wgl_pick_port(Int(free_port)) == Int(free_port)
-        # Squat a port (standing in for another user's / another workspace's
-        # server) — wgl_pick_port must fall back to a DIFFERENT, valid port.
-        squatter = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", 0))
-        _, taken = Sockets.getsockname(squatter)
-        picked = ShipToolsRepl.wgl_pick_port(Int(taken))
-        @test picked != Int(taken)
-        @test 1024 < picked <= 65535
-        close(squatter)
+    @testset "page helper: a secret per REPL child and an OS-assigned port (decision 0031)" begin
+        s = ShipToolsRepl.page_secret()
+        @test occursin(r"^[0-9a-f]{32}$", s)
+        @test ShipToolsRepl.page_secret() == s
+        p = ShipToolsRepl.page_port(nothing)
+        @test p in 1:65535
+        @test ShipToolsRepl.page_port(p) == p
+        # A holder on `p` (standing in for another account's or workspace's server): the helper must move on.
+        holder = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", p))
+        try
+            q = ShipToolsRepl.page_port(p)
+            @test q != p
+            @test q in 1:65535
+        finally
+            close(holder)
+        end
     end
 
     @testset "serve: ready sentinel is the first stdout envelope (ADR 0009 update)" begin

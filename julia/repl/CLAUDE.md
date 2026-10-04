@@ -24,4 +24,5 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 - Every request gets a terminal `res` (`emit_fallback_done`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
-- `wgl_pick_port` has a twin in julia/pluto/start.jl, and `write_envelope` has one in julia/kernel.
+- `wglshow` binds a port the OS assigns (`page_port`) and mounts the figure at a secret path minted once per child (`page_secret`); `/` answers 404.
+- `write_envelope` has a twin in julia/kernel.
