@@ -21,10 +21,8 @@ function _install_adapter(cli::Symbol; unhooked::Vector{String} = String[])
         # since an account with a real settings.json never sees the
         # shared one.
     elseif cli === :codex
-        # ADR 0031 — codex adapter: ccx launcher, the PermissionRequest->blocked
-        # hook script, and the hooks.json plugin payload (state-nav wiring). The shared
-        # state scripts (comm-status-*.sh) ride the core
-        # deploy above.
+        # ADR 0031 — codex adapter: ccx launcher, and the hooks.json plugin
+        # payload (state-nav wiring).
         home = codex_home()
         @info "Installed into codex home" dir = home
         mismatch = _codex_home_profile_mismatch(home)
