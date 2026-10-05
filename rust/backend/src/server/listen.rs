@@ -98,7 +98,16 @@ fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
     return std::os::unix::net::UnixStream::connect(path).is_ok();
     #[cfg(windows)]
-    return std::fs::OpenOptions::new().read(true).write(true).open(path).is_ok();
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Identification level, like every client of a pipe name another account may hold (ADR 0049, User isolation).
+        return std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION)
+            .open(path)
+            .is_ok();
+    }
 }
 
 /// Refuses when a daemon still answers on the socket at `path`. Unlinking

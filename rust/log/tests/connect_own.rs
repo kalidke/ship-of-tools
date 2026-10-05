@@ -148,10 +148,12 @@ mod windows {
     }
 }
 
-/// Files that keep their own stream type and so apply the rule around their one dial: each must call the names listed. Every other dial primitive is a compile error in rust.yml's "Local endpoint dials"
-/// step (rust/clippy.toml `disallowed-methods`, an `#[allow]` with a reason at each sanctioned site); the allow of these
-/// two sites is what this test holds to the rule. `std::fs::OpenOptions::open` cannot be disallowed, since it opens
-/// every file, so dial.rs's `pipe:` arm, which opens a pipe as a file, is held here.
+/// Files that keep their own stream type and so apply the rule around their one dial; each must contain the names listed.
+/// Every connector rust/clippy.toml names is a compile error in rust.yml's "Local endpoint dials" step unless it sits at
+/// an `#[allow]` with its reason; the allow at these two sites is what this test holds to the rule. It checks that the
+/// names appear on a non-comment line of the file: not their order, not that they sit in the dialing function, and not
+/// any other file. `std::fs::OpenOptions::open` cannot be disallowed, since it opens every file, so a third opener of a
+/// pipe path would pass both checks.
 const WRAPPED: &[(&str, &[&str])] = &[
     // `connect_pipe`: the window's transport and lease dial; its Windows arm goes through `connect_own`.
     ("frontend/src/net/transport/mod.rs", &["own_socket(", "connect_own("]),

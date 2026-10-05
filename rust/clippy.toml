@@ -1,8 +1,9 @@
 # ADR 0049, User isolation: a Rust process reaches a local socket or pipe by name only through
-# sot_log::identity::connect_own, so every connector below is disallowed outside the sanctioned sites. A sanctioned site
+# sot_log::identity::connect_own, so every connector named below is disallowed outside the sanctioned sites. A sanctioned site
 # carries #[allow(clippy::disallowed_methods, reason = "...")]. rust.yml's "Local endpoint dials" step runs the lint over
 # every library and binary on all three platforms. Paths that do not exist on a platform draw a warning there, never an
-# error. Not expressible here: std::fs::OpenOptions::open on a pipe path; rust/log/tests/connect_own.rs holds that one.
+# error. Not expressible here: std::fs::OpenOptions::open on a pipe path; rust/log/tests/connect_own.rs only checks that
+# net/transport/mod.rs and topology/dial.rs contain the rule's names, not their order and not any other file's opener.
 disallowed-methods = [
   { path = "std::os::unix::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "std::os::unix::net::UnixStream::connect_addr", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
