@@ -14,11 +14,9 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::Command;
 
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
-}
+#[path = "support/sotd.rs"]
+mod sotd;
 
 /// A `claude` stub at `<home>/.local/bin/claude` — found ONLY via
 /// `resolve_claude`'s HOME-derived fallback (the proof's own PATH never
@@ -64,7 +62,7 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
     let home = tempfile::tempdir().expect("tempdir");
     let claude = seed_printing_claude_stub(home.path());
 
-    let out = Command::new(sotd_exe())
+    let out = sotd::sotd_command()
         .arg("agent-exec")
         .arg("claude")
         .arg("--x")
@@ -123,7 +121,7 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
 /// explicitly asked for.
 #[test]
 fn agent_exec_unknown_kind_exits_2() {
-    let out = Command::new(sotd_exe())
+    let out = sotd::sotd_command()
         .arg("agent-exec")
         .arg("bogus")
         .env_clear()

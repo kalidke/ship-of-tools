@@ -42,7 +42,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::tokio::Stream as LocalStream;
@@ -153,7 +153,7 @@ impl Env {
             }
         };
 
-        let mut cmd = Command::new(support::sotd_exe());
+        let mut cmd = support::sotd_command();
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")

@@ -11,14 +11,12 @@
 //! the second proof is the one that decides whether the chain survives an MSYS
 //! exec stub, and CI's windows-latest has Git Bash.
 
-use std::path::PathBuf;
 use std::process::Command;
 
-const GIT_BASH: &str = "C:/Program Files/Git/bin/bash.exe";
+#[path = "support/sotd.rs"]
+mod sotd;
 
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
-}
+const GIT_BASH: &str = "C:/Program Files/Git/bin/bash.exe";
 
 fn own_name() -> String {
     std::env::current_exe()
@@ -61,7 +59,7 @@ fn own_path() -> String {
 
 #[test]
 fn first_line_is_the_direct_parent() {
-    let out = Command::new(sotd_exe()).arg("ancestors").output().expect("run sotd");
+    let out = sotd::sotd_command().arg("ancestors").output().expect("run sotd");
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let lines = lines_of(&out);
     assert!(!lines.is_empty(), "no ancestors printed");
@@ -87,7 +85,7 @@ fn the_chain_survives_an_msys_shell() {
     // leave no shell in the chain.
     let out = Command::new(GIT_BASH)
         .args(["-c", "\"$SOTD\" ancestors; true"])
-        .env("SOTD", sotd_exe().to_string_lossy().replace('\\', "/"))
+        .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/"))
         .output()
         .expect("run bash");
     let lines = lines_of(&out);
@@ -110,8 +108,8 @@ fn the_chain_survives_an_msys_shell() {
 #[test]
 fn from_starts_above_the_named_process() {
     let own = std::process::id();
-    let all = Command::new(sotd_exe()).arg("ancestors").output().expect("run sotd");
-    let from = Command::new(sotd_exe()).args(["ancestors", "--from", &own.to_string()]).output().expect("run sotd");
+    let all = sotd::sotd_command().arg("ancestors").output().expect("run sotd");
+    let from = sotd::sotd_command().args(["ancestors", "--from", &own.to_string()]).output().expect("run sotd");
     assert!(all.status.success(), "stderr: {}", String::from_utf8_lossy(&all.stderr));
     assert!(from.status.success(), "stderr: {}", String::from_utf8_lossy(&from.stderr));
     let (all, from) = (lines_of(&all), lines_of(&from));
@@ -122,7 +120,7 @@ fn from_starts_above_the_named_process() {
 #[test]
 fn other_arguments_are_a_usage_error() {
     for args in [&["ancestors", "--from"][..], &["ancestors", "--from", "x"], &["ancestors", "extra"]] {
-        let out = Command::new(sotd_exe()).args(args).output().expect("run sotd");
+        let out = sotd::sotd_command().args(args).output().expect("run sotd");
         assert_eq!(out.status.code(), Some(2), "{args:?}: stdout {:?}", String::from_utf8_lossy(&out.stdout));
     }
 }
@@ -138,7 +136,7 @@ fn the_cygwin_parent_carries_the_walk_past_an_msys_exec() {
     let out = Command::new(GIT_BASH)
         .args(["-c", r#"bash -c "$INNER"; true"#])
         .env("INNER", inner)
-        .env("SOTD", sotd_exe().to_string_lossy().replace('\\', "/"))
+        .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/"))
         .output()
         .expect("run bash");
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -157,7 +155,7 @@ fn an_exec_under_a_native_parent_keeps_the_chain() {
     let out = Command::new(GIT_BASH)
         .args(["-c", r#"exec bash -c "$INNER""#])
         .env("INNER", inner)
-        .env("SOTD", sotd_exe().to_string_lossy().replace('\\', "/"))
+        .env("SOTD", sotd::sotd_program().to_string_lossy().replace('\\', "/"))
         .output()
         .expect("run bash");
     let walk = lines_of(&out);

@@ -2,11 +2,8 @@
 //! Half-open long-lived-role reaper (topology plan §F step 2): server-level
 //! regression tests through the REAL wire protocol against a real `sotd`,
 //! same posture as `active_frontend.rs` (no protocol doubles, no mocked
-//! `handle_connection`) -- `Env`/`connect_and_hello`/`call`/`client_row`
-//! copied from that file (its own header explains why this crate
-//! duplicates rather than shares: each `tests/*.rs` binary is a separate
-//! compilation unit, and `tests/support` is reserved for the two files
-//! that already share a heavier capsule-process fixture).
+//! `handle_connection`) -- `Env`/`connect_and_hello`/`call`/`client_row` are this file's own copies;
+//! it takes only `sotd_command`, from `tests/support/sotd.rs`.
 //!
 //! Before this lane a half-open `fe`/`bridge` connection (a closed laptop,
 //! a killed bridge) was never reaped: no keepalive since 0.4.0, and
@@ -25,8 +22,11 @@
 //!   the above.
 
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::Duration;
+
+#[path = "support/sotd.rs"]
+mod sotd;
 
 use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use interprocess::local_socket::GenericFilePath;
@@ -108,7 +108,7 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let mut cmd = Command::new(sotd_exe());
+        let mut cmd = sotd::sotd_command();
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -141,10 +141,6 @@ impl Drop for Env {
         let _ = self.daemon.kill();
         let _ = self.daemon.wait();
     }
-}
-
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
 }
 
 async fn try_connect(socket_path: &std::path::Path) -> Option<LocalStream> {

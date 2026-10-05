@@ -14,7 +14,7 @@
 //! and broadcasts `topology.changed` to a SEPARATE connection, over the
 //! real socket, not just in-process.
 //!
-//! `mod support;` serves `comm_isolation_dirs` and `sotd_exe` —
+//! `mod support;` serves `comm_isolation_dirs` and `sotd_command` —
 //! this file's own `Env` stays local, same reasoning as `ping_reaper.rs`.
 
 mod support;
@@ -98,7 +98,7 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let mut cmd = Command::new(support::sotd_exe());
+        let mut cmd = support::sotd_command();
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")

@@ -16,7 +16,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use sot_protocol::{op, HelloReq};
-use support::{call, poll_until, sotd_exe, try_connect, Env, TEST_STATE_HOST};
+use support::{call, poll_until, try_connect, Env, TEST_STATE_HOST};
 
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -51,7 +51,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     let hosts_toml = env._tmp.path().join("hosts.toml");
     std::fs::write(&hosts_toml, format!("hub = \"{TEST_STATE_HOST}\"\n\n[host.{TEST_STATE_HOST}]\ndaemon = true\n")).expect("write hosts.toml");
 
-    let child = std::process::Command::new(sotd_exe())
+    let child = support::sotd_command()
         .arg("--label")
         .arg(sot_protocol::local_daemon_label())
         .arg("--project-root")
@@ -111,7 +111,7 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     // `sotd status --json` — a SEPARATE, real one-shot process (the same
     // binary, the same env), not a library call into `topology::status` — this
     // is the actual CLI a launcher or the `sot-status` skill would run.
-    let mut status_cmd = tokio::process::Command::new(sotd_exe());
+    let mut status_cmd = tokio::process::Command::from(support::sotd_command());
     status_cmd
         .arg("status")
         .arg("--json")

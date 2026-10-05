@@ -18,14 +18,14 @@
 //!    genuine hostname collision) never both receive an untargeted
 //!    `fe.command.send` — exactly one does, by connection identity.
 //!
-//! `mod support;` serves `comm_isolation_dirs`, `sotd_exe` and `try_connect` —
+//! `mod support;` serves `comm_isolation_dirs`, `sotd_command` and `try_connect` —
 //! this file's own `Env` stays local (a separate, lighter fixture than
 //! `support::Env`'s heavier capsule-process one).
 
 mod support;
 
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream as LocalStream;
@@ -90,7 +90,7 @@ impl Env {
                 runtime_tmp.path().join(format!("wire-{tag}.sock"))
             }
         };
-        let daemon = Command::new(support::sotd_exe())
+        let daemon = support::sotd_command()
             .arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")

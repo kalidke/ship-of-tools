@@ -2,6 +2,9 @@
 //! `sotd topology refresh` on a scratch hub: the real binary, a stand-in `systemctl` first on PATH. Wiring-level.
 use {std::path::PathBuf, tempfile::TempDir};
 
+#[path = "support/sotd.rs"]
+mod sotd;
+
 const STALE_SERVICE: &str = include_str!("fixtures/relay/relay-service-rc9.8.unit");
 
 const OVERRIDE: &str = include_str!("fixtures/relay/relay-dropin-override.conf");
@@ -34,7 +37,7 @@ fn hub() -> TempDir {
 
 /// Exit code, stdout, stderr of `sotd topology refresh` with every path inside `t`.
 fn refresh(t: &TempDir) -> (Option<i32>, String, String) {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_sotd"));
+    let mut cmd = sotd::sotd_command();
     // A cleared environment and a PATH of the scratch bin alone: no route reaches the real systemctl or the
     // user's service manager, even where the scratch stub cannot run (a noexec temp mount fails the test instead).
     let out = cmd

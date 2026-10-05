@@ -9,7 +9,7 @@ mod support;
 use std::process::Stdio;
 use std::time::Duration;
 
-use support::{poll_until, sotd_exe, try_connect, Env, TEST_STATE_HOST};
+use support::{poll_until, try_connect, Env, TEST_STATE_HOST};
 
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -24,7 +24,7 @@ async fn a_second_daemon_on_a_live_socket_refuses_and_the_first_still_answers() 
     let second = Env::new("live2");
     let out = tokio::time::timeout(
         BOUND,
-        tokio::process::Command::new(sotd_exe())
+        tokio::process::Command::from(support::sotd_command())
             .arg("--socket")
             .arg(&first.socket_path)
             .arg("--project-root")

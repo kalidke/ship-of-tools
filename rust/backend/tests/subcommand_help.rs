@@ -6,8 +6,11 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
+
+#[path = "support/sotd.rs"]
+mod sotd;
 
 fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap() {
@@ -42,7 +45,7 @@ fn make_env(tmp: &Path) {
 }
 
 fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sotd"))
+    let mut child = sotd::sotd_command()
         .args(args)
         .env_clear()
         .env("HOME", tmp.join("home"))

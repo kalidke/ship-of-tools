@@ -48,7 +48,7 @@ impl Env {
             std::fs::set_permissions(runtime_tmp.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
         }
         let socket_path = runtime_tmp.path().join(format!("wire-{tag}.sock"));
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sotd"));
+        let mut cmd = support::sotd_command();
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")

@@ -228,7 +228,7 @@ impl Env {
     /// — `Env` owns it now so its own `Drop` can order the daemon kill
     /// ahead of the leg sweep and tmux teardown (F4).
     pub fn spawn_sotd(&self) {
-        let child = Command::new(sotd_exe())
+        let child = sotd_command()
             .arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")
@@ -412,7 +412,7 @@ impl Env {
         let mut path = std::ffi::OsString::from(prepend_dir);
         path.push(":");
         path.push(std::env::var_os("PATH").unwrap_or_default());
-        let child = Command::new(sotd_exe())
+        let child = sotd_command()
             .arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")
@@ -441,7 +441,7 @@ impl Env {
     /// needs, without adding a parameter to the shared `spawn_sotd`.
     /// Portable like `spawn_sotd` itself — must still compile on Windows.
     pub fn spawn_sotd_with_env(&self, extra: &[(&str, &str)]) {
-        let mut cmd = Command::new(sotd_exe());
+        let mut cmd = sotd_command();
         cmd.arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")
@@ -506,7 +506,7 @@ impl Env {
             .arg(setenv("PATH", &path))
             .arg(setenv("HOME", &home))
             .arg("--")
-            .arg(sotd_exe())
+            .arg(sotd_program())
             .arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")

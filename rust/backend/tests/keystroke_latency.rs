@@ -228,7 +228,7 @@ async fn k3b_ssh_cold_dial() {
         "test -S {} && env XDG_RUNTIME_DIR={} {} stdio-bridge",
         sessions.join("sot.sock").display(),
         rt.path().display(),
-        sotd_exe().display()
+        sotd_program().display()
     );
 
     let hello = || {
