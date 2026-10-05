@@ -71,7 +71,7 @@ jobs:
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
       # ADR 0049, User isolation: every TCP connection a Rust process accepts is checked for its owner before a byte is
       # read. rust/clippy.toml disallows every TCP accept; the one #[allow] sits in sot_log::identity::peer_owner's `serve`.
-      - name: TCP accepts
+      - name: Disallowed methods
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Function length allowances can only fall
         if: matrix.os == 'ubuntu-latest'

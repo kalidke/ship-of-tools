@@ -1,5 +1,5 @@
 //! Source guards for ADR 0049, User isolation. That every TCP accept goes through
-//! `sot_log::identity::peer_owner::serve_own` is a lint, not a text search (`rust/clippy.toml`, rust.yml's "TCP accepts"
+//! `sot_log::identity::peer_owner::serve_own` is a lint, not a text search (`rust/clippy.toml`, rust.yml's "Disallowed methods"
 //! step); what a lint cannot see is here: each test walks the production source of every Rust crate that opens a socket
 //! and names file:line for each breach.
 
