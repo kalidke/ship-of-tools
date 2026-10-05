@@ -198,24 +198,6 @@ try {
 
         } catch { Check '4: section ran' $false $_.Exception.Message }
         try {
-        Write-Host "`n=== 4b. the launcher's lease against the real daemon: its handoff hello is admitted and the lease granted (ADR 0049) ===" -ForegroundColor Cyan
-        # Open-SotLease (scripts/sot-lease.ps1) writes the hello the daemon admits every connection by and the lease
-        # line in one write. The daemon is the one section 3 built, so this is the launcher's lease against the real
-        # admission, which no fake can vouch for. A handover ends the lease without a close, so the daemon stays up
-        # for the next sections (a bare drop would depart as a Close and shut it down).
-        . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
-        $LeaseReplyWaitMs = 5000
-        $HandoverBoundSeconds = 60
-        $global:SotLeases = @()
-        $script:supLines4b = @()
-        function Write-SupLog { param([string]$Message) $script:supLines4b += $Message }
-        $streams4b = @(Open-SotLease $pipePath3)
-        Check '4b: the real daemon grants the launcher a lease' ($streams4b.Count -eq 1) "got $($streams4b.Count); log: $($script:supLines4b -join ' | ')"
-        $global:SotLeases = $streams4b
-        Close-SotLeases
-
-        } catch { Check '4b: section ran' $false $_.Exception.Message }
-        try {
         Write-Host "`n=== 5. shutdown stops the daemon and leaves a fake supervisor alone ===" -ForegroundColor Cyan
         # Stand-in for a capsule supervisor: any long-lived NON-sotd.exe
         # process. Proves -Stop's exact match (Name='sotd.exe' + this exact
@@ -234,6 +216,28 @@ try {
         Check 'fake supervisor left alone' (-not $fakeSup.HasExited) 'fake supervisor was killed too'
 
         } catch { Check '5: section ran' $false $_.Exception.Message }
+        try {
+        Write-Host "`n=== 5b. the launcher's lease against a real daemon of its own: its handoff hello is admitted, the lease granted, and its end shuts the daemon down (ADR 0049) ===" -ForegroundColor Cyan
+        # Open-SotLease (scripts/sot-lease.ps1) writes the hello the daemon admits every connection by and the lease
+        # line in one write. This is the launcher's lease against the real admission, which no fake can vouch for. The
+        # daemon is a fresh one on its own pipe (a handover would keep it for its 60 s bound), and the lease's plain end
+        # departs as a Close, which shuts it down.
+        . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
+        $LeaseReplyWaitMs = 5000
+        $HandoverBoundSeconds = 60
+        $global:SotLeases = @()
+        $script:supLines5b = @()
+        function Write-SupLog { param([string]$Message) $script:supLines5b += $Message }
+        $pipe5b = New-TestPipeName
+        $out5b = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5b -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+        Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
+        $streams5b = @(Open-SotLease (Get-PipePath $pipe5b))
+        Check '5b: the real daemon grants the launcher a lease' ($streams5b.Count -eq 1) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
+        foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
+        Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+        Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+        } catch { Check '5b: section ran' $false $_.Exception.Message }
         try {
         Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
         # ADR 0042 L2b design C: no -PipeName override here -- the script
