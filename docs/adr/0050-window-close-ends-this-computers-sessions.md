@@ -86,7 +86,7 @@ any row is touched; the run gate closes and in-flight starts drain, until the ro
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
 deadline, and a row of any other runtime is left running and counted not ended; every
-process the daemon starts, but a capsule supervisor and the children known limits (n) and (o) name, is
+process the daemon starts, but a capsule supervisor and the children known limit (n) names, is
 killed with everything it started (its leader is reaped only after that kill; each runs in its own process group
 on Unix and its own job on Windows), and their owners are given 3 s to let go; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
@@ -231,5 +231,4 @@ connection is the only handle.
 - (n) The update pipeline's children (rust/updater: curl or gh, tar or unzip, git, julia instantiate, npm) run in
   the daemon's process outside containment, with `kill_on_drop` only: a shutdown during an update's staging or
   prepare leaves them to end on their own; under the systemd unit its cgroup ends them.
-- (o) The hub's relay refresh runs `systemctl` outside containment (rust/backend/src/topology/relay_units.rs).
 - Window: see the release notes.

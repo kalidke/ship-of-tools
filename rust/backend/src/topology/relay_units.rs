@@ -107,9 +107,10 @@ const RELAY_TEMPLATE: (&str, &str) = ("sot-host-relay-", ".socket");
 /// `topology::relay_units::apply_plan` is the pure decision made from its result.
 fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> {
     let pattern = format!("{prefix}*{suffix}");
-    let out = std::process::Command::new("systemctl")
-        .args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"])
-        .output()
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut cmd)
         .map_err(|e| format!("systemctl --user list-unit-files: {e}"))?;
     if !out.status.success() {
         // systemd exits 1 when a PATTERN matched no unit files, with
@@ -313,10 +314,9 @@ fn is_main_pid(show: &str, me: u32) -> bool {
 #[cfg(target_os = "linux")]
 fn supervised_by_systemd() -> Result<bool, String> {
     let what = format!("systemctl --user show -p MainPID --value {DAEMON_UNIT}");
-    let out = std::process::Command::new("systemctl")
-        .args(["--user", "show", "-p", "MainPID", "--value", DAEMON_UNIT])
-        .output()
-        .map_err(|e| format!("{what}: {e}"))?;
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args(["--user", "show", "-p", "MainPID", "--value", DAEMON_UNIT]);
+    let out = crate::lifecycle::child_signal::process().output(&mut cmd).map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
         return Err(format!("{what}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -352,9 +352,10 @@ fn run_systemctl(args: &[&str]) -> Result<(), String> {
 
 /// `systemctl args`: its stdout on success.
 fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("systemctl")
-        .args(args)
-        .output()
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args(args);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut cmd)
         .map_err(|e| format!("systemctl {}: {e}", args.join(" ")))?;
     if !out.status.success() {
         return Err(format!("systemctl {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
@@ -548,6 +549,45 @@ mod tests {
         assert!(e.contains("not the hub"), "{e}");
         assert!(!called && !dir.join("sot-host-relay-remote-a@.service").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SIGKILLs the pid a stub wrote to the file, on every path out of the test.
+    #[cfg(target_os = "linux")]
+    struct KillBackground(PathBuf);
+
+    #[cfg(target_os = "linux")]
+    impl Drop for KillBackground {
+        fn drop(&mut self) {
+            if let Some(pid) = std::fs::read_to_string(&self.0).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
+                // SAFETY: a plain signal to a sleeper this test started.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// The refresh's one-shots run in their own containment: what a
+    /// `systemctl` leaves running dies with it, though it exits at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_relay_probe_takes_its_tree() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path = crate::paths::EnvGuard::capture("PATH");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bg = dir.path().join("bg");
+        let _kill = KillBackground(bg.clone());
+        let stub = dir.path().join("systemctl");
+        std::fs::write(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::topology::dial::tests::prepend_to_path(dir.path());
+        assert_eq!(supervised_by_systemd(), Ok(false));
+        let pid: i32 = std::fs::read_to_string(&bg).unwrap().trim().parse().expect("the stub's descendant pid");
+        let gone = (0..150).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // SAFETY: signal 0 only probes the pid.
+            unsafe { libc::kill(pid, 0) != 0 }
+        });
+        assert!(gone, "the relay probe's descendant survived");
     }
 }
 
