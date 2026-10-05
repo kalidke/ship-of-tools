@@ -36,6 +36,11 @@ fn tcp_peer_owner(local: SocketAddr, peer: SocketAddr) -> PeerOwner {
     imp::lookup(local, peer, &own)
 }
 
+/// How many owner lookups one listener runs at once. Each lookup reads a whole kernel table on a thread of the
+/// process's shared blocking pool, so another account opening many connections to a page port must not be able to
+/// fill that pool, which the rest of the daemon uses too; the connections beyond it wait their turn.
+const MAX_LOOKUPS: usize = 8;
+
 /// Refusals already warned of, by (listener, port, owner).
 static DROPPED: Mutex<BTreeSet<(&'static str, u16, String)>> = Mutex::new(BTreeSet::new());
 
@@ -67,7 +72,7 @@ fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> bool {
 
 /// The only TCP accept loop Ship of Tools' Rust processes run (ADR 0049, User isolation); the Julia page servers
 /// (Pluto, `wglshow`) listen on their own ports and are locked by a secret instead. Each accepted connection is checked in
-/// its own task, on a blocking thread, before a byte is read: only this OS account's reaches `handle`; any other is
+/// its own task, on a blocking thread (at most `MAX_LOOKUPS` at a time per listener), before a byte is read: only this OS account's reaches `handle`; any other is
 /// closed with nothing read or written (the first refusal per listener, port and owner is a warning). An accept
 /// error is logged and retried after 50 ms. Runs until its future is dropped.
 pub async fn serve_own<H, Fut>(listener: tokio::net::TcpListener, name: &'static str, handle: H)
@@ -87,13 +92,17 @@ where
 {
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     let handle = Arc::new(handle);
+    let lookups = Arc::new(tokio::sync::Semaphore::new(MAX_LOOKUPS));
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
-                let handle = Arc::clone(&handle);
+                let (handle, lookups) = (Arc::clone(&handle), Arc::clone(&lookups));
                 tokio::spawn(async move {
                     let Ok(local) = stream.local_addr() else { return };
-                    if !tokio::task::spawn_blocking(move || admit(name, local, peer)).await.unwrap_or(false) {
+                    let Ok(turn) = lookups.acquire_owned().await else { return };
+                    let admitted = tokio::task::spawn_blocking(move || admit(name, local, peer)).await.unwrap_or(false);
+                    drop(turn);
+                    if !admitted {
                         return; // `stream` drops here: closed with no byte read or written
                     }
                     handle(stream).await;
@@ -514,6 +523,43 @@ mod tests {
             .expect("the refused connection must close");
         assert!(raw.is_empty(), "got: {}", String::from_utf8_lossy(&raw));
         assert_eq!(ran.load(SeqCst), 0, "a refused connection must never reach the handler");
+        task.abort();
+    }
+
+    /// ADR 0049, User isolation: a flood of connections to one page port runs at most `MAX_LOOKUPS` owner lookups at a
+    /// time, and every connection is still served in the end.
+    #[tokio::test]
+    async fn a_flood_of_connections_runs_a_bounded_number_of_lookups() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use tokio::io::AsyncReadExt;
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        static MOST: AtomicUsize = AtomicUsize::new(0);
+        fn slow(_: &'static str, _: SocketAddr, _: SocketAddr) -> bool {
+            let now = RUNNING.fetch_add(1, SeqCst) + 1;
+            MOST.fetch_max(now, SeqCst);
+            std::thread::sleep(Duration::from_millis(40));
+            RUNNING.fetch_sub(1, SeqCst);
+            true
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(listener, "test", slow, |mut s| async move {
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut s, b"k").await;
+        }));
+        let clients: Vec<_> = (0..MAX_LOOKUPS * 3)
+            .map(|_| {
+                tokio::spawn(async move {
+                    let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    let mut b = [0u8; 1];
+                    tokio::time::timeout(Duration::from_secs(10), c.read_exact(&mut b)).await.unwrap().unwrap();
+                })
+            })
+            .collect();
+        for c in clients {
+            c.await.unwrap();
+        }
+        assert!(MOST.load(SeqCst) <= MAX_LOOKUPS, "{} lookups ran at once", MOST.load(SeqCst));
+        assert!(MOST.load(SeqCst) > 1, "the lookups did not overlap, so the bound was not exercised");
         task.abort();
     }
 
