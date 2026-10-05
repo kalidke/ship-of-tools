@@ -1,4 +1,5 @@
-//! The hello handshake: the protocol gate, the hello reply with its revision replay and the roster entry.
+//! The hello: the admission every connection passes first (`admit_hello`), the hello reply with its revision replay
+//! and the roster entry (`register_hello`).
 
 use super::*;
 use crate::server::reply::HandlerOutput;
@@ -25,6 +26,81 @@ fn protocol_gate(client_protocol: u32) -> ProtocolGate {
     }
 }
 
+/// A hello refused: the `{error, code, ...}` payload its reply carries. The connection is closed after it.
+#[derive(Debug)]
+pub(super) struct HelloRefusal(pub(super) serde_json::Value);
+
+impl HelloRefusal {
+    fn new(code: &str, message: String) -> Self {
+        Self(serde_json::json!({ "error": message, "code": code }))
+    }
+}
+
+/// A frame as a connection's first frame: it must be a `hello` request that parses, else `unauthenticated`.
+pub(super) fn parse_first_frame(frame: &Frame) -> Result<HelloReq, HelloRefusal> {
+    if frame.kind != Kind::Req || frame.op != op::HELLO {
+        return Err(HelloRefusal::new(
+            "unauthenticated",
+            format!("send a hello first: {:?} is not served to a connection that has not said hello", frame.op),
+        ));
+    }
+    serde_json::from_value(frame.payload.clone())
+        .map_err(|e| HelloRefusal::new("unauthenticated", format!("the hello payload does not parse: {e}")))
+}
+
+/// The one admission every connection passes after its process was admitted at accept: its hello, in this order. The
+/// protocol gate (ADR 0030 §2: a structured `{error, code}` envelope that does NOT deserialize as `HelloRes`, so the
+/// frontend surfaces a clear "update needed" screen), the declared host and OS account both present, and the host's
+/// account record (ADR 0049 `## User isolation`: a host that has said hello as two accounts is refused until the
+/// daemon restarts, and the refusal names the host and the remedy, never an account). A refused hello is one reply,
+/// then the connection's end.
+pub(super) fn admit_hello(req: &HelloReq, clients: &Clients) -> Result<(), HelloRefusal> {
+    if protocol_gate(req.protocol) == ProtocolGate::Reject {
+        let frontend_version = if req.app_version.is_empty() { "<pre-versioning>" } else { req.app_version.as_str() };
+        let message = format!(
+            "protocol mismatch: backend {} (protocol {}) vs frontend {} (protocol {}) \
+             — update the older side",
+            sot_protocol::app_version(),
+            sot_protocol::PROTOCOL_VERSION,
+            frontend_version,
+            req.protocol,
+        );
+        tracing::warn!(
+            client_id = %req.client_id,
+            client_protocol = req.protocol,
+            backend_protocol = sot_protocol::PROTOCOL_VERSION,
+            "hello rejected: {message}"
+        );
+        return Err(HelloRefusal(serde_json::json!({
+            "error": message,
+            "code": "protocol_mismatch",
+            "backend_protocol": sot_protocol::PROTOCOL_VERSION,
+            "frontend_protocol": req.protocol,
+            "backend_version": sot_protocol::app_version(),
+            "frontend_version": req.app_version,
+        })));
+    }
+    let present = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+    let (Some(host), Some(os_user)) = (present(&req.host), present(&req.os_user)) else {
+        return Err(HelloRefusal::new(
+            "identity_missing",
+            "a hello must name its host and the OS account it runs as (`host` and `os_user`)".to_string(),
+        ));
+    };
+    clients.admit_account(&host, &os_user).map_err(|conflict| {
+        tracing::warn!(host = %conflict.host, client_id = %req.client_id, "hello refused: the host has said hello as two OS accounts");
+        HelloRefusal::new(
+            "os_user_conflict",
+            format!(
+                "host {} has said hello to this daemon as more than one OS account; each OS account enrols its \
+                 own hub account, then restart this daemon",
+                conflict.host
+            ),
+        )
+    })
+}
+
+/// The reply to an admitted hello: the session, its revision and any replay the client missed.
 pub async fn handle_hello(
     req_id: u64,
     req: HelloReq,
@@ -34,46 +110,6 @@ pub async fn handle_hello(
     clients: &crate::clients::Clients,
 ) -> Result<HandlerOutput> {
     let (session_id, revision) = session.snapshot().await;
-
-    // Protocol version gate (ADR 0030 §2): a structured `{error, code}` envelope that does NOT deserialize
-    // as `HelloRes`, so the frontend surfaces a clear "update needed" screen
-    // instead of failing on a later op with a cryptic frame-parse error.
-    match protocol_gate(req.protocol) {
-        ProtocolGate::Accept => {}
-        ProtocolGate::Reject => {
-            let frontend_version = if req.app_version.is_empty() {
-                "<pre-versioning>".to_string()
-            } else {
-                req.app_version.clone()
-            };
-            let message = format!(
-                "protocol mismatch: backend {} (protocol {}) vs frontend {} (protocol {}) \
-                 — update the older side",
-                sot_protocol::app_version(),
-                sot_protocol::PROTOCOL_VERSION,
-                frontend_version,
-                req.protocol,
-            );
-            tracing::warn!(
-                client_id = %req.client_id,
-                client_protocol = req.protocol,
-                backend_protocol = sot_protocol::PROTOCOL_VERSION,
-                "hello rejected: {message}"
-            );
-            let payload = serde_json::json!({
-                "error": message,
-                "code": "protocol_mismatch",
-                "backend_protocol": sot_protocol::PROTOCOL_VERSION,
-                "frontend_protocol": req.protocol,
-                "backend_version": sot_protocol::app_version(),
-                "frontend_version": req.app_version,
-            });
-            return Ok(vec![(
-                Frame::res(req_id, op::HELLO, payload).with_rev(revision),
-                None,
-            )]);
-        }
-    }
 
     // Replay policy:
     //   - First-time client (no session_id): nothing to replay.
@@ -115,9 +151,8 @@ pub async fn handle_hello(
         host,
         project_root,
         label: label.map(str::to_string),
-        // Includes the connection this hello answers — it registers in
-        // `admit_hello`, which dispatch's HELLO arm calls before this
-        // handler runs (ADR 0010/0013).
+        // Includes the connection this hello answers when it is a control session — it registers in
+        // `register_hello` before this handler runs (ADR 0010/0013); a handoff connection never does.
         clients_connected: clients.count(),
         // ADR 0030 §2: report our wire-contract protocol + product version so
         // the frontend can warn on a legacy backend (protocol 0) and surface
@@ -144,44 +179,20 @@ pub async fn handle_hello(
     Ok(out)
 }
 
-/// Enters a connection in the client roster at its first hello and records its declared host and name.
-pub(super) fn admit_hello(
-    req: &HelloReq, clients: &Clients, client_guard: &mut Option<crate::clients::ClientGuard>,
-    is_long_lived_role: &mut bool, hello_host: &mut Option<String>, hello_name: &mut Option<String>,
-) {
-    // Register this connection in the client roster the first
-    // time we learn its client_id (a reconnect re-sends hello
-    // on the same connection — keep the original guard). Done
-    // before `handle_hello` so `clients_connected` counts self.
-    // Topology plan §F step 2: mark this connection
-    // ELIGIBLE for the read-deadline reaper -- exactly
-    // the two long-lived roles, `fe` and `bridge`
-    // (`cli`/`agent` are one-shot and stay ungated).
-    // This does NOT arm the deadline itself (manager
-    // compatibility fix, post-review) — only this
-    // connection's FIRST `ping` does that, so a peer too old to send one keeps
-    // today's behaviour exactly, never reaped by this
-    // path.
-    // A peer on another protocol is about to be
-    // refused by `handle_hello`'s gate: never enter
-    // the roster (it would be counted as a directed
-    // command's audience and listed by `version.query`
-    // while its hello stands refused). It gets the
-    // structured mismatch reply and nothing else.
-    if client_guard.is_none() && protocol_gate(req.protocol) == ProtocolGate::Accept {
-        *is_long_lived_role = matches!(req.role.as_str(), "fe" | "bridge");
-        *hello_host = req.host.clone();
-        *hello_name = req.name.clone();
-        *client_guard = Some(clients.register(
-            req.client_id.clone(),
-            req.app_version.clone(),
-            req.protocol,
-            req.role.clone(),
-            req.host.clone(),
-            req.instance.clone(),
-            req.name.clone(),
-        ));
-    }
+/// Enters a control session in the client roster, holding its declared host, role and name for the connection's
+/// life. Called after the connection's bus subscriptions and before the hello's reply, so `clients_connected` counts
+/// it and no event between the two is lost. Only a long-lived role (`fe`, `bridge`) is eligible for the read
+/// deadline, which the connection's first `ping` arms (`serve_control`); a handoff connection is never listed.
+pub(super) fn register_hello(req: &HelloReq, clients: &Clients) -> crate::clients::ClientGuard {
+    clients.register(
+        req.client_id.clone(),
+        req.app_version.clone(),
+        req.protocol,
+        req.role.clone(),
+        req.host.clone(),
+        req.instance.clone(),
+        req.name.clone(),
+    )
 }
 
 #[cfg(test)]
@@ -195,8 +206,8 @@ mod protocol_gate_tests {
             protocol_gate(sot_protocol::PROTOCOL_VERSION),
             ProtocolGate::Accept
         );
-        // Concretely, protocol 2 is accepted today.
-        assert_eq!(protocol_gate(2), ProtocolGate::Accept);
+        // Concretely, protocol 3 is accepted today.
+        assert_eq!(protocol_gate(3), ProtocolGate::Accept);
     }
 
     #[test]
@@ -206,6 +217,8 @@ mod protocol_gate_tests {
         // 2) and a newer one are all rejected — the FE renders the
         // "update needed" screen naming both sides.
         assert_eq!(protocol_gate(sot_protocol::PROTOCOL_VERSION - 1), ProtocolGate::Reject);
+        // Every pre-0.6.6 client (frontend, hub link, comm scripts) speaks 2: it declares no OS account.
+        assert_eq!(protocol_gate(2), ProtocolGate::Reject);
         assert_eq!(protocol_gate(0), ProtocolGate::Reject);
         assert_eq!(protocol_gate(99), ProtocolGate::Reject);
     }

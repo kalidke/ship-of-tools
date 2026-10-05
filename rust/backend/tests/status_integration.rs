@@ -83,16 +83,8 @@ async fn sotd_status_reaches_a_real_daemon_and_lists_its_own_row_and_client() {
     let stream = poll_until(|| async { try_connect(&socket_path).await }, BOUND, "sotd's own-label socket to accept a connection").await;
     let mut conn = tokio::io::BufReader::new(stream);
     let hello = HelloReq {
-        client_id: "status-it-fe".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some(TEST_STATE_HOST.to_string()),
-        role: "fe".to_string(),
-        instance: None,
         name: Some(format!("fe@{TEST_STATE_HOST}")),
+        ..HelloReq::this_process("status-it-fe", "fe", Some(TEST_STATE_HOST.to_string())).expect("this process's account")
     };
     // `call` writes the request then skips any evt broadcast (a
     // comm-registry poll included) that legitimately arrives before the

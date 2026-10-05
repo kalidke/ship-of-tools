@@ -223,7 +223,7 @@ impl State {
             .map(|(h, _)| h)
             .unwrap_or(&self.active_host);
         let pane_terminal_reason: Option<String> = pane_reason_line(
-            self.protocol_mismatch
+            self.hello_refused
                 .get(pane_host)
                 .and_then(|m| m.lines().next()),
             pane_terminal_reason_text(

@@ -63,6 +63,26 @@ pub(super) fn bind(tag: &str) -> (Bound, PathBuf) {
     (Bound { listener, _folder: folder }, path)
 }
 
+/// The daemon's admission of a handoff (ADR 0049 `## User isolation`): the first frame must be a hello whose role is
+/// `handoff`, which is answered accepted, and the frame behind it (here the lease) is returned with the hello. Any
+/// other first frame is refused `unauthenticated` and the fake reads nothing more, as the daemon does.
+pub(super) async fn read_handoff<R, W>(rx: &mut R, tx: &mut W) -> Option<(Frame, Frame)>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let (hello, _) = codec::read_frame(rx).await.ok()?;
+    if hello.op != op::HELLO || hello.payload["role"] != "handoff" {
+        let refusal = serde_json::json!({"error": "send a hello first", "code": "unauthenticated"});
+        let _ = codec::write_frame(tx, &Frame::res(hello.id, &hello.op, refusal), None).await;
+        return None;
+    }
+    let accepted = serde_json::json!({"session_id": "s", "revision": 0, "snapshot_pending": false});
+    codec::write_frame(tx, &Frame::res(hello.id, op::HELLO, accepted), None).await.ok()?;
+    let (req, _) = codec::read_frame(rx).await.ok()?;
+    Some((hello, req))
+}
+
 fn pipe_config(path: &Path) -> TransportConfig {
     TransportConfig { dial: Dial::Pipe(path.to_path_buf()), token: None }
 }
@@ -105,7 +125,7 @@ async fn lease_retried_each_data_connection() {
             let n = c.fetch_add(1, Ordering::SeqCst) + 1;
             let (rx, mut tx) = conn.split();
             let mut rx = codec::buffered(rx);
-            let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+            let Some((_, req)) = read_handoff(&mut rx, &mut tx).await else { continue };
             let payload = match n {
                 1 => serde_json::json!({"error": "unknown op: fe.lease"}),
                 2 => serde_json::json!({"outcome": "closing"}),
@@ -186,7 +206,7 @@ async fn notice_seen_timeout_keeps_the_lease() {
         let conn = listener.accept().await.unwrap();
         let (rx, mut tx) = conn.split();
         let mut rx = codec::buffered(rx);
-        let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+        let (_, req) = read_handoff(&mut rx, &mut tx).await.expect("a handoff");
         let granted = serde_json::json!({"outcome": "granted"});
         codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
         let (seen, _) = codec::read_frame(&mut rx).await.unwrap();
@@ -214,16 +234,22 @@ async fn lease_wire_round_trip() {
         let conn = listener.accept().await.unwrap();
         let (rx, mut tx) = conn.split();
         let mut rx = codec::buffered(rx);
-        let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+        let (hello, req) = read_handoff(&mut rx, &mut tx).await.expect("a handoff");
+        // The hello names this window's host and OS account, and the lease follows it as the second frame.
+        assert_eq!(hello.id, 1);
+        assert_eq!(hello.payload["client_id"], serde_json::json!("sot-fe-lease"));
+        assert_eq!(hello.payload["protocol"], serde_json::json!(sot_protocol::PROTOCOL_VERSION));
+        assert_eq!(hello.payload["host"], serde_json::json!(crate::net::identity::frontend_identity().host));
+        assert_eq!(hello.payload["os_user"], serde_json::json!(sot_log::identity::os_account::own_account_id()));
         assert_eq!(req.op, op::FE_LEASE);
-        assert_eq!(req.id, 1);
+        assert_eq!(req.id, 2);
         let me = self_identity().unwrap();
         assert_eq!(req.payload["boot"], serde_json::json!(me.boot));
         assert_eq!(req.payload["pid"], serde_json::json!(me.pid));
         assert_eq!(req.payload["created"], serde_json::json!(me.created));
         assert_eq!(req.payload["token"], serde_json::json!("tok"));
         let granted = serde_json::json!({"outcome": "granted", "state_root": "r", "not_ended": 1});
-        codec::write_frame(&mut tx, &Frame::res(1, op::FE_LEASE, granted), None).await.unwrap();
+        codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
         let (seen, _) = codec::read_frame(&mut rx).await.unwrap();
         codec::write_frame(&mut tx, &Frame::res(seen.id, op::FE_NOTICE_SEEN, serde_json::json!({})), None)
             .await
@@ -274,7 +300,7 @@ async fn slow_grant_is_held_not_dropped() {
             tokio::spawn(async move {
                 let (rx, mut tx) = conn.split();
                 let mut rx = codec::buffered(rx);
-                let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+                let Some((_, req)) = read_handoff(&mut rx, &mut tx).await else { return };
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 let granted = serde_json::json!({"outcome": "granted", "state_root": "r", "not_ended": 2});
                 codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
@@ -312,7 +338,7 @@ async fn one_daemon_under_two_labels_is_one_count() {
                 let task = tokio::spawn(async move {
                     let (rx, mut tx) = conn.split();
                     let mut rx = codec::buffered(rx);
-                    let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+                    let Some((_, req)) = read_handoff(&mut rx, &mut tx).await else { return };
                     let granted = serde_json::json!({"outcome": "granted", "state_root": root, "not_ended": n});
                     codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
                     while let Ok((f, _)) = codec::read_frame(&mut rx).await {
@@ -433,4 +459,26 @@ async fn bind_removes_its_folder_when_dropped() {
     assert!(dir.is_dir());
     drop(listener);
     assert!(!dir.exists(), "{} was left behind", dir.display());
+}
+
+/// A hello the daemon refuses (an older protocol, a second OS account on the host) is not a failed connect: the data
+/// connection goes on, so its own hello is refused the same way and shows the daemon's message; the lease is
+/// `Unreached` and nothing is held.
+#[tokio::test]
+async fn a_refused_hello_leaves_the_lease_unreached_and_the_data_connection_going() {
+    let (listener, path) = bind("refusedhello");
+    tokio::spawn(async move {
+        let conn = listener.accept().await.unwrap();
+        let (rx, mut tx) = conn.split();
+        let mut rx = codec::buffered(rx);
+        let (hello, _) = codec::read_frame(&mut rx).await.unwrap();
+        let refusal = serde_json::json!({"error": "host has said hello as more than one OS account", "code": "os_user_conflict"});
+        codec::write_frame(&mut tx, &Frame::res(hello.id, op::HELLO, refusal), None).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    });
+    let host = "local".to_string();
+    let leases = Leases::new(false, vec![host.clone()]);
+    assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
+    assert_eq!(leases.standing(&host), Some(Standing::Unreached));
+    assert!(!leases.held(&host));
 }

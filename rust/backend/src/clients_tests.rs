@@ -718,3 +718,38 @@ mod fe_command_send_tests {
         assert_eq!(evt.target_serial, Some(active.serial()));
     }
 }
+
+    /// ADR 0049 `## User isolation`, the detector per declared host: the state a hello finds, what
+    /// `admit_account` answers and the state after; the account still counts after its connection is gone, and
+    /// connections already registered for a refused host stay registered.
+    #[test]
+    fn host_account_table() {
+        let clients = Clients::new();
+        let state = |host: &str| match clients.inner.lock().unwrap().hosts.get(host) {
+            None => "absent".to_string(),
+            Some(HostAccounts::One(a)) => format!("One({a})"),
+            Some(HostAccounts::Several) => "Several".to_string(),
+        };
+        let conflict = |host: &str| Some(OsUserConflict { host: host.into() });
+        // Absent: the first account is served and remembered.
+        let live = clients.register("client", "0.6.0", 3, "cli".to_string(), Some("X".into()), None, None);
+        clients.admit_account("X", "a").expect("absent -> served");
+        assert_eq!(state("X"), "One(a)");
+        // One(a): the same account is served again; another host's account is that host's own first.
+        clients.admit_account("X", "a").expect("same account");
+        clients.admit_account("Y", "b").expect("another host");
+        assert_eq!((state("X"), state("Y")), ("One(a)".to_string(), "One(b)".to_string()));
+        // One(a), another account: refused, and the host is Several; its live connection stays registered.
+        assert_eq!(clients.admit_account("X", "b").err(), conflict("X"));
+        assert_eq!(state("X"), "Several");
+        assert_eq!(clients.count(), 1, "a refused hello leaves the roster alone");
+        drop(live);
+        // Several: every account is refused, either one, until the daemon restarts.
+        for user in ["a", "b", "c"] {
+            assert_eq!(clients.admit_account("X", user).err(), conflict("X"), "{user}");
+        }
+        // One(b) with nobody connected: the account still counts.
+        assert_eq!(clients.admit_account("Y", "a").err(), conflict("Y"));
+        assert_eq!(state("Y"), "Several");
+    }
+

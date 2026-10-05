@@ -1,38 +1,39 @@
 //! Preview replies: preview.get and set_scale results and failures, preview.changed, concept.read
-//! and concept.write, the browser opens (pluto, docs, video, quarto), and the protocol-mismatch
-//! overlay (set on a mismatch, cleared by a clean hello).
+//! and concept.write, the browser opens (pluto, docs, video, quarto), and the refused-hello
+//! overlay (set on a refusal, cleared by a clean hello).
 
 use crate::ui::*;
 
 impl State {
-    pub(crate) fn clear_protocol_mismatch(&mut self, event_host: HostKey) {
-        // ADR 0030 §2: a clean hello means the protocol skew (if
-        // any) is resolved — clear the blocking "update needed"
-        // overlay so the chrome returns to normal.
+    pub(crate) fn clear_hello_refused(&mut self, event_host: HostKey) {
+        // ADR 0030 §2: a clean hello means the refusal (a protocol skew
+        // or an account refusal, if any) is resolved — clear the
+        // blocking overlay so the chrome returns to normal.
         // ADR 0042 L2a: only THIS host's mismatch entry is
         // resolved -- a clean hello from host A must not erase
-        // host B's still-real mismatch. Clearing preview_fatal
+        // host B's still-real refusal. Clearing preview_fatal
         // unconditionally is still correct: it's a projection
         // of active_host's entry, rebuilt lazily at draw time
         // either way (harmless extra rebuild if this wasn't
         // the active host's mismatch to begin with).
-        self.protocol_mismatch.remove(&event_host);
+        self.hello_refused.remove(&event_host);
         self.preview_fatal = None;
     }
 
-    pub(crate) fn on_protocol_mismatch(&mut self, event_host: HostKey, message: String) {
-        // ADR 0030 §2: hard FE/BE version skew. Latch the blocking
+    pub(crate) fn on_hello_refused(&mut self, event_host: HostKey, message: String) {
+        // ADR 0030 §2: hard FE/BE version skew; ADR 0049: the daemon
+        // refused this window's account. Latch the blocking
         // overlay (rebuilt lazily in the draw once md_rect_px is
         // known, so it wraps to the real preview width) and mirror
         // a short line to the status bar.
         // ADR 0042 L2a: per-host -- a stale/optional remote's
-        // mismatch must not block the whole UI while every
+        // refusal must not block the whole UI while every
         // other (healthy) host works fine. Only active_host's
         // entry is ever projected to the blocking overlay
         // (rebuild_fatal_overlay/show_fatal).
-        self.protocol_mismatch.insert(event_host.clone(), message);
+        self.hello_refused.insert(event_host.clone(), message);
         self.preview_fatal = None;
-        self.status = "protocol mismatch · update needed (see preview)".to_string();
+        self.status = "the backend refused this window (see preview)".to_string();
     }
 
     pub(crate) fn on_concept_read(

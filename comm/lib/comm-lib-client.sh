@@ -433,6 +433,52 @@ sot_json_escape() {
     printf '%s' "$1" | jq -Rs .
 }
 
+# _sot_windows_sid — the process token's user SID under git-bash, the value `own_account_id()` gives Rust on
+# Windows. Three probes in turn, the first that prints a SID wins: `whoami /user` called directly (MSYS must not
+# rewrite its `/user` style arguments as paths, hence MSYS2_ARG_CONV_EXCL), the same through `cmd`, and PowerShell's
+# WindowsIdentity. When none does, what each printed goes to stderr, so a runner or box where the account really
+# cannot be read says why.
+_sot_windows_sid() {
+    local probe out sid diag=""
+    for probe in whoami cmd powershell; do
+        case "$probe" in
+            whoami) out="$(MSYS2_ARG_CONV_EXCL='*' whoami /user /fo csv /nh 2>&1)" ;;
+            cmd) out="$(cmd //c "whoami /user /fo csv /nh" 2>&1)" ;;
+            powershell) out="$(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' 2>&1 </dev/null)" ;;
+        esac
+        out="$(printf '%s' "$out" | tr -d '\r')"
+        sid="$(printf '%s\n' "$out" | grep -oE 'S-1-[0-9]+(-[0-9]+)+' | tail -n 1)"
+        if [ -n "$sid" ]; then
+            printf '%s\n' "$sid"
+            return 0
+        fi
+        diag="$diag [$probe: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-120)]"
+    done
+    echo "_sot_windows_sid: no probe printed this process's user SID:$diag" >&2
+    return 1
+}
+
+# _sot_os_user — this shell's OS account as the operating system issued it, for the hello's `os_user` (ADR 0049
+# `## User isolation`; the same value `sot_log::identity::os_account::own_account_id()` gives the Rust builders):
+# `uid:<euid>` on Unix, the process token's user SID on Windows (`_sot_windows_sid`). Cached in
+# `_SOT_OS_USER`. Empty means unreadable: it fails, and no hello is sent. Never a name from the environment, and no
+# sotd call (an older installed sotd would break every send).
+_sot_os_user() {
+    if [ -z "${_SOT_OS_USER:-}" ]; then
+        if _sot_is_windows; then
+            _SOT_OS_USER="$(_sot_windows_sid)"
+        else
+            _SOT_OS_USER="uid:$(id -u 2>/dev/null)"
+            [ "$_SOT_OS_USER" = "uid:" ] && _SOT_OS_USER=""
+        fi
+    fi
+    if [ -z "$_SOT_OS_USER" ]; then
+        echo "_sot_os_user: this process's OS account is unreadable -- cannot declare an identity" >&2
+        return 1
+    fi
+    printf '%s\n' "$_SOT_OS_USER"
+}
+
 # sot_hello_frame — the ONE hello frame every comm script sends
 # before any other op (ADR 0046 decision 1: a connection declares
 # `{host, role, name}` once, and the daemon binds it — never recomputed
@@ -452,23 +498,23 @@ sot_json_escape() {
 sot_hello_frame() {
     local role
     if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
-    local tok host
+    local tok host os_user
     tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
     host="$(sot_host)" || return 1
+    _sot_os_user >/dev/null || return 1
+    os_user="$_SOT_OS_USER"
     # JSON-escape every interpolated string (S19, Codex finding S19): an
     # unescaped quote or backslash in a declared host/name/token would
     # otherwise produce invalid JSON the daemon's own parser rejects.
     #
-    # The `"protocol":2` literal below is sotd's WIRE protocol
+    # The `"protocol":3` literal below is sotd's WIRE protocol
     # (`sot_protocol::PROTOCOL_VERSION`, rust/protocol/src/lib.rs) — not
     # this file's own `$PROTOCOL_VERSION` (registry.json schema version,
-    # unrelated). It went stale against a live daemon when the wire
-    # protocol bumped 1 -> 2 and nothing here asked the binary; bump it by
-    # hand alongside every future `PROTOCOL_VERSION` change until this
-    # reads `sotd --version`'s trailing `protocol <N>` instead (see that
-    # function's doc comment).
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":2,"app_version":"comm","token":%s,"host":%s,"role":%s,"name":%s}}\n' \
-        "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
+    # unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
+    # change; sot-protocol's `comm_lib_hello_speaks_this_protocol` test
+    # fails until the two match.
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":3,"app_version":"comm","token":%s,"host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
+        "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$os_user")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
 }
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
@@ -509,11 +555,25 @@ _sot_oneshot_sender() {
     exec sleep "$3"
 }
 
+# _sot_hello_refusal FILE — the daemon's message when the hello's reply in FILE (the first line whose op is hello)
+# carries an error: the daemon refused this client (an older protocol, a second OS account on the host) and closed the
+# connection (ADR 0049 `## User isolation`). Nothing when the hello was accepted or has not been answered yet.
+_sot_hello_refusal() {
+    local reply
+    reply="$(grep -m1 '"op":"hello"' "$1" 2>/dev/null || true)"
+    [ -n "$reply" ] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$reply" | jq -r 'if (.payload.error? // null) != null then (.payload.error | tostring) else empty end' 2>/dev/null
+    else
+        case "$reply" in *'"error"'*) printf 'refused\n' ;; esac
+    fi
+}
+
 sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
-    local tmp ncpid line="" deadline hello
-    hello="$(sot_hello_frame)"
+    local tmp ncpid line="" deadline hello refused=""
+    hello="$(sot_hello_frame)" || return 1
     tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     case "$ENDPOINT" in
         unix:*)
@@ -591,10 +651,14 @@ sot_oneshot_request() {
             break
         fi
         line=""
+        # A refused hello ends the connection: no reply is coming, so say why at once.
+        refused="$(_sot_hello_refusal "$tmp")"
+        [ -n "$refused" ] && break
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
             line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
             _sot_line_ok "$line" || line=""
+            [ -n "$line" ] || refused="$(_sot_hello_refusal "$tmp")"
             break; }
         sleep 0.1
     done
@@ -607,6 +671,10 @@ sot_oneshot_request() {
         printf 'sot_oneshot_request: %s: %s\n' "${target:-ssh bridge}" "$(tr '\n' ' ' < "$tmp.err")" >&2
     fi
     rm -f "${tmp:?}" "${tmp:?}.snd" "${tmp:?}.err"
+    if [ -n "$refused" ]; then
+        printf 'sot_oneshot_request: hello refused: %s\n' "$refused" >&2
+        return 1
+    fi
     [ -n "$line" ] && printf '%s\n' "$line"
 }
 

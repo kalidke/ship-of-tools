@@ -44,8 +44,8 @@ impl State {
                 crate::net::transport::IncomingEvt::Disconnected { reason } => {
                     self.on_disconnected(event_host, reason)
                 }
-                crate::net::transport::IncomingEvt::ProtocolMismatch { message } => {
-                    self.on_protocol_mismatch(event_host, message)
+                crate::net::transport::IncomingEvt::HelloRefused { message } => {
+                    self.on_hello_refused(event_host, message)
                 }
                 crate::net::transport::IncomingEvt::TreeRoot {
                     workspace_id,

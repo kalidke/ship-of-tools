@@ -703,8 +703,12 @@ OPS_FE_LEAVING="$(sed -n 's/.*pub const FE_LEAVING: &str = "\([^"]*\)".*/\1/p' "
 check "sot-lease.ps1 names the fe.lease op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEASE\"" "$PS_LEASE" && echo yes || echo no)"
 check "sot-lease.ps1 names the fe.leaving op" "yes" "$(grep -qF "\"op\":\"$OPS_FE_LEAVING\"" "$PS_LEASE" && echo yes || echo no)"
 # The golden lease line: the launcher's literal and ops/lease.rs's test line (backslashes stripped)
-# share the prefix and the sorted payload keys, in order.
-LEASE_PREFIX='{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"'
+# share the prefix and the sorted payload keys, in order. The frame's "v" is the wire protocol
+# (`Frame::req` stamps `PROTOCOL_VERSION`), so a bump that misses the launcher fails here.
+WIRE_PROTO="$(sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);.*/\1/p' "$(dirname "$0")/../../rust/protocol/src/lib.rs")"
+check "lib.rs names one wire protocol" "yes" "$([ -n "$WIRE_PROTO" ] && echo yes || echo no)"
+check "sot-lease.ps1's fe.leaving frame speaks the wire protocol" "yes" "$(grep -qF "{\"v\":$WIRE_PROTO,\"id\":2,\"kind\":\"req\",\"op\":\"$OPS_FE_LEAVING\"" "$PS_LEASE" && echo yes || echo no)"
+LEASE_PREFIX="{\"v\":$WIRE_PROTO,\"id\":1,\"kind\":\"req\",\"op\":\"fe.lease\",\"payload\":{\"boot\":\""
 in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then ,"pid": on one line
     local txt
     if [ "$2" = 1 ]; then txt="$(sed 's/\\//g' "$1")"; else txt="$(cat "$1")"; fi
@@ -713,6 +717,11 @@ in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then 
 }
 check "sot-lease.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LEASE" 0)"
 check "ops/lease.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
+# The launcher's hello (ADR 0049, User isolation) speaks the wire protocol and names the handoff role.
+HANDOFF_ROLE="$(sed -n 's/.*pub const HANDOFF_ROLE: &str = "\([^"]*\)".*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops/session.rs")"
+check "session.rs names the handoff role" "yes" "$([ -n "$HANDOFF_ROLE" ] && echo yes || echo no)"
+check "sot-lease.ps1's hello speaks the wire protocol" "yes" "$(grep -qF "\"op\":\"hello\",\"payload\":{\"client_id\":\"sot-launcher\",\"protocol\":$WIRE_PROTO," "$PS_LEASE" && echo yes || echo no)"
+check "sot-lease.ps1's hello is a handoff" "yes" "$(grep -qF "\"role\":\"$HANDOFF_ROLE\"}}" "$PS_LEASE" && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 printf '\n'

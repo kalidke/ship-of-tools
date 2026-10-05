@@ -4,21 +4,20 @@ use super::conn::{ping_read_deadline, test_slow_concept_read_delay, touch_person
 use crate::rows::ops::pty::handle_pty_open;
 use crate::rows::reauth::answer_workspace_reauth;
 use crate::sidecars::ops::{handle_monitor_history, handle_monitor_subscribe, handle_monitor_unsubscribe};
-use super::hello::admit_hello;
 use super::reply::{canonicalize_workspace_id, finish_dispatch, spawn_job, write_reply, OutTx};
 use super::*;
 
 /// Answers one request frame: the op table, each arm calling its owner, then the reply write.
 #[allow(clippy::too_many_lines, reason = "the op table: one arm per request op, each calling its owner; predates the 100-line limit")]
 pub(super) async fn dispatch<W>(
-    tx: &mut W, frame: Frame, session: &Session, mathjax: &MathJax, pluto: &Pluto, files_mode: &Arc<FilesMode>,
-    label: &Arc<Option<String>>, workspaces: &Workspaces, ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
+    tx: &mut W, frame: Frame, session: &Session, mathjax: &MathJax, pluto: &Pluto,
+    workspaces: &Workspaces, ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
     agent_events_tx: &broadcast::Sender<AgentMessage>, agent_receipt_tx: &broadcast::Sender<AgentReceipt>,
     fe_command_tx: &broadcast::Sender<FeCommandEvt>, clients: &Clients,
     topology_store: &Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: &broadcast::Sender<crate::topology::store::TopologyChanged>, leases: &Arc<crate::lifecycle::lease::Leases>,
-    client_guard: &mut Option<crate::clients::ClientGuard>, hello_host: &mut Option<String>,
-    hello_name: &mut Option<String>, is_long_lived_role: &mut bool, deadline_armed: &mut bool,
+    client_guard: &Option<crate::clients::ClientGuard>, hello_host: &Option<String>,
+    hello_name: &Option<String>, is_long_lived_role: bool, deadline_armed: &mut bool,
     read_deadline: &mut tokio::time::Instant, active_workspace: &mut Option<String>, monitor_subscribed: &mut bool,
     jobs: &mut JoinSet<()>, job_sem: &Arc<Semaphore>, out_tx: &OutTx,
 ) -> Result<()>
@@ -36,14 +35,6 @@ where
     // from a neighbouring log line.
     let dispatch_started = std::time::Instant::now();
     let dispatched: Result<crate::server::reply::HandlerOutput> = match frame.op.as_str() {
-        op::HELLO => match serde_json::from_value::<sot_protocol::HelloReq>(frame.payload).context("hello payload") {
-            Ok(req) => {
-                admit_hello(&req, clients, client_guard, is_long_lived_role, hello_host, hello_name);
-                crate::server::hello::handle_hello(frame.id, req, &session, &files_mode, label.as_deref(), &clients)
-                    .await
-            }
-            Err(e) => Err(e),
-        },
         op::TREE_ROOT => {
             crate::files::tree_ops::handle_tree_root(frame.id, frame.payload, &session, &workspaces).await
         }
@@ -249,7 +240,7 @@ where
             // frontend or comm bridge not yet converged from main)
             // stays permanently unarmed and keeps today's behaviour:
             // never reaped by this path.
-            if *is_long_lived_role && !*deadline_armed {
+            if is_long_lived_role && !*deadline_armed {
                 *deadline_armed = true;
                 *read_deadline = tokio::time::Instant::now() + ping_read_deadline();
             }

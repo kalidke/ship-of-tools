@@ -1,40 +1,81 @@
 //! Tests of the lane dial against a stub daemon: refusal mapping, bad-token and no-bridge replies, timeouts and cancel.
 
 use super::*;
+use interprocess::local_socket::{prelude::*, GenericFilePath, Listener, ListenerOptions, Stream};
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::time::Duration;
 
-#[test]
-fn tcp_client_sets_nodelay() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let stream = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-    let client = TcpClient::new(stream).unwrap();
-    assert!(client.stream.nodelay().unwrap());
+/// A fake daemon on a fresh local socket (a pipe on Windows): the one transport the lane client dials besides
+/// ssh, portable, no daemon process needed. On Unix the dial reaches it through `connect_own`, which speaks only to a
+/// socket in a folder private to this account, so the socket sits in a folder made 0700 here, never left to the umask.
+struct FakeDaemon {
+    path: std::path::PathBuf,
+    listener: Listener,
 }
 
-/// A `std::net::TcpListener` on loopback plays the daemon — portable,
-/// no daemon process needed — for every refusal/uncertainty case
-/// `dial` must classify (ADR 0045 decision 4).
+impl FakeDaemon {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, Ordering::SeqCst);
+        // A literal `/tmp` on Unix: `sun_path` is short on macOS and `$TMPDIR` there is not.
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::fs::DirBuilderExt;
+            let dir = std::path::PathBuf::from(format!("/tmp/sot-lane-test-{}-{n}", std::process::id()));
+            std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+            dir.join("d.sock")
+        };
+        #[cfg(windows)]
+        let path = std::path::PathBuf::from(format!(r"\\.\pipe\sot-lane-test-{}-{n}", std::process::id()));
+        let name = path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+        Self { path, listener }
+    }
+
+    fn endpoint(&self) -> DaemonLaneEndpoint {
+        DaemonLaneEndpoint { dial: LaneDial::Local(self.path.clone()), token: None }
+    }
+
+    fn accept(&self) -> Stream {
+        self.listener.accept().unwrap()
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FakeDaemon {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(self.path.parent().unwrap());
+    }
+}
+
+/// A fake daemon plays the daemon for every refusal/uncertainty case `dial` must classify (ADR 0045 decision 4).
 fn dial_against<F>(respond: F) -> Result<(u32, u64), TransportError>
 where
-    F: FnOnce(std::net::TcpStream) + Send + 'static,
+    F: FnOnce(Stream) + Send + 'static,
 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = std::thread::spawn(move || {
-        let (conn, _) = listener.accept().unwrap();
-        respond(conn);
-    });
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
+    let daemon = FakeDaemon::new();
+    let endpoint = daemon.endpoint();
+    let handle = std::thread::spawn(move || respond(daemon.accept()));
     let result = endpoint.dial("row-1", "supervisor", None).map(|c| (c.peer.pid, c.peer.created));
     handle.join().unwrap();
     result
 }
 
-fn respond_with(mut conn: std::net::TcpStream, payload: serde_json::Value) {
-    // Drain the request frame so the client's write doesn't block.
-    let mut buf = [0u8; 4096];
-    let _ = conn.read(&mut buf);
+/// Reads the two frames a dial writes in one write, its hello and its `lane.connect`, and answers the hello as an
+/// accepting daemon does. Returns both frames as sent.
+fn serve_hello(conn: &mut Stream) -> (Frame, Frame) {
+    let mut reader = std::io::BufReader::new(&*conn);
+    let hello = crate::codec::read_frame_blocking(&mut reader).expect("the dial's hello");
+    let request = crate::codec::read_frame_blocking(&mut reader).expect("the dial's lane.connect");
+    let ok = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
+    let mut line = serde_json::to_vec(&Frame::res(hello.id, op::HELLO, ok)).unwrap();
+    line.push(b'\n');
+    conn.write_all(&line).unwrap();
+    (hello, request)
+}
+
+fn respond_with(mut conn: Stream, payload: serde_json::Value) {
+    serve_hello(&mut conn);
     let res = crate::Frame::res(1, op::LANE_CONNECT, payload);
     let mut line = serde_json::to_vec(&res).unwrap();
     line.push(b'\n');
@@ -71,22 +112,58 @@ fn a_bridge_daemons_own_bad_token_stays_unauthenticated() {
     }
 }
 
-/// An OLD daemon's ordinary control-loop auth gate answers
-/// `lane.connect` with the SAME `unauthenticated` code but its own
-/// "send a token-valid hello first" text — this must be recognized
-/// as `no_bridge`, not confused with a real bridge's bad-token
-/// refusal (ADR 0045 lane B4a Codex review blocker).
+/// ADR 0049 `## User isolation`: the dial says hello first, as a handoff naming this process's OS account, and
+/// writes it together with `lane.connect`, so the hello costs no round trip.
 #[test]
-fn an_old_daemons_control_loop_unauthenticated_is_no_bridge() {
-    let result = dial_against(|conn| {
-        respond_with(
-            conn,
-            serde_json::json!({ "error": "authentication required: send a token-valid hello first", "code": "unauthenticated" }),
-        );
+fn the_dial_says_a_handoff_hello_first_in_the_same_write() {
+    let daemon = FakeDaemon::new();
+    let endpoint = daemon.endpoint();
+    let handle = std::thread::spawn(move || {
+        let mut conn = daemon.accept();
+        let (hello, request) = serve_hello(&mut conn);
+        respond_with_ok_lane(&mut conn);
+        (hello, request)
     });
-    match result {
-        Err(TransportError::Refused { code, .. }) => assert_eq!(code, "no_bridge"),
-        other => panic!("expected Refused{{code: no_bridge}}, got {other:?}"),
+    let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
+    drop(client);
+    let (hello, request) = handle.join().unwrap();
+    assert_eq!((hello.kind, hello.op.as_str()), (Kind::Req, op::HELLO));
+    let hello: crate::HelloReq = serde_json::from_value(hello.payload).expect("a HelloReq");
+    assert_eq!(hello.role, crate::HANDOFF_ROLE);
+    assert_eq!(hello.protocol, crate::PROTOCOL_VERSION);
+    assert_eq!(hello.os_user, sot_log::identity::os_account::own_account_id());
+    assert_eq!(request.op, op::LANE_CONNECT);
+}
+
+fn respond_with_ok_lane(conn: &mut Stream) {
+    let res = crate::Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 1u32, "created": 1u64 }));
+    let mut line = serde_json::to_vec(&res).unwrap();
+    line.push(b'\n');
+    conn.write_all(&line).unwrap();
+}
+
+/// A daemon that refuses the dial's hello (an older protocol, a second account on the host) is terminal: `Refused`
+/// with the daemon's own code and message, never the next op's end of file.
+#[test]
+fn a_refused_hello_is_refused_with_its_code_and_message() {
+    for code in ["protocol_mismatch", "os_user_conflict", "identity_missing"] {
+        let daemon = FakeDaemon::new();
+        let endpoint = daemon.endpoint();
+        let handle = std::thread::spawn(move || {
+            let mut conn = daemon.accept();
+            let mut reader = std::io::BufReader::new(&conn);
+            let hello = crate::codec::read_frame_blocking(&mut reader).expect("the dial's hello");
+            let refusal = crate::Frame::res(hello.id, op::HELLO, serde_json::json!({ "error": "no thanks", "code": code }));
+            let mut line = serde_json::to_vec(&refusal).unwrap();
+            line.push(b'\n');
+            conn.write_all(&line).unwrap();
+        });
+        let result = endpoint.dial("row-1", "supervisor", None).map(|_| ());
+        handle.join().unwrap();
+        match result {
+            Err(TransportError::Refused { code: got, detail }) => assert_eq!((got.as_str(), detail.as_str()), (code, "no thanks")),
+            other => panic!("expected Refused{{{code}}}, got {other:?}"),
+        }
     }
 }
 
@@ -153,23 +230,17 @@ fn an_undetermined_reply_is_undetermined() {
 #[test]
 fn a_silent_daemon_is_unreachable_within_two_seconds() {
     // Case 1: accepts the connect, then never speaks — the
-    // handshake bound. NOT a dropped/unaccepted port: on Windows
-    // loopback, a client's own ephemeral port can coincide with a
-    // just-freed listener port and complete a TCP *self*-connect,
-    // reading back its own request frame instead of seeing a
-    // refused connect. A real listener that accepts and stays
+    // handshake bound. A real listener that accepts and stays
     // silent (held open in a thread until this case is done)
-    // exercises the same "no daemon answers" outcome without that
-    // race.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    // exercises the "no daemon answers" outcome.
+    let daemon = FakeDaemon::new();
+    let endpoint = daemon.endpoint();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let handle = std::thread::spawn(move || {
-        let (conn, _) = listener.accept().unwrap();
-        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+        let conn = daemon.accept();
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
         drop(conn);
     });
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
     let started = Instant::now();
     // `.map(|_| ())`: `DaemonLaneClient` carries no `Debug` impl (a
     // live socket/pipe handle has no useful one), so the success
@@ -200,22 +271,20 @@ fn a_silent_daemon_is_unreachable_within_two_seconds() {
 /// 500 ms, so the test could pass even if `cancel()` did nothing).
 #[test]
 fn cancel_unblocks_a_pending_read() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    let daemon = FakeDaemon::new();
+    let endpoint = daemon.endpoint();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let handle = std::thread::spawn(move || {
-        let (mut conn, _) = listener.accept().unwrap();
-        let mut buf = [0u8; 4096];
-        let _ = conn.read(&mut buf);
+        let mut conn = daemon.accept();
+        serve_hello(&mut conn);
         let res = crate::Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 4242u32, "created": 99u64 }));
         let mut line = serde_json::to_vec(&res).unwrap();
         line.push(b'\n');
         conn.write_all(&line).unwrap();
         // Held open until the test says the cancelled read already
         // completed -- see this test's own doc.
-        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+        let _ = release_rx.recv_timeout(Duration::from_secs(10));
     });
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
     let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
 
     let client = std::sync::Arc::new(client);
@@ -236,7 +305,7 @@ fn cancel_unblocks_a_pending_read() {
         elapsed < std::time::Duration::from_secs(2),
         "cancel() itself must unblock the read (peer stayed open 10s) -- took {elapsed:?}"
     );
-    // `shutdown(Both)` on a Tcp/Unix stream unblocks a pending LOCAL
+    // `shutdown(Both)` on a Unix stream unblocks a pending LOCAL
     // read as ordered EOF (`Ok(0)`) — it marks this end fully closed,
     // it does not raise an error the way `PipeClient::cancel`'s own
     // OVERLAPPED cancel does. Either outcome proves cancel() (not
@@ -249,12 +318,11 @@ fn cancel_unblocks_a_pending_read() {
 
 #[test]
 fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    let daemon = FakeDaemon::new();
+    let endpoint = daemon.endpoint();
     let handle = std::thread::spawn(move || {
-        let (mut conn, _) = listener.accept().unwrap();
-        let mut buf = [0u8; 4096];
-        let _ = conn.read(&mut buf);
+        let mut conn = daemon.accept();
+        serve_hello(&mut conn);
         let res = crate::Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "ok": true, "pid": 111u32, "created": 1u64 }));
         let mut line = serde_json::to_vec(&res).unwrap();
         line.push(b'\n');
@@ -268,7 +336,6 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
         let _ = conn.write_all(b"irrelevant");
     });
 
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None };
     let client = endpoint.dial("row-1", "supervisor", None).expect("handshake succeeds");
 
     struct FixedExchange;
@@ -317,7 +384,7 @@ fn spawn_stub_child() -> std::process::Child {
 /// `BridgedClient::cancel()`'s own contract: the kill it issues must
 /// be what unblocks a read already parked on the child's stdout, not
 /// an eventual natural exit racing ahead of it — same property
-/// `cancel_unblocks_a_pending_read` proves for `TcpClient` above, one
+/// `cancel_unblocks_a_pending_read` proves for the local-socket client above, one
 /// mechanism for both.
 #[test]
 fn bridged_cancel_unblocks_a_parked_read_via_kill() {

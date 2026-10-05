@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// `lane.connect` request (ADR 0045 §2) — the FIRST frame on a dedicated
+/// `lane.connect` request (ADR 0045 §2) — the frame behind a `handoff` hello on a dedicated
 /// lane-bridge connection. `target` is the capsule row's `session_name`
 /// name, exactly as `pty.open` addresses it, and is REQUIRED for BOTH
 /// lanes: a voyage lane is reached only through the capsule row that owns

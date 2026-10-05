@@ -1,9 +1,10 @@
 #![cfg(target_os = "linux")]
 //! ADR 0045 lane B4b: the cross-process proofs that an FE attach client
 //! reaches a real capsule row THROUGH a real daemon in the middle, over
-//! a test-owned TCP -> Unix relay standing in for the loopback tunnel a
-//! remote `DaemonLaneEndpoint::LaneDial::Tcp` dials in production
-//! (`sot-protocol`'s own `lane_client.rs`, lane B4a). Shares `Env` and
+//! a test-owned Unix-socket relay standing in for the link a remote
+//! `DaemonLaneEndpoint` reaches its daemon by (`sot-protocol`'s own
+//! `lane_client.rs`, lane B4a), which the tests can cut, blackhole and
+//! throttle. Shares `Env` and
 //! the wire-protocol round-trip helpers with `capsule_workspaces/main.rs` via
 //! `tests/support/mod.rs` (a pure lift there, no behavior change).
 //!
@@ -21,14 +22,13 @@ use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
 use sot_protocol::{op, Frame};
 
 use std::io::{Read, Write};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, UnixStream};
+use tokio::net::{UnixListener, UnixStream};
 
 /// Mirrors `capsule_workspaces/main.rs`'s own `SERIAL`: this file's real
 /// `sotd`/`sot-capsule` processes share the same per-process
@@ -101,18 +101,20 @@ fn screen_text(client: &FeAttachClient<DaemonLaneEndpoint>) -> String {
     text
 }
 
-/// A test-owned TCP -> Unix relay standing in for the loopback tunnel a
-/// remote `DaemonLaneEndpoint::LaneDial::Tcp` dials in production: binds
-/// `127.0.0.1:0` and forwards each accepted connection to the daemon's
+/// A test-owned Unix-socket relay standing in for the link a remote
+/// `DaemonLaneEndpoint` reaches its daemon by: binds a socket in its own
+/// temp folder and forwards each accepted connection to the daemon's
 /// own `env.socket_path`, using `tokio::io::copy_bidirectional` for the
 /// ordinary (unthrottled) case. Four controls simulate the transport
 /// failure modes ADR 0045 decisions 4 and 11 classify: [`Relay::cut`] /
-/// [`Relay::resume`] (a dead or restored tunnel — the SAME `addr` stays
+/// [`Relay::resume`] (a dead or restored tunnel — the SAME `path` stays
 /// valid across both, no rebind), [`Relay::blackhole`] (accepted but
 /// silent — a wedged peer), [`Relay::throttle`] (a slow downlink, a
 /// simple token bucket paced on the daemon-to-client direction only).
 struct Relay {
-    addr: SocketAddr,
+    path: PathBuf,
+    /// Keeps the relay's socket folder alive: a literal `/tmp` base, since `sun_path` is short.
+    _dir: tempfile::TempDir,
     state: Arc<RelayState>,
     accept_task: tokio::task::JoinHandle<()>,
 }
@@ -127,8 +129,9 @@ struct RelayState {
 
 impl Relay {
     async fn start(unix_path: PathBuf) -> Relay {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind the test relay");
-        let addr = listener.local_addr().expect("relay local_addr");
+        let dir = tempfile::Builder::new().prefix("sot-relay-").permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700)).tempdir_in("/tmp").expect("relay folder");
+        let path = dir.path().join("relay.sock");
+        let listener = UnixListener::bind(&path).expect("bind the test relay");
         let state = Arc::new(RelayState {
             unix_path,
             cutting: AtomicBool::new(false),
@@ -139,24 +142,24 @@ impl Relay {
         let accept_state = Arc::clone(&state);
         let accept_task = tokio::spawn(async move {
             loop {
-                let (tcp, _) = match listener.accept().await {
+                let (front, _) = match listener.accept().await {
                     Ok(v) => v,
                     Err(_) => break,
                 };
                 if accept_state.cutting.load(Ordering::SeqCst) {
                     // "Stop accepting": the handshake itself cannot be
-                    // refused without unbinding the port `addr` must stay
+                    // refused without unbinding the socket `path` must stay
                     // valid across — closing the connection the instant
                     // it lands is observably the same to a caller
                     // reading/writing it (`TransportError::Unreachable`,
                     // never a wedge).
-                    drop(tcp);
+                    drop(front);
                     continue;
                 }
                 if accept_state.blackhole.load(Ordering::SeqCst) {
                     let h = tokio::spawn(async move {
-                        let mut tcp = tcp;
-                        let _ = tokio::io::copy(&mut tcp, &mut tokio::io::sink()).await;
+                        let mut front = front;
+                        let _ = tokio::io::copy(&mut front, &mut tokio::io::sink()).await;
                     });
                     accept_state.pipes.lock().unwrap().push(h);
                     continue;
@@ -165,15 +168,15 @@ impl Relay {
                 let rate_state = Arc::clone(&accept_state);
                 let h = tokio::spawn(async move {
                     let Ok(unix) = UnixStream::connect(&path).await else { return };
-                    let mut tcp = tcp;
+                    let mut front = front;
                     let mut unix = unix;
                     if rate_state.rate.load(Ordering::SeqCst) == 0 {
-                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
+                        let _ = tokio::io::copy_bidirectional(&mut front, &mut unix).await;
                         return;
                     }
-                    let (mut tcp_r, mut tcp_w) = tokio::io::split(tcp);
+                    let (mut front_r, mut front_w) = tokio::io::split(front);
                     let (mut unix_r, mut unix_w) = tokio::io::split(unix);
-                    let up = tokio::io::copy(&mut tcp_r, &mut unix_w);
+                    let up = tokio::io::copy(&mut front_r, &mut unix_w);
                     let down = async {
                         let mut buf = [0u8; 4096];
                         let mut tokens: f64 = 0.0;
@@ -187,7 +190,7 @@ impl Relay {
                             while off < n {
                                 let rate = rate_state.rate.load(Ordering::SeqCst);
                                 if rate == 0 {
-                                    if tcp_w.write_all(&buf[off..n]).await.is_err() {
+                                    if front_w.write_all(&buf[off..n]).await.is_err() {
                                         return;
                                     }
                                     off = n;
@@ -201,7 +204,7 @@ impl Relay {
                                     continue;
                                 }
                                 let take = ((n - off) as f64).min(tokens) as usize;
-                                if tcp_w.write_all(&buf[off..off + take]).await.is_err() {
+                                if front_w.write_all(&buf[off..off + take]).await.is_err() {
                                     return;
                                 }
                                 tokens -= take as f64;
@@ -214,13 +217,13 @@ impl Relay {
                 accept_state.pipes.lock().unwrap().push(h);
             }
         });
-        Relay { addr, state, accept_task }
+        Relay { path, _dir: dir, state, accept_task }
     }
 
     /// Aborts every currently-piped connection and stops completing new
-    /// ones — still bound at the SAME `addr`, so `resume()` needs no
-    /// rebind and a client retrying against the stable address sees the
-    /// SAME outage continue, not a fresh port.
+    /// ones — still bound at the SAME `path`, so `resume()` needs no
+    /// rebind and a client retrying against the stable path sees the
+    /// SAME outage continue, not a fresh socket.
     fn cut(&self) {
         self.state.cutting.store(true, Ordering::SeqCst);
         for h in self.state.pipes.lock().unwrap().drain(..) {
@@ -252,7 +255,7 @@ impl Drop for Relay {
 }
 
 fn daemon_lane_endpoint(relay: &Relay) -> DaemonLaneEndpoint {
-    DaemonLaneEndpoint { dial: LaneDial::Tcp(relay.addr), token: None }
+    DaemonLaneEndpoint { dial: LaneDial::Local(relay.path.clone()), token: None }
 }
 
 mod dial;

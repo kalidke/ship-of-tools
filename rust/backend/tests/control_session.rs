@@ -1,8 +1,9 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! A control session's replies, pinned through a real `sotd`: the op table's unknown-op answer, the
 //! `monitor.*` and `pty.open` arms that answer inline, the four off-loop ops, `workspace.activate`,
-//! the evt-frame skip, the no-hello-needed `ping`, the protocol-gated roster entry and the hello that does not
-//! parse. Every request is read strictly: its reply is the next non-evt frame and no second reply follows it.
+//! the evt-frame skip, the `ping` a connection with no hello is refused, the refused hellos (another protocol, one
+//! that does not parse), which close their connection and never enter the roster. Every request is read strictly:
+//! its reply is the next non-evt frame and no second reply follows it.
 
 mod support;
 
@@ -14,6 +15,23 @@ use support::{connect_and_hello, poll_until, try_connect, Conn, Env, BOUND};
 /// How long a request's connection must stay silent after its one reply: a second reply, for the same
 /// request, would arrive within it.
 const QUIET: Duration = Duration::from_millis(100);
+
+/// A fresh connection whose first frame is `frame`: the one reply, which must carry the frame's id, and then the
+/// daemon's end of the connection (the admission, ADR 0049 `## User isolation`: a refused first frame is one reply and
+/// a close).
+async fn refused_first_frame(env: &Env, frame: Frame) -> serde_json::Value {
+    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a refused connection").await;
+    let mut conn = tokio::io::BufReader::new(stream);
+    codec::write_frame(&mut conn, &frame, None).await.expect("write the first frame");
+    let (reply, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .expect("the refusal did not arrive")
+        .expect("read the refusal");
+    assert_eq!((reply.id, reply.kind), (frame.id, Kind::Res), "{reply:?}");
+    let end = tokio::time::timeout(BOUND, codec::read_frame(&mut conn)).await.expect("the refused connection stayed open");
+    assert!(end.is_err(), "a refused first frame is followed by the end of the connection, got {end:?}");
+    reply.payload
+}
 
 /// Writes one request, reads the next frame that is not an evt, which must carry that request's id, and
 /// then requires nothing but evt frames for `QUIET`. (`support::call` skips other ids, so it cannot see
@@ -49,16 +67,14 @@ async fn control_session_replies_are_pinned() {
         id - 1
     };
 
-    // 1. A frame of kind evt is skipped without a reply; ping needs no hello.
+    // 1. A frame of kind evt is skipped without a reply; a ping before any hello is refused and closes.
     codec::write_frame(&mut conn, &Frame::evt("probe.evt", json!({})), None).await.expect("write evt");
     let ping_id = next();
     let reply = strict(&mut conn, ping_id, op::PING, json!({})).await;
     assert_eq!((reply.op.as_str(), reply.kind), (op::PING, Kind::Res));
     assert_eq!(reply.payload, json!({"ok": true}));
-    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a second connection").await;
-    let mut bare = tokio::io::BufReader::new(stream);
-    let reply = strict(&mut bare, 1, op::PING, json!({})).await;
-    assert_eq!(reply.payload, json!({"ok": true}), "a request before any hello is answered");
+    let refusal = refused_first_frame(&env, Frame::req(1, op::PING, json!({}))).await;
+    assert_eq!(refusal["code"], "unauthenticated", "a request before any hello is refused: {refusal:?}");
 
     // 2. An op nobody owns.
     let reply = strict(&mut conn, next(), "no.such.op", json!({})).await;
@@ -134,23 +150,13 @@ async fn control_session_replies_are_pinned() {
     let reply = strict(&mut conn, next(), op::WORKSPACE_ACTIVATE, json!({"workspace_id": "ws-nosuch"})).await;
     assert_eq!(reply.payload, json!({}));
 
-    // 7. A hello on another protocol is refused and never enters the roster.
-    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a third connection").await;
-    let mut probe = tokio::io::BufReader::new(stream);
+    // 7. A hello on another protocol is refused, closes its connection and never enters the roster.
     let hello = HelloReq {
-        client_id: "mismatch-probe".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
         protocol: sot_protocol::PROTOCOL_VERSION + 1,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
+        ..HelloReq::this_process("mismatch-probe", "", Some("host-a".to_string())).expect("this process's account")
     };
-    let reply = strict(&mut probe, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
-    assert_eq!(reply.payload["code"], "protocol_mismatch", "{:?}", reply.payload);
+    let refusal = refused_first_frame(&env, Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap())).await;
+    assert_eq!(refusal["code"], "protocol_mismatch", "{refusal:?}");
     let reply = strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await;
     let ids: Vec<&str> = reply.payload["clients"]
         .as_array()
@@ -160,10 +166,9 @@ async fn control_session_replies_are_pinned() {
         .collect();
     assert!(ids.contains(&"capsule-workspaces-test"), "the helloed connection is listed: {ids:?}");
     assert!(!ids.contains(&"mismatch-probe"), "a refused hello never enters the roster: {ids:?}");
-    drop(probe);
 
-    // 8. A hello whose payload does not parse is one handler_error reply and never enters the roster; a valid
-    // hello on the same connection then does.
+    // 8. A hello whose payload does not parse is `unauthenticated` and closes its connection, and never enters the
+    // roster; a valid hello on a new connection then does.
     let listed = |reply: &Frame| -> Vec<String> {
         reply.payload["clients"]
             .as_array()
@@ -173,34 +178,22 @@ async fn control_session_replies_are_pinned() {
             .collect()
     };
     let before = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
-    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a fourth connection").await;
-    let mut bad = tokio::io::BufReader::new(stream);
-    let reply = strict(&mut bad, 1, op::HELLO, json!({"client_id": 5})).await;
-    assert_eq!(reply.payload["code"], "handler_error", "{:?}", reply.payload);
+    let refusal = refused_first_frame(&env, Frame::req(1, op::HELLO, json!({"client_id": 5}))).await;
+    assert_eq!(refusal["code"], "unauthenticated", "{refusal:?}");
     assert!(
-        reply.payload["error"].as_str().is_some_and(|e| e.starts_with("hello payload")),
-        "{:?}",
-        reply.payload
+        refusal["error"].as_str().is_some_and(|e| e.starts_with("the hello payload does not parse")),
+        "{refusal:?}"
     );
     let after_bad = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
     assert_eq!(after_bad, before, "an unparsable hello never enters the roster");
-    let hello = HelloReq {
-        client_id: "mw18-after-bad".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
-    };
-    let reply = strict(&mut bad, 2, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
-    assert!(reply.payload.get("code").is_none(), "a valid hello on the same connection is answered: {:?}", reply.payload);
+    let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a fourth connection").await;
+    let mut good = tokio::io::BufReader::new(stream);
+    let hello = HelloReq::this_process("mw18-after-bad", "", Some("host-a".to_string())).expect("this process's account");
+    let reply = strict(&mut good, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
+    assert!(reply.payload.get("code").is_none(), "a valid hello is answered: {:?}", reply.payload);
     assert!(reply.payload["session_id"].is_string(), "{:?}", reply.payload);
     let after_good = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
     assert!(after_good.iter().any(|i| i == "mw18-after-bad"), "the valid hello is listed: {after_good:?}");
-    drop(bad);
+    drop(good);
     env.kill_daemon_bounded().await;
 }

@@ -5,10 +5,10 @@ use crate::ui::*;
 
 impl State {
     pub(in crate::ui) fn preview_shows(&self) -> (bool, bool, bool, bool, bool) {
-        // ADR 0030 §2: the protocol-mismatch overlay is a hard block — it takes
+        // ADR 0030 §2, ADR 0049: the refused-hello overlay is a hard block — it takes
         // the preview pane over EVERYTHING (help included) until a clean
         // reconnect clears it. Rebuilt lazily below once md_rect_px is known.
-        let show_fatal = self.protocol_mismatch.contains_key(&self.active_host);
+        let show_fatal = self.hello_refused.contains_key(&self.active_host);
         let show_png = self.preview_png.is_some() && !show_fatal;
         let show_svg = false;
         // Edit mode owns the preview pane: the file viewer hides so
