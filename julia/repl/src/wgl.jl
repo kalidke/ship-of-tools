@@ -214,11 +214,22 @@ function page_server(Bonito, host::String, port::Int)
     return server
 end
 
-# The page's route: Bonito's own rendering of `app`, answered with `Referrer-Policy: no-referrer` so no request the
-# page makes names its secret path.
+# `wglshow` renders pages Bonito's way only on the Bonito 5.1 line and later 5.x: the page handler below rebuilds the
+# body of Bonito's own `apply_handler(::App, context)` with another asset server.
+wgl_bonito_supported(v::VersionNumber) = v"5.1" <= v < v"6"
+
+# The page's route: a Bonito session of its own with `NoServer`, so every script and file the page uses travels inside
+# it and this port has no `/assets/` route, answered with `Referrer-Policy: no-referrer` so no request the page makes
+# names its secret path. (Bonito's own app route builds its session with `HTTPAssetServer`, which registers that route
+# and serves every file a session registers to any account that can compute the key from the file's path.)
 function no_referrer_page(Bonito, app)
     return function (context)
-        response = Base.invokelatest(Bonito.HTTPServer.apply_handler, app, context)
+        server = context.application
+        connection = Base.invokelatest(Bonito.WebSocketConnection, server)
+        session = Base.invokelatest(Bonito.Session, connection; asset_server = Base.invokelatest(Bonito.NoServer), title = app.title)
+        body = sprint(io -> Base.invokelatest(Bonito.page_html, io, session, app))
+        Base.invokelatest(Bonito.mark_displayed!, session)
+        response = Base.invokelatest(Bonito.HTTPServer.html, body)
         Base.invokelatest(Bonito.HTTP.setheader, response, "Referrer-Policy" => "no-referrer")
         return response
     end
@@ -246,8 +257,9 @@ call time by PkgId from `Base.loaded_modules` — WGLMakie just needs to be
 *loaded* in this REPL's world (directly via `using WGLMakie`, or transitively
 through a package that depends on it; Bonito then comes in as WGLMakie's own
 dependency). The figure is served by one Bonito server per REPL process, bound on `127.0.0.1` at a port the OS assigns and
-kept for the REPL's life, at a secret path minted with that server (decision 0031). `/` answers 404, so another
-account on the box that finds the port gets nothing, and the page is sent with `Referrer-Policy: no-referrer`.
+kept for the REPL's life, at a secret path minted with that server (decision 0031). The page carries its
+scripts and files inside it and its websocket sits under an unguessable session id, so another account on the box that
+finds the port gets nothing: `/` and every other path answer 404. The page is sent with `Referrer-Policy: no-referrer`.
 A repeat `wglshow` shows the new figure at the same address without closing the listener. Tabs still showing
 an earlier figure keep it until they close. The frontend opens the page through a one-use local redirect, so the
 address is never on a command line. A remote frontend reaches it through the per-URL ADR-0035 proxy. Pass
@@ -267,7 +279,7 @@ when WGLMakie is) that teaches it to render a figure. `wglshow(fig; port=…)`
 keeps working exactly as documented above for anyone who wants the explicit
 call (e.g. to pin a port).
 
-Pinned against WGLMakie 0.13 / Bonito 5.1 (validated live, ADR 0032).
+Needs Bonito 5.1 or a later 5.x (checked at each call); validated against WGLMakie 0.13 and Bonito 5.1 (ADR 0032).
 """
 function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,AbstractString} = true)
     WGL = get(Base.loaded_modules, WGLMAKIE_PKGID, nothing)
@@ -276,6 +288,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
     # so this just returns the module) rather than assume the user `using`d it.
     Bonito = Base.require(Base.PkgId(
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
+    wgl_bonito_supported(pkgversion(Bonito)) || error("wglshow needs Bonito 5.1 or a later 5.x; this REPL loaded Bonito $(pkgversion(Bonito))")
     port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
     host = "127.0.0.1"
     page = WGL_SERVER[]

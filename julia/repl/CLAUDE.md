@@ -13,6 +13,7 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 - `src/wgl.jl`: browser-served artifacts: `BrowserView`, the WGLMakie server, `wglshow`.
 - `src/frames.jl`: how an eval's output becomes typed frames, and the BrowserView announcements.
 - `test/runtests.jl`: the streaming tests and the stdlib-only guard test.
+- `test/bonito/`: the `wglshow` page test's own environment (Bonito): the page carries its assets, its port has no asset route, and (Linux) serving it opens exactly one listener (CI's "wglshow pages" job).
 
 ## Start here
 `serve` for an op; `stream_eval_frames` for output; `wglshow` for browser artifacts.
@@ -24,5 +25,5 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 - Every request gets a terminal `res` (`emit_fallback_done`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
-- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both); `/` answers 404.
+- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both). Its page is a Bonito session of its own with `NoServer` (`no_referrer_page`), so its scripts and files travel inside the page and the port answers only the page and its websocket; `/` and every other path answer 404. It needs Bonito 5.1 or a later 5.x (`wgl_bonito_supported`).
 - `write_envelope` has a twin in julia/kernel.

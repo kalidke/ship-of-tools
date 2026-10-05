@@ -335,6 +335,15 @@ const DR = ShipToolsRepl
         @test !displayable(DR.WGLDisplay(), MIME("text/plain"))
     end
 
+    @testset "wglshow serves its page only on the Bonito line it was built against (ADR 0049, User isolation)" begin
+        for v in (v"5.1.0", v"5.1.1", v"5.2.0")
+            @test DR.wgl_bonito_supported(v)
+        end
+        for v in (v"4.2.0", v"5.0.0", v"6.0.0")
+            @test !DR.wgl_bonito_supported(v)
+        end
+    end
+
     @testset "ShipToolsRepl is stacked under the user's environment; a registered dependency can be shadowed by the user's manifest (Parsers 3 killed JSON3, 2026-09-18)" begin
         project = Pkg.TOML.parsefile(joinpath(pkgdir(ShipToolsRepl), "Project.toml"))
         deps = get(project, "deps", Dict{String,Any}())

@@ -201,6 +201,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | loopback page-URL grammar (`http` or `https`, host `127.0.0.1` or `localhost`, an explicit port) | rule | pages | `rust/protocol/src/page_url.rs` `loopback_port_from_url` |
 | video, site-prefix, site-pool listeners and grant tables | endpoint, state | pages | `rust/backend/src/pages/video.rs` `Grants`, `register_video`; `rust/backend/src/pages/site/mod.rs` `spawn`, `spawn_pool`, `set_root` |
 | window page-proxy listeners and arming | endpoint | pages | `rust/frontend/src/pages.rs` `serve_browser`, `Arm`; `rust/frontend/src/ui/page_proxy.rs` `ensure_proxy_for_url` |
+| Pluto's page server and notebook workers | endpoint | sidecars | `julia/pluto/start.jl`; `julia/pluto/session_options.jl` `configure_session!` |
+| `wglshow`'s page server, one per REPL child | endpoint | sidecars | `julia/repl/src/wgl.jl` `page_server`, `no_referrer_page`, `WGL_SERVER` |
 | `lane.connect` | op | rows | `rust/backend/src/rows/ops/lane_bridge.rs` `handle_lane_connect` |
 | `pty.open` (start a row, answer `attach_direct`) | op | rows | `rust/backend/src/rows/ops/pty.rs` `handle_pty_open` |
 | `pty.write` | op | rows | `rust/protocol/src/ops/mod.rs` `PTY_WRITE` (no dispatch arm) |
