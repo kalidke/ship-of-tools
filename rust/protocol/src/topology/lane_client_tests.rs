@@ -22,6 +22,8 @@ impl FakeDaemon {
         let path = {
             use std::os::unix::fs::DirBuilderExt;
             let dir = std::path::PathBuf::from(format!("/tmp/sot-lane-test-{}-{n}", std::process::id()));
+            // A folder a crashed run of the same pid left must not make `create` panic.
+            let _ = std::fs::remove_dir_all(&dir);
             std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
             dir.join("d.sock")
         };

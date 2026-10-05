@@ -3,6 +3,8 @@
 **Status:** current — Accepted (implements ADR 0024's deferred generalization / rejected-alt #4; supersedes the per-port `-L` sprawl as the primary reachability mechanism — the legacy-forward fallback this ADR once kept is retired outright, see below)
 **Date:** 2026-07-21
 
+2026-10 amendment (0.6.6, ADR 0049 `## User isolation`): `proxy.connect` is the next frame after a hello whose role is `handoff`, not a connection's first frame; wire protocol 3.
+
 ## Context
 
 Every backend HTTP surface today is reachable from a remote FE only through a

@@ -734,7 +734,7 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
 /// them. Unlike `fe.presence` (which needs no payload and stamps via
 /// `server/dispatch.rs`'s dispatch loop, since the thing being stamped is the
 /// connection itself), the store happens here — the payload IS what's
-/// stored. An unregistered `serial` (`None`, pre-hello) is a harmless
+/// stored. An unregistered `serial` (`None`) is a harmless
 /// no-op ack, same as `touch_person_input`; a registered connection with
 /// NO declared hello `name` is refused (`unnamed_connection`) rather than
 /// stored — the `disconnected` map keys on that name, so a declaration
@@ -751,7 +751,7 @@ pub async fn handle_fe_sessions(
     let req: sot_protocol::FeSessionsReq =
         serde_json::from_value(payload_json).context("fe.sessions payload")?;
     let Some(serial) = serial else {
-        // Pre-hello (no connection registered yet): the same harmless
+        // No roster entry: the same harmless
         // no-op `touch_person_input` accepts, since there is nothing to
         // store OR refuse against.
         return Ok(vec![(

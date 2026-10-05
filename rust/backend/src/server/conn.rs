@@ -93,8 +93,7 @@ async fn read_owned<R: AsyncRead + Unpin>(
 /// them had an automated producer too (reconnect re-announces tree/preview
 /// requests, a badge-consuming `goto` fires them, an autostarted agent
 /// writes into its own pane, and a command-file `cycle_ws` could forge
-/// `read: true`) — deleted rather than patched. A no-op pre-hello, when
-/// `client_guard` is still `None`.
+/// `read: true`) — deleted rather than patched.
 pub(super) fn touch_person_input(clients: &Clients, guard: &Option<ClientGuard>) {
     if let Some(g) = guard {
         clients.touch_person_input(g.serial());

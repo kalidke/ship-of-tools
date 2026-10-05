@@ -93,7 +93,8 @@ whose directory must be private, or on Windows a named pipe with an owner-only
 descriptor, and a hub's per-host relay sockets are owner-only Unix sockets. Every
 connection to the daemon is admitted twice, each in one place: at accept, by the
 account of its process (Linux and macOS compare the peer's effective uid with the
-daemon's; on Windows the pipe's owner-only descriptor decides), and at its first frame,
+daemon's; on Windows the pipe's owner-only descriptor decides; a peer whose process the
+operating system cannot name is refused too), and at its first frame,
 which must be a hello naming its host and the OS account it runs as (wire protocol 3);
 until the hello is accepted nothing is served and nothing is sent but its refusal. A
 hello whose role is `handoff` leaves the control loop after its reply for the one frame
