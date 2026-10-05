@@ -109,6 +109,24 @@ _sot_emit_endpoint() {
     return 1
 }
 
+# _sot_live_sotd_exes — the binary of each process `pgrep -af sotd` lists whose
+# /proc/<pid>/exe is named `sotd` or `sotd.exe`, one per line, in pgrep's order;
+# nothing on Windows (no pgrep on a stock git-bash PATH) or where /proc cannot
+# be read. pgrep matches any command line that mentions sotd (`tail -f
+# .../sotd.log`, `gdb sotd`, `watch ...`), and both callers below would run or
+# return such a process's binary: only a binary named sotd is ever listed.
+_sot_live_sotd_exes() {
+    _sot_is_windows && return 0
+    local line pid exe
+    while IFS= read -r line; do
+        pid="${line%% *}"
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+        [ -x "$exe" ] || continue
+        case "${exe##*/}" in sotd|sotd.exe) printf '%s\n' "$exe" ;; esac
+    done < <(pgrep -af 'sotd' 2>/dev/null || true)
+}
+
 # _sot_sotd_bin — the one binary-finding ladder for a caller that only
 # needs `sotd`'s PATH, no live socket: `SOTD_BIN`, `command -v sotd`,
 # `~/.local/share/sot/bin/sotd`, `~/.local/bin/sotd` -- a bare `sotd`
@@ -123,41 +141,12 @@ _sot_sotd_bin() {
                       "$HOME/.local/share/sot/bin/sotd" "$HOME/.local/bin/sotd"; do
         [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     done
-    # LAST candidate (BLOCKER 3): a live `sotd`'s own binary, read out of
-    # /proc/<pid>/exe -- a source-built box (`rust/target/release/sotd`, no
-    # release install, `SOTD_BIN` unset, neither `~/.local` path present)
-    # fell through this whole ladder to nothing before this line existed,
-    # and this ladder's own caller (`_sot_planned_relay_endpoint`) no
-    # longer falls through further to `sot_daemon_endpoint` (main's ruling,
-    # pinned at join_disambiguation/pipe_endpoint.sh: never the local
-    # daemon for a question about the hub's endpoint) -- finding the
-    # BINARY here and asking IT `topology relay-endpoint` is still a
-    # planned answer, not the local daemon's own socket, so that ruling
-    # stays met. `sot_daemon_endpoint` (below) guards the identical pgrep
-    # loop the same way; pgrep is not on a stock git-bash PATH and must
-    # never be reached for on Windows.
-    if ! _sot_is_windows; then
-        while IFS= read -r line; do
-            local pid="${line%% *}"
-            case "$pid" in ''|*[!0-9]*) continue ;; esac
-            [ -r "/proc/$pid/exe" ] || continue
-            candidate="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-            [ -n "$candidate" ] && [ -x "$candidate" ] || continue
-            # basename gate (round-2 lane fix): unlike `sot_daemon_endpoint`'s
-            # loop below, this candidate is never executed to prove itself
-            # (there is no socket-serving process to query yet -- that's the
-            # whole point of this ladder rung), so "readable and executable"
-            # alone matches ANY process pgrep's substring search turned up --
-            # a `journalctl -fu sotd` or a `tail -f .../sotd.log` with a lower
-            # pid than the real daemon's own. `continue` to the next pid
-            # instead of returning the first plausible one.
-            case "${candidate##*/}" in
-                sotd|sotd.exe) ;;
-                *) continue ;;
-            esac
-            printf '%s\n' "$candidate"; return 0
-        done < <(pgrep -af 'sotd' 2>/dev/null || true)
-    fi
+    # LAST candidate (BLOCKER 3): a live sotd's own binary, for a source-built
+    # box with no install. It is never the local daemon's socket, only a binary
+    # asked for the planned relay endpoint (main's ruling, pinned at
+    # join_disambiguation/pipe_endpoint.sh).
+    IFS= read -r candidate < <(_sot_live_sotd_exes) || candidate=""
+    [ -n "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
     return 1
 }
 
@@ -347,15 +336,9 @@ sot_daemon_endpoint() {
     _try_sotd_socket_bin "$HOME/.local/share/sot/bin/sotd" && return 0
     _try_sotd_socket_bin "$HOME/.local/bin/sotd" && return 0
 
-    if ! _sot_is_windows; then
-        while IFS= read -r line; do
-            local pid="${line%% *}"
-            case "$pid" in ''|*[!0-9]*) continue ;; esac
-            [ -r "/proc/$pid/exe" ] || continue
-            bin="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
-            _try_sotd_socket_bin "$bin" && return 0
-        done < <(pgrep -af 'sotd' 2>/dev/null || true)
-    fi
+    while IFS= read -r bin; do
+        _try_sotd_socket_bin "$bin" && return 0
+    done < <(_sot_live_sotd_exes)
 
     return 1
 }
