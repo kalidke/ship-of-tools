@@ -9,9 +9,9 @@ impl Workspaces {
 
     /// Insert a workspace. Idempotent on slug: if an entry exists for
     /// the same slug we keep its workspace_id (a stable id across daemon
-    /// restarts is the contract), but the rest of the metadata is taken
-    /// from the new `ws` so a fresh project_root from disk wins over a
-    /// stale one in memory. Resource caches on the *old* entry are
+    /// restarts is the contract), but the rest of the metadata, its declared
+    /// handle included, is taken from the new `ws` so a fresh project_root
+    /// from disk wins over a stale one in memory. Resource caches on the *old* entry are
     /// discarded — the assumption is that re-insertion happens at most
     /// once at startup (scan_disk) and during explicit workspace
     /// metadata edits, neither of which is on a hot path.
@@ -39,6 +39,7 @@ impl Workspaces {
                 );
                 w.runtime = ws.runtime.clone();
                 w.account = Mutex::new(ws.account());
+                w.agent_handle = Mutex::new(ws.agent_handle());
                 w
             }
             None => ws,
@@ -465,6 +466,29 @@ mod tests {
         let resolved = reg.resolve(Some("alpha")).unwrap();
         assert_eq!(resolved.workspace_id, original_id);
         assert_eq!(resolved.project_root, PathBuf::from("/p/alpha-renamed"));
+    }
+
+    // The default row's boot re-seed (`seed_default_row`) carries the row's
+    // declared handle into a fresh `Workspace` and re-inserts it; the
+    // same-slug arm used to blank it through `meta_only`.
+    #[test]
+    fn a_same_slug_reinsert_takes_the_new_rows_declared_handle() {
+        let reg = Workspaces::new();
+        let ws = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        let original_id = ws.workspace_id.clone();
+        reg.insert(ws);
+        reg.set_agent_handle(&original_id, "m5-carried").expect("registered");
+
+        let mut carried = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        carried.agent_handle = Mutex::new("m5-carried".to_string());
+        reg.insert(carried);
+        let resolved = reg.resolve(Some("alpha")).unwrap();
+        assert_eq!(resolved.workspace_id, original_id);
+        assert_eq!(resolved.agent_handle(), "m5-carried");
+
+        let fresh = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        reg.insert(fresh);
+        assert_eq!(reg.resolve(Some("alpha")).unwrap().agent_handle(), "");
     }
 
     /// ADR 0042 slice L1a: `insert`'s own doc says the id-preserving
