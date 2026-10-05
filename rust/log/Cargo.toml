@@ -82,6 +82,7 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 # Self-referential dev-dependency (a standard Cargo idiom): enables
 # `test-support` for every target `cargo test -p sot-log` builds --
 # this crate's own `tests/*.rs` integration binaries included — without

@@ -31,6 +31,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use sot_log::secret::RedactingWriter;
+use tracing_subscriber::util::SubscriberInitExt;
 
 /// Restrict default file-creation permissions to owner-only (security
 /// review): without this, every file sotd creates — its own log, the
@@ -128,6 +130,18 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
         }
     }
     Some(Arc::new(Mutex::new(file)))
+}
+
+/// The daemon's log: events at the `RUST_LOG` level (default `info`), each masked of page secrets
+/// (`sot_log::secret`) and written through `TeeWriter` to stdout and the private file.
+fn log_subscriber(file: Option<Arc<Mutex<std::fs::File>>>) -> impl tracing::Subscriber + Send + Sync {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(move || RedactingWriter(TeeWriter { file: file.clone() }))
+        .finish()
 }
 
 /// `sotd --help`'s text; also the fallback for every command without a usage of its own.
@@ -373,16 +387,7 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let log_file = open_private_log_file();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .with_writer(move || TeeWriter {
-            file: log_file.clone(),
-        })
-        .init();
+    log_subscriber(open_private_log_file()).init();
 
     let opts = parse_args().context("parsing command-line arguments")?;
 
@@ -527,4 +532,24 @@ fn parse_args() -> Result<Opts> {
     })
 }
 
+#[cfg(test)]
+mod log_tests {
+    use super::*;
 
+    /// ADR 0049, User isolation: the daemon's log file never holds a page secret an event carries.
+    #[test]
+    fn the_daemon_log_masks_page_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sotd.log");
+        let file = std::fs::File::create(&path).unwrap();
+        let subscriber = log_subscriber(Some(Arc::new(Mutex::new(file))));
+        let token = "0123456789abcdef0123456789abcdef";
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
+        });
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");
+        assert!(!written.contains(token), "the token reached the file: {written}");
+        assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
+    }
+}

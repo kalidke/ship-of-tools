@@ -201,7 +201,7 @@ impl State {
         // figure) at a loopback URL. Hand it straight to the OS
         // browser-open (reusing the pluto/video/docs path) and skip the
         // repl-log append entirely. The URL resolves directly on a
-        // local FE and via the launcher's `-L` tunnel on a remote one.
+        // local FE and through this window's page proxy (ADR 0035) on a remote one.
         if let ReplFrame::Browser { url, open, fe } = &frame {
             let url = url.clone();
             let origin = crate::browser_open::origin_of(&url);

@@ -9,7 +9,9 @@
 // HTTP listener is bound, then services `OPEN <abspath>` requests on
 // stdin, replying with `URL <url>` or `ERR <msg>` per line on stdout. The
 // `URL` already carries `?secret=...` — Julia holds `session.secret` and
-// builds the full URL itself, so this supervisor never needs to see it.
+// builds the full URL itself. This supervisor relays that URL in the
+// `pluto.open` reply and never logs it; the log writer masks any secret
+// (`sot_log::secret`).
 //
 // Same lazy-respawn shape as mathjax.rs: on child death the
 // supervisor drops the submission channel; the next caller respawns.
