@@ -23,6 +23,8 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Promises
 - Re-inserting a slug keeps its workspace id and takes every other field from the new row (`Workspaces::insert`).
+- The default row keeps its declared handle across a restart: `seed_default_row` carries it into the boot re-seed,
+  and `insert` keeps the new row's handle.
 - Handle, account and agent change in place on the shared `Arc`, never through a replacing `insert`, so a destroyed row
   is not brought back (`set_agent_handle`, `set_account`, `reset_agent_to_none`).
 - No two rows hold one declared handle. At run time `set_agent_handle` clears it from every other row under the

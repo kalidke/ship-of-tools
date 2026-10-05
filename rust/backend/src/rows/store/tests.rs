@@ -457,6 +457,40 @@ fn scan_disk_clears_a_handle_two_tomls_declare_when_the_registry_names_neither()
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// R2: the boot sequence, `scan_disk` then `seed_default_row` (`server::run`), keeps the default row's declared
+/// handle in memory and in its toml. It needs both halves: `seed_default_row` carries the handle into the re-seed,
+/// and `insert` keeps the new row's handle.
+#[test]
+fn boot_keeps_the_default_rows_declared_handle() {
+    let _guard = env_guarded();
+    let dir = std::env::temp_dir().join(format!("sot-ws-test-default-handle-{}-{}", std::process::id(), now_unix()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("m5-home");
+    std::fs::create_dir_all(&root).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", dir.join("xdg"));
+    std::env::set_var("LOCALAPPDATA", &dir);
+    std::env::remove_var("USERPROFILE");
+    std::env::set_var("SOT_SELF_HOST", "host-4");
+    std::env::set_var("SOT_COMM_HOME", dir.join("comm"));
+    let mut row = Workspace::from_label("m5-home", root.clone(), false, "none".into(), String::new(), String::new());
+    row.agent_handle = Mutex::new("m5-anchor".to_string());
+    let id = row.workspace_id.clone();
+    save(&row).unwrap();
+
+    let reg = Workspaces::new();
+    assert_eq!(scan_disk(&reg, false).unwrap(), 1);
+    let opts = crate::Opts { socket: None, project_root: root.clone(), label: Some("m5-home".into()), adopt_legacy_registry: false };
+    let files_mode = crate::files::tree::FilesMode::new(root.clone()).unwrap();
+    let seeded = crate::rows::anchor::seed_default_row(&opts, &files_mode, &reg);
+    assert_eq!(seeded.workspace_id, id, "the re-seed must keep the default row's id");
+    assert_eq!(seeded.agent_handle(), "m5-anchor", "the boot re-seed dropped the default row's handle");
+
+    let fresh = Workspaces::new();
+    scan_disk(&fresh, false).unwrap();
+    assert_eq!(fresh.resolve(Some("m5-home")).unwrap().agent_handle(), "m5-anchor", "the default row's toml lost its handle");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn load_toml_legacy_rejected_when_legacy_off() {
     let dir = std::env::temp_dir().join(format!(
