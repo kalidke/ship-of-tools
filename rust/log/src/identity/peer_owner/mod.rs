@@ -79,6 +79,7 @@ where
 }
 
 /// [`serve_own`] with the check as a parameter, so this module's tests can refuse a connection that is really ours.
+#[allow(clippy::disallowed_methods, reason = "the one TCP accept of the Rust processes: every connection it returns is checked before use (ADR 0049, User isolation)")]
 async fn serve<H, Fut>(listener: tokio::net::TcpListener, name: &'static str, admit: Admit, handle: H)
 where
     H: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,

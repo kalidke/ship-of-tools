@@ -12,7 +12,7 @@ bind (a recycled pid), and then reads that process's token SID; macOS reads the 
 Read `mod.rs`: `serve_own`, then `PeerOwner`, `tcp_peer_owner` and `admit`; `pcblist_n.rs` only for the macOS table.
 
 ## Rules
-- Every TCP accept in Ship of Tools' Rust processes is `serve_own`'s (guarded by `rust/log/tests/single_accept.rs`); no caller can hand a loop a weaker check. Pluto's and `wglshow`'s servers are Julia children on ports of their own: no owner check reaches them, and their secret is the lock (it never reaches another account's command line, file or log).
+- Every TCP accept in Ship of Tools' Rust processes is `serve_own`'s (enforced by clippy `disallowed-methods` in `rust/clippy.toml`, with one `#[allow]` in `serve`); no caller can hand a loop a weaker check. Pluto's and `wglshow`'s servers are Julia children on ports of their own: no owner check reaches them, and their secret is the lock (it never reaches another account's command line, file or log).
 - Only `PeerOwner::Mine` is served; every failure is `Unknown` and refuses (`admit`, private).
 - A refused connection is closed with nothing read or written (`serve`); an accept error is retried after 50 ms.
 - The macOS walker accepts only the kernel's six-record sequence per connection; any other length, order or truncation

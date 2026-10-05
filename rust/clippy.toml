@@ -1,0 +1,10 @@
+# ADR 0049, User isolation: every TCP connection a Rust process accepts is checked for its owner before a byte is read, so
+# the only accept is the one inside sot_log::identity::peer_owner's `serve` (`serve_own` is its public face), which carries
+# the one #[allow(clippy::disallowed_methods, reason = "...")]. rust.yml's "TCP accepts" step runs the lint over every
+# library and binary on all three platforms.
+disallowed-methods = [
+  { path = "std::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "std::net::TcpListener::incoming", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpListener::poll_accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+]
