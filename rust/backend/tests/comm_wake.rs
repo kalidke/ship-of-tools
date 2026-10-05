@@ -467,8 +467,9 @@ async fn a_newer_join_moves_the_handle_and_only_the_newer_row_is_woken() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// Two tomls declaring one handle (a crash or a failed save between a join's two saves): at boot the handle stays
-/// only on the row the comm registry names as its last joiner, so the wake reaches that row alone.
+/// Two tomls declaring one handle (a crash or a failed save between a join's two saves, or a daemon that stopped
+/// while the second save still waited for the row's guard): at boot the handle stays only on the row the comm
+/// registry names as its last joiner, so the wake reaches that row alone.
 #[tokio::test]
 async fn two_tomls_on_one_handle_keep_it_on_the_last_joiner_at_boot() {
     let _serial = SERIAL.lock().await;

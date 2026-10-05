@@ -56,8 +56,9 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
         count += scan_dir(reg, &sessions_dir, true)?;
     }
     // One row per handle (ADR 0049): a crash between a join's two saves, a
-    // failed save of the row that lost the handle, or an older daemon can
-    // leave one handle on several tomls. comm-join.sh writes the registry
+    // failed save of the row that lost the handle, a daemon that stopped
+    // while that save still waited for the row's guard, or an older daemon
+    // can leave one handle on several tomls. comm-join.sh writes the registry
     // entry before it declares the handle, so the entry names the newer join.
     for (handle, cleared) in reg.clear_shared_handles(|h| crate::comm::registry::registry::last_joiner(h, &declared_host())) {
         let ids: Vec<&str> = cleared.iter().map(|ws| ws.workspace_id.as_str()).collect();

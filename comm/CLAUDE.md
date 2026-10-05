@@ -42,7 +42,8 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides:
-`remove_comm_agents_for_workspace`, `handle_agent_join`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
+`remove_comm_agents_for_workspace`, `handle_agent_join`, `comm_handle_for_workspace`, `clear_comm_unread`,
+`read_comm_agents`, `host_matches`, `last_joiner`, `spawn_registry_poll`, `workspace.changed`, `workspace.list`,
 `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`, `agents/spawn/comm-probe.sh`,
 `agents/spawn/comm-bootstrap.sh`. Uses: `SshRecipe`, `recipe_for`, `dial_and_call_tracked`, `dispatch`, `ChildGuard`,
 `Signal`, `child_signal::fired`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,

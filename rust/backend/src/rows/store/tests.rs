@@ -423,9 +423,10 @@ fn handles(reg: &Workspaces) -> [String; 3] {
     ["a", "b", "c"].map(|slug| reg.resolve(Some(slug)).unwrap().agent_handle())
 }
 
-/// ADR 0049, one row per handle at boot: a crash between a join's two saves, or a moved row's failed save, leaves two
-/// tomls on one handle. comm-join.sh writes the registry entry before it declares the handle, so the entry's
-/// `workspace_id` names the newer join: the handle stays only there, and the clear is saved.
+/// ADR 0049, one row per handle at boot: a crash between a join's two saves, a moved row's failed save, or a daemon
+/// that stopped while that save still waited for the row's guard leaves two tomls on one handle. comm-join.sh writes
+/// the registry entry before it declares the handle, so the entry's `workspace_id` names the newer join: the handle
+/// stays only there, and the clear is saved.
 #[test]
 fn scan_disk_keeps_a_handle_two_tomls_declare_only_on_its_last_joiner() {
     let _guard = env_guarded();
