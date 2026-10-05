@@ -189,28 +189,30 @@ fn extract_marker_numbers(text: &str) -> Vec<u64> {
 /// `PenSnapshot` and the queue drain, the exact defect shape) still let
 /// 24 newer bytes overtake the queue while every assertion here kept
 /// passing. Fixed by making the two KINDS of output byte-distinguishable
-/// and adding a deterministic witness that output is genuinely pending,
-/// rather than merely checking that "some Output" follows `PenSnapshot`:
+/// and witnessing that the old ones are queued, rather than merely
+/// checking that "some Output" follows `PenSnapshot`:
 ///
-/// `B` types SEQUENCE-NUMBERED markers (`"mN\r\n"`) continuously, and —
-/// critically — a background thread also WAITS for `B`'s OWN echo of
-/// each one (not merely its `input`'s WAL outcome, which is a SEPARATE,
-/// unrelated-in-time commit) before advancing to the next. Since `B`
-/// only ever SEES an echo once `output_committed` has actually run with
-/// it — the SAME call that, uniformly, also queues it for `A` — every
-/// marker number `B` has confirmed-echoed by a given instant is PROVEN,
-/// not assumed, to already be sitting in `A`'s own queue (`A` is still
-/// mid-transfer throughout). This is the deterministic witness: `cutoff`
-/// is the highest such CONFIRMED marker right before `A` is released;
-/// everything at or below it is unambiguously OLD (queued), and whatever
-/// marker the typer is mid-flight on AT the instant of release — sent,
-/// but not yet confirmed-echoed to `B` — is unambiguously NEW: genuinely
-/// still pending, from `A`'s own perspective, by construction, not by
-/// luck. The assertion below requires markers of BOTH kinds to actually
-/// appear, then checks EVERY old marker's position against EVERY new
-/// marker's position — old before new, full order, no reversal — which
-/// is exactly what the pre-fix code violates and what round 1's weaker
-/// "some Output after PenSnapshot" check could not see.
+/// `B` types SEQUENCE-NUMBERED markers (`"mN\r\n"`) continuously, starting
+/// only after A's checkpoint chunk is queued (so none is inside the
+/// checkpoint), and — critically — a background thread also WAITS for
+/// `B`'s OWN echo of each one (not merely its `input`'s WAL outcome, which
+/// is a SEPARATE, unrelated-in-time commit) before advancing to the next.
+/// Since `B` only ever SEES an echo once `output_committed` has actually
+/// run with it — the SAME call that, uniformly, also queues it for `A` —
+/// every marker number `B` has confirmed-echoed by a given instant is
+/// PROVEN, not assumed, to already be sitting in `A`'s own queue (`A` is
+/// still mid-transfer throughout). `cutoff` is the highest such CONFIRMED
+/// marker when the main thread switches the typer to fast mode: everything at or below it is
+/// unambiguously OLD (queued). A marker above it was not yet confirmed to
+/// `B`, so it may ALREADY be queued too: the old-before-new comparison
+/// below is a check on a real shell, not a deterministic witness that
+/// output was still pending at release. The deterministic pin of the
+/// replay's order is `a_take_held_behind_a_v3_transfer_replays_after_pen_
+/// snapshot_and_the_queue` (`lane/attach_proto/v3_tests.rs`). The
+/// assertion requires markers of BOTH kinds to appear, then checks EVERY
+/// old marker's position against EVERY new marker's position — old before
+/// new, no reversal — which is what the pre-fix code violates and what
+/// round 1's weaker "some Output after PenSnapshot" check could not see.
 #[test]
 #[allow(clippy::too_many_lines, reason = "one test scenario: a v3 watcher's completion drains pen and geometry before a replayed take's output")]
 fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_output() {
@@ -245,6 +247,35 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
         _ => None,
     });
 
+    // A: the v3 watcher under test. Held from before its own `attach`
+    // onward -- its checkpoint chunk gets queued but never reported
+    // complete, so it stays genuinely mid-transfer (`Sending`) for the
+    // whole middle section below.
+    transport.open(A);
+    transport.feed(A, frame::hello_at(wire::ATTACH_PROTO_V3));
+    let mut watcher_a = FrameWatcher::new(&transport);
+    watcher_a.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
+    });
+    transport.set_hold_for(A, true);
+    transport.feed(A, frame::attach("watcher"));
+    // Throwaway cursor, same technique `attach_mid_stream_checkpoint_
+    // reproduces_reference_screen` uses: only confirms the chunk was
+    // constructed and queued (`sent_frames` records bytes at send time,
+    // held or not) without disturbing `watcher_a`'s own cursor. By the
+    // time this returns, `reply_queued` is already set on A's
+    // connection (that happens synchronously when the chunk's own Send
+    // is constructed, well before any transport-level completion,
+    // held or not) -- so the `take` fed right after this is guaranteed
+    // to be HELD, not refused as a lockstep violation.
+    FrameWatcher::new(&transport).wait_for("A checkpoint chunk queued (throwaway)", A, Duration::from_secs(10), |f| {
+        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { .. })).then_some(())
+    });
+
+    // The typer starts only now, after A's checkpoint chunk is queued: the
+    // chunk is built from the live screen in the same loop step, so no
+    // marker can be inside it, and every marker B confirms below reaches
+    // A as queued output.
     // B types SEQUENCE-NUMBERED, byte-distinguishable markers ("mN\r\n")
     // in the background, respecting the wire's own lockstep (one
     // outstanding `input` at a time). Two speeds, switched by
@@ -261,9 +292,7 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     // `witness_mode` to FAST: the typer keeps sending markers, paced
     // only by the wire's own lockstep (`InputRecorded`, itself far
     // faster than a full round trip through the PTY echo), with no
-    // per-marker echo wait -- creating a genuine backlog the periodic
-    // flush has not caught up with yet, which is what the release right
-    // after actually needs to exercise the replay's own flush_output.
+    // per-marker echo wait.
     // `b_last_confirmed_echo` is the highest marker number `B` has
     // itself witnessed-echoed so far (only advanced in WITNESSED mode).
     let stop_typing = Arc::new(AtomicBool::new(false));
@@ -273,8 +302,8 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     // terminal refusal/unknown) has landed WHILE in fast mode -- a much
     // TIGHTER signal than the echo witness above (no PTY round trip
     // involved, just the wire's own ordered command reply), used to
-    // release A the INSTANT a real backlog exists rather than guessing
-    // a sleep duration against the capsule's own 50ms flush cadence.
+    // release A without guessing a sleep duration against the capsule's
+    // own 50ms flush cadence.
     let fast_wal_confirmed = Arc::new(AtomicU64::new(0));
     let type_transport = transport.clone();
     let stop_for_typer = Arc::clone(&stop_typing);
@@ -313,31 +342,6 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
             }
             n += 1;
         }
-    });
-
-    // A: the v3 watcher under test. Held from before its own `attach`
-    // onward -- its checkpoint chunk gets queued but never reported
-    // complete, so it stays genuinely mid-transfer (`Sending`) for the
-    // whole middle section below.
-    transport.open(A);
-    transport.feed(A, frame::hello_at(wire::ATTACH_PROTO_V3));
-    let mut watcher_a = FrameWatcher::new(&transport);
-    watcher_a.wait_for("A hello_ok", A, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::HelloOk { .. })).then_some(())
-    });
-    transport.set_hold_for(A, true);
-    transport.feed(A, frame::attach("watcher"));
-    // Throwaway cursor, same technique `attach_mid_stream_checkpoint_
-    // reproduces_reference_screen` uses: only confirms the chunk was
-    // constructed and queued (`sent_frames` records bytes at send time,
-    // held or not) without disturbing `watcher_a`'s own cursor. By the
-    // time this returns, `reply_queued` is already set on A's
-    // connection (that happens synchronously when the chunk's own Send
-    // is constructed, well before any transport-level completion,
-    // held or not) -- so the `take` fed right after this is guaranteed
-    // to be HELD, not refused as a lockstep violation.
-    FrameWatcher::new(&transport).wait_for("A checkpoint chunk queued (throwaway)", A, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::CheckpointChunk { .. })).then_some(())
     });
 
     // A races its OWN `take` in behind its still-unconfirmed attach
@@ -509,8 +513,8 @@ fn v3_watcher_completion_drains_pen_and_geometry_before_a_replayed_takes_own_out
     );
     assert!(
         !new_positions.is_empty(),
-        "expected at least one NOT-yet-witnessed marker (numbered > {cutoff}) to reach A -- the deterministic \
-         witness this test needs, proving output really was still pending at the instant A was released: \
+        "expected at least one marker not yet confirmed to B (numbered > {cutoff}) to reach A: it may already \
+         be queued, so this is a check on a real shell, not a witness that output was pending at release: \
          {a_sequence:?}"
     );
 
