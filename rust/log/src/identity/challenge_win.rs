@@ -327,17 +327,7 @@ pub fn challenge(
 /// classifier) runs `challenge()` itself, on top of a connection this
 /// function already authenticated at the OS level.
 pub fn authenticate_server(conn: &dyn PipeChallengeable) -> PeerAuthOutcome {
-    authenticate_pipe(conn.raw_handle(), CHALLENGE_ACCESS)
-}
-
-/// Steps 1-3 on a connected client pipe handle, asking only for the right a token read needs. No wire I/O; nothing is
-/// retained. The rule `crate::identity::connect_own::own_pipe` applies to every client of this box's daemon pipe.
-pub fn pipe_server_is_own(pipe: HANDLE) -> PeerAuthOutcome {
-    authenticate_pipe(pipe, PROCESS_QUERY_LIMITED_INFORMATION)
-}
-
-fn authenticate_pipe(pipe: HANDLE, access: u32) -> PeerAuthOutcome {
-    match authenticate_steps_1_to_3(pipe, access) {
+    match authenticate_steps_1_to_3(conn.raw_handle(), CHALLENGE_ACCESS) {
         ChallengeOutcome::Foreign => PeerAuthOutcome::Foreign,
         ChallengeOutcome::Undetermined => PeerAuthOutcome::Undetermined,
         ChallengeOutcome::Proven((handle, pid)) => {
@@ -350,5 +340,16 @@ fn authenticate_pipe(pipe: HANDLE, access: u32) -> PeerAuthOutcome {
                 Err(_) => PeerAuthOutcome::Undetermined,
             }
         }
+    }
+}
+
+/// Steps 1-3 on a connected client pipe handle, asking only for the right a token read needs. No wire I/O, no
+/// `GetProcessTimes`, nothing retained: only whether the serving process runs as this account. The rule
+/// `crate::identity::connect_own::own_pipe` applies to every client of this box's daemon pipe.
+pub fn pipe_server_is_own(pipe: HANDLE) -> ChallengeOutcome<()> {
+    match authenticate_steps_1_to_3(pipe, PROCESS_QUERY_LIMITED_INFORMATION) {
+        ChallengeOutcome::Proven(_) => ChallengeOutcome::Proven(()),
+        ChallengeOutcome::Foreign => ChallengeOutcome::Foreign,
+        ChallengeOutcome::Undetermined => ChallengeOutcome::Undetermined,
     }
 }

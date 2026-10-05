@@ -6,7 +6,7 @@ use std::path::Path;
 #[cfg(unix)]
 use crate::host::state_dir::is_private_dir;
 #[cfg(windows)]
-use crate::identity::challenge::PeerAuthOutcome;
+use crate::identity::challenge::ChallengeOutcome;
 #[cfg(windows)]
 use crate::identity::challenge_win::{pipe_server_is_own, PipeChallengeable};
 use crate::lane::transport::TransportError;
@@ -39,10 +39,10 @@ pub fn own_socket(path: &Path) -> std::io::Result<()> {
 pub fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     let why = match pipe_server_is_own(pipe.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE) {
-        PeerAuthOutcome::Authenticated(_) => return Ok(()),
-        PeerAuthOutcome::Foreign => "another OS account serves this pipe",
+        ChallengeOutcome::Proven(()) => return Ok(()),
+        ChallengeOutcome::Foreign => "another OS account serves this pipe",
         // An OS call that fails never admits.
-        PeerAuthOutcome::Undetermined => "cannot tell which OS account serves this pipe",
+        ChallengeOutcome::Undetermined => "cannot tell which OS account serves this pipe",
     };
     Err(std::io::Error::new(
         std::io::ErrorKind::PermissionDenied,
