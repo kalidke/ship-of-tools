@@ -223,6 +223,90 @@ fn pen_changed_and_geometry_mid_transfer_are_queued_and_drained_in_order_after_p
     );
 }
 
+/// "Replay LAST" (`events.rs`, the final-chunk arm of `sent`): a take held
+/// behind a v3 watcher's one-chunk checkpoint replays only after that
+/// watcher's own completion, `PenSnapshot` first and then its queued
+/// frames, so nothing the replay triggers overtakes its history.
+#[test]
+fn a_take_held_behind_a_v3_transfer_replays_after_pen_snapshot_and_the_queue() {
+    let mut p = proto();
+    let now = t0();
+    attach_to_done_at(&mut p, 1, wire::ATTACH_PROTO_V3, now);
+
+    // conn 2: a v3 watcher held mid-transfer behind a one-chunk
+    // checkpoint, with its own take held behind that chunk's completion.
+    assert_eq!(p.connection_opened(2, now), vec![]);
+    let a = p.frame(2, hello_frame_at(wire::ATTACH_PROTO_V3), now);
+    p.sent(2, a[0].send_marker(), now);
+    let a = p.frame(2, attach_frame("watcher"), now);
+    assert!(a.is_empty());
+    let a = p.ground_reached(now);
+    assert!(matches!(a.as_slice(), [Action::BeginCheckpoint { conn: 2 }]));
+    let chunk = p.checkpoint_ready(2, vec![0xCD], now);
+    let marker = chunk[0].send_marker();
+    assert!(
+        matches!(marker, Some(SentMarker::CheckpointChunk { is_last: true, .. })),
+        "expected a one-chunk transfer: {marker:?}"
+    );
+    let held = p.frame(2, take_frame("bob"), now);
+    assert_eq!(held, vec![], "expected the racing take to be held: {held:?}");
+
+    // Meanwhile conn 1 takes, output commits and conn 1 resizes: conn 2
+    // queues PenChanged, Output and Geometry, in that order.
+    let a = p.frame(1, take_frame("alice"), now);
+    let request_id = match a.as_slice() {
+        [Action::CommitTake { request_id, .. }] => *request_id,
+        other => panic!("expected CommitTake: {other:?}"),
+    };
+    let mut actions = p.take_committed(1, "alice".to_string(), 1, request_id, now);
+    for action in &actions {
+        if let Action::Send { conn, marker, .. } = action {
+            p.sent(*conn, marker.clone(), now);
+        }
+    }
+    let output = p.output_committed(b"hi", now);
+    for action in &output {
+        if let Action::Send { conn, marker, .. } = action {
+            p.sent(*conn, marker.clone(), now);
+        }
+    }
+    actions.extend(output);
+    let resize = decode_one(&encode_attach_client(&AttachClient::Resize { cols: 120, rows: 45 }).unwrap());
+    let a = p.frame(1, resize, now);
+    let request_id = match a.as_slice() {
+        [Action::ApplyResize { request_id, conn: 1, .. }] => *request_id,
+        other => panic!("expected ApplyResize: {other:?}"),
+    };
+    let resized = p.resize_outcome(1, true, 120, 45, request_id, now);
+    for action in &resized {
+        if let Action::Send { conn, marker, .. } = action {
+            p.sent(*conn, marker.clone(), now);
+        }
+    }
+    actions.extend(resized);
+    assert!(
+        !actions.iter().any(|act| matches!(act, Action::Send { conn: 2, .. })),
+        "conn 2 must receive nothing while its own transfer is in flight: {actions:?}"
+    );
+
+    // Completion: PenSnapshot, the queue in emission order, the replayed
+    // take last.
+    let final_actions = p.sent(2, marker, now);
+    let (replay, sends) = final_actions.split_last().expect("completion must emit actions");
+    assert!(matches!(replay, Action::CommitTake { conn: 2, .. }), "the held take must replay LAST: {final_actions:?}");
+    let decoded: Vec<DecodedFrame> = sends.iter().map(|a| decode_one(a.send_bytes())).collect();
+    assert_eq!(
+        decoded,
+        vec![
+            DecodedFrame::AttachServer(AttachServer::PenSnapshot { holder: Some("alice".to_string()), take_epoch: 1 }),
+            DecodedFrame::AttachServer(AttachServer::PenChanged { holder: Some("alice".to_string()), take_epoch: 1 }),
+            DecodedFrame::AttachServer(AttachServer::Output { bytes: b"hi".to_vec() }),
+            DecodedFrame::AttachServer(AttachServer::Geometry { cols: 120, rows: 45 }),
+        ],
+        "PenSnapshot, then the queued frames in emission order, before the replay: {final_actions:?}"
+    );
+}
+
 /// Codex review round, should-fix 5 (capsule half): a queued
 /// `PenChanged`/`Geometry` shares the SAME `queued_live_bytes`
 /// budget as ordinary output, not a second, unbounded list --
