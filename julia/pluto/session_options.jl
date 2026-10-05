@@ -1,6 +1,9 @@
 # The options of the daemon's Pluto session, in one place so the test (test/runtests.jl) configures exactly what
 # start.jl runs.
 
+using Distributed
+using Random
+
 """
     configure_session!(session, host, port)
 
@@ -30,5 +33,9 @@ function configure_session!(session, host::AbstractString, port::Integer)
     # stdin, never from its command line, and closes a connection whose header carries another cookie before it reads a
     # message. The cost: on Windows Pluto cannot stop a running cell in this mode (it says so; owner: 0.6.7).
     session.options.evaluation.workspace_use_distributed_stdlib = true
+    # Its cookie is the lock, so it comes from the OS's secure generator, like every page secret, and not from the
+    # default RNG that `Distributed` would draw it from. It is set before any worker exists, and the workers read it
+    # from their stdin.
+    Distributed.cluster_cookie(Random.randstring(Random.RandomDevice(), Distributed.HDR_COOKIE_LEN))
     return session
 end

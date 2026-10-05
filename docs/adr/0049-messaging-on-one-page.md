@@ -102,8 +102,8 @@ no owner check reaches them; each is locked by a secret instead, and the guarant
 the secret never reaches another account (not its command lines, files or logs): Pluto's
 page by its session secret, `wglshow`'s page by its secret path and its websocket by a
 session id drawn from the OS's secure generator, and every Pluto notebook worker by the
-Distributed cluster cookie, which the worker reads from its stdin and checks on every
-connection before it reads a message (Pluto's default Malt worker accepted the first
+Distributed cluster cookie (16 characters drawn from the OS's secure generator), which the
+worker reads from its stdin and checks on every connection before it reads a message (Pluto's default Malt worker accepted the first
 connection with no secret, and is not used: `julia/pluto/session_options.jl`, tested on
 Linux, macOS and Windows by `julia/pluto/test/runtests.jl`). One door stays open: Bonito's
 asset route on `wglshow`'s port serves the files a figure's session registers, keyed by a

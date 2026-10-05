@@ -52,10 +52,21 @@ function stranger_is_dropped(port::Integer, bytes::Vector{UInt8}; wait = 10.0)
     end
 end
 
+@testset "the cluster cookie is drawn per session from the OS's generator" begin
+    cookies = String[]
+    for _ in 1:2
+        configure_session!(Pluto.ServerSession(), "127.0.0.1", 1234)
+        push!(cookies, Distributed.cluster_cookie())
+    end
+    @test all(c -> occursin(r"^[A-Za-z0-9]{16}$", c), cookies)
+    @test cookies[1] != cookies[2]
+end
+
 @testset "Pluto's notebook workers" begin
     dir = mktempdir()
     session = Pluto.ServerSession()
     configure_session!(session, "127.0.0.1", 1234)
+    cookie = Distributed.cluster_cookie()
 
     notebook_path = joinpath(dir, "owner.jl")
     Pluto.save_notebook(Pluto.Notebook([Pluto.Cell("x = 20 + 1")], notebook_path))
@@ -73,6 +84,10 @@ end
         catch
             0
         end
+        @testset "the worker holds the cookie configure_session! set" begin
+            @test Malt.remote_eval_fetch(workspace.worker, :(getfield(Base.loaded_modules[$DISTRIBUTED], :LPROC).cookie)) == cookie
+        end
+
         @testset "the worker listens on loopback" begin
             @test port > 0
             @test Malt.remote_eval_fetch(workspace.worker, :(getfield(Base.loaded_modules[$DISTRIBUTED], :LPROC).bind_addr)) == "127.0.0.1"
