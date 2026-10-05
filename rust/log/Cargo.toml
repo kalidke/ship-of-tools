@@ -12,8 +12,9 @@ license.workspace = true
 # feature is the SEPARATE path a `tests/*.rs` integration-test crate in
 # this same package needs, since those compile the library WITHOUT
 # `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
-# a future `sot-capsule` caller) unless it explicitly opts in.
-test-support = []
+# a future `sot-capsule` caller) unless it explicitly opts in. It also brings
+# `test_log` and `test_scan`: the one way a test reads tracing output, and the walker the source scans share.
+test-support = ["dep:tracing-subscriber"]
 
 [dependencies]
 serde = { workspace = true }
@@ -33,6 +34,8 @@ getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From im
 # string -- this crate had no tracing dep before this. Same version the
 # rest of the workspace pins.
 tracing = { workspace = true }
+# Only `test_log` (feature `test-support`) uses it: the capture subscriber's formatter.
+tracing-subscriber = { workspace = true, optional = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
 # (L1-unix LU2a): `capsule/` is no longer

@@ -383,53 +383,36 @@ mod tests {
         assert!(!stop_hook_running(b"{", "h", now));
     }
 
-    /// A log sink for one test: `tracing` writes here while the test's subscriber is the default.
-    #[derive(Clone, Default)]
-    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-    impl std::io::Write for LogBuf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn a_refusal_streak_logs_one_line_and_a_wake_or_a_read_ends_it() {
-        let buf = LogBuf::default();
-        let sink = buf.clone();
-        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
-        let text = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let log = sot_log::test_log::capture();
+        let text = || log.text();
         let count = || text().matches("keeps refusing the wake").count();
         let refused = || Step::Refused(Refusal { reason: "input not empty", border: "──── named-session ─".to_string(), detail: None });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
-        tracing::subscriber::with_default(sub, || {
-            // Inside the bound: silent. Fails if the bound is ignored.
-            at(Duration::ZERO, refused());
-            at(REFUSED_FOR - Duration::from_secs(1), refused());
-            assert_eq!(count(), 0, "inside the bound: silent");
-            // One line per streak, with its fields. Fails if the info! is deleted, a field dropped, or a streak logs twice.
-            at(REFUSED_FOR, refused());
-            at(REFUSED_FOR * 5, refused());
-            assert_eq!(count(), 1, "one line per streak");
-            let t = text();
-            assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\""), "{t}");
-            // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
-            at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
-            at(REFUSED_FOR * 7, refused());
-            assert_eq!(count(), 1, "a new streak waits its own bound");
-            at(REFUSED_FOR * 8, refused());
-            assert_eq!(count(), 2);
-            // A read inbox ends it too. Fails if Clear leaves the streak.
-            at(REFUSED_FOR * 9, Step::Clear);
-            at(REFUSED_FOR * 10, refused());
-            at(REFUSED_FOR * 11, refused());
-            assert_eq!(count(), 3);
-        });
+        // Inside the bound: silent. Fails if the bound is ignored.
+        at(Duration::ZERO, refused());
+        at(REFUSED_FOR - Duration::from_secs(1), refused());
+        assert_eq!(count(), 0, "inside the bound: silent");
+        // One line per streak, with its fields. Fails if the info! is deleted, a field dropped, or a streak logs twice.
+        at(REFUSED_FOR, refused());
+        at(REFUSED_FOR * 5, refused());
+        assert_eq!(count(), 1, "one line per streak");
+        let t = text();
+        assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\""), "{t}");
+        // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
+        at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
+        at(REFUSED_FOR * 7, refused());
+        assert_eq!(count(), 1, "a new streak waits its own bound");
+        at(REFUSED_FOR * 8, refused());
+        assert_eq!(count(), 2);
+        // A read inbox ends it too. Fails if Clear leaves the streak.
+        at(REFUSED_FOR * 9, Step::Clear);
+        at(REFUSED_FOR * 10, refused());
+        at(REFUSED_FOR * 11, refused());
+        assert_eq!(count(), 3);
     }
 
     #[test]
@@ -467,22 +450,18 @@ mod tests {
 
     #[test]
     fn an_unconfirmed_write_warns_once_per_streak() {
-        let buf = LogBuf::default();
-        let sink = buf.clone();
-        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
-        let count = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap().matches(&format!("text not confirmed ({STALE})")).count();
+        let log = sot_log::test_log::capture();
+        let count = || log.text().matches(&format!("text not confirmed ({STALE})")).count();
         let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()) });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + Duration::from_secs(secs));
-        tracing::subscriber::with_default(sub, || {
-            for secs in [0, 2, 4] {
-                at(secs, u());
-            }
-            assert_eq!(count(), 1);
-            at(6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
-            at(8, u());
-            assert_eq!(count(), 2);
-        });
+        for secs in [0, 2, 4] {
+            at(secs, u());
+        }
+        assert_eq!(count(), 1);
+        at(6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
+        at(8, u());
+        assert_eq!(count(), 2);
     }
 }

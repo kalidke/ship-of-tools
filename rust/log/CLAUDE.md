@@ -51,12 +51,14 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `../../julia/sotlog/`: SotLog, the Julia reader of the golden segment fixtures.
 
 ## Files
-- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests.
+- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings `test_log` and `test_scan` (the backend and frontend turn it on in their dev-dependencies).
 - `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
+- `src/test_log.rs`: `capture()`, the test-only reader of tracing output (feature `test-support`), and its source scan.
+- `src/test_scan.rs`: `rust_sources()`, every workspace member's Rust source for the source scans (feature `test-support`).
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.
@@ -74,4 +76,5 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
+- A test reads tracing output only through `test_log::capture()`; besides it, only the two binaries' `main` set up a subscriber (`test_log::tests::only_test_log_makes_a_subscriber`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.
