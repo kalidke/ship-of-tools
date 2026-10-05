@@ -170,13 +170,13 @@ impl Conn {
     }
 }
 
-#[allow(clippy::disallowed_methods, reason = "own_socket runs first on the unix: arm; the pipe: arm is checked by own_pipe")]
 fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
             // ADR 0049, User isolation: only a socket in this account's private folder.
             sot_log::identity::connect_own::own_socket(std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
+            #[allow(clippy::disallowed_methods, reason = "own_socket runs first, above")]
             return std::os::unix::net::UnixStream::connect(p)
                 .map(Conn::Unix)
                 .map_err(|e| format!("{endpoint}: {e}"));

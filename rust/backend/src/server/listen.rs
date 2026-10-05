@@ -93,9 +93,9 @@ pub(super) async fn take_daemon_lock(opts: &crate::Opts) -> Result<Option<sot_lo
 
 /// Whether a daemon answers on the session socket: on Unix a connect
 /// succeeds, on Windows a client open of the pipe name succeeds.
-#[allow(clippy::disallowed_methods, reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written")]
 fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
+    #[allow(clippy::disallowed_methods, reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written")]
     return std::os::unix::net::UnixStream::connect(path).is_ok();
     #[cfg(windows)]
     {
@@ -116,9 +116,10 @@ fn socket_answers(path: &std::path::Path) -> bool {
 /// (ECONNREFUSED), or none at all, is stale; any other connect error
 /// refuses too, because it cannot tell.
 #[cfg(unix)]
-#[allow(clippy::disallowed_methods, reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written")]
 pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
-    match std::os::unix::net::UnixStream::connect(path) {
+    #[allow(clippy::disallowed_methods, reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written")]
+    let attempt = std::os::unix::net::UnixStream::connect(path);
+    match attempt {
         Ok(_) => anyhow::bail!(
             "another daemon is already listening on {}; refusing to start on its socket \
              (stop that daemon first, or pass a different --socket)",

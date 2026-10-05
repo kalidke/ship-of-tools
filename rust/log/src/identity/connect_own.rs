@@ -53,18 +53,18 @@ pub fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> 
 
 /// The blocking connect the stdio bridge and the lane dial share: the platform connector, then the rule.
 #[cfg(unix)]
-#[allow(clippy::disallowed_methods, reason = "the rule runs first")]
 pub fn connect_own(path: &Path) -> Result<crate::lane::socket_unix::SocketClient, TransportError> {
     own_socket(path).map_err(|source| TransportError::Io {
         op: "connect_own",
         source,
     })?;
-    crate::lane::socket_unix::connect_unix_socket_unchallenged(path)
+    #[allow(clippy::disallowed_methods, reason = "the rule runs first")]
+    let client = crate::lane::socket_unix::connect_unix_socket_unchallenged(path)?;
+    Ok(client)
 }
 
 /// The blocking connect the stdio bridge and the lane dial share: the platform connector, then the rule.
 #[cfg(windows)]
-#[allow(clippy::disallowed_methods, reason = "the rule runs right after the connect, before the caller writes")]
 pub fn connect_own(path: &Path) -> Result<crate::lane::pipe_win::PipeClient, TransportError> {
     use std::os::windows::io::{BorrowedHandle, RawHandle};
     let text = path.to_str().ok_or_else(|| TransportError::Io {
@@ -73,6 +73,7 @@ pub fn connect_own(path: &Path) -> Result<crate::lane::pipe_win::PipeClient, Tra
     })?;
     // The connector's mid-dial cancel hook. Nothing sets it: the dial is the caller's first act on this endpoint.
     let dial_cancel = std::sync::atomic::AtomicBool::new(false);
+    #[allow(clippy::disallowed_methods, reason = "the rule runs right after the connect, before the caller writes")]
     let client = crate::lane::pipe_win::connect_pipe_path_unchallenged(text, &dial_cancel)?;
     // SAFETY: the handle is owned by `client`, which outlives this borrow.
     let handle = unsafe { BorrowedHandle::borrow_raw(client.raw_handle() as RawHandle) };

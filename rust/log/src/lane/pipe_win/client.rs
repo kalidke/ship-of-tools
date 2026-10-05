@@ -81,10 +81,11 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError
 /// the probe episode's remaining wall time), so folding authentication
 /// into the connect itself here would collapse rows the classifier needs
 /// to tell apart.
-#[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
 pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, TransportError> {
     validate_voyage_id(voyage_id)?;
-    connect_named_pipe_unchallenged(pipe_name_wide(voyage_id), &AtomicBool::new(false))
+    #[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_named_pipe_unchallenged(pipe_name_wide(voyage_id), &AtomicBool::new(false))?;
+    Ok(client)
 }
 
 /// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
@@ -95,9 +96,10 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 /// intentionally has no `_unchallenged`-free sibling here — the caller
 /// composes the full challenge itself, exactly as `supervisor::probe::win::RealProbeOps`
 /// does for the mgmt lane's own unchallenged connect.
-#[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
 pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, TransportError> {
-    connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))
+    #[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))?;
+    Ok(client)
 }
 
 /// Shared raw connect, given an already-resolved wide pipe name: retries
@@ -123,13 +125,13 @@ pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient
 /// checks a flag between its own already-bounded waits is the only
 /// mechanism that exists; existing callers (both wrappers above) pass a
 /// fresh, never-set flag, so their own behavior is unchanged.
-#[allow(clippy::disallowed_methods, reason = "the one raw open of the unchallenged connector, at identification level")]
 pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
         if cancel.load(Ordering::SeqCst) {
             return Err(TransportError::Cancelled);
         }
+        #[allow(clippy::disallowed_methods, reason = "the one raw open of the unchallenged connector, at identification level")]
         let h = unsafe {
             CreateFileW(
                 name.as_ptr(),
@@ -191,9 +193,10 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
 /// own bounded poll loop — see that function's own doc for why a checked
 /// flag between its already-bounded waits is the only mid-dial
 /// cancellation a synchronous `CreateFileW`/`WaitNamedPipeW` pair admits.
-#[allow(clippy::disallowed_methods, reason = "the connector connect_own wraps")]
 pub(crate) fn connect_pipe_path_unchallenged(path: &str, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
-    connect_named_pipe_unchallenged(wide_null(path), cancel)
+    #[allow(clippy::disallowed_methods, reason = "the connector connect_own wraps")]
+    let client = connect_named_pipe_unchallenged(wide_null(path), cancel)?;
+    Ok(client)
 }
 
 impl PipeClient {

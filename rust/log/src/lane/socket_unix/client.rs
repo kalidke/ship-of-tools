@@ -463,10 +463,11 @@ pub(crate) fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClie
 /// `pipe_win::connect_voyage_pipe_unchallenged`'s own "never widen" doc:
 /// an unchallenged `SocketClient` reachable through a PUBLIC path would
 /// defeat this whole module's enforcement.
-#[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
 pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let path = voyage_socket_path(voyage_id)?;
-    connect_unix_socket_unchallenged(&path)
+    #[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_unix_socket_unchallenged(&path)?;
+    Ok(client)
 }
 
 /// The supervisor lane's own raw connect, with NO authentication — see
@@ -477,10 +478,11 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// called on Linux AND macOS, via `Endpoint for SocketEndpoint`'s own
 /// `connect_supervisor_unchallenged` (`attach_client/client.rs` and
 /// `supervisor_client`, both generic over `Endpoint`, are its callers).
-#[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
 pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
-    connect_unix_socket_unchallenged(&path)
+    #[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_unix_socket_unchallenged(&path)?;
+    Ok(client)
 }
 
 /// Connect to `<runtime_dir>/voyage-<voyage_id>.sock` AND authenticate
