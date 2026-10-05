@@ -10,6 +10,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="$(cd "$SCRIPT_DIR/../work_state/hooks" && pwd)"
@@ -45,12 +46,11 @@ bad() { echo "FAIL $1${2:+ — $2}"; fail=$((fail+1)); }
 seed_row() {
     jq -n --arg n "$NAME" '{agents:{($n):{state:"working",floor:"working",summary:"x",status_at:"2026-09-08T00:00:00Z",repo:"x"}}}' > "$REGISTRY"
 }
-# The logging sleep: appends its arguments to SLEEPS, then runs the real sleep (its absolute path, resolved before the
-# shim exists). A stub that must itself sleep calls $REAL_SLEEP, so the log holds only the hook's own waits.
+# The logging sleep (lib-wait.sh): SLEEPS holds the waits of the command that has $SHIM first on its PATH. A stub that
+# must itself sleep calls $REAL_SLEEP, so the log holds only the hook's own waits.
 REAL_SLEEP="$(command -v sleep)"
-SHIM="$WORK/shim"; SLEEPS="$WORK/sleeps.log"; mkdir -p "$SHIM"
-printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec "%s" "$@"\n' "$SLEEPS" "$REAL_SLEEP" > "$SHIM/sleep"
-chmod +x "$SHIM/sleep"
+SHIM="$WORK/shim"; SLEEPS="$WORK/sleeps.log"
+sleep_log "$SHIM" "$SLEEPS" || { echo "FATAL: no logging sleep" >&2; exit 2; }
 # HB: one heartbeat call past the 10 s throttle, with the logging sleep first on its PATH; SLEEPS holds its waits.
 HB() {
     rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null

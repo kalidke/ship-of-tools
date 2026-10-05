@@ -13,6 +13,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `hub_files/`: parts of `test-hub-files.sh`: `lock_shell.sh`, `routes.sh`, `wire.sh`, `reader.sh`, `lock_faults.sh`
 - `join_disambiguation/`: parts of `test-join-disambiguation.sh`: derived handles, self-files, `jq_args.sh`, pipe endpoints, send identity, slot guard, spawn and lock
 - `lib-home-guard.sh`: the guard every suite sources first; drops the host's comm identity and daemon routes, and gives `guard_fresh_home`, `guard_refuse_live_home`, `guard_stage_bin`, `in_row`
+- `lib-wait.sh`: the waits the suites share: `await` (a check every 50 ms, a 30 s hang guard), `stopped` (a holder that stopped itself), `sleep_log` (the logging sleep that counts a command's waits)
 - `stage-bin.sh`: lays the files of the folders in `comm/bin-folders.txt` flat into a destination, in the repo's form
 - `status_floor/`: parts of `test-status-floor.sh`: `reduction.sh`, `markers.sh`, `audit_and_races.sh`
 - `test-agent-join.sh`: `comm-join.sh` declares the row's handle to its daemon over the owner endpoint, never the relay
@@ -54,11 +55,11 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   those five. The suites of the row-lifecycle CLIs, the launchers and `sot-gh-auth.sh` are in `agents/tests/` and source this folder's guard.
 - A shell rule that has a Rust twin is checked by a text scan or a parity test here (`test-hub-files.sh` T13 over
   `inbox.rs`, `test-registry-lock.sh` t15 over `lock.rs`); change both arms in one commit.
-- A suite's verdict never depends on how fast the host runs. A case bounds a duration from above only to rule out a
-  slower behaviour its exit status and output cannot show, and then by a count of the code's own waits (a logging
-  `sleep` first on PATH) or, where nothing can be counted, by that behaviour's own length (a lock's full 10 s wait in
-  place of a shortened one). A case that needs a step only to return sets no bound: the run's timeout turns a hang into
-  a failure (`scripts/tests/rc-gate.sh` gives each suite 20 minutes, the CI job 60). A step a case starts in the
-  background is awaited by a signal it gives (a file it writes, the stopped state of a holder that stops itself), never
-  a fixed sleep, and ends before the case returns. Lower bounds ("waited at least the deadline") stay: load only
-  lengthens a wait.
+- A hermetic suite's verdict does not depend on how fast the host runs, down to the one speed bound left: the run's own
+  timeout (`scripts/tests/rc-gate.sh` gives each suite 20 minutes, the CI job 60), which turns a hang into a failure. A
+  case bounds a duration from above only to rule out a slower behaviour its exit status and output cannot show, and
+  then by counting the code's own waits (`sleep_log`, lib-wait.sh). A wait the code under test enforces is set longer
+  than every hang guard in the suite, unless its expiry is what the case tests. A step a case starts in the background
+  is awaited by a signal it gives (`await`; `stopped` for a holder that stops itself), never a fixed sleep, and ends
+  before the case returns. Lower bounds ("waited at least the deadline") stay: load only lengthens a wait. The suites
+  that need peer hosts and comm-matrix.sh time real boxes and are outside this rule.
