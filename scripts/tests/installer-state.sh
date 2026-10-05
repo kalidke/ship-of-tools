@@ -476,6 +476,17 @@ check "the oldest five go and the newest three stay" "567" \
 reap_stub "$d"
 
 # ---------------------------------------------------------------------------
+case_start "ensure_log_is_owner_only"
+# The shell's own redirect makes the daemon's log, so its mode would be the caller's umask's, and the daemon copies
+# every log line to that stdout: any account that can reach the prefix would read it (ADR 0049, User isolation).
+d="$WORK/logs-mode"; mkdir -p "$d/home"
+( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )
+mode_log="$(newest_log "$d/prefix/logs")"
+check "the daemon's log is owner-only under umask 022" "600" \
+    "$(stat -c %a "$mode_log" 2>/dev/null || stat -f %Lp "$mode_log" 2>/dev/null || echo unreadable)"
+reap_stub "$d"
+
+# ---------------------------------------------------------------------------
 case_start "a_live_writers_log_is_kept"
 # The oldest log names this shell's own live pid, as a daemon still shutting
 # down names its own; six newer dead ones put the dir over the count.

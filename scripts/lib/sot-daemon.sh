@@ -229,6 +229,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         logfile="$logdir/sotd.${stamp}Z-$$.log"
         # Append, never truncate: the name is new, and a file another daemon
         # still writes is never cut short.
+        ( umask 077 && : >>"$logfile" )  # owner-only: the daemon copies every log line to it; the mv below keeps the mode
         nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >>"$logfile" 2>&1 </dev/null &
         pid=$!
         # Name the log for the daemon that writes it, so a prune keeps it while
