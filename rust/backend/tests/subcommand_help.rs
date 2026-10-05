@@ -38,9 +38,7 @@ fn make_env(tmp: &Path) {
     std::fs::set_permissions(tmp.join("run"), std::fs::Permissions::from_mode(0o700)).unwrap();
     for tool in ["ssh", "systemctl"] {
         let p = tmp.join("fakebin").join(tool);
-        std::fs::write(&p, format!("#!/bin/sh\ntouch {}/DIALED\nexit 1\n", tmp.display())).unwrap();
-        #[cfg(unix)]
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&p, format!("#!/bin/sh\ntouch {}/DIALED\nexit 1\n", tmp.display()));
     }
 }
 

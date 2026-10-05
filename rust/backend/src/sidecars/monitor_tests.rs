@@ -164,14 +164,10 @@
         let dir = std::env::temp_dir().join(format!("sot-sampler-na-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
         let stub = dir.join("nvidia-smi");
-        std::fs::write(
+        sot_log::test_exec::write_executable(
             &stub,
             "#!/bin/sh\ncat <<'EOF'\n0, 11, [N/A], [N/A], 40, 5.0\n1, 22, N/A, N/A, 41, 5.1\n2, 33, Not Supported, Not Supported, 42, 5.2\n3, 44, , , 43, 5.3\nEOF\n",
-        )
-        .expect("write stub");
-        let mut perms = std::fs::metadata(&stub).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&stub, perms).expect("chmod stub");
+        );
 
         let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap_or_default());
         let mut child = std::process::Command::new("bash")

@@ -357,14 +357,10 @@ impl Env {
         let dir = self._tmp.path().join("fakebin");
         std::fs::create_dir_all(&dir).expect("mkdir fakebin");
         let claude = dir.join("claude");
-        std::fs::write(
+        sot_log::test_exec::write_executable(
             &claude,
             b"#!/bin/sh\nexec /no/such/binary/sot-test-unlaunchable-claude\n",
-        )
-        .expect("write fake claude stub");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake claude stub");
+        );
         dir
     }
 
@@ -378,17 +374,13 @@ impl Env {
         std::fs::create_dir_all(&dir).expect("mkdir fakebin");
         let pidfile = self._tmp.path().join("escapee.pid");
         let claude = dir.join("claude");
-        std::fs::write(
+        sot_log::test_exec::write_executable(
             &claude,
             format!(
                 "#!/bin/sh\nsetsid sh -c 'echo $$ > \"{}\"; sleep 120; :' </dev/null >/dev/null 2>&1 &\nexec sleep 120\n",
                 pidfile.display()
             ),
-        )
-        .expect("write fake claude with escapee");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake claude with escapee");
+        );
         (dir, pidfile)
     }
 
@@ -563,11 +555,7 @@ impl Env {
         let dir = self._tmp.path().join("fakebin-systemd-run");
         std::fs::create_dir_all(&dir).expect("mkdir fakebin-systemd-run");
         let stub = dir.join("systemd-run");
-        std::fs::write(&stub, b"#!/bin/sh\necho 'stub: no user manager' >&2; exit 1\n")
-            .expect("write stub systemd-run");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod stub systemd-run");
+        sot_log::test_exec::write_executable(&stub, b"#!/bin/sh\necho 'stub: no user manager' >&2; exit 1\n");
         dir
     }
 

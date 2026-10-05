@@ -19,6 +19,8 @@ pub mod supervisor;
 pub mod test_log;
 #[cfg(feature = "test-support")]
 pub mod test_scan;
+#[cfg(feature = "test-support")]
+pub mod test_exec;
 
 pub use host::lock_writer;
 #[cfg(windows)]

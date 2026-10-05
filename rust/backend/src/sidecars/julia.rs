@@ -308,13 +308,9 @@ mod tests {
     fn accepts_a_tiny_executable_file() {
         // Proves the old size floor is gone from the other direction too:
         // a small but genuinely executable file is accepted.
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("julia");
-        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
+        sot_log::test_exec::write_executable(&path, b"#!/bin/sh\nexit 0\n");
         assert_eq!(looks_like_fake_julia(&path), None);
     }
 
@@ -324,14 +320,7 @@ mod tests {
         let bin_dir = juliaup_dir.join(version_dir_name).join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
         let exe_name = if cfg!(windows) { "julia.exe" } else { "julia" };
-        std::fs::write(bin_dir.join(exe_name), vec![0u8; 8192]).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(bin_dir.join(exe_name)).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(bin_dir.join(exe_name), perms).unwrap();
-        }
+        sot_log::test_exec::write_executable(&bin_dir.join(exe_name), vec![0u8; 8192]);
     }
 
     #[test]
@@ -493,14 +482,7 @@ mod tests {
         let path_dir = tempfile::tempdir().unwrap();
         let exe_name = if cfg!(windows) { "julia.exe" } else { "julia" };
         let real_julia = path_dir.path().join(exe_name);
-        std::fs::write(&real_julia, vec![0u8; 8192]).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&real_julia).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&real_julia, perms).unwrap();
-        }
+        sot_log::test_exec::write_executable(&real_julia, vec![0u8; 8192]);
 
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
@@ -517,17 +499,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn path_search_skips_a_non_executable_candidate_for_a_real_one_further_along() {
-        use std::os::unix::fs::PermissionsExt;
         let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let fake_dir = tempfile::tempdir().unwrap();
         let real_dir = tempfile::tempdir().unwrap();
         std::fs::write(fake_dir.path().join("julia"), b"not executable").unwrap();
         let real_julia = real_dir.path().join("julia");
-        std::fs::write(&real_julia, vec![0u8; 8192]).unwrap();
-        let mut perms = std::fs::metadata(&real_julia).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&real_julia, perms).unwrap();
+        sot_log::test_exec::write_executable(&real_julia, vec![0u8; 8192]);
 
         let joined_path = std::env::join_paths([fake_dir.path(), real_dir.path()]).unwrap();
 

@@ -417,9 +417,7 @@ mod tests {
         let _guard = self_file_env_guarded();
         let dir = tempfile::tempdir().expect("tempdir");
         let claude = dir.path().join("claude");
-        std::fs::write(&claude, b"#!/bin/sh\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\n");
         // `claude_recipe` reads HOME (the account home); the guard restores it.
         std::env::remove_var("HOME");
         let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
@@ -579,8 +577,7 @@ mod tests {
 
     #[cfg(unix)]
     fn write_stub_ccx(path: &Path) {
-        std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
-        set_executable(path);
+        sot_log::test_exec::write_executable(path, "#!/bin/sh\nexit 0\n");
     }
 
     #[test]
@@ -616,8 +613,7 @@ mod tests {
     fn resolve_claude_finds_an_executable_on_path() {
         let dir = tempfile_test_dir();
         let claude = dir.path().join("claude");
-        std::fs::write(&claude, b"#!/bin/sh\nexit 0\n").unwrap();
-        set_executable(&claude);
+        sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
         let path_var = std::ffi::OsString::from(dir.path());
         let resolved = resolve_claude(Some(&path_var), None).unwrap();
         assert_eq!(resolved, claude.to_string_lossy());
@@ -630,8 +626,7 @@ mod tests {
         let local_bin = dir.path().join(".local/bin");
         std::fs::create_dir_all(&local_bin).unwrap();
         let claude = local_bin.join("claude");
-        std::fs::write(&claude, b"#!/bin/sh\nexit 0\n").unwrap();
-        set_executable(&claude);
+        sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
         // An empty PATH still finds it via the HOME-derived fallback dirs.
         let resolved = resolve_claude(None, Some(dir.path())).unwrap();
         assert_eq!(resolved, claude.to_string_lossy());
@@ -667,8 +662,7 @@ mod tests {
         std::fs::create_dir(dir1.path().join("claude")).unwrap();
         let dir2 = tempfile_test_dir();
         let real = dir2.path().join("claude");
-        std::fs::write(&real, b"#!/bin/sh\nexit 0\n").unwrap();
-        set_executable(&real);
+        sot_log::test_exec::write_executable(&real, b"#!/bin/sh\nexit 0\n");
         let path_var = std::env::join_paths([dir1.path(), dir2.path()]).unwrap();
         let resolved = resolve_claude(Some(&path_var), None).unwrap();
         assert_eq!(resolved, real.to_string_lossy());
@@ -692,8 +686,7 @@ mod tests {
     fn resolve_ccx_finds_an_executable_on_path() {
         let dir = tempfile_test_dir();
         let ccx = dir.path().join("ccx");
-        std::fs::write(&ccx, b"#!/bin/sh\nexit 0\n").unwrap();
-        set_executable(&ccx);
+        sot_log::test_exec::write_executable(&ccx, b"#!/bin/sh\nexit 0\n");
         let path_var = std::ffi::OsString::from(dir.path());
         assert_eq!(resolve_ccx(Some(&path_var), None).unwrap(), ccx.to_string_lossy());
     }
@@ -705,8 +698,7 @@ mod tests {
         let local_bin = dir.path().join(".local/bin");
         std::fs::create_dir_all(&local_bin).unwrap();
         let ccx = local_bin.join("ccx");
-        std::fs::write(&ccx, b"#!/bin/sh\nexit 0\n").unwrap();
-        set_executable(&ccx);
+        sot_log::test_exec::write_executable(&ccx, b"#!/bin/sh\nexit 0\n");
         assert_eq!(resolve_ccx(None, Some(dir.path())).unwrap(), ccx.to_string_lossy());
     }
 
@@ -720,12 +712,6 @@ mod tests {
     #[cfg(unix)]
     fn tempfile_test_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
-    }
-
-    #[cfg(unix)]
-    fn set_executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // ADR 0046 decision 6: a reauth leg carries an explicit `--resume

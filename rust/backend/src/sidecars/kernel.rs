@@ -590,12 +590,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_kernel_child_and_never_respawns() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
         let stub = dir.path().join("stub-julia");
-        std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display()));
         let project = dir.path().join("kp");
         std::fs::create_dir(&project).unwrap();
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));

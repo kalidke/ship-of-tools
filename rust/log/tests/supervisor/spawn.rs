@@ -96,7 +96,7 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::fs::MetadataExt;
 
     let _serial = serial();
     let _runtime = isolated_runtime_dir();
@@ -109,8 +109,7 @@ fn a_leg_spawned_after_the_binary_is_renamed_runs_the_supervisors_own_inode() {
     // the built binary itself (`capsule_exe()`) must stay put for every
     // other test in this file.
     let copy_path = dir.path().join("sot-capsule-copy");
-    std::fs::copy(capsule_exe(), &copy_path).expect("copy sot-capsule for a renameable launch path");
-    std::fs::set_permissions(&copy_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sot_log::test_exec::write_executable(&copy_path, std::fs::read(capsule_exe()).expect("read sot-capsule for a renameable launch path"));
 
     let mut cmd = Command::new(&copy_path);
     cmd.arg("supervise")

@@ -563,7 +563,6 @@ mod tests {
     /// — `julia_bin` is only ever a path to a binary, so a shell script
     /// reproduces "a package manager rewrote something" with no Julia here.
     fn julia_fixture(name: &str, julia_body: &str) -> (PathBuf, PrepareSpec) {
-        use std::os::unix::fs::PermissionsExt;
 
         let base_tmp =
             std::env::temp_dir().join(format!("sot-updater-{name}-{}", std::process::id()));
@@ -577,14 +576,12 @@ mod tests {
         );
 
         let julia = base_tmp.join("julia-standin.sh");
-        std::fs::write(
+        sot_log::test_exec::write_executable(
             &julia,
             format!(
                 "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --project=*) p=${{a#--project=}};; esac; done\n{julia_body}\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&julia, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let prefix = base_tmp.join("prefix");
         let spec = PrepareSpec {

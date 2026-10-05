@@ -22,15 +22,13 @@ fn dropins(t: &TempDir) -> PathBuf {
 }
 
 fn hub() -> TempDir {
-    use std::os::unix::fs::PermissionsExt;
     let t = tempfile::tempdir().unwrap();
     let ctl = t.path().join("bin/systemctl");
     for d in [t.path().join("bin"), dropins(&t)] {
         std::fs::create_dir_all(d).unwrap();
     }
-    std::fs::write(&ctl, FAKE_SYSTEMCTL).unwrap();
+    sot_log::test_exec::write_executable(&ctl, FAKE_SYSTEMCTL);
     std::fs::write(t.path().join("bin/show-ok"), format!("ExecStart={{ path=/usr/bin/ssh ; argv[]={} ; }}\nLoadState=loaded\n", sot_protocol::topology::relay_units::relay_command_line())).unwrap();
-    std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(t.path().join("hosts.toml"), "hub = \"hub-box\"\n[host.hub-box]\ndaemon = true\n[host.remote-a]\ndaemon = true\n").unwrap();
     t
 }

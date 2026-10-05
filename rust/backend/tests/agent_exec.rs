@@ -12,7 +12,6 @@
 //! given flags land in order, before the bootstrap skill) and a nesting
 //! env var (so scrubbing is provably real, not merely undocumented).
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 #[path = "support/sotd.rs"]
@@ -29,7 +28,7 @@ fn seed_printing_claude_stub(home: &std::path::Path) -> PathBuf {
     let dir = home.join(".local").join("bin");
     std::fs::create_dir_all(&dir).expect("mkdir ~/.local/bin");
     let claude = dir.join("claude");
-    std::fs::write(
+    sot_log::test_exec::write_executable(
         &claude,
         b"#!/bin/sh\n\
           echo \"ARGV0=$0\"\n\
@@ -40,10 +39,7 @@ fn seed_printing_claude_stub(home: &std::path::Path) -> PathBuf {
           done\n\
           echo \"CLAUDECODE=${CLAUDECODE:-<unset>}\"\n\
           echo \"PATH=$PATH\"\n",
-    )
-    .expect("write fake claude stub");
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod fake claude stub");
+    );
     claude
 }
 

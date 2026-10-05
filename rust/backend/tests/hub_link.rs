@@ -142,9 +142,7 @@ fn write_stub_ssh(dir: &Path, hub_socket: &Path, count: &Path) {
         s = hub_socket.display()
     );
     let path = dir.join("ssh");
-    std::fs::write(&path, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sot_log::test_exec::write_executable(&path, script);
 }
 
 fn inbox_lines(env: &Env, h: &str) -> Vec<serde_json::Value> {
