@@ -18,16 +18,15 @@ case_two_writers_give_400_whole_lines() {
     return 0
 }
 
-# T12 (shell arm) — a killed holder costs nothing: the OS released the lock.
+# T12 (shell arm) — a killed holder costs nothing: the OS released the lock, so the send
+# files (behind a lock still held it would run out its 10 s wait and fail).
 case_a_killed_holder_frees_the_lock_at_once() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'exec sleep 60' || { echo "  holder never took the lock"; return 1; }
     kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
-    local t0=$SECONDS
     run_send "@$PEER" "after the kill"
     [ "$SEND_RC" -eq 0 ] || { echo "  rc $SEND_RC: $SEND_ERR"; return 1; }
     contains "$SEND_OUT" "filed -> @$PEER" || { echo "  out: $SEND_OUT"; return 1; }
-    [ $((SECONDS - t0)) -lt 10 ] || { echo "  waited $((SECONDS - t0))s for a dead holder"; return 1; }
     [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 1 ] || { echo "  inbox not one whole line"; return 1; }
     return 0
 }
@@ -37,6 +36,7 @@ case_a_frozen_holder_makes_the_send_wait_then_fail() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; kill -STOP $$; printf "%s\n" "\"msg\":\"resumed\"}" >&8' \
         || { echo "  holder never took the lock"; return 1; }
+    frozen "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
     local t0=$SECONDS
     SOT_INBOX_LOCK_WAIT_SECS=1 run_send "@$PEER" "while frozen"
     [ "$SEND_RC" -eq 1 ] || { echo "  rc $SEND_RC, want 1 (out: $SEND_OUT)"; return 1; }

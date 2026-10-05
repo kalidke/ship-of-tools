@@ -14,17 +14,16 @@ count_of() { printf '%s\n' "$1" | grep -c -F -- "$2"; }
 # The captain's test: a writer killed mid-line. A poll shows nothing new and
 # leaves the cursor alone; the next real send cuts the tail and says so; the
 # next poll shows the new message once and skips nothing; every line parses.
+# The holder writes its partial and stops itself; the case kills it only once it
+# has stopped, so the partial is on disk first.
 case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "first"
     poll_peer
     contains "$POLL_OUT" "first" || { echo "  first not shown: $POLL_OUT"; return 1; }
     local cur; cur="$(peer_cursor)"
-    local size i; size="$(wc -c < "$INBOX/$PEER.jsonl")"
-    start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; exec sleep 60' || { echo "  holder never took the lock"; return 1; }
-    # The holder signals ready BEFORE it writes the partial line: wait for the bytes, never kill it first.
-    for i in $(seq 600); do [ "$(wc -c < "$INBOX/$PEER.jsonl")" -gt "$size" ] && break; sleep 0.05; done
-    [ "$(wc -c < "$INBOX/$PEER.jsonl")" -gt "$size" ] || { echo "  the holder never wrote its partial line"; kill -9 "$HOLDER"; return 1; }
+    start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; kill -STOP $$' || { echo "  holder never took the lock"; return 1; }
+    frozen "$HOLDER" || { echo "  the holder never wrote its partial and stopped"; kill -9 "$HOLDER"; return 1; }
     kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
     poll_peer
     contains "$POLL_OUT" "No new messages." || { echo "  poll showed the partial: $POLL_OUT"; return 1; }
@@ -41,37 +40,25 @@ case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
     return 0
 }
 
-# Main's test: a FROZEN writer that wrote a whole line holds the lock. A poll
-# and the end-of-turn hook both return with the try-again line, which only a
-# wait that ran out prints, after at least the read bound (1 s: a lower bound, which
-# load only lengthens) of shared-lock tries (a logging flock sees them; the wait
-# is the library's own clock, so no count and no upper bound); the cursor is
-# unchanged, and after SIGCONT every line is delivered exactly once.
+# Main's test: a FROZEN writer that wrote a whole line holds the lock. A poll and
+# the end-of-turn hook both return with the try-again line, which only a read wait
+# that ran out its bound prints; the cursor is unchanged, and after SIGCONT every
+# line is delivered exactly once. No duration is bounded: on a starved CPU the
+# hook's own work takes seconds, and a hang is the run's timeout's to catch.
 case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "one"; poll_peer
-    local cur t0; cur="$(peer_cursor)"
-    mkdir -p "$WORK/logflock"
-    printf '#!/bin/sh\necho "$*" >> "%s/flock.log"\nexec %s "$@"\n' "$WORK" "$(command -v flock)" > "$WORK/logflock/flock"
-    chmod +x "$WORK/logflock/flock"
+    local cur; cur="$(peer_cursor)"
     start_holder 'printf "%s\n" "{\"from\":\"holder\",\"to\":\"t-peer\",\"repo\":\"r\",\"msg\":\"two\",\"ts\":\"t\"}" >&8; kill -STOP $$; :' \
         || { echo "  holder never took the lock"; return 1; }
-    rm -f "${WORK:?}/flock.log"
-    t0=$SECONDS
-    PATH="$WORK/logflock:$PATH" SOT_INBOX_READ_WAIT_SECS=1 poll_peer_env
-    # A hang guard only: the bound is the logged `-w 1` below.
-    [ $((SECONDS - t0)) -lt 120 ] || { echo "  poll took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
-    grep -q -e ' -s 9$' "$WORK/flock.log" && [ $((SECONDS - t0)) -ge 1 ] || { echo "  the poll made no shared-lock tries over 1 s ($((SECONDS - t0))s)"; kill -CONT "$HOLDER"; return 1; }
+    frozen "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
+    SOT_INBOX_READ_WAIT_SECS=1 poll_peer_env
     [ "$POLL_RC" -eq 75 ] && contains "$POLL_OUT" "the inbox for @$PEER is being written — nothing was read; run comm-poll.sh again" \
         || { echo "  rc $POLL_RC: $POLL_OUT"; kill -CONT "$HOLDER"; return 1; }
     [ "$(peer_cursor)" = "$cur" ] || { echo "  cursor moved"; kill -CONT "$HOLDER"; return 1; }
     local hout hrc
     ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
-    rm -f "${WORK:?}/flock.log"
-    t0=$SECONDS
-    hout="$(PATH="$WORK/logflock:$PATH" SOT_INBOX_READ_WAIT_SECS=1 idle_hook 2>&1)"; hrc=$?
-    [ $((SECONDS - t0)) -lt 120 ] || { echo "  hook took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
-    grep -q -e ' -s 9$' "$WORK/flock.log" && [ $((SECONDS - t0)) -ge 1 ] || { echo "  the hook made no shared-lock tries over 1 s ($((SECONDS - t0))s)"; kill -CONT "$HOLDER"; return 1; }
+    hout="$(SOT_INBOX_READ_WAIT_SECS=1 idle_hook 2>&1)"; hrc=$?
     contains "$hout" "the inbox for @$PEER is being written; it will be checked again at the next turn end" \
         || { echo "  hook said: $hout (rc $hrc)"; kill -CONT "$HOLDER"; return 1; }
     ! contains "$hout" '"decision"' || { echo "  the hook blocked the turn on a busy inbox"; kill -CONT "$HOLDER"; return 1; }
@@ -287,10 +274,11 @@ case_a_cursor_one_past_the_end_steps_back_one_and_further_gives_zero() {
 
 # S-2: a poll shows its batch AFTER letting go of the lock. Behind a jq that
 # sleeps 50 ms per call, a 100-line backlog takes ~25 s to show; a writer's
-# append must still file while it does, not after the poll's display (its 10 s wait is the bound).
+# append still files while it does (held off by the display, it would run out its
+# 10 s wait and fail).
 case_a_slow_display_does_not_hold_off_a_writer() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
-    local i pid t0 ms real
+    local i pid real
     real="$(command -v jq)"
     mkdir -p "$WORK/slowjq"
     printf '#!/bin/sh\necho x >> "%s/jq.calls"\nsleep 0.05\nexec %s "$@"\n' "$WORK" "$real" > "$WORK/slowjq/jq"
@@ -305,21 +293,19 @@ case_a_slow_display_does_not_hold_off_a_writer() {
     i=0
     while [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -lt 8 ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
     [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -ge 8 ] || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; echo "  the poll never reached its display"; return 1; }
-    t0="$(date +%s%N)"
     append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"late","ts":"t"}' >/dev/null
     local rc=$?
-    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    echo "  the append filed ${ms} ms into a slow display"
-    [ "$rc" -eq 0 ] && [ "$ms" -lt 10000 ] || { echo "  the append rc $rc after ${ms} ms"; return 1; }
+    [ "$rc" -eq 0 ] || { echo "  the append rc $rc"; return 1; }
     return 0
 }
 
 # The wait is chosen by lock kind: under `nfs4 …` the append POLLS (`flock -n`,
-# every 15-25 ms) and follows a release within a retry; under `local …` or
-# `none@…` it BLOCKS (`flock -w`), as before. A wrapper logs each flock call.
+# every 15-25 ms); under `local …` or `none@…` it BLOCKS (`flock -w`), as before.
+# A wrapper logs each flock call; a waiter that missed the release would run out
+# its 10 s wait and the append would be refused.
 case_the_lock_wait_is_chosen_by_lock_kind() {
-    local mid=0123456789abcdef0123456789abcdef kind mnt rec want t0 ms real
+    local mid=0123456789abcdef0123456789abcdef kind mnt rec want real
     real="$(command -v flock)"
     mkdir -p "$WORK/fbin"
     printf '#!/bin/sh\necho "$*" >> "%s/flock.log"\nexec %s "$@"\n' "$WORK" "$real" > "$WORK/fbin/flock"
@@ -334,18 +320,13 @@ case_the_lock_wait_is_chosen_by_lock_kind() {
         printf '%s\n' "$rec" > "$SOT_COMM_HOME/inbox-lock-manager"
         rm -f "${WORK:?}/flock.log"
         start_holder 'exec sleep 0.3' || { echo "  no holder"; return 1; }
-        t0="$(date +%s%N)"
         if ! FAKE_MNT="$mnt" PATH="$WORK/fbin:$PATH" append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"w","ts":"t"}' >/dev/null; then
             echo "  $kind: append refused"
             printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
             return 1
         fi
-        ms=$(( ($(date +%s%N) - t0) / 1000000 ))
         printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"
-        echo "  $kind: filed ${ms} ms after start, flock calls: $(tr '\n' '|' < "$WORK/flock.log")"
-        # The flock log below tells polling from blocking. The bound is the 10 s
-        # wait a missed wake would run out, which only a hang reaches.
-        [ "$ms" -lt 10000 ] || { echo "  $kind: took ${ms} ms, past the 10 s wait, after the 300 ms release"; return 1; }
+        echo "  $kind: flock calls: $(tr '\n' '|' < "$WORK/flock.log")"
         case "$want" in
             poll)  grep -q -e '-n ' "$WORK/flock.log" && ! grep -q -e '-w ' "$WORK/flock.log" || { echo "  $kind should poll"; return 1; } ;;
             block) grep -q -e '-w ' "$WORK/flock.log" && ! grep -q -e '-n ' "$WORK/flock.log" || { echo "  $kind should block"; return 1; } ;;

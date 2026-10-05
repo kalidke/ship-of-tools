@@ -128,7 +128,9 @@ whole_lines() {
 # A holder of the peer's inbox lock, in the background: takes the lock, then
 # runs $1 (`exec sleep 60` holds it; the frozen case writes half a line and
 # stops itself). `exec` so the recorded pid IS the lock holder — a child that
-# inherited fd 9 would keep the lock past the kill.
+# inherited fd 9 would keep the lock past the kill. `ready` means the lock is held; a
+# case that needs the body's own writes first has the body stop itself (`kill -STOP $$`)
+# and waits for that with `frozen`.
 start_holder() {
     local body="$1"
     rm -f "${WORK:?}/ready"
@@ -139,6 +141,17 @@ start_holder() {
     local i=0
     while [ ! -e "$WORK/ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
     [ -e "$WORK/ready" ]
+}
+
+# frozen PID — wait until the holder PID has stopped itself (`kill -STOP $$` in its body), so everything its body did
+# before that is done. Polls the process state every 50 ms, at most 600 times.
+frozen() {
+    local i
+    for i in $(seq 600); do
+        case "$(ps -o stat= -p "$1" 2>/dev/null)" in *T*) return 0 ;; esac
+        sleep 0.05
+    done
+    return 1
 }
 
 . "$(dirname "${BASH_SOURCE[0]}")/hub_files/lock_shell.sh"
