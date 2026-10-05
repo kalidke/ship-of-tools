@@ -1,8 +1,8 @@
 # rust/log/src/identity/peer_owner: whose OS account holds the far end of an accepted loopback connection (platform)
 
 An accepted loopback TCP connection is judged by the OS account that owns its far end: one lookup per connection, on a
-blocking thread. Linux reads the kernel's TCP table; Windows reads the owner-pid TCP table and then that process's
-token SID; macOS reads the kernel's TCP table (`net.inet.tcp.pcblist_n`) and judges the socket's creator; any other platform refuses. Part of platform; charter: rust/log/src/host/CLAUDE.md
+blocking thread. Linux reads the kernel's TCP table; Windows reads the owner-module TCP table (the binding process and the bind time), refuses a process created after the
+bind (a recycled pid), and then reads that process's token SID; macOS reads the kernel's TCP table (`net.inet.tcp.pcblist_n`) and judges the socket's creator; any other platform refuses. Part of platform; charter: rust/log/src/host/CLAUDE.md
 (written by a later unit, not yet present).
 
 ## Files

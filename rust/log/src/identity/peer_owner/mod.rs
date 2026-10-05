@@ -231,21 +231,30 @@ mod imp {
     use super::{verdict, PeerOwner};
     use std::io;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, FILETIME};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_TCP_STATE_ESTAB,
-        TCP_TABLE_OWNER_PID_CONNECTIONS,
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_MODULE, MIB_TCPROW_OWNER_MODULE, MIB_TCP_STATE_ESTAB,
+        TCP_TABLE_OWNER_MODULE_CONNECTIONS,
     };
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
-    /// The owner-pid TCP table for one address family, as 8-byte-aligned words: a `u32` row count, then the rows.
+    /// The process that issued the context bind of a connection, and when (FILETIME ticks). The table names the
+    /// binder and never updates it: a socket a process bound and handed to a child still names the parent, whose pid
+    /// Windows may later give to any process. The timestamp is what tells the two apart.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) struct Binder {
+        pub(super) pid: u32,
+        pub(super) bound: i64,
+    }
+
+    /// The owner-module TCP table for one address family, as 8-byte-aligned words: a `u32` row count, then the rows.
     /// `af` is 2 (AF_INET) or 23 (AF_INET6), literal so no WinSock feature is needed.
     fn table(af: u32) -> io::Result<Vec<u64>> {
         let mut size = 0u32;
         for _ in 0..4 {
             let mut buf = vec![0u64; (size as usize).div_ceil(8).max(1)];
             let rc = unsafe {
-                GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, af, TCP_TABLE_OWNER_PID_CONNECTIONS, 0)
+                GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, af, TCP_TABLE_OWNER_MODULE_CONNECTIONS, 0)
             };
             if rc == 0 {
                 return Ok(buf);
@@ -257,14 +266,16 @@ mod imp {
         Err(io::Error::other("the TCP table kept growing"))
     }
 
-    /// The rows of a table from [`table`]: the count the table states, bounded by the bytes the buffer holds.
+    /// The rows of a table from [`table`]: the count the table states, bounded by the bytes the buffer holds. The
+    /// rows start after the count at the row type's own alignment (8 for the module rows, which hold an `i64`).
     fn rows<R: Copy>(buf: &[u64]) -> Vec<R> {
         let bytes = buf.len() * 8;
         let base = buf.as_ptr().cast::<u8>();
         let stated = unsafe { std::ptr::read_unaligned(base.cast::<u32>()) } as usize;
-        let count = stated.min((bytes - 4) / std::mem::size_of::<R>());
+        let start = 4usize.next_multiple_of(std::mem::align_of::<R>());
+        let count = stated.min(bytes.saturating_sub(start) / std::mem::size_of::<R>());
         (0..count)
-            .map(|i| unsafe { std::ptr::read_unaligned(base.add(4 + i * std::mem::size_of::<R>()).cast::<R>()) })
+            .map(|i| unsafe { std::ptr::read_unaligned(base.add(start + i * std::mem::size_of::<R>()).cast::<R>()) })
             .collect()
     }
 
@@ -283,11 +294,11 @@ mod imp {
         }
     }
 
-    /// The pid owning the peer's end of the connection: the ESTABLISHED row whose local endpoint is `peer` and remote
+    /// The binder of the peer's end of the connection: the ESTABLISHED row whose local endpoint is `peer` and remote
     /// `listener`.
-    fn owning_pid(listener: SocketAddr, peer: SocketAddr) -> io::Result<Option<u32>> {
+    pub(super) fn binder_of(listener: SocketAddr, peer: SocketAddr) -> io::Result<Option<Binder>> {
         if let (SocketAddr::V4(_), SocketAddr::V4(_)) = (listener, peer) {
-            let found = rows::<MIB_TCPROW_OWNER_PID>(&table(2)?)
+            let found = rows::<MIB_TCPROW_OWNER_MODULE>(&table(2)?)
                 .into_iter()
                 .find(|r| {
                     r.dwState == MIB_TCP_STATE_ESTAB as u32
@@ -295,52 +306,74 @@ mod imp {
                         && v4(r.dwRemoteAddr, r.dwRemotePort) == listener
                 });
             if let Some(r) = found {
-                return Ok(Some(r.dwOwningPid));
+                return Ok(Some(Binder { pid: r.dwOwningPid, bound: r.liCreateTimestamp }));
             }
         }
         let (listener, peer) = (mapped(listener), mapped(peer));
-        let found = rows::<MIB_TCP6ROW_OWNER_PID>(&table(23)?)
+        let found = rows::<MIB_TCP6ROW_OWNER_MODULE>(&table(23)?)
             .into_iter()
             .find(|r| {
                 r.dwState == MIB_TCP_STATE_ESTAB as u32
                     && v6(r.ucLocalAddr, r.dwLocalPort) == peer
                     && v6(r.ucRemoteAddr, r.dwRemotePort) == listener
             });
-        Ok(found.map(|r| r.dwOwningPid))
+        Ok(found.map(|r| Binder { pid: r.dwOwningPid, bound: r.liCreateTimestamp }))
     }
 
-    /// The token user of process `pid` against this process's own, with the process held open throughout. A pid is
-    /// unique only while its process lives, so `still_owner` asks the TCP table again once the handle is held: the
-    /// held handle keeps the pid from being reused, and only an unchanged answer proves the pid is the connection's.
-    /// Another account's process usually cannot be opened, which is a refusal like any other failure.
-    pub(super) fn owner_of(pid: u32, own: &str, still_owner: impl FnOnce() -> io::Result<Option<u32>>) -> PeerOwner {
+    /// The creation time of the process `h` holds, in FILETIME ticks.
+    fn created(h: windows_sys::Win32::Foundation::HANDLE) -> io::Result<i64> {
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut create, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
+        if unsafe { GetProcessTimes(h, &mut create, &mut exit, &mut kernel, &mut user) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((i64::from(create.dwHighDateTime) << 32) | i64::from(create.dwLowDateTime))
+    }
+
+    /// The token user of the binder's process against this process's own, with the process held open throughout.
+    /// A pid is unique only while its process lives, and the table never updates the binder, so two checks stand
+    /// between a pid and a verdict. Holding the handle keeps the pid from being reused from now on, and
+    /// `still_binder` asks the table again to prove the row did not change meanwhile. The process must also have been
+    /// created no later than the bind: a process created after it can only be a stranger's pid, recycled. Another
+    /// account's process usually cannot be opened, which is a refusal like any other failure.
+    pub(super) fn owner_of(
+        binder: Binder,
+        own: &str,
+        still_binder: impl FnOnce() -> io::Result<Option<Binder>>,
+    ) -> PeerOwner {
+        let pid = binder.pid;
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h.is_null() {
             return PeerOwner::Unknown(format!("OpenProcess({pid}): {}", io::Error::last_os_error()));
         }
-        let sid = match still_owner() {
-            Ok(Some(again)) if again == pid => Some(crate::host::sid_string_from_process(h)),
-            _ => None,
+        let verdict_for = || match still_binder() {
+            Ok(Some(again)) if again == binder => match created(h) {
+                Ok(born) if born > binder.bound => Err("the process holding the binder's pid was created after the bind: a recycled id".to_string()),
+                Ok(_) => crate::host::sid_string_from_process(h).map_err(|e| format!("token of {pid}: {e}")),
+                Err(e) => Err(format!("GetProcessTimes({pid}): {e}")),
+            },
+            _ => Err("the peer's connection changed during the lookup".to_string()),
         };
+        let sid = verdict_for();
         unsafe {
             CloseHandle(h);
         }
         match sid {
-            Some(Ok(sid)) => verdict(&sid, own),
-            Some(Err(e)) => PeerOwner::Unknown(format!("token of {pid}: {e}")),
-            None => PeerOwner::Unknown("the peer's connection changed during the lookup".into()),
+            Ok(sid) => verdict(&sid, own),
+            Err(why) => PeerOwner::Unknown(why),
         }
     }
 
-    /// [`owner_of`] without the revalidation, for a pid the caller already holds.
+    /// [`owner_of`] without the revalidation, for a process the caller already holds and a bind the caller names.
     #[cfg(test)]
-    pub(super) fn pid_owner(pid: u32, own: &str) -> PeerOwner {
-        owner_of(pid, own, || Ok(Some(pid)))
+    pub(super) fn pid_owner(pid: u32, bound: i64, own: &str) -> PeerOwner {
+        let binder = Binder { pid, bound };
+        owner_of(binder, own, || Ok(Some(binder)))
     }
 
     pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
-        match owning_pid(local, peer) {
-            Ok(Some(pid)) => owner_of(pid, own, || owning_pid(local, peer)),
+        match binder_of(local, peer) {
+            Ok(Some(binder)) => owner_of(binder, own, || binder_of(local, peer)),
             Ok(None) => PeerOwner::Unknown("no TCP table row for the peer (it may have closed)".into()),
             Err(e) => PeerOwner::Unknown(format!("GetExtendedTcpTable: {e}")),
         }
@@ -484,18 +517,75 @@ mod tests {
     #[test]
     fn this_process_is_mine_and_the_system_process_is_not() {
         let own = crate::identity::os_account::own_account_id().unwrap();
-        assert_eq!(imp::pid_owner(std::process::id(), &own), PeerOwner::Mine);
+        assert_eq!(imp::pid_owner(std::process::id(), i64::MAX, &own), PeerOwner::Mine);
         // Pid 4 is the System process: its token is another account's, or it cannot be opened at all.
-        assert_ne!(imp::pid_owner(4, &own), PeerOwner::Mine);
+        assert_ne!(imp::pid_owner(4, i64::MAX, &own), PeerOwner::Mine);
     }
 
     #[cfg(windows)]
     #[test]
     fn a_connection_whose_owner_changed_is_refused() {
         let own = crate::identity::os_account::own_account_id().unwrap();
+        let binder = imp::Binder { pid: std::process::id(), bound: i64::MAX };
+        assert_eq!(imp::owner_of(binder, &own, || Ok(Some(binder))), PeerOwner::Mine);
+        assert_ne!(imp::owner_of(binder, &own, || Ok(None)), PeerOwner::Mine);
+        let other_pid = imp::Binder { pid: 4, ..binder };
+        assert_ne!(imp::owner_of(binder, &own, || Ok(Some(other_pid))), PeerOwner::Mine);
+        let other_bind = imp::Binder { bound: i64::MAX - 1, ..binder };
+        assert_ne!(imp::owner_of(binder, &own, || Ok(Some(other_bind))), PeerOwner::Mine);
+    }
+
+    /// ADR 0049, User isolation: the table names the process that bound a socket, and Windows may give that pid to a
+    /// later process. A process created after the bind is a recycled id, never the connection's owner, even when its
+    /// token is ours; one created before it is.
+    #[cfg(windows)]
+    #[test]
+    fn a_process_created_after_the_bind_is_refused() {
+        let own = crate::identity::os_account::own_account_id().unwrap();
         let me = std::process::id();
-        assert_eq!(imp::owner_of(me, &own, || Ok(Some(me))), PeerOwner::Mine);
-        assert_ne!(imp::owner_of(me, &own, || Ok(None)), PeerOwner::Mine);
-        assert_ne!(imp::owner_of(me, &own, || Ok(Some(4))), PeerOwner::Mine);
+        assert_ne!(imp::pid_owner(me, 0, &own), PeerOwner::Mine, "this process began after tick 0");
+        assert_eq!(imp::pid_owner(me, i64::MAX, &own), PeerOwner::Mine);
+    }
+
+    /// The child side of `a_connection_from_a_child_process_names_the_child`: connect to the port the parent names,
+    /// then hold the connection until the parent closes our stdin. A plain run of this test (no variable) does nothing.
+    #[cfg(windows)]
+    #[test]
+    fn child_client_helper() {
+        use std::io::Read;
+        let Ok(port) = std::env::var("SOT_PEER_OWNER_CHILD_PORT") else { return };
+        let _held = std::net::TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap();
+        println!("connected");
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    }
+
+    /// The Windows orientation and attribution check the one-process tests cannot make: the row that matches a
+    /// connection is the peer's own row, so its binder is the child that connected, not this process, and the bind
+    /// happened after that child began.
+    #[cfg(windows)]
+    #[test]
+    fn a_connection_from_a_child_process_names_the_child() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "identity::peer_owner::tests::child_client_helper", "--nocapture", "--test-threads=1"])
+            .env("SOT_PEER_OWNER_CHILD_PORT", port.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        while !lines.next().map_or(true, |l| l.is_ok_and(|l| l.trim() == "connected")) {}
+        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        let binder = imp::binder_of(local, peer).unwrap().expect("the child's row");
+        let verdict = tcp_peer_owner(local, peer);
+        drop(child.stdin.take());
+        let _ = child.wait();
+        assert_eq!(binder.pid, child.id(), "the row named this process, not the child that connected");
+        assert!(binder.bound > 0);
+        assert_eq!(verdict, PeerOwner::Mine);
     }
 }
