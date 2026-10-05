@@ -100,13 +100,21 @@ notebook workers and `wglshow`'s Bonito server are Julia processes that listen o
 their own, which any account can reach directly. Ship of Tools does not accept on them, so
 no owner check reaches them; each is locked by a secret instead, and the guarantee is that
 the secret never reaches another account (not its command lines, files or logs): Pluto's
-page by its session secret, `wglshow`'s page by its secret path, and every Pluto notebook
-worker by the Distributed cluster cookie, which the worker reads from its stdin and checks
-on every connection before it reads a message (Pluto's default Malt worker accepted the
-first connection with no secret, and is not used: `julia/pluto/session_options.jl`, tested
-on Linux, macOS and Windows by `julia/pluto/test/runtests.jl`). The cost is on Windows only:
-in this mode Pluto cannot stop a running cell there (it says so; restoring interrupt is
-planned for 0.6.7).
+page by its session secret, `wglshow`'s page by its secret path and its websocket by a
+session id drawn from the OS's secure generator, and every Pluto notebook worker by the
+Distributed cluster cookie, which the worker reads from its stdin and checks on every
+connection before it reads a message (Pluto's default Malt worker accepted the first
+connection with no secret, and is not used: `julia/pluto/session_options.jl`, tested on
+Linux, macOS and Windows by `julia/pluto/test/runtests.jl`). One door stays open: Bonito's
+asset route on `wglshow`'s port serves the files a figure's session registers, keyed by a
+hash of each file's path, to any account that can name the path (public library files, and
+any file a figure names with `Asset(path)`); Bonito has no way to put it behind the secret
+and an asset server that embeds files in the page is not selectable for an app route in
+Bonito 5.1, so the limit is recorded, not closed. The cost is on Windows only: in this mode
+Pluto cannot stop a running cell there (it says so; restoring interrupt is planned for
+0.6.7). The guarantee is isolation, not availability: another account can still fill a
+listener's backlog and delay this account's own connections; each connection it opens is
+refused quickly.
 The comm scripts create the comm folder and its inboxes with no mode of
 their own, so these are only as private as the creating shell's umask and the home
 folder above them; no lane is named for that yet.

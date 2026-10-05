@@ -129,12 +129,19 @@ first refusal per account and port is logged as a warning. A connection
 the daemon makes itself, the proxy reaching a page for a remote
 frontend, is the daemon's own account and is served.
 
-Figures served with `wglshow` bind a port the operating system assigns
-and carry a secret in the page's address, so another account that finds
-the port gets nothing. One server per REPL keeps its port and its secret
+Figures served with `wglshow` bind a port the operating system assigns.
+The figure's page carries a secret in its address and its websocket an
+unguessable session id, so another account that finds the port gets
+neither. Bonito's asset route is the exception: it serves the files a
+figure's session registers (its own JavaScript and CSS, and any file the
+figure names with `Asset(path)`) under a key that is a hash of the file's
+path, to any account that can name the path, so a file you register that
+way is as readable as its path is guessable. Bonito offers no way to put
+that route behind the secret, so this is a known limit. One server per REPL keeps its port and its secret
 for the REPL's life, so the secret is never valid on a port it has let go.
-The page is sent with `Referrer-Policy: no-referrer`. Pluto notebooks
-carry Pluto's own secret. No page address goes on a command line, where
+The page is sent with `Referrer-Policy: no-referrer`. Pluto's page
+carries Pluto's own secret, and each Pluto notebook worker checks a cluster
+cookie on every connection. No page address goes on a command line, where
 another account could read it. The frontend hands the browser only the
 address of a one-use loopback listener of its own. That listener serves
 this account alone, answers the browser's first request with a redirect
