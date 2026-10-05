@@ -461,3 +461,34 @@ fn a_daemons_answer_over_ssh_is_never_replaced_by_its_stderr() {
         other => panic!("a login that died without a word is Unreachable, got {:?}", other.map(|_| ())),
     }
 }
+
+/// A failed write over an ssh login names the error's own words and the login's last line, each once (review round 2,
+/// NOTE 3: the line used to replace the error's words and then be added a second time).
+#[cfg(unix)]
+#[test]
+fn a_failed_lane_write_names_its_error_and_the_ssh_line_once() {
+    // The stand-in closes its stdin, then writes its line and exits: the handshake's write finds no reader.
+    let child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("exec 0<&-; echo 'a line ssh wrote to stderr' >&2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("`sh` must be on PATH for this test");
+    let client = BridgedClient::wrap(child).expect("wrap");
+    client.child.lock().unwrap().wait().expect("the stand-in exits");
+    let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
+    let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
+    match handshake(LaneStream::Bridged(client), &hello, &request) {
+        Err(TransportError::Unreachable(e)) => {
+            let text = e.to_string();
+            let own = text.strip_prefix("lane write: ").and_then(|t| t.strip_suffix(": a line ssh wrote to stderr"));
+            assert!(
+                own.is_some_and(|w| !w.is_empty() && !w.contains("a line ssh wrote to stderr")),
+                "want `lane write: <the io error>: <the line>`, got: {text}"
+            );
+        }
+        other => panic!("a write to a login that has gone is Unreachable, got {:?}", other.map(|_| ())),
+    }
+}

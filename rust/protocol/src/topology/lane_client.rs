@@ -213,13 +213,11 @@ impl BridgedClient {
         }
     }
 
-    /// Wraps a raw io error with the child's last stderr line when one
-    /// was captured — that line IS the diagnosis (a dead child's own
-    /// "Permission denied" beats the generic "broken pipe" its closed
-    /// pipe leaves behind).
+    /// The io error, with the child's last stderr line after it when one was captured: a dead child's own "Permission
+    /// denied" explains the generic "broken pipe" its closed pipe leaves behind, and the error keeps its own words.
     fn diagnose(&self, source: std::io::Error) -> std::io::Error {
         match self.poll_last_stderr() {
-            Some(line) => std::io::Error::other(line),
+            Some(line) => std::io::Error::new(source.kind(), format!("{source}: {line}")),
             None => source,
         }
     }
@@ -523,22 +521,36 @@ fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Inst
         crate::codec::write_frame_blocking(&mut both, req).map_err(|e| unreachable(&e))?;
         ClientIo(stream).write_all(&both).map_err(TransportError::Unreachable)?;
         let mut r = std::io::BufReader::new(ClientIo(stream));
-        let hello_reply = crate::codec::read_frame_blocking(&mut r).map_err(|e| unreachable(&e))?;
+        let hello_reply = read_reply(stream, &mut r)?;
         classify_hello_reply(hello_reply)?;
-        crate::codec::read_frame_blocking(&mut r).map_err(|e| unreachable(&e))
+        read_reply(stream, &mut r)
     });
-    // Only a failure in which the daemon sent nothing (the write, a read that ends before a frame, the bound) is
-    // explained by the ssh child's last stderr line; a refused hello and every reply's own classification are the
-    // daemon's answer and are returned as it gave them (BLOCKER 2: a stderr line used to replace them).
+    // A refused hello and every reply's own classification are the daemon's answer and are returned as it gave them
+    // (BLOCKER 2 of round 1: a stderr line used to replace them). The ssh child's last stderr line is added once: by
+    // `diagnose` to the client's own write or read error, by `read_reply` to a read that ended before a frame, and here
+    // to the bound.
     match outcome {
         Some(Ok(frame)) => classify_reply(frame),
-        Some(Err(TransportError::Unreachable(e))) => Err(TransportError::Unreachable(with_ssh_line(stream, e))),
         Some(Err(e)) => Err(e),
         None => Err(TransportError::Unreachable(with_ssh_line(
             stream,
             std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"),
         ))),
     }
+}
+
+/// One reply of the handshake. A read the client failed is its own io error, whose text names the ssh child's line
+/// already (`diagnose`); a read that ended before a whole frame (the child's stdout closed, an over-long or unparsable
+/// line) went through no client error, so the line is added here. The error's whole chain is kept (`{:#}`).
+fn read_reply(stream: &LaneStream, r: &mut std::io::BufReader<ClientIo<'_>>) -> Result<Frame, TransportError> {
+    crate::codec::read_frame_blocking(r).map_err(|e| {
+        let text = std::io::Error::other(format!("{e:#}"));
+        if e.downcast_ref::<std::io::Error>().is_some() {
+            TransportError::Unreachable(text)
+        } else {
+            TransportError::Unreachable(with_ssh_line(stream, text))
+        }
+    })
 }
 
 /// `e`, with the ssh child's last stderr line after it when `stream` is one: a dying child's stdout closes as a clean
