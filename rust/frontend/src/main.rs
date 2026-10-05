@@ -51,7 +51,7 @@ fn set_app_user_model_id() {
 }
 
 /// The window's log: events at the `RUST_LOG` level (default `info`), each masked of page secrets
-/// (`sot_log::secret`) and written to a writer from `make`.
+/// (`sot_log::secret`) and written, without colour codes, to a writer from `make`.
 fn log_subscriber<W: std::io::Write + 'static>(
     make: impl Fn() -> W + Send + Sync + 'static,
 ) -> impl tracing::Subscriber + Send + Sync {
@@ -60,6 +60,7 @@ fn log_subscriber<W: std::io::Write + 'static>(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_ansi(false)
         .with_writer(move || RedactingWriter(make()))
         .finish()
 }
@@ -188,5 +189,7 @@ mod tests {
         assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");
         assert!(!written.contains(token), "the token reached the file: {written}");
         assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
+        // No colour codes: on Windows this output is a file, and they would split a field name from its `=`.
+        assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
     }
 }
