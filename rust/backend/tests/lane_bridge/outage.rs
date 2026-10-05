@@ -1,6 +1,7 @@
 //! A blackhole, a daemon outage past the window, and a terminal row after the window.
 
 use super::*;
+use sot_log::attach_client::rules::HEALTH_WINDOW;
 
 // -----------------------------------------------------------------------
 // (iv)+(v) A blackhole is unreachable and retried, never terminal; a cut
@@ -221,6 +222,11 @@ async fn a_daemon_outage_past_the_window_keeps_retrying() {
 // answers lane_absent, no supervise is ever spawned.
 // -----------------------------------------------------------------------
 
+/// Ends the test 300 s after the attach. The client's health window restarts on every uncertain dial (ADR 0045
+/// decision 4), so on a loaded host a client still legitimately retrying can reach this guard; the failure message
+/// prints the status lines, which show each restart. No time past `HEALTH_WINDOW` is a claim of the product.
+const HANG_GUARD: Duration = Duration::from_secs(300);
+
 #[tokio::test]
 async fn a_terminal_row_is_terminal_after_the_window() {
     let _serial = SERIAL.lock().await;
@@ -287,12 +293,17 @@ async fn a_terminal_row_is_terminal_after_the_window() {
 
     let start = Instant::now();
     let mut last_pgrep_check = Instant::now();
+    // Every change of the client's status line, with its time since the attach: a hang prints them.
+    let mut lines = vec![(Duration::ZERO, client.status_line().to_string())];
     loop {
         client.pump();
+        if lines.last().is_some_and(|(_, l)| l != client.status_line()) {
+            lines.push((start.elapsed(), client.status_line().to_string()));
+        }
         if client.is_dead() {
             break;
         }
-        assert!(start.elapsed() < Duration::from_secs(150), "must reach HealthWindowExpired within 150s of a terminal row, status={}", client.status_line());
+        assert!(start.elapsed() < HANG_GUARD, "the client had not ended {HANG_GUARD:?} after the attach; uncertain dials restart its window (ADR 0045 decision 4); status lines: {lines:?}");
         if last_pgrep_check.elapsed() >= Duration::from_secs(10) {
             assert!(!any_process_matches(&pattern), "a terminal row must never be resumed — a supervise process appeared");
             last_pgrep_check = Instant::now();
@@ -300,7 +311,9 @@ async fn a_terminal_row_is_terminal_after_the_window() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let elapsed = start.elapsed();
-    assert!(elapsed >= Duration::from_secs(120), "went terminal too early ({elapsed:?}) — the health window must run its full 120s");
+    // The product promises the terminal only after HEALTH_WINDOW of continuous absence (ADR 0045 decision 4 restarts the
+    // window on every uncertain dial), so there is no ceiling to assert: it is the floor, the reason and no supervise.
+    assert!(elapsed >= HEALTH_WINDOW, "went terminal too early ({elapsed:?}) — the health window must run its full {HEALTH_WINDOW:?}; status lines: {lines:?}");
     assert!(client.status_line().contains("HealthWindowExpired"), "status must name HealthWindowExpired, got {:?}", client.status_line());
     assert!(!any_process_matches(&pattern), "a terminal row must never be resumed");
 
