@@ -136,161 +136,31 @@ mod windows {
     }
 }
 
-/// The dial primitives: each reaches a socket or pipe by name with no check of who serves it.
-const DIAL_PRIMITIVES: &[&str] = &[
-    "UnixStream::connect(",
-    "LocalStream::connect(",
-    "local_socket::tokio::Stream::connect(",
-    "connect_unix_socket_unchallenged(",
-    "connect_pipe_path_unchallenged(",
-    "connect_named_pipe_unchallenged(",
-];
-
-/// Files that may hold any number of primitives, each with its reason.
-const FREE: &[&str] = &[
-    // The rule itself: the platform connector, then the check.
-    "log/src/identity/connect_own.rs",
-    // The connectors; their own callers in these folders run the identity challenge after connecting.
-    "log/src/lane/socket_unix/client.rs",
-    "log/src/lane/pipe_win/client.rs",
-    // The daemon probing the path it is about to bind: an answer refuses the start, nothing is written.
-    "backend/src/server/listen.rs",
-];
-
-/// Files that keep their own stream type and so apply the rule around their one primitive: exactly one, and the file
-/// calls both `own_socket(` and `own_pipe(`.
+/// Files that keep their own stream type and so apply the rule around their one dial: each must call both
+/// `own_socket(` and `own_pipe(`. Every other dial primitive is a compile error in rust.yml's "Local endpoint dials"
+/// step (rust/clippy.toml `disallowed-methods`, an `#[allow]` with a reason at each sanctioned site); the allow of these
+/// two sites is what this test holds to the rule. `std::fs::OpenOptions::open` cannot be disallowed, since it opens
+/// every file, so dial.rs's `pipe:` arm, which opens a pipe as a file, is held here.
 const WRAPPED: &[&str] = &[
-    // `connect_pipe`: an interprocess tokio stream the window's transport and lease share.
+    // `connect_pipe`: the window's transport and lease dial.
     "frontend/src/net/transport/mod.rs",
-    // `connect`: std streams the dial clones. Its `pipe:` arm opens a file, which no text search can tell from any other
-    // open, so this wrapped-file check (both rule calls present) is what holds that arm to the rule.
+    // `connect`: `sotd topology`'s dial; its `pipe:` arm opens a file.
     "backend/src/topology/dial.rs",
 ];
 
-/// A cfg predicate that holds only when `test` is set: `test`, or `all(..)` with such an operand.
-fn requires_test(pred: &str) -> bool {
-    let pred = pred.trim();
-    if pred == "test" {
-        return true;
-    }
-    let Some(inner) = pred.strip_prefix("all(").and_then(|p| p.strip_suffix(')')) else {
-        return false;
-    };
-    let (mut depth, mut cur, mut operands) = (0i32, String::new(), Vec::new());
-    for ch in inner.chars() {
-        if ch == ',' && depth == 0 {
-            operands.push(std::mem::take(&mut cur));
-            continue;
-        }
-        depth += i32::from(ch == '(') - i32::from(ch == ')');
-        cur.push(ch);
-    }
-    operands.push(cur);
-    operands.iter().any(|o| requires_test(o))
-}
-
-/// The lines of `src` outside test code: a block opening with a column-0 `#[cfg(..)]` that requires `test`, followed by a
-/// `mod` line, runs to the next line that is exactly `}` (or is that one `mod ...;` line).
-fn non_test_lines(src: &str) -> Vec<(usize, &str)> {
-    let lines: Vec<&str> = src.lines().collect();
-    let mut kept = Vec::new();
-    let mut k = 0;
-    while k < lines.len() {
-        let is_test_cfg = |l: &str| {
-            l.strip_prefix("#[cfg(")
-                .and_then(|r| r.split_once(")]").map(|(p, _)| p))
-                .is_some_and(requires_test)
-        };
-        if lines[k].starts_with("#[cfg(") && is_test_cfg(lines[k]) {
-            let mut j = k + 1;
-            while j < lines.len() && (lines[j].trim().is_empty() || lines[j].trim_start().starts_with("#[")) {
-                j += 1;
-            }
-            if j < lines.len() && (lines[j].starts_with("mod ") || lines[j].starts_with("pub mod ")) {
-                let mut end = j;
-                if !lines[j].trim_end().ends_with(';') {
-                    end = j + 1;
-                    while end < lines.len() && lines[end] != "}" {
-                        end += 1;
-                    }
-                }
-                k = end + 1;
-                continue;
-            }
-        }
-        kept.push((k + 1, lines[k]));
-        k += 1;
-    }
-    kept
-}
-
-fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-fn is_test_file(rel: &str) -> bool {
-    let name = rel.rsplit('/').next().unwrap();
-    rel.split('/').rev().skip(1).any(|d| d == "tests")
-        || name == "tests.rs"
-        || name.ends_with("_tests.rs")
-        || name == "test_support.rs"
-}
-
-/// ADR 0049, User isolation: a Rust client that dials this box's daemon or a relay socket by name does it through the
-/// rule. Every dial primitive in non-test code under the five crates sits in a file this test lists, free (the rule, the
-/// connectors, the daemon's own probe) or wrapped (its one primitive, with `own_socket(` and `own_pipe(` both called).
-/// A primitive anywhere else fails here, naming file:line; so does a listed file that has lost its rule.
+/// ADR 0049, User isolation: the two files whose dial the lint allows, and the one whose pipe the lint cannot see, still
+/// call the rule on both platforms (both the Unix and the Windows arm sit in the source text).
 #[test]
-fn no_local_dial_outside_connect_own() {
+fn the_files_that_wrap_their_own_dial_call_the_rule() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
-    let mut files = Vec::new();
-    for krate in ["backend", "frontend", "log", "protocol", "updater"] {
-        rust_files(&root.join(krate).join("src"), &mut files);
-    }
-    assert!(files.len() >= 100, "found only {} source files", files.len());
-
-    let mut found_free = Vec::new();
     let mut failures = Vec::new();
-    for path in &files {
-        let rel = path.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-        if is_test_file(&rel) {
-            continue;
-        }
-        let src = std::fs::read_to_string(path).unwrap();
-        let hits: Vec<(usize, &str)> = non_test_lines(&src)
-            .into_iter()
-            .filter(|(_, l)| !l.trim_start().starts_with("//"))
-            .filter(|(_, l)| DIAL_PRIMITIVES.iter().any(|p| l.contains(p)))
-            .collect();
-        if hits.is_empty() && !WRAPPED.contains(&rel.as_str()) {
-            continue;
-        }
-        if FREE.contains(&rel.as_str()) {
-            found_free.push(rel);
-        } else if WRAPPED.contains(&rel.as_str()) {
-            if hits.len() != 1 {
-                failures.push(format!("{rel}: {} dial primitives, wrapped files hold exactly one", hits.len()));
-            }
-            for rule in ["own_socket(", "own_pipe("] {
-                if !non_test_lines(&src).iter().any(|(_, l)| l.contains(rule)) {
-                    failures.push(format!("{rel}: never calls {rule}"));
-                }
-            }
-        } else {
-            for (n, l) in hits {
-                failures.push(format!("{rel}:{n}: dial primitive outside connect_own: {}", l.trim()));
+    for rel in WRAPPED {
+        let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        for rule in ["own_socket(", "own_pipe("] {
+            if !src.lines().any(|l| !l.trim_start().starts_with("//") && l.contains(rule)) {
+                failures.push(format!("{rel}: never calls {rule}"));
             }
         }
-    }
-    for listed in FREE {
-        assert!(found_free.iter().any(|f| f == listed), "{listed} is listed free but holds no dial primitive");
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -170,6 +170,7 @@ impl Conn {
     }
 }
 
+#[allow(clippy::disallowed_methods, reason = "own_socket runs first on the unix: arm; the pipe: arm is checked by own_pipe")]
 fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]

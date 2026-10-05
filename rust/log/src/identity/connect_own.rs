@@ -52,6 +52,7 @@ pub fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> 
 
 /// The blocking connect the stdio bridge and the lane dial share: the platform connector, then the rule.
 #[cfg(unix)]
+#[allow(clippy::disallowed_methods, reason = "the rule runs first")]
 pub fn connect_own(path: &Path) -> Result<crate::lane::socket_unix::SocketClient, TransportError> {
     own_socket(path).map_err(|source| TransportError::Io {
         op: "connect_own",
@@ -62,6 +63,7 @@ pub fn connect_own(path: &Path) -> Result<crate::lane::socket_unix::SocketClient
 
 /// The blocking connect the stdio bridge and the lane dial share: the platform connector, then the rule.
 #[cfg(windows)]
+#[allow(clippy::disallowed_methods, reason = "the rule runs right after the connect, before the caller writes")]
 pub fn connect_own(path: &Path) -> Result<crate::lane::pipe_win::PipeClient, TransportError> {
     use std::os::windows::io::{BorrowedHandle, RawHandle};
     let text = path.to_str().ok_or_else(|| TransportError::Io {

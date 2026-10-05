@@ -11,7 +11,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `challenge_unix.rs`: the Linux identity challenge (`authenticate_server`, `challenge`) and the `SocketClient` connect path it authenticates, each test process-isolated; Linux only.
 - `claude_e2e.rs`: the real claude-sdk-helper and pinned SDK driving the Claude adapter against a fake Messages API, including the no-replay resume gate; Linux, and only with `SOT_HELPER_E2E=1`.
 - `claude_rig.rs`: the Claude adapter (`claude::run`) against a scripted fake helper: turn table, WAL, redaction, terminal and successor closure, test-only unfenced mode; Linux.
-- `connect_own.rs`: `connect_own`'s rule (ADR 0049, User isolation): a socket in a folder that is not private is refused, one in a private folder is accepted (Unix); a pipe another account serves is refused, one this account serves is accepted (Windows).
+- `connect_own.rs`: `connect_own`'s rule (ADR 0049, User isolation): a socket in a folder that is not private is refused, one in a private folder is accepted (Unix); a pipe another account serves is refused, one this account serves is accepted (Windows); and the two files that wrap their own dial still call `own_socket(` and `own_pipe(`.
 - `conpty.rs`: the owned ConPTY and job containment layer; Windows only.
 - `e2e_pipe.rs`: a real capsule run over a real `PipeServer`, with watcher, driver and mgmt clients on one capsule; Windows only.
 - `e2e_socket/`: the same end to end over a real `SocketServer` and `connect_voyage_socket` (`main.rs`), and the producer dying with its capsule through PDEATHSIG (`pdeathsig.rs`); Linux only.

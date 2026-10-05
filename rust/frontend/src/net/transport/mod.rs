@@ -308,6 +308,7 @@ async fn connect_and_run(
 /// Connect to the local socket at `path`, only when this OS account serves it (ADR 0049, User isolation): the socket's
 /// folder is checked before the connect.
 #[cfg(unix)]
+#[allow(clippy::disallowed_methods, reason = "the one window dial: own_socket runs first")]
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
     let path_str = path.to_str().context("socket path must be valid UTF-8")?;
     let name = path_str
