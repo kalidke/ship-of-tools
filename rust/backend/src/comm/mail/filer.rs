@@ -7,9 +7,7 @@ use sot_protocol::op;
 use sot_protocol::CommFileReq;
 use sot_protocol::CommFileRes;
 use sot_protocol::Frame;
-use crate::rows::workspace::Phase;
-use crate::rows::Workspaces;
-use crate::comm::registry::registry::{comm_handle_for_workspace, iso8601_utc_from_secs, read_registry_fresh, unix_now_secs};
+use crate::comm::registry::registry::{iso8601_utc_from_secs, read_registry_fresh, unix_now_secs};
 use crate::paths::valid_name;
 use crate::server::reply::HandlerOutput;
 
@@ -19,14 +17,10 @@ use crate::server::reply::HandlerOutput;
 /// is `{ok:true}` only when the line is in the file; every refusal is
 /// `{error, code}` and nothing was appended. The file work runs off the
 /// reactor, like the registry helpers.
-pub async fn handle_comm_file(
-    req_id: u64,
-    payload_json: serde_json::Value,
-    workspaces: &Workspaces,
-) -> Result<HandlerOutput> {
+pub async fn handle_comm_file(req_id: u64, payload_json: serde_json::Value) -> Result<HandlerOutput> {
     let req: CommFileReq = serde_json::from_value(payload_json).context("comm.file payload")?;
     let (from, to) = (req.from.clone(), req.to.clone());
-    let verdict = file_comm(req, workspaces).await?;
+    let verdict = file_comm(req).await?;
     let payload = match verdict {
         Ok(()) => {
             tracing::info!(%from, %to, "comm.file filed");
@@ -43,20 +37,8 @@ pub async fn handle_comm_file(
 /// The filing behind `comm.file`, callable in-process: the hub link
 /// (`hub_link.rs`) files what arrives on its connection through this same
 /// function. `Err` inside the `Ok` is the refusal `(code, sentence)`.
-pub(crate) async fn file_comm(
-    req: CommFileReq,
-    workspaces: &Workspaces,
-) -> Result<std::result::Result<(), (String, String)>> {
-    let rows = workspaces.list();
+pub(crate) async fn file_comm(req: CommFileReq) -> Result<std::result::Result<(), (String, String)>> {
     tokio::task::spawn_blocking(move || {
-        // Arm 1 of liveness: a running row holds the handle, by THE
-        // row-binding rule and the two phases counted as running.
-        let row_holds = || {
-            rows.iter().any(|ws| {
-                matches!(ws.phase(), Phase::Starting | Phase::Ready)
-                    && comm_handle_for_workspace(ws) == req.to
-            })
-        };
         let home = crate::comm::sot_comm_home();
         let self_host = comm_self_host();
         let topology = sot_protocol::topology::load();
@@ -91,11 +73,9 @@ pub(crate) async fn file_comm(
         comm_file_verdict(
             home.as_deref(),
             &filer,
-            row_holds,
             forward,
             &req,
             unix_now_secs(),
-            comm_stale_secs(),
             crate::comm::mail::inbox::inbox_lock_wait(),
         )
     })
@@ -141,19 +121,17 @@ struct Filer {
 /// answer verbatim, a refusal is `file_failed`; this folder LISTS `to`
 /// (`.agents[to].host` non-empty — the question `comm-send.sh` and
 /// `comm-relay.sh`'s `_registry_target` ask, and deliberately not whether the
-/// host is this box); a session holds it (a running row, else a fresh
-/// heartbeat); then the append under the inbox lock. `Err` is
+/// host is this box); a session holds it (its `last_seen` is fresh: the
+/// session stamps it, and the daemon that runs its row, `comm/registry/liveness.rs`);
+/// then the append under the inbox lock. `Err` is
 /// `(code, sentence)`, the sentence what the sender prints after
 /// `FAILED -> @<to>: `.
-#[allow(clippy::too_many_arguments)]
 fn comm_file_verdict(
     comm_home: Option<&std::path::Path>,
     filer: &Filer,
-    row_holds: impl FnOnce() -> bool,
     forward: impl FnOnce(&CommFileReq) -> std::result::Result<serde_json::Value, String>,
     req: &CommFileReq,
     now_secs: u64,
-    stale_secs: u64,
     wait: std::time::Duration,
 ) -> std::result::Result<(), (String, String)> {
     let to = req.to.as_str();
@@ -203,7 +181,7 @@ fn comm_file_verdict(
     if field("host").map_or(true, str::is_empty) {
         return Err(not_here());
     }
-    if !(row_holds() || heartbeat_fresh(field("last_seen"), now_secs, stale_secs)) {
+    if !heartbeat_fresh(field("last_seen"), now_secs) {
         return Err(("no_live_session".into(), format!("no live session holds @{to}")));
     }
     let ts = iso8601_utc_from_secs(now_secs);
@@ -211,11 +189,11 @@ fn comm_file_verdict(
         .map_err(|e| ("file_failed".into(), e))
 }
 
-/// Arm 2 of `comm.file`'s liveness: `last_seen` within `stale_secs` of now.
+/// `comm.file`'s liveness: `last_seen` within `LIVE_SECS` of now.
 /// Both writers stamp one fixed-width UTC shape (`now_iso`,
 /// `iso8601_utc_now`), so string order is time order; a stamp that is absent
 /// or not exactly that shape is no heartbeat, never a fresh one.
-fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64, stale_secs: u64) -> bool {
+fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64) -> bool {
     let Some(s) = last_seen else {
         return false;
     };
@@ -227,17 +205,12 @@ fn heartbeat_fresh(last_seen: Option<&str>, now_secs: u64, stale_secs: u64) -> b
             19 => b == b'Z',
             _ => b.is_ascii_digit(),
         });
-    shape && s > iso8601_utc_from_secs(now_secs.saturating_sub(stale_secs)).as_str()
+    shape && s > iso8601_utc_from_secs(now_secs.saturating_sub(LIVE_SECS)).as_str()
 }
 
-/// `SOT_COMM_STALE_SECS`, default 600 — the name and number `comm-lib.sh`'s
-/// `sot_recipient_note` reads for the same field.
-fn comm_stale_secs() -> u64 {
-    std::env::var("SOT_COMM_STALE_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(600)
-}
+/// How old a `last_seen` may be and still count: the one number, `COMM_LIVE_SECS`
+/// in `comm-lib-base.sh`, which `sot_heartbeat_fresh` applies to the same stamp.
+const LIVE_SECS: u64 = 600;
 
 #[cfg(test)]
 mod comm_file_tests {
@@ -271,16 +244,16 @@ mod comm_file_tests {
         panic!("a filing at the hub never forwards")
     }
 
-    fn file_as(home: Option<&std::path::Path>, filer: &Filer, req: &CommFileReq, row: bool) -> Verdict {
-        comm_file_verdict(home, filer, || row, no_forward, req, NOW, 600, Duration::from_secs(1))
+    fn file_as(home: Option<&std::path::Path>, filer: &Filer, req: &CommFileReq) -> Verdict {
+        comm_file_verdict(home, filer, no_forward, req, NOW, Duration::from_secs(1))
     }
 
     fn req(to: &str) -> CommFileReq {
         CommFileReq { from: "s".into(), to: to.into(), text: "hi".into(), broadcast: false, forwarded: false }
     }
 
-    fn file(home: Option<&std::path::Path>, to: &str, row: bool) -> Verdict {
-        file_as(home, &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &req(to), row)
+    fn file(home: Option<&std::path::Path>, to: &str) -> Verdict {
+        file_as(home, &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &req(to))
     }
 
     fn err(code: &str, text: &str) -> Verdict {
@@ -291,7 +264,7 @@ mod comm_file_tests {
     #[test]
     fn listed_and_fresh_files_the_line() {
         let d = home();
-        assert_eq!(file(Some(d.path()), "fresh", false), Ok(()));
+        assert_eq!(file(Some(d.path()), "fresh"), Ok(()));
         let line = std::fs::read_to_string(d.path().join("inbox/fresh.jsonl")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!(v, json!({"from": "s", "to": "fresh", "repo": "daemon", "msg": "hi",
@@ -305,7 +278,7 @@ mod comm_file_tests {
         let d = home();
         let req: CommFileReq =
             serde_json::from_value(json!({"from": "s", "to": "fresh", "text": "all", "broadcast": true})).unwrap();
-        assert_eq!(file_as(Some(d.path()), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &req, false), Ok(()));
+        assert_eq!(file_as(Some(d.path()), &filer(crate::comm::mail::inbox::Role::Hub, "local m"), &req), Ok(()));
         let line = std::fs::read_to_string(d.path().join("inbox/fresh.jsonl")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
         assert_eq!((v["to"].as_str(), v["repo"].as_str()), (Some(""), Some("daemon")));
@@ -314,17 +287,11 @@ mod comm_file_tests {
     }
 
     #[test]
-    fn a_running_row_wins_over_a_stale_heartbeat() {
-        let d = home();
-        assert_eq!(file(Some(d.path()), "stale", true), Ok(()));
-    }
-
-    #[test]
-    fn no_row_and_a_stale_heartbeat_is_no_live_session_and_appends_nothing() {
+    fn a_stale_heartbeat_is_no_live_session_and_appends_nothing() {
         let d = home();
         let inbox = d.path().join("inbox/stale.jsonl");
         std::fs::write(&inbox, "{\"msg\":\"before\"}\n").unwrap();
-        let (code, error) = file(Some(d.path()), "stale", false).unwrap_err();
+        let (code, error) = file(Some(d.path()), "stale").unwrap_err();
         assert_eq!((code.as_str(), error.as_str()), ("no_live_session", "no live session holds @stale"));
         assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
     }
@@ -335,7 +302,7 @@ mod comm_file_tests {
         let d = home();
         std::fs::write(d.path().join("registry.json"), "").unwrap();
         let t0 = std::time::Instant::now();
-        let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+        let (code, error) = file(Some(d.path()), "fresh").unwrap_err();
         // An empty registry is retried over the 200 ms schedule before the verdict; this is a lower bound, so load only lengthens it.
         // It catches a `file()` that skips the retried read unless that read stalls 200 ms, so it does not pin the path deterministically.
         assert!(t0.elapsed() >= std::time::Duration::from_millis(200), "{:?}", t0.elapsed());
@@ -343,7 +310,7 @@ mod comm_file_tests {
         assert!(error.contains("could not be read"), "{error}");
         assert!(!d.path().join("inbox/fresh.jsonl").exists());
         std::fs::remove_file(d.path().join("registry.json")).unwrap();
-        assert_eq!(file(Some(d.path()), "fresh", true).unwrap_err().0, "not_here");
+        assert_eq!(file(Some(d.path()), "fresh").unwrap_err().0, "not_here");
     }
 
     // The heal runs inside a pause, so which try sees it is fixed; the
@@ -456,24 +423,24 @@ mod comm_file_tests {
     fn unlisted_hostless_and_no_folder_are_not_here() {
         let d = home();
         for to in ["nobody", "hostless"] {
-            assert_eq!(file(Some(d.path()), to, true), err("not_here", &format!("no box knows that handle: {to}")));
+            assert_eq!(file(Some(d.path()), to), err("not_here", &format!("no box knows that handle: {to}")));
         }
-        assert_eq!(file(None, "fresh", true).unwrap_err().0, "not_here");
+        assert_eq!(file(None, "fresh").unwrap_err().0, "not_here");
         assert!(!d.path().join("inbox/nobody.jsonl").exists());
     }
 
     #[test]
     fn an_empty_or_invalid_to_is_bad_handle() {
         let d = home();
-        assert_eq!(file(Some(d.path()), "", true), err("bad_handle", "not a handle: \"\""));
-        assert_eq!(file(Some(d.path()), "../x", true).unwrap_err().0, "bad_handle");
+        assert_eq!(file(Some(d.path()), ""), err("bad_handle", "not a handle: \"\""));
+        assert_eq!(file(Some(d.path()), "../x").unwrap_err().0, "bad_handle");
     }
 
     #[test]
     fn an_append_that_cannot_happen_is_file_failed() {
         let d = home();
         std::fs::create_dir(d.path().join("inbox/fresh.jsonl")).unwrap();
-        let (code, error) = file(Some(d.path()), "fresh", false).unwrap_err();
+        let (code, error) = file(Some(d.path()), "fresh").unwrap_err();
         assert_eq!(code, "file_failed");
         assert!(error.starts_with("the append failed: "), "{error}");
     }
@@ -491,13 +458,13 @@ mod comm_file_tests {
             ("nfs4 B:/y\n", "written by an unknown machine"),
         ] {
             std::fs::write(d.path().join("inbox-lock-manager"), record).unwrap();
-            let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+            let (code, error) = file(Some(d.path()), "fresh").unwrap_err();
             assert_eq!(code, "file_failed", "{record:?}");
             assert!(error.contains(fragment), "{record:?}: {error}");
             assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
         }
         std::fs::remove_file(d.path().join("inbox-lock-manager")).unwrap();
-        let (code, error) = file(Some(d.path()), "fresh", true).unwrap_err();
+        let (code, error) = file(Some(d.path()), "fresh").unwrap_err();
         assert!(code == "file_failed" && error.starts_with("no inbox lock record at "), "{error}");
         assert_eq!(std::fs::read_to_string(&inbox).unwrap(), "{\"msg\":\"before\"}\n");
     }
@@ -518,14 +485,12 @@ mod comm_file_tests {
             let v = comm_file_verdict(
                 Some(d.path()),
                 &guest,
-                || true,
                 |fwd: &CommFileReq| {
                     *sent.borrow_mut() = Some(fwd.clone());
                     answer
                 },
                 &req("fresh"),
                 NOW,
-                600,
                 Duration::from_secs(1),
             );
             (v, sent.into_inner().expect("forwarded"))
@@ -542,7 +507,7 @@ mod comm_file_tests {
         // A forwarded frame at a guest is refused, never forwarded again.
         let mut again = req("fresh");
         again.forwarded = true;
-        let (code, error) = file_as(Some(d.path()), &guest, &again, true).unwrap_err();
+        let (code, error) = file_as(Some(d.path()), &guest, &again).unwrap_err();
         assert!(code == "file_failed" && error.contains("not its folder's hub (guest-b)"), "{error}");
     }
 
@@ -552,13 +517,109 @@ mod comm_file_tests {
     #[test]
     fn the_heartbeat_cutoff_is_a_string_compare_on_one_shape() {
         let at = |s: u64| iso8601_utc_from_secs(s);
-        assert!(heartbeat_fresh(Some(&at(NOW - 599)), NOW, 600));
-        assert!(!heartbeat_fresh(Some(&at(NOW - 600)), NOW, 600));
-        assert!(!heartbeat_fresh(Some(&at(NOW - 601)), NOW, 600));
-        assert!(!heartbeat_fresh(Some("2026-9-29T01:02:03Z"), NOW, 600));
-        assert!(!heartbeat_fresh(Some("9999-99-99 99:99:99Z"), NOW, 600));
-        assert!(!heartbeat_fresh(None, NOW, 600));
+        assert!(heartbeat_fresh(Some(&at(NOW - 599)), NOW));
+        assert!(!heartbeat_fresh(Some(&at(NOW - 600)), NOW));
+        assert!(!heartbeat_fresh(Some(&at(NOW - 601)), NOW));
+        assert!(!heartbeat_fresh(Some("2026-9-29T01:02:03Z"), NOW));
+        assert!(!heartbeat_fresh(Some("9999-99-99 99:99:99Z"), NOW));
+        assert!(!heartbeat_fresh(None, NOW));
         assert_eq!(at(0), "1970-01-01T00:00:00Z");
         assert_eq!(at(NOW).len(), 20);
+    }
+
+    // The shell's `sot_heartbeat_fresh` and `heartbeat_fresh` are one rule on
+    // one stamp. Unix only: it runs bash, and the hosted macOS leg runs it
+    // with BSD `date`.
+    #[cfg(unix)]
+    #[test]
+    fn heartbeat_agrees_with_the_shell() {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/lib/comm-lib.sh");
+        let now = unix_now_secs();
+        let at = |s: u64| iso8601_utc_from_secs(s);
+        // Each stamp with the env its shell run gets.
+        let cases: Vec<(String, Option<(&str, &str)>)> = vec![
+            (at(now - 590), None),
+            (at(now - 610), None),
+            (at(now + 3600), None),
+            (String::new(), None),
+            ("2026-9-29T01:02:03Z".into(), None),
+            ("9999-99-99 99:99:99Z".into(), None),
+            ("2099-01-01 00:00:00Z".into(), None),
+            ("2099-01-01T00:00:00+00:00".into(), None),
+            ("2099-01-01T00:00:00z".into(), None),
+            (at(now - 100), Some(("SOT_COMM_STALE_SECS", "30"))),
+        ];
+        for (stamp, extra) in cases {
+            let mut cmd = std::process::Command::new("/bin/bash");
+            cmd.arg("-c")
+                .arg(r#"source "$1"; sot_heartbeat_fresh "$2"; echo $?; echo "$BASH_VERSION""#)
+                .arg("bash")
+                .arg(&lib)
+                .arg(&stamp);
+            if let Some((k, v)) = extra {
+                cmd.env(k, v);
+            }
+            let out = cmd.output().expect("run bash");
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            let shell = stdout.lines().next() == Some("0");
+            let rust = heartbeat_fresh(if stamp.is_empty() { None } else { Some(&stamp) }, now);
+            assert_eq!(rust, shell, "bash {}, stamp {stamp:?}: {}", stdout.lines().nth(1).unwrap_or_default(), String::from_utf8_lossy(&out.stderr));
+        }
+    }
+
+    // The inbox has no writer but the verdict (and the one-time move of an old
+    // frontend inbox): every daemon route ends in `comm_file_verdict`, and the
+    // last_seen readers and writers are the listed files. A new member fails here.
+    #[test]
+    fn every_inbox_append_is_the_verdicts_or_the_move() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && !p.file_name().unwrap().to_string_lossy().ends_with("_tests.rs")
+                {
+                    out.push(p);
+                }
+            }
+        }
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&src, &mut files);
+        assert!(files.len() > 50, "the walk found {} files", files.len());
+        let word = |text: &str, w: &str| {
+            text.match_indices(w).any(|(i, _)| {
+                let before = text[..i].chars().next_back();
+                let after = text[i + w.len()..].chars().next();
+                !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            })
+        };
+        let (mut appenders, mut last_seen) = (Vec::new(), Vec::new());
+        for f in &files {
+            let text = std::fs::read_to_string(f).unwrap();
+            let text = text.split("\n#[cfg(test)]").next().unwrap();
+            let rel = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+            let calls = text.matches("file_frame(").count() - text.matches("pub fn file_frame(").count();
+            if calls > 0 {
+                appenders.push((rel.clone(), calls));
+            }
+            if word(text, "last_seen") {
+                last_seen.push(rel);
+            }
+        }
+        appenders.sort();
+        last_seen.sort();
+        assert_eq!(appenders, vec![("comm/mail/filer.rs".to_string(), 1), ("comm/mail/hub_link.rs".to_string(), 1)]);
+        assert_eq!(
+            last_seen,
+            [
+                "comm/mail/filer.rs",
+                "comm/registry/liveness.rs",
+                "comm/registry/poll.rs",
+                "comm/registry/registry.rs",
+                "server/mod.rs",
+            ]
+        );
     }
 }

@@ -29,13 +29,13 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-inbox-lock-onehost.sh`: the inbox lock on one machine whose mount lock is unknown (needs one peer host)
 - `test-inbox-lock-twohost.sh`: concurrent shell and Rust appenders, frozen and killed holders across two boxes (needs a peer host)
 - `test-join-disambiguation.sh`: derived handles are decided and written in one critical section; refusals and self-file healing
-- `test-registry-io.sh`: the registry's one writer and one reader: unreadable is never absent, no write over a bad file
+- `test-registry-io.sh`: the registry's one writer and one reader: unreadable is never absent, no write over a bad file; comm-list labels by the one heartbeat rule
 - `test-registry-lock.sh`: the registry lock names its holder and is reclaimed only from a proven-dead holder
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
 - `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first
-- `test-send-routes-to-relay.sh`: a registry miss goes to the wire and a hit files locally, never both
+- `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append and every `last_seen` file is on a pinned list
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
 ## Start here

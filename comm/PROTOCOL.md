@@ -64,10 +64,13 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
 }
 ```
 
-**Liveness** is heartbeat-based, not pane-based: an agent is *live* if
-`now - last_seen <= SOT_COMM_STALE_SECS` (default 600). This is what lets a
-session on one machine consider a session on another reachable. `host` +
-`workspace_id` are the address a same-host daemon resolves.
+**Liveness** is one fact, `last_seen`: a handle is *live* when its `last_seen` is a
+`YYYY-MM-DDTHH:MM:SSZ` stamp under 600 seconds old (`COMM_LIVE_SECS`, `LIVE_SECS`). The
+session stamps it (join, send, poll, status, and each turn's heartbeat), and the daemon that
+runs a Starting or Ready row stamps that row's handle every minute (`liveness.rs`), so an
+idle row stays live while it runs, through a daemon restart, and until ten minutes after its
+last stamp. An age is read against the reader's clock, so skew between two boxes moves the
+ten minutes by the skew. `host` + `workspace_id` are the address a same-host daemon resolves.
 
 **Work-state** (`state` + `summary`, stamped by `status_at`) powers the ADE
 *state-nav* at-a-glance view, and is distinct from the lifecycle `status` above.
@@ -401,9 +404,11 @@ last line read. The accepted residual: a reader on a
 mismatched host may deliver a line whose sender was told `FAILED`, so a retry
 can duplicate it; it can never lose one.
 
-The daemon's filer checks liveness first: a row still runs a session with
-that handle, or the session was active in the last ten minutes. A script's
-own append in route 1 does not check it yet.
+Every route checks liveness before it appends, by the one rule above: a script that reads the
+receiver's entry refuses a handle that is not live itself, and the daemon's filer refuses it
+the same way, so `filed` is never printed for a handle no live session holds. The shell's
+`sot_heartbeat_fresh` and the filer's `heartbeat_fresh` are one rule, pinned by
+`heartbeat_agrees_with_the_shell`.
 
 **The one result**, nothing else:
 

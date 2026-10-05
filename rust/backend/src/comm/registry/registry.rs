@@ -445,6 +445,41 @@ pub(crate) fn clear_comm_unread(ws: &Workspace, host: &str) {
     });
 }
 
+/// `stamp_last_seen`'s lock bound: the liveness task retries at its next due pass, so a long wait buys nothing.
+const STAMP_LOCK_BOUND: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Set `.agents[h].last_seen = stamp` for each of `handles` whose entry exists and is an object,
+/// and write nothing else: it never creates an entry. This is the daemon's liveness write
+/// (`liveness.rs`): the registry's `last_seen` is the one fact every reader judges a handle's
+/// life by, and a row that runs keeps its handle's stamp fresh here. Under
+/// `with_comm_registry_lock`, on a fresh read, through `replace_registry` only if something
+/// changed. False on a held lock, an unreadable or unparseable registry, or a failed write.
+pub(crate) fn stamp_last_seen(handles: &std::collections::BTreeSet<String>, stamp: &str) -> bool {
+    with_comm_registry_lock(STAMP_LOCK_BOUND, |reg_path, tmp_path| {
+        let Ok(bytes) = read_registry_fresh(reg_path) else {
+            return false;
+        };
+        let Ok(mut root) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            return false;
+        };
+        let Some(agents) = root.get_mut("agents").and_then(|a| a.as_object_mut()) else {
+            return false;
+        };
+        let mut changed = false;
+        for h in handles {
+            let Some(entry) = agents.get_mut(h).and_then(|e| e.as_object_mut()) else {
+                continue;
+            };
+            if entry.get("last_seen").and_then(|v| v.as_str()) != Some(stamp) {
+                entry.insert("last_seen".to_string(), serde_json::Value::String(stamp.to_string()));
+                changed = true;
+            }
+        }
+        !changed || replace_registry(reg_path, tmp_path, &root)
+    })
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 #[path = "registry_tests.rs"]
 mod tests;

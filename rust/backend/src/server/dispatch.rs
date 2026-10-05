@@ -214,7 +214,7 @@ where
             .await
         }
         op::COMM_FILE => {
-            crate::comm::mail::filer::handle_comm_file(frame.id, frame.payload, &workspaces).await
+            crate::comm::mail::filer::handle_comm_file(frame.id, frame.payload).await
         }
         op::AGENT_JOIN => {
             crate::comm::registry::join::handle_agent_join(frame.id, frame.payload, &workspaces, &ws_events_tx)

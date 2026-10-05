@@ -152,85 +152,36 @@ sot_registry_bytes() {
 }
 _sot_retry_note() { [ -z "${SOT_COMM_TEST_RETRY_LOG:-}" ] || echo "$1" >> "$SOT_COMM_TEST_RETRY_LOG" 2>/dev/null || :; }
 
-# sot_recipient_note HANDLE — one factual clause about a registry entry's
-# recipient, for a sender's ack line (messaging ruling, 2026-09-26: "a sender
-# cannot tell working from waiting-on-its-human from gone"). Reads ONLY the
-# entry the sender already has open (.agents[$1] in $REGISTRY) -- no second
-# file, no daemon call. Prints nothing and returns 1 the instant a needed
-# fact is absent or unparseable: an annotation is a courtesy, never a guess.
-#
-# A STALE heartbeat (last_seen older than SOT_COMM_STALE_SECS, default 600 --
-# the same threshold comm-list.sh already uses) overrides every other clause,
-# because a stamp from a dead session is the misleading one.
-#
-# Absent that, `state` decides (comm-status.sh's own reduction, ADR 0044
-# amendment): `working` gets the turn-boundary wording; the state that
-# actually means "stopped, waiting on its own human to answer" is `blocked`
-# (a `question` is set and `floor` is absent) -- NOT `floor == "user"`, which
-# instead co-occurs with `working` (floor present => state "working"; the
-# value only records who started the live turn -- comm-status.sh:97-112, the
-# ADR 0044 amendment table). Every other state prints its own word
-# unembellished (idle, done, waiting, or a future state this helper has never
-# heard of) -- silence beats a confident wrong summary, but a real word beats
-# no word.
-# _sot_last_seen_age LAST_SEEN — print the heartbeat's age in seconds and
-# return 0; return 1 (printing nothing) when LAST_SEEN is empty, unparseable,
-# or `date -d` fails. A future timestamp gives a negative age, which callers
-# treat as fresh.
-_sot_last_seen_age() {
-    local seens
-    [ -n "${1:-}" ] || return 1
-    seens="$(date -u -d "$1" +%s 2>/dev/null)" || return 1
-    [ -n "$seens" ] && [ "$seens" -gt 0 ] 2>/dev/null || return 1
-    echo $(( $(date -u +%s) - seens ))
-}
-
-sot_recipient_note() {
-    local h="$1" row state summary status_at last_seen now
-    row="$(sot_registry_read "$h")" || row=""
-    [ -n "$row" ] && [ "$row" != "null" ] || return 1
-    state="$(printf '%s' "$row" | jq -r 'if (.state|type)=="string" then .state else empty end' 2>/dev/null)" || state=""
-    [ -n "$state" ] || return 1
-    summary="$(printf '%s' "$row" | jq -r 'if (.summary|type)=="string" then .summary else empty end' 2>/dev/null)" || summary=""
-    status_at="$(printf '%s' "$row" | jq -r 'if (.status_at|type)=="string" then .status_at else empty end' 2>/dev/null)" || status_at=""
-    last_seen="$(printf '%s' "$row" | jq -r 'if (.last_seen|type)=="string" then .last_seen else empty end' 2>/dev/null)" || last_seen=""
-    now="$(date -u +%s)"
-
-    local hb_age
-    if hb_age="$(_sot_last_seen_age "$last_seen")" \
-        && [ "$hb_age" -ge "${SOT_COMM_STALE_SECS:-600}" ]; then
-        echo "no heartbeat for $(sot_fmt_age "$hb_age") -- may be gone"
-        return 0
-    fi
-
-    [ -n "$status_at" ] || return 1
-    local sats sat_age
-    sats="$(date -u -d "$status_at" +%s 2>/dev/null)" || sats=""
-    [ -n "$sats" ] && [ "$sats" -gt 0 ] 2>/dev/null || return 1
-    sat_age="$(sot_fmt_age $((now - sats)))"
-
-    case "$state" in
-        working)
-            echo "working, stamped ${sat_age} ago -- reply expected at its turn boundary" ;;
-        blocked)
-            local q; q="$(printf '%s' "$summary" | jq -Rr '.[0:60]' 2>/dev/null)" || q=""
-            echo "needs its own user, stamped ${sat_age} ago: \"${q}\"" ;;
-        *)
-            echo "${state}, stamped ${sat_age} ago" ;;
+# sot_heartbeat_fresh STAMP — rc 0 exactly when the daemon's `heartbeat_fresh`
+# would say so (pinned by `heartbeat_agrees_with_the_shell`): STAMP is
+# `YYYY-MM-DDTHH:MM:SSZ` in ASCII digits, and sorts after the same shape of
+# `now - COMM_LIVE_SECS`, compared as bytes. Both writers stamp that one
+# fixed-width shape, so string order is time order. A stamp that is absent or
+# not that shape is no heartbeat. If `date` cannot print the cutoff the answer
+# is "not fresh": a broken `date` can never give a false `filed`.
+sot_heartbeat_fresh() {
+    local stamp="${1:-}" cutoff n
+    local LC_ALL=C
+    case "$stamp" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+        *) return 1 ;;
     esac
+    n=$(( $(date -u +%s) - COMM_LIVE_SECS ))
+    cutoff="$(date -u -d "@$n" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" \
+        || cutoff="$(date -u -r "$n" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 1
+    [ "${#cutoff}" -eq 20 ] || return 1
+    [[ "$stamp" > "$cutoff" ]]
 }
 
 # sot_handle_live HANDLE — rc 0 when the registry's .agents[HANDLE].last_seen is
-# fresh (within SOT_COMM_STALE_SECS, default 600 — the threshold
-# sot_recipient_note and comm-list.sh use), else rc 1. An absent row, an absent
-# or unparseable last_seen all mean not live: it never fabricates liveness. Asks
-# the heartbeat only (no daemon round trip), so comm-join.sh's stranding warning
+# fresh (sot_heartbeat_fresh), else rc 1. An absent row, an absent or
+# unparseable last_seen all mean not live: it never fabricates liveness. Asks
+# the registry only (no daemon round trip), so comm-join.sh's stranding warning
 # works on a box with no daemon reachable.
 sot_handle_live() {
-    local last_seen age
-    last_seen="$(sot_registry_read "$1" | jq -r '.last_seen // empty | if type=="string" then . else empty end' 2>/dev/null)" || return 1
-    age="$(_sot_last_seen_age "$last_seen")" || return 1
-    [ "$age" -lt "${SOT_COMM_STALE_SECS:-600}" ]
+    local last_seen
+    last_seen="$(sot_registry_read "$1" | sot_jq -r '.last_seen | strings | select(length == 20)' 2>/dev/null)" || return 1
+    sot_heartbeat_fresh "$last_seen"
 }
 
 # registry_del_if_provisional NAME WANT_ROOT WANT_NONCE — conditionally

@@ -3,14 +3,15 @@
 # Usage: comm-send.sh @name "message"
 #        comm-send.sh --broadcast "message"
 #
-# Every send lands in the recipient's durable inbox, and THAT is the
-# acknowledgement: a filed frame is read by the recipient's next turn boundary
-# (its Stop hook reads its own inbox), so `filed -> @name` is the verdict and
-# exit 0 means it. The append is comm-lib.sh's sot_inbox_append: under the
-# inbox lock, or by the daemon that owns the comm folder when this box cannot
-# prove it takes the same lock; one that cannot be made prints
-# `FAILED -> @name: <why>` and exits 1, never `filed`. The daemon wakes an
-# idle row; this script types into nobody.
+# `filed -> @name` means the line is in the inbox of a handle a live session
+# holds, and is the whole verdict: a filed frame is read by the recipient's
+# next turn boundary (its Stop hook reads its own inbox), and exit 0 means it.
+# A listed handle that is not live (its registry last_seen is not under
+# COMM_LIVE_SECS old) is refused here, before anything is appended. The
+# append is comm-lib.sh's sot_inbox_append: under the inbox lock, or by the
+# daemon that owns the comm folder when this box cannot prove it takes the
+# same lock; one that cannot be made prints `FAILED -> @name: <why>` and
+# exits 1, never `filed`. The daemon wakes an idle row; this script types into nobody.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
@@ -100,6 +101,18 @@ deliver() {  # $1 = target name
         echo "no such handle: $t" >&2; return 1
     fi
 
+    # 0) liveness: `filed` is for a live handle. The registry's last_seen is the
+    # one fact (the session stamps it, and the daemon that runs its row stamps it
+    # every minute), so a handle that is not live is refused here with the
+    # daemon's own sentence, before anything is built or appended. No daemon is
+    # asked.
+    local last_seen=""
+    last_seen="$(printf '%s' "$row" | sot_jq -r '.last_seen | strings | select(length == 20)' 2>/dev/null)" || last_seen=""
+    if ! sot_heartbeat_fresh "$last_seen"; then
+        echo "FAILED -> @$t: no live session holds @$t" >&2
+        return 1
+    fi
+
     # 1) durable inbox — this append IS the delivery, made by the one helper
     # that appends (sot_inbox_append), under the inbox lock or by the daemon;
     # a refused lock, a failed write or a daemon that does not file is FAILED,
@@ -119,15 +132,7 @@ deliver() {  # $1 = target name
         return 1
     fi
 
-    # 2) the recipient annotation (messaging ruling, 2026-09-26): one factual
-    # clause read off the same registry entry `deliver` already has open --
-    # never a second file, never the daemon. Empty (missing/malformed entry
-    # or fields) means no clause, never a guess (sot_recipient_note's own
-    # contract) -- the send's success is unaffected either way.
-    local note=""
-    note="$(sot_recipient_note "$t" 2>/dev/null)" || note=""
-    [ -n "$note" ] && note=" ($note)"
-    echo "  filed -> @$t$note"
+    echo "  filed -> @$t"
     return 0
 }
 

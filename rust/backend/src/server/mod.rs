@@ -96,7 +96,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     tracing::info!(count = n, "workspaces scanned from disk");
     // The daemon holds the link to the hub and files for its own comm folder
     // (0031 Part 3); a box with no such link returns at once.
-    tokio::spawn(crate::comm::mail::hub_link::run(workspaces.clone()));
+    tokio::spawn(crate::comm::mail::hub_link::run());
     // Held until `run` returns: the boot-time row object keeps its watcher and children alive, as before the cut.
     let _default_ws = seed_default_row(&opts, &files_mode, &workspaces);
 
@@ -169,6 +169,7 @@ pub async fn run(opts: Opts) -> Result<()> {
     // 1.5s tick also coalesces a working agent's periodic status_at re-stamps. The
     // diff excludes `last_seen` so frequent send/poll heartbeats never spam re-lists.
     spawn_registry_poll(&ws_events_tx);
+    tokio::spawn(crate::comm::registry::liveness::run(workspaces.clone()));
 
 
     // Comm wake (0031 B3): types the unread-mail line into rows at a free

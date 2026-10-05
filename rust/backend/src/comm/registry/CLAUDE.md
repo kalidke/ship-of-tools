@@ -6,6 +6,7 @@ comm/CLAUDE.md.
 ## Files
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
 - `join.rs`: `agent.join`: a session declares its handle on its row
+- `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`)
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
 - `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
 - `mod.rs`: declares the files
@@ -20,12 +21,16 @@ comm/CLAUDE.md.
 prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LINES` (64) it ends `!truncated`, exit 3.
 
 ## Rules
-- Every daemon registry write (`remove_comm_agents_for_workspace`, `clear_comm_unread`) runs under
+- Every daemon registry write (`remove_comm_agents_for_workspace`, `clear_comm_unread`, `stamp_last_seen`) runs under
   `with_comm_registry_lock` and goes through `replace_registry`: `write_synced` flushes a temp file, then it is renamed
   into place.
   `remove_comm_agents_for_workspace` prunes a destroyed row's entry.
 - `clear_comm_unread` removes `done` (and turns a `done` state to `idle`) on a person's view of a row. It is the
   daemon's only work-state write.
+- `stamp_last_seen` writes only `last_seen`, only on entries that exist, for the handles `held` names
+  (`comm_handle_for_workspace` of each Starting or Ready row); a pass that would change nothing writes nothing. `run`
+  stamps when that set changes and every `STAMP_EVERY` (60 s); a failed pass is logged and retried at the next. It
+  is the daemon's only liveness write.
 - `comm_handle_for_workspace` is the one row-binding rule: the declared handle, else the pinned self-file, else the
   stored agent name.
 - `handle_agent_join` stores the declared handle under the row's guard, overwriting a previous one without a check

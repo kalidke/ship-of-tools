@@ -8,10 +8,10 @@ messaging; charter: comm/CLAUDE.md.
 
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
-- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, jq and host helpers, ages
+- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
 - `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `sot_oneshot_request`, pty input and screen
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
-- `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads and a row's status
+- `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
 - `comm-lib-inbox.sh`: the inbox append and its lock, `sot_comm_file`, the read cursor, the line counts and `sot_unread` (the unread count)
 - `comm-lib-identity.sh`: the self file, the routable-identity gate, slugs and derived handles (`claim_derived_handle`)
 - `comm-lib-agent-layers.sh`: the agent-layer check (`sot_require_agent`): which agents lie between a script and its row
@@ -55,9 +55,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   unreadable).
 - One inbox append (`sot_inbox_append`), one `comm.file` request (`sot_comm_file`) and one unread count (`sot_unread`,
   the wake's rule; a count that cannot be made returns 1, never 0).
+- One rule for a live `last_seen` (`sot_heartbeat_fresh`, `COMM_LIVE_SECS`), the twin of the filer's `heartbeat_fresh`.
 - Every endpoint leaves through `_sot_emit_endpoint`.
 - A value that may start with `/` goes through `sot_jq_rawfile`, never `jq --arg`.
-- A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count).
+- A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
 - The host part `comm-context.sh` gives an unpinned self file, and `comm-despawn.sh`'s match of it, come from `sot_raw_host`
   (raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first), not `sot_host`. A capsule's pinned self file is
   named by the daemon with its declared host, which is `sot_host`'s rule.

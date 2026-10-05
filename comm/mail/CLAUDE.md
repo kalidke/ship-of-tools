@@ -6,7 +6,7 @@ and find their siblings (`comm-lib.sh`, `comm-context.sh`) through their own fol
 comm/CLAUDE.md.
 
 ## Files
-- `comm-send.sh`: directed and broadcast sends; the registry decides a local append or the wire (it execs `comm-relay.sh send` for a handle it cannot name).
+- `comm-send.sh`: directed and broadcast sends; the registry decides a local append or the wire (it execs `comm-relay.sh send` for a handle it cannot name), and a listed handle that is not live is refused before anything is appended.
 - `comm-relay.sh`: the send that rides the daemon: `comm.file` for a handle the hub lists, else `agent.send` and a wait for a filer's receipt; the retired `bridge` verb only sleeps.
 - `comm-poll.sh`: shows the inbox lines past the read cursor, then advances it; the only writer of the cursor.
 
@@ -14,8 +14,9 @@ comm/CLAUDE.md.
 `comm-send.sh` for what a send prints and why (`filed -> @h` or `FAILED -> @h: <reason>`); `comm-poll.sh` for reading.
 
 ## Rules
-- `filed -> @h` is printed only on the appender's word (`sot_inbox_append`, `sot_comm_file` in comm-lib-inbox.sh); the
-  `agent.send` leg of `comm-relay.sh` still ends in `NOT CONFIRMED` when no filer claims the send within 5 seconds.
+- `filed -> @h` is printed only on the appender's word (`sot_inbox_append`, `sot_comm_file` in comm-lib-inbox.sh), and
+  only for a live handle: `deliver` refuses a listed handle whose `last_seen` `sot_heartbeat_fresh` does not call fresh.
+  The `agent.send` leg of `comm-relay.sh` still ends in `NOT CONFIRMED` when no filer claims the send within 5 seconds.
 - Only `comm-poll.sh` moves `read/<h>.cursor`.
 - Readers count newline-terminated lines only.
 - A message body reaches jq through `sot_jq_rawfile`, never `--arg`.

@@ -27,8 +27,9 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
 - `route` appends locally only when line 1 of `inbox-lock-manager` equals this daemon's own `lock_identity`; otherwise
   a guest forwards and a hub refuses, naming the recovery (`refusal`). Only the hub writes that record, at start
   (`record_at_start`, called by `record_at_boot` from main).
-- `comm_file_verdict` lists a handle only when `.agents[h].host` is non-empty. On the append route it then needs a live
-  holder: a Starting or Ready row binding h, else a `last_seen` under `SOT_COMM_STALE_SECS` (600) (`heartbeat_fresh`). A
+- `comm_file_verdict` lists a handle only when `.agents[h].host` is non-empty. On the append route it then needs a
+  live holder: a `last_seen` under `LIVE_SECS` (600) (`heartbeat_fresh`, the twin of the shell's
+  `sot_heartbeat_fresh`), stamped by the session and by the daemon running its row (`comm/registry/liveness.rs`). A
   forward skips both tests and returns the hub's answer verbatim.
 - `forward_comm_file` waits `inbox_lock_wait` plus `COMM_FORWARD_SLACK` (5 s) at most, or until the shutdown signal
   fires; either way it kills the ssh child before returning.

@@ -97,19 +97,10 @@ sot_jq() {
     return "${PIPESTATUS[0]}"
 }
 
-# sot_fmt_age SECONDS -> "12s"/"6m"/"32m"/"8h"/"3d" (no "ago" suffix -- every
-# caller supplies its own wording, since the same figure reads differently in
-# a success line vs a timeout message). A negative age (clock skew) floors to
-# 0 rather than printing garbage.
-sot_fmt_age() {
-    local s="$1"
-    [ "$s" -lt 0 ] 2>/dev/null && s=0
-    if   [ "$s" -lt 60 ];    then echo "${s}s"
-    elif [ "$s" -lt 3600 ];  then echo "$((s / 60))m"
-    elif [ "$s" -lt 86400 ]; then echo "$((s / 3600))h"
-    else                          echo "$((s / 86400))d"
-    fi
-}
+# How old a heartbeat may be and still count as live: the one
+# number, which `sot_heartbeat_fresh` applies here and the daemon's filer
+# (`LIVE_SECS`, rust/backend/src/comm/mail/filer.rs) applies to the same stamp.
+COMM_LIVE_SECS=600
 
 # --- MSYS2 argv-conversion guard for jq values that can legitimately
 # start with "/" ---
