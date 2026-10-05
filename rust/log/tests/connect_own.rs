@@ -150,7 +150,7 @@ mod windows {
 }
 
 /// Files that keep their own stream type and so apply the rule around their one dial; each must contain the names listed.
-/// Every connector rust/clippy.toml names is a compile error in rust.yml's "Dials and accepts" step unless it sits at
+/// Every connector rust/clippy.toml names is a compile error in rust.yml's "Disallowed methods" step unless it sits at
 /// an `#[allow]` with its reason; the allow at these two sites is what this test holds to the rule. It checks that the
 /// names appear on a non-comment line of the file: not their order, not that they sit in the dialing function, and not
 /// any other file. `std::fs::OpenOptions::open` cannot be disallowed, since it opens every file, so a third opener of a

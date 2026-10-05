@@ -212,6 +212,7 @@ pub(super) async fn run_local(
     {
         listener_options = listener_options.security_descriptor(session_pipe_security_descriptor()?);
     }
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
     let listener = listener_options
         .create_tokio()
         .with_context(|| format!("bind {socket_path:?}"))?;
