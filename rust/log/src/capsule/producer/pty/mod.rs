@@ -4,8 +4,8 @@
 //! `ConptyProducer`. `spawn`'s `pre_exec` body
 //! (after its own new leading step —
 //! see the second point below): new session, slave becomes the controlling
-//! tty, stdio duped onto it, every inherited fd ≥ 3 closed before exec (the
-//! flock rationale is unchanged — see the comment at the call site). Three
+//! tty, stdio duped onto it, every inherited fd ≥ 3 closed before exec (a
+//! killed holder's lock copy and the pty fds — see the comment at the call site). Three
 //! things are genuinely NEW here, all decision-driven:
 //!
 //! - **The output side reports EOF only after the loop closes it, BY

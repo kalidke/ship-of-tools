@@ -279,7 +279,10 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     // below is then (correctly) not served — observed as a deterministic
     // 10 s timeout on the real windows legs while every protocol-level
     // replay of this sequence passed.
-    let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string()];
+    // --wait-line: the flood starts only when the driver sends its line,
+    // after the watcher's hold below, so the hold is on before any of the
+    // flood is committed.
+    let argv = vec![helper, "--flood".to_string(), total.to_string(), "--linger".to_string(), "--wait-line".to_string()];
     let cfg = config(dir.path(), "slowwatcher1", argv, 80, 25);
     let root = cfg.voyage_root.clone();
     let transport = TestTransport::new();
@@ -302,8 +305,9 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     transport.feed(DRIVER, frame::attach("driver"));
     watcher.collect_checkpoint("driver checkpoint", DRIVER, Duration::from_secs(10));
     transport.feed(DRIVER, frame::take("driver"));
-    watcher.wait_for("driver take_ok", DRIVER, Duration::from_secs(10), |f| {
-        matches!(f, wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { .. })).then_some(())
+    let take_epoch = watcher.wait_for("driver take_ok", DRIVER, Duration::from_secs(10), |f| match f {
+        wire::DecodedFrame::AttachServer(wire::AttachServer::TakeOk { take_epoch }) => Some(*take_epoch),
+        _ => None,
     });
 
     transport.open(WATCHER);
@@ -316,6 +320,8 @@ fn slow_watcher_overflow_closes_while_driver_stays_live() {
     // Never drains from here on: every future send to WATCHER queues
     // forever, simulating a client that stopped reading its pipe.
     transport.set_hold_for(WATCHER, true);
+    // Start the flood: the helper reads this one line before writing.
+    transport.feed(DRIVER, frame::input("driver", take_epoch, [1; 16], b"go\r\n"));
 
     // Bounded poll for the watcher's own close -- the flood alone drives
     // this; no fixed sleep assumes when the budget actually trips.

@@ -9,9 +9,9 @@ impl Workspaces {
 
     /// Insert a workspace. Idempotent on slug: if an entry exists for
     /// the same slug we keep its workspace_id (a stable id across daemon
-    /// restarts is the contract), but the rest of the metadata is taken
-    /// from the new `ws` so a fresh project_root from disk wins over a
-    /// stale one in memory. Resource caches on the *old* entry are
+    /// restarts is the contract), but the rest of the metadata, its declared
+    /// handle included, is taken from the new `ws` so a fresh project_root
+    /// from disk wins over a stale one in memory. Resource caches on the *old* entry are
     /// discarded — the assumption is that re-insertion happens at most
     /// once at startup (scan_disk) and during explicit workspace
     /// metadata edits, neither of which is on a hot path.
@@ -39,6 +39,7 @@ impl Workspaces {
                 );
                 w.runtime = ws.runtime.clone();
                 w.account = Mutex::new(ws.account());
+                w.agent_handle = Mutex::new(ws.agent_handle());
                 w
             }
             None => ws,
@@ -199,28 +200,92 @@ impl Workspaces {
     /// Record the sot-comm handle a session inside `workspace_id` DECLARED
     /// via `agent.join` (ADR 0046 decision 1) — the daemon is told once
     /// instead of re-deriving it from a self-file read-back on every
-    /// `workspace.list`/`clear_comm_unread` call. `None` if `workspace_id`
-    /// is not registered (the `agent.join` handler reports this as
-    /// `unknown_workspace`).
+    /// `workspace.list`/`clear_comm_unread` call — and MOVE it: ADR 0049
+    /// gives a handle to one row only, so every OTHER row whose declared
+    /// handle equals `handle` loses it (cell cleared) in the same step.
+    /// Returns the row and the ids of the rows that lost the handle, for
+    /// the caller to persist; an empty `handle` moves nothing. `None` if
+    /// `workspace_id` is not registered (the `agent.join` handler reports
+    /// this as `unknown_workspace`).
     ///
     /// Manager review (S6, Codex finding B5): a GUARDED IN-PLACE update,
-    /// never a replacement `insert`. The row is looked up once under the
-    /// registry's read lock; the write lands on the row's OWN interior
-    /// `agent_handle` cell (the SAME `Arc<Workspace>`, resource caches —
-    /// kernel, repl, watcher — untouched), not on a freshly reconstructed
-    /// `Workspace` that would start every cache cold. This also closes the
-    /// destroy race the old replace-based version had: since this method
-    /// never touches `by_id`/`by_slug`, a `destroy` that removes the row
-    /// between the lookup and this write leaves the row destroyed — the
-    /// write lands on an orphaned `Arc` nobody can `resolve()` to anymore,
-    /// never a resurrection.
-    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<Arc<Workspace>> {
-        let ws = {
-            let g = self.inner.read().expect("workspaces lock");
-            g.by_id.get(workspace_id)?.clone()
-        };
+    /// never a replacement `insert`. The write lands on each row's OWN
+    /// interior `agent_handle` cell (the SAME `Arc<Workspace>`, resource
+    /// caches — kernel, repl, watcher — untouched), not on a freshly
+    /// reconstructed `Workspace` that would start every cache cold. This
+    /// also closes the destroy race the old replace-based version had:
+    /// since this method never touches `by_id`/`by_slug`, a `destroy` that
+    /// removes the row between the lookup and this write leaves the row
+    /// destroyed — the write lands on an orphaned `Arc` nobody can
+    /// `resolve()` to anymore, never a resurrection.
+    ///
+    /// The registry's WRITE lock is held across the whole move, so two
+    /// concurrent declarations of one handle serialise and the later one
+    /// wins; a cell is locked only for one clone or one write, so taking
+    /// cells under the registry lock cannot deadlock.
+    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<(Arc<Workspace>, Vec<String>)> {
+        let g = self.inner.write().expect("workspaces lock");
+        let ws = g.by_id.get(workspace_id)?.clone();
+        let mut moved = Vec::new();
+        if !handle.is_empty() {
+            for (id, other) in g.by_id.iter() {
+                if id == workspace_id {
+                    continue;
+                }
+                let mut cell = other.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
+                if *cell == handle {
+                    cell.clear();
+                    moved.push(id.clone());
+                }
+            }
+        }
         *ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
-        Some(ws)
+        Some((ws, moved))
+    }
+
+    /// Boot's side of one row per handle (ADR 0049): every non-empty
+    /// declared handle that two or more rows hold stays only on the row
+    /// `keep(handle)` names (a workspace id) and is cleared on the rest; a
+    /// `keep` that names none of them clears it on all. `keep` runs with
+    /// no lock held; the clears run under the registry's write lock, like
+    /// [`set_agent_handle`](Self::set_agent_handle)'s. Returns each such
+    /// handle with the rows it was cleared on, for the caller to save.
+    pub(crate) fn clear_shared_handles(
+        &self,
+        keep: impl Fn(&str) -> Option<String>,
+    ) -> Vec<(String, Vec<Arc<Workspace>>)> {
+        let mut by_handle: std::collections::BTreeMap<String, Vec<Arc<Workspace>>> = Default::default();
+        for ws in self.list() {
+            let h = ws.agent_handle();
+            if !h.is_empty() {
+                by_handle.entry(h).or_default().push(ws);
+            }
+        }
+        let shared: Vec<(String, Vec<Arc<Workspace>>, Option<String>)> = by_handle
+            .into_iter()
+            .filter(|(_, rows)| rows.len() > 1)
+            .map(|(h, rows)| {
+                let kept = keep(&h);
+                (h, rows, kept)
+            })
+            .collect();
+        let _g = self.inner.write().expect("workspaces lock");
+        let mut out = Vec::new();
+        for (handle, rows, kept) in shared {
+            let mut cleared = Vec::new();
+            for ws in rows {
+                if kept.as_deref() == Some(ws.workspace_id.as_str()) {
+                    continue;
+                }
+                let mut cell = ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
+                if *cell == handle {
+                    cell.clear();
+                    cleared.push(ws.clone());
+                }
+            }
+            out.push((handle, cleared));
+        }
+        out
     }
 
     /// Record which account this row's agent runs as (ADR 0046 decision
@@ -352,7 +417,8 @@ mod tests {
 
         let joined = reg
             .set_agent_handle(&row.workspace_id, "capsuleprobe-testhost")
-            .expect("the row is registered");
+            .expect("the row is registered")
+            .0;
         assert_eq!(joined.workspace_id, original_id, "set_agent_handle must preserve the id");
         assert_eq!(joined.agent_handle(), "capsuleprobe-testhost");
         assert_eq!(joined.runtime, "capsule", "unrelated metadata must survive the update");
@@ -391,7 +457,7 @@ mod tests {
         let _ = row.kernel();
         assert!(row.kernel_built(), "test setup: the kernel cache must be built before the join");
 
-        let joined = reg.set_agent_handle(&row.workspace_id, "capsuleprobe2-testhost").unwrap();
+        let joined = reg.set_agent_handle(&row.workspace_id, "capsuleprobe2-testhost").unwrap().0;
         assert!(
             joined.kernel_built(),
             "a guarded in-place update must never discard a live resource cache"
@@ -465,6 +531,29 @@ mod tests {
         let resolved = reg.resolve(Some("alpha")).unwrap();
         assert_eq!(resolved.workspace_id, original_id);
         assert_eq!(resolved.project_root, PathBuf::from("/p/alpha-renamed"));
+    }
+
+    // The default row's boot re-seed (`seed_default_row`) carries the row's
+    // declared handle into a fresh `Workspace` and re-inserts it; the
+    // same-slug arm used to blank it through `meta_only`.
+    #[test]
+    fn a_same_slug_reinsert_takes_the_new_rows_declared_handle() {
+        let reg = Workspaces::new();
+        let ws = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        let original_id = ws.workspace_id.clone();
+        reg.insert(ws);
+        reg.set_agent_handle(&original_id, "m5-carried").expect("registered");
+
+        let mut carried = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        carried.agent_handle = Mutex::new("m5-carried".to_string());
+        reg.insert(carried);
+        let resolved = reg.resolve(Some("alpha")).unwrap();
+        assert_eq!(resolved.workspace_id, original_id);
+        assert_eq!(resolved.agent_handle(), "m5-carried");
+
+        let fresh = Workspace::from_label("alpha", PathBuf::from("/p/alpha"), false, "none".into(), String::new(), String::new());
+        reg.insert(fresh);
+        assert_eq!(reg.resolve(Some("alpha")).unwrap().agent_handle(), "");
     }
 
     /// ADR 0042 slice L1a: `insert`'s own doc says the id-preserving

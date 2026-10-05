@@ -25,4 +25,5 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 - Every registry write is `registry_replace` under `with_lock`, and an unreadable registry is never "absent"
   (`sot_registry_read` returns 2).
 - `comm-join.sh` refuses to write another repo's identity into a slot keyed by `$SOT_WORKSPACE_ID`.
-- Not built: one row per handle (ADR 0049's stages B5 and B6). `agent.join` clears no other row today.
+- `comm-context.sh` trusts a row's self-file even after a newer `agent.join` moved its handle off that row
+  (`comm/CLAUDE.md` records the gap).

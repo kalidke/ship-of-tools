@@ -245,6 +245,48 @@ mod remove_comm_agents_for_workspace_host_tests {
     }
 
     #[test]
+    fn by_name_leaves_an_entry_that_another_row_now_owns() {
+        // ADR 0049: the handle moved to a newer row, whose `workspace_id` the
+        // entry carries; destroying the older row, whose stored name is
+        // still that handle, must not take the newer row's entry.
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-comm-registry-by-name-moved-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        let registry_path = dir.join("registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "agents": {
+                    "m5-shared": {"host": "host-4", "workspace_id": "newer-id"},
+                    "m5-bare": {"host": "host-4"},
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(remove_comm_agents_for_workspace("m5-shared", "older-id", "host-4").is_empty());
+        // An entry with no `workspace_id` is still pruned by name.
+        assert_eq!(remove_comm_agents_for_workspace("m5-bare", "older-id", "host-4"), vec!["m5-bare".to_string()]);
+
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+        let agents = after.get("agents").unwrap().as_object().unwrap();
+        assert!(agents.contains_key("m5-shared"), "the newer row's entry must survive");
+        assert_eq!(agents.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn by_workspace_id_prunes_a_manually_joined_handle() {
         // A handle joined by `comm-join.sh --name other` never sets
         // `ws.agent_name`, so `by_name` alone never matches its row — but
@@ -455,7 +497,7 @@ mod clear_comm_unread_tests {
         );
         let before = std::fs::read(&registry_path).unwrap();
 
-        clear_comm_unread(&mk_ws("x", ""), "host-4");
+        clear_comm_unread(&mk_ws("x", ""), &[], "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "a foreign host's row must never be touched");
@@ -481,7 +523,7 @@ mod clear_comm_unread_tests {
             );
             let before = std::fs::read(&registry_path).unwrap();
 
-            clear_comm_unread(&mk_ws("x", ""), "host-4");
+            clear_comm_unread(&mk_ws("x", ""), &[], "host-4");
 
             let after = std::fs::read(&registry_path).unwrap();
             assert_eq!(before, after, "state {state} must never be rewritten");
@@ -498,7 +540,7 @@ mod clear_comm_unread_tests {
         std::env::set_var("SOT_COMM_HOME", &dir);
         // No registry.json written at all.
 
-        clear_comm_unread(&mk_ws("x", "agent"), "host-4");
+        clear_comm_unread(&mk_ws("x", "agent"), &[], "host-4");
         assert!(!dir.join("registry.json").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -514,7 +556,7 @@ mod clear_comm_unread_tests {
         std::fs::write(&registry_path, b"not json{{{").unwrap();
         let before = std::fs::read(&registry_path).unwrap();
 
-        clear_comm_unread(&mk_ws("x", "agent"), "host-4");
+        clear_comm_unread(&mk_ws("x", "agent"), &[], "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after);
@@ -547,7 +589,7 @@ mod clear_comm_unread_tests {
         // count, and a loaded CI runner (the macOS leg took 2.6 s for the
         // ~1 s spin) turns any elapsed-time gate into a flake. The property
         // under test is fail-closed: the registry is untouched.
-        clear_comm_unread(&mk_ws("x", ""), "host-4");
+        clear_comm_unread(&mk_ws("x", ""), &[], "host-4");
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "a contended lock must fail closed with no write");
 
@@ -585,7 +627,7 @@ mod clear_comm_unread_tests {
         ws.runtime = "capsule".to_string();
         ws.agent_handle = std::sync::Mutex::new("capsule-handle-x".to_string());
 
-        clear_comm_unread(&ws, "host-4");
+        clear_comm_unread(&ws, &[], "host-4");
 
         let after: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
@@ -626,7 +668,7 @@ mod clear_comm_unread_tests {
         // use, means "nothing to bind to" and the call returns before ever
         // reaching the row — fine for an untouched-either-way assertion,
         // not for this one, which needs the write to actually run).
-        clear_comm_unread(&mk_ws("x", "host-4-be-x"), "host-4");
+        clear_comm_unread(&mk_ws("x", "host-4-be-x"), &[], "host-4");
 
         let after: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
@@ -655,7 +697,7 @@ mod clear_comm_unread_tests {
         );
         let before = std::fs::read(&registry_path).unwrap();
 
-        clear_comm_unread(&mk_ws("x", "host-4-be-x"), "host-4");
+        clear_comm_unread(&mk_ws("x", "host-4-be-x"), &[], "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "a row with no done fact must never be rewritten");
@@ -689,7 +731,7 @@ mod clear_comm_unread_tests {
         ws.runtime = "capsule".to_string();
         // No agent_handle declared at all.
 
-        clear_comm_unread(&ws, "host-4");
+        clear_comm_unread(&ws, &[], "host-4");
 
         let after = std::fs::read(&registry_path).unwrap();
         assert_eq!(before, after, "an unbound capsule row must never fall through to an unrelated handle");

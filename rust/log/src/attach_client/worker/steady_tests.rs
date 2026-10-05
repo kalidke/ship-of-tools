@@ -146,7 +146,11 @@ fn an_input_stamped_before_the_attach_is_counted_not_sent_and_a_current_one_is_s
         assert!(sent.elapsed() < WORKER_TICK * 5, "the current input was never sent");
         thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(discarded.load(Ordering::SeqCst), 0, "a current input clears the count");
+    // The worker clears the count after its write, so wait for the clear.
+    while discarded.load(Ordering::SeqCst) != 0 {
+        assert!(sent.elapsed() < WORKER_TICK * 5, "a current input clears the count");
+        thread::sleep(Duration::from_millis(5));
+    }
 
     tx.send(WorkerMsg::Shutdown).unwrap();
     let outcome = worker.join().expect("the worker thread must not panic");

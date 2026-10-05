@@ -23,8 +23,6 @@
 //!   recovery that drops complete frames appended after that read passes.
 //! - Load: the waiter's 30 s deadline, and the producer's 60 s cap (a test
 //!   thread starved past it before the kill fails "not SIGKILL").
-//! - The `pkill` reap marker is per test, not per run: two concurrent runs
-//!   on one host can kill each other's capsules.
 //! - Random kill points do not guarantee a torn record or a segment
 //!   rotation in any run.
 
@@ -159,8 +157,10 @@ fn kill9_sweep_recovers_green_every_round() {
                 "--",
                 "/bin/sh",
                 "-c",
-                "end=$(($(date +%s)+60)); i=0; while echo payload-line-$i; do i=$((i+1)); \
-                 [ $((i % 1000)) -ne 0 ] || [ $(date +%s) -lt $end ] || break; done",
+                &format!(
+                    "end=$(($(date +%s)+60)); i=0; while echo payload-{voyage}-$i; do i=$((i+1)); \
+                     [ $((i % 1000)) -ne 0 ] || [ $(date +%s) -lt $end ] || break; done"
+                ),
             ])
             .env("SOT_RUNTIME_DIR", runtime_dir.path())
             .stdin(std::process::Stdio::null())
@@ -187,10 +187,10 @@ fn kill9_sweep_recovers_green_every_round() {
             "round {round}: capsule ended by {status}, not SIGKILL"
         );
         // Reap the orphaned producer too (its own session on a now-dead
-        // PTY — it can block there indefinitely). The marker string is
-        // unique to this test.
+        // PTY — it can block there indefinitely). The marker carries this
+        // run's voyage id, so the reap matches no other run's processes.
         let _ = std::process::Command::new("pkill")
-            .args(["-9", "-f", "payload-line-"])
+            .args(["-9", "-f", &format!("payload-{voyage}-")])
             .status();
 
         // Reopen = reconcile + recover under the writer lock. The next

@@ -96,6 +96,8 @@ Who owns what: `docs/ownership.md`. How they connect: `docs/integration.md`.
   writes the relaunch sentinel and the Windows launcher respawns the window on exit 75 or 76. On Linux and macOS the
   installed all-in-one `sot-launch` respawns on 75 only, and a window started by `scripts/launch-sot.sh` is not
   respawned.
+- Run a command on a second host with `scripts/tests/on-host.sh HOST DIR -- CMD`, never a hand-built `env -u` list inside a
+  quoted ssh command: its newlines can run a bare `env` there and print that host's environment.
 - Releases follow the `release` skill and `scripts/release.sh`.
 - A session's handoff is its recovery file, `dev/output/handoff-<handle>.md` (gitignored), written at milestones.
   The private ops sidecar (`../ship-of-tools-ops`, or `$SOT_OPS_DIR`) holds the publish guard's denylist; on a machine

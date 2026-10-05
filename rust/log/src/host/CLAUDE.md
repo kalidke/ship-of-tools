@@ -29,8 +29,11 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
 - Only linux, macos and windows build: `rename_noreplace_raw` has three arms and no fourth.
 - Publication is source flush, no-clobber rename, renamed-file flush on Windows, then parent flush
   (`publish_noreplace`, `finish_publication`).
-- A lock is kernel-held and released on any death; a contended one fails within `RETRY_DEADLINE_MS` as "lock held"
+- A lock is kernel-held: a dropped guard unlocks it at once (`WriterLock`'s Drop), the kernel releases it on any death, and no exec'd child holds it; a contended one fails within `RETRY_DEADLINE_MS` as "lock held"
   (`lock_writer`).
+- The workspace takes kernel file locks in two files: `lock.rs` here and the backend's
+  `rust/backend/src/comm/mail/inbox.rs` (`take_lock`); `every_kernel_file_lock_is_taken_in_a_listed_file` pins the
+  list.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 
 ## Connections

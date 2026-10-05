@@ -33,23 +33,35 @@ enum ExitObservable {
     /// Already exited before the writer loop's first poll (ordering B: the
     /// loop's own `wait(ZERO)` wins the race).
     AtSpawn,
-    /// This long after the output side ended (ordering A: the reader wins,
-    /// and the confirmation has to block out the remainder).
-    AfterOutputEnd(Duration),
+    /// This long after the capsule starts confirming an exit (its first
+    /// `wait` with a timeout above zero; ordering A: the reader wins, and
+    /// the confirmation has to block out the remainder). Keyed on the
+    /// capsule's own call, not on the script's clock, so no scheduling
+    /// delay can make the exit observable before the capsule asks.
+    AfterConfirmationStarts(Duration),
     /// Never — the producer is alive past the grace, which is the case the
     /// rule still has to kill the capsule for.
     Never,
+}
+
+/// When `domain_is_empty` first answers "empty".
+#[derive(Clone, Copy)]
+enum Domain {
+    /// As soon as the producer has exited: a domain already down to an
+    /// unreaped leader zombie.
+    EmptyOnceExited,
+    /// Only once the capsule has confirmed the exit after a terminal reader
+    /// event: a domain that still has a descendant to reap when teardown
+    /// starts, so Phase A keeps servicing the channel until the terminal
+    /// event has been taken.
+    EmptyOnceTheExitIsConfirmed,
 }
 
 struct FakeScript {
     output_ends_after: Duration,
     output_end: OutputEnd,
     exit: ExitObservable,
-    /// `domain_is_empty` answers "not empty" this many times before it
-    /// answers "empty". One poll is the ordinary case for a domain that
-    /// still has a descendant to reap when teardown starts; zero is a
-    /// domain that is already down to an unreaped leader zombie.
-    domain_polls_before_empty: usize,
+    domain: Domain,
 }
 
 /// The script `FakeProducer::spawn` picks up — `Producer::spawn` is an
@@ -60,8 +72,12 @@ static FAKE_SCRIPT: std::sync::Mutex<Option<FakeScript>> = std::sync::Mutex::new
 
 struct FakeState {
     exit_at: std::sync::Mutex<Option<Instant>>,
-    domain_polls: AtomicU64,
-    domain_polls_before_empty: u64,
+    exit_after_confirming: Option<Duration>,
+    /// Set by the first `wait` with a timeout above zero: the capsule
+    /// confirming an exit after a terminal reader event (both `Done` arms
+    /// call `wait(READER_END_EXIT_GRACE)`; the main loop polls with zero).
+    confirming: AtomicBool,
+    domain: Domain,
 }
 
 impl FakeState {
@@ -108,19 +124,19 @@ impl sot_log::capsule::producer::Producer for FakeProducer {
                 ExitObservable::AtSpawn => Some(Instant::now()),
                 _ => None,
             }),
-            domain_polls: AtomicU64::new(0),
-            domain_polls_before_empty: script.domain_polls_before_empty as u64,
+            exit_after_confirming: match script.exit {
+                ExitObservable::AfterConfirmationStarts(d) => Some(d),
+                _ => None,
+            },
+            confirming: AtomicBool::new(false),
+            domain: script.domain,
         });
         let (steps_tx, steps_rx) = mpsc::channel();
         {
-            let state = Arc::clone(&state);
             let steps_tx = steps_tx.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(script.output_ends_after);
                 let _ = steps_tx.send(script.output_end);
-                if let ExitObservable::AfterOutputEnd(d) = script.exit {
-                    *state.exit_at.lock().unwrap() = Some(Instant::now() + d);
-                }
             });
         }
         Ok(FakeProducer {
@@ -144,6 +160,12 @@ impl sot_log::capsule::producer::Producer for FakeProducer {
     }
 
     fn wait(&self, timeout: Duration) -> sot_log::Result<bool> {
+        if timeout > Duration::ZERO {
+            self.state.confirming.store(true, Ordering::Release);
+            if let Some(d) = self.state.exit_after_confirming {
+                self.state.exit_at.lock().unwrap().get_or_insert(Instant::now() + d);
+            }
+        }
         let deadline = Instant::now() + timeout;
         loop {
             if self.state.exited() {
@@ -165,11 +187,11 @@ impl sot_log::capsule::producer::Producer for FakeProducer {
     }
 
     fn domain_is_empty(&self) -> sot_log::Result<bool> {
-        if !self.state.exited() {
-            return Ok(false);
-        }
-        let seen = self.state.domain_polls.fetch_add(1, Ordering::AcqRel);
-        Ok(seen >= self.state.domain_polls_before_empty)
+        Ok(self.state.exited()
+            && match self.state.domain {
+                Domain::EmptyOnceExited => true,
+                Domain::EmptyOnceTheExitIsConfirmed => self.state.confirming.load(Ordering::Acquire),
+            })
     }
 
     fn close_output_side(&mut self) -> std::thread::JoinHandle<()> {
@@ -236,12 +258,13 @@ fn early_output_end_after_the_exit_is_recorded_and_the_run_still_seals() {
             output_ends_after: Duration::ZERO,
             output_end: OutputEnd::Eof,
             exit: ExitObservable::AtSpawn,
-            // One poll: teardown's first emptiness check says "not yet",
-            // so Phase A services the channel once and is where the
-            // queued terminal event lands. See
+            // Not empty until the exit is confirmed after the terminal
+            // event: Phase A keeps servicing the channel until that event
+            // lands, however long the script and reader threads take to
+            // queue it. See
             // `early_output_end_is_not_recorded_when_the_domain_empties_first`
             // for what a domain that is already empty does instead.
-            domain_polls_before_empty: 1,
+            domain: Domain::EmptyOnceTheExitIsConfirmed,
         },
     );
     let summary = summary.expect("an early output end the producer's exit explains must not be fatal");
@@ -257,7 +280,7 @@ fn early_output_end_after_the_exit_is_recorded_and_the_run_still_seals() {
 
 /// Ordering A (the reader wins: the terminal event arrives while the main
 /// loop is blocked in `recv_timeout`, and the exit only becomes observable
-/// afterwards, well inside the grace). Same outcome as ordering B, same
+/// once the capsule starts confirming it, well inside the grace). Same outcome as ordering B, same
 /// `exit_kind`, same recorded field — which is the determinism claim of
 /// the ruling's race analysis, as an assertion.
 #[test]
@@ -270,8 +293,8 @@ fn early_output_end_confirmed_inside_the_grace_is_recorded_and_the_run_still_sea
         FakeScript {
             output_ends_after: Duration::from_millis(150),
             output_end: OutputEnd::Eof,
-            exit: ExitObservable::AfterOutputEnd(Duration::from_millis(300)),
-            domain_polls_before_empty: 0,
+            exit: ExitObservable::AfterConfirmationStarts(Duration::from_millis(300)),
+            domain: Domain::EmptyOnceExited,
         },
     );
     let summary = summary.expect("an exit confirmed inside the grace must not be fatal");
@@ -301,7 +324,7 @@ fn early_output_end_with_the_producer_alive_past_the_grace_is_fatal() {
             output_ends_after: Duration::from_millis(50),
             output_end: OutputEnd::Eof,
             exit: ExitObservable::Never,
-            domain_polls_before_empty: 0,
+            domain: Domain::EmptyOnceExited,
         },
     );
     let err = summary.expect_err("an unexplained early output end must stay capsule-fatal");
@@ -329,7 +352,7 @@ fn a_reader_gone_without_a_terminal_event_is_still_fatal() {
             output_ends_after: Duration::from_millis(50),
             output_end: OutputEnd::PanicInRead,
             exit: ExitObservable::Never,
-            domain_polls_before_empty: 0,
+            domain: Domain::EmptyOnceExited,
         },
     );
     let err = summary.expect_err("a reader gone without a terminal Done must stay fatal");
@@ -358,7 +381,7 @@ fn early_output_end_is_not_recorded_when_the_domain_empties_first() {
             output_ends_after: Duration::ZERO,
             output_end: OutputEnd::Eof,
             exit: ExitObservable::AtSpawn,
-            domain_polls_before_empty: 0,
+            domain: Domain::EmptyOnceExited,
         },
     );
     let summary = summary.expect("this ordering is correct, just unrecorded");
@@ -446,7 +469,7 @@ fn shutdown_guard_runs_while_the_writer_lock_is_held() {
         output_ends_after: Duration::from_millis(50),
         output_end: OutputEnd::Eof,
         exit: ExitObservable::Never,
-        domain_polls_before_empty: 0,
+        domain: Domain::EmptyOnceExited,
     });
     let cfg = config(dir.path(), "guard4", vec!["fake-producer".to_string()], 80, 25);
     let transport = TestTransport::new();

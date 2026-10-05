@@ -1,10 +1,10 @@
 # ADR 0049: messaging on one page
 
 **Status:** current — accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
-0048 (filer receipts). Part of what follows is built (the daemon's wake, the inbox lock); the
-relay's single verdict (lane M4) is not yet. The rest lands in stages, and the
-per-session watcher, listener and bridge machinery it replaces stays in place until
-each stage does.
+0048 (filer receipts). Part of what follows is built (the daemon's wake, the inbox lock, one row
+per handle; `comm/CLAUDE.md` says what one row per handle leaves unbuilt); the relay's single
+verdict (lane M4) is not yet. The rest lands in stages, and the per-session watcher, listener
+and bridge machinery it replaces stays in place until each stage does.
 
 2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
 guarantees, this ADR the design.

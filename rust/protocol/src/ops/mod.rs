@@ -255,12 +255,15 @@ pub mod op {
     /// sot-comm handle to the daemon that spawned/pinned its env (ADR
     /// 0046 decision 1), over the typed owner endpoint (`SOT_SOCKET`) —
     /// never the relay. Payload `AgentJoinReq { workspace_id, handle }`.
-    /// The daemon persists `Workspace.agent_handle`, publishes
-    /// `workspace.changed`, and answers `AgentJoinRes { ok }`; refusals
-    /// (`unknown_workspace`, `bad_handle`) ride the standard error
-    /// payload. Replaces the daemon's own self-file read-back
-    /// (`capsule_comm_handle`) — the session declares once instead of the
-    /// daemon re-deriving it from disk on every read.
+    /// A handle belongs to one row (ADR 0049): the daemon moves it off
+    /// every other row that declared it, persists `Workspace.agent_handle`
+    /// for the joining row, publishes `workspace.changed`, and answers
+    /// `AgentJoinRes { ok }` once that row is saved; the rows that lost the
+    /// handle are saved after the reply. Refusals (`unknown_workspace`,
+    /// `bad_handle`, and `persist_failed` when the joining row's save
+    /// failed) ride the standard error payload. The daemon's read-back of
+    /// the row's self-file (`capsule_comm_handle`) stays only as the
+    /// fallback for a row that has not declared.
     pub const AGENT_JOIN: &str = "agent.join";
     /// Client→daemon request: drive the frontend(s) with an imperative UI command
     /// (ADR 0025). Mirrors `AGENT_SEND`'s publish leg — the daemon re-emits the
