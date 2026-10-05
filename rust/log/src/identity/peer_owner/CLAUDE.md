@@ -7,11 +7,13 @@ token SID; macOS reads the kernel's TCP table (`net.inet.tcp.pcblist_n`) and jud
 
 ## Files
 - `mod.rs`: the `PeerOwner` verdict, `tcp_peer_owner` (the per-platform lookup) and `admit` (the check a listener runs).
+- `pcblist_n.rs`: the macOS kernel TCP table walker (`net.inet.tcp.pcblist_n`), compiled on macOS and for tests.
 
 ## Start here
-Read `mod.rs`: `PeerOwner`, then `tcp_peer_owner` and `admit`.
+Read `mod.rs`: `PeerOwner`, then `tcp_peer_owner` and `admit`; `pcblist_n.rs` only for the macOS table.
 
 ## Rules
 - Only `PeerOwner::Mine` is served; every failure is `Unknown` and refuses (`admit`).
-- A table walker accepts only the record sequence the kernel writes; a truncated or disordered table refuses.
+- The macOS walker accepts only the kernel's six-record sequence per connection; any other length, order or truncation
+  refuses (`pcblist_n.rs`).
 - The first refusal per listener, port and owner is a warning; later ones are debug lines.
