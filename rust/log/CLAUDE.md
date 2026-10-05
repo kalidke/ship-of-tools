@@ -57,6 +57,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
+- `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.

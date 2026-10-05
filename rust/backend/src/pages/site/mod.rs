@@ -326,22 +326,11 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     let port = listener.local_addr().context("static-site server local_addr")?.port();
     BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
-                            tracing::debug!(error = %e, "static-site conn ended");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "static-site accept failed");
-                }
-            }
+    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs", |stream| async move {
+        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
+            tracing::debug!(error = %e, "static-site conn ended");
         }
-    });
+    }));
     Ok(())
 }
 
@@ -396,22 +385,11 @@ pub async fn spawn_pool() {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(port);
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _peer)) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
-                                tracing::debug!(error = %e, port, "pool-site conn ended");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, port, "pool-site accept failed");
-                    }
-                }
+        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| async move {
+            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
+                tracing::debug!(error = %e, port, "pool-site conn ended");
             }
-        });
+        }));
     }
 }
 

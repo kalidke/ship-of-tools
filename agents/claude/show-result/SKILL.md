@@ -19,7 +19,9 @@ otherwise *name a path* or *paste a URL*), and on "open it in the browser",
 | A built site, ANY page inside it, or a self-contained `.html` | `sot-fe docs <ws> <abs-path>` | FE machine's OS browser |
 | An http(s) URL — page, PR, CI run, dashboard | `sot-fe open-url <url>` | FE machine's OS browser |
 
-`open-url` is http(s)-only, no workspace. `docs` needs an ABSOLUTE backend
+`open-url` puts the address on a command line any account on the box can read: never pass it an address with a
+secret in it (a `wglshow` figure, a Pluto notebook, a docs or video page); a figure opens on one frontend with
+`wglshow(fig; open = "<fe>")`. `open-url` is http(s)-only, no workspace. `docs` needs an ABSOLUTE backend
 path (confined to a workspace root) — use it for anything that must actually
 run (JS/WebGL). Both broadcast; `--fe <host>` targets the FE on that host.
 

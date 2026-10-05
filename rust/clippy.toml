@@ -1,11 +1,17 @@
-# ADR 0049, User isolation: a Rust process reaches a local socket or pipe by name only through
-# sot_log::identity::connect_own, so every connector the list below names is disallowed outside the sanctioned sites.
-# A sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")]. rust.yml's "Local endpoint dials" step
-# runs the lint over every library and binary. Paths that do not exist on a platform draw a warning there, never an
-# error. A new connector method joins this list. Not expressible here: std::fs::OpenOptions::open on a pipe path;
-# rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and topology/dial.rs contain the rule's names, not
-# their order and not any other file's opener.
+# ADR 0049, User isolation: one lint over two kinds of endpoint call. rust.yml's "Dials and accepts" step runs it over
+# every library and binary on all three platforms, and a lane's merge gate runs the same line (.github/CLAUDE.md). A
+# sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on the one statement that dials or
+# accepts. A path that does not exist on a platform draws a warning there, never an error.
+# - Local endpoint dials: a Rust process reaches a local socket or pipe by name only through
+#   sot_log::identity::connect_own, so every connector the first group names is disallowed outside the sanctioned sites.
+#   A new connector method joins it. Not expressible here: std::fs::OpenOptions::open on a pipe path;
+#   rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and topology/dial.rs contain the rule's names,
+#   not their order and not any other file's opener.
+# - TCP accepts: every TCP connection a Rust process accepts is checked for its owner before a byte is read, so the only
+#   TCP accept is the one in sot_log::identity::peer_owner's `serve` (serve_own), which carries the second group's one
+#   allow.
 disallowed-methods = [
+  # Local endpoint dials: only through sot_log::identity::connect_own.
   { path = "std::os::unix::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "std::os::unix::net::UnixStream::connect_addr", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "tokio::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
@@ -36,4 +42,11 @@ disallowed-methods = [
   { path = "sot_log::lane::socket_unix::client::connect_unix_socket_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_pipe_path_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_named_pipe_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  # TCP accepts: only in sot_log::identity::peer_owner's `serve` (serve_own).
+  { path = "std::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "std::net::TcpListener::incoming", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpListener::poll_accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "libc::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "libc::accept4", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
 ]

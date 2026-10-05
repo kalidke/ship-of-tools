@@ -2,7 +2,7 @@
 
 Before a reply on a local connection is trusted, the client proves the peer is this user's process, with a known pid and
 creation time. The OS-specific steps 1-3 run first, in one file per platform; the shared wire steps 4-5 follow. Part of
-platform; charter: rust/log/src/host/CLAUDE.md (written by a later unit, not yet present).
+platform; charter: rust/log/src/host/CLAUDE.md.
 
 ## Files
 - `mod.rs`: declares the modules below.
@@ -15,6 +15,8 @@ platform; charter: rust/log/src/host/CLAUDE.md (written by a later unit, not yet
 - `impersonation_probe.rs`: test support (Windows, `test-support` feature): the impersonation level a pipe's server gets over a client's handle.
 - `exchange.rs`: the identity request and reply codec for the wire round trip (`feed`).
 - `deadline.rs`: the three-state deadline race that bounds a blocking call (`run_with_deadline`).
+- `os_account.rs`: this process's OS account as the OS issues it (`own_account_id`), the value two accounts on one box are told apart by.
+- `peer_owner/`: whose OS account owns the far end of an accepted loopback connection.
 
 ## Start here
 Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the platform file's `challenge` and
@@ -28,5 +30,5 @@ Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the pl
 - `created` is compared for equality only, in each OS's own unit: FILETIME bits, `/proc` start ticks, pidversion.
 - The macOS kernel fact the challenge rests on (a client reading `LOCAL_PEERTOKEN` on its own fd sees the server's pid
   and a nonzero pidversion) is pinned by `rust/log/tests/macos_kernel_facts/`.
-- No Rust code dials a local socket or pipe by name outside `connect_own` and the sites that apply its rule, except through a connector the list in `rust/clippy.toml` names without an `#[allow]` and its reason: rust.yml's "Local endpoint dials" step (`disallowed_methods`) fails on one. It cannot see `std::fs::OpenOptions::open` of a pipe path; `rust/log/tests/connect_own.rs` only checks that `net/transport/mod.rs` and `topology/dial.rs` contain the rule's names (`own_socket(`, `connect_own(` or `own_pipe(`), not their order and not any other file's opener.
+- No Rust code dials a local socket or pipe by name outside `connect_own` and the sites that apply its rule, except through a connector the list in `rust/clippy.toml` names without an `#[allow]` and its reason: rust.yml's "Dials and accepts" step (`disallowed_methods`) fails on one. It cannot see `std::fs::OpenOptions::open` of a pipe path; `rust/log/tests/connect_own.rs` only checks that `net/transport/mod.rs` and `topology/dial.rs` contain the rule's names (`own_socket(`, `connect_own(` or `own_pipe(`), not their order and not any other file's opener.
 - A client that reaches this box's daemon or a relay socket by name speaks to it only after `connect_own`'s rule passes: on Unix before the connect, on Windows before the first byte. The Unix rule checks the socket's own folder only, not the folders above it (a custom runtime path under another account's writable, non-sticky folder is not covered; the daemon's bind check has that limit too, and checks the folders from the runtime folder down for a derived path); every Rust client of a Windows daemon pipe opens it at identification level (`SECURITY_IDENTIFICATION`): `connect_own`, `topology/dial.rs` and the daemon's own start probe (`socket_answers`).

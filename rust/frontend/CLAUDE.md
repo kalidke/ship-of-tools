@@ -11,6 +11,8 @@ each belong to one other subsystem, named below. Part of fe-ui; charter: rust/fr
 - `queries/`: the Julia highlight query that `ui/preview/markdown/highlight.rs` embeds (fe-ui).
 - `src/main.rs`: `main`, the process entry: tracing, the connection set, the transport runtime, then `ui::App` (fe-ui;
   charter rust/frontend/src/ui/CLAUDE.md).
+- `src/browser_open.rs`: opens a served page in the OS browser through a one-use local redirect, so no page address is
+  on a command line (pages; charter rust/backend/src/pages/CLAUDE.md).
 - `src/cli.rs`: argv parsing, `Cli::parse` and the usage text (fe-ui; charter rust/frontend/src/ui/CLAUDE.md).
 - `src/lease.rs`: the window's lease client, `Leases` and `Leaving` (lifecycle; charter
   rust/backend/src/lifecycle/CLAUDE.md).

@@ -134,12 +134,16 @@ pub enum ReplFrame {
         /// Whether front-ends should AUTO-OPEN the URL in the OS browser.
         /// `wglshow(fig; open=false)` sets this false to serve without
         /// opening anywhere — the frame still flows (so the daemon's
-        /// ADR-0035 proxy allowlist still learns the port) and a session
-        /// then opens it on exactly one FE via
-        /// `sot-fe open-url <url> --fe <handle>`. Absent (older shims)
+        /// ADR-0035 proxy allowlist still learns the port) (`fe` names the
+        /// one frontend that opens it anyway). Absent (older shims)
         /// defaults to true — the original broadcast-open behavior.
         #[serde(default = "default_open")]
         open: bool,
+        /// The one frontend that opens the page although `open` is false: its address (`fe@<name>`, what
+        /// `sot-fe --fe <name>` targets), matched exactly as a directed `fe.command` is. Sent only with
+        /// `open: false`, so a frontend that predates it opens nothing. `wglshow(fig; open = "<name>")`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fe: Option<String>,
     },
     Error {
         message: String,
@@ -332,5 +336,34 @@ mod repl_lifecycle_tests {
         });
         let e: WorkspaceListEntry = serde_json::from_value(json).unwrap();
         assert_eq!(e.repl_state, "starting");
+    }
+}
+
+#[cfg(test)]
+mod browser_frame_tests {
+    use super::*;
+
+    #[test]
+    fn a_browser_frame_names_its_one_frontend_only_when_aimed() {
+        let v = serde_json::json!({"kind": "browser", "url": "http://127.0.0.1:1/x"});
+        let f: ReplFrame = serde_json::from_value(v).unwrap();
+        match &f {
+            ReplFrame::Browser { open, fe, .. } => {
+                assert!(*open);
+                assert_eq!(*fe, None);
+            }
+            other => panic!("not a browser frame: {other:?}"),
+        }
+        let back = serde_json::to_value(&f).unwrap();
+        assert!(back.get("fe").is_none(), "{back}");
+
+        let v = serde_json::json!({"kind": "browser", "url": "http://127.0.0.1:1/x", "open": false, "fe": "fe@a"});
+        match serde_json::from_value::<ReplFrame>(v).unwrap() {
+            ReplFrame::Browser { open, fe, .. } => {
+                assert!(!open);
+                assert_eq!(fe.as_deref(), Some("fe@a"));
+            }
+            other => panic!("not a browser frame: {other:?}"),
+        }
     }
 }

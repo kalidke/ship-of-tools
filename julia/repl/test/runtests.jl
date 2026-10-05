@@ -35,6 +35,20 @@ const DR = ShipToolsRepl
         @test strip(frames[1][:text]) == "42"
     end
 
+    @testset "a BrowserView shows its origin, never its secret path (decision 0031)" begin
+        # A wrapped BrowserView is rendered as text like any value; that text reaches logs and sot-fe output.
+        bv = DR.BrowserView("http://127.0.0.1:41234/0123456789abcdef0123456789abcdef", false)
+        for s in (repr(bv), string(bv), sprint(show, MIME"text/plain"(), bv), repr((bv,)),
+                  sprint(show, MIME"text/plain"(), [bv]), sprint(show, MIME"text/plain"(), Dict(:fig => bv)))
+            @test !occursin("0123456789abcdef", s)
+            @test occursin("127.0.0.1:41234", s)
+        end
+        @test all(f -> !occursin("0123456789abcdef", string(get(f, :text, ""))), DR.value_frames_for((bv,)))
+        # A userinfo is dropped whole, even one with a raw `@` in it.
+        @test repr(DR.BrowserView("https://alice@password@127.0.0.1:41234/x", false)) ==
+              "BrowserView(https://127.0.0.1:41234/…, open = false)"
+    end
+
     @testset "value_frames_for: BrowserView emits a browser frame (ADR 0032)" begin
         url = "http://127.0.0.1:1237/browser-display/abcd"
         frames = DR.value_frames_for(DR.BrowserView(url))
@@ -43,8 +57,8 @@ const DR = ShipToolsRepl
         @test frames[1][:url] == url
         # browserview() is the exported constructor and round-trips identically.
         @test DR.value_frames_for(DR.browserview(url)) == frames
-        # Auto-open is on by default; `open = false` (serve-only, targeted
-        # open via `sot-fe open-url --fe`) rides the frame so front-ends can
+        # Auto-open is on by default; `open = false` (serve-only, or opened on one named
+        # frontend with `open = "<name>"`) rides the frame so front-ends can
         # skip the broadcast browser-open.
         @test frames[1][:open] === true
         no_open = DR.value_frames_for(DR.browserview(url; open = false))
@@ -274,21 +288,18 @@ const DR = ShipToolsRepl
         empty!(DR.ANNOUNCED_BROWSER_URLS)
     end
 
-    @testset "wgl_pick_port: preferred when free, ephemeral fallback when taken" begin
-        # Grab an ephemeral port to use as a known-free preferred: close it,
-        # then wgl_pick_port should return it verbatim.
-        srv = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", 0))
-        _, free_port = Sockets.getsockname(srv)
-        close(srv)
-        @test ShipToolsRepl.wgl_pick_port(Int(free_port)) == Int(free_port)
-        # Squat a port (standing in for another user's / another workspace's
-        # server) — wgl_pick_port must fall back to a DIFFERENT, valid port.
-        squatter = Sockets.listen(Sockets.InetAddr(Sockets.ip"127.0.0.1", 0))
-        _, taken = Sockets.getsockname(squatter)
-        picked = ShipToolsRepl.wgl_pick_port(Int(taken))
-        @test picked != Int(taken)
-        @test 1024 < picked <= 65535
-        close(squatter)
+    @testset "browser frame: opened on one named frontend (decision 0031)" begin
+        url = "http://127.0.0.1:1/0123456789abcdef0123456789abcdef"
+        f = DR.value_frames_for(DR.browserview(url; open = "laptop"))
+        @test length(f) == 1
+        @test f[1][:open] === false
+        @test f[1][:fe] == "fe@laptop"
+        @test DR.value_frames_for(DR.browserview(url; open = "fe@laptop")) == f
+        @test !haskey(DR.value_frames_for(DR.browserview(url))[1], :fe)
+        @test !haskey(DR.value_frames_for(DR.browserview(url; open = false))[1], :fe)
+        @test DR.browser_announce_key(DR.browserview(url; open = "a")) !=
+              DR.browser_announce_key(DR.browserview(url; open = "b"))
+        @test_throws ArgumentError DR.browserview(url; open = "")
     end
 
     @testset "serve: ready sentinel is the first stdout envelope (ADR 0009 update)" begin

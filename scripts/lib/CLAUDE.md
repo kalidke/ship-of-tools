@@ -29,3 +29,5 @@ before a window), then `sot_rerender_owned` (what an update does to the unit and
   prefix embedded in it matches); `sot_rerender_owned` and `sot_backup_owned` touch no other file.
 - `sot_prune_logs` keeps a log while the pid in its name is alive or while it is the newest, and a failed `rm` is
   logged and skipped, never fatal (`SOT_LOG_KEEP`, `SOT_LOG_CAP_BYTES`).
+- The logs folder `sot_daemon_ensure` writes a started daemon's log into is made owner-only (mode 700), new or existing and
+  whichever way the daemon starts, because the daemon copies every log line to it and earlier logs hold unmasked secrets.
