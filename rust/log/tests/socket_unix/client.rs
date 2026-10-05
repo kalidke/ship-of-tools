@@ -406,16 +406,23 @@ fn connect_retries_within_the_bound_on_a_full_backlog() {
     // loop) with nothing ever calling `accept()` on it -- every raw
     // connect piles up in the backlog until it's full.
     let listener = UnixListener::bind(&path).unwrap();
+    // The test sets its own backlog: std's `bind` uses the host's maximum
+    // (`somaxconn`), which would make the connects needed to fill it, and
+    // so whether the open-file limit runs out first, a fact of the host.
+    // `listen(2)` on a listening socket sets its backlog again.
+    use std::os::unix::io::AsRawFd as _;
+    const BACKLOG: i32 = 4;
+    // SAFETY: `listener` owns a valid listening socket fd for this call.
+    assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), BACKLOG) }, 0, "listen(2) must reset the backlog");
 
     // Saturate the backlog with NONBLOCKING raw connects until EAGAIN is
-    // actually observed (a bounded attempt count -- std's own
-    // `UnixListener::bind` backlog is 128 -- so a system with a huge
-    // backlog cannot spin this test forever; the bound is a sanity cap on
-    // the syscall count, not a race with the syscall itself, since a
+    // actually observed (a bounded attempt count so a failure to fill
+    // cannot spin this test forever; the bound is a sanity cap on the
+    // syscall count, not a race with the syscall itself, since a
     // nonblocking connect can never block).
     let mut saturating = Vec::new();
     let mut observed_eagain = false;
-    for _ in 0..8192 {
+    for _ in 0..64 {
         match nonblocking_connect_attempt(&path).expect("raw connect(2) setup failed") {
             Some(s) => saturating.push(s),
             None => {
@@ -424,7 +431,7 @@ fn connect_retries_within_the_bound_on_a_full_backlog() {
             }
         }
     }
-    assert!(observed_eagain, "expected the backlog to fill (a real EAGAIN) within 8192 raw connects");
+    assert!(observed_eagain, "expected the backlog to fill (a real EAGAIN) within 64 raw connects");
 
     // `connect_voyage_socket` itself now races the saturated backlog: it
     // must not fail fast (this is EAGAIN, not "no listener"), and it must

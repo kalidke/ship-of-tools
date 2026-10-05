@@ -1,8 +1,8 @@
-//! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, then Enter.
+//! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, wait for it, then Enter.
 
 use super::*;
-use super::screen::{free_test_lines, held_rows, wake_lines};
-use crate::rows::run::headless::{attach, checkpointed, send_enter, type_and_pace, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
+use super::screen::{free_test_lines, held_rows, wake_lines, Prompt};
+use crate::rows::run::headless::{attach, checkpointed, send_enter, send_text, Client, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
 #[derive(Debug, PartialEq, Eq)]
@@ -14,9 +14,13 @@ pub enum WakeOutcome {
     /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
     /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
     TypedNoEnter { reason: &'static str, border: String },
-    /// A write on `step` (`"text"` or `"enter"`) returned an error (`detail`, the phase and its text), or its
-    /// delivery is unknown: what that step wrote may still have reached the agent.
+    /// The Enter write (`step` `"enter"`) returned an error or its delivery is unknown (`detail`, the phase and its
+    /// text): the Enter may still have reached the agent. For `step` `"text"` it is only the stale refusal (phase
+    /// `input`), which wrote nothing.
     Unconfirmed { step: &'static str, detail: String },
+    /// The text write failed in a phase other than `"input"`, or its delivery is unknown: the line may have reached
+    /// the agent (and may draw later), so it counts as typed.
+    TextUnknown { detail: String },
 }
 
 /// The outcome once the line is typed and the gate passed: the Enter write's result.
@@ -27,6 +31,15 @@ pub(crate) fn wake_outcome(enter: Result<(), HeadlessError>) -> WakeOutcome {
     }
 }
 
+/// A failed text write: only the stale refusal (phase `"input"`) wrote nothing, so only that is a clean refusal.
+fn text_failed(e: HeadlessError) -> WakeOutcome {
+    if e.phase == "input" {
+        unconfirmed("text", e)
+    } else {
+        WakeOutcome::TextUnknown { detail: format!("{}: {}", e.phase, e.detail) }
+    }
+}
+
 /// A failed write on `step`, as the outcome the wake reports.
 pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
     WakeOutcome::Unconfirmed { step, detail: format!("{}: {}", e.phase, e.detail) }
@@ -34,9 +47,10 @@ pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
 
 /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
 /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
-/// [`free_test_lines`] reads them), and
-/// only then type `line` and, if the typed-line gate (asked of the live screen after the pacing wait) says
-/// the line sits alone in main's input box, Enter, as [`write_and_enter`] does. A screen
+/// [`free_test_lines`] reads them; `None` refuses), and
+/// only then type `line` and, once the typed-line gate says it sits alone in main's input box (asked of the live
+/// screen until `op_budget` after the write), Enter ([`type_then_enter`]). A box that already holds just the wake
+/// line (`Prompt::HoldsLine`, on the first frame and the live one) gets Enter alone and no second typing. A screen
 /// that is not free gets no hold (it still costs the attach); one that is
 /// must then hold identical (the cursor, and every row through the line
 /// under it) for `still_for`, else it is a working row and nothing is
@@ -47,12 +61,10 @@ pub fn wake_if_free(
     state_dir: &Path,
     controller_id: &str,
     line: &str,
-    is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
+    is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> Option<Prompt>,
     agent: &str,
     still_for: Duration,
     op_budget: Duration,
-    quiet_budget: Duration,
-    pacing_budget: Duration,
 ) -> Result<WakeOutcome, HeadlessError> {
     let mut client = checkpointed(attach(state_dir, controller_id)?, Instant::now() + op_budget)?;
     let cursor = client.screen().cursor_position();
@@ -72,7 +84,8 @@ pub fn wake_if_free(
             }
         }
     };
-    let out = if !is_free(&seen, Some(cursor), agent) {
+    let first_prompt = is_free(&seen, Some(cursor), agent);
+    let out = if first_prompt.is_none() {
         Ok(WakeOutcome::NotFree)
     } else {
         mark("hold");
@@ -84,30 +97,45 @@ pub fn wake_if_free(
             still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(client.screen()), cursor.0) == held_rows(&first, cursor.0);
         }
         // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
-        if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
-            mark("final-ok");
-            Ok(match type_and_pace(&mut client, line.as_bytes(), op_budget, quiet_budget, pacing_budget) {
-                Err(e) => unconfirmed("text", e),
-                Ok(_) => {
-                    client.pump();
-                    let lines = free_test_lines(client.screen());
-                    let cursor = Some(client.screen().cursor_position());
-                    match super::screen::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
-                        Some(reason) => {
-                            let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
-                            WakeOutcome::TypedNoEnter { reason, border }
-                        }
-                        None => wake_outcome(send_enter(&mut client, op_budget)),
-                    }
+        let live = if still { is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) } else { None };
+        match live {
+            Some(prompt) if Some(prompt) == first_prompt => {
+                mark("final-ok");
+                if prompt == Prompt::HoldsLine {
+                    tracing::info!("comm wake: Enter for the wake line left in main's input box");
+                    Ok(wake_outcome(send_enter(&mut client, op_budget)))
+                } else {
+                    Ok(type_then_enter(&mut client, line, agent, op_budget))
                 }
-            })
-        } else {
-            Ok(WakeOutcome::NotFree)
+            }
+            _ => Ok(WakeOutcome::NotFree),
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
     mark("done");
     out
+}
+
+/// Types `line`, pumps until the typed-line gate passes or `op_budget` has passed since the write returned, then
+/// writes Enter. A line that never shows alone gets no Enter ([`WakeOutcome::TypedNoEnter`]).
+fn type_then_enter(client: &mut Client, line: &str, agent: &str, op_budget: Duration) -> WakeOutcome {
+    if let Err(e) = send_text(client, line.as_bytes(), op_budget) {
+        return text_failed(e);
+    }
+    let deadline = Instant::now() + op_budget;
+    loop {
+        client.pump();
+        let lines = free_test_lines(client.screen());
+        let cursor = Some(client.screen().cursor_position());
+        match super::screen::typed_refusal(&lines, cursor, agent, cfg!(windows), line) {
+            None => return wake_outcome(send_enter(client, op_budget)),
+            Some(reason) if Instant::now() >= deadline => {
+                let border = cursor.and_then(|(row, _)| lines.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
+                return WakeOutcome::TypedNoEnter { reason, border };
+            }
+            Some(_) => std::thread::sleep(POLL_INTERVAL),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -122,21 +150,23 @@ mod tests {
     }
 
     #[test]
-    fn text_write_failure_is_unconfirmed_not_skipped() {
-        // The mapping `wake_if_free` applies to a `type_and_pace` error; a real text-write failure needs a stub
-        // supervisor with no seam here, so the mapping is tested directly.
-        let failed = HeadlessError { phase: "write", detail: "broken pipe".to_string(), submitted: true };
-        let out = unconfirmed("text", failed);
-        assert_eq!(out, WakeOutcome::Unconfirmed { step: "text", detail: "write: broken pipe".to_string() });
+    fn a_text_write_that_may_have_landed_is_not_a_clean_refusal() {
+        let failed = |phase| HeadlessError { phase, detail: "x".to_string(), submitted: true };
+        // Only the stale refusal (phase "input") wrote nothing; any other failure may have reached the agent.
+        assert_eq!(text_failed(failed("input")), WakeOutcome::Unconfirmed { step: "text", detail: "input: x".to_string() });
+        // The phases `send_text` returns: `input` (stale), `record` (delivery unknown or the deadline), `take` (the client died).
+        for phase in ["record", "take"] {
+            assert_eq!(text_failed(failed(phase)), WakeOutcome::TextUnknown { detail: format!("{phase}: x") });
+        }
     }
 
     // Observed on Linux only: the attach client's worker is the same code elsewhere, but no host here runs it.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_wake_without_a_lane_is_a_checkpoint_error() {
-        let free = |_: &[String], _: Option<(u16, u16)>, _: &str| true;
+        let free = |_: &[String], _: Option<(u16, u16)>, _: &str| Some(Prompt::Empty);
         let d = Duration::from_secs(5);
-        let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "x", &free, "claude", d, d, d, d)
+        let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "x", &free, "claude", d, d)
             .expect_err("no lane to wake");
         assert_eq!(err.phase, "checkpoint");
         assert!(!err.submitted);

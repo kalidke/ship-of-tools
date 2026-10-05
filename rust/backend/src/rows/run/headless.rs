@@ -27,9 +27,9 @@ pub(crate) const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
 
 /// What a headless op failed to do, and where. `phase` is one of
 /// `size` (the size gate, before any attach), `attach`, `checkpoint`,
-/// `take` (the pen was asked for but never granted, and — since
-/// nothing reached [`Client::send_input`]'s own wire flush yet —
-/// `submitted` is `false` here), `input` (a definite
+/// `take` (the pen was asked for but never granted, with `submitted`
+/// `false` — or, from `send_and_wait_recorded`, the client died after the
+/// input was handed to it: `submitted` is `true` and delivery is unknown), `input` (a definite
 /// `input_refused_stale`; never retried by this module), `record`
 /// (the record's own verdict is UNKNOWABLE: either the wire said
 /// `input_delivery_unknown`, or the deadline expired after the input
@@ -214,21 +214,14 @@ pub(crate) fn enter_outcome(r: Result<(), HeadlessError>) -> PtyEnter {
 
 /// [`write_and_enter`]'s steps 2-3 (type, then wait for the screen to settle) over an already attached,
 /// checkpointed client; the caller shuts the client down.
-pub(crate) fn type_and_pace(
+fn type_and_pace(
     client: &mut Client,
     text: &[u8],
     op_budget: Duration,
     quiet_budget: Duration,
     pacing_budget: Duration,
 ) -> Result<usize, HeadlessError> {
-    let n = if text.is_empty() {
-        0
-    } else {
-        match send_and_wait_recorded(client, text, Instant::now() + op_budget) {
-            Ok(n) => n,
-            Err(e) => return Err(e),
-        }
-    };
+    let n = if text.is_empty() { 0 } else { send_text(client, text, op_budget)? };
     // `SOT_TEST_PACING_HOLD` (test-only, the `SOT_TEST_ACTIVATION_BARRIER`
     // convention): hold pacing to its full bound. Terminal output batches,
     // so a scripted test load cannot keep the screen changing every poll.
@@ -252,6 +245,11 @@ pub(crate) fn type_and_pace(
     }
 
     Ok(n)
+}
+
+/// The text write, recorded on the wire, as [`send_enter`] is for Enter: the bytes written.
+pub(crate) fn send_text(client: &mut Client, text: &[u8], op_budget: Duration) -> Result<usize, HeadlessError> {
+    send_and_wait_recorded(client, text, Instant::now() + op_budget)
 }
 
 /// [`write_and_enter`]'s step 4: the Enter byte, written and recorded. Doc above.

@@ -26,12 +26,31 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 
 ## Rules
 - `comm-lib.sh` only sources its parts, and a part calls nothing while it is sourced: outside function bodies there are
-  assignments only, so the order of the parts changes no behaviour. A new part is a new file here and a new line
+  assignments only, and comm-lib-base.sh's `umask 077`, which reads nothing, so the order of the parts changes no
+  behaviour. A new part is a new file here and a new line
   `source "$(dirname "${BASH_SOURCE[0]}")/<part>" || return 1` there, the form the installer inlines (a `source` or `.`
   command it sees anywhere else whose path names a part stops the install; it reads lines, not bash, so a command in a
   case arm, after an assignment or a command word, split over lines or in process substitution, a path built from a
   variable and a part run by another command are not seen). A part sources nothing, and uses no `BASH_SOURCE`, no
   `LINENO` and no top-level `return`, so inlined it defines the same functions and globals.
+- Every script that sources the library writes under umask 077, except `comm-worktree-new.sh`, which sets the caller's
+  mask back for the worktree. The comm folder's path is made absolute once, in comm-lib-base.sh, so a later `cd` or an
+  exported `CDPATH` cannot make two commands mean two folders: a relative `SOT_COMM_HOME` is resolved against the first
+  comm script's directory and exported absolute, so its children agree (the daemon resolves it against its own).
+- `ensure_home` (`_sot_comm_tighten`) removes group and other permissions from the layout's own entries only
+  (`_sot_comm_own` names them: the folder, `inbox/`, `read/`, `self/`, `state/`, `probe/` and its folders,
+  `registry.json`, `registry.json.tmp` and `registry.json.new.*`, `.registry.lock` and its `.tmp.*` and `.reclaim.*`
+  files, the lock manager's record and temp, `gh-device-auth.json`, and the files of those folders: comm/PROTOCOL.md's
+  layout block), and only while the comm folder itself is open to group or other. It hands `find` the
+  layout folders and lets it descend one level, so a layout folder that is a symlink is never followed, and it closes
+  the comm folder last. An unknown file or folder, `bin/` and `VERSION` keep their modes behind the 0700 folder. A file
+  `chmod` cannot change (another account's) is warned about once, at the pass that closes the folder, and not again.
+  `comm-join.sh` runs it at every join.
+- The refusal is a deny list: a comm folder that is the root, the home folder or a git checkout gets one warning and
+  its permissions are not changed (the folders `ensure_home` makes are still made). A mistaken `SOT_COMM_HOME` that
+  names any other folder still loses its own group and other bits, and those of its children the list names, because
+  nothing marks a folder as a comm folder before `ensure_home` writes the registry in it. A warning of a failed
+  tightening comes only from a re-check of the end state, naming the entry still open.
 - One registry write (`registry_replace` under `with_lock`) and one read (`sot_registry_read`: 0 present, 1 absent, 2
   unreadable).
 - One inbox append (`sot_inbox_append`) and one `comm.file` request (`sot_comm_file`).

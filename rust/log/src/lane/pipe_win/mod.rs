@@ -257,7 +257,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    OPEN_EXISTING, PIPE_ACCESS_DUPLEX, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, WaitNamedPipeW, PIPE_READMODE_BYTE,
@@ -447,7 +447,8 @@ mod server;
 mod slot;
 
 use accept::*;
-pub use client::{connect_pipe_path_unchallenged, connect_voyage_pipe, PipeClient, PipeEndpoint};
+pub(crate) use client::connect_pipe_path_unchallenged;
+pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 pub(crate) use client::connect_voyage_pipe_unchallenged;
 use conn::*;
 pub use server::PipeServer;

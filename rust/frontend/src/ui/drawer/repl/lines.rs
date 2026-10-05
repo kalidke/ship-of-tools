@@ -192,7 +192,7 @@ pub(in crate::ui) fn build_repl_lines(
                     // is defensive — if one ever lands here, render a compact
                     // caption rather than dropping it silently.
                     out.push(RtLine::from(vec![Span::styled(
-                        format!("↗ interactive figure · {url}"),
+                        format!("↗ interactive figure · {}", crate::browser_open::origin_of(url)),
                         Style::default().fg(Color::LightBlue),
                     )]));
                 }

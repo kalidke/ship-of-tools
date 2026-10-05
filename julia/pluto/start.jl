@@ -24,21 +24,10 @@ function pick_port(preferred::Int)
 end
 const PORT = pick_port(1234)
 
+include(joinpath(@__DIR__, "session_options.jl"))
+
 session = Pluto.ServerSession()
-session.options.server.host = HOST
-session.options.server.port = PORT
-session.options.server.launch_browser = false
-session.options.server.show_file_system = false
-session.options.server.disable_writing_notebook_files = false
-# Access-gated (security review): any local user on this shared host could
-# otherwise reach the Pluto UI and run code as the daemon's owner — an RCE
-# as bad as an open protocol port. `require_secret_for_access = true` makes
-# every request need `session.secret` (URL query param or the cookie Pluto
-# sets after the first authenticated hit); the `URL` line below appends it,
-# so the `o`-opens-Pluto flow keeps working with no frontend change.
-session.options.security.require_secret_for_open_links = true
-session.options.security.require_secret_for_access = true
-session.options.security.warn_about_untrusted_code = true
+configure_session!(session, HOST, PORT)
 
 server_task = Pluto.run!(session)
 
@@ -58,7 +47,7 @@ end
 println(stdout, "READY http://$(HOST):$(PORT)")
 flush(stdout)
 
-edit_url(nb) = "http://$(HOST):$(PORT)/edit?secret=$(session.secret)&id=$(nb.notebook_id)"
+edit_url(nb) = "http://$(HOST):$(PORT)$(session.options.server.base_url)edit?secret=$(session.secret)&id=$(nb.notebook_id)"
 
 # Service loop: read OPEN <abspath> requests on stdin, write URL <url> or
 # ERR <msg> on stdout. Stays alive until stdin closes.

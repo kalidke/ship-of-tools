@@ -57,28 +57,15 @@ const CHUNK: usize = 64 * 1024;
 
 /// This box's own already-hardened client for its own endpoint — the same
 /// two `sot-log` clients `LaneDial::Local` dials with, never a second
-/// connector written here.
+/// connector written here. `connect_own` connects only to an endpoint this
+/// OS account serves (ADR 0049, User isolation).
 #[cfg(unix)]
 type Bridged = sot_log::lane::socket_unix::SocketClient;
 #[cfg(windows)]
 type Bridged = sot_log::lane::pipe_win::PipeClient;
 
-#[cfg(unix)]
 fn connect(path: &Path) -> Result<Bridged, TransportError> {
-    sot_log::lane::socket_unix::connect_unix_socket_unchallenged(path)
-}
-
-#[cfg(windows)]
-fn connect(path: &Path) -> Result<Bridged, TransportError> {
-    let text = path.to_str().ok_or_else(|| TransportError::Io {
-        op: "connect",
-        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "pipe path is not valid Unicode"),
-    })?;
-    // `connect_pipe_path_unchallenged`'s mid-dial cancel hook. Nothing
-    // sets it here — the dial is the first thing this process does and no
-    // other thread exists yet to cancel it.
-    let dial_cancel = std::sync::atomic::AtomicBool::new(false);
-    sot_log::lane::pipe_win::connect_pipe_path_unchallenged(text, &dial_cancel)
+    sot_log::identity::connect_own::connect_own(path)
 }
 
 pub fn run(args: &[String]) -> i32 {

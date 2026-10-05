@@ -1,6 +1,6 @@
 //! Lease tests: leaving, and what the daemon is told on the way out.
 
-use super::grant_tests::bind;
+use super::grant_tests::{bind, Bound};
 use super::*;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -11,7 +11,7 @@ use std::time::Duration;
 /// answers each leave whose intent is `reply_to`, after `delay`, with the
 /// sentinel `not_ended: 7`, and marks it replied only once that is written.
 fn leave_fake(
-    listener: interprocess::local_socket::tokio::Listener,
+    listener: Bound,
     gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     reply_to: Option<&'static str>,
     delay: Duration,
@@ -217,7 +217,7 @@ async fn answered(replied: &std::sync::atomic::AtomicBool) {
 /// A daemon that grants, answers the first leave with `payload` under the
 /// leave's id plus `shift`, then reads until EOF.
 fn odd_reply_fake(
-    listener: interprocess::local_socket::tokio::Listener,
+    listener: Bound,
     shift: u64,
     payload: serde_json::Value,
 ) -> tokio::task::JoinHandle<()> {

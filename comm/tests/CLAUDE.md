@@ -21,6 +21,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-comm-deps.sh`: a missing jq, flock or perl is named by poll, session start and the Stop hook, never passed silently
 - `test-comm-e2e-readers.sh`: real readers on a real shared home lose no line (needs a v4 peer and a v3 host)
 - `test-comm-matrix-verdict.sh`: the acceptance matrix's verdict logic tells a false failure from a false success
+- `test-comm-private.sh`: every comm writer makes the comm folder its user's alone, an older folder is tightened at join, user files keep the caller's umask
 - `test-comm-poll-cursor.sh`: the read cursor is a line offset that survives a torn line, a cut-back file and a legacy stamp
 - `test-crlf-jq-output.sh`: the comm scripts compare handles correctly under a jq that writes CRLF
 - `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip

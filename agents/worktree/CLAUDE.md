@@ -24,3 +24,5 @@ from the same name.
 - `comm-worktree-clean.sh` measures "merged" against `main` or `master` only (`BASEBR`); a branch merged elsewhere
   reads unmerged until `--force`.
 - `comm-worktree-new.sh` refuses a second agent inside a session (`sot_require_agent`), before any git write.
+- `comm-worktree-new.sh` makes the worktree under the caller's mask: it sets it back after sourcing the library, whose
+  `umask 077` is for the comm folder.

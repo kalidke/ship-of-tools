@@ -21,7 +21,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `status_integration.rs`: topology; `sotd status` against a real daemon the test starts and stops
 - `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host]` with real pipes and real processes
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
-- `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire
+- `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
 - `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules)
 - `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a TCP-to-Unix relay

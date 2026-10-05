@@ -38,8 +38,7 @@ The browser opens `http://127.0.0.1:<port>/…` on both ends:
 
 - **Local frontend** (same box as the daemon): reaches the loopback port directly.
 - **Remote frontend**: the **daemon TCP proxy** (ADR 0035) carries the port
-  through the one control tunnel — no per-port `ssh -L` needed. (The launcher's
-  legacy `-L 1241` forward still works as a fallback and coexists.)
+  through the one control tunnel — no per-port `ssh -L` needed.
 
 ## Why WGLMakie, not CairoMakie
 

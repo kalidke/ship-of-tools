@@ -34,8 +34,8 @@ impl Producer for PtyProducer {
         // when `std`'s own error-reporting `write` fails its internal
         // assertion, which `wait()` observes as an ordinary (if violent)
         // process exit, not a spawn failure. Neither property may be
-        // silently dropped: the flock fix is real (a rare parallel-test
-        // flake, per its own comment) and `ExitKind::SpawnFailed` must
+        // silently dropped: the close of every fd >= 3 (the pty fds and a
+        // killed holder's lock copy) and `ExitKind::SpawnFailed` must
         // stay honest (`tests/capsule/`'s own
         // `spawn_failure_is_compensated_unix`, the Unix twin of the
         // Windows spawn-failure test). The fix keeps BOTH: resolve
@@ -206,10 +206,10 @@ impl Producer for PtyProducer {
                 // Close EVERY inherited fd ≥ 3 before exec. O_CLOEXEC
                 // alone is not enough: between fork and exec this child
                 // holds copies of all parent fds, and a flock lives on
-                // the open file description — so a capsule-host thread
-                // dropping and reopening a voyage lock during this window
-                // would collide with its own lock through us (observed as
-                // a rare parallel-test flake). `close_range` severs those
+                // the open file description. A dropped guard is unlocked
+                // by `WriterLock`'s Drop, so this window no longer holds a
+                // live holder's lock; it still holds a KILLED holder's
+                // (no Drop runs) until exec. `close_range` severs those
                 // references at the earliest point — including this
                 // child's own inherited copies of the master and the
                 // slave the PARENT is about to keep held (decision 12):

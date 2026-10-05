@@ -83,7 +83,9 @@ pub fn connect_voyage_pipe(voyage_id: &str) -> Result<PipeClient, TransportError
 /// to tell apart.
 pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeClient, TransportError> {
     validate_voyage_id(voyage_id)?;
-    connect_named_pipe_unchallenged(pipe_name_wide(voyage_id), &AtomicBool::new(false))
+    #[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_named_pipe_unchallenged(pipe_name_wide(voyage_id), &AtomicBool::new(false))?;
+    Ok(client)
 }
 
 /// ADR 0041 step 6 U2: connect to the supervisor lane's own pipe with NO
@@ -95,7 +97,9 @@ pub(crate) fn connect_voyage_pipe_unchallenged(voyage_id: &str) -> Result<PipeCl
 /// composes the full challenge itself, exactly as `supervisor::probe::win::RealProbeOps`
 /// does for the mgmt lane's own unchallenged connect.
 pub(crate) fn connect_supervisor_pipe_unchallenged(h: &str) -> Result<PipeClient, TransportError> {
-    connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))
+    #[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_named_pipe_unchallenged(supervisor_pipe_name_wide(h), &AtomicBool::new(false))?;
+    Ok(client)
 }
 
 /// Shared raw connect, given an already-resolved wide pipe name: retries
@@ -127,6 +131,7 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
         if cancel.load(Ordering::SeqCst) {
             return Err(TransportError::Cancelled);
         }
+        #[allow(clippy::disallowed_methods, reason = "the one raw open of the unchallenged connector, at identification level")]
         let h = unsafe {
             CreateFileW(
                 name.as_ptr(),
@@ -134,7 +139,9 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
                 0,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
+                // Identification level (ADR 0049, User isolation): whatever serves the pipe can read who this is but
+                // never act as this account, whichever process it turns out to be.
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
                 std::ptr::null_mut(),
             )
         };
@@ -169,15 +176,16 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
     }
 }
 
-/// ADR 0045 decision 3 (`sot-protocol`'s `DaemonLaneEndpoint`): the lane
-/// bridge dials a pipe PATH handed to it on the wire (`LaneDial::Local`
+/// ADR 0045 decision 3: the lane bridge dials a pipe PATH handed to it on the wire (`LaneDial::Local`
 /// carries whatever path the daemon's `lane.connect` reply implies),
 /// never a name this crate derives from a voyage id or a state-dir hash
 /// itself — so this is the raw connect by an arbitrary caller-supplied
 /// path, wide-encoded and handed to the SAME bounded-retry connect every
-/// other named-pipe client gets, never a parallel implementation. `pub`
-/// (every sibling raw connect above is `pub(crate)`): the caller here is
-/// `sot-protocol`, a different crate. NO authentication, exactly like
+/// other named-pipe client gets, never a parallel implementation. Crate-
+/// private like every sibling raw connect above: other crates
+/// (`sot-protocol`'s `DaemonLaneEndpoint`, `sotd stdio-bridge`) reach a pipe
+/// by name only through `identity::connect_own::connect_own`, which checks
+/// who serves it (ADR 0049, User isolation). NO authentication, exactly like
 /// [`connect_named_pipe_unchallenged`] itself — the lane bridge's own
 /// identity proof is decision 3's split (the daemon ran steps 1-3 on ITS
 /// dial; this client runs steps 4-5 over the pipe this returns). `cancel`
@@ -185,8 +193,10 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
 /// own bounded poll loop — see that function's own doc for why a checked
 /// flag between its already-bounded waits is the only mid-dial
 /// cancellation a synchronous `CreateFileW`/`WaitNamedPipeW` pair admits.
-pub fn connect_pipe_path_unchallenged(path: &str, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
-    connect_named_pipe_unchallenged(wide_null(path), cancel)
+pub(crate) fn connect_pipe_path_unchallenged(path: &str, cancel: &AtomicBool) -> Result<PipeClient, TransportError> {
+    #[allow(clippy::disallowed_methods, reason = "the connector connect_own wraps")]
+    let client = connect_named_pipe_unchallenged(wide_null(path), cancel)?;
+    Ok(client)
 }
 
 impl PipeClient {

@@ -11,9 +11,10 @@
 // `parse_range`, `serve_file` and `write_simple` are shared with `pages::site`,
 // so the two servers cannot disagree about Range or an empty file.
 //
-// Scope/security: binds 127.0.0.1 only. Serves only files whose extension is a known video type, and only
-// real regular files. This port has no auth of its own, though — any local
-// user on a shared host can reach it — so it must never accept a raw
+// Scope/security: binds 127.0.0.1 only and serves only connections from this
+// OS account (`serve_own`, ADR 0049). Serves only files whose
+// extension is a known video type, and only real regular files. It still must
+// never accept a raw
 // filesystem path from the request itself (that turned "video files the
 // single user can already read" into "any file, video or not, anyone on the
 // box can read"). Instead `video.open` REGISTERS the one file it's handing
@@ -27,7 +28,9 @@ use std::sync::RwLock;
 
 use anyhow::{Context, Result};
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream};
+#[cfg(test)]
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 use super::http::{content_type, serve_file, write_simple};
 use super::random_token;
@@ -117,12 +120,11 @@ pub fn bound_video_port() -> Option<u16> {
 /// callers should spawn this once at startup. The actual port is recorded
 /// for `bound_video_port()`.
 pub async fn spawn(preferred: u16) -> Result<()> {
-    let listener = match TcpListener::bind(("127.0.0.1", preferred)).await {
+    let listener = match crate::pages::bind_page_listener(preferred) {
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(preferred, error = %e, "video preferred port taken — falling back to an ephemeral port (multi-user host?)");
-            TcpListener::bind(("127.0.0.1", 0))
-                .await
+            crate::pages::bind_page_listener(0)
                 .context("bind video http server on an ephemeral 127.0.0.1 port")?
         }
     };
@@ -132,23 +134,15 @@ pub async fn spawn(preferred: u16) -> Result<()> {
         .port();
     BOUND_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "video http server listening");
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream).await {
-                            tracing::debug!(error = %e, "video http conn ended");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "video http accept failed");
-                }
-            }
-        }
-    });
+    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "video", serve_conn));
     Ok(())
+}
+
+/// One accepted video connection: `handle_conn`, its error logged at debug.
+async fn serve_conn(stream: TcpStream) {
+    if let Err(e) = handle_conn(stream).await {
+        tracing::debug!(error = %e, "video http conn ended");
+    }
 }
 
 /// Whether this path is a video extension this server will serve. Public so
@@ -284,5 +278,27 @@ mod video_ext_tests {
         for p in ["clip.avi", "song.mp3", "x.gif", "noext", "mp4"] {
             assert!(!is_servable_video(Path::new(p)), "{p} should not be servable");
         }
+    }
+}
+
+#[cfg(test)]
+mod serve_own_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn this_accounts_connection_is_served_through_the_real_check() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "test", serve_conn));
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"GET /nosuchtoken HTTP/1.1\r\nHost: x\r\n\r\n").await.unwrap();
+        let mut buf = [0u8; 128];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), c.read(&mut buf))
+            .await
+            .expect("this account's connection must be answered")
+            .unwrap();
+        let head = String::from_utf8_lossy(&buf[..n]);
+        assert!(head.starts_with("HTTP/1.1 404"), "got: {head}");
     }
 }

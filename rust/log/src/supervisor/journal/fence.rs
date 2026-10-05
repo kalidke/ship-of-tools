@@ -21,8 +21,8 @@ pub fn supervisor_lock_path(state_dir: &Path) -> PathBuf {
     state_dir.join(SUPERVISOR_LOCK_FILE_NAME)
 }
 
-/// The held supervisor fence — kernel-released on drop (including hard
-/// kills), exactly like the voyage writer fence's own guard. A DISTINCT
+/// The held supervisor fence — unlocked on drop, kernel-released on any
+/// death (including hard kills), exactly like the voyage writer fence's own guard. A DISTINCT
 /// type (not a re-export of `host::WriterLock`), so external callers'
 /// code reads as holding THE authority fence, not an unrelated per-voyage
 /// writer lock that merely happens to share its kernel mechanics — and so

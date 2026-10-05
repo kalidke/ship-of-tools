@@ -13,18 +13,30 @@ all clients are mutually addressable through the same registry and inboxes.
 ```
 ~/.sot-comm/
   bin/                     # installed scripts (the reference client)
+  VERSION                  # the installer's commit stamp
   registry.json            # who is reachable + liveness  (source of truth for discovery)
+  registry.json.tmp        # a registry write's temp file, renamed over registry.json
+  registry.json.new.<pid>.<n>  # the skeleton ensure_home links into place when there is no registry
   .registry.lock           # the registry-write lock: a file naming its holder (below)
   .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever, but a daemon's own
   .registry.lock.tmp.<id>      # a take's temp file, removed by the take
+  inbox-lock-manager       # the hub daemon's record of the inbox lock's mount, written at boot
+  .inbox-lock-manager.<id>.<pid>.<n>  # that record's temp file
+  gh-device-auth.json      # sot-gh-auth.sh's device-flow state
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
+  inbox/<name>.lock        # that inbox's lock file
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
   state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
                            # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
                            # Nothing removes a mail tick, so every session ever held on mail
                            # leaves one. Bounded per-session litter, and nothing sweeps it.
+  probe/<handle>/          # a probe row's project root (comm-probe.sh)
 ```
+
+Every entry above except `bin/` and `VERSION` (the installer's) is 0700 (a folder) or 0600 (a file), created so by every
+writer; `ensure_home` closes an older folder's entries at the next join. Anything else in the folder keeps its mode behind
+the 0700 folder. On Windows the folder inherits the profile's access list.
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
 shared place to publish, not a live broker. In an optional shared-home
@@ -426,8 +438,8 @@ sitting at the start of the input line marked by the prompt glyph (`❯`,
 or on Windows `❯` or `>`, the latter being Claude Code's fallback when its
 unicode check fails), followed by a no-break space, between the input box's
 two rules (on every OS; on Windows a bare glyph too, for now), so a grey
-suggestion or any other decoration does not count as a draft, while a draft
-counts unless its cursor sits at its very start, and the screen down to the
+suggestion (drawn dim) or any other dim decoration does not count as a draft, while
+a draft is not free wherever its cursor sits, and the screen down to the
 input box's lower rule (the background-agent footer below it is not watched)
 must then hold still for a second and a half before anything is typed, so a working
 session is not typed into while its screen is still changing — the daemon
@@ -437,7 +449,9 @@ sender — several frontends can show one row and each would type, and a
 closed window would leave the row deaf. It types a fixed notice, never the
 message itself: a pasted message is never marked read, so it would show
 again. One line per new batch of mail; one more if it is
-still unread ten minutes later at a free prompt. A row whose registry entry
+still unread ten minutes later at a free prompt. A line it typed that did not
+send is sent by a later tick, with Enter alone, once main's input box holds just
+that line; within one daemon run it is never typed twice (a restart forgets it). A row whose registry entry
 carries a `stop_at` under a minute old is running its Stop hook and is not typed
 into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
 and the hook reads the mail itself. A turn ended by Esc or an API error runs no

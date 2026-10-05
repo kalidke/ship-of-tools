@@ -2,6 +2,7 @@
 //! which entry is a row's, and the UTC stamps comm writes.
 
 use crate::rows::Workspace;
+use std::sync::Arc;
 
 /// ISO-8601 UTC instant (e.g. `2026-05-29T14:30:05Z`) without pulling in
 /// chrono — the backend has no time crate, so format the civil date from
@@ -190,11 +191,28 @@ pub(crate) fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The row an entry names: its non-empty `workspace_id`, the row whose
+/// session last joined that handle (`comm-join.sh` writes it from
+/// `$SOT_WORKSPACE_ID` before it declares the handle to the daemon).
+pub(crate) fn entry_row(entry: &serde_json::Value) -> Option<&str> {
+    entry.get("workspace_id").and_then(|v| v.as_str()).filter(|id| !id.is_empty())
+}
+
+/// The row whose session last joined `handle` on `host`: the registry entry's
+/// `workspace_id` (`entry_row`), if the entry is this host's. `None` when there
+/// is no registry, no entry, another host's entry or no row id in it.
+pub(crate) fn last_joiner(handle: &str, host: &str) -> Option<String> {
+    let agents = read_comm_agents()?;
+    let entry = agents.get(handle).filter(|e| host_matches(e, host))?;
+    entry_row(entry).map(str::to_string)
+}
+
 /// Which sot-comm registry row is workspace `ws`'s? THE ONE place that
 /// answers this — `handle_workspace_list` (the FE's `state`/`summary`
-/// merge) and `clear_comm_unread` (ADR 0044's read-clears-blue) both call
-/// this rather than each encoding their own copy of the rule, so they can
-/// never disagree about which row a workspace owns.
+/// merge), `clear_comm_unread` (ADR 0044's read-clears-blue) and `comm.file`'s
+/// running-row liveness (`running_row_holds`) all call this rather than each
+/// encoding their own copy of the rule, so they can never disagree about
+/// which row a workspace owns.
 ///
 /// - `agent_handle` set (ADR 0046 decision 1: the session inside `ws`
 ///   DECLARED this via `agent.join`) wins outright, on every runtime —
@@ -205,14 +223,23 @@ pub(crate) fn host_matches(entry: &serde_json::Value, host: &str) -> bool {
 ///   finding B8): this read-back STAYS as the fallback for a row that
 ///   has not (yet, or ever, for an older comm-join.sh) declared via
 ///   `agent.join` — deleted only with family H once every row has cycled.
-pub(crate) fn comm_handle_for_workspace(ws: &Workspace) -> String {
+/// - a fallback handle that some OTHER row in `rows` declares binds
+///   nothing (`""`): ADR 0049's one row per handle, so a row that lost a
+///   handle to a newer `agent.join` never answers to it by a stale
+///   self-file or stored name. `rows` is the daemon's rows; a caller
+///   checking one row alone passes `&[]`.
+pub(crate) fn comm_handle_for_workspace(ws: &Workspace, rows: &[Arc<Workspace>]) -> String {
     let declared = ws.agent_handle();
     if !declared.is_empty() {
         return declared;
     }
     let h = capsule_comm_handle(&ws.workspace_id);
-    if h.is_empty() {
-        ws.agent_name()
+    let h = if h.is_empty() { ws.agent_name() } else { h };
+    let held_elsewhere = rows
+        .iter()
+        .any(|r| r.workspace_id != ws.workspace_id && r.agent_handle() == h);
+    if h.is_empty() || held_elsewhere {
+        String::new()
     } else {
         h
     }
@@ -282,7 +309,9 @@ const CLEAR_COMM_UNREAD_LOCK_BOUND: std::time::Duration = std::time::Duration::f
 /// another host must survive), or when its own `workspace_id` field equals
 /// this workspace's id AND `host_matches` (covers a manually-joined handle,
 /// e.g. `comm-join.sh --name other`, whose `agent_name` was never set to
-/// this workspace's). ALL matching rows are dropped, including stale
+/// this workspace's). A by-name match whose entry carries another row's
+/// `workspace_id` is skipped (ADR 0049: the handle moved to that row). ALL
+/// matching rows are dropped, including stale
 /// duplicates on the same session.
 ///
 /// Fully best-effort: a missing registry, malformed JSON, a lock that can't be
@@ -329,11 +358,11 @@ fn remove_comm_agents_for_workspace_bounded(
         let to_remove: Vec<String> = agents
             .iter()
             .filter_map(|(handle, entry)| {
-                let by_name =
-                    !agent_name.is_empty() && handle == agent_name && host_matches(entry, host);
-                let by_workspace = !workspace_id.is_empty()
-                    && entry.get("workspace_id").and_then(|v| v.as_str()) == Some(workspace_id)
+                let by_name = !agent_name.is_empty()
+                    && handle == agent_name
+                    && entry_row(entry).map_or(true, |id| id == workspace_id)
                     && host_matches(entry, host);
+                let by_workspace = entry_row(entry) == Some(workspace_id) && host_matches(entry, host);
                 (by_name || by_workspace).then(|| handle.clone())
             })
             .collect();
@@ -366,7 +395,8 @@ fn remove_comm_agents_for_workspace_bounded(
 ///
 /// Two phases, both filtered through `comm_handle_for_workspace` — THE SAME
 /// row-binding rule `handle_workspace_list` uses (declared `agent_handle`
-/// first, else stored `agent_name`):
+/// first, else the self-file, else stored `agent_name`; a fallback another
+/// row declares binds nothing), with `rows` the daemon's rows:
 ///
 /// 1. **Unlocked pre-check** — read the registry once, resolve the handle,
 ///    require the row to pass `host_matches` and carry a `done` key (any
@@ -385,10 +415,10 @@ fn remove_comm_agents_for_workspace_bounded(
 /// Best-effort throughout: a missing registry, malformed JSON, or any I/O
 /// failure is a silent no-op — the activate's ack is unaffected either
 /// way (the caller sends it regardless of what this does).
-pub(crate) fn clear_comm_unread(ws: &Workspace, host: &str) {
+pub(crate) fn clear_comm_unread(ws: &Workspace, rows: &[Arc<Workspace>], host: &str) {
     // --- Unlocked pre-check ---
     let pre_agents = read_comm_agents();
-    let handle = comm_handle_for_workspace(ws);
+    let handle = comm_handle_for_workspace(ws, rows);
     if handle.is_empty() {
         return;
     }
@@ -413,7 +443,7 @@ pub(crate) fn clear_comm_unread(ws: &Workspace, host: &str) {
         };
         // Re-resolve and re-decide against the freshly-read registry — it
         // may have changed since the pre-check above.
-        let handle = comm_handle_for_workspace(ws);
+        let handle = comm_handle_for_workspace(ws, rows);
         if handle.is_empty() {
             return;
         }
@@ -452,3 +482,7 @@ mod tests;
 #[cfg(test)]
 #[path = "registry_write_tests.rs"]
 mod write_tests;
+
+#[cfg(test)]
+#[path = "binding_sites_tests.rs"]
+mod binding_sites_tests;

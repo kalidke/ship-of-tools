@@ -1,10 +1,10 @@
 # ADR 0049: messaging on one page
 
 **Status:** current — accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
-0048 (filer receipts). Part of what follows is built (the daemon's wake, the inbox lock); the
-relay's single verdict (lane M4) is not yet. The rest lands in stages, and the
-per-session watcher, listener and bridge machinery it replaces stays in place until
-each stage does.
+0048 (filer receipts). Part of what follows is built (the daemon's wake, the inbox lock, one row
+per handle; `comm/CLAUDE.md` says what one row per handle leaves unbuilt); the relay's single
+verdict (lane M4) is not yet. The rest lands in stages, and the per-session watcher, listener
+and bridge machinery it replaces stays in place until each stage does.
 
 2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
 guarantees, this ADR the design.
@@ -39,7 +39,9 @@ The owner asked for the fix as "agree on the one page comm system and then clean
 - **Waking** — every two seconds each daemon looks at every row it runs, and types one
   fixed line into a row with unread mail sitting at a free prompt — the cursor at the
   start of an empty input line; a dialog, menu, draft or working session is not free
-  and is never typed into. One line per batch, one more after ten minutes unread. A
+  and is never typed into. One line per batch, one more after ten minutes unread. A line
+  it typed that did not send is sent by a later tick, with Enter alone, once main's input
+  box holds just that line; within one daemon run it is never typed twice (a restart forgets it). A
   busy session needs no typing — its end-of-turn check will not let a turn finish with
   unread mail waiting. This is the only wake: no per-session watcher, listener, bridge
   or Monitor exists.
@@ -90,14 +92,36 @@ sockets. Not built: the daemon serves its ops and events, mail included, to a
 connection that has sent no hello; the hello names no OS account; and the peer read at
 accept refuses another account only for a lease, so a hub cannot tell two OS users on
 one hub account apart. Lane M1 builds the hello admission and that refusal, and deletes
-`LaneDial::Tcp`, a TCP lane dial that only tests construct. On Windows the frontend,
-its lease, `sotd stdio-bridge` and the lane client connect to whatever answers their
-pipe name, a name in the machine-wide pipe namespace, without checking which account
-serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept
-a connection from any account and rely on the URL's secret alone; lane S1 builds their
-owner check. The comm scripts create the comm folder and its inboxes with no mode of
-their own, so these are only as private as the creating shell's umask and the home
-folder above them; no lane is named for that yet.
+`LaneDial::Tcp`, a TCP lane dial that only tests construct. Built by lane M1b: the
+frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` speak
+only to an endpoint their own OS account serves, a pipe whose serving process runs as
+this account on Windows and a socket in a folder private to this account on Unix
+(`rust/log/src/identity/connect_own.rs`); a client opens that pipe at identification level, so
+its server cannot act as the account before the check. The Unix check covers the socket's own folder only. The
+daemon's bind check covers more for a derived path (the runtime folder and every folder below it down to the socket's)
+and the same single folder for a custom one; neither covers the folders above: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR`
+or `XDG_RUNTIME_DIR` under another account's writable, non-sticky folder is not covered. The video, site and site-pool servers, the frontend's page proxy and the one-use redirect listener that opens a page
+in the browser accept only through `serve_own`, which drops another account's connection before reading a byte.
+Pluto's server, its notebook workers and `wglshow`'s Bonito server are Julia processes listening on loopback ports of
+their own, which any account on the computer can reach; Ship of Tools does not accept on them, so no owner check
+reaches them. Each is locked instead by a secret drawn from the OS's secure generator, and the guarantee is that the
+secret never reaches another account (not its command lines, files or logs): Pluto's server by its session secret, which is also the first segment of
+every path Pluto serves, so a request without it gets nothing, Pluto's own files and `/ping` included; every Pluto notebook worker by the
+Distributed cluster cookie (16 characters), which the worker reads from its stdin and checks on every connection
+before it reads a message (Pluto's default Malt worker accepted the first connection with no secret and is not used:
+`julia/pluto/session_options.jl`); and a `wglshow` page by its secret path and its websocket by its session id, the
+page carrying its scripts and files inside it, so that nothing on that port answers without one of them
+(`julia/repl/src/wgl.jl`). Every listener of the Rust processes, the Julia children and the Node helpers is listed,
+and a new one fails `rust/log/tests/isolation_guards.rs` or, on Linux, the listener census of
+`julia/pluto/test/runtests.jl` and `julia/repl/test/bonito/runtests.jl`. The cost is on Windows only: in this mode
+Pluto cannot stop a running cell there (it says so; restoring interrupt is planned for 0.6.7). The guarantee is
+isolation, not availability: another account can still fill a listener's backlog and delay this account's own
+connections; each connection it opens is refused, or answered with nothing, quickly. The comm folder and everything in it but the installed scripts and
+their version stamp are its user's alone: every writer creates them owner-only (0700
+folders, 0600 files), and the next join removes the group and other permissions an
+older release left on the layout's own entries, while anything else in the folder
+keeps its mode behind the folder's own 0700; on Windows the folder under the profile
+inherits the profile's access list (the user, SYSTEM and Administrators).
 
 ## Why the daemon and not the frontend
 

@@ -254,7 +254,7 @@ fn route_response(
     let resp = match parsed {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, line, "mathjax response parse failed");
+            tracing::warn!(error = %sot_protocol::codec::unparsed(&e, line.len()), "mathjax response parse failed");
             return;
         }
     };
@@ -272,5 +272,21 @@ fn route_response(
         }));
     } else {
         let _ = reply.send(Err(anyhow!("mathjax: missing svg and error fields")));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR 0049, User isolation: a MathJax line that does not parse is logged by position and length, never its bytes.
+    #[test]
+    fn a_mathjax_line_that_does_not_parse_is_logged_without_its_bytes() {
+        let logged = crate::sidecars::logged_by(|| {
+            let mut pending = HashMap::new();
+            route_response(r#"{"id":2,"svg":"<svg data-u="http://127.0.0.1:41234/0123456789ab"#, &mut pending);
+        });
+        assert_eq!(logged.lines().filter(|l| l.contains("WARN")).count(), 1, "{logged}");
+        assert!(!logged.contains("0123") && !logged.contains("41234"), "{logged}");
     }
 }

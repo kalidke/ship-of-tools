@@ -28,6 +28,8 @@ thiserror = "2"
 # directly for the same fact.
 gethostname = "0.5"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
+# `identity::peer_owner::serve_own`, the one TCP accept loop (ADR 0049, User isolation).
+tokio = { workspace = true }
 # ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
 # reason to `tracing` (`attach_client/client.rs`), not only the pane's own status
 # string -- this crate had no tracing dep before this. Same version the
@@ -63,6 +65,7 @@ libc = { workspace = true }
 # Win32_System_IO for OVERLAPPED/CancelIoEx/GetOverlappedResult — the pinned
 # cancellation mechanism a dedicated thread alone cannot provide. Same
 # version the frontend pins.
+# Plus Win32_NetworkManagement_IpHelper for GetExtendedTcpTable (identity/peer_owner, decision 0031).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
@@ -74,10 +77,12 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Pipes",
     "Win32_System_IO",
     "Win32_System_Registry",
+    "Win32_NetworkManagement_IpHelper",
 ] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 # Self-referential dev-dependency (a standard Cargo idiom): enables
 # `test-support` for every target `cargo test -p sot-log` builds --
 # this crate's own `tests/*.rs` integration binaries included — without

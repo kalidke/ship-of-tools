@@ -6,7 +6,31 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-pub(super) fn bind(tag: &str) -> (interprocess::local_socket::tokio::Listener, PathBuf) {
+/// A bound listener and, on Unix, the private folder its socket sits in. It derefs to the listener; dropping it drops
+/// the listener first, then removes the folder.
+pub(super) struct Bound {
+    listener: interprocess::local_socket::tokio::Listener,
+    _folder: Folder,
+}
+
+struct Folder(Option<PathBuf>);
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+impl std::ops::Deref for Bound {
+    type Target = interprocess::local_socket::tokio::Listener;
+    fn deref(&self) -> &Self::Target {
+        &self.listener
+    }
+}
+
+pub(super) fn bind(tag: &str) -> (Bound, PathBuf) {
     let unique = format!(
         "sot-lease-test-{tag}-{}-{}",
         std::process::id(),
@@ -22,16 +46,21 @@ pub(super) fn bind(tag: &str) -> (interprocess::local_socket::tokio::Listener, P
         // macOS's temp_dir() is long enough to overflow sun_path
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let _ = &unique;
-        PathBuf::from(format!(
-            "/tmp/sl-{tag}-{}-{}.sock",
+        // `connect_pipe` refuses a socket outside a private folder (ADR 0049, User isolation).
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = PathBuf::from(format!(
+            "/tmp/sl-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
-        ))
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("s.sock")
     };
     let _ = std::fs::remove_file(&path);
     let name = path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_tokio().expect("bind");
-    (listener, path)
+    let folder = Folder(if cfg!(windows) { None } else { path.parent().map(PathBuf::from) });
+    (Bound { listener, _folder: folder }, path)
 }
 
 fn pipe_config(path: &Path) -> TransportConfig {
@@ -269,7 +298,7 @@ async fn slow_grant_is_held_not_dropped() {
 async fn one_daemon_under_two_labels_is_one_count() {
     // A fake daemon that grants every connection `root` and `n`, logging each later frame.
     fn daemon(
-        listener: interprocess::local_socket::tokio::Listener,
+        listener: Bound,
         root: &'static str,
         n: u32,
     ) -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>>) {
@@ -393,4 +422,15 @@ fn no_lease_status_line() {
     leases.set(&"h".to_string(), granted(), Some(tx));
     assert_eq!(leases.standing(&"h".to_string()), Some(Unreached));
     assert_eq!(leases.notice(), Some(NOTICE_NO_BACKEND));
+}
+
+/// `bind`'s private folder goes with the listener: nothing is left in /tmp after a test.
+#[cfg(unix)]
+#[tokio::test]
+async fn bind_removes_its_folder_when_dropped() {
+    let (listener, path) = bind("folder");
+    let dir = path.parent().unwrap().to_path_buf();
+    assert!(dir.is_dir());
+    drop(listener);
+    assert!(!dir.exists(), "{} was left behind", dir.display());
 }

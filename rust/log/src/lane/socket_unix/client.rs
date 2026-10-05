@@ -407,18 +407,19 @@ impl Endpoint for SocketEndpoint {
 /// outer retry, once this whole call returns `Undetermined` up through
 /// `authenticate_server`/`challenge`).
 ///
-/// ADR 0045 decision 3 (`sot-protocol`'s `DaemonLaneEndpoint`): `pub`,
-/// widened from this module's own `pub(crate)` siblings above — the lane
-/// bridge dials a socket PATH handed to it on the wire (`LaneDial::
-/// Local`), never a name this crate derives from a voyage id or a
-/// state-dir hash itself, and its caller is `sot-protocol`, a different
-/// crate. Reused rather than reimplemented: this is the SAME bounded,
+/// ADR 0045 decision 3: the lane bridge dials a socket PATH handed to it
+/// on the wire (`LaneDial::Local`), never a name this crate derives from a
+/// voyage id or a state-dir hash itself. Crate-private: other crates
+/// (`sot-protocol`'s `DaemonLaneEndpoint`, `sotd stdio-bridge`) reach a
+/// socket by name only through `identity::connect_own::connect_own`, which
+/// runs the private-folder rule first (ADR 0049, User isolation). Reused
+/// rather than reimplemented: this is the SAME bounded,
 /// non-blocking, pid-anchored connector every other Unix caller gets —
 /// a caller that rolled its own blocking `UnixStream::connect` wrapped
 /// in an external deadline would leak the blocked connect thread past
 /// that deadline on a full listen backlog, which this loop's own
 /// non-blocking `connect(2)` + bounded poll never does.
-pub fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, TransportError> {
+pub(crate) fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, TransportError> {
     let addr_bytes = path.as_os_str().as_bytes();
     let deadline = Instant::now() + CONNECT_BOUND;
     loop {
@@ -464,7 +465,9 @@ pub fn connect_unix_socket_unchallenged(path: &Path) -> Result<SocketClient, Tra
 /// defeat this whole module's enforcement.
 pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let path = voyage_socket_path(voyage_id)?;
-    connect_unix_socket_unchallenged(&path)
+    #[allow(clippy::disallowed_methods, reason = "a voyage lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_unix_socket_unchallenged(&path)?;
+    Ok(client)
 }
 
 /// The supervisor lane's own raw connect, with NO authentication — see
@@ -477,7 +480,9 @@ pub(crate) fn connect_voyage_socket_unchallenged(voyage_id: &str) -> Result<Sock
 /// `supervisor_client`, both generic over `Endpoint`, are its callers).
 pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketClient, TransportError> {
     let path = supervisor_socket_path(h)?;
-    connect_unix_socket_unchallenged(&path)
+    #[allow(clippy::disallowed_methods, reason = "a supervisor lane connector: the caller runs the lane's identity challenge")]
+    let client = connect_unix_socket_unchallenged(&path)?;
+    Ok(client)
 }
 
 /// Connect to `<runtime_dir>/voyage-<voyage_id>.sock` AND authenticate

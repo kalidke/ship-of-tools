@@ -188,23 +188,27 @@ pub fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
     }
 }
 
-/// Steps 1-3 of the OS-side identity check, shared by [`challenge()`] and
-/// [`authenticate_server()`]: read the server pid `P` via
+/// Steps 1-3 of the OS-side identity check, shared by [`challenge()`],
+/// [`authenticate_server()`] and `connect_own::own_pipe`: read the server pid `P` via
 /// `GetNamedPipeServerProcessId`, `OpenProcess` it, and compare its
 /// token-user SID against this account's. Returns the open handle plus
 /// `P` on a matching SID; `Foreign`/`Undetermined` are already the
 /// caller's own terminal outcome.
-fn authenticate_steps_1_to_3(
-    conn: &dyn PipeChallengeable,
+///
+/// `access` is the process right step 2 asks for: the full challenge's
+/// mask ([`CHALLENGE_ACCESS`]), or only the query right a token read needs
+/// ([`QUERY_ACCESS`], what `connect_own::own_pipe` asks for).
+pub(crate) fn authenticate_steps_1_to_3(
+    pipe: HANDLE,
+    access: u32,
 ) -> ChallengeOutcome<(OwnedHandle, u32)> {
     // Step 1.
     let mut server_pid: u32 = 0;
-    if unsafe { GetNamedPipeServerProcessId(conn.raw_handle(), &mut server_pid) } == 0 {
+    if unsafe { GetNamedPipeServerProcessId(pipe, &mut server_pid) } == 0 {
         return ChallengeOutcome::Undetermined;
     }
 
     // Step 2.
-    let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
     let raw = unsafe { OpenProcess(access, 0, server_pid) };
     if raw.is_null() {
         return ChallengeOutcome::Undetermined;
@@ -229,6 +233,14 @@ fn authenticate_steps_1_to_3(
 
     ChallengeOutcome::Proven((handle, server_pid))
 }
+
+/// The process rights the full challenge holds on the server it proves:
+/// the invalid-mgmt kill, the creation-time read, the death wait.
+const CHALLENGE_ACCESS: u32 = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+
+/// The one process right a token read needs: what `connect_own::own_pipe` asks for, where no kill, wait or reply-bound
+/// proof is wanted.
+pub(crate) const QUERY_ACCESS: u32 = PROCESS_QUERY_LIMITED_INFORMATION;
 
 /// The five pinned steps (ADR 0041 Lifecycle "The challenge"), in order:
 /// (1) read the server pid `P` via `GetNamedPipeServerProcessId`; (2)
@@ -257,7 +269,7 @@ pub fn challenge(
     exchange: &mut dyn IdentityExchange,
     reply_deadline: Instant,
 ) -> ChallengeOutcome<ChallengedProcess> {
-    let (handle, server_pid) = match authenticate_steps_1_to_3(conn) {
+    let (handle, server_pid) = match authenticate_steps_1_to_3(conn.raw_handle(), CHALLENGE_ACCESS) {
         ChallengeOutcome::Proven(v) => v,
         ChallengeOutcome::Foreign => return ChallengeOutcome::Foreign,
         ChallengeOutcome::Undetermined => return ChallengeOutcome::Undetermined,
@@ -319,7 +331,7 @@ pub fn challenge(
 /// classifier) runs `challenge()` itself, on top of a connection this
 /// function already authenticated at the OS level.
 pub fn authenticate_server(conn: &dyn PipeChallengeable) -> PeerAuthOutcome {
-    match authenticate_steps_1_to_3(conn) {
+    match authenticate_steps_1_to_3(conn.raw_handle(), CHALLENGE_ACCESS) {
         ChallengeOutcome::Foreign => PeerAuthOutcome::Foreign,
         ChallengeOutcome::Undetermined => PeerAuthOutcome::Undetermined,
         ChallengeOutcome::Proven((handle, pid)) => {

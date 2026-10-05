@@ -170,6 +170,7 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, first_id: u64, first_raw: S
             }
             st.current = Some((id, raw, Arc::clone(&slot)));
         }
+        #[allow(clippy::disallowed_methods, reason = "listener: capsule lane pipe: an owner-only DACL, then the identity challenge")]
         let connect_result = slot.submit_and_wait_registered(
             &shared.instances,
             id,

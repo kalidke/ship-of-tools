@@ -174,6 +174,9 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
+            // ADR 0049, User isolation: only a socket in this account's private folder.
+            sot_log::identity::connect_own::own_socket(std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
+            #[allow(clippy::disallowed_methods, reason = "own_socket runs first, above")]
             return std::os::unix::net::UnixStream::connect(p)
                 .map(Conn::Unix)
                 .map_err(|e| format!("{endpoint}: {e}"));
@@ -190,7 +193,19 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
-            return std::fs::OpenOptions::new().read(true).write(true).open(p).map(Conn::Pipe).map_err(|e| format!("{endpoint}: {e}"));
+            use std::os::windows::fs::OpenOptionsExt;
+            use std::os::windows::io::AsHandle;
+            // Identification level: whatever serves the pipe can read who this is but never act as this account, so
+            // nothing it does before the check below can use this account's rights.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .security_qos_flags(windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION)
+                .open(p)
+                .map_err(|e| format!("{endpoint}: {e}"))?;
+            // ADR 0049, User isolation: only a pipe this account serves, checked before a byte is written.
+            sot_log::identity::connect_own::own_pipe(file.as_handle(), std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
+            return Ok(Conn::Pipe(file));
         }
         #[cfg(not(windows))]
         {
@@ -289,6 +304,20 @@ pub(crate) fn dial_and_call_tracked(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// ADR 0049, User isolation: `connect`'s `pipe:` arm opens the pipe at identification level, so a server that
+    /// impersonates the client right after the first byte gets an identification token.
+    #[cfg(windows)]
+    #[test]
+    fn the_pipe_arm_opens_at_identification_level() {
+        use std::io::Write;
+        let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
+            let (mut writer, reader, guard) = connect(&format!("pipe:{name}")).expect("connect").split().expect("split");
+            writer.write_all(b"x").expect("write one byte");
+            (writer, reader, guard)
+        });
+        assert_eq!(level, windows_sys::Win32::Security::SecurityIdentification);
+    }
 
     #[cfg(unix)]
     use crate::paths::EnvGuard;

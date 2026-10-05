@@ -65,7 +65,7 @@ pub(in crate::ui) fn help_key(state: &mut State, key: KeyPress<'_>, context: hel
             Key::Named(NamedKey::Backspace) => { state.help.query.pop(); state.help.selected = 0; }
             _ if action == Some(Action::HelpManual) && !event.repeat => {
                 if let Some(a) = state.help.selected_action(&state.bindings) {
-                    if let Err(e) = open_url_in_browser(help::manual_url(a)) {
+                    if let Err(e) = crate::browser_open::spawn_opener(help::manual_url(a)) {
                         state.status = format!("Open help manual failed: {e}");
                     }
                 }

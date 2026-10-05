@@ -95,9 +95,19 @@ pub(super) async fn take_daemon_lock(opts: &crate::Opts) -> Result<Option<sot_lo
 /// succeeds, on Windows a client open of the pipe name succeeds.
 fn socket_answers(path: &std::path::Path) -> bool {
     #[cfg(unix)]
+    #[allow(clippy::disallowed_methods, reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written")]
     return std::os::unix::net::UnixStream::connect(path).is_ok();
     #[cfg(windows)]
-    return std::fs::OpenOptions::new().read(true).write(true).open(path).is_ok();
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Identification level, like every client of a pipe name another account may hold (ADR 0049, User isolation).
+        return std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .security_qos_flags(windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION)
+            .open(path)
+            .is_ok();
+    }
 }
 
 /// Refuses when a daemon still answers on the socket at `path`. Unlinking
@@ -107,7 +117,9 @@ fn socket_answers(path: &std::path::Path) -> bool {
 /// refuses too, because it cannot tell.
 #[cfg(unix)]
 pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
-    match std::os::unix::net::UnixStream::connect(path) {
+    #[allow(clippy::disallowed_methods, reason = "the daemon probes the path it is about to bind; an answer refuses the start and nothing is written")]
+    let attempt = std::os::unix::net::UnixStream::connect(path);
+    match attempt {
         Ok(_) => anyhow::bail!(
             "another daemon is already listening on {}; refusing to start on its socket \
              (stop that daemon first, or pass a different --socket)",
@@ -200,6 +212,7 @@ pub(super) async fn run_local(
     {
         listener_options = listener_options.security_descriptor(session_pipe_security_descriptor()?);
     }
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
     let listener = listener_options
         .create_tokio()
         .with_context(|| format!("bind {socket_path:?}"))?;
@@ -209,8 +222,10 @@ pub(super) async fn run_local(
     // accepting by dropping the listener and unlinking the socket, on the
     // same wake as the deciding departure, before any row is touched.
     let decided = loop {
+        #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
+        let accept = listener.accept();
         let stream: LocalStream = tokio::select! {
-            accepted = listener.accept() => accepted.context("accept on sot socket")?,
+            accepted = accept => accepted.context("accept on sot socket")?,
             () = leases.gone() => break tokio::time::Instant::now(),
         };
         let peer_identity = crate::server::listen::accepted_peer(&stream);

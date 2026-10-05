@@ -55,19 +55,25 @@
 //! below the box refuses the row; with no panel nothing below the box is checked, so a view of another agent
 //! or a focus off the input that drew no panel would read free (every captured view draws the panel); with agent view on, a
 //! focus on the panel that draws nothing reads free ([`panel_refusal`]).
-//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]);
-//! otherwise no Enter goes, the
-//! attempt counts as the wake (the line is not typed again before new mail or [`REPEAT_AFTER`]), and a warning names
-//! it. That gate withholds Enter after a stray key between the
+//! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]), which the
+//! wake waits up to [`OP_BUDGET`] for after typing; otherwise no Enter goes, the
+//! attempt counts as the wake (within one daemon run the line is not typed again before [`REPEAT_AFTER`] or a read inbox) and owes its Enter, and a warning names
+//! it. A later tick ([`Decision::Complete`]) sends Enter alone, never typing, once the first frame and the live screen after the hold both show just the wake line in main's box. That gate withholds Enter after a stray key between the
 //! final read and the typing; the line itself has then gone, without Enter, wherever that key put focus (the
 //! panel or a draft). Nothing guards the window between the gate's read and the Enter: a key pressed, or a dialog
 //! or permission prompt drawn, in it receives the Enter. A later wake refuses for whatever the screen then
 //! shows, and the refusal streak logs it.
 //!
+//! A text write that fails after it may have landed (any phase but a stale `input` refusal) is treated as typed: the
+//! line is owed its Enter and is not typed again, so a write that was lost for good costs the row its wake until
+//! [`REPEAT_AFTER`] (the Complete bound) or a read inbox.
+//! Enter alone also goes to a box that holds exactly the wake line for another reason: a line recalled from history with Up or returned to the box by Esc, once it has held still for
+//! [`STILL_FOR`]. The check cannot tell it from a line the wake left (it never reads the cursor column).
+//!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -79,7 +85,7 @@ mod screen;
 mod unread;
 
 use attempt::{wake_if_free, WakeOutcome};
-use screen::{prompt_glyphs, refused_on};
+use screen::{prompt_glyphs, prompt_of, Prompt};
 use unread::scan;
 
 pub const TICK: Duration = Duration::from_secs(2);
@@ -95,8 +101,6 @@ const STOP_HOOK_BOUND: Duration = Duration::from_secs(60);
 const WAKE_LINE: &str = "[sot-comm] you have mail: run comm-poll.sh";
 const CONTROLLER_ID: &str = "sot-comm-wake";
 const OP_BUDGET: Duration = Duration::from_secs(3);
-const QUIET_BUDGET: Duration = Duration::from_millis(300);
-const PACING_BUDGET: Duration = Duration::from_secs(1);
 /// A turn whose only change is a once-a-second counter must change inside the hold even when the screen reaches the daemon ~100 ms late.
 const STILL_FOR: Duration = Duration::from_millis(1500);
 
@@ -105,6 +109,8 @@ const STILL_FOR: Duration = Duration::from_millis(1500);
 struct Woken {
     line: u64,
     at: Instant,
+    /// The line was typed and no Enter went: a later tick may send Enter alone ([`Decision::Complete`]), never type again.
+    enter_owed: bool,
 }
 
 /// One look at `inbox/<h>.jsonl` against `read/<h>.cursor`.
@@ -142,11 +148,15 @@ enum Decision {
     /// Unread, but already woken for it.
     Hold,
     Wake,
+    /// Unread, the line typed and Enter owed, and [`REPEAT_AFTER`] not yet passed: only Enter alone may be sent.
+    Complete,
 }
 
 fn decide(s: &Scan, woken: Option<&Woken>, now: Instant) -> Decision {
     if s.unread == 0 {
         Decision::Clear
+    } else if woken.is_some_and(|w| w.enter_owed && now.duration_since(w.at) < REPEAT_AFTER) {
+        Decision::Complete
     } else if s.fresh > 0 || woken.map_or(true, |w| now.duration_since(w.at) >= REPEAT_AFTER) {
         Decision::Wake
     } else {
@@ -158,31 +168,15 @@ fn decide(s: &Scan, woken: Option<&Woken>, now: Instant) -> Decision {
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let mut woken: HashMap<String, Woken> = HashMap::new();
     let mut streaks: HashMap<String, Streak> = HashMap::new();
-    let mut warned: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
         let rows = workspaces.list();
-        let mut declared: HashMap<String, usize> = HashMap::new();
-        for ws in &rows {
-            let h = ws.agent_handle();
-            if !h.is_empty() {
-                *declared.entry(h).or_default() += 1;
-            }
-        }
         let mut checks = Vec::new();
         for ws in rows {
             let handle = ws.agent_handle();
             if handle.is_empty() || ws.runtime != "capsule" {
-                continue;
-            }
-            // Two rows declaring one handle: a wake aimed by a guess types
-            // into someone else's session, so both are skipped.
-            if declared.get(&handle).copied().unwrap_or(0) > 1 {
-                if warned.insert(handle.clone()) {
-                    tracing::warn!(handle = %handle, "comm wake: two rows declare this handle; waking neither");
-                }
                 continue;
             }
             let agent = ws.agent();
@@ -213,7 +207,7 @@ enum Step {
     Refused(Refusal),
 }
 
-/// Why the wake did not type into a row with mail: a [`refused_on`] reason, `stop hook running`, `moved during the
+/// Why the wake did not type into a row with mail: a [`prompt_of`] reason, `stop hook running`, `moved during the
 /// hold` or `text not confirmed`, and the line above the cursor's row (the box's top border, when there is a box).
 #[derive(Debug)]
 struct Refusal {
@@ -260,11 +254,12 @@ fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Stre
 
 fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Option<Woken>) -> Step {
     let s = scan(home, handle, prior.map_or(0, |w| w.line));
-    match decide(&s, prior.as_ref(), Instant::now()) {
+    let complete = match decide(&s, prior.as_ref(), Instant::now()) {
         Decision::Clear => return Step::Clear,
         Decision::Hold => return Step::Skip,
-        Decision::Wake => {}
-    }
+        Decision::Wake => false,
+        Decision::Complete => true,
+    };
     // Only a Ready row is typed into: a row whose agent has ended can still
     // show a prompt-shaped last screen. (Nothing on the wake path restarts a
     // row; `wake_if_free` only attaches.)
@@ -273,35 +268,47 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
         return Step::Skip;
     }
     let seen: std::cell::RefCell<(Option<&'static str>, String)> = Default::default();
-    let free = |l: &[String], c: Option<(u16, u16)>, a: &str| {
+    let free = |l: &[String], c: Option<(u16, u16)>, a: &str| -> Option<Prompt> {
         // The registry, then the clock: a mark the read sees was stamped no later than `now`.
         let registry = crate::comm::registry::registry::read_registry_fresh(&home.join("registry.json")).unwrap_or_default();
         let now = crate::comm::registry::registry::unix_now_secs();
-        let reason = refused_on(l, c, a, cfg!(windows)).or_else(|| stop_hook_running(&registry, handle, now).then_some("stop hook running"));
+        let prompt = prompt_of(l, c, a, cfg!(windows));
+        let reason = match prompt {
+            Err(reason) => Some(reason),
+            // A Complete tick sends Enter to a line already in the box; an empty box is not its business.
+            Ok(Prompt::Empty) if complete => Some("the typed wake line has not shown"),
+            Ok(_) => stop_hook_running(&registry, handle, now).then_some("stop hook running"),
+        };
         let border = c.and_then(|(row, _)| l.get((row as usize).checked_sub(1)?)).cloned().unwrap_or_default();
         *seen.borrow_mut() = (reason, border);
-        reason.is_none()
+        prompt.ok().filter(|_| reason.is_none())
     };
-    let out = wake_if_free(state_dir, CONTROLLER_ID, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET, QUIET_BUDGET, PACING_BUDGET);
+    let out = wake_if_free(state_dir, CONTROLLER_ID, WAKE_LINE, &free, agent, STILL_FOR, OP_BUDGET);
     step_of(handle, out, seen.take(), s.total, Instant::now())
 }
 
 /// What one wake attempt means for the row. A line that was typed counts as the wake whether or not Enter followed or
 /// was confirmed (ADR 0049: one line per batch): typing it again would repeat it wherever focus went, or send it twice.
-/// A text write that failed or whose delivery is unknown is a refusal, decided by the next tick's screen read and
-/// warned once per streak ([`settle`]). An attach or checkpoint failure is no row this tick.
+/// One typed without Enter is owed it (`enter_owed`): a later tick sends Enter alone once the line shows alone ([`Decision::Complete`]).
+/// A text write refused as stale (phase `input`, nothing written) is a refusal, decided by the next tick's screen read
+/// and warned once per streak ([`settle`]); any other text-write failure may have landed, so it counts as typed and
+/// owes its Enter ([`WakeOutcome::TextUnknown`]). An attach or checkpoint failure is no row this tick.
 fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<&'static str>, String), total: u64, now: Instant) -> Step {
     let (reason, border) = seen;
     match out {
-        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now }),
+        Ok(WakeOutcome::Woke) => Step::Woke(Woken { line: total, at: now, enter_owed: false }),
         Ok(WakeOutcome::NotFree) => Step::Refused(Refusal { reason: reason.unwrap_or("moved during the hold"), border, detail: None }),
         Ok(WakeOutcome::TypedNoEnter { reason, border }) => {
             tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
-            Step::Woke(Woken { line: total, at: now })
+            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+        }
+        Ok(WakeOutcome::TextUnknown { detail }) => {
+            tracing::warn!(handle, border = ?border, "comm wake: text not confirmed ({detail}); the line may have landed, so it is not typed again and its Enter is owed");
+            Step::Woke(Woken { line: total, at: now, enter_owed: true })
         }
         Ok(WakeOutcome::Unconfirmed { step: "enter", detail }) => {
             tracing::warn!(handle, border = ?border, "comm wake: enter not confirmed ({detail}); the line was typed, so it is not typed again");
-            Step::Woke(Woken { line: total, at: now })
+            Step::Woke(Woken { line: total, at: now, enter_owed: false })
         }
         Ok(WakeOutcome::Unconfirmed { detail, .. }) => Step::Refused(Refusal { reason: "text not confirmed", border, detail: Some(detail) }),
         Err(e) => {
@@ -319,7 +326,7 @@ mod tests {
     fn batches() {
         let t0 = Instant::now();
         let later = t0 + Duration::from_secs(601);
-        let w = Woken { line: 3, at: t0 };
+        let w = Woken { line: 3, at: t0, enter_owed: false };
         let mail = |unread, fresh| Scan { total: 3, unread, fresh };
         // After a restart the map is empty: unread mail is a new batch.
         assert_eq!(decide(&mail(3, 3), None, t0), Decision::Wake);
@@ -331,6 +338,12 @@ mod tests {
         assert_eq!(decide(&mail(3, 0), Some(&w), later), Decision::Wake);
         // Read: forgotten.
         assert_eq!(decide(&mail(0, 0), Some(&w), later), Decision::Clear);
+        // A typed line owed its Enter: only Enter alone, fresh mail or not, until REPEAT_AFTER; then a new line; read, forgotten.
+        let owed = Woken { enter_owed: true, ..w };
+        assert_eq!(decide(&mail(3, 0), Some(&owed), t0), Decision::Complete);
+        assert_eq!(decide(&mail(4, 1), Some(&owed), t0), Decision::Complete);
+        assert_eq!(decide(&mail(4, 1), Some(&owed), later), Decision::Wake);
+        assert_eq!(decide(&mail(0, 0), Some(&owed), t0), Decision::Clear);
     }
 
     #[test]
@@ -390,7 +403,7 @@ mod tests {
             let t = text();
             assert!(t.contains("handle=h ") && t.contains("reason=\"input not empty\"") && t.contains("border=\"──── named-session ─\""), "{t}");
             // A wake ends the streak. Fails if it does not (the old streak is logged, so the count stays 1).
-            at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0 }));
+            at(REFUSED_FOR * 6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
             at(REFUSED_FOR * 7, refused());
             assert_eq!(count(), 1, "a new streak waits its own bound");
             at(REFUSED_FOR * 8, refused());
@@ -409,22 +422,31 @@ mod tests {
         assert!(matches!(step_of("h", out, (None, String::new()), 1, Instant::now()), Step::Skip));
     }
 
+    /// The one text refusal left: `send_and_wait_recorded`'s phase `input`, in the wake's `phase: detail` shape.
+    const STALE: &str = "input: input refused as stale (the take epoch changed); this op is never retried";
+
     #[test]
-    fn a_typed_line_counts_as_the_wake_and_a_failed_write_is_tried_again() {
+    fn a_typed_line_counts_as_the_wake_and_a_write_refused_as_stale_is_tried_again() {
         let now = Instant::now();
         let seen = || (None, "b".to_string());
         let typed_no_enter = WakeOutcome::TypedNoEnter { reason: "typed text not in main's input box", border: String::new() };
-        assert!(matches!(step_of("h", Ok(typed_no_enter), seen(), 7, now), Step::Woke(Woken { line: 7, .. })));
+        assert!(matches!(step_of("h", Ok(typed_no_enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
         let enter = WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".into() };
-        assert!(matches!(step_of("h", Ok(enter), seen(), 7, now), Step::Woke(Woken { line: 7, .. })));
-        let text = WakeOutcome::Unconfirmed { step: "text", detail: "record: input delivery unknown".into() };
+        assert!(matches!(step_of("h", Ok(enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: false, .. })));
+        let text = WakeOutcome::Unconfirmed { step: "text", detail: STALE.into() };
         match step_of("h", Ok(text), seen(), 7, now) {
             Step::Refused(r) => {
                 assert_eq!(r.reason, "text not confirmed");
-                assert_eq!(r.detail.as_deref(), Some("record: input delivery unknown"));
+                assert_eq!(r.detail.as_deref(), Some(STALE));
             }
-            _ => panic!("a failed text write is a refusal"),
+            _ => panic!("a text write refused as stale is a refusal"),
         }
+    }
+
+    #[test]
+    fn a_text_write_of_unknown_delivery_owes_its_enter_and_is_not_typed_again() {
+        let out = WakeOutcome::TextUnknown { detail: "record: input delivery unknown".into() };
+        assert!(matches!(step_of("h", Ok(out), (None, "b".to_string()), 7, Instant::now()), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
     }
 
     #[test]
@@ -432,8 +454,8 @@ mod tests {
         let buf = LogBuf::default();
         let sink = buf.clone();
         let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
-        let count = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap().matches("text not confirmed (record: input delivery unknown)").count();
-        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some("record: input delivery unknown".to_string()) });
+        let count = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap().matches(&format!("text not confirmed ({STALE})")).count();
+        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()) });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + Duration::from_secs(secs));
@@ -442,7 +464,7 @@ mod tests {
                 at(secs, u());
             }
             assert_eq!(count(), 1);
-            at(6, Step::Woke(Woken { line: 1, at: t0 }));
+            at(6, Step::Woke(Woken { line: 1, at: t0, enter_owed: false }));
             at(8, u());
             assert_eq!(count(), 2);
         });

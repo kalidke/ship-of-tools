@@ -36,7 +36,9 @@
 #                   durable). e.g. ".SoT" -> label ".SoT-wt-<short>" sorts left.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_caller_umask="$(umask)"   # the worktree is the user's own files: made under the caller's mask, not the library's
 source "$SCRIPT_DIR/comm-lib.sh"
+umask "$_caller_umask"
 # A second agent inside the session makes no worktree (a plain one is `git worktree
 # add`); the gate comes before option parsing and any git write, --help included.
 _why="$(sot_require_agent)" || { echo "comm-worktree-new.sh: $_why" >&2; exit 1; }

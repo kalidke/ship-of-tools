@@ -45,6 +45,10 @@ set -uo pipefail
 NAME="${1:-}"; TP="${2:-}"
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
+# The state folder and the signature file are the comm folder's, so private (ADR 0049, User isolation): 077 from
+# here, and the caller's mask back only in the subshell that starts the headless claude.
+_caller_umask="$(umask)"
+umask 077
 STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR" 2>/dev/null || true
 MODEL="${SOT_AUDITOR_MODEL:-claude-haiku-4-5-20251001}"
 CHECKS="${SOT_AUDITOR_CHECKS:-}"
@@ -234,7 +238,8 @@ EOF
 )"
 
 resp="$(printf '%s' "$prompt" \
-    | ( unset CLAUDECODE AI_AGENT CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
+    | ( umask "$_caller_umask"
+        unset CLAUDECODE AI_AGENT CLAUDE_CODE_ENTRYPOINT 2>/dev/null || true
         for v in $(env | grep -oE '^CLAUDE_CODE_[A-Z_]*' 2>/dev/null); do unset "$v" 2>/dev/null || true; done
         # The headless claude inherits the account's hooks and this session's
         # comm identity: without this its prompt hook and Stop hook restamp
