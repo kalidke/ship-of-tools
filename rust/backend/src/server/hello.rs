@@ -26,6 +26,20 @@ fn protocol_gate(client_protocol: u32) -> ProtocolGate {
     }
 }
 
+/// A hello that passed `admit_hello` and nothing else: the only way to make one is that function, so a handler that
+/// takes an `Admitted` cannot be reached from accept by a connection whose hello was not admitted.
+pub(super) struct Admitted(HelloReq);
+
+impl Admitted {
+    pub(super) fn hello(&self) -> &HelloReq {
+        &self.0
+    }
+
+    pub(super) fn into_hello(self) -> HelloReq {
+        self.0
+    }
+}
+
 /// A hello refused: the `{error, code, ...}` payload its reply carries. The connection is closed after it.
 #[derive(Debug)]
 pub(super) struct HelloRefusal(pub(super) serde_json::Value);
@@ -54,7 +68,7 @@ pub(super) fn parse_first_frame(frame: &Frame) -> Result<HelloReq, HelloRefusal>
 /// account record (ADR 0049 `## User isolation`: a host that has said hello as two accounts is refused until the
 /// daemon restarts, and the refusal names the host and the remedy, never an account). A refused hello is one reply,
 /// then the connection's end.
-pub(super) fn admit_hello(req: &HelloReq, clients: &Clients) -> Result<(), HelloRefusal> {
+pub(super) fn admit_hello(req: HelloReq, clients: &Clients) -> Result<Admitted, HelloRefusal> {
     if protocol_gate(req.protocol) == ProtocolGate::Reject {
         let frontend_version = if req.app_version.is_empty() { "<pre-versioning>" } else { req.app_version.as_str() };
         let message = format!(
@@ -87,17 +101,20 @@ pub(super) fn admit_hello(req: &HelloReq, clients: &Clients) -> Result<(), Hello
             "a hello must name its host and the OS account it runs as (`host` and `os_user`)".to_string(),
         ));
     };
-    clients.admit_account(&host, &os_user).map_err(|conflict| {
-        tracing::warn!(host = %conflict.host, client_id = %req.client_id, "hello refused: the host has said hello as two OS accounts");
-        HelloRefusal::new(
-            "os_user_conflict",
-            format!(
-                "host {} has said hello to this daemon as more than one OS account; each OS account enrols its \
-                 own hub account, then restart this daemon",
-                conflict.host
-            ),
-        )
-    })
+    match clients.admit_account(&host, &os_user) {
+        Ok(()) => Ok(Admitted(req)),
+        Err(conflict) => {
+            tracing::warn!(host = %conflict.host, client_id = %req.client_id, "hello refused: the host has said hello as two OS accounts");
+            Err(HelloRefusal::new(
+                "os_user_conflict",
+                format!(
+                    "host {} has said hello to this daemon as more than one OS account; each OS account enrols its \
+                     own hub account, then restart this daemon",
+                    conflict.host
+                ),
+            ))
+        }
+    }
 }
 
 /// The reply to an admitted hello: the session, its revision and any replay the client missed.
@@ -183,7 +200,8 @@ pub async fn handle_hello(
 /// life. Called after the connection's bus subscriptions and before the hello's reply, so `clients_connected` counts
 /// it and no event between the two is lost. Only a long-lived role (`fe`, `bridge`) is eligible for the read
 /// deadline, which the connection's first `ping` arms (`serve_control`); a handoff connection is never listed.
-pub(super) fn register_hello(req: &HelloReq, clients: &Clients) -> crate::clients::ClientGuard {
+pub(super) fn register_hello(admitted: &Admitted, clients: &Clients) -> crate::clients::ClientGuard {
+    let req = admitted.hello();
     clients.register(
         req.client_id.clone(),
         req.app_version.clone(),

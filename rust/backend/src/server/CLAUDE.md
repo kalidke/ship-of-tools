@@ -35,6 +35,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   `protocol_mismatch`, `identity_missing` or `os_user_conflict`) and is closed; nothing else is served or sent to it
   (`handle_connection`). A host that has said hello as two OS accounts is refused for either until the daemon restarts
   (`Clients::admit_account`); connections already open are left alone.
+- Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
 - A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
 - A connection has one writer. Off-loop jobs hand their reply back over `OutTx` and the loop writes it with
@@ -69,7 +70,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster
-- `hello.rs`: the hello: the admission (`parse_first_frame`, `admit_hello`), the reply with its replay (`handle_hello`) and the roster entry (`register_hello`)
+- `hello.rs`: the hello: the admission (`parse_first_frame`, `admit_hello`, and `Admitted`, the only proof of it), the reply with its replay (`handle_hello`) and the roster entry (`register_hello`)
 - `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time admission (`admit_peer`, `same_account`)
 - `conn.rs`: one connection: the read-deadline reaper, its admission at the first frame (`handle_connection`), the handoff to a pipe or a lease (`hand_off`), the control loop (`serve_control`) and its select (`select_once`)
 - `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply

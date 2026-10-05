@@ -7,10 +7,10 @@ use super::events::{
     recv_or_pending, write_agent_message, write_agent_receipt, write_fe_command, write_monitor_tick,
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
-use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, HelloRefusal};
+use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
 use super::reply::{finish_dispatch, write_reply, HandlerOutput, OutTx, OFFLOOP_CONCURRENCY};
 use super::*;
-use sot_protocol::{HelloReq, HANDOFF_ROLE};
+use sot_protocol::HANDOFF_ROLE;
 
 /// Read deadline for a connection whose declared role is `fe` or `bridge`
 /// (topology plan §F step 2, D10 — the half-open-roster fix). Since 0.4.0
@@ -150,7 +150,7 @@ where
             return Ok(());
         }
     };
-    let admitted = parse_first_frame(&first).and_then(|hello| admit_hello(&hello, &clients).map(|()| hello));
+    let admitted = parse_first_frame(&first).and_then(|hello| admit_hello(hello, &clients));
     let hello = match admitted {
         Ok(hello) => hello,
         Err(HelloRefusal(payload)) => {
@@ -159,7 +159,7 @@ where
             return write_reply(&mut tx, refusal, None).await;
         }
     };
-    if hello.role == HANDOFF_ROLE {
+    if hello.hello().role == HANDOFF_ROLE {
         return hand_off(buffered, tx, first.id, hello, &session, &files_mode, &label, &workspaces, &clients, peer, &leases).await;
     }
 
@@ -176,7 +176,7 @@ where
 /// (`fe.lease`). Any other frame is `bad_request` and the end. It is never listed in the roster and never serves the
 /// control ops.
 async fn hand_off<R, W>(
-    mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: HelloReq, session: &Session,
+    mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: Admitted, session: &Session,
     files_mode: &FilesMode, label: &Option<String>, workspaces: &Workspaces, clients: &Clients,
     peer: sot_log::identity::challenge::PeerAuthenticated, leases: &crate::lifecycle::lease::Leases,
 ) -> Result<()>
@@ -184,7 +184,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let reply = handle_hello(hello_id, hello, session, files_mode, label.as_deref(), clients).await?;
+    let reply = handle_hello(hello_id, hello.into_hello(), session, files_mode, label.as_deref(), clients).await?;
     if let Some((frame, blob)) = reply.into_iter().next() {
         write_reply(&mut tx, frame, blob).await?;
     }
@@ -221,7 +221,7 @@ where
 
 /// Runs one control session: the per-connection state, then the frame loop and its op table.
 async fn serve_control<R, W>(
-    mut tx: W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: HelloReq, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
+    mut tx: W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
     preview_changed_tx: broadcast::Sender<PreviewChanged>, label: Arc<Option<String>>, workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
     agent_receipt_tx: broadcast::Sender<AgentReceipt>, fe_command_tx: broadcast::Sender<FeCommandEvt>,
@@ -374,10 +374,10 @@ where
     // `filer` (ADR 0048), read from the hello and never from a request body, which is what makes a receipt
     // unforgeable (`None` for a connection that declared no name, which therefore cannot vouch for anything).
     let client_guard = Some(register_hello(&hello, &clients));
-    let hello_host = hello.host.clone();
-    let hello_name = hello.name.clone();
-    let is_long_lived_role = matches!(hello.role.as_str(), "fe" | "bridge");
-    let hello_reply = handle_hello(hello_id, hello, &session, &files_mode, label.as_deref(), &clients).await;
+    let hello_host = hello.hello().host.clone();
+    let hello_name = hello.hello().name.clone();
+    let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
+    let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
         write_reply(&mut tx, frame, blob).await?;
     }

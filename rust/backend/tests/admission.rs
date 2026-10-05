@@ -105,10 +105,41 @@ fn listed(version: &Frame, client_id: &str) -> bool {
     clients.iter().any(|c| c.get("client_id").and_then(Value::as_str) == Some(client_id))
 }
 
-/// The done test. Frame 1 of every connection kind, and of two ops that are no kind of connection, is refused
-/// `unauthenticated` and the connection closed; after a hello with role `handoff` each of the three handoff ops
-/// reaches its handler in the same write; a handoff connection serves nothing else; a control connection's second
-/// hello closes it.
+/// Every op name of `sot_protocol::op` but `hello`, read from the op module's source (`pub const NAME: &str = "op";`
+/// lines between `pub mod op {` and its closing brace), so an op added to it is in the done test the day it is added.
+fn op_names() -> Vec<String> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../protocol/src/ops/mod.rs");
+    let source = std::fs::read_to_string(path).expect("read the op module");
+    let module = source.split("pub mod op {").nth(1).expect("`pub mod op {`");
+    let module = module.split("\n}\n").next().expect("the op module's end");
+    let names: Vec<String> = module
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("pub const ")?.split_once(": &str = \"")?.1.strip_suffix("\";").map(str::to_string))
+        .filter(|name| name != op::HELLO)
+        .collect();
+    assert!(names.len() >= 60, "found only {} op names: {names:?}", names.len());
+    for named in [op::PROXY_CONNECT, op::LANE_CONNECT, op::FE_LEASE, op::FILE_READ, op::AGENT_SEND] {
+        assert!(names.iter().any(|n| n == named), "the scan missed {named}");
+    }
+    names
+}
+
+/// Part (a): every op as frame 1 of its own connection gets one `unauthenticated` reply, then the end, and nothing else.
+async fn every_op_as_a_first_frame_is_refused(env: &Env, payloads: &[(&str, Value)]) {
+    for name in op_names() {
+        let payload = payloads.iter().find(|(n, _)| *n == name).map_or_else(|| json!({}), |(_, p)| p.clone());
+        let mut conn = open(env).await;
+        write_together(&mut conn, &[Frame::req(1, &name, payload)]).await;
+        let seen = until_closed(&mut conn, &name).await;
+        assert_eq!(seen.len(), 1, "{name}: exactly one reply: {seen:?}");
+        assert_eq!(code(&seen[0].payload), Some("unauthenticated"), "{name}: {:?}", seen[0].payload);
+    }
+}
+
+/// The done test. Frame 1 of every op in `sot_protocol::op` (all but `hello`, whatever kind of connection it would
+/// open) is refused `unauthenticated` and the connection closed; after a hello with role `handoff` each of the three
+/// handoff ops reaches its handler in the same write; a handoff connection serves nothing else; a control
+/// connection's second hello closes it.
 #[tokio::test]
 async fn every_connection_kind_needs_an_accepted_hello() {
     let _serial = SERIAL.lock().await;
@@ -117,18 +148,8 @@ async fn every_connection_kind_needs_an_accepted_hello() {
     let proxy = (op::PROXY_CONNECT, json!({"port": 1}));
     let lane = (op::LANE_CONNECT, json!({"target": "no-such-row", "lane": "supervisor"}));
     let lease = (op::FE_LEASE, json!({"boot": "", "pid": 1, "created": 0}));
-    // (a) No hello first: one `unauthenticated` reply, then the end, and nothing else.
-    let others = [
-        (op::FILE_READ, json!({"path": "a.txt"})),
-        (op::AGENT_SEND, json!({"from": "t", "to": "", "text": "x", "id": "adm-1"})),
-    ];
-    for (name, payload) in [&proxy, &lane, &lease].into_iter().chain(others.iter()) {
-        let mut conn = open(&env).await;
-        write_together(&mut conn, &[Frame::req(1, name, payload.clone())]).await;
-        let seen = until_closed(&mut conn, name).await;
-        assert_eq!(seen.len(), 1, "{name}: exactly one reply: {seen:?}");
-        assert_eq!(code(&seen[0].payload), Some("unauthenticated"), "{name}: {:?}", seen[0].payload);
-    }
+    // (a) No hello first.
+    every_op_as_a_first_frame_is_refused(&env, &[proxy.clone(), lane.clone(), lease.clone()]).await;
     // (b) A handoff hello and the connect frame in one write: both reach their owners, then the end.
     for ((name, payload), want) in [(&proxy, "bad_port"), (&lane, "unknown_workspace"), (&lease, "")] {
         let mut conn = open(&env).await;
