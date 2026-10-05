@@ -690,6 +690,9 @@ mod tests {
     async fn missing_kernel_project_reports_dead_without_spawning() {
         let dir = tempfile::tempdir().unwrap();
         let missing_project = dir.path().join("does-not-exist");
+        // A stand-in program, never spawned: the check under test comes after the julia lookup, and a host with
+        // no julia (a CI runner) fails that lookup first.
+        STUB_BIN.lock().unwrap().push((missing_project.clone(), "never-spawned".to_string()));
         let kernel = Kernel::new(missing_project, dir.path().to_path_buf());
         let err = kernel.request("kernel.hello", json!({})).await.unwrap_err();
         let unavailable = err
