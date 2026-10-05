@@ -305,26 +305,52 @@ async fn connect_and_run(
     }
 }
 
-/// Connect to the local socket / named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation):
-/// on Unix the socket's folder is checked before the connect, on Windows the pipe's serving process right after it,
-/// before the first byte.
+/// Connect to the local socket at `path`, only when this OS account serves it (ADR 0049, User isolation): the socket's
+/// folder is checked before the connect.
+#[cfg(unix)]
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
     let path_str = path.to_str().context("socket path must be valid UTF-8")?;
     let name = path_str
         .to_fs_name::<GenericFilePath>()
         .with_context(|| format!("interpret {path_str:?} as local-socket name"))?;
-    #[cfg(unix)]
     sot_log::identity::connect_own::own_socket(path).with_context(|| format!("connect {path:?}"))?;
-    let stream = LocalStream::connect(name)
+    LocalStream::connect(name)
         .await
+        .with_context(|| format!("connect {path:?}"))
+}
+
+/// Connect to the named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation): the pipe is
+/// opened at identification level, so whatever serves it can never act as this account, and the serving process is
+/// checked before any byte is written. Opened here rather than by interprocess, which has no way to ask for that level;
+/// the open waits out `ERROR_PIPE_BUSY` as interprocess does, bounded.
+#[cfg(windows)]
+pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
+    use interprocess::os::windows::named_pipe::local_socket::tokio::Stream as PipeStream;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::{AsHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, SECURITY_IDENTIFICATION};
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let file = loop {
+        let opened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_OVERLAPPED)
+            .security_qos_flags(SECURITY_IDENTIFICATION)
+            .open(path);
+        match opened {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) && std::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            other => break other.with_context(|| format!("connect {path:?}"))?,
+        }
+    };
+    sot_log::identity::connect_own::own_pipe(file.as_handle(), path).with_context(|| format!("connect {path:?}"))?;
+    let stream = PipeStream::try_from(OwnedHandle::from(file))
+        .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("connect {path:?}"))?;
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsHandle;
-        let LocalStream::NamedPipe(pipe) = &stream;
-        sot_log::identity::connect_own::own_pipe(pipe.as_handle(), path).with_context(|| format!("connect {path:?}"))?;
-    }
-    Ok(stream)
+    Ok(LocalStream::from(stream))
 }
 
 /// Read exactly one frame while *owning* the reader, handing it back with the

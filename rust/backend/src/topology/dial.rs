@@ -192,8 +192,16 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
+            use std::os::windows::fs::OpenOptionsExt;
             use std::os::windows::io::AsHandle;
-            let file = std::fs::OpenOptions::new().read(true).write(true).open(p).map_err(|e| format!("{endpoint}: {e}"))?;
+            // Identification level: whatever serves the pipe can read who this is but never act as this account, so
+            // nothing it does before the check below can use this account's rights.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .security_qos_flags(windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION)
+                .open(p)
+                .map_err(|e| format!("{endpoint}: {e}"))?;
             // ADR 0049, User isolation: only a pipe this account serves, checked before a byte is written.
             sot_log::identity::connect_own::own_pipe(file.as_handle(), std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
             return Ok(Conn::Pipe(file));

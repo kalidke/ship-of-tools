@@ -134,7 +134,9 @@ pub(super) fn connect_named_pipe_unchallenged(name: Vec<u16>, cancel: &AtomicBoo
                 0,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED,
+                // Identification level (ADR 0049, User isolation): whatever serves the pipe can read who this is but
+                // never act as this account, whichever process it turns out to be.
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
                 std::ptr::null_mut(),
             )
         };
