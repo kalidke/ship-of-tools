@@ -1,9 +1,9 @@
 //! child_signal.rs — the one process-wide `fired` flag every child owner
 //! selects on, because `kill_on_drop` does not run at `process::exit`.
-//! [`Signal::spawn`] starts a child in its own containment and [`Contained`]
-//! is the kill: firing the signal, or dropping the `Contained`, ends the
-//! child and everything it started. [`ChildGuard`] only counts the ssh
-//! children of the hub link and the topology dial, which are not contained.
+//! [`Signal::spawn`] and [`Signal::spawn_std`] start a child in its own
+//! containment and [`Held`] is the kill: firing the signal, or releasing or
+//! dropping the `Held`, ends the child and everything it started, and the
+//! child is reaped only after.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -35,10 +35,13 @@ impl Signal {
 
     /// The flag goes first, so an owner that sees its child die already
     /// reads [`is_fired`](Self::is_fired); then every tree is killed, by
-    /// dropping the registry, whatever each owner is awaiting.
+    /// dropping the registry under its lock, whatever each owner is
+    /// awaiting.
     pub(crate) fn fire(&self) {
         self.fired.send_replace(true);
-        let trees = self.trees.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let mut trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
+        let taken = trees.take();
+        drop(taken);
         drop(trees);
     }
 
@@ -51,7 +54,7 @@ impl Signal {
         let _ = rx.wait_for(|fired| *fired).await;
     }
 
-    pub(crate) fn guard(&'static self) -> ChildGuard {
+    fn guard(&'static self) -> ChildGuard {
         self.live.fetch_add(1, Ordering::SeqCst);
         ChildGuard(&self.live)
     }
@@ -60,60 +63,165 @@ impl Signal {
         self.live.load(Ordering::SeqCst)
     }
 
+    /// The process-group number of every tree still held.
+    #[cfg(all(test, unix))]
+    pub(crate) fn held_groups(&self) -> Vec<i32> {
+        let trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
+        trees.as_ref().map(|map| map.values().map(|t| t.pgid()).collect()).unwrap_or_default()
+    }
+
+    /// Register `tree`. Once the signal has fired the tree is killed at once
+    /// and refused.
+    fn hold(&'static self, tree: crate::lifecycle::contain::Tree) -> std::io::Result<Held> {
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        let mut trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
+        match trees.as_mut() {
+            Some(map) => {
+                map.insert(id, tree);
+            }
+            None => {
+                drop(tree);
+                return Err(std::io::Error::other("the daemon is shutting down"));
+            }
+        }
+        drop(trees);
+        Ok(Held { sig: self, id, _live: self.guard() })
+    }
+
     /// Start `cmd` in its own containment and register the tree. The owner
-    /// keeps the returned [`Contained`] beside the `Child`: dropping it, or
-    /// [`fire`](Self::fire), kills the child and everything it started. Once
-    /// the signal has fired the child is killed at once and refused.
-    pub(crate) fn spawn(
-        &'static self,
-        cmd: &mut tokio::process::Command,
-    ) -> std::io::Result<(tokio::process::Child, Contained)> {
-        crate::lifecycle::contain::prepare(cmd);
+    /// keeps the returned [`Contained`]: waiting for it, killing it,
+    /// dropping it, or [`fire`](Self::fire) ends the child and everything it
+    /// started. Once the signal has fired the child is killed at once and
+    /// refused.
+    pub(crate) fn spawn(&'static self, cmd: &mut tokio::process::Command) -> std::io::Result<Contained> {
+        // Made before the spawn, so no exit goes unseen by `Contained::wait`.
+        #[cfg(unix)]
+        let sigchld = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
+        crate::lifecycle::contain::prepare(cmd.as_std_mut());
+        cmd.kill_on_drop(true);
         let mut child = cmd.spawn()?;
-        let tree = match crate::lifecycle::contain::adopt(&child) {
+        let tree = match crate::lifecycle::contain::adopt(
+            child.id(),
+            #[cfg(windows)]
+            child.raw_handle(),
+        ) {
             Ok(tree) => tree,
             Err(e) => {
                 let _ = child.start_kill();
                 return Err(e);
             }
         };
-        let id = self.next.fetch_add(1, Ordering::SeqCst);
-        let refused = {
-            let mut trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
-            match trees.as_mut() {
-                Some(map) => {
-                    map.insert(id, tree);
-                    None
-                }
-                None => Some(tree),
+        let held = match self.hold(tree) {
+            Ok(held) => held,
+            Err(e) => {
+                let _ = child.start_kill();
+                return Err(e);
             }
         };
-        if let Some(tree) = refused {
-            drop(tree);
-            return Err(std::io::Error::other("the daemon is shutting down"));
+        Ok(Contained {
+            stdin: child.stdin.take(),
+            stdout: child.stdout.take(),
+            stderr: child.stderr.take(),
+            held,
+            child,
+            #[cfg(unix)]
+            sigchld,
+        })
+    }
+
+    /// [`spawn`](Self::spawn) for a blocking caller, which keeps the
+    /// `Child` itself: the [`Held`] ends the tree when released or dropped,
+    /// and the caller reaps the child only after that.
+    pub(crate) fn spawn_std(
+        &'static self,
+        cmd: &mut std::process::Command,
+    ) -> std::io::Result<(std::process::Child, Held)> {
+        crate::lifecycle::contain::prepare(cmd);
+        let mut child = cmd.spawn()?;
+        let tree = match crate::lifecycle::contain::adopt(
+            Some(child.id()),
+            #[cfg(windows)]
+            Some(std::os::windows::io::AsRawHandle::as_raw_handle(&child)),
+        ) {
+            Ok(tree) => tree,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        };
+        match self.hold(tree) {
+            Ok(held) => Ok((child, held)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(e)
+            }
         }
-        Ok((child, Contained { _live: self.guard(), id, sig: self }))
     }
 }
 
-/// One contained child, alive until dropped. Dropping it kills the child's
-/// tree if the shutdown has not already, then stops counting the child.
-pub(crate) struct Contained {
+/// One tree in a [`Signal`]'s registry, and a count of one live child.
+/// [`release`](Self::release), or dropping it, kills the tree under the
+/// registry lock if the shutdown has not already; the child's leader is
+/// reaped only after that, because its pid is the group's number.
+pub(crate) struct Held {
     sig: &'static Signal,
     id: u64,
     _live: ChildGuard,
 }
 
-impl Drop for Contained {
-    fn drop(&mut self) {
-        let tree = self
-            .sig
-            .trees
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_mut()
-            .and_then(|map| map.remove(&self.id));
+impl Held {
+    pub(crate) fn release(&self) {
+        let mut trees = self.sig.trees.lock().unwrap_or_else(|e| e.into_inner());
+        let tree = trees.as_mut().and_then(|map| map.remove(&self.id));
         drop(tree);
+        drop(trees);
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// One contained child with its pipes. It owns the `Child`: only
+/// [`wait`](Self::wait), [`kill`](Self::kill) and dropping reap it, each
+/// after the tree's kill, so a kill never reaches a group number the leader's
+/// reap freed. `held` drops before `child`, so a drop kills the tree first.
+pub(crate) struct Contained {
+    pub(crate) stdin: Option<tokio::process::ChildStdin>,
+    pub(crate) stdout: Option<tokio::process::ChildStdout>,
+    pub(crate) stderr: Option<tokio::process::ChildStderr>,
+    held: Held,
+    child: tokio::process::Child,
+    #[cfg(unix)]
+    sigchld: tokio::signal::unix::Signal,
+}
+
+impl Contained {
+    /// Wait for the leader to exit, kill what it started, then reap it. A
+    /// descendant that holds the child's pipes open is killed too.
+    pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(unix)]
+        if let Some(pid) = self.child.id() {
+            // Seen unreaped, so the group number stays the leader's.
+            while !crate::lifecycle::contain::exited_pid(pid, false)? {
+                self.sigchld.recv().await;
+            }
+        }
+        #[cfg(windows)]
+        self.child.wait().await?;
+        self.held.release();
+        self.child.wait().await
+    }
+
+    /// Kill the tree, then the child, and reap it.
+    pub(crate) async fn kill(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.held.release();
+        let _ = self.child.start_kill();
+        self.child.wait().await
     }
 }
 
@@ -138,9 +246,8 @@ pub(crate) fn live_children() -> usize {
     process().live()
 }
 
-/// Counts one child alive until dropped. Its owner keeps it beside the
-/// `Child`, so it drops once the child is reaped. [`Contained`] holds one;
-/// the uncontained ssh owners (the hub link, the topology dial) hold it directly.
+/// Counts one child alive until dropped. [`Held`] holds one, so it drops
+/// once the child's owner lets go of the tree.
 pub(crate) struct ChildGuard(&'static AtomicUsize);
 
 impl Drop for ChildGuard {
@@ -155,6 +262,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn child_guard_killed_on_fire() {
         // A private signal: firing the process's own would kill every other
@@ -201,18 +309,17 @@ mod tests {
         cmd.args(["-c", "sleep 3104 & echo $!; exec sleep 3104"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
-        let (mut child, contained) = signal.spawn(&mut cmd).expect("spawn");
+        let mut contained = signal.spawn(&mut cmd).expect("spawn");
         assert_eq!(signal.live(), 1);
         let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(child.stdout.take().unwrap()), &mut line)
+        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(contained.stdout.take().unwrap()), &mut line)
             .await
             .unwrap();
         let grandchild: i32 = line.trim().parse().expect("grandchild pid");
-        let mut stdin = child.stdin.take().unwrap();
+        let mut stdin = contained.stdin.take().unwrap();
         let owner = tokio::spawn(async move {
-            let _contained = contained;
             let _ = stdin.write_all(&vec![0u8; 1 << 20]).await;
-            let _ = child.wait().await;
+            let _ = contained.wait().await;
         });
         tokio::time::sleep(Duration::from_millis(300)).await;
         signal.fire();
@@ -245,5 +352,50 @@ mod tests {
         }
         let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         assert!(gone(pid), "the refused child survived");
+    }
+
+    /// The leader's exit takes everything it started with it, before the
+    /// leader is reaped, even though nothing fired the signal.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_kills_the_tree_at_the_leaders_exit() {
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3107 >/dev/null 2>&1 & echo $!"]).stdout(std::process::Stdio::piped());
+        let mut contained = signal.spawn(&mut cmd).expect("spawn");
+        let mut line = String::new();
+        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(contained.stdout.take().unwrap()), &mut line)
+            .await
+            .unwrap();
+        let descendant: i32 = line.trim().parse().expect("descendant pid");
+        contained.wait().await.expect("wait");
+        assert!(gone(descendant), "the leader's descendant survived its exit");
+        assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
+        drop(contained);
+        assert_eq!(signal.live(), 0);
+    }
+
+    /// A blocking caller sees the exit unreaped: the leader's number is still
+    /// its own and the tree is still held, until the caller lets go of the
+    /// `Held`; only then is it reaped.
+    #[cfg(unix)]
+    #[test]
+    fn a_one_shot_takes_its_tree_after_it_exits() {
+        use std::io::BufRead;
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3107 >/dev/null 2>&1 & echo $!"]).stdout(std::process::Stdio::piped());
+        let (mut child, held) = signal.spawn_std(&mut cmd).expect("spawn_std");
+        let pgid = child.id() as i32;
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        let descendant: i32 = line.trim().parse().expect("descendant pid");
+        assert!(crate::lifecycle::contain::exited(&mut child, true).expect("exited"), "the child had not exited");
+        assert!(signal.held_groups().contains(&pgid), "the tree was released before its owner let go");
+        // SAFETY: signal 0 only probes the pid.
+        assert_eq!(unsafe { libc::kill(pgid, 0) }, 0, "the exit was seen by reaping it");
+        drop(held);
+        child.wait().expect("wait");
+        assert!(gone(descendant), "the one-shot's descendant survived");
     }
 }

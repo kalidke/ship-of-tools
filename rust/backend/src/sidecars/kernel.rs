@@ -360,23 +360,23 @@ async fn run_one_generation(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // `_contained` is the one kill: it drops before `child` on every return,
-    // and the shutdown fires it from anywhere, so a child this loop is not
-    // polling for (a full stdin pipe) and what it started still die.
-    let (mut child, _contained) = match sig.spawn(&mut cmd) {
+    // `contained` is the one kill: it ends the tree before the child on every
+    // return, and the shutdown fires it from anywhere, so a child this loop is
+    // not polling for (a full stdin pipe) and what it started still die.
+    let mut contained = match sig.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => return (false, format!("spawn {julia_bin} failed: {e}")),
     };
 
-    let mut stdin = match child.stdin.take() {
+    let mut stdin = match contained.stdin.take() {
         Some(s) => s,
         None => return (false, "kernel child stdin missing".to_string()),
     };
-    let stdout = match child.stdout.take() {
+    let stdout = match contained.stdout.take() {
         Some(s) => s,
         None => return (false, "kernel child stdout missing".to_string()),
     };
-    let stderr = match child.stderr.take() {
+    let stderr = match contained.stderr.take() {
         Some(s) => s,
         None => return (false, "kernel child stderr missing".to_string()),
     };

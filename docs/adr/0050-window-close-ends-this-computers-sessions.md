@@ -85,10 +85,10 @@ closing and new leases are refused, the listener dropped and the socket unlinked
 any row is touched; the run gate closes and in-flight starts drain, until the rows
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
-deadline, and a row of any other runtime is left running and counted not ended; the
-daemon's long-lived children (the kernel, the REPL, Pluto, MathJax, the monitor's sampler and a quarto
-render) are killed with everything they started (each runs in its own process group on Unix and its own job on
-Windows), and their owners are given 3 s to let go; the final record is written; the
+deadline, and a row of any other runtime is left running and counted not ended; every
+process the daemon starts, but a capsule supervisor and the children known limits (n) and (o) name, is
+killed with everything it started (its leader is reaped only after that kill; each runs in its own process group
+on Unix and its own job on Windows), and their owners are given 3 s to let go; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
@@ -191,11 +191,13 @@ connection is the only handle.
 6. Closed: a row's remembered scopes are the durable file `row-scopes` in its state dir,
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.
 7. A daemon child's tree is killed with it, but a process can leave. Unix: a descendant that
-   calls `setsid` is outside the child's process group; this covers Julia's `detach` (a
+   moves to another process group is outside it, by `setpgid` (a shell's job control does this) or
+   by `setsid`; this covers Julia's `detach` (a
    `run(detach(cmd))` child has pgid = sid = its own pid) and so Pluto's notebook workers,
    which Malt starts detached. Under the systemd unit the daemon's cgroup ends them when the
    daemon exits; started without systemd, an idle worker exits when its server socket closes
-   and a busy one when its cell ends. Windows: on Windows nothing started inside a daemon
+   and a busy one when its cell ends. An ssh `ControlPersist` master leaves the same way, so
+   ending the daemon's ssh never ends an operator's shared connection. Windows: on Windows nothing started inside a daemon
    child's job or a row's job can leave it. Outside it are a process a broker starts (WMI,
    COM activation, the task scheduler, a service) and a program started through an
    app-execution alias, which the Store install of juliaup makes `julia`: a julia started
@@ -226,4 +228,8 @@ connection is the only handle.
   may resume them.
 - (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
   at the next window; it stays in the record until acknowledged.
+- (n) The update pipeline's children (rust/updater: curl or gh, tar or unzip, git, julia instantiate, npm) run in
+  the daemon's process outside containment, with `kill_on_drop` only: a shutdown during an update's staging or
+  prepare leaves them to end on their own; under the systemd unit its cgroup ends them.
+- (o) The hub's relay refresh runs `systemctl` outside containment (rust/backend/src/topology/relay_units.rs).
 - Window: see the release notes.

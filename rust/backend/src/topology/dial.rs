@@ -22,8 +22,9 @@ enum Conn {
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
     /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
-    /// `Child` rather than a stream.
-    Bridged(std::process::Child),
+    /// `Child` rather than a stream, and the [`Held`](crate::lifecycle::child_signal::Held)
+    /// that kills its tree.
+    Bridged(std::process::Child, crate::lifecycle::child_signal::Held),
 }
 
 /// Kills and reaps the ssh child `Conn::Bridged` hands to [`Conn::split`]
@@ -50,8 +51,9 @@ struct ChildGuard {
     last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Set for a forwarded call that a caller may cut short; see [`Track`].
     track: Option<std::sync::Arc<Track>>,
-    /// Counts the child among the live ones until `Drop` has reaped it.
-    _live: Option<crate::lifecycle::child_signal::ChildGuard>,
+    /// Kills the child's tree and counts it among the live ones; `Drop` lets
+    /// go of it before it reaps the child.
+    held: Option<crate::lifecycle::child_signal::Held>,
 }
 
 /// How a forwarding caller reaches the ssh child a dial thread owns: the
@@ -93,10 +95,9 @@ impl ChildGuard {
         self.last_stderr.lock().ok().and_then(|line| line.clone())
     }
 
-    /// Hand this guard's child to `track` and count it as live; true when the track was cancelled before this.
+    /// Hand this guard's child to `track`; true when the track was cancelled before this.
     fn attach(&mut self, track: &std::sync::Arc<Track>) -> bool {
         use std::sync::atomic::Ordering::SeqCst;
-        self._live = Some(track.sig.guard());
         self.track = Some(std::sync::Arc::clone(track));
         *track.child.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::sync::Arc::clone(&self.child));
         track.cancelled.load(SeqCst)
@@ -109,6 +110,8 @@ impl Drop for ChildGuard {
         if let Some(track) = &self.track {
             track.child.lock().unwrap_or_else(|p| p.into_inner()).take();
         }
+        // The tree is killed before the child is reaped: its pid is the group's number.
+        drop(self.held.take());
         let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
         let _ = child.kill();
         let _ = child.wait();
@@ -139,9 +142,9 @@ impl Conn {
                 let r = f.try_clone()?;
                 Ok((Box::new(f), Box::new(r), None))
             }
-            Conn::Bridged(mut child) => {
-                let stdin = child.stdin.take().expect("spawn_sync pipes stdin");
-                let stdout = child.stdout.take().expect("spawn_sync pipes stdout");
+            Conn::Bridged(mut child, held) => {
+                let stdin = child.stdin.take().expect("the ssh command pipes stdin");
+                let stdout = child.stdout.take().expect("the ssh command pipes stdout");
                 // The child's last non-empty stderr line, drained on its own
                 // thread for as long as the child lives -- the pattern
                 // `rust/frontend/src/net/transport/mod.rs` already uses for its own
@@ -164,13 +167,13 @@ impl Conn {
                         }
                     });
                 }
-                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr, track: None, _live: None })))
+                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr, track: None, held: Some(held) })))
             }
         }
     }
 }
 
-fn connect(endpoint: &str) -> Result<Conn, String> {
+fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
@@ -208,8 +211,9 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
             None => (rest, None),
         };
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
-        let child = sot_protocol::topology::ssh_bridge::LinkGate::default().spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
-        return Ok(Conn::Bridged(child));
+        let mut cmd = sot_protocol::topology::ssh_bridge::LinkGate::default().command(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
+        let (child, held) = sig.spawn_std(&mut cmd).map_err(|e| format!("{endpoint}: {e}"))?;
+        return Ok(Conn::Bridged(child, held));
     }
     Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))
 }
@@ -232,7 +236,8 @@ pub(crate) fn dial_and_call_tracked(
     payload: serde_json::Value,
     track: Option<std::sync::Arc<Track>>,
 ) -> Result<serde_json::Value, String> {
-    let (mut w, r, mut guard) = connect(endpoint)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
+    let sig = track.as_ref().map_or_else(crate::lifecycle::child_signal::process, |t| t.sig);
+    let (mut w, r, mut guard) = connect(endpoint, sig)?.split().map_err(|e| format!("{endpoint}: {e}"))?;
     if let (Some(track), Some(g)) = (&track, guard.as_mut()) {
         if g.attach(track) {
             return Err(format!("{endpoint}: cancelled"));
@@ -343,7 +348,7 @@ pub(crate) mod tests {
     /// `dial_and_call` a `ChildGuard` for that arm so an early return
     /// cannot leak the spawned process -- proved here against a STUB
     /// `ssh` put FIRST on `PATH`, never the real one. The original
-    /// version of this test called `connect("ssh:hub")` against whatever
+    /// version of this test called `connect("ssh:hub", crate::lifecycle::child_signal::process())` against whatever
     /// `ssh` the box actually had: `Command::spawn()` returns as soon as
     /// the child process image exists, before it does any network
     /// connecting, but the exec itself was still a real `ssh hub` attempt
@@ -364,7 +369,7 @@ pub(crate) mod tests {
         let marker1 = dir1.path().join("invoked");
         write_stub_ssh(dir1.path(), &marker1);
         prepend_to_path(dir1.path());
-        let conn = connect("ssh:hub").expect("ssh: must dispatch to the stub on PATH, not fail as unrecognised");
+        let conn = connect("ssh:hub", crate::lifecycle::child_signal::process()).expect("ssh: must dispatch to the stub on PATH, not fail as unrecognised");
         let (_w, _r, guard) = conn.split().expect("split must hand back the stub's own stdin/stdout");
         assert!(guard.is_some(), "an ssh: connection must carry a ChildGuard, or dial_and_call returning early leaks the process");
         assert!(wait_for_marker(&marker1), "the ssh:hub arm must have exec'd OUR stub, not something else on PATH");
@@ -374,7 +379,7 @@ pub(crate) mod tests {
         let marker2 = dir2.path().join("invoked");
         write_stub_ssh(dir2.path(), &marker2);
         prepend_to_path(dir2.path());
-        let conn = connect("ssh:hub/gamma").expect("ssh:<target>/<host> must parse the same way dial.rs does");
+        let conn = connect("ssh:hub/gamma", crate::lifecycle::child_signal::process()).expect("ssh:<target>/<host> must parse the same way dial.rs does");
         let (_w, _r, guard) = conn.split().unwrap();
         assert!(wait_for_marker(&marker2), "the ssh:hub/gamma arm must have exec'd OUR stub too");
         drop(guard);
@@ -385,8 +390,8 @@ pub(crate) mod tests {
         // fail HERE too, not just at the frontend. Neither call reaches
         // spawn_sync (the grammar check runs first), so PATH/the stub
         // above are irrelevant to these two.
-        assert!(connect("ssh:-oProxyCommand=x").is_err(), "a leading-dash target must be refused");
-        assert!(connect("ssh:Hub").is_err(), "an uppercase target must be refused (not a plain host name)");
+        assert!(connect("ssh:-oProxyCommand=x", crate::lifecycle::child_signal::process()).is_err(), "a leading-dash target must be refused");
+        assert!(connect("ssh:Hub", crate::lifecycle::child_signal::process()).is_err(), "an uppercase target must be refused (not a plain host name)");
     }
 
     /// Kills the stub's background `sleep` on every path out of the test.
@@ -400,6 +405,37 @@ pub(crate) mod tests {
                 let _ = std::process::Command::new("kill").arg(pid.trim()).status();
             }
         }
+    }
+
+    /// Dropping the dial takes the ssh child and what it started: an ssh
+    /// that starts a background process (a `ProxyCommand`) leaves nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_dial_takes_its_ssh_tree() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _path_guard = EnvGuard::capture("PATH");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bg = dir.path().join("bg");
+        let _holder = KillHolder(bg.clone());
+        write_ssh_script(dir.path(), &format!("sleep 3109 >/dev/null 2>&1 &\necho $! > '{}'\nexec cat\n", bg.display()));
+        prepend_to_path(dir.path());
+        let conn = connect("ssh:hub", crate::lifecycle::child_signal::process()).expect("connect");
+        let (_w, _r, guard) = conn.split().expect("split");
+        let began = std::time::Instant::now();
+        let pid: i32 = loop {
+            if let Some(pid) = std::fs::read_to_string(&bg).ok().and_then(|s| s.trim().parse().ok()) {
+                break pid;
+            }
+            assert!(began.elapsed() < std::time::Duration::from_secs(5), "the stub ssh never wrote its descendant's pid");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        drop(guard);
+        let gone = (0..150).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // SAFETY: signal 0 only probes the pid.
+            unsafe { libc::kill(pid, 0) != 0 }
+        });
+        assert!(gone, "the dial's ssh left a descendant alive");
     }
 
     /// ROUND-3 BLOCKER: no error path may WAIT on the ssh child's stderr.
@@ -474,9 +510,8 @@ pub(crate) mod tests {
         let child = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()).spawn().expect("a sleeper child");
         let mut guard = ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)),
-            last_stderr: Default::default(), track: None, _live: None };
+            last_stderr: Default::default(), track: None, held: None };
         assert!(!guard.attach(&track), "a fresh track is not cancelled");
-        assert_eq!(sig.live(), 1);
         track.cancel();
         let exited = (0..100).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -484,14 +519,13 @@ pub(crate) mod tests {
         });
         assert!(exited, "cancel left the tracked child running");
         drop(guard);
-        assert_eq!(sig.live(), 0, "the reaped child is still counted");
         assert!(track.child.lock().unwrap().is_none(), "the guard left its child published after reaping it");
         track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
     }
 
     #[test]
     fn unrecognised_scheme_names_all_four_dialable_spellings() {
-        let err = connect("carrier-pigeon:whatever").err().expect("must be an error");
+        let err = connect("carrier-pigeon:whatever", crate::lifecycle::child_signal::process()).err().expect("must be an error");
         assert!(err.contains("unix:/tcp:/pipe:/ssh:"), "error should name all four schemes, got: {err}");
     }
 }

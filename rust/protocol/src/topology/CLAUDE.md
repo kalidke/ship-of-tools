@@ -16,13 +16,14 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - This box's own endpoint: the session socket or pipe path, the local daemon label, `slug`, `local_endpoint`
   (`$SOT_SOCKET` beats `$SOT_BACKEND_LABEL` beats the local label) and the plain host-name grammar
   (`is_plain_host_name`), in `endpoint.rs`.
-- The ssh recipe (`SshRecipe`), its options and `LinkGate`, in `ssh_bridge.rs`.
+- The ssh recipe (`SshRecipe`), its options and `LinkGate` (`spawn_sync`, `spawn_async`, `probe`, and `command` for a
+  caller that contains the child), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The hub's systemd unit text for each relayed host, in `relay_units.rs`.
 
 ## Promises
 - `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar.
-- While a host's `LinkGate` is down, no gated spawn starts ssh.
+- While a host's `LinkGate` is down, no gated spawn or command starts ssh.
 - A lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and can be cancelled; refusals come back typed;
   no ssh child outlives its client.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
@@ -33,7 +34,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `TopologyStore`, `topology.set`, `topology.changed`, `sot_ssh_bridge`,
 `_sot_is_plain_host_name`, `comm/lib/comm-lib-client.sh`, `sot_slug`, `comm/lib/comm-lib-identity.sh`, `slug`. Uses:
-`dispatch`, `sotd stdio-bridge`, `ChildGuard`, `Signal`, `child_signal::fired`, `child_signal::process`,
+`dispatch`, `sotd stdio-bridge`, `Signal::spawn_std`, `Held`, `Signal`, `child_signal::fired`, `child_signal::process`,
 `lane.connect`, `Endpoint`, `DaemonLaneEndpoint`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `boot_identity`, `process_created`, `IdentityExchange`.
 

@@ -1,9 +1,10 @@
 # rust/backend/src/lifecycle: lifecycle (charter)
 
 ## Idea
-Nothing outlives its owner unless designed to: every child process the daemon starts has one owner that selects on a
-process-wide signal, every exit is bounded on the OS clock, and the last window on a computer decides, through its
-lease, whether that computer's sessions end (ADR 0050).
+Nothing outlives its owner unless designed to: every process the daemon starts, but those ADR 0050 names as outside,
+runs in its own containment, which its owner's release or the process-wide signal kills with everything it started,
+every exit is bounded on the OS clock, and the last window on a computer decides, through its lease, whether that
+computer's sessions end (ADR 0050).
 
 ## Owns
 - The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lifecycle::lease`, the file
@@ -11,8 +12,8 @@ lease, whether that computer's sessions end (ADR 0050).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
-- The child signal and the containment: `Signal`, `Signal::spawn`, `Contained`, `ChildGuard`, `fire`, `fired`,
-  `live_children`; contain.rs `Tree`, `prepare`, `adopt`.
+- The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `Held`,
+  `ChildGuard`, `fire`, `fired`, `live_children`; contain.rs `Tree`, `prepare`, `adopt`, `exited`, `exited_pid`.
 - The bounds and exit codes in `sot_protocol::ops::lease`.
 - The window's half, rust/frontend/src/lease.rs.
 
@@ -33,15 +34,16 @@ lease, whether that computer's sessions end (ADR 0050).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
   shutdown has begun (`Leases::while_open`, called by update.rs).
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
-- A child started through `Signal::spawn` dies with everything it started when its `Contained` drops or the signal
-  fires, whatever its owner awaits; a spawn after the fire is killed and refused (`Signal::spawn`, `Contained`'s drop).
+- A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
+  releases or drops it or the signal fires; its leader is reaped only after that kill (`Contained::wait`,
+  `Held::release`; `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
-`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Contained`,
-`ChildGuard`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `accepted_peer`,
+`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
+`Contained`, `Held`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `accepted_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`.
@@ -51,7 +53,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/frontend/src/lease.rs`: a file, the window's half.
 
 ## Files
-- `child_signal.rs`: the process-wide `fired` flag, the registry of contained trees and the live-child count.
+- `child_signal.rs`: the process-wide `fired` flag, the registry of contained trees (`Held`) and the live-child count.
 - `contain.rs`: the platform half of containment: the process group or job, adopting a child, the kill.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.

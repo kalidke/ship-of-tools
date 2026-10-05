@@ -533,9 +533,9 @@ async fn supervise(
             return;
         }
         let reason = match spawn_source(&host, sig).await {
-            Ok((mut child, _contained)) => {
-                let mut stdout = child.stdout.take().map(|s| BufReader::new(s).lines());
-                let mut stderr = child.stderr.take().map(|s| BufReader::new(s).lines());
+            Ok(mut contained) => {
+                let mut stdout = contained.stdout.take().map(|s| BufReader::new(s).lines());
+                let mut stderr = contained.stderr.take().map(|s| BufReader::new(s).lines());
                 // ssh's own words for why the source died, kept only until
                 // the child does — one bounded string, never a growing log.
                 let mut stderr_line: Option<String> = None;
@@ -590,7 +590,6 @@ async fn supervise(
                         }
                     }
                 }
-                // `_contained` drops before `child`: the sampler's tree dies, then it is reaped.
             }
             Err(e) => e.to_string(),
         };
@@ -620,7 +619,7 @@ async fn supervise(
 async fn spawn_source(
     host: &MonitorHost,
     sig: &'static crate::lifecycle::child_signal::Signal,
-) -> std::io::Result<(tokio::process::Child, crate::lifecycle::child_signal::Contained)> {
+) -> std::io::Result<crate::lifecycle::child_signal::Contained> {
     let interval = "1";
     #[cfg(test)]
     let stub = tests::STUB_SAMPLER.lock().unwrap().iter().find(|(h, _)| *h == host.name).map(|(_, p)| p.clone());
@@ -654,13 +653,13 @@ async fn spawn_source(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let (mut child, contained) = sig.spawn(&mut cmd)?;
-    if let Some(mut stdin) = child.stdin.take() {
+    let mut contained = sig.spawn(&mut cmd)?;
+    if let Some(mut stdin) = contained.stdin.take() {
         stdin.write_all(SAMPLER_SH.as_bytes()).await?;
         // Close stdin so `bash -s` hits EOF and starts executing the loop.
         let _ = stdin.shutdown().await;
     }
-    Ok((child, contained))
+    Ok(contained)
 }
 
 
