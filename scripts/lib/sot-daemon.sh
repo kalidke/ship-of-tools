@@ -217,6 +217,9 @@ sot_prune_logs() {  # <dir>
 sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     local prefix="$1" sotd_bin="$2" socket="$3" mode=nohup pid="" code="" start now warned=0
     local logdir="$1/logs" logfile="" stamp err
+    # A logs folder that exists is owner-only whichever way the daemon starts: an install that ran nohup before and is
+    # systemd-owned now still holds its old logs (unmasked secrets) there.
+    [ ! -d "$logdir" ] || chmod 700 "$logdir" 2>/dev/null || echo "WARNING: cannot secure $logdir" >&2
     sot_socket_open "$socket" && return 0
     if sot_service_owned "$prefix"; then
         mode=systemd

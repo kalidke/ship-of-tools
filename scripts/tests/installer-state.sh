@@ -491,6 +491,15 @@ printf 'earlier\n' > "$d/prefix/logs/sotd.log"; chmod 644 "$d/prefix/logs/sotd.l
 check "an existing 755 logs folder becomes owner-only" "700" "$(mode_of "$d/prefix/logs")"
 check "its earlier log keeps its line" "earlier" "$(cat "$d/prefix/logs/sotd.log")"
 reap_stub "$d"
+# An install that ran nohup before and is systemd-owned now keeps a 755 folder with its old logs: the ensure
+# secures it on the systemd path too.
+d="$WORK/logs-mode-systemd"; mkdir -p "$d/home/.config/systemd/user" "$d/prefix/logs"
+chmod 755 "$d/prefix/logs"
+printf '{"service": "systemd"}\n' > "$d/prefix/install.json"
+render_sotd_unit "$d/prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/home/.config/systemd/user/sotd.service"
+( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 1 )
+check "a systemd-owned install's existing logs folder becomes owner-only" "700" "$(mode_of "$d/prefix/logs")"
+reap_stub "$d"
 
 # ---------------------------------------------------------------------------
 case_start "a_live_writers_log_is_kept"
