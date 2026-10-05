@@ -26,10 +26,9 @@ use std::sync::Arc;
 use crate::net::dial::HostKey;
 use anyhow::{Context, Result};
 use base64::Engine;
-use interprocess::local_socket::{
-    tokio::{prelude::*, Stream as LocalStream},
-    GenericFilePath,
-};
+#[cfg(unix)]
+use interprocess::local_socket::GenericFilePath;
+use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
 use serde_json::Value;
 use sot_protocol::{
     codec, op, AgentSendReq, ConceptReadReq, ConceptReadRes, ConceptWriteReq, ConceptWriteRes,
@@ -320,35 +319,20 @@ pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> 
         .with_context(|| format!("connect {path:?}"))
 }
 
-/// Connect to the named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation): the pipe is
-/// opened at identification level, so whatever serves it can never act as this account, and the serving process is
-/// checked before any byte is written. Opened here rather than by interprocess, which has no way to ask for that level;
-/// the open waits out `ERROR_PIPE_BUSY` as interprocess does, bounded.
+/// Connect to the named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation): `connect_own`
+/// opens it at identification level and checks the serving process before any byte is written, bounded by sot-log's
+/// `CONNECT_BOUND` like every other client of this pipe; the handle it returns, opened for overlapped I/O, is then
+/// adopted as the window's stream, as the lane bridge adopts its own (`rows/ops/lane_bridge.rs`).
 #[cfg(windows)]
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
     use interprocess::os::windows::named_pipe::local_socket::tokio::Stream as PipeStream;
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::os::windows::io::{AsHandle, OwnedHandle};
-    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OVERLAPPED, SECURITY_IDENTIFICATION};
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let file = loop {
-        let opened = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(FILE_FLAG_OVERLAPPED)
-            .security_qos_flags(SECURITY_IDENTIFICATION)
-            .open(path);
-        match opened {
-            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) && std::time::Instant::now() < deadline => {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            other => break other.with_context(|| format!("connect {path:?}"))?,
-        }
-    };
-    sot_log::identity::connect_own::own_pipe(file.as_handle(), path).with_context(|| format!("connect {path:?}"))?;
-    let stream = PipeStream::try_from(OwnedHandle::from(file))
+    let owned = path.to_path_buf();
+    let client = tokio::task::spawn_blocking(move || sot_log::identity::connect_own::connect_own(&owned))
+        .await
+        .context("pipe connect task")?
+        .with_context(|| format!("connect {path:?}"))?;
+    let stream = PipeStream::try_from(client.into_handle())
         .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("connect {path:?}"))?;
     Ok(LocalStream::from(stream))

@@ -136,16 +136,15 @@ mod windows {
     }
 }
 
-/// Files that keep their own stream type and so apply the rule around their one dial: each must call both
-/// `own_socket(` and `own_pipe(`. Every other dial primitive is a compile error in rust.yml's "Local endpoint dials"
+/// Files that keep their own stream type and so apply the rule around their one dial: each must call the names listed. Every other dial primitive is a compile error in rust.yml's "Local endpoint dials"
 /// step (rust/clippy.toml `disallowed-methods`, an `#[allow]` with a reason at each sanctioned site); the allow of these
 /// two sites is what this test holds to the rule. `std::fs::OpenOptions::open` cannot be disallowed, since it opens
 /// every file, so dial.rs's `pipe:` arm, which opens a pipe as a file, is held here.
-const WRAPPED: &[&str] = &[
-    // `connect_pipe`: the window's transport and lease dial.
-    "frontend/src/net/transport/mod.rs",
+const WRAPPED: &[(&str, &[&str])] = &[
+    // `connect_pipe`: the window's transport and lease dial; its Windows arm goes through `connect_own`.
+    ("frontend/src/net/transport/mod.rs", &["own_socket(", "connect_own("]),
     // `connect`: `sotd topology`'s dial; its `pipe:` arm opens a file.
-    "backend/src/topology/dial.rs",
+    ("backend/src/topology/dial.rs", &["own_socket(", "own_pipe("]),
 ];
 
 /// ADR 0049, User isolation: the two files whose dial the lint allows, and the one whose pipe the lint cannot see, still
@@ -154,9 +153,9 @@ const WRAPPED: &[&str] = &[
 fn the_files_that_wrap_their_own_dial_call_the_rule() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let mut failures = Vec::new();
-    for rel in WRAPPED {
+    for (rel, rules) in WRAPPED {
         let src = std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
-        for rule in ["own_socket(", "own_pipe("] {
+        for rule in *rules {
             if !src.lines().any(|l| !l.trim_start().starts_with("//") && l.contains(rule)) {
                 failures.push(format!("{rel}: never calls {rule}"));
             }
