@@ -290,8 +290,8 @@ try {
             Start-Sleep -Milliseconds 500
             $lines16 = @(Get-Content -LiteralPath $log16 -ErrorAction SilentlyContinue)
             $handover16 = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
-            Check '16e: the re-invoked copy hands over the caller''s lease' (($lines16.Count -ge 2) -and ($lines16[1] -ceq $handover16)) "lines: $($lines16 -join ' | ')"
-            Check '16e: and then closes it (eof)' (($lines16.Count -ge 3) -and ($lines16[2] -ceq 'eof')) "lines: $($lines16 -join ' | ')"
+            Check '16e: the re-invoked copy hands over the caller''s lease' (($lines16.Count -ge 3) -and ($lines16[2] -ceq $handover16)) "lines: $($lines16 -join ' | ')"
+            Check '16e: and then closes it (eof)' (($lines16.Count -ge 4) -and ($lines16[3] -ceq 'eof')) "lines: $($lines16 -join ' | ')"
             Check '16e: the caller''s list is empty afterwards' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"
         } finally {
             foreach ($s16 in @($global:SotLeases)) { try { $s16.Dispose() } catch { } }
