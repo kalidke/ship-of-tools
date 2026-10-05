@@ -331,10 +331,13 @@ mod tests {
         let workspaces = Workspaces::new();
         let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", &workspaces, sig).await });
         let began = Instant::now();
-        while sig.live() == 0 {
-            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
+        // The guard counts the child at its spawn, before the stub's first line has run; fire only once
+        // that line has written the counter, so the one-spawn precondition is true.
+        while std::fs::read_to_string(&counter).map_or(0, |s| s.lines().count()) == 0 {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never ran");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert!(sig.live() > 0, "the stub child exited before the fire");
         sig.fire();
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
