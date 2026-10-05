@@ -453,6 +453,7 @@ try {
             [System.IO.File]::WriteAllText($in8d, (@($hello8d, $lease8d) -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
             $argv8d = '-NoProfile -ExecutionPolicy Bypass -File "' + $transport8d + '" -PipeName ' + $Pipe + ' -Mode Oneshot -Op fe.lease -TimeoutSec 10'
             $proc8d = Start-Process -FilePath 'powershell.exe' -ArgumentList $argv8d -RedirectStandardInput $in8d -RedirectStandardOutput $outf8d -RedirectStandardError $errf8d -WindowStyle Hidden -PassThru
+            $null = $proc8d.Handle   # Windows PowerShell 5.1 reads ExitCode as empty unless the handle was taken while the process ran
             $script:hung8d = -not $proc8d.WaitForExit(20000)
             if ($script:hung8d) { Stop-Process -Id $proc8d.Id -Force -ErrorAction SilentlyContinue }
             $script:out8d = @(Get-Content -LiteralPath $outf8d -ErrorAction SilentlyContinue | Where-Object { $_ -ne '' })
