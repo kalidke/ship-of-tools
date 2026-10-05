@@ -20,6 +20,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `fixtures/`: committed bytes: the golden `.sotseg` segments, the pinned lane `.bin` files and the fake Messages API script.
 - `golden.rs`: the v1 segment bytes pinned against the committed `.sotseg` fixtures; Unix and Windows.
 - `macos_kernel_facts/`: the macOS kernel behaviours the lane rests on, one module per fact group (peer token, pty hangup, kqueue death watch, pty revoke); macOS only.
+- `other_account.rs`: a client run as `sudo -n -u nobody` gets no byte from a `serve_own` listener, a client of this account does (ADR 0049, User isolation); Unix, skipped where passwordless sudo is not available.
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `single_accept.rs`: source guards (ADR 0049, User isolation) a lint cannot make: no browser opener outside `browser_open.rs` and no secret, token or address as a command-line argument, found by walking the non-test source of every crate; every platform. The TCP accept rule is a lint (`rust/clippy.toml`).
