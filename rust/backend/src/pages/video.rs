@@ -28,7 +28,9 @@ use std::sync::RwLock;
 
 use anyhow::{Context, Result};
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream};
+#[cfg(test)]
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 use super::http::{content_type, serve_file, write_simple};
 use super::random_token;
@@ -118,12 +120,11 @@ pub fn bound_video_port() -> Option<u16> {
 /// callers should spawn this once at startup. The actual port is recorded
 /// for `bound_video_port()`.
 pub async fn spawn(preferred: u16) -> Result<()> {
-    let listener = match TcpListener::bind(("127.0.0.1", preferred)).await {
+    let listener = match crate::pages::bind_page_listener(preferred) {
         Ok(l) => l,
         Err(e) => {
             tracing::warn!(preferred, error = %e, "video preferred port taken — falling back to an ephemeral port (multi-user host?)");
-            TcpListener::bind(("127.0.0.1", 0))
-                .await
+            crate::pages::bind_page_listener(0)
                 .context("bind video http server on an ephemeral 127.0.0.1 port")?
         }
     };

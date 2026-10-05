@@ -84,6 +84,21 @@ where
     serve(listener, name, admit, handle).await
 }
 
+/// On Windows, a socket a process holds is inherited by every child that process starts, and tokio's accepted sockets
+/// are inheritable: a child started while a connection is being refused would keep it open at the other end until it
+/// ends. So an accepted socket is made non-inheritable the moment it is accepted, before the check. A failure is
+/// logged at debug and does not refuse: the check still runs. Nothing to do elsewhere.
+#[cfg(windows)]
+fn no_inherit(stream: &tokio::net::TcpStream) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    if unsafe { SetHandleInformation(stream.as_raw_socket() as _, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        tracing::debug!(error = %std::io::Error::last_os_error(), "an accepted socket could not be made non-inheritable");
+    }
+}
+#[cfg(not(windows))]
+fn no_inherit(_: &tokio::net::TcpStream) {}
+
 /// [`serve_own`] with the check as a parameter, so this module's tests can refuse a connection that is really ours.
 async fn serve<H, Fut>(listener: tokio::net::TcpListener, name: &'static str, admit: Admit, handle: H)
 where
@@ -101,6 +116,7 @@ where
         let accepted = listener.accept().await;
         match accepted {
             Ok((stream, peer)) => {
+                no_inherit(&stream);
                 let handle = Arc::clone(&handle);
                 tokio::spawn(async move {
                     let Ok(local) = stream.local_addr() else { return };
@@ -708,6 +724,42 @@ mod tests {
         let _held = std::net::TcpStream::connect(addr.parse::<SocketAddr>().unwrap()).unwrap();
         println!("connected");
         let _ = std::io::stdin().read_to_end(&mut Vec::new());
+    }
+
+    /// ADR 0049, User isolation: a child process started while a connection is being refused does not keep that
+    /// connection open. The check starts a child that lives about 5 s and refuses; the client must see the connection
+    /// end within 2 s. The listener is a plain tokio one, the shape the daemon's page listeners had.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_child_started_during_a_refusal_does_not_hold_the_connection() {
+        use std::process::{Child, Command, Stdio};
+        use tokio::io::AsyncReadExt;
+        static CHILD: std::sync::Mutex<Option<Child>> = std::sync::Mutex::new(None);
+        fn refuse_and_start_a_child(_: &'static str, _: SocketAddr, _: SocketAddr) -> bool {
+            let child = Command::new("ping")
+                .args(["-n", "6", "127.0.0.1"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            *CHILD.lock().unwrap() = Some(child);
+            false
+        }
+        let _no_other_child_meanwhile = CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(listener, "test", refuse_and_start_a_child, |_s| async {}));
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut raw = Vec::new();
+        let closed = tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut raw)).await;
+        task.abort();
+        if let Some(mut child) = CHILD.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(closed.is_ok(), "a child started during the refusal held the connection open");
+        assert!(raw.is_empty());
     }
 
     /// This test binary run as a child that connects to `listener` and holds the connection: the child, the accepted

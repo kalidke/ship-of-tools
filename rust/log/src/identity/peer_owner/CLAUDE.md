@@ -19,7 +19,9 @@ Read `mod.rs`: `serve_own`, then `PeerOwner`, `tcp_peer_owner` and `admit`; `pcb
   TCP accept carries the allow named `listener: page (TCP)` in `serve`; `rust/log/tests/isolation_guards.rs` lists
   every listener's allow. No caller can hand a loop a weaker check.
 - Only `PeerOwner::Mine` is served; every failure is `Unknown` and refuses (`admit`, private).
-- A refused connection is closed with nothing read or written (`serve`); an accept error is retried after 50 ms.
+- A refused connection is closed with nothing read or written (`serve`). On Windows the accepted socket is made
+  non-inheritable the moment it is accepted, before the check, so a child process started after that cannot keep it
+  open. An accept error is retried after 50 ms.
 - One listener runs at most `MAX_LOOKUPS` owner lookups at once and takes its turn before the accept, so a flood waits
   in the kernel's backlog and cannot fill the process's blocking pool or its descriptors.
 - The macOS walker accepts only the kernel's six-record sequence per connection; any other length, order or
