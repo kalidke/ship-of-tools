@@ -8,6 +8,7 @@
 // winit drives the main thread for window/input/redraw; tokio carries the
 // Unix-socket protocol traffic to/from the backend (ADR 0010).
 
+mod browser_open;
 mod cli;
 mod lease;
 mod net;

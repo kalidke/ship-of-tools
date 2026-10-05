@@ -26,7 +26,6 @@ module ShipToolsRepl
 using Base64
 using Pkg
 using Random
-using Sockets
 
 export serve, browserview, BrowserView, wglshow
 

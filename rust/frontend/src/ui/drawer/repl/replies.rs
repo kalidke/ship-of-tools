@@ -202,29 +202,25 @@ impl State {
         // browser-open (reusing the pluto/video/docs path) and skip the
         // repl-log append entirely. The URL resolves directly on a
         // local FE and via the launcher's `-L` tunnel on a remote one.
-        if let ReplFrame::Browser { url, open } = &frame {
+        if let ReplFrame::Browser { url, open, fe } = &frame {
             let url = url.clone();
-            // `open: false` (`wglshow(fig; open=false)`) — the eval
-            // is serving for a TARGETED open: some session will
-            // follow up with `sot-fe open-url <url> --fe <handle>`
-            // for exactly one FE. Every FE must stay hands-off
-            // here (auto-opening on all FEs is the multi-client
-            // layout race the flag exists to avoid); surface the
-            // URL in the status line so a human at any FE can
-            // still open it deliberately.
-            if !open {
-                tracing::info!(%url, "wgl: browser frame served no-open");
-                self.status = format!("interactive figure served · {url}");
+            let origin = crate::browser_open::origin_of(&url);
+            // `open: false` serves without opening; `fe` names the one
+            // frontend that opens it anyway (`wglshow(fig; open = "<fe>")`),
+            // matched exactly as a directed fe.command is.
+            if !crate::browser_open::opens_here(*open, fe.as_deref(), &self_comm_handle()) {
+                tracing::info!(page = %origin, "wgl: browser frame served, not opened here");
+                self.status = "interactive figure served, not opened here".to_string();
                 self.window.request_redraw();
                 return;
             }
             if self.ensure_proxy_for_url(&event_host, &url) {
-                match open_url_in_browser(&url) {
+                match crate::browser_open::open_page(&url) {
                     Ok(()) => {
-                        self.status = format!("opened interactive figure · {url}")
+                        self.status = format!("opened interactive figure · {origin}")
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, %url, "wgl: open_url_in_browser failed");
+                        tracing::warn!(error = %e, page = %origin, "wgl: browser open failed");
                         self.status =
                             format!("interactive figure · browser-open failed · {e}");
                     }

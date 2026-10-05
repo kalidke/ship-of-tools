@@ -18,7 +18,7 @@
 //! honest without blocking the render thread: the GPU thread binds a
 //! `std::net::TcpListener` SYNCHRONOUSLY (a bind is sub-millisecond, no
 //! `block_on`, so the port is already listening the instant
-//! `open_url_in_browser` runs) and hands the bound listener — tagged with the
+//! `browser_open::open_page` runs) and hands the bound listener — tagged with the
 //! ssh recipe and token it resolved for that page's host — to the transport
 //! runtime here, which owns the async accept loop + the per-connection pipe.
 //!
@@ -267,35 +267,11 @@ where
     Ok(Answer::Piped)
 }
 
-/// Hand `url` (any browser-openable address — `http://…`, `file:///…`, or
-/// a local filesystem path) off to the OS default handler. Fire-and-
-/// forget — we don't wait for the browser to exit.
+/// Hand `url`, an address with NO secret in it (a local file, the public manual), to the OS opener. A served page
+/// goes through `crate::browser_open::open_page`, never here: this argument lands on command lines other accounts
+/// can read.
 pub(crate) fn open_url_in_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // Avoid `cmd /c start`: shell metacharacters in URLs, especially
-        // `&secret=...` on Pluto links, are otherwise parsed by cmd.exe.
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn()
-            .map(|_| ())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())?;
-    }
-    tracing::info!(%url, "opened in browser");
-    Ok(())
+    crate::browser_open::spawn_opener(url)
 }
 
 /// Write `html_bytes` to a unique temp file and hand it off to the OS
@@ -385,7 +361,9 @@ mod tests {
                 }
             }
         };
-        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), sot_log::identity::peer_owner::admit, dial));
+        // This test is about parking, not ownership; its dial drops the stream at once, and the real check refuses a
+        // connection whose far end has already closed.
+        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), |_, _, _| true, dial));
         for _ in 0..6 {
             let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             let mut buf = [0u8; 1];

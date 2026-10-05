@@ -91,12 +91,17 @@ fn parse_endpoint(s: &str) -> Option<SocketAddr> {
 }
 
 /// The uid in the row of `table` whose local endpoint is `peer` and remote endpoint `listener` (the peer's own
-/// end of the connection), if there is one.
+/// end of the connection), if there is one. It reads only a live, owned row (ESTABLISHED with an inode), because a
+/// closing orphan carries uid 0 and no inode.
 #[cfg(any(target_os = "linux", test))]
 fn uid_of_row(table: &str, peer: SocketAddr, listener: SocketAddr) -> Option<u32> {
     table.lines().skip(1).find_map(|line| {
         let f: Vec<&str> = line.split_whitespace().collect();
-        if parse_endpoint(f.get(1)?)? == peer && parse_endpoint(f.get(2)?)? == listener {
+        if parse_endpoint(f.get(1)?)? == peer
+            && parse_endpoint(f.get(2)?)? == listener
+            && *f.get(3)? == "01"
+            && *f.get(9)? != "0"
+        {
             f.get(7)?.parse().ok()
         } else {
             None
@@ -353,19 +358,34 @@ mod imp {
             && u16::from_be(ini.insi_fport as u16) == other.port()
     }
 
-    /// The scan is restricted to this uid's processes, so finding the peer's socket there is the ownership proof.
+    /// The refusal once `deadline` has passed, so every step and the success check one expression.
+    fn over(deadline: Instant) -> Option<PeerOwner> {
+        (Instant::now() > deadline)
+            .then(|| PeerOwner::Unknown(format!("over the {} ms macOS lookup budget", MACOS_BUDGET.as_millis())))
+    }
+
     pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, _own: &str) -> PeerOwner {
+        lookup_until(local, peer, Instant::now() + MACOS_BUDGET)
+    }
+
+    /// The scan is restricted to this uid's processes, so finding the peer's socket there is the ownership proof;
+    /// past `deadline` nothing is proven, however the scan stands.
+    pub(super) fn lookup_until(local: SocketAddr, peer: SocketAddr, deadline: Instant) -> PeerOwner {
         let (SocketAddr::V4(local), SocketAddr::V4(peer)) = (local, peer) else {
             return PeerOwner::Unknown("IPv6 peer: no macOS lookup".into());
         };
-        let deadline = Instant::now() + MACOS_BUDGET;
         for pid in pids() {
-            if Instant::now() > deadline {
-                return PeerOwner::Unknown(format!("over the {} ms macOS lookup budget", MACOS_BUDGET.as_millis()));
+            if let Some(late) = over(deadline) {
+                return late;
             }
             for fd in socket_fds(pid) {
+                if let Some(late) = over(deadline) {
+                    return late;
+                }
                 match socket_info(pid, fd) {
-                    Ok(Some(info)) if holds(&info, peer, local) => return PeerOwner::Mine,
+                    Ok(Some(info)) if holds(&info, peer, local) => {
+                        return over(deadline).unwrap_or(PeerOwner::Mine);
+                    }
                     Ok(_) => {}
                     Err(e) => return PeerOwner::Unknown(e),
                 }
@@ -382,7 +402,8 @@ mod imp {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID, MIB_TCP_STATE_ESTAB,
+        TCP_TABLE_OWNER_PID_CONNECTIONS,
     };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
@@ -431,12 +452,17 @@ mod imp {
         }
     }
 
-    /// The pid owning the peer's end of the connection: the row whose local endpoint is `peer` and remote `listener`.
+    /// The pid owning the peer's end of the connection: the ESTABLISHED row whose local endpoint is `peer` and remote
+    /// `listener`.
     fn owning_pid(listener: SocketAddr, peer: SocketAddr) -> io::Result<Option<u32>> {
         if let (SocketAddr::V4(_), SocketAddr::V4(_)) = (listener, peer) {
             let found = rows::<MIB_TCPROW_OWNER_PID>(&table(2)?)
                 .into_iter()
-                .find(|r| v4(r.dwLocalAddr, r.dwLocalPort) == peer && v4(r.dwRemoteAddr, r.dwRemotePort) == listener);
+                .find(|r| {
+                    r.dwState == MIB_TCP_STATE_ESTAB as u32
+                        && v4(r.dwLocalAddr, r.dwLocalPort) == peer
+                        && v4(r.dwRemoteAddr, r.dwRemotePort) == listener
+                });
             if let Some(r) = found {
                 return Ok(Some(r.dwOwningPid));
             }
@@ -444,30 +470,46 @@ mod imp {
         let (listener, peer) = (mapped(listener), mapped(peer));
         let found = rows::<MIB_TCP6ROW_OWNER_PID>(&table(23)?)
             .into_iter()
-            .find(|r| v6(r.ucLocalAddr, r.dwLocalPort) == peer && v6(r.ucRemoteAddr, r.dwRemotePort) == listener);
+            .find(|r| {
+                r.dwState == MIB_TCP_STATE_ESTAB as u32
+                    && v6(r.ucLocalAddr, r.dwLocalPort) == peer
+                    && v6(r.ucRemoteAddr, r.dwRemotePort) == listener
+            });
         Ok(found.map(|r| r.dwOwningPid))
     }
 
-    /// The token user of process `pid` against this process's own. Another account's process usually cannot be opened,
-    /// which is a refusal like any other failure.
-    pub(super) fn pid_owner(pid: u32, own: &str) -> PeerOwner {
+    /// The token user of process `pid` against this process's own, with the process held open throughout. A pid is
+    /// unique only while its process lives, so `still_owner` asks the TCP table again once the handle is held: the
+    /// held handle keeps the pid from being reused, and only an unchanged answer proves the pid is the connection's.
+    /// Another account's process usually cannot be opened, which is a refusal like any other failure.
+    pub(super) fn owner_of(pid: u32, own: &str, still_owner: impl FnOnce() -> io::Result<Option<u32>>) -> PeerOwner {
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h.is_null() {
             return PeerOwner::Unknown(format!("OpenProcess({pid}): {}", io::Error::last_os_error()));
         }
-        let sid = crate::host::sid_string_from_process(h);
+        let sid = match still_owner() {
+            Ok(Some(again)) if again == pid => Some(crate::host::sid_string_from_process(h)),
+            _ => None,
+        };
         unsafe {
             CloseHandle(h);
         }
         match sid {
-            Ok(sid) => verdict(&sid, own),
-            Err(e) => PeerOwner::Unknown(format!("token of {pid}: {e}")),
+            Some(Ok(sid)) => verdict(&sid, own),
+            Some(Err(e)) => PeerOwner::Unknown(format!("token of {pid}: {e}")),
+            None => PeerOwner::Unknown("the peer's connection changed during the lookup".into()),
         }
+    }
+
+    /// [`owner_of`] without the revalidation, for a pid the caller already holds.
+    #[cfg(test)]
+    pub(super) fn pid_owner(pid: u32, own: &str) -> PeerOwner {
+        owner_of(pid, own, || Ok(Some(pid)))
     }
 
     pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
         match owning_pid(local, peer) {
-            Ok(Some(pid)) => pid_owner(pid, own),
+            Ok(Some(pid)) => owner_of(pid, own, || owning_pid(local, peer)),
             Ok(None) => PeerOwner::Unknown("no TCP table row for the peer (it may have closed)".into()),
             Err(e) => PeerOwner::Unknown(format!("GetExtendedTcpTable: {e}")),
         }
@@ -515,6 +557,24 @@ mod tests {
         assert_eq!(verdict("uid:1001", "uid:1001"), PeerOwner::Mine);
     }
 
+    #[test]
+    fn a_closing_or_ownerless_row_names_no_owner() {
+        let (client, server) = (loopback(0x80EC), loopback(0xE387));
+        let header = CAPTURE.lines().next().unwrap();
+        let row = CAPTURE.lines().find(|l| l.contains("0100007F:80EC 0100007F:E387")).unwrap();
+        // A FIN_WAIT2/TIME_WAIT orphan: state 06, uid 0, inode 0.
+        let closing = row.replace(" 01 ", " 06 ").replace("1001        0 2335972813", "   0        0 0");
+        // A live state with no inode: uid 0, inode 0.
+        let ownerless = row.replace("1001        0 2335972813", "   0        0 0");
+        assert_ne!(closing, row);
+        assert_ne!(ownerless, row);
+        for orphan in [closing, ownerless] {
+            let table = format!("{header}\n{orphan}\n");
+            assert_eq!(uid_of_row(&table, client, server), None, "{orphan}");
+        }
+        assert_eq!(uid_of_row(CAPTURE, client, server), Some(1001));
+    }
+
     /// A connected pair on loopback: the accepted stream's own address and its peer's.
     fn accepted_pair() -> (std::net::TcpStream, std::net::TcpStream) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -549,6 +609,24 @@ mod tests {
         assert_eq!(imp::pid_owner(std::process::id(), &own), PeerOwner::Mine);
         // Pid 4 is the System process: its token is another account's, or it cannot be opened at all.
         assert_ne!(imp::pid_owner(4, &own), PeerOwner::Mine);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_connection_whose_owner_changed_is_refused() {
+        let own = crate::identity::os_account::own_account_id().unwrap();
+        let me = std::process::id();
+        assert_eq!(imp::owner_of(me, &own, || Ok(Some(me))), PeerOwner::Mine);
+        assert_ne!(imp::owner_of(me, &own, || Ok(None)), PeerOwner::Mine);
+        assert_ne!(imp::owner_of(me, &own, || Ok(Some(4))), PeerOwner::Mine);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_lookup_past_its_deadline_refuses_even_its_own_connection() {
+        let (accepted, _client) = accepted_pair();
+        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        assert_ne!(imp::lookup_until(local, peer, std::time::Instant::now()), PeerOwner::Mine);
     }
 
     #[cfg(target_os = "macos")]
