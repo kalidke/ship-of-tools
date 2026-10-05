@@ -44,6 +44,9 @@ const DR = ShipToolsRepl
             @test occursin("127.0.0.1:41234", s)
         end
         @test all(f -> !occursin("0123456789abcdef", string(get(f, :text, ""))), DR.value_frames_for((bv,)))
+        # A userinfo is dropped whole, even one with a raw `@` in it.
+        @test repr(DR.BrowserView("https://alice@password@127.0.0.1:41234/x", false)) ==
+              "BrowserView(https://127.0.0.1:41234/…, open = false)"
     end
 
     @testset "value_frames_for: BrowserView emits a browser frame (ADR 0032)" begin
