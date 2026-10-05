@@ -54,3 +54,7 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   those five. The suites of the row-lifecycle CLIs, the launchers and `sot-gh-auth.sh` are in `agents/tests/` and source this folder's guard.
 - A shell rule that has a Rust twin is checked by a text scan or a parity test here (`test-hub-files.sh` T13 over
   `inbox.rs`, `test-registry-lock.sh` t15 over `lock.rs`); change both arms in one commit.
+- A suite's verdict never depends on how fast the host runs: a bound on how long something took is a count of the code's
+  own waits (a logging `sleep` first on PATH), or a bound no shorter than the longest wait the code has (10 s), which
+  only a hang reaches; a step a case starts in the background is awaited by a signal it gives, never a fixed sleep, and
+  ends before the case returns. Lower bounds ("waited at least the deadline") stay: load only lengthens a wait.

@@ -3,6 +3,8 @@
 # comm-context.sh wait: it polls every 50 ms (not once a second), bounds the
 # wait, kills a stalled child, removes its temp file, and keeps a finished
 # child's output. A stub comm-context.sh sits in a scratch copy of the hooks dir.
+# The waits are counted, never timed: a logging `sleep` first on the hook's PATH
+# records each wait the hook makes, so the verdict does not depend on host speed.
 #
 # Usage: comm/tests/test-heartbeat-ctx-wait.sh
 # Exit: 0 if every case PASSes, 1 if any FAILs.
@@ -43,49 +45,49 @@ bad() { echo "FAIL $1${2:+ — $2}"; fail=$((fail+1)); }
 seed_row() {
     jq -n --arg n "$NAME" '{agents:{($n):{state:"working",floor:"working",summary:"x",status_at:"2026-09-08T00:00:00Z",repo:"x"}}}' > "$REGISTRY"
 }
-# HB: one heartbeat call past the 10 s throttle; prints elapsed ms.
+# The logging sleep: appends its arguments to SLEEPS, then runs the real sleep (its absolute path, resolved before the
+# shim exists). A stub that must itself sleep calls $REAL_SLEEP, so the log holds only the hook's own waits.
+REAL_SLEEP="$(command -v sleep)"
+SHIM="$WORK/shim"; SLEEPS="$WORK/sleeps.log"; mkdir -p "$SHIM"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec "%s" "$@"\n' "$SLEEPS" "$REAL_SLEEP" > "$SHIM/sleep"
+chmod +x "$SHIM/sleep"
+# HB: one heartbeat call past the 10 s throttle, with the logging sleep first on its PATH; SLEEPS holds its waits.
 HB() {
-    local t0 t1
     rm -f "${SOT_COMM_HOME:?}"/state/hb-*.tick 2>/dev/null
-    t0=$EPOCHREALTIME
-    printf '{"tool_name":"Bash"}' | bash "$FLAT/comm-status-heartbeat.sh" >"$HB_OUT" 2>&1
-    t1=$EPOCHREALTIME
-    # Digits only, as comm-lib.sh reads its own clock: the decimal mark
-    # follows the locale, so the raw string is never used in arithmetic.
-    echo $(( (${t1//[!0-9]/} - ${t0//[!0-9]/}) / 1000 ))
+    : > "$SLEEPS"
+    printf '{"tool_name":"Bash"}' | PATH="$SHIM:$PATH" bash "$FLAT/comm-status-heartbeat.sh" >"$HB_OUT" 2>&1
 }
 
-# (a) fast context call: no whole-second dead time.
-printf '#!/usr/bin/env bash\necho "NAME=%s"\n' "$NAME" > "$STUB"; chmod +x "$STUB"
+# (a) fast context call: every wait the hook makes is a 50 ms poll, never a whole second. An empty log passes too (the
+# stub may end before the first poll); (b) shows the log sees the polls.
+printf '#!/usr/bin/env bash\n"%s" 0.2\necho "NAME=%s"\n' "$REAL_SLEEP" "$NAME" > "$STUB"; chmod +x "$STUB"
 seed_row
-slow=0; times=""
-for _ in 1 2 3 4 5; do
-    ms="$(HB)"; times="$times $ms"
-    [ "$ms" -lt 500 ] || slow=$((slow+1))
-done
-[ "$slow" = 0 ] && ok "(a) fast context: 5 runs under 500 ms (ms:$times)" || bad "(a) fast context" "ms:$times"
+HB
+other="$(grep -c -v -x '0.05' "$SLEEPS")"
+[ "$other" = 0 ] && ok "(a) fast context: every wait is 0.05 ($(wc -l < "$SLEEPS") polls)" || bad "(a) fast context" "waits: $(tr '\n' ' ' < "$SLEEPS")"
 
 # (b) bound: a stalled context call is killed at the tick bound, no temp left.
 cat > "$STUB" <<EOS
 #!/usr/bin/env bash
 echo \$\$ > "$WORK/stub.pid"
-exec sleep 30
+exec "$REAL_SLEEP" 300
 EOS
 chmod +x "$STUB"
 seed_row
-ms="$(SOT_HB_CTX_TIMEOUT_TICKS=20 HB)"
+SOT_HB_CTX_TIMEOUT_TICKS=20 HB
+polls="$(grep -c -x '0.05' "$SLEEPS")"; total="$(wc -l < "$SLEEPS")"
 STUB_PID="$(cat "$WORK/stub.pid" 2>/dev/null)"
 gone=1; kill -0 "$STUB_PID" 2>/dev/null && gone=0
 left="$(find "$SOT_COMM_HOME/state" -name '.hb-ctx-*' | wc -l)"
-if [ "$ms" -lt 3000 ] && [ "$gone" = 1 ] && [ "$left" = 0 ]; then ok "(b) bound: returned in ${ms} ms, stub gone, no temp file"
-else bad "(b) bound" "ms=$ms gone=$gone temp_left=$left"; fi
+if [ "$polls" = 20 ] && [ "$total" = 20 ] && [ "$gone" = 1 ] && [ "$left" = 0 ]; then ok "(b) bound: 20 polls of 0.05, stub gone, no temp file"
+else bad "(b) bound" "polls=$polls total=$total gone=$gone temp_left=$left"; fi
 [ "$gone" = 0 ] && { kill "$STUB_PID" 2>/dev/null; wait "$STUB_PID" 2>/dev/null; }
 STUB_PID=""
 
 # (c) a context call that takes 0.2 s still has its output used.
-printf '#!/usr/bin/env bash\nsleep 0.2\necho "NAME=%s"\n' "$NAME" > "$STUB"; chmod +x "$STUB"
+printf '#!/usr/bin/env bash\n"%s" 0.2\necho "NAME=%s"\n' "$REAL_SLEEP" "$NAME" > "$STUB"; chmod +x "$STUB"
 seed_row
-HB >/dev/null
+HB
 at="$(jq -r --arg n "$NAME" '.agents[$n].status_at' "$REGISTRY")"
 [ "$at" != "2026-09-08T00:00:00Z" ] && ok "(c) output kept: row stamped ($at)" || bad "(c) output kept" "status_at unchanged"
 
