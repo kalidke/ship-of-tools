@@ -709,12 +709,12 @@ impl DaemonLaneEndpoint {
     }
 }
 
-/// `connect_unix_socket_unchallenged`/`connect_pipe_path_unchallenged`'s
-/// own failures are always [`TransportError::Io`] — this unwraps that
+/// `connect_own`'s failures (a connector's own, or the rule's refusal) are
+/// always [`TransportError::Io`] — this unwraps that
 /// (preserving the underlying `io::Error`) so [`DaemonLaneEndpoint::
 /// dial`] can rewrap it as [`TransportError::Unreachable`] uniformly;
 /// any other variant (unreachable in practice — neither connector
-/// produces one) still degrades to a generic io error rather than
+/// nor the rule produces one) still degrades to a generic io error rather than
 /// panicking.
 #[cfg(any(unix, windows))]
 fn unwrap_connect_io(e: TransportError) -> std::io::Error {

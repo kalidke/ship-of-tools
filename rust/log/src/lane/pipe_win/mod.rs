@@ -447,7 +447,8 @@ mod server;
 mod slot;
 
 use accept::*;
-pub use client::{connect_pipe_path_unchallenged, connect_voyage_pipe, PipeClient, PipeEndpoint};
+pub(crate) use client::connect_pipe_path_unchallenged;
+pub use client::{connect_voyage_pipe, PipeClient, PipeEndpoint};
 pub(crate) use client::connect_voyage_pipe_unchallenged;
 use conn::*;
 pub use server::PipeServer;

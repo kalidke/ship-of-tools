@@ -408,7 +408,7 @@ mod connect;
 mod listener;
 mod server;
 
-pub use client::connect_unix_socket_unchallenged;
+pub(crate) use client::connect_unix_socket_unchallenged;
 #[cfg(unix)]
 pub use client::connect_voyage_socket;
 pub(crate) use client::connect_voyage_socket_unchallenged;
