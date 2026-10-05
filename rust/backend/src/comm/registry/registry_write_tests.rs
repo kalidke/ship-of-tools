@@ -260,13 +260,14 @@ mod stamp_write_tests {
     fn with_nothing_to_change_it_writes_nothing() {
         let _guard = guarded();
         let (dir, registry_path) = seed("nothing");
-        use std::os::unix::fs::MetadataExt;
-        let inode = std::fs::metadata(&registry_path).unwrap().ino();
+        #[cfg(unix)]
+        let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&registry_path).unwrap());
         let before = std::fs::read(&registry_path).unwrap();
         assert!(stamp_last_seen(&BTreeSet::new(), STAMP));
         assert!(stamp_last_seen(&set(&["nobody"]), STAMP));
         assert_eq!(std::fs::read(&registry_path).unwrap(), before);
-        assert_eq!(std::fs::metadata(&registry_path).unwrap().ino(), inode, "the registry was rewritten");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&registry_path).unwrap()), inode, "the registry was rewritten");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
