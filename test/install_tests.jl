@@ -316,21 +316,20 @@ end
     end
 end
 
-# The process mask: set it and get the old one back. Windows has no umask, so its branch is never lowered there.
-@static if Sys.iswindows()
-    set_process_umask(mask) = nothing
-else
-    set_process_umask(mask) = ccall(:umask, Base.Cmode_t, (Base.Cmode_t,), mask)
-end
-
 @testset "install_comm makes a new comm folder its user's alone" begin
+    # The process mask: set it and get the old one back. Windows has no umask, so its branch is never lowered there.
+    @static if Sys.iswindows()
+        set_process_umask(mask) = nothing
+    else
+        set_process_umask(mask) = ccall(:umask, Base.Cmode_t, (Base.Cmode_t,), mask)
+    end
     mktempdir() do home
         chmod(home, 0o755)
         # ADR 0049, User isolation: a new folder is 0700 whatever the caller's mask. The mask is process-wide,
-        # so it is set around the install only. No HOME: install_comm(clis = Symbol[]) reads only SOT_COMM_HOME.
+        # so it is set around the install only. install_comm(clis = Symbol[]) reads only the comm home.
         old = set_process_umask(0o022)
         try
-            withenv("SOT_COMM_HOME" => joinpath(home, ".sot-comm"), "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing) do
+            in_home(home) do
                 ShipTools.install_comm(clis = Symbol[])
             end
         finally
@@ -338,7 +337,9 @@ end
         end
         comm = joinpath(home, ".sot-comm")
         @test isfile(joinpath(comm, "VERSION"))
-        if !Sys.iswindows()
+        if Sys.iswindows()
+            @test_skip false
+        else
             @test filemode(comm) & 0o777 == 0o700
             @test filemode(joinpath(comm, "bin", "comm-poll.sh")) & 0o777 == 0o755
         end
