@@ -461,6 +461,22 @@ mod tests {
         assert!(admit("test", local, peer));
     }
 
+    /// ADR 0049, User isolation: a client on a dual-stack socket (Java's default, among others) reaches a 127.0.0.1
+    /// listener with an IPv4-mapped address, so its row is in the IPv6 table (Linux `tcp6`) and the verdict must still
+    /// name its owner. Skipped where the OS gives no such socket (Windows' sockets are IPv6-only by default).
+    #[test]
+    fn a_dual_stack_client_of_an_ipv4_listener_is_mine() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let Ok(_client) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(), port)) else {
+            eprintln!("skipped: no dual-stack connect on this host");
+            return;
+        };
+        let (accepted, _) = listener.accept().unwrap();
+        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine, "{local} <- {peer}");
+    }
+
     #[test]
     fn a_peer_no_socket_has_is_refused() {
         // A free port Q and a peer no socket holds: no row, so refused.
