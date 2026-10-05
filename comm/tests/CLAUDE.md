@@ -34,7 +34,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
-- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first
+- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first, and every clock read in comm/tests and agents/tests matches its row in the clock table, which may only fall
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire and a hit files locally, never both
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
@@ -62,4 +62,5 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   than every hang guard in the suite, unless its expiry is what the case tests. A step a case starts in the background
   is awaited by a signal it gives (`await`; `stopped` for a holder that stops itself), never a fixed sleep, and ends
   before the case returns. Lower bounds ("waited at least the deadline") stay: load only lengthens a wait. The suites
-  that need peer hosts and comm-matrix.sh time real boxes and are outside this rule.
+  that need peer hosts and comm-matrix.sh time real boxes and are outside this rule. test-rm-guard.sh pins every clock read in comm/tests and agents/tests to its clock table; a row
+  may only fall, and the rows marked owed are waits this rule still has to replace.

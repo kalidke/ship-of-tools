@@ -25,6 +25,13 @@
 # check first proves it flags a copy of test-hub-files.sh without its source
 # line.
 #
+# The same walk pins the suites' clock reads (comm/tests/CLAUDE.md's timing rule):
+# every tracked `*.sh` under comm/tests and agents/tests but this file is counted
+# for `EPOCHREALTIME`, `date ... +%s...` and `SECONDS` on its non-comment lines, and
+# the count must equal its row in the clock table; a file with no row reads no
+# clock. A row may only fall: a new or raised row is a review question against the
+# rule. The count first proves itself on its own table of lines.
+#
 # Usage: comm/tests/test-rm-guard.sh
 # Exit: 0 if no unguarded site or suite, 1 naming each one.
 set -uo pipefail
@@ -97,9 +104,38 @@ done
 [ "$table_bad" -eq 0 ] || exit 1
 echo "PASS: the delete pattern flags and passes each of its $n table rows"
 
-files=(); suites=()
+# The clock reads: COUNT FILE for each file with at least one, over the non-comment lines.
+CLOCK_SCAN='
+for my $f (@ARGV) {
+    open my $fh, "<", $f or next;
+    my $n = 0;
+    while (my $line = <$fh>) {
+        next if $line =~ /^\s*#/;
+        $n++ while $line =~ /EPOCHREALTIME|\bdate\b[^;&|)\n]*\+%s|\bSECONDS\b/g;
+    }
+    print "$n $f\n" if $n;
+}'
+# Its own table: each row is the count the pattern must give and one line.
+n=0
+while IFS= read -r row; do
+    n=$((n + 1)); printf '%s\n' "${row#* }" > "$T/clock-row"
+    got="$(perl -e "$CLOCK_SCAN" "$T/clock-row" | cut -d' ' -f1)"
+    [ "${got:-0}" = "${row%% *}" ] || { echo "FAIL: the clock pattern's table row $n must count ${row%% *}: ${row#* }"; exit 1; }
+done <<'EOF'
+1 t0=$(date +%s%N)
+1 now=$(date -u +%s)
+2 a=$EPOCHREALTIME; b=$EPOCHREALTIME
+1 [ $((SECONDS - t0)) -lt 3 ] || exit 1
+0 # t0=$(date +%s%N)
+0 sleep 0.05
+0 stamp=$(date +%Y-%m-%dT%H:%M:%SZ)
+EOF
+echo "PASS: the clock pattern counts each of its $n table rows"
+
+files=(); suites=(); clockfiles=()
 while IFS= read -r f; do
     case "$f" in comm/*|agents/*) case "${f##*/}" in test-*.sh) suites+=("$REPO/$f") ;; esac ;; esac
+    case "$f" in comm/tests/test-rm-guard.sh) ;; comm/tests/*.sh|agents/tests/*.sh) clockfiles+=("$REPO/$f") ;; esac
     case "${f##*/}" in
         *.sh) files+=("$REPO/$f") ;;
         *.*) ;;
@@ -111,6 +147,7 @@ done < <(git -C "$REPO" ls-files)
 [ "${#suites[@]}" -ge 29 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 29" >&2; exit 1; }
 
 sites="$(perl -e "$RM_SCAN" "${files[@]}")"
+clock_got="$(perl -e "$CLOCK_SCAN" "${clockfiles[@]}" | sed "s#^\([0-9]*\) $REPO/#\1 #" | sort -k2)"
 
 # unguarded SUITE... — each suite whose first command other than `set` is not
 # the guard's source line.
@@ -142,6 +179,49 @@ else
     printf '%s\n' "$bad" | sed "s#^$REPO/##" | while IFS= read -r f; do
         echo "FAIL: $f does not source lib-home-guard.sh before any command but set"
     done
+    rc=1
+fi
+
+# The clock table: COUNT PATH REASON. A row may only fall; an `owed` row is a wait the timing rule still has to replace.
+clock_table="$(cat <<'EOF'
+2 agents/tests/test-despawn-resolve.sh owed: a 5 s wall-clock wait for the stub socket
+2 agents/tests/test-sot-fe-reauth.sh owed: a 5 s wall-clock wait for the stub socket
+2 agents/tests/test-sot-fe-version.sh owed: a 5 s wall-clock wait for the stub socket
+2 agents/tests/test-spawn-capsule-workspace.sh owed: a 5 s wall-clock wait for the stub socket
+2 agents/tests/test-spawn-remote-no-local-row.sh owed: a 5 s wall-clock wait for the stub socket
+4 comm/tests/comm-matrix.sh live matrix over real boxes: times delivery on purpose
+2 comm/tests/hub_files/lock_shell.sh a lower bound: the send behind a frozen holder waited its 1 s
+4 comm/tests/join_disambiguation/slot_guard.sh owed: two 10 s wall-clock waits
+4 comm/tests/join_disambiguation/spawn_and_lock.sh owed: two 10 s wall-clock waits
+2 comm/tests/test-agent-join.sh owed: a 5 s wall-clock wait for the stub socket
+8 comm/tests/test-comm-e2e-readers.sh needs peer hosts: times delivery on purpose
+2 comm/tests/test-endpoint-gate.sh owed: a 3 s upper bound its rc 124 check already covers
+2 comm/tests/test-inbox-lock-onehost.sh needs a peer host: prints the elapsed time
+14 comm/tests/test-inbox-lock-twohost.sh needs peer hosts: times holders across boxes
+2 comm/tests/test-join-disambiguation.sh owed: a 5 s wall-clock wait for the stub socket
+15 comm/tests/test-registry-lock.sh lower bounds (t8, t10, comm-status's 10 s) and t13's test of the lock's own clock
+3 comm/tests/test-registry-twohost.sh needs peer hosts: a timed run window
+3 comm/tests/test-relay-file-first.sh a lower bound: the full 5 s receipt window
+EOF
+)"
+clock_bad=0; clock_rows=0
+while read -r got file; do
+    [ -n "$file" ] || continue
+    row="$(printf '%s\n' "$clock_table" | awk -v f="$file" '$2 == f { print $1 }')"
+    if [ -z "$row" ]; then
+        echo "FAIL: $file reads the clock $got times and has no row"; clock_bad=1
+    elif [ "$got" != "$row" ]; then
+        echo "FAIL: $file reads the clock $got times, its row says $row (a new read: count the code's waits with sleep_log or await a signal; a lower count: lower the row)"; clock_bad=1
+    fi
+    clock_rows=$((clock_rows + 1))
+done <<< "$clock_got"
+while read -r _ file _; do
+    printf '%s\n' "$clock_got" | awk -v f="$file" '$2 == f { found = 1 } END { exit !found }' \
+        || { echo "FAIL: $file has a row but reads no clock (delete the row)"; clock_bad=1; }
+done <<< "$clock_table"
+if [ "$clock_bad" -eq 0 ]; then
+    echo "PASS: every clock read in comm/tests and agents/tests matches its row ($clock_rows files)"
+else
     rc=1
 fi
 exit "$rc"
