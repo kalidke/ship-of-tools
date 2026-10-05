@@ -193,7 +193,9 @@ mod tests {
 
     /// No scan cuts a file at its first `#[cfg(test)]`: the text of that attribute followed at once by a double
     /// quote is what a string-literal cut (`find`, `split`, `==`) contains, and such a cut misses every production
-    /// line after a test-only item in the middle of a file.
+    /// line after a test-only item in the middle of a file. It sees a cut where the attribute text is followed at
+    /// once by a double quote. A literal that runs on past the attribute (`"#[cfg(test)]\n…"`) is not seen; that
+    /// limit is accepted (M4 recheck 3, N2).
     #[test]
     fn no_scan_cuts_a_file_at_its_first_cfg_test() {
         // Built with `concat!`, so this file does not hold the text it looks for.

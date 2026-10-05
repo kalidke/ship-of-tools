@@ -63,7 +63,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
 - `src/identity/`: the peer challenge and identity exchange.
-- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` (the `fn` or `struct` a match lies in) (feature `test-support`).
+- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).
 - `src/host/`: per-machine facts and platform primitives.
 - `src/bin/`: `sot-capsule`, `sot-log` and the three test-fixture binaries.
 
