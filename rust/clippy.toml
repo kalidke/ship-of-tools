@@ -7,9 +7,10 @@
 #   A new connector method joins it. Not expressible here: std::fs::OpenOptions::open on a pipe path;
 #   rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and topology/dial.rs contain the rule's names,
 #   not their order and not any other file's opener.
-# - TCP accepts: every TCP connection a Rust process accepts is checked for its owner before a byte is read, so the only
-#   TCP accept is the one in sot_log::identity::peer_owner's `serve` (serve_own), which carries the second group's one
-#   allow.
+# - Accepts: every listener a Rust process accepts on is listed. Each accept primitive the second group names is
+#   disallowed; each production accept carries one allow whose reason begins "listener: <name>:", and
+#   rust/log/tests/isolation_guards.rs (every_rust_listener_is_listed) pins those names. The one TCP accept is
+#   sot_log::identity::peer_owner's `serve` (serve_own).
 disallowed-methods = [
   # Local endpoint dials: only through sot_log::identity::connect_own.
   { path = "std::os::unix::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
@@ -42,11 +43,20 @@ disallowed-methods = [
   { path = "sot_log::lane::socket_unix::client::connect_unix_socket_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_pipe_path_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_named_pipe_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
-  # TCP accepts: only in sot_log::identity::peer_owner's `serve` (serve_own).
+  # Accepts: every listener listed; the one TCP accept is serve_own's.
   { path = "std::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
   { path = "std::net::TcpListener::incoming", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
   { path = "tokio::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
   { path = "tokio::net::TcpListener::poll_accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
   { path = "libc::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
   { path = "libc::accept4", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "std::os::unix::net::UnixListener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "std::os::unix::net::UnixListener::incoming", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::UnixListener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::UnixListener::poll_accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::Listener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::ListenerExt::incoming", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::tokio::Listener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::NamedPipeServer::connect", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "windows_sys::Win32::System::Pipes::ConnectNamedPipe", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
 ]

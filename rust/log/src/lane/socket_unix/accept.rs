@@ -68,7 +68,9 @@ pub(super) fn accept_loop(shared: Arc<ServerShared>, listener: UnixListener, wak
         if fds[0].revents & libc::POLLIN == 0 {
             continue; // nothing to accept yet
         }
-        match listener.accept() {
+        #[allow(clippy::disallowed_methods, reason = "listener: capsule lane socket: a private runtime folder, then the identity challenge")]
+        let accepted = listener.accept();
+        match accepted {
             Ok((stream, _addr)) => {
                 if shared.conns.lock().unwrap().len() >= shared.max_connections as usize {
                     // ADR 0043 decision 4: accept-then-close at capacity.

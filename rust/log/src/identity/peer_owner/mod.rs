@@ -3,8 +3,9 @@
 //! connection, on a blocking thread:
 //! - Linux: the kernel's TCP table (`/proc/net/tcp`, then `/proc/net/tcp6` for a client on a dual-stack socket);
 //!   the peer's own row carries its uid.
-//! - Windows: the owner-pid TCP table (`GetExtendedTcpTable`, IPv4 then IPv6 with v4-mapped addresses), then that
-//!   process's token user SID.
+//! - Windows: the owner-module TCP table (`GetExtendedTcpTable`, IPv4 then IPv6 with v4-mapped addresses): the binding
+//!   process and the bind time; a process created after the bind is a recycled pid and refused; then that process's
+//!   token user SID.
 //! - macOS: the kernel's TCP table (sysctl `net.inet.tcp.pcblist_n`, the one netstat reads); the peer's own
 //!   connection carries the uid that created its socket, as on Linux.
 //! Every failure refuses: only [`PeerOwner::Mine`] is served. [`serve_own`] is the one TCP accept loop of the Rust
@@ -96,7 +97,7 @@ where
         // The turn comes before the accept, so a flood beyond the bound waits in the kernel's backlog and not as accepted
         // streams, each holding one of the process's descriptors.
         let Ok(turn) = Arc::clone(&lookups).acquire_owned().await else { return };
-        #[allow(clippy::disallowed_methods, reason = "the one TCP accept of the Rust processes: every connection it returns is checked before use (ADR 0049, User isolation)")]
+        #[allow(clippy::disallowed_methods, reason = "listener: page (TCP): every connection is checked for its owner before use (ADR 0049, User isolation)")]
         let accepted = listener.accept().await;
         match accepted {
             Ok((stream, peer)) => {

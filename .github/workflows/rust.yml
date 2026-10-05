@@ -70,8 +70,8 @@ jobs:
       - name: Function length
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
       # ADR 0049, User isolation: rust/clippy.toml disallows every local-endpoint connector (a Rust process reaches a
-      # local socket or pipe by name only through sot_log::identity::connect_own) and every TCP accept (the one is
-      # sot_log::identity::peer_owner's `serve`). A sanctioned site carries #[allow(clippy::disallowed_methods, reason =
+      # local socket or pipe by name only through sot_log::identity::connect_own) and every accept (each listener is listed in
+      # rust/log/tests/isolation_guards.rs; the one TCP accept is sot_log::identity::peer_owner's `serve`). A sanctioned site carries #[allow(clippy::disallowed_methods, reason =
       # "...")] on one statement. A path that does not exist on a leg draws a warning there.
       - name: Dials and accepts
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
