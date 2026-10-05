@@ -2,13 +2,14 @@
 
 use std::collections::BTreeSet;
 
+use sot_log::test_scan::{enclosing, is_ident, production_sources};
+
 /// `(path under src/, site, the kinds of binding it touches (the scan's needles), what the site does with it)`. A
 /// site is the enclosing `fn` or `struct`.
 const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("agents/env.rs", "capsule_supervisor_env", &["SOT_COMM_NAME", "SOT_COMM_SELF_FILE"], "pin: gives the session its stored name (`SOT_COMM_NAME`) and its self-file slot (`SOT_COMM_SELF_FILE`)"),
-    ("comm/mail/filer.rs", "file_comm", &["running_row_holds("], "rule: comm.file's running-row liveness through `running_row_holds`, with the daemon's rows"),
-    ("comm/mail/filer.rs", "running_row_holds", &["comm_handle_for_workspace("], "rule: a running row holds `to` by `comm_handle_for_workspace`"),
     ("comm/registry/join.rs", "join_row", &["set_agent_handle("], "move: `set_agent_handle`"),
+    ("comm/registry/liveness.rs", "held_handles", &["comm_handle_for_workspace("], "rule: the liveness stamp's handles, by `comm_handle_for_workspace` with the daemon's whole row list"),
     ("comm/registry/registry.rs", "clear_comm_unread", &["comm_handle_for_workspace("], "rule: read-clears-done, by `comm_handle_for_workspace`"),
     ("comm/registry/registry.rs", "comm_handle_for_workspace", &[".agent_name", "agent_handle", "capsule_comm_handle("], "the rule: declared, else self-file, else stored name; a fallback another row declares binds nothing"),
     ("comm/wake/mod.rs", "run", &["agent_handle"], "declared: wakes each capsule row by its declared handle"),
@@ -42,10 +43,6 @@ const SITES: &[(&str, &str, &[&str], &str)] = &[
     ("rows/workspace.rs", "reset_agent_in_place", &[".agent_name"], "the clear of the stored name when a default row's run ends"),
 ];
 
-fn is_ident(c: Option<char>) -> bool {
-    c.is_some_and(|c| c.is_alphanumeric() || c == '_')
-}
-
 /// Where the scan looks: `(needle, needs no identifier character before, after)`.
 const NEEDLES: &[(&str, bool, bool)] = &[
     ("agent_handle", true, true),
@@ -55,37 +52,18 @@ const NEEDLES: &[(&str, bool, bool)] = &[
     ("capsule_comm_handle(", true, false),
     ("comm_handle_for_workspace(", true, false),
     ("clear_comm_unread(", true, false),
-    ("running_row_holds(", true, false),
     ("remove_comm_agents_for_workspace(", true, false),
     ("set_agent_handle(", true, false),
     ("last_joiner(", true, false),
 ];
 
-/// The last `fn <name>` or `struct <name>` that starts before `pos`.
-fn enclosing(text: &str, pos: usize) -> String {
-    let before = &text[..pos];
-    let mut best: Option<(usize, String)> = None;
-    for kw in ["fn ", "struct "] {
-        let mut from = 0;
-        while let Some(at) = before[from..].find(kw) {
-            let at = from + at;
-            from = at + kw.len();
-            if is_ident(before[..at].chars().next_back()) {
-                continue;
-            }
-            let name: String = before[at + kw.len()..].chars().take_while(|c| is_ident(Some(*c))).collect();
-            if !name.is_empty() && best.as_ref().map_or(true, |(b, _)| at > *b) {
-                best = Some((at, name));
-            }
-        }
-    }
-    best.map(|(_, n)| n).unwrap_or_default()
-}
-
 /// Every production match of a needle: `(path, enclosing site, needle, the text after the match)`.
 fn scan() -> Vec<(String, String, &'static str, String)> {
     let mut out = Vec::new();
-    for (path, text) in crate::source_scan_tests::production_sources() {
+    let backend = production_sources()
+        .into_iter()
+        .filter_map(|(p, t)| p.strip_prefix("rust/backend/src/").map(|rel| (rel.to_string(), t)));
+    for (path, text) in backend {
         for &(needle, no_ident_before, no_ident_after) in NEEDLES {
             for (pos, _) in text.match_indices(needle) {
                 let after = &text[pos + needle.len()..];
@@ -126,7 +104,7 @@ fn every_handle_binding_site_is_listed() {
         ));
     }
     for (path, site, needle, after) in &found {
-        let rule_call = ["comm_handle_for_workspace(", "clear_comm_unread(", "running_row_holds("].contains(needle);
+        let rule_call = ["comm_handle_for_workspace(", "clear_comm_unread("].contains(needle);
         if rule_call && after.split(')').next().unwrap_or("").contains("&[]") {
             faults.push(format!("{path} `{site}` calls `{needle}` with no rows (`&[]`): {how}"));
         }

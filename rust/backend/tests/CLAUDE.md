@@ -9,6 +9,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`
+- `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the protocol-gated roster
 - `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change
@@ -36,7 +37,7 @@ shows the shape.
 
 ## Rules
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
-  (capsule_workspaces, comm_wake, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
+  (capsule_workspaces, comm_send, comm_wake, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every wait is bounded: `support::poll_until` and `BOUND`.
 - A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`).
 - A binary over 800 lines is `<name>/main.rs` plus modules, loading `#[path = "../support/mod.rs"] mod support;`.

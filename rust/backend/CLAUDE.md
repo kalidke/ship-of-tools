@@ -11,7 +11,6 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `src/main.rs`: boot: argv, umask, directory checks, the tee log, then `server::run`
 - `src/clients.rs`: the roster of connected frontends (`Clients`, `ClientGuard`) and the `fe.*` and `version.query` ops that read it
 - `src/clients_tests.rs`: unit tests of the roster
-- `src/source_scan_tests.rs`: test-only: `production_sources`, every non-test `.rs` under `src/` with its test modules and comment lines removed, for the tests that scan the source
 - `src/session.rs`: the revision counter and the bounded event ring a reconnecting client replays from (`Session::bump`)
 - `src/paths.rs`: the platform helpers: state and socket paths, `resource_dir`, the private-directory checks
 - `src/durable.rs`: the one fsynced write and delete for the records a later start acts on

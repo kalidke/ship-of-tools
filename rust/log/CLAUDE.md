@@ -64,6 +64,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
 - `src/identity/`: the peer challenge and identity exchange.
+- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).
 - `src/host/`: per-machine facts and platform primitives.
 - `src/bin/`: `sot-capsule`, `sot-log` and the three test-fixture binaries.
 
@@ -75,4 +76,5 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
+- Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.

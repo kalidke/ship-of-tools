@@ -214,7 +214,7 @@ wait_table="$(cat <<'EOF'
 2 1 comm/tests/test-agent-join.sh owed: a 5 s wall-clock wait for the stub socket
 0 6 comm/tests/test-comm-deps.sh owed: a fixed 3 s wait for the logged line and a 50 x 0.1 s cap; scenario: the retired loop's two 2 s sleeps, a 30 s tether, a 6 s window load can only lengthen
 8 16 comm/tests/test-comm-e2e-readers.sh needs peer hosts: times delivery on purpose
-2 4 comm/tests/test-endpoint-gate.sh owed: a 3 s upper bound its rc 124 check already covers and two 50 x 0.05 s caps; scenario: a stub child's 5 s sleep, one fake pgrep line
+2 6 comm/tests/test-endpoint-gate.sh owed: a 3 s upper bound its rc 124 check already covers and two 50 x 0.05 s caps; scenario: a stub child's 5 s sleep, one fake pgrep line, two 30 s stub children
 2 8 comm/tests/test-inbox-lock-onehost.sh needs a peer host: prints the elapsed time and paces its writers
 14 10 comm/tests/test-inbox-lock-twohost.sh needs peer hosts: times holders across boxes
 2 1 comm/tests/test-join-disambiguation.sh owed: a 5 s wall-clock wait for the stub socket

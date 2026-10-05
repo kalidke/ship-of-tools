@@ -16,6 +16,8 @@ pub mod lane;
 pub mod secret;
 pub mod store;
 pub mod supervisor;
+#[cfg(feature = "test-support")]
+pub mod test_scan;
 
 pub use host::lock_writer;
 #[cfg(windows)]

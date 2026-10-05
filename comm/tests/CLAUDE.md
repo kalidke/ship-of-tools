@@ -24,19 +24,19 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-comm-private.sh`: every comm writer makes the comm folder its user's alone, an older folder is tightened at join, user files keep the caller's umask
 - `test-comm-poll-cursor.sh`: the read cursor is a line offset that survives a torn line, a cut-back file and a legacy stamp
 - `test-crlf-jq-output.sh`: the comm scripts compare handles correctly under a jq that writes CRLF
-- `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip
+- `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip; no `sotd --socket` in another process's argv is ever an endpoint, and a process is asked for a socket only when its binary is named sotd
 - `test-heartbeat-ctx-wait.sh`: the heartbeat hook's wait on `comm-context.sh` polls fast, is bounded and cleans up
 - `test-hub-files.sh`: the inbox append: one lock, both writers, fail closed, whole lines, routes and lock records
 - `test-inbox-lock-onehost.sh`: the inbox lock on one machine whose mount lock is unknown (needs one peer host)
 - `test-inbox-lock-twohost.sh`: concurrent shell and Rust appenders, frozen and killed holders across two boxes (needs a peer host)
 - `test-join-disambiguation.sh`: derived handles are decided and written in one critical section; refusals and self-file healing
-- `test-registry-io.sh`: the registry's one writer and one reader: unreadable is never absent, no write over a bad file
+- `test-registry-io.sh`: the registry's one writer and one reader: unreadable is never absent, no write over a bad file; comm-list labels by the one heartbeat rule
 - `test-registry-lock.sh`: the registry lock names its holder and is reclaimed only from a proven-dead holder
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
 - `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first, and every clock read and every `sleep N` or `sleep $X` in comm/tests and agents/tests match their row in the wait table, which may only fall
-- `test-send-routes-to-relay.sh`: a registry miss goes to the wire and a hit files locally, never both
+- `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
 ## Start here

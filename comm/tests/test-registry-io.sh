@@ -51,6 +51,9 @@
 #      directory at its path here, the shape ESTALE takes across boxes): for
 #      ~50 ms the retry resolves; for 1 s the read is 2 after 3 retries and the
 #      put FAILs, leaving the registry that comes back as it was.
+#  15. comm-list.sh labels a row live or stale by sot_heartbeat_fresh (600 s,
+#      COMM_LIVE_SECS), whatever SOT_COMM_STALE_SECS says: with it exported as
+#      30, a 100 s heartbeat is `live` and a 3600 s one is `stale`.
 #
 # No bats dependency. HERMETIC: a temp $SOT_COMM_HOME, a v2 self file, a
 # pinned $SOT_COMM_TEST_HOST, and a COPY of the scripts dir with the hooks
@@ -389,6 +392,18 @@ case_a_registry_that_opens_but_will_not_read_is_retried_and_a_lasting_one_is_unr
         || { echo "  writer, a directory for 1 s: rc $rc: $(cat "$WORK/err")"; return 1; }
 }
 
+case_comm_list_labels_by_the_one_heartbeat_rule() {
+    local out n100 n3600
+    n100="$(date -u -d '100 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"; n3600="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+    put_reg "$(jq -n --arg a "$n100" --arg b "$n3600" '{protocol_version: 1, agents: {
+        young: {host: "testhost", repo: "p", last_seen: $a, expertise: []},
+        old: {host: "testhost", repo: "p", last_seen: $b, expertise: []}}}')"
+    # Its exit status is the frontend roster's (no daemon here); the labels are what this reads.
+    out="$(cd "$ROOT" && SOT_COMM_STALE_SECS=30 "$BIN/comm-list.sh" 2>&1)" || :
+    printf '%s\n' "$out" | grep -E '@young .* live ' >/dev/null || { echo "  a 100 s heartbeat is not live: $out"; return 1; }
+    printf '%s\n' "$out" | grep -E '@old .* stale ' >/dev/null || { echo "  a 3600 s heartbeat is not stale: $out"; return 1; }
+}
+
 PASS=0; FAIL=0
 for c in case_reader_table \
          case_send_on_a_lasting_empty_registry_is_unreadable \
@@ -402,7 +417,8 @@ for c in case_reader_table \
          case_a_zero_byte_read_is_re_read_and_a_lasting_one_is_unreadable \
          case_a_missing_registry_is_absent_and_unparseable_bytes_are_not_retried \
          case_a_failed_read_is_retried_and_a_lasting_one_is_unreadable \
-         case_a_registry_that_opens_but_will_not_read_is_retried_and_a_lasting_one_is_unreadable; do
+         case_a_registry_that_opens_but_will_not_read_is_retried_and_a_lasting_one_is_unreadable \
+         case_comm_list_labels_by_the_one_heartbeat_rule; do
     # Each case runs in a subshell with the cleanup trap cleared: with_lock
     # saves and restores the EXIT trap it sees, and a subshell sees this one.
     if out="$(trap - EXIT; "$c" 2>&1)"; then

@@ -23,6 +23,8 @@ backend; charter: comm/CLAUDE.md.
   Enter (`Woken::enter_owed`) is instead sent Enter alone, fresh mail or not, until REPEAT_AFTER (`Decision::Complete`). It skips a row
   whose registry `stop_at` mark is under STOP_HOOK_BOUND (60 s) old (`stop_hook_running`).
 - `cursor_offset` ports comm-lib-inbox.sh's `sot_cursor_offset`, which is the spec; `agrees_with_the_shell` runs both (Linux).
+- `counts` is the one unread rule: a JSON object whose `to` is a string equal to the handle and whose `from` is not it.
+  `sot_unread` in comm-lib-inbox.sh is its shell twin, which the Stop hook counts with; `unread_agrees_with_the_shell` runs both (Linux) (they agree on every line a writer emits; PROTOCOL.md names the malformed lines on which only the shell counts).
 - `prompt_glyphs` knows claude only, so a Codex row is never typed into.
 - `wake_if_free` makes one attach. A free first frame must hold still through the box's lower rule (`held_rows`) for
   STILL_FOR (1.5 s), and the live screen must read free again.

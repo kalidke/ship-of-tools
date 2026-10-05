@@ -158,15 +158,14 @@ if [ "$NEED_DERIVE" = true ]; then
     # self-file discarded by comm-context.sh, pre-self-heal or otherwise) —
     # the registry still shows tier-1 as held by "an unknown project", so
     # derivation treats it as someone else's and hands back a DIFFERENT
-    # handle, silently. A fresh heartbeat still being stamped under the bare
-    # handle is strong evidence that "unknown project" is actually THIS
-    # session's own prior identity — a real collision from an unrelated
-    # project has no reason to be heartbeating under OUR root's
-    # basename+host. Warn loudly so the operator/session can no longer
-    # strand silently; still proceed with the qualified join (a heartbeat
-    # alone doesn't prove ownership — a genuinely different, still-live
-    # session for the same repo+host could be the one stamping it — so this
-    # NEVER auto-reclaims).
+    # handle, silently. A fresh last_seen under the bare handle is strong
+    # evidence that "unknown project" is THIS session's own prior identity:
+    # either that session acted in the last ten minutes or the daemon running
+    # its row stamped it. But a running row of another project with the same
+    # basename on this box keeps it fresh the same way. Warn loudly so the
+    # operator/session can no longer strand silently; still proceed with the
+    # qualified join (a fresh last_seen does not prove ownership), so this NEVER
+    # auto-reclaims.
     if [ -n "$CLAIMED_QUALIFIER" ] && [ -n "$CLAIMED_TIER1" ] && [ "$CLAIMED_TIER1" != "$NAME" ] \
        && sot_handle_live "$CLAIMED_TIER1"; then
         # The printed recipe below uses THIS install's own SCRIPT_DIR —
@@ -181,18 +180,19 @@ if [ "$NEED_DERIVE" = true ]; then
         cat >&2 <<WARN
 
 *** WARNING: joined as '@$NAME', but '@$CLAIMED_TIER1' (this project's bare
-*** handle) is still being heartbeated under this user. That is almost
-*** certainly YOUR OWN earlier identity, not a real collision with another
-*** project — most likely this session's own '@$CLAIMED_TIER1' row was
-*** evicted as stale (see comm-context.sh) and this join escalated away from
-*** it instead of reclaiming it. Proceeding with the qualified join as
-*** '@$NAME' — a heartbeat alone doesn't prove ownership, so this is never
-*** auto-reclaimed — but if this IS your own handle, you can now strand
-*** yourself silently: '@$CLAIMED_TIER1''s inbox is the one still being
-*** filled while everyone else now addresses you as '@$NAME'.
+*** handle) is still being heartbeated under this user: a session acted, or
+*** the daemon running its row stamped it, in the last ten minutes. That is
+*** often YOUR OWN earlier identity -- this session's own '@$CLAIMED_TIER1'
+*** row, evicted as stale (see comm-context.sh), so this join escalated away
+*** from it instead of reclaiming it -- but a running row of another project
+*** with this basename on this box looks the same. Proceeding with the
+*** qualified join as '@$NAME' (a fresh last_seen does not prove ownership,
+*** so this is never auto-reclaimed); if '@$CLAIMED_TIER1' IS your own
+*** handle, you can now strand yourself silently: its inbox is the one still
+*** being filled while everyone else now addresses you as '@$NAME'.
 ***
-*** If you confirm sole ownership (one live session with this repo as cwd
-*** whose own heartbeat is the fresh one), reclaim
+*** If you confirm sole ownership (one live session with this repo as cwd,
+*** and no other row on this box holding '@$CLAIMED_TIER1'), reclaim
 *** the bare handle instead of staying on '@$NAME':
 ***   $QSCRIPT_DIR/comm-leave.sh --name $QNAME
 ***   $QSCRIPT_DIR/comm-join.sh --name $QTIER1

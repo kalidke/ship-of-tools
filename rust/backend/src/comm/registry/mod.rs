@@ -2,6 +2,7 @@
 
 pub(crate) mod ancestors;
 pub(crate) mod join;
+pub(crate) mod liveness;
 pub(crate) mod lock;
 pub(crate) mod poll;
 pub(crate) mod registry;

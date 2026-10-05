@@ -10,7 +10,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/comm-lib.sh"
 eval "$("$SCRIPT_DIR/comm-context.sh")"
 
-STALE_SECS="${SOT_COMM_STALE_SECS:-600}"
 nows="$(date -u +%s)"
 
 # fmt_age (compact relative age) now lives in comm-lib.sh, sourced above —
@@ -29,7 +28,7 @@ while IFS=$'\037' read -r name host repo seen exp state summary status_at; do
     any=true
     seens="$(date -u -d "$seen" +%s 2>/dev/null || echo 0)"
     age=$((nows - seens))
-    if [ "$age" -le "$STALE_SECS" ]; then status="live"; else status="stale ${age}s"; fi
+    if sot_heartbeat_fresh "$seen"; then status="live"; else status="stale ${age}s"; fi
     me=""; [ "$name" = "$NAME" ] && me="  <- me"
     printf "  @%-18s %-10s %-14s %-12s [%s]%s\n" "$name" "$host" "$repo" "$status" "$exp" "$me"
 

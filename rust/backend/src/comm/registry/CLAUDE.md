@@ -7,6 +7,7 @@ comm/CLAUDE.md.
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
 - `binding_sites_tests.rs`: every site that reads or writes a row's handle binding, and the scan that pins the list
 - `join.rs`: `agent.join`: a session declares its handle on its row
+- `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`, `held_handles`)
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
 - `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
 - `mod.rs`: declares the files
@@ -21,20 +22,27 @@ comm/CLAUDE.md.
 prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LINES` (64) it ends `!truncated`, exit 3.
 
 ## Rules
-- Every daemon registry write (`remove_comm_agents_for_workspace`, `clear_comm_unread`) runs under
+- Every daemon registry write (`remove_comm_agents_for_workspace`, `clear_comm_unread`, `stamp_last_seen`) runs under
   `with_comm_registry_lock` and goes through `replace_registry`: `write_synced` flushes a temp file, then it is renamed
   into place.
   `remove_comm_agents_for_workspace` prunes a destroyed row's entry.
 - `clear_comm_unread` removes `done` (and turns a `done` state to `idle`) on a person's view of a row. It is the
   daemon's only work-state write.
+- `stamp_last_seen` writes only `last_seen`, only on entries that exist, for the handles `held_handles` names:
+  each Starting or Ready row's handle by `comm_handle_for_workspace` given the daemon's whole row list, so a
+  running row never stamps a handle it reaches by a self-file or stored name that another row declares. A pass
+  that would change nothing writes nothing. `run` stamps when that set changes and every `STAMP_EVERY` (60 s).
+  `held` resolves a handle only for a Starting or Ready row, inside the pass's `spawn_blocking`. A failed pass is
+  one warning naming the rows whose sends fail once their last stamp is ten minutes old, and is retried at the
+  next. It is the daemon's only liveness write.
 - `comm_handle_for_workspace` is the one row-binding rule: the declared handle, else the pinned self-file, else the
   stored agent name; a self-file or stored name that names a handle another row declares binds nothing. Its callers
-  (`handle_workspace_list`, `clear_comm_unread`, `running_row_holds`) pass the daemon's rows.
+  (`handle_workspace_list`, `clear_comm_unread`, `held_handles`) pass the daemon's rows.
 - A registry entry's `workspace_id` is the row whose session last joined that handle (`comm-join.sh` writes it;
   `entry_row` reads it). The destroy prune (`remove_comm_agents_for_workspace`) removes an entry by the row's stored
   name only when the entry names no other row.
 - Every site that reads or writes a row's handle binding is listed in `binding_sites_tests.rs` with the kinds of
-  binding it touches (the scan's needles). `every_handle_binding_site_is_listed` fails on a site or a kind missing from
+  binding it touches (the scan's needles; it walks the sources through `sot_log::test_scan::production_sources`). `every_handle_binding_site_is_listed` fails on a site or a kind missing from
   the list or gone, and on a call of the rule with `&[]` before its first `)` outside tests; it does not see a second
   binding of a kind a site already has, or an empty row list passed some other way.
 - `handle_agent_join` moves the declared handle (`set_agent_handle`) and answers `ok` only after the joining row is
