@@ -95,11 +95,18 @@ its lease, `sotd stdio-bridge` and the lane client connect to whatever answers t
 pipe name, a name in the machine-wide pipe namespace, without checking which account
 serves it; lane M1b builds that check. The video, site and site-pool servers, the frontend's page proxy and the one-use
 redirect listener that opens a page in the browser accept only through `serve_own`,
-which drops another account's connection before reading a byte. Pluto's server and
-`wglshow`'s Bonito server are Julia children that listen on ports of their own, which
-any account can reach directly. Ship of Tools does not accept on them, so no
-owner check reaches them; for those two the guarantee is that their secret never
-reaches another account (not its command lines, files or logs).
+which drops another account's connection before reading a byte. Pluto's server, its
+notebook workers and `wglshow`'s Bonito server are Julia processes that listen on ports of
+their own, which any account can reach directly. Ship of Tools does not accept on them, so
+no owner check reaches them; each is locked by a secret instead, and the guarantee is that
+the secret never reaches another account (not its command lines, files or logs): Pluto's
+page by its session secret, `wglshow`'s page by its secret path, and every Pluto notebook
+worker by the Distributed cluster cookie, which the worker reads from its stdin and checks
+on every connection before it reads a message (Pluto's default Malt worker accepted the
+first connection with no secret, and is not used: `julia/pluto/session_options.jl`, tested
+on Linux, macOS and Windows by `julia/pluto/test/runtests.jl`). The cost is on Windows only:
+in this mode Pluto cannot stop a running cell there (it says so; restoring interrupt is
+planned for 0.6.7).
 The comm scripts create the comm folder and its inboxes with no mode of
 their own, so these are only as private as the creating shell's umask and the home
 folder above them; no lane is named for that yet.

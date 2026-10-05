@@ -21,7 +21,7 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   never the preferred one.
 - Nothing is served that an op did not grant: video by token (`register_video`), a prefix site by nonce (`set_root`),
   a pool site by its per-open secret and then an HttpOnly cookie (`assign_pool_port`).
-- The video, site and pool listeners accept through `serve_own`: only this OS account's connections are served. Pluto's server is the Julia child's own listener, locked by its secret.
+- The video, site and pool listeners accept through `serve_own`: only this OS account's connections are served. Pluto's server is the Julia child's own listener, locked by its session secret, and its notebook workers by the Distributed cluster cookie (`julia/pluto/session_options.jl`).
 - Minting fails closed: `random_token` returns `None` rather than a weak token.
 - `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound, and logs a refused
   port once per streak.
