@@ -33,6 +33,8 @@
                 @test read(joinpath(root, "zzz-skill", "SKILL.md"), String) == "NEW-zzz-skill"
                 # The orphan warned and stayed; it did not throw.
                 @test isfile(joinpath(locked, "held.md"))
+            else
+                @test_skip false
             end
         finally
             chmod(locked, 0o755)

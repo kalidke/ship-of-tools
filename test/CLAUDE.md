@@ -25,7 +25,8 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
   error before the body if `homedir()` is not that home. The suite's last set fails a subject file that names a home
   variable as a string, and reads `in_home`'s contract back on the suite home. Every test writes only under
   `mktempdir()`. No hosted runner carries codex, so a real codex under these tests on Windows is untested.
-- A test that needs Unix mode bits probes at run time, with the operation the code under test uses, and skips itself.
+- A test that needs Unix mode bits probes at run time, with the operation the code under test uses, and records a skip
+  with `@test_skip false`, so the Broken count shows every skipped block.
 - The bash checks (sourcing a library, running an installed script) run only where `Sys.isunix()`; the rest runs everywhere.
 - A subject file defines its own helpers, inside a testset or, when several of its testsets share one, once at its top; `in_home` (runtests.jl) is the one helper the files share.
 - Comm paths come from ShipTools' constants (`ShipTools.CLAUDE_SKILL_SRCS`, `ShipTools._comm_bin_files()`), never a literal

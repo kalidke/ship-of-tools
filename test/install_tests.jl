@@ -287,12 +287,12 @@ end
         # The scan lists a file it cannot read (where mode bits are enforced), so only that file's folder fails.
         chmod(joinpath(app, "app.sh"), 0o000)
         unreadable = try read(joinpath(app, "app.sh")); false catch; true end
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) == files
+        unreadable ? (@test ShipTools._comm_bin_files([lib, app]) == files) : (@test_skip false)
         # A folder with two files, one unreadable at the scan: both names stay listed. A shorter list would
         # let the install's prune delete the folder's other scripts from the bin and record the shorter list,
         # when the file reads again at its folder's publish and the install succeeds.
         write(joinpath(app, "app2.sh"), "z=1\n")
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
+        unreadable ? (@test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]) : (@test_skip false)
         chmod(joinpath(app, "app.sh"), 0o644)
         @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
     end

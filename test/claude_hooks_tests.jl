@@ -92,8 +92,8 @@ end
             # hook in the account's own file is gone.
             @test "/usr/local/bin/user-shared.sh" in cmds(shared, "Stop")
             @test "/usr/local/bin/user-a.sh" in cmds(a, "Stop")
-            @test readchomp(`jq -r .model $shared`) == "shared"
-            @test readchomp(`jq -r .model $a`) == "own"
+            @test jq_lines(`jq -r .model $shared`) == ["shared"]
+            @test jq_lines(`jq -r .model $a`) == ["own"]
             @test isempty(cmds(a, "Notification"))
             # Links stay links, to the same targets; the empty account stays empty.
             @test islink(default) && readlink(default) == shared

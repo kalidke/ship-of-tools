@@ -73,6 +73,8 @@
             fl2 = split(err2.msg, '\n'; limit = 2)[1]
             @test occursin(old_dst, fl2)
             @test occursin("denied", lowercase(fl2)) || occursin("eacces", lowercase(fl2))
+        else
+            @test_skip false
         end
         chmod(unreadable_src, 0o644)  # let mktempdir clean up
 
@@ -172,6 +174,8 @@ end
         if !Sys.isexecutable(joinpath(dir, "present.sh"))
             probs2 = ShipTools._check_installed(dir, ["present.sh"]; executable = Returns(true))
             @test any(occursin("present.sh", p) for p in probs2)
+        else
+            @test_skip false
         end
 
         chmod(joinpath(dir, "present.sh"), 0o755)
