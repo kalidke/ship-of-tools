@@ -9,8 +9,9 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
 - `session_options.jl`: `configure_session!`, the daemon's Pluto options (loopback, the session secret, Distributed
   workers and their cookie).
 - `test/runtests.jl`: a stranger's call to a notebook worker runs nothing and the notebook still evaluates for its
-  owner; the session secret and the cluster cookie are drawn per session from the OS's generator; and (Linux) opening a
-  notebook starts no listener but the worker's (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
+  owner; the session secret and the cluster cookie are drawn per session from the OS's generator and on no command
+  line; start.jl refuses a request without the secret; and (Linux) start.jl with one open notebook listens on exactly
+  its own port and the worker's (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
 
 ## Start here
 `start.jl` for the protocol; `session_options.jl` for the security options.

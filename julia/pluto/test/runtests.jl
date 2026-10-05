@@ -52,14 +52,47 @@ function stranger_is_dropped(port::Integer, bytes::Vector{UInt8}; wait = 10.0)
     end
 end
 
-# Linux: the (port, loopback) of every TCP socket this user is listening on, from the kernel's tables.
-function listeners()
+# Linux: `pid` and every process descended from it.
+function process_tree(pid::Integer)
+    parent_of = Dict{Int,Int}()
+    for entry in readdir("/proc")
+        all(isdigit, entry) || continue
+        try
+            stat = read("/proc/$entry/stat", String)
+            # "pid (comm) state ppid ...": comm may hold spaces and parentheses, so split after the last ')'.
+            parent_of[parse(Int, entry)] = parse(Int, split(stat[last(findlast(')', stat)) + 2:end])[2])
+        catch
+        end
+    end
+    tree = Set{Int}([pid])
+    grew = true
+    while grew
+        grew = false
+        for (child, parent) in parent_of
+            if parent in tree && !(child in tree)
+                push!(tree, child)
+                grew = true
+            end
+        end
+    end
+    return tree
+end
+
+# Linux: the (port, loopback) of every TCP socket in state LISTEN whose inode a process of `pid`'s tree holds open:
+# what that tree listens on, and not what the rest of the account's processes do meanwhile.
+function tree_listeners(pid::Integer)
+    @test isdir("/proc/$pid")   # a Linux run that cannot read /proc fails; it never skips
+    inodes = Set{String}()
+    for p in process_tree(pid), fd in (try readdir("/proc/$p/fd") catch; String[] end)
+        target = try readlink("/proc/$p/fd/$fd") catch; "" end
+        m = match(r"^socket:\[(\d+)\]$", target)
+        m === nothing || push!(inodes, m.captures[1])
+    end
     found = Set{Tuple{Int,Bool}}()
-    uid = Int(ccall(:geteuid, Cint, ()))
     for (file, loopback) in (("/proc/net/tcp", "0100007F"), ("/proc/net/tcp6", "00000000000000000000000001000000"))
         for line in Iterators.drop(eachline(file), 1)
             f = split(line)
-            length(f) >= 8 && f[4] == "0A" && parse(Int, f[8]) == uid || continue
+            length(f) >= 10 && f[4] == "0A" && f[10] in inodes || continue
             address, port = split(f[2], ':')
             push!(found, (parse(Int, port; base = 16), address == loopback))
         end
@@ -96,7 +129,7 @@ end
 
     notebook_path = joinpath(dir, "owner.jl")
     Pluto.save_notebook(Pluto.Notebook([Pluto.Cell("x = 20 + 1")], notebook_path))
-    listening_before = Sys.islinux() ? listeners() : nothing
+    listening_before = Sys.islinux() ? tree_listeners(getpid()) : nothing
     notebook = Pluto.SessionActions.open(session, notebook_path; run_async = false)
     try
         workspace = Pluto.WorkspaceManager.get_workspace((session, notebook))
@@ -113,8 +146,19 @@ end
         end
         if listening_before !== nothing
             @testset "opening a notebook starts exactly one listener: the worker's, on loopback" begin
-                opened = setdiff(listeners(), listening_before)
+                opened = setdiff(tree_listeners(getpid()), listening_before)
                 @test opened == Set([(port, true)])
+            end
+        end
+
+        if Sys.islinux()
+            @testset "the cluster cookie is on no command line of the worker's tree" begin
+                worker_pid = Int(Malt.remote_eval_fetch(workspace.worker, :(getpid())))
+                for p in process_tree(getpid())
+                    cmdline = try read("/proc/$p/cmdline", String) catch; "" end
+                    @test !occursin(cookie, cmdline)
+                end
+                @test worker_pid in process_tree(getpid())
             end
         end
 
@@ -150,5 +194,69 @@ end
         end
     finally
         Pluto.SessionActions.shutdown(session, notebook; keep_in_session = false, async = false)
+    end
+end
+
+# start.jl is the process the daemon runs: its stdio protocol, its page and its listeners, over its own process tree.
+@testset "start.jl end to end" begin
+    dir = mktempdir()
+    notebook_path = joinpath(dir, "owner.jl")
+    Pluto.save_notebook(Pluto.Notebook([Pluto.Cell("x = 20 + 1")], notebook_path))
+    start = joinpath(@__DIR__, "..", "start.jl")
+    stderr_log = joinpath(dir, "start.stderr")
+    child = open(pipeline(Cmd(`$(Base.julia_cmd()) --project=$(joinpath(@__DIR__, "..")) $start`); stderr = stderr_log), "r+")
+    # Read lines until one starts with `prefix` (Pluto may print before it), within `wait` seconds.
+    function line_with(prefix; wait = 180.0)
+        found = Channel{Union{String,Nothing}}(1)
+        @async try
+            for line in eachline(child)
+                startswith(line, prefix) && (put!(found, line); return)
+            end
+            put!(found, nothing)
+        catch
+            put!(found, nothing)
+        end
+        timedwait(() -> isready(found), wait) == :ok || return nothing
+        return take!(found)
+    end
+    try
+        ready = line_with("READY http://127.0.0.1:")
+        @test ready !== nothing
+        port = parse(Int, last(split(ready, ':')))
+        write(child, "OPEN $notebook_path\n")
+        flush(child)
+        url = line_with("URL ")
+        @test url !== nothing
+        secret = match(r"secret=([0-9a-f]{32})&", url).captures[1]
+        id = match(r"&id=([0-9a-f-]+)", url).captures[1]
+        base = "http://127.0.0.1:$port"
+        get(path) = Pluto.HTTP.get(base * path; status_exception = false, redirect = false, retry = false, readtimeout = 30)
+
+        @testset "Pluto's pages need the session secret" begin
+            @test get("/").status == 403
+            @test get("/edit?id=$id").status == 403
+            @test get("/edit?id=$id&secret=$(replace(secret, secret[1] => secret[1] == '0' ? '1' : '0'; count = 1))").status == 403
+            @test get("/edit?secret=$secret&id=$id").status == 200   # the control: the secret opens the page
+        end
+
+        if Sys.islinux()
+            @testset "start.jl listens on its page and one worker, on loopback, and no command line carries the secret" begin
+                tree = process_tree(Base.getpid(child))
+                listening = tree_listeners(Base.getpid(child))
+                @test (port, true) in listening
+                @test length(listening) == 2
+                @test all(last, listening)
+                for p in tree
+                    cmdline = try read("/proc/$p/cmdline", String) catch; "" end
+                    @test !occursin(secret, cmdline)
+                end
+            end
+        end
+    finally
+        try close(child.in) catch end
+        timedwait(() -> !process_running(child), 60.0) == :ok || kill(child)
+        wait(child)
+        process_exited(child) || kill(child)
+        isfile(stderr_log) && !success(child) && println(stderr, "start.jl stderr tail:\n", last(readlines(stderr_log), 20))
     end
 end
