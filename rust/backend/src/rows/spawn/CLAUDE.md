@@ -28,3 +28,5 @@ scope is closed.
   (`spawn_detached`).
 - A supervisor survives a daemon restart only inside its own user scope (`spawn_detached`, Linux arm).
 - A scope is killed only after `row_scope_aim::aim` accepts it (`row_scope::end`).
+- The user-scope probe runs through `Signal::spawn_std`, and on its timeout its tree is killed before it is reaped
+  (`user_scope_available`).

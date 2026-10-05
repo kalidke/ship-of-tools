@@ -246,6 +246,8 @@ mod help_tests {
 #[tokio::main]
 #[allow(clippy::too_many_lines, reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit")]
 async fn main() -> Result<()> {
+    #[cfg(unix)]
+    lifecycle::child_signal::reset_child_signal();
     // Pure query subcommands (security review): checked against raw argv
     // BEFORE any startup side effect (umask, private log file/state dir
     // creation, tracing init) below. Previously pure path/version queries were

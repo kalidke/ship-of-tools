@@ -16,8 +16,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - This box's own endpoint: the session socket or pipe path, the local daemon label, `slug`, `local_endpoint`
   (`$SOT_SOCKET` beats `$SOT_BACKEND_LABEL` beats the local label) and the plain host-name grammar
   (`is_plain_host_name`), in `endpoint.rs`.
-- The ssh recipe (`SshRecipe`), its options and `LinkGate` (`spawn_sync`, `spawn_async`, `probe`, and `command` for a
-  caller that contains the child), in `ssh_bridge.rs`.
+- The ssh recipe (`SshRecipe`), its options, which turn ssh sharing off as the relay unit's do, and `LinkGate`
+  (`spawn_sync`, `spawn_async`, `probe`, and `command` for a caller that contains the child), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The hub's systemd unit text for each relayed host, in `relay_units.rs`.
 
