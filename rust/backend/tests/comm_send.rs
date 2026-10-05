@@ -75,7 +75,9 @@ impl Staged {
         serde_json::from_slice(&std::fs::read(self.env.comm_root.join("registry.json")).expect("registry")).expect("registry json")
     }
 
-    /// Adds registry entries (host `testhost`, the given `last_seen`), tmp file then rename.
+    /// Adds registry entries (host `testhost`, the given `last_seen`), tmp file then rename, with no lock. Every caller
+    /// writes before any row exists, and the daemon writes the registry only to stamp a row it runs, so nothing races
+    /// this read-modify-write.
     fn add_entries(&self, entries: &[(&str, String)]) {
         let mut reg = self.registry();
         for (handle, last_seen) in entries {

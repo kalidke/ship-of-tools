@@ -293,20 +293,24 @@ case_a_stamp_with_a_trailing_newline_is_no_heartbeat() {
 
 # R7: the invariant "filed only after a liveness check" reaches every place that appends to an inbox
 # or writes or reads a last_seen; a new member must be added here, with its check, on purpose. Over the
-# comm/ and agents/ files that are outside any tests folder and are not pages.
+# tracked files of the checkout that are not pages, not Rust (filer.rs has that pin) and not tests.
 case_every_append_and_last_seen_file_is_pinned() {
-    local root="$SCRIPT_DIR/../.." files got want
-    files="$(cd "$root" && find comm agents -type f ! -path '*/tests/*' ! -name '*.md' | sort)"
-    [ "$(printf '%s\n' "$files" | grep -c .)" -ge 20 ] || { echo "  the walk found too few files: $files"; return 1; }
-    pin() {  # WORD WANT...
-        local word="$1"; shift
-        got="$(cd "$root" && printf '%s\n' "$files" | xargs grep -lw -- "$word" | sort | tr '\n' ' ')"
+    local repo files got want
+    repo="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "  not in a git checkout"; return 1; }
+    files="$(git -C "$repo" ls-files | grep -v '\.md$' | grep -v '\.rs$' | grep -vE '(^|/)tests?/')"
+    [ "$(printf '%s\n' "$files" | grep -c .)" -ge 100 ] || { echo "  the walk found too few files"; return 1; }
+    pin() {  # GREP-ARGS... -- WANT...
+        local args=() w
+        while [ "$1" != -- ]; do args+=("$1"); shift; done; shift
+        got="$(cd "$repo" && printf '%s\n' "$files" | xargs grep -l "${args[@]}" 2>/dev/null | sort | tr '\n' ' ')"
         want="$(printf '%s\n' "$@" | sort | tr '\n' ' ')"
-        [ "$got" = "$want" ] || { echo "  files naming $word: $got, want $want"; return 1; }
+        [ "$got" = "$want" ] || { echo "  files matching ${args[*]}: $got, want $want"; return 1; }
     }
-    pin sot_inbox_append comm/lib/comm-lib-identity.sh comm/lib/comm-lib-inbox.sh comm/mail/comm-send.sh || return 1
-    pin _sot_append_whole comm/lib/comm-lib-inbox.sh comm/lib/comm-lib-registry.sh || return 1
-    pin last_seen agents/spawn/comm-spawn.sh comm/lib/comm-lib-registry-lock.sh comm/lib/comm-lib-registry.sh \
+    pin -w sot_inbox_append -- comm/lib/comm-lib-identity.sh comm/lib/comm-lib-inbox.sh comm/mail/comm-send.sh || return 1
+    pin -w _sot_append_whole -- comm/lib/comm-lib-inbox.sh comm/lib/comm-lib-registry.sh || return 1
+    # a redirection into an inbox file: both are `: >>` touches, which add no line
+    pin -E '>>?[[:space:]]*"?[^[:space:]]*(INBOX|inbox)[^[:space:]]*\.jsonl' -- agents/spawn/comm-spawn.sh comm/registry/comm-join.sh || return 1
+    pin -w last_seen -- agents/spawn/comm-spawn.sh comm/lib/comm-lib-registry-lock.sh comm/lib/comm-lib-registry.sh \
         comm/mail/comm-send.sh comm/registry/comm-join.sh comm/registry/comm-list.sh comm/work_state/comm-status.sh \
         comm/work_state/hooks/comm-status-heartbeat.sh || return 1
     return 0

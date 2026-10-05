@@ -569,7 +569,8 @@ mod comm_file_tests {
 
     // The inbox has no writer but the verdict (and the one-time move of an old
     // frontend inbox): every daemon route ends in `comm_file_verdict`, and the
-    // last_seen readers and writers are the listed files. A new member fails here.
+    // last_seen readers and writers, and every open for append, are the listed
+    // files in every crate. A new member fails here.
     #[test]
     fn every_inbox_append_is_the_verdicts_or_the_move() {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -584,10 +585,15 @@ mod comm_file_tests {
                 }
             }
         }
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let rust = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut files = Vec::new();
-        walk(&src, &mut files);
-        assert!(files.len() > 50, "the walk found {} files", files.len());
+        for krate in std::fs::read_dir(&rust).unwrap() {
+            let src = krate.unwrap().path().join("src");
+            if src.is_dir() {
+                walk(&src, &mut files);
+            }
+        }
+        assert!(files.len() > 200, "the walk found {} files", files.len());
         let word = |text: &str, w: &str| {
             text.match_indices(w).any(|(i, _)| {
                 let before = text[..i].chars().next_back();
@@ -595,31 +601,54 @@ mod comm_file_tests {
                 !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
             })
         };
-        let (mut appenders, mut last_seen) = (Vec::new(), Vec::new());
+        let (mut appenders, mut last_seen, mut opens) = (Vec::new(), Vec::new(), Vec::new());
+        let mut inbox_text = String::new();
         for f in &files {
             let text = std::fs::read_to_string(f).unwrap();
             let text = text.split("\n#[cfg(test)]").next().unwrap();
-            let rel = f.strip_prefix(&src).unwrap().to_string_lossy().replace('\\', "/");
+            let rel = f.strip_prefix(&rust).unwrap().to_string_lossy().replace('\\', "/");
             let calls = text.matches("file_frame(").count() - text.matches("pub fn file_frame(").count();
             if calls > 0 {
                 appenders.push((rel.clone(), calls));
             }
             if word(text, "last_seen") {
-                last_seen.push(rel);
+                last_seen.push(rel.clone());
+            }
+            let n = text.matches(".append(true)").count();
+            if n > 0 {
+                opens.push((rel.clone(), n));
+            }
+            if rel == "backend/src/comm/mail/inbox.rs" {
+                inbox_text = text.to_string();
             }
         }
         appenders.sort();
         last_seen.sort();
-        assert_eq!(appenders, vec![("comm/mail/filer.rs".to_string(), 1), ("comm/mail/hub_link.rs".to_string(), 1)]);
+        opens.sort();
+        assert_eq!(appenders, vec![("backend/src/comm/mail/filer.rs".to_string(), 1), ("backend/src/comm/mail/hub_link.rs".to_string(), 1)]);
         assert_eq!(
             last_seen,
             [
-                "comm/mail/filer.rs",
-                "comm/registry/liveness.rs",
-                "comm/registry/poll.rs",
-                "comm/registry/registry.rs",
-                "server/mod.rs",
+                "backend/src/comm/mail/filer.rs",
+                "backend/src/comm/registry/liveness.rs",
+                "backend/src/comm/registry/poll.rs",
+                "backend/src/comm/registry/registry.rs",
+                "backend/src/server/mod.rs",
             ]
         );
+        assert_eq!(
+            opens,
+            vec![
+                ("backend/src/comm/mail/inbox.rs".to_string(), 2),
+                ("backend/src/main.rs".to_string(), 1),
+                ("backend/src/rows/spawn/detach.rs".to_string(), 1),
+            ]
+        );
+        // `append_line` is defined once and called once, by `file_frame_with`, which `file_frame` calls.
+        assert_eq!(inbox_text.matches("append_line(").count(), 2, "append_line has a new caller");
+        let from = inbox_text.find("fn file_frame_with(").expect("file_frame_with");
+        let body = &inbox_text[from..];
+        let end = body[1..].find("\nfn ").or_else(|| body[1..].find("\npub fn ")).map_or(body.len(), |i| i + 1);
+        assert_eq!(body[..end].matches("append_line(").count(), 1, "append_line is not called by file_frame_with");
     }
 }
