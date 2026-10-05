@@ -133,13 +133,14 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
 }
 
 /// The daemon's log: events at the `RUST_LOG` level (default `info`), each masked of page secrets
-/// (`sot_log::secret`) and written through `TeeWriter` to stdout and the private file.
+/// (`sot_log::secret`) and written, without colour codes, through `TeeWriter` to stdout and the private file.
 fn log_subscriber(file: Option<Arc<Mutex<std::fs::File>>>) -> impl tracing::Subscriber + Send + Sync {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_ansi(false)
         .with_writer(move || RedactingWriter(TeeWriter { file: file.clone() }))
         .finish()
 }
@@ -551,5 +552,7 @@ mod log_tests {
         assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");
         assert!(!written.contains(token), "the token reached the file: {written}");
         assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
+        // No colour codes: they would split a field name from its `=`, so `secret=` would not read as one marker.
+        assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
     }
 }
