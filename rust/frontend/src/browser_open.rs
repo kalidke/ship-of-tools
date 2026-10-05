@@ -214,13 +214,29 @@ mod tests {
         false
     }
 
+    /// ADR 0049, User isolation: whichever page is opened (the shapes of a `wglshow` figure, Pluto, a docs site and a
+    /// video), the opener's command line carries only the redirect's own address, never the page's path or secret.
     #[test]
     fn the_browser_is_handed_no_secret() {
-        let a = handed(Duration::from_secs(5));
-        let port = a.strip_prefix("http://127.0.0.1:").and_then(|r| r.strip_suffix('/')).unwrap_or("");
-        assert!(!port.is_empty() && port.chars().all(|c| c.is_ascii_digit()), "{a}");
-        assert!(!a.contains("0123456789abcdef"), "{a}");
-        assert!(!a.contains("secret"), "{a}");
+        for page in [
+            PAGE,
+            "http://127.0.0.1:41234/0123456789abcdef0123456789abcdef",
+            "http://127.0.0.1:1234/edit?id=1&secret=Ab12Cd34Ef56",
+            "http://127.0.0.1:1237/__open/0123456789abcdef0123456789abcdef/",
+            "http://127.0.0.1:1235/0123456789abcdef0123456789abcdef.mp4",
+        ] {
+            let mut got = String::new();
+            open_page_with(page, Duration::from_secs(5), |a| {
+                got = a.to_string();
+                Ok(())
+            })
+            .unwrap();
+            let port = got.strip_prefix("http://127.0.0.1:").and_then(|r| r.strip_suffix('/')).unwrap_or("");
+            assert!(!port.is_empty() && port.chars().all(|c| c.is_ascii_digit()), "{got}");
+            for fragment in ["0123456789abcdef", "secret", "Ab12Cd34", "/edit", "/__open", ".mp4"] {
+                assert!(!got.contains(fragment), "{got} names {fragment} of {page}");
+            }
+        }
     }
 
     #[test]

@@ -7,7 +7,8 @@
 //!   process's token user SID.
 //! - macOS: the kernel's TCP table (sysctl `net.inet.tcp.pcblist_n`, the one netstat reads); the peer's own
 //!   connection carries the uid that created its socket, as on Linux.
-//! Every failure refuses: only [`PeerOwner::Mine`] is served. [`serve_own`] is the one TCP accept loop that applies it.
+//! Every failure refuses: only [`PeerOwner::Mine`] is served. [`serve_own`] is the one TCP accept loop of the Rust
+//! processes, and applies it.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -15,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PeerOwner {
+enum PeerOwner {
     /// The peer's socket belongs to this process's OS account.
     Mine,
     /// It belongs to another account (`uid:<n>` or a SID), for the log line.
@@ -28,7 +29,7 @@ pub enum PeerOwner {
 type Admit = fn(&'static str, std::net::SocketAddr, std::net::SocketAddr) -> bool;
 
 /// `local` is the accepted stream's own address (the listener side), `peer` its remote address.
-pub fn tcp_peer_owner(local: SocketAddr, peer: SocketAddr) -> PeerOwner {
+fn tcp_peer_owner(local: SocketAddr, peer: SocketAddr) -> PeerOwner {
     let Some(own) = crate::identity::os_account::own_account_id() else {
         return PeerOwner::Unknown("this process's own account is unreadable".into());
     };
@@ -52,15 +53,20 @@ fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> bool {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert((listener, local.port(), key));
+    let why = match owner {
+        PeerOwner::Unknown(_) => "closed a connection whose owner could not be determined",
+        _ => "closed a connection that is not this OS account's",
+    };
     if first {
-        tracing::warn!(listener, port = local.port(), ?owner, "closed a connection that is not this OS account's (logged once per account and port)");
+        tracing::warn!(listener, port = local.port(), ?owner, "{why} (logged once per account and port)");
     } else {
-        tracing::debug!(listener, port = local.port(), ?owner, "closed a connection that is not this OS account's");
+        tracing::debug!(listener, port = local.port(), ?owner, "{why}");
     }
     false
 }
 
-/// The only TCP accept loop Ship of Tools runs (ADR 0049, User isolation). Each accepted connection is checked in
+/// The only TCP accept loop Ship of Tools' Rust processes run (ADR 0049, User isolation); the Julia page servers
+/// (Pluto, `wglshow`) listen on their own ports and are locked by a secret instead. Each accepted connection is checked in
 /// its own task, on a blocking thread, before a byte is read: only this OS account's reaches `handle`; any other is
 /// closed with nothing read or written (the first refusal per listener, port and owner is a warning). An accept
 /// error is logged and retried after 50 ms. Runs until its future is dropped.
