@@ -17,13 +17,13 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Rules
 - Run from the repo root: `julia --project=. -e 'using Pkg; Pkg.test()'`.
-- The settings-merge tests call `jq`; its lines are split on `\r?\n` (a Windows `jq` ends lines with CRLF), and an existing settings file the installer names is compared as `realpath` (Windows `mktempdir()` is an 8.3 short path).
+- The settings-merge tests call `jq` and read its raw output through `jq_lines` (claude_hooks_tests.jl), which takes the one CR off each line on Windows, where jq writes CRLF line endings.
 - The suite runs inside a temporary home, and a test that needs a home of its own sets it only through `in_home(home)`
   (runtests.jl): HOME, USERPROFILE, HOMEDRIVE and HOMEPATH (Julia's `homedir()` reads USERPROFILE on Windows), the comm
   home under it, CLAUDE_CONFIG_DIR and CODEX_HOME unset, and an error before the body if `homedir()` is not that home.
   Every test writes only under `mktempdir()`.
 - A test that needs Unix mode bits probes at run time, with the operation the code under test uses, and skips itself.
 - The bash checks (sourcing a library, running an installed script) run only where `Sys.isunix()`; the rest runs everywhere.
-- A subject file defines its own helpers inside its testsets; `in_home` is the one helper they share.
+- A subject file defines its own helpers, inside a testset or, when several of its testsets share one, once at its top; `in_home` (runtests.jl) is the one helper the files share.
 - Comm paths come from ShipTools' constants (`ShipTools.CLAUDE_SKILL_SRCS`, `ShipTools._comm_bin_files()`), never a literal
   path.
