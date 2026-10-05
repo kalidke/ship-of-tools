@@ -28,6 +28,8 @@ disallowed-methods = [
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFile2", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFileTransactedW", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFileTransactedA", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  { path = "windows_sys::Win32::Storage::FileSystem::CreateFileFromAppW", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  { path = "windows_sys::Win32::Storage::FileSystem::CreateFile2FromAppW", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::System::Pipes::CallNamedPipeW", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::System::Pipes::CallNamedPipeA", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "libc::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
