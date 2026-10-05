@@ -12,6 +12,34 @@ use super::reply::{finish_dispatch, write_reply, HandlerOutput, OutTx, OFFLOOP_C
 use super::*;
 use sot_protocol::HANDOFF_ROLE;
 
+/// The write half of a connection the daemon can give up on (ADR 0027). On Windows the session pipe's drop waits, in
+/// interprocess's one linger thread, until the peer has read what the daemon wrote; a peer the daemon has given up on
+/// never does, and every later close would wait behind it. `abandon` drops that wait for this connection only.
+pub(super) trait Abandon {
+    fn abandon(&self);
+}
+
+impl Abandon for interprocess::local_socket::tokio::SendHalf {
+    fn abandon(&self) {
+        // On Unix a closed socket's peer still reads what was written, and nothing waits.
+        #[cfg(windows)]
+        {
+            let Self::NamedPipe(half) = self;
+            let pipe: &interprocess::os::windows::named_pipe::tokio::SendPipeStream<
+                interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+            > = half.as_ref();
+            pipe.assume_flushed();
+        }
+    }
+}
+
+/// How a control session ended: its peer closed or broke the protocol (`Closed`), or the daemon's ping reaper gave up
+/// on it (`GaveUp`). A write the daemon could not finish ends it with an error, which is a give-up too.
+enum Ended {
+    Closed,
+    GaveUp,
+}
+
 /// How long a connection may take to send its first frame, and a `handoff` connection its next one after its hello: a
 /// peer of this account that connects and says nothing must not hold a task (ADR 0049 `## User isolation`). Every client
 /// writes its hello at once (the window's own hello bound is 30 s), so this never ends an honest connection. At the
@@ -123,7 +151,7 @@ pub(super) async fn handle_connection<R, W>(
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Abandon,
 {
     // CANCEL-SAFETY: `read_frame` is NOT cancellation-safe (it reads the `\n`
     // envelope then `read_exact`s the blob tail across two awaits). Polling
@@ -172,12 +200,18 @@ where
         return hand_off(buffered, tx, first.id, hello, &session, &files_mode, &label, &workspaces, &clients, peer, &leases).await;
     }
 
-    serve_control(
-        tx, buffered, first.id, hello, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
+    let ended = serve_control(
+        &mut tx, buffered, first.id, hello, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
         ws_events_tx, agent_events_tx, agent_receipt_tx, fe_command_tx, repl_frame_tx, clients, topology_store,
         topo_changed_tx, leases,
     )
-    .await
+    .await;
+    // A session the daemon gave up on (reaped, or a write it could not finish) is closed without waiting for its peer
+    // to read; every other end keeps that wait, so a peer that is reading gets every byte.
+    if !matches!(ended, Ok(Ended::Closed)) {
+        tx.abandon();
+    }
+    ended.map(|_| ())
 }
 
 /// A connection whose hello said `handoff`: answers the hello, reads its one next frame and gives the connection to
@@ -191,7 +225,7 @@ async fn hand_off<R, W>(
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Abandon,
 {
     let reply = handle_hello(hello_id, hello.into_hello(), session, files_mode, label.as_deref(), clients).await?;
     if let Some((frame, blob)) = reply.into_iter().next() {
@@ -223,7 +257,12 @@ where
         (Kind::Req, op::FE_LEASE) => {
             tracing::info!(?peer, "fe.lease — a lease connection");
             let state_root = sot_log::host::state_dir::sot_state_dir();
-            crate::lifecycle::lease::hold(rx, tx, next, peer, leases, state_root.as_deref()).await
+            let held = crate::lifecycle::lease::hold(rx, &mut tx, next, peer, leases, state_root.as_deref()).await;
+            // A lease whose reply or notice could not be written is a peer given up on: closed without the wait.
+            if held.is_err() {
+                tx.abandon();
+            }
+            held
         }
         _ => {
             let message = "a handoff connection's next frame is proxy.connect, lane.connect or fe.lease";
@@ -234,14 +273,14 @@ where
 
 /// Runs one control session: the per-connection state, then the frame loop and its op table.
 async fn serve_control<R, W>(
-    mut tx: W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
+    tx: &mut W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
     preview_changed_tx: broadcast::Sender<PreviewChanged>, label: Arc<Option<String>>, workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
     agent_receipt_tx: broadcast::Sender<AgentReceipt>, fe_command_tx: broadcast::Sender<FeCommandEvt>,
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>, clients: Clients,
     topology_store: Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>, leases: Arc<crate::lifecycle::lease::Leases>,
-) -> Result<()>
+) -> Result<Ended>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -392,12 +431,12 @@ where
     let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
     let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
     for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
-        write_reply(&mut tx, frame, blob).await?;
+        write_reply(tx, frame, blob).await?;
     }
 
     loop {
         let frame = match select_once(
-            &mut tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
+            tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
             &mut agent_events_rx, &mut agent_receipt_rx, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
             &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
             &client_guard,
@@ -411,12 +450,12 @@ where
                     Ok((f, _blob)) => f,
                     Err(e) => {
                         tracing::debug!(error = %e, "read_frame returned; closing");
-                        return Ok(());
+                        return Ok(Ended::Closed);
                     }
                 }
             }
             Woke::Again => continue,
-            Woke::Reap => return Ok(()),
+            Woke::Reap => return Ok(Ended::GaveUp),
         };
 
         // Any frame from an ARMED connection is proof of life — push the
@@ -436,11 +475,11 @@ where
         // One hello per connection, the one that admitted it: a second closes the connection with no reply.
         if frame.op == op::HELLO {
             tracing::info!("a second hello on one connection: closing it unanswered");
-            return Ok(());
+            return Ok(Ended::Closed);
         }
 
         dispatch(
-            &mut tx, frame, &session, &mathjax, &pluto, &workspaces, &ws_events_tx,
+            tx, frame, &session, &mathjax, &pluto, &workspaces, &ws_events_tx,
             &agent_events_tx, &agent_receipt_tx, &fe_command_tx, &clients, &topology_store, &topo_changed_tx, &leases,
             &client_guard, &hello_host, &hello_name, is_long_lived_role, &mut deadline_armed,
             &mut read_deadline, &mut active_workspace, &mut monitor_subscribed, &mut jobs, &job_sem, &out_tx,

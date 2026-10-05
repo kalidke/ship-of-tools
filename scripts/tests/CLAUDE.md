@@ -33,6 +33,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   `rust.yml` step "Test launcher leases".
 - `test-local-daemon-fake.ps1`: dot-sourced by both local-daemon suites: compiles the fake `sotd.exe` and defines
   `Clear-FakeEnv`, `New-FakePrefix` and `Stop-FakeOn`.
+- `test-local-daemon-pipe.ps1`: dot-sourced by test-local-daemon.ps1 inside section 5c, in its scope: the session pipe
+  under load (cases (iii)-(vii): large requests behind an accepted and a refused hello, the inbound buffer's memory, a
+  peer the daemon gives up on).
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the
   test root and `Complete-LocalDaemonTest`, their cleanup.
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,

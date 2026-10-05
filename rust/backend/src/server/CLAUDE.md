@@ -48,7 +48,10 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   degrades to an error frame for that request (`write_reply`); only a write failure ends the connection, or a file
   download's read error once its chunks are on the wire (`stream_file_download`).
 - A peer that cannot drain a frame within 10 s plus 1 s per MiB of blob is dropped (`write_frame_to`,
-  `write_deadline`, ADR 0027).
+  `write_deadline`, ADR 0027). A peer the daemon gives up on (that one, a reaped `fe` or `bridge` connection, a lease
+  whose reply or notice could not be written) is closed without waiting for it to read (`Abandon`), so on Windows it
+  never holds the closes behind it in interprocess's one linger thread; every other close waits until its peer has read
+  what was written.
 - On Windows a client may write its hello and its request, each one envelope at most the cap, before it reads: the
   session pipe's inbound buffer holds both (`bind_session`, `PIPE_INBOUND_BYTES`), so a refusal, which the pipe holds
   open until the client has read it, never waits on a client still blocked in its own write. The cost: a client of this
