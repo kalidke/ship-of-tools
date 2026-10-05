@@ -244,8 +244,11 @@ try {
         # agents\comm-pipe-request.ps1 matches a reply by its op. A refused hello is a reply to the hello, so the transport
         # must hand it over (and fail) rather than wait out its bound and report a silent daemon: the caller names the
         # refusal. (ii) is the same request with an accepted hello, so the transport's own answer path is exercised too.
+        # This daemon closes after refusing, so the transport reads on past a protocol refusal to the end of the
+        # connection, says so on stderr and exits 1; the stderr line is the transport's, not a failure of this section.
         . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
         $pipe5c = New-TestPipeName
+        try {
         $out5c = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5c -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         Check '5c: the daemon starts' (Wait-Pipe $pipe5c) "pipe never opened; log: $out5c"
         $transport = Join-Path $PSScriptRoot '..\..\agents\comm-pipe-request.ps1'
@@ -254,20 +257,29 @@ try {
         $request5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{}}'
         $old5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":2,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
         $new5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
-        $refused5c = @(@($old5c, $request5c) | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport -PipeName $pipe5c -Mode Oneshot -Op version.query -TimeoutSec 10 2>$null)
-        $refusedExit5c = $LASTEXITCODE
+        function Invoke-Transport5c([string[]]$Lines) {
+            $ErrorActionPreference = 'Continue'
+            $script:out5c = @($Lines | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport -PipeName $pipe5c -Mode Oneshot -Op version.query -TimeoutSec 10 2>$null)
+            $script:exit5c = $LASTEXITCODE
+        }
+        Invoke-Transport5c @($old5c, $request5c)
+        $refused5c = $script:out5c
+        $refusedExit5c = $script:exit5c
         Check '5c: a refused hello prints exactly its own reply' ($refused5c.Count -eq 1) "got $($refused5c.Count) lines: $($refused5c -join ' | ')"
         if ($refused5c.Count -eq 1) {
             $reply5c = $refused5c[0] | ConvertFrom-Json
             Check '5c: the reply is the hello refusal, with the daemon''s code' (($reply5c.op -eq 'hello') -and ($reply5c.payload.code -eq 'protocol_mismatch')) "reply was: $($refused5c[0])"
         }
         Check '5c: a refused hello exits 1' ($refusedExit5c -eq 1) "got $refusedExit5c"
-        $served5c = @(@($new5c, $request5c) | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport -PipeName $pipe5c -Mode Oneshot -Op version.query -TimeoutSec 10 2>$null)
-        $servedExit5c = $LASTEXITCODE
+        Invoke-Transport5c @($new5c, $request5c)
+        $served5c = $script:out5c
+        $servedExit5c = $script:exit5c
         Check '5c: an accepted hello gets the request answered' (($served5c.Count -eq 1) -and (($served5c[0] | ConvertFrom-Json).op -eq 'version.query')) "got: $($served5c -join ' | ')"
         Check '5c: an accepted hello exits 0' ($servedExit5c -eq 0) "got $servedExit5c"
-        $stop5c = & $script -Stop -Prefix $p3 -PipeName $pipe5c 6>&1 2>&1
-        Get-DaemonProcs (Get-PipePath $pipe5c) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        } finally {
+            $stop5c = & $script -Stop -Prefix $p3 -PipeName $pipe5c 6>&1 2>&1
+            Get-DaemonProcs (Get-PipePath $pipe5c) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
 
         } catch { Check '5c: section ran' $false $_.Exception.Message }
         try {
