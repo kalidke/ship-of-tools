@@ -230,13 +230,43 @@ end
         secret = match(r"secret=([0-9a-f]{32})&", url).captures[1]
         id = match(r"&id=([0-9a-f-]+)", url).captures[1]
         base = "http://127.0.0.1:$port"
-        get(path) = Pluto.HTTP.get(base * path; status_exception = false, redirect = false, retry = false, readtimeout = 30)
+        # No cookie a previous request set can stand in for the secret.
+        get(path) = Pluto.HTTP.get(base * path; status_exception = false, redirect = false, retry = false, readtimeout = 30, cookies = false)
+        frontend = Pluto.project_relative_path(Pluto.frontend_directory())
+        static_file = first(f for f in readdir(frontend) if endswith(f, ".css") || endswith(f, ".svg"))
 
-        @testset "Pluto's pages need the session secret" begin
-            @test get("/").status == 403
-            @test get("/edit?id=$id").status == 403
-            @test get("/edit?id=$id&secret=$(replace(secret, secret[1] => secret[1] == '0' ? '1' : '0'; count = 1))").status == 403
-            @test get("/edit?secret=$secret&id=$id").status == 200   # the control: the secret opens the page
+        @testset "Pluto answers nothing outside a path that is the session secret (ADR 0049, User isolation)" begin
+            # Pluto serves its own scripts, styles and fonts, /ping and the binder token without the secret by default;
+            # under the secret's base URL none of them is outside it.
+            for path in ("/ping", "/possible_binder_token_please", "/favicon.ico", "/$static_file")
+                @test get(path).status == 404
+            end
+            @test get("/").status in (403, 404)
+            # The controls: under the secret's path everything is served, with the secret in the query as before (Pluto's
+            # own check answers 403 to a request that carries the path but not the query, and `/ping` is public only
+            # at the root).
+            @test get("/$secret/ping").status == 403
+            @test get("/$secret/ping?secret=$secret").status == 200
+            @test String(get("/$secret/ping?secret=$secret").body) == "OK!"
+            @test get("/$secret/$static_file").status == 200
+            @test get("/$secret/edit?id=$id").status == 403
+            wrong = replace(secret, secret[1] => secret[1] == '0' ? '1' : '0'; count = 1)
+            @test get("/$wrong/ping?secret=$secret").status == 404   # the right query does not stand in for the right path
+            @test get("/$secret/edit?secret=$secret&id=$id").status == 200
+        end
+
+        if Sys.iswindows()
+            @testset "a drive path reads no file (Pluto's static route joins a path onto its folder, and on Windows an absolute one escapes it)" begin
+                secret_file = joinpath(dir, "secret-data.json")
+                write(secret_file, """{"private": "contents of a file outside Pluto"}""")
+                drive_path = "/" * replace(secret_file, '\\' => '/')   # /C:/Users/.../secret-data.json
+                # Without the secret's path, nothing is served. (Under the secret's path Pluto's static route still joins a drive
+                # path onto its folder, which Windows resolves outside it; whoever holds the secret already holds Pluto's code
+                # execution, so that path is not a lock.)
+                response = get(drive_path)
+                @test response.status == 404
+                @test !occursin("contents of a file outside Pluto", String(response.body))
+            end
         end
 
         if Sys.islinux()

@@ -10,7 +10,7 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
   workers and their cookie).
 - `test/runtests.jl`: a stranger's call to a notebook worker runs nothing and the notebook still evaluates for its
   owner; the session secret and the cluster cookie are drawn per session from the OS's generator and on no command
-  line; start.jl refuses a request without the secret; and (Linux) start.jl with one open notebook listens on exactly
+  line; start.jl answers nothing outside its secret path (on Windows, not a drive path either); and (Linux) start.jl with one open notebook listens on exactly
   its own port and the worker's (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
 
 ## Start here
@@ -19,8 +19,9 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
 ## Rules
 - Stdio protocol: `READY http://127.0.0.1:<port>` once bound; then one `URL <url>` or `ERR <msg>` per
   `OPEN <abspath>`.
-- Every request needs the session secret (32 hex characters from the OS's secure generator, set by
-  `configure_session!`), except Pluto's own public script, style and font files and `/ping`; every URL carries the
+- Pluto serves every route under a path that is its session secret (`base_url`), which `configure_session!` sets with
+  the secret (32 hex characters from the OS's secure generator). A request without it gets 403 or 404, Pluto's own
+  files and `/ping` included. A URL is `http://127.0.0.1:<port>/<secret>/edit?secret=<secret>&id=<id>`, the query's
   secret before `id` (`edit_url`).
 - Every notebook runs in a Distributed worker (`workspace_use_distributed_stdlib`), which checks the cluster cookie it
   read from its stdin on every connection before it reads a message; `configure_session!` draws the cookie from the

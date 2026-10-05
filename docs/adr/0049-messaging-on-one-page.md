@@ -105,8 +105,8 @@ in the browser accept only through `serve_own`, which drops another account's co
 Pluto's server, its notebook workers and `wglshow`'s Bonito server are Julia processes listening on loopback ports of
 their own, which any account on the computer can reach; Ship of Tools does not accept on them, so no owner check
 reaches them. Each is locked instead by a secret drawn from the OS's secure generator, and the guarantee is that the
-secret never reaches another account (not its command lines, files or logs): Pluto's pages by Pluto's session secret
-(only Pluto's own public script, style and font files are served without it); every Pluto notebook worker by the
+secret never reaches another account (not its command lines, files or logs): Pluto's server by its session secret, which is also the first segment of
+every path Pluto serves, so a request without it gets nothing, Pluto's own files and `/ping` included; every Pluto notebook worker by the
 Distributed cluster cookie (16 characters), which the worker reads from its stdin and checks on every connection
 before it reads a message (Pluto's default Malt worker accepted the first connection with no secret and is not used:
 `julia/pluto/session_options.jl`); and a `wglshow` page by its secret path and its websocket by its session id, the

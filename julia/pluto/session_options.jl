@@ -26,6 +26,9 @@ function configure_session!(session, host::AbstractString, port::Integer)
     # The secret is the only lock on Pluto's pages, so it is 128 bits from the OS's secure generator, like every page
     # secret of Ship of Tools, and not the 8 characters Pluto draws from the default RNG.
     session.secret = bytes2hex(rand(Random.RandomDevice(), UInt8, 16))
+    # Every route under the secret: Pluto's unauthenticated static route joins a request path onto its frontend folder
+    # (and on Windows an absolute path escapes it), so no path outside the secret's may name a file or answer at all.
+    session.options.server.base_url = "/" * session.secret * "/"
     session.options.security.require_secret_for_open_links = true
     session.options.security.require_secret_for_access = true
     session.options.security.warn_about_untrusted_code = true

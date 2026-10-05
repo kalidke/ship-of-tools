@@ -23,8 +23,8 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Only the hub runs the declared `[monitor]` roster, read once at start (`load_hosts`, `sampling_roster`); only a Linux
   daemon samples itself (`without_local_sampler`).
 - The Julia children's page servers listen on 127.0.0.1 and answer nothing without a secret drawn from the OS's
-  secure generator, which never reaches another account: Pluto's pages need its session secret (only Pluto's own
-  public script, style and font files and `/ping` are served without it), each notebook worker checks the Distributed
+  secure generator, which never reaches another account: Pluto serves every path under its session secret
+  (`base_url`), so nothing, not even its own files or `/ping`, answers without it, each notebook worker checks the Distributed
   cluster cookie it read from its stdin before it reads a message, and a `wglshow` page sits behind its secret path,
   its websocket behind its session id, with its assets inside the page (`julia/pluto/session_options.jl`,
   `julia/repl/src/wgl.jl`).

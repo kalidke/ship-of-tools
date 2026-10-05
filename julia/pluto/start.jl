@@ -47,7 +47,7 @@ end
 println(stdout, "READY http://$(HOST):$(PORT)")
 flush(stdout)
 
-edit_url(nb) = "http://$(HOST):$(PORT)/edit?secret=$(session.secret)&id=$(nb.notebook_id)"
+edit_url(nb) = "http://$(HOST):$(PORT)$(session.options.server.base_url)edit?secret=$(session.secret)&id=$(nb.notebook_id)"
 
 # Service loop: read OPEN <abspath> requests on stdin, write URL <url> or
 # ERR <msg> on stdout. Stays alive until stdin closes.

@@ -133,8 +133,8 @@ own account and is served.
 Pluto's server and the server `wglshow` starts in your REPL are Julia's
 own listeners on loopback ports, which any account on the box can reach,
 so each answers nothing without a secret drawn from the operating system's
-secure generator. Pluto's pages need Pluto's session secret (only Pluto's
-own public script, style and font files are served without it), and each
+secure generator. Pluto serves everything, its own files included,
+under a path that is Pluto's session secret, and each
 notebook runs in a worker that checks a cluster cookie, read from its
 standard input, on every connection. A `wglshow` figure is served on a port
 the operating system assigns, at an address with a secret in it, and its
