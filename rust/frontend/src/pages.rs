@@ -243,15 +243,25 @@ where
 /// file (the OS cleans temp on its own schedule; a fresh path per call
 /// also prevents the browser from showing a stale cached version).
 pub(crate) fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
+    let path = write_preview_html(&std::env::temp_dir(), html_bytes)?;
+    crate::browser_open::spawn_opener(&path.to_string_lossy())
+}
+
+/// A new file for a rendered preview in `dir`: created, never overwritten, and readable by this account only on Unix,
+/// where `/tmp` is shared by every account on the box (ADR 0049, User isolation).
+fn write_preview_html(dir: &std::path::Path, html_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut path = std::env::temp_dir();
-    path.push(format!("sot-preview-{now}.html"));
-    std::fs::write(&path, html_bytes)?;
-    let path_str = path.to_string_lossy().to_string();
-    crate::browser_open::spawn_opener(&path_str)
+    let path = dir.join(format!("sot-preview-{now}.html"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(&path)?.write_all(html_bytes)?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -461,5 +471,26 @@ mod tests {
         assert!(arm.dial().is_none());
         arm.reopen();
         assert!(arm.dial().is_some(), "opening the page again un-parks");
+    }
+
+    /// ADR 0049, User isolation: a rendered preview in the shared temp folder is this account's alone, and a second
+    /// preview is a new file, never an overwrite.
+    #[test]
+    fn a_preview_file_is_private_and_never_overwritten() {
+        let dir = std::env::temp_dir().join(format!("sot-preview-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = super::write_preview_html(&dir, b"<p>one</p>").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b = super::write_preview_html(&dir, b"<p>two</p>").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&a).unwrap(), b"<p>one</p>");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&a, &b] {
+                assert_eq!(std::fs::metadata(f).unwrap().permissions().mode() & 0o777, 0o600, "{f:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
