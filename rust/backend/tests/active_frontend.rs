@@ -442,8 +442,9 @@ async fn drain_until_closed_without_eof(conn: &mut Conn) {
 }
 
 /// ADR 0027's reaper covers downloads: a reader that stops reading mid-`file.download` is
-/// dropped by the per-connection write deadline, so it does not hold its connection task, its
-/// roster entry or its socket forever.
+/// dropped by the per-connection write deadline: the daemon drops the connection's task and
+/// roster entry, so they are not held forever (on Linux the socket closes too, which the test
+/// then reads).
 #[tokio::test]
 async fn a_stalled_download_is_closed_by_the_write_deadline() {
     let env = Env::spawn("stalled");

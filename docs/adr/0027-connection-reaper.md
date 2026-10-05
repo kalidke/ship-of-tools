@@ -124,6 +124,8 @@ by keepalive (≤ ~50 s), not the faster 10 s path. Acceptable: downloads are an
 infrequent path and keepalive still bounds the leak. Wrapping it would mean
 threading the timeout into the handler's write loop — deferred until it matters.
 
+**Amendment 2026-10-04:** the gap is closed: `stream_file_download` now writes every frame through `write_frame_to`, so a reader that stalls mid-download is dropped by the write deadline (the daemon drops the connection's task and roster entry; on Linux the socket closes). The text above is kept as written, since this ADR has no convention for deleting clauses.
+
 ## Alternatives considered
 
 - **Tune / bound the broadcast channels.** Wrong layer — `tokio::broadcast`
