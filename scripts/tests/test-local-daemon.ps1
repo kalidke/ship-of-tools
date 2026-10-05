@@ -444,10 +444,20 @@ try {
         $transport8d = Join-Path $PSScriptRoot '..\..\agents\comm-pipe-request.ps1'
         $hello8d = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":"t-host","os_user":"t-account","role":"cli"}}'
         $lease8d = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{}}'
+        # The transport runs as its own process with files for its three streams and a bound on the wait, so a transport
+        # that hangs fails this section with what it wrote instead of stalling the job.
         function Invoke-Transport8d([string]$Pipe) {
-            $ErrorActionPreference = 'Continue'
-            $script:out8d = @(@($hello8d, $lease8d) | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport8d -PipeName $Pipe -Mode Oneshot -Op fe.lease -TimeoutSec 10 2>$null)
-            $script:exit8d = $LASTEXITCODE
+            $in8d = Join-Path $root "t8d-$Pipe.in"
+            $outf8d = Join-Path $root "t8d-$Pipe.out"
+            $errf8d = Join-Path $root "t8d-$Pipe.err"
+            [System.IO.File]::WriteAllText($in8d, (@($hello8d, $lease8d) -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
+            $argv8d = '-NoProfile -ExecutionPolicy Bypass -File "' + $transport8d + '" -PipeName ' + $Pipe + ' -Mode Oneshot -Op fe.lease -TimeoutSec 10'
+            $proc8d = Start-Process -FilePath 'powershell.exe' -ArgumentList $argv8d -RedirectStandardInput $in8d -RedirectStandardOutput $outf8d -RedirectStandardError $errf8d -WindowStyle Hidden -PassThru
+            $script:hung8d = -not $proc8d.WaitForExit(40000)
+            if ($script:hung8d) { Stop-Process -Id $proc8d.Id -Force -ErrorAction SilentlyContinue }
+            $script:out8d = @(Get-Content -LiteralPath $outf8d -ErrorAction SilentlyContinue | Where-Object { $_ -ne '' })
+            $script:err8d = (@(Get-Content -LiteralPath $errf8d -ErrorAction SilentlyContinue) -join ' ')
+            $script:exit8d = if ($script:hung8d) { -1 } else { $proc8d.ExitCode }
         }
         foreach ($code8d in @('protocol_mismatch', 'os_user_conflict')) {
             Clear-FakeEnv
@@ -457,6 +467,7 @@ try {
             try {
                 Check "8d ($code8d): the fake pipe is up" (Wait-Pipe $pipe8d) 'pipe never answered'
                 Invoke-Transport8d $pipe8d
+                Check "8d ($code8d): the transport ends on its own" (-not $script:hung8d) "still running after 40 s; stdout: $($script:out8d -join ' | ') stderr: $($script:err8d)"
                 $first8d = $null
                 if ($script:out8d.Count -ge 1) { $first8d = $script:out8d[0] | ConvertFrom-Json }
                 Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($script:out8d -join ' | ')"
