@@ -17,6 +17,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `moved-check.sh`: compares the lines a commit range added and removed, to show a move left no residual.
 - `test-check-layout.sh`: self-test of `check-layout.sh` over throwaway repos.
 - `test-moved-check.sh`: self-test of `moved-check.sh` over throwaway repos.
+- `on-host.sh`: `on-host.sh HOST DIR -- CMD [ARG...]` runs CMD in DIR on a second host through `ssh HOST bash -s`, with
+  the host's SOT_ variables, XDG_STATE_HOME, JULIA_LOAD_PATH and JULIA_PROJECT unset first; prints nothing of its own.
+- `test-on-host.sh`: `on-host.sh` against a stub `ssh` that runs `bash -s` locally. Run by hand.
 - `rc-gate.sh`: the local candidate gate: the Rust workspace tests, doc tests, windows-gnu and darwin cross checks,
   every Julia suite and the shell suites, as concurrent jobs under one cap. Linux only, run by hand.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
