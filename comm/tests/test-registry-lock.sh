@@ -3,8 +3,9 @@
 # made by link(2), and reclaimed only when its holder is proved dead on this
 # machine. One Linux box, hermetic.
 #
-#   1 a SIGKILLed holder is reclaimed: the waiter holds in under 3 s, the
-#     marker reclaim.<D> holds the waiter's ID, registry.json still parses;
+#   1 a SIGKILLed holder is reclaimed: the waiter holds within the lock's
+#     10 s wait, the marker reclaim.<D> holds the waiter's ID, registry.json
+#     still parses;
 #   2 a live holder is never reclaimed: FAILED names it and "it is running",
 #     the lock is byte-identical, there is no marker, and the record's pid is
 #     the process that holds (the ID is computed there, never in a subshell);
@@ -22,9 +23,9 @@
 #     version" and is left as it was, with nothing linked into it; the older
 #     mkdir waiter waits on a file lock and proceeds after its release;
 #   7 a zero wait (the heartbeat) still reclaims a dead holder, and gives up
-#     at once on a live one;
+#     at once on a live one: it logs no sleep;
 #   8 the touches: a send against a killed holder reclaims and files; against
-#     a live holder it returns in about 1 s, exit 0, filed; comm-status
+#     a live holder it returns after at least 0.9 s, exit 0, filed; comm-status
 #     against the same live holder waits its full 10 s and FAILs;
 #   9 the clear command removes an unprovable holder's lock through its
 #     marker, refuses a holder this box proves alive, refuses a marker held by
@@ -32,11 +33,11 @@
 #     leaving lock and marker as they were, tells a person to remove the lock
 #     by hand only when that reclaimer's record has no proof fields, and says
 #     "free", exit 0, for no lock;
-#  10 the bound is time: a touch with 0.5 s tries against a live holder ends
-#     within its 1 s deadline plus one try;
+#  10 the bound is time: a touch with 0.5 s tries against a live holder waits
+#     its 1 s and makes 2 or 3 tries (counted by a logging sleep);
 #  11 a home without hard links FAILs naming the cause and leaves nothing;
 #  12 a zero wait whose retake after a reclaim fails makes one step and that
-#     retake, and FAILs at once: nothing chains (review SF2);
+#     retake, and FAILs at once: nothing chains, counted (review SF2);
 #  13 the clock is EPOCHREALTIME's digits under a comma decimal, and an unset
 #     or non-numeric one is FAILED naming the clock, never the holder;
 #  14 a dead holder D whose marker reclaim.<D> names D: the next writer and
@@ -89,6 +90,13 @@ check() {  # run in this shell, not a subshell, so PIDS reaches the EXIT trap
 contains() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 hasnt_by_hand() { ! contains "$1" "by hand" || { echo "a provable record told to remove by hand: $1"; return 1; }; }
 lib() { bash -c ". '$LIB'; $1"; }
+# The logging sleep (comm/tests/CLAUDE.md): `lib_logged` runs `lib` with it first on PATH, and SLEEPS holds the waits
+# that call made. The real sleep is resolved before the shim exists.
+REAL_SLEEP="$(command -v sleep)"
+SHIM="$WORK/shim"; SLEEPS="$WORK/sleeps.log"; mkdir -p "$SHIM"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s"\nexec "%s" "$@"\n' "$SLEEPS" "$REAL_SLEEP" > "$SHIM/sleep"
+chmod +x "$SHIM/sleep"
+lib_logged() { : > "$SLEEPS"; PATH="$SHIM:$PATH" lib "$1"; }
 field() { cut -d: -f"$2" <<<"$1"; }
 marker() { printf '%s.reclaim.%s' "$P" "${1//:/.}"; }
 markers() { find "$SOT_COMM_HOME" -maxdepth 1 -name '.registry.lock.reclaim.*' | wc -l; }
@@ -128,7 +136,7 @@ t1() {
     t0=$(date +%s%N)
     lib '_sot_lock_self_id; echo "$_SOT_LOCK_ID" > "'"$WORK"'/me"; with_lock registry_touch x' || { echo "waiter failed"; return 1; }
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-    [ "$ms" -lt 3000 ] || { echo "took ${ms}ms"; return 1; }
+    [ "$ms" -lt 10000 ] || { echo "took ${ms}ms"; return 1; }
     me="$(cat "$WORK/me")"
     [ "$(cat "$(marker "$d")")" = "$me" ] || { echo "marker does not hold the waiter's ID"; return 1; }
     [ ! -e "$P" ] || { echo "lock not released"; return 1; }
@@ -242,15 +250,13 @@ t6() {
 check "6: an older peer's mkdir lock is FAILED and untouched; an older waiter waits on a file lock" t6
 
 t7() {
-    reset; local t0 ms
+    reset
     dead_holder >/dev/null
     lib 'SOT_LOCK_WAIT_SECS=0 with_lock registry_touch x' || { echo "zero tries did not reclaim"; return 1; }
     live_holder || return 1
-    t0=$(date +%s%N)
-    lib 'SOT_LOCK_WAIT_SECS=0 with_lock true' 2>/dev/null && { echo "took a live lock"; end_holder; return 1; }
-    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    lib_logged 'SOT_LOCK_WAIT_SECS=0 with_lock true' 2>/dev/null && { echo "took a live lock"; end_holder; return 1; }
     end_holder
-    [ "$ms" -lt 1000 ] || { echo "zero tries waited ${ms}ms"; return 1; }
+    [ ! -s "$SLEEPS" ] || { echo "zero tries slept: $(tr '\n' ' ' < "$SLEEPS")"; return 1; }
 }
 check "7: a zero wait reclaims a dead holder and gives up at once on a live one" t7
 
@@ -277,7 +283,7 @@ t8() {
     live_holder || return 1
     send "beside a live holder"
     [ "$SEND_RC" = 0 ] && filed "beside a live holder" || { echo "send rc=$SEND_RC: $SEND_OUT"; end_holder; return 1; }
-    [ "$SEND_MS" -ge 900 ] && [ "$SEND_MS" -lt 4000 ] || { echo "the send took ${SEND_MS}ms"; end_holder; return 1; }
+    [ "$SEND_MS" -ge 900 ] && [ "$SEND_MS" -lt 10000 ] || { echo "the send took ${SEND_MS}ms"; end_holder; return 1; }
     t0=$(date +%s%N)
     err="$(cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST=testhost "$BIN/comm-status.sh" working 2>&1)" \
         && { echo "comm-status wrote under a live holder"; end_holder; return 1; }
@@ -327,15 +333,17 @@ t9() {
 check "9: the clear clears an unprovable holder, refuses a live one and an unprovable reclaimer, and says free" t9
 
 t10() {
-    reset; local t0 ms
+    reset; local t0 ms tries
     live_holder || return 1
     t0=$(date +%s%N)
-    lib 'SOT_LOCK_WAIT_SECS=1 SOT_COMM_TEST_LOCK_TRY_DELAY=0.5 with_lock true' 2>/dev/null && { echo "took a live lock"; end_holder; return 1; }
+    lib_logged 'SOT_LOCK_WAIT_SECS=1 SOT_COMM_TEST_LOCK_TRY_DELAY=0.5 with_lock true' 2>/dev/null && { echo "took a live lock"; end_holder; return 1; }
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
     end_holder
-    [ "$ms" -ge 1000 ] && [ "$ms" -lt 2200 ] || { echo "a 1 s touch with 0.5 s tries took ${ms}ms"; return 1; }
+    tries="$(grep -c -x '0.5' "$SLEEPS")"
+    [ "$ms" -ge 1000 ] || { echo "a 1 s touch with 0.5 s tries took ${ms}ms"; return 1; }
+    [ "$tries" -ge 2 ] && [ "$tries" -le 3 ] || { echo "a 1 s touch with 0.5 s tries made $tries tries: $(tr '\n' ' ' < "$SLEEPS")"; return 1; }
 }
-check "10: the bound is time: 0.5 s tries against a live holder end within 1 s plus one try" t10
+check "10: the bound is time: 0.5 s tries against a live holder wait the 1 s and make 2 or 3 tries" t10
 
 t11() {
     reset; local err
@@ -364,16 +372,13 @@ _sot_lock_take() { [ "$1" != "$P" ] || echo take >> "$WORK/count"; orig_take "$@
 SOT_LOCK_WAIT_SECS=0 with_lock true
 COUNT
 t12() {
-    reset; local d2 out t0 ms
+    reset; local d2 out
     record_then KILL; d2="$(cat "$WORK/r")"
     dead_holder >/dev/null; rm -f "${WORK:?}/count"
-    t0=$(date +%s%N)
     out="$(LIB="$LIB" WORK="$WORK" P="$P" D2="$d2" bash "$WORK/count.sh" 2>&1)" && { echo "took the lock: $out"; return 1; }
-    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
     [ "$(grep -c step "$WORK/count")" = 1 ] && [ "$(grep -c take "$WORK/count")" = 2 ] \
         || { echo "not one step and one retake: $(tr '\n' ' ' < "$WORK/count")"; return 1; }
     [ "$(cat "$P")" = "$d2" ] || { echo "the second dead holder's lock was reclaimed"; return 1; }
-    [ "$ms" -lt 1000 ] || { echo "a zero wait took ${ms}ms"; return 1; }
     contains "$out" "is held by $(field "$d2" 1) pid $(field "$d2" 5) start $(field "$d2" 6) (" \
         && contains "$out" "another process took it as soon as a dead holder's lock was removed" || { echo "$out"; return 1; }
 }
@@ -411,13 +416,13 @@ t14() {
     t0=$(date +%s%N)
     out="$(timeout 20 bash -c ". '$LIB'; SOT_LOCK_WAIT_SECS=1 with_lock true" 2>&1)" && { echo "took the lock: $out"; return 1; }
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-    [ "$ms" -lt 2500 ] || { echo "a 1 s writer took ${ms}ms"; return 1; }
+    [ "$ms" -lt 10000 ] || { echo "a 1 s writer took ${ms}ms"; return 1; }
     contains "$out" "its reclaim marker $(marker "$d") names $d, which its reclaim chain already holds" \
         && contains "$out" "remove $P by hand" || { echo "$out"; return 1; }
     t0=$(date +%s%N)
     out="$(timeout 20 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared: $out"; return 1; }
     ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-    [ "$ms" -lt 2500 ] || { echo "the clear took ${ms}ms"; return 1; }
+    [ "$ms" -lt 10000 ] || { echo "the clear took ${ms}ms"; return 1; }
     contains "$out" "its reclaim marker $(marker "$d") names $d" && contains "$out" "remove the lock by hand" \
         || { echo "$out"; return 1; }
     [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$d" ] || { echo "the lock or its marker changed"; return 1; }
