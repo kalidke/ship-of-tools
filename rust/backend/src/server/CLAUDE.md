@@ -33,8 +33,9 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   pipe's owner-only descriptor).
 - A connection whose first frame is not a hello that parses and passes `admit_hello` gets one reply (`unauthenticated`,
   `protocol_mismatch`, `identity_missing` or `os_user_conflict`) and is closed; nothing else is served or sent to it
-  (`handle_connection`). A host that has said hello as two OS accounts is refused for either until the daemon restarts
-  (`Clients::admit_account`); connections already open are left alone.
+  (`handle_connection`). A first frame that declares a blob is refused `unauthenticated` before a byte of its blob is
+  read (`read_envelope`, `parse_first_frame`). A host that has said hello as two OS accounts is refused for either
+  until the daemon restarts (`Clients::admit_account`); connections already open are left alone.
 - Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
 - A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
@@ -58,7 +59,7 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
 `fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `sotd stdio-bridge`, `write_frame_within`,
-`write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
+`write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
 `shutdown::run`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,

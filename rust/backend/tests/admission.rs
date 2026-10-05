@@ -320,6 +320,20 @@ async fn a_refused_hello_closes_the_connection() {
     env.kill_daemon_bounded().await;
 }
 
+/// A first frame is a hello, and a hello carries no blob: one that declares a blob is refused `unauthenticated` before
+/// a byte of the blob is read, so a peer of this account cannot make the daemon read what it has not admitted (review
+/// round 2, NOTE A on C13: the declared blob used to be read first, until the 10 s bound).
+#[tokio::test]
+async fn a_first_frame_that_declares_a_blob_is_refused_before_its_blob_is_read() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("admit-blob-refused");
+    env.spawn_sotd();
+    let mut payload = hello("t-blob", "host-a", ACCOUNT_A, "cli");
+    payload["blob"] = json!({ "len": 1u64 << 30 });
+    assert_refused(&env, payload, "unauthenticated").await;
+    env.kill_daemon_bounded().await;
+}
+
 /// A peer of this account that connects and says nothing must not hold the daemon's task: a connection with no first
 /// frame, and a `handoff` connection with no next frame after its hello, are closed by the daemon's own read bound
 /// (10 s, `ADMISSION_READ_BOUND`), the first having been sent nothing and the second only its hello's reply.

@@ -148,7 +148,7 @@ where
     // the connection becomes: `handoff` leaves for a byte pipe or a lease after the hello's reply (`hand_off`);
     // every other role is a control session at once, so a client that only listens after its hello (the hub link)
     // is sent its events.
-    let (first, _blob) = match tokio::time::timeout(ADMISSION_READ_BOUND, codec::read_frame(&mut buffered)).await {
+    let first = match tokio::time::timeout(ADMISSION_READ_BOUND, codec::read_envelope(&mut buffered)).await {
         Ok(Ok(read)) => read,
         Ok(Err(e)) => {
             tracing::debug!(error = %e, "first read failed before any frame; closing");

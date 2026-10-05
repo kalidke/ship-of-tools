@@ -50,13 +50,19 @@ impl HelloRefusal {
     }
 }
 
-/// A frame as a connection's first frame: it must be a `hello` request that parses, else `unauthenticated`.
+/// A frame as a connection's first frame: it must be a `hello` request that declares no blob and parses, else
+/// `unauthenticated`.
 pub(super) fn parse_first_frame(frame: &Frame) -> Result<HelloReq, HelloRefusal> {
     if frame.kind != Kind::Req || frame.op != op::HELLO {
         return Err(HelloRefusal::new(
             "unauthenticated",
             format!("send a hello first: {:?} is not served to a connection that has not said hello", frame.op),
         ));
+    }
+    // A hello carries no blob, and `handle_connection` read only this envelope: a first frame that declares one is
+    // refused before a byte of its blob is read.
+    if sot_protocol::codec::declared_blob_len(frame).is_some() {
+        return Err(HelloRefusal::new("unauthenticated", "a hello carries no blob".to_string()));
     }
     serde_json::from_value(frame.payload.clone())
         .map_err(|e| HelloRefusal::new("unauthenticated", format!("the hello payload does not parse: {e}")))
