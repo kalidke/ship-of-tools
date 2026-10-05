@@ -259,6 +259,9 @@ jobs:
           bash test-send-routes-to-relay.sh
           bash test-comm-matrix-verdict.sh
           bash test-status-floor.sh
+          # ADR 0049, User isolation: every writer makes the comm folder 0700/0600 under umask 022,
+          # a folder an older release left is tightened at join, user files keep the caller's umask.
+          bash test-comm-private.sh
           # The heartbeat waits on its context call in 50 ms ticks under a
           # 10 s bound, so a call that ends at once costs 50 ms, not a whole
           # second. Timed against a stub, hermetic, about two seconds.

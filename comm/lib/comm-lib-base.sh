@@ -1,5 +1,5 @@
 # comm-lib-base.sh: the library's base: platform test, the comm folder's paths, clock, tool checks, jq and host helpers, ages.
-# Sourced by comm-lib.sh; defines functions and globals only.
+# Sourced by comm-lib.sh; defines functions and globals only, and sets the umask.
 
 # _sot_is_windows — the ONE shared platform test (Codex review, PR1 round 2
 # finding 6: Windows-specific defaults/guards must live HERE, not duplicated
@@ -24,6 +24,8 @@ SELF_DIR="$COMM_HOME/self"
 READ_DIR="$COMM_HOME/read"
 # The registry lock (see with_lock): a FILE naming its holder.
 _SOT_REG_LOCK="$COMM_HOME/.registry.lock"
+# Everything a comm script makes is its user's alone (ADR 0049, User isolation).
+umask 077
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 

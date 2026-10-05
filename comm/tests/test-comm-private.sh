@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# test-comm-private.sh — ADR 0049, User isolation: the comm folder and everything in it are its user's
+# alone. Hermetic: a temp home (never the live comm folder), scripts run from a copy of the staged bin
+# whose comm-lib.sh ends with test-hub-files.sh's fixture stubs (no daemon, a fixture mount), a pinned
+# $SOT_COMM_TEST_HOST, and the self file left unpinned (the `nopane` slot).
+#
+#   1. Under umask 022 below a 0755 home no other account can read an inbox, and every folder is 0700
+#      and every file 0600: every writer runs (join, the status marker, the record, a library append,
+#      the cursor, the heartbeat and Stop hooks, the auditor), bin/ and VERSION excepted.
+#   2. A comm folder an older release left (folders 755, files 644) is tightened at the next join;
+#      bin/, VERSION and a symlink's target keep their modes.
+#   3. Where a comm script starts a writer of the user's own files, that writer keeps the caller's
+#      umask: (a) the auditor's `claude -p`, (b) the worktree `comm-worktree-new.sh` makes.
+#
+# Windows has no umask: a folder under the profile inherits the profile's access list, so this suite
+# prints one SKIP there. The locked local append and the hooks' mail read are Linux's, so other systems skip too.
+#
+# Usage: comm/tests/test-comm-private.sh
+# Exit: 0 if every case PASSes (or the suite skips), 1 if any FAILs.
+set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+
+umask 022
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-comm-private-XXXXXX")"
+[ -n "$WORK" ] && [ -d "$WORK" ] || { echo "FATAL: mktemp failed" >&2; exit 1; }
+trap 'rm -rf "${WORK:?}"' EXIT
+guard_fresh_home "$WORK"
+
+if [ "$(uname -s)" != Linux ]; then
+    echo "SKIP: comm folder modes: the access list under the profile is the mechanism here, and the locked local append is Linux's"
+    exit 0
+fi
+
+chmod 755 "$HOME"
+export SOT_COMM_HOME="$HOME/.sot-comm"
+guard_refuse_live_home "$SOT_COMM_HOME"
+SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+export SOT_COMM_TEST_HOST="testhost"
+unset SOT_COMM_NAME SOT_COMM_SELF_FILE CLAUDE_CODE_SESSION_ID
+
+# A copy of the staged bin whose library finds no daemon and a fixture mount, so a library append is local.
+BIN="$WORK/bin"
+cp -r "$SCRIPTS_DIR" "$BIN" && chmod -R u+w "$BIN" || { echo "FATAL: cannot copy the scripts" >&2; exit 1; }
+cat >> "$BIN/comm-lib.sh" <<'STUB'
+
+# ---- no daemon, a fixture mount (test only) ---------------------------------
+sot_daemon_endpoint() { return 1; }
+sot_relay_endpoint() { [ -n "${1:-}" ] || return 1; printf '%s\n' "$1"; }
+_sot_findmnt() { printf '%s\n' "${FAKE_MNT-nfs4 rw,vers=4.2,local_lock=none filer.example:/export/home}"; }
+_sot_machine_id() { printf '0123456789abcdef0123456789abcdef'; }
+STUB
+grep -q '^_sot_machine_id() { printf' "$BIN/comm-lib.sh" || { echo "FATAL: the fixture stub did not land in the copy" >&2; exit 1; }
+RECORD="nfs4 filer.example:/export/home"
+
+# A stub `claude` on PATH stands in for the auditor's tier 2 and records the umask it was started under.
+STUB_DIR="$WORK/claude-stub"; mkdir -p "$STUB_DIR"
+cat > "$STUB_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+umask > "$S2_CLAUDE_UMASK"
+printf '%s' '{"findings":[]}'
+STUB
+chmod +x "$STUB_DIR/claude"
+export S2_CLAUDE_UMASK="$WORK/claude-umask"
+export PATH="$STUB_DIR:$PATH"
+
+# A git repo to run from: the scripts' project, and case 3's worktree source.
+FIX="$WORK/fixture"; mkdir -p "$FIX"
+( cd "$FIX" && git init -q . && echo one > file.txt && git add file.txt \
+    && git -c user.name=t -c user.email=t@example.invalid commit -q -m one ) || { echo "FATAL: no fixture repo" >&2; exit 1; }
+
+pass=0; fail=0
+ok()  { echo "PASS: $1"; pass=$((pass+1)); }
+bad() { echo "FAIL: $1"; fail=$((fail+1)); }
+
+mode() { perl -e 'printf "%o", (lstat $ARGV[0])[2] & 07777' "$1"; }
+# Every path under ROOT but bin/ and VERSION that is not 700 (a folder) or 600 (a file), one indented line each.
+loose_paths() {  # ROOT
+    local p
+    find "$1" \( -path "$1/bin" -o -path "$1/VERSION" \) -prune -o ! -type l \
+        \( \( -type d ! -perm 700 \) -o \( -type f ! -perm 600 \) \) -print | while IFS= read -r p; do
+        printf '    %s %s\n' "$(mode "$p")" "${p#"$WORK"/}"
+    done
+}
+# can_read CLASS FILE: whether an account of class g (group) or o (other) can open FILE: its x bit on every folder
+# from $HOME down to the file's own, and its r bit on the file.
+can_read() {  # g|o FILE
+    local xb=1 rb=4 d
+    [ "$1" = g ] && { xb=8; rb=32; }
+    d="$(dirname "$2")"
+    while :; do
+        [ $(( 8#$(mode "$d") & xb )) -ne 0 ] || return 1
+        [ "$d" = "$HOME" ] && break
+        d="$(dirname "$d")"
+    done
+    [ $(( 8#$(mode "$2") & rb )) -ne 0 ]
+}
+# S2 CMD...: run a comm script from the fixture repo (its project), output kept in $WORK/last.out.
+S2() { ( cd "$FIX" && "$@" ) > "$WORK/last.out" 2>&1; }
+# missing PATH...: the paths that do not exist, one indented line each.
+missing() { local p; for p in "$@"; do [ -e "$p" ] || printf '    missing %s\n' "${p#"$WORK"/}"; done; }
+line() { printf '{"ts":"2026-10-04T00:00:00Z","from":"%s","to":"%s","msg":"%s"}\n' "$1" "$2" "$3"; }
+append() {  # TO FROM MSG: one line through the library's append
+    line "$2" "$1" "$3" | bash -c 'source "$1/comm-lib.sh"; sot_inbox_append "$2"' _ "$BIN" "$1"
+}
+
+C="$SOT_COMM_HOME"
+# ---- 1: every writer, under umask 022 below a 0755 home ----
+fails=""
+S2 "$BIN/comm-join.sh" --name s2-a || fails+=$'\n'"    comm-join.sh failed: $(tail -n 3 "$WORK/last.out" | tr '\n' ' ')"
+fails+="$(missing "$C" "$C/inbox" "$C/self" "$C/read" "$C/registry.json" "$C/inbox/s2-a.jsonl" "$C/self/testhost__nopane.txt")"
+ln -s "$BIN" "$C/bin"
+S2 env SOT_COMM_ASKQ_ID=s2 "$BIN/comm-status.sh" blocked "q" || fails+=$'\n'"    comm-status.sh blocked failed: $(tail -n 3 "$WORK/last.out" | tr '\n' ' ')"
+S2 "$BIN/comm-status.sh" idle
+fails+="$(missing "$C/state" "$C/state/askq-s2.marker")"
+( umask 077; printf '%s\n' "$RECORD" > "$C/inbox-lock-manager" )   # the record the daemon writes at boot
+append s2-b s2-a "to b" >/dev/null 2>&1
+append s2-a s2-b "one" >/dev/null 2>&1
+fails+="$(missing "$C/inbox/s2-b.jsonl" "$C/inbox/s2-b.lock" "$C/inbox/s2-a.lock")"
+S2 "$BIN/comm-poll.sh"
+fails+="$(missing "$C/read/s2-a.cursor")"
+( cd "$FIX" && printf '{"tool_name":"Bash"}' | bash "$BIN/comm-status-heartbeat.sh" ) >/dev/null 2>&1
+set -- "$C"/state/hb-*.tick; fails+="$(missing "$1")"
+append s2-a s2-b "two" >/dev/null 2>&1
+TR1="$WORK/transcript-1.jsonl"
+{ jq -nc '{type:"user",message:{content:"go"}}'; jq -nc '{type:"assistant",message:{content:[{type:"text",text:"Done."}]}}'; } > "$TR1"
+( cd "$FIX" && jq -nc --arg p "$TR1" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN/comm-status-idle.sh" ) > "$WORK/stop-1.out" 2>&1
+set -- "$C"/state/mail-*.tick; fails+="$(missing "$1")"
+set -- "$C"/state/stop-feedback-*.jsonl; fails+="$(missing "$1")"
+S2 "$BIN/comm-poll.sh"
+TR2="$WORK/transcript-2.jsonl"
+{ jq -nc '{type:"user",message:{content:"go"}}'; jq -nc '{type:"assistant",message:{content:[{type:"text",text:"Shall I go on?"}]}}'; } > "$TR2"
+( cd "$FIX" && jq -nc --arg p "$TR2" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN/comm-status-idle.sh" ) > "$WORK/stop-2.out" 2>&1
+fails+="$(missing "$C/state/auditor-s2-a")"
+fails+="$(loose_paths "$C")"
+for cls in g o; do
+    ! can_read "$cls" "$C/inbox/s2-a.jsonl" || fails+=$'\n'"    class $cls can read .sot-comm/inbox/s2-a.jsonl"
+done
+if [ -z "$fails" ]; then ok "under umask 022 below a 0755 home no other account can read an inbox, and every folder is 0700 and every file 0600"
+else bad "under umask 022 below a 0755 home no other account can read an inbox, and every folder is 0700 and every file 0600"; printf '%s\n' "${fails#$'\n'}"; fi
+
+# ---- 2: a folder an older release left ----
+OLD="$WORK/old-home/.sot-comm"
+guard_refuse_live_home "$OLD"
+mkdir -p "$OLD/inbox" "$OLD/read" "$OLD/self" "$OLD/state" "$OLD/bin"
+printf '{"protocol_version": 1, "agents": {}}\n' > "$OLD/registry.json"
+: > "$OLD/inbox/s2-a.jsonl"; : > "$OLD/inbox/s2-a.lock"; : > "$OLD/read/s2-a.cursor"
+printf 's2-a\nrepo=fixture\nroot=%s\n' "$FIX" > "$OLD/self/testhost__nopane.txt"
+: > "$OLD/state/x.tick"; printf '%s\n' "$RECORD" > "$OLD/inbox-lock-manager"; : > "$OLD/.registry.lock.reclaim.x"
+printf 'stamp\n' > "$OLD/VERSION"; printf '#!/bin/sh\n' > "$OLD/bin/s.sh"; chmod 755 "$OLD/bin/s.sh"
+printf 'outside\n' > "$WORK/outside.txt"; ln -s "$WORK/outside.txt" "$OLD/state/link"
+fails=""
+S2 env SOT_COMM_HOME="$OLD" "$BIN/comm-join.sh" --name s2-a || fails+=$'\n'"    comm-join.sh failed: $(tail -n 3 "$WORK/last.out" | tr '\n' ' ')"
+fails+="$(loose_paths "$OLD")"
+for kept in "bin 755" "bin/s.sh 755" "VERSION 644"; do
+    [ "$(mode "$OLD/${kept% *}")" = "${kept#* }" ] || fails+=$'\n'"    ${kept% *} is $(mode "$OLD/${kept% *}"), not ${kept#* }"
+done
+[ "$(cat "$OLD/VERSION")" = stamp ] || fails+=$'\n'"    VERSION's bytes changed"
+[ -L "$OLD/state/link" ] && [ "$(mode "$WORK/outside.txt")" = 644 ] && [ "$(cat "$WORK/outside.txt")" = outside ] \
+    || fails+=$'\n'"    the symlink or its target changed (target mode $(mode "$WORK/outside.txt"))"
+if [ -z "$fails" ]; then ok "a comm folder an older release left is tightened at the next join; bin/, VERSION and a symlink's target keep their modes"
+else bad "a comm folder an older release left is tightened at the next join; bin/, VERSION and a symlink's target keep their modes"; printf '%s\n' "${fails#$'\n'}"; fi
+
+# ---- 3: a writer of the user's own files keeps the caller's umask ----
+export SOT_COMM_HOME="$WORK/h3/.sot-comm"
+guard_refuse_live_home "$SOT_COMM_HOME"
+S2 "$BIN/comm-join.sh" --name s2-c
+ln -s "$BIN" "$SOT_COMM_HOME/bin"
+rm -f "${S2_CLAUDE_UMASK:?}"
+( cd "$FIX" && jq -nc --arg p "$TR2" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN/comm-status-idle.sh" ) > "$WORK/stop-3.out" 2>&1
+got="$(cat "$S2_CLAUDE_UMASK" 2>/dev/null || echo none)"
+[ "$got" = 0022 ] && ok "the auditor's claude -p starts under the caller's umask" \
+    || { bad "the auditor's claude -p starts under the caller's umask"; echo "    umask there: $got (want 0022)"; }
+S2 "$BIN/comm-worktree-new.sh" s2 --no-spawn
+WTD="$WORK/worktrees/fixture-wt-s2"
+if [ -f "$WTD/file.txt" ] && [ "$(mode "$WTD/file.txt")" = 644 ] && [ "$(mode "$WORK/worktrees")" = 755 ]; then
+    ok "comm-worktree-new.sh makes the worktree under the caller's umask"
+else
+    bad "comm-worktree-new.sh makes the worktree under the caller's umask"
+    echo "    file.txt $(mode "$WTD/file.txt" 2>/dev/null || echo missing), worktrees/ $(mode "$WORK/worktrees" 2>/dev/null || echo missing); script said: $(tail -n 2 "$WORK/last.out" | tr '\n' ' ')"
+fi
+
+echo "$pass passed, $fail failed"
+[ "$fail" = 0 ]

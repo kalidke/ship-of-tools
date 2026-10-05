@@ -106,8 +106,7 @@ request() {
     # window (it exchanges for the token once you authorize) — write it 0600.
     # NOTE: no cleanup trap here on purpose — the split flow needs this to survive
     # until `poll` consumes it (poll owns the trap).
-    mkdir -p "$(dirname "$STATE")"
-    ( umask 077; printf '%s\n' "$resp" > "$STATE" )
+    ( umask 077; mkdir -p "$(dirname "$STATE")"; printf '%s\n' "$resp" > "$STATE" )
     # Machine-parseable lines FIRST (a controller greps these), then a human block.
     echo "SOT_GH_USER_CODE=${user_code}"
     echo "SOT_GH_VERIFY_URL=${verify}"

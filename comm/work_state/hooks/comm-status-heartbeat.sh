@@ -31,6 +31,8 @@ set -uo pipefail
 # after the parent's own marker had stamped blocked (field report, 2026-09-18).
 # The launcher sets SOT_COMM_HOOKS=off; every status hook stands down on it.
 [ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
+# Everything this hook writes is the comm folder's, so private (ADR 0049, User isolation); it starts only comm scripts.
+umask 077
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

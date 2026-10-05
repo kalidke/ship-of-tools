@@ -21,6 +21,7 @@ may act as it. These scripts resolve the handle, claim it, list the rows and rec
 ## Rules
 - A derived handle is decided and written in one critical section (`claim_derived_handle`); a pin is kept verbatim.
 - `sot_require_agent` runs before any read, send, join or stamp.
+- `comm-join.sh` runs `ensure_home` before its writes, so a new comm folder is private and an older one is tightened.
 - Every registry write is `registry_replace` under `with_lock`, and an unreadable registry is never "absent"
   (`sot_registry_read` returns 2).
 - `comm-join.sh` refuses to write another repo's identity into a slot keyed by `$SOT_WORKSPACE_ID`.

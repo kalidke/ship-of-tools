@@ -97,9 +97,11 @@ its lease, `sotd stdio-bridge` and the lane client connect to whatever answers t
 pipe name, a name in the machine-wide pipe namespace, without checking which account
 serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept
 a connection from any account and rely on the URL's secret alone; lane S1 builds their
-owner check. The comm scripts create the comm folder and its inboxes with no mode of
-their own, so these are only as private as the creating shell's umask and the home
-folder above them; no lane is named for that yet.
+owner check. The comm folder and everything in it but the installed scripts and
+their version stamp are its user's alone: every writer creates them owner-only (0700
+folders, 0600 files), and the next join removes the group and other permissions an
+older release left; on Windows the folder under the profile inherits the profile's
+access list (the user, SYSTEM and Administrators).
 
 ## Why the daemon and not the frontend
 

@@ -24,3 +24,5 @@ priority) sits above the `with_lock` call that applies it. For what the Stop hoo
 - The auditor fails open: any internal failure, a missing `claude`, `SOT_TURN_AUDITOR=0` or `auditor.off` in the comm
   folder exits 3, and the Stop hook then takes its old path. It never holds a turn.
 - The auditor runs its model call with `SOT_COMM_HOOKS=off`, so the headless call's own hooks stand down.
+- The Stop hook and the auditor write the comm folder in `umask 077` subshells, so the auditor's `claude -p` keeps the
+  caller's mask; the heartbeat hook sets `umask 077` itself, as it starts only comm scripts.

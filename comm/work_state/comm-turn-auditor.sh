@@ -45,7 +45,9 @@ set -uo pipefail
 NAME="${1:-}"; TP="${2:-}"
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 REGISTRY="$COMM_HOME/registry.json"
-STATE_DIR="$COMM_HOME/state"; mkdir -p "$STATE_DIR" 2>/dev/null || true
+# The state folder and the signature file are the comm folder's, so private (ADR 0049, User isolation);
+# no top-level umask: the headless claude below keeps the caller's mask.
+STATE_DIR="$COMM_HOME/state"; ( umask 077 && mkdir -p "$STATE_DIR" ) 2>/dev/null || true
 MODEL="${SOT_AUDITOR_MODEL:-claude-haiku-4-5-20251001}"
 CHECKS="${SOT_AUDITOR_CHECKS:-}"
 # $1: a candidate kind. Empty CHECKS (default) enables every kind, as before.
@@ -146,7 +148,7 @@ if [ -f "$sigfile" ]; then
         exit 0   # same situation, recently judged/nudged — stay quiet
     fi
 fi
-printf '%s %s\n' "$sig" "$(date +%s)" > "$sigfile" 2>/dev/null || true
+( umask 077 && printf '%s %s\n' "$sig" "$(date +%s)" > "$sigfile" ) 2>/dev/null || true
 
 # ---- tier 2: one conservative Haiku judgment ---------------------------------
 # Each check's full description, looked up by kind; only the ENABLED kinds'

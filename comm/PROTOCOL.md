@@ -26,6 +26,8 @@ all clients are mutually addressable through the same registry and inboxes.
                            # leaves one. Bounded per-session litter, and nothing sweeps it.
 ```
 
+Every folder here is 0700 and every file 0600, except `bin/` and `VERSION` (the installer's); `ensure_home` makes it so.
+
 The registry and inboxes are **data at rest** — discovery and catch-up need a
 shared place to publish, not a live broker. In an optional shared-home
 deployment, one `~/.sot-comm` serves every host sharing that home.
