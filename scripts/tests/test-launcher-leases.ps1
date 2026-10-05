@@ -92,8 +92,8 @@ try {
     } catch { Check '10: section ran' $false $_.Exception.Message }
     if ($compiled) {
         try {
-        Write-Host "`n=== 11. ConvergeLeaseHandover: the lease line, the handover line, the refusal warning ===" -ForegroundColor Cyan
-        foreach ($fname in @('Get-SotBootId', 'Open-SotLease', 'Close-SotLeases')) {
+        Write-Host "`n=== 11. ConvergeLeaseHandover: the hello and lease lines, the handover line, the refusal warnings ===" -ForegroundColor Cyan
+        foreach ($fname in @('Get-SotBootId', 'Get-SotHelloHost', 'ConvertTo-SotJsonString', 'Open-SotLease', 'Close-SotLeases')) {
             $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             Check "11: $fname is defined" ($null -ne $fn) 'function not found'
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
@@ -129,15 +129,20 @@ try {
                 if ($regOut -match 'BootId\s+REG_DWORD\s+0x([0-9a-fA-F]+)') { $bootDec = [string][Convert]::ToUInt32($Matches[1], 16) }
                 $created11 = [System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
                 $golden = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + $bootDec + '","created":' + $created11 + ',"pid":' + $PID + '}}'
+                # The hello that precedes it (ADR 0049, User isolation): a handoff naming this computer and the OS account.
+                $helloHost11 = if ($env:SOT_SELF_HOST) { $env:SOT_SELF_HOST } else { ([System.Net.Dns]::GetHostName().Split('.')[0]).ToLowerInvariant() }
+                $sid11 = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+                $goldenHello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":"' + $helloHost11 + '","os_user":"' + $sid11 + '","role":"handoff"}}'
                 Start-Sleep -Milliseconds 300
                 $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
-                Check '11a: the first logged line is the golden lease line' (($lines11a.Count -ge 1) -and ($lines11a[0] -ceq $golden)) "got: $($lines11a[0]) want: $golden"
+                Check '11a: the first logged line is the golden hello line' (($lines11a.Count -ge 1) -and ($lines11a[0] -ceq $goldenHello)) "got: $($lines11a[0]) want: $goldenHello"
+                Check '11a: the second logged line is the golden lease line' (($lines11a.Count -ge 2) -and ($lines11a[1] -ceq $golden)) "got: $($lines11a[1]) want: $golden"
                 Close-SotLeases
                 Start-Sleep -Milliseconds 500
                 $lines11a = @(Get-Content -LiteralPath $log11a -ErrorAction SilentlyContinue)
                 $handover = '{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}'
-                Check '11a: the handover line follows' (($lines11a.Count -ge 2) -and ($lines11a[1] -ceq $handover)) "lines: $($lines11a -join ' | ')"
-                Check '11a: then eof' (($lines11a.Count -ge 3) -and ($lines11a[2] -ceq 'eof')) "lines: $($lines11a -join ' | ')"
+                Check '11a: the handover line follows' (($lines11a.Count -ge 3) -and ($lines11a[2] -ceq $handover)) "lines: $($lines11a -join ' | ')"
+                Check '11a: then eof' (($lines11a.Count -ge 4) -and ($lines11a[3] -ceq 'eof')) "lines: $($lines11a -join ' | ')"
                 Check '11a: the lease list is empty after Close-SotLeases' ($global:SotLeases.Count -eq 0) "count $($global:SotLeases.Count)"
             } finally {
                 if ($fake11a -and -not $fake11a.HasExited) { Stop-Process -Id $fake11a.Id -Force -ErrorAction SilentlyContinue }
@@ -159,6 +164,22 @@ try {
                 Check '11b: the warning names the 60 s bound' ((@($script:supLines | Where-Object { $_ -like '*60 s*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
             } finally {
                 if ($fake11b -and -not $fake11b.HasExited) { Stop-Process -Id $fake11b.Id -Force -ErrorAction SilentlyContinue }
+                Clear-FakeEnv
+            }
+
+            # (d) a refused hello is named in the warning, and no stream comes back
+            $pipe11d = New-TestPipeName
+            Clear-FakeEnv
+            $env:FAKE_SOTD_HELLO_REFUSAL = 'os_user_conflict'
+            $fake11d = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe11d)) -WindowStyle Hidden -PassThru
+            try {
+                Check '11d: the fake pipe is up' (Wait-Pipe $pipe11d) 'pipe never answered'
+                $script:supLines = @()
+                $streams11d = @(Open-SotLease (Get-PipePath $pipe11d))
+                Check '11d: no stream comes back' ($streams11d.Count -eq 0) "got $($streams11d.Count)"
+                Check '11d: the warning names the refused hello and its code' ((@($script:supLines | Where-Object { $_ -like '*hello refused: os_user_conflict*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
+            } finally {
+                if ($fake11d -and -not $fake11d.HasExited) { Stop-Process -Id $fake11d.Id -Force -ErrorAction SilentlyContinue }
                 Clear-FakeEnv
             }
 

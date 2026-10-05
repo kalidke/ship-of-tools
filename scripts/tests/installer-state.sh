@@ -717,6 +717,11 @@ in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then 
 }
 check "sot-lease.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LEASE" 0)"
 check "ops/lease.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
+# The launcher's hello (ADR 0049, User isolation) speaks the wire protocol and names the handoff role.
+HANDOFF_ROLE="$(sed -n 's/.*pub const HANDOFF_ROLE: &str = "\([^"]*\)".*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops/session.rs")"
+check "session.rs names the handoff role" "yes" "$([ -n "$HANDOFF_ROLE" ] && echo yes || echo no)"
+check "sot-lease.ps1's hello speaks the wire protocol" "yes" "$(grep -qF "\"op\":\"hello\",\"payload\":{\"client_id\":\"sot-launcher\",\"protocol\":$WIRE_PROTO," "$PS_LEASE" && echo yes || echo no)"
+check "sot-lease.ps1's hello is a handoff" "yes" "$(grep -qF "\"role\":\"$HANDOFF_ROLE\"}}" "$PS_LEASE" && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
 printf '\n'
