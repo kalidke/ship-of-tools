@@ -463,9 +463,11 @@ async fn bind_removes_its_folder_when_dropped() {
 
 /// A hello the daemon refuses (an older protocol, a second OS account on the host) is not a failed connect: the data
 /// connection goes on, so its own hello is refused the same way and shows the daemon's message; the lease is
-/// `Unreached` and nothing is held.
+/// `Undetermined`, whose notice ("closing will not end sessions: this computer's backend could not verify this
+/// window") is true of every refusal, where `Unreached`'s "there is no backend on this computer" is false; nothing is
+/// held.
 #[tokio::test]
-async fn a_refused_hello_leaves_the_lease_unreached_and_the_data_connection_going() {
+async fn a_refused_hello_leaves_the_lease_undetermined_and_the_data_connection_going() {
     let (listener, path) = bind("refusedhello");
     tokio::spawn(async move {
         let conn = listener.accept().await.unwrap();
@@ -479,6 +481,7 @@ async fn a_refused_hello_leaves_the_lease_unreached_and_the_data_connection_goin
     let host = "local".to_string();
     let leases = Leases::new(false, vec![host.clone()]);
     assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
-    assert_eq!(leases.standing(&host), Some(Standing::Unreached));
+    assert_eq!(leases.standing(&host), Some(Standing::Undetermined));
     assert!(!leases.held(&host));
+    assert_eq!(leases.notice(), Some(NOTICE_UNDETERMINED));
 }

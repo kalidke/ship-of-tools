@@ -281,7 +281,7 @@ impl Leases {
             // Not a failed connect: the data connection's own hello is refused the same way and shows the
             // daemon's message on the blocking screen, which an `Err` here would never let it reach.
             Ok(Replies::Refused { code, error }) => {
-                self.set(host, Standing::Unreached, None);
+                self.set(host, Standing::Undetermined, None);
                 tracing::warn!(%host, %code, %error, "window lease: the backend refused this window's hello");
                 return Ok(0);
             }
