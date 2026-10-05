@@ -41,7 +41,10 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   start of an empty input line; a dialog, menu, draft or working session is not free
   and is never typed into. One line per batch, one more after ten minutes unread. A line
   it typed that did not send is sent by a later tick, with Enter alone, once main's input
-  box holds just that line; it is never typed twice. A
+  box holds just that line; it is never typed twice. A row that keeps refusing the wake for a minute tells the
+  senders of its unread mail, once per refusal streak, with one line filed into each sender's
+  inbox as a silent broadcast copy by the daemon's own filer: it wakes no one and is never
+  itself the subject of a wake or a notice. A
   busy session needs no typing — its end-of-turn check will not let a turn finish with
   unread mail waiting. This is the only wake: no per-session watcher, listener, bridge
   or Monitor exists.

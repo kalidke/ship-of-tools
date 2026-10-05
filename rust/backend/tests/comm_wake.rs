@@ -307,12 +307,17 @@ fn iso_at(off: i64) -> String {
 /// Sets `agents.HANDLE` in the harness's registry, creating it if absent;
 /// written to a temp file and renamed.
 fn set_entry(env: &Env, entry: serde_json::Value) {
+    set_entry_for(env, HANDLE, entry);
+}
+
+/// [`set_entry`] for any handle.
+fn set_entry_for(env: &Env, handle: &str, entry: serde_json::Value) {
     let path = env.comm_root.join("registry.json");
     let mut doc: serde_json::Value = std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_else(|| serde_json::json!({ "agents": {} }));
-    doc["agents"][HANDLE] = entry;
+    doc["agents"][handle] = entry;
     let tmp = env.comm_root.join("registry.json.tmp");
     std::fs::create_dir_all(&env.comm_root).expect("mkdir comm root");
     std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
@@ -574,5 +579,33 @@ async fn a_wake_line_left_unsent_is_completed_by_the_next_tick() {
     assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
     let said = daemon_log(&row.env).matches("did not show in main's input box").count();
     assert_eq!(said, 1, "the left line should be named once in the daemon log");
+    row.env.kill_daemon_bounded().await;
+}
+
+/// A row that keeps refusing the wake for REFUSED_FOR (60 s) tells the sender of its unread mail, once per streak: one
+/// line in the sender's inbox, filed as a broadcast copy (`to:""`) so it files silently for comm-poll and no wake counts
+/// it, naming the recipient and the refusal. The row here sits in a dialog, so the wake never types.
+#[tokio::test]
+async fn a_row_that_keeps_refusing_the_wake_tells_the_sender_once() {
+    let _serial = SERIAL.lock().await;
+    let row = start("cwn", None, true).await;
+    // The sender of `append_mail` is "other": a live session of the registry's, as comm.file's verdict needs.
+    set_entry_for(&row.env, "other", serde_json::json!({ "host": "h", "state": "working", "last_seen": iso_at(0) }));
+    append_mail(&row.env, 1);
+    let notices = || std::fs::read_to_string(row.env.comm_root.join("inbox").join("other.jsonl")).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(100);
+    while notices().is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let text = notices();
+    assert_eq!(text.lines().count(), 1, "the sender should be told once: {text:?}");
+    let line: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(line["to"], "", "a notice must file as a broadcast copy, which no wake counts");
+    let msg = line["msg"].as_str().unwrap();
+    assert!(msg.contains("@wakeh") && msg.contains("has not been woken for 60 s: "), "{msg}");
+    // Once per streak: the streak goes on, no second line.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(notices().lines().count(), 1, "a second notice in one streak");
+    assert_eq!(pings(&row.log), 0);
     row.env.kill_daemon_bounded().await;
 }

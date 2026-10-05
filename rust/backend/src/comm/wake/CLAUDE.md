@@ -7,6 +7,7 @@ backend; charter: comm/CLAUDE.md.
 ## Files
 - `attempt.rs`: one wake's attach, hold, type and Enter, and its outcome
 - `mod.rs`: the tick: when a row is woken, and the account of the whole wake
+- `notice.rs`: the one-line notice to a sender whose message has not woken its row
 - `screen.rs`: whether a captured screen is a free prompt, and the rows the hold compares
 - `screen_tests.rs`: the tests of the screen reading, over captured frames
 - `unread.rs`: how much mail is unread: the inbox against the cursor
@@ -28,3 +29,7 @@ backend; charter: comm/CLAUDE.md.
   box (`type_then_enter`); Enter goes only then.
 - A typed line counts as the wake and is never typed again for its batch; one left without Enter is sent, Enter alone,
   by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`).
+- A row that keeps refusing the wake for REFUSED_FOR (60 s) tells the senders of its unread mail once per streak: `settle`
+  returns the reason at the bound and `notify_senders` files one broadcast copy (`to:""`, from `sotd`) per sender through
+  `file_comm`, the filer of `comm.file`, so a sender on another box is reached by its forward. A broadcast copy is never
+  counted by `scan`, so no notice starts a wake, a streak or a notice about a notice.

@@ -122,6 +122,29 @@ pub(super) fn scan(comm_home: &Path, handle: &str, woken_line: u64) -> Scan {
     out
 }
 
+/// The distinct senders of the lines [`scan`] counts as unread for `handle` (past its cursor, to it, not from it),
+/// in first-seen order. A line with no `from` has no sender to tell.
+pub(super) fn unread_senders(comm_home: &Path, handle: &str) -> Vec<String> {
+    let cursor = cursor_offset(comm_home, handle);
+    let Ok(bytes) = std::fs::read(comm_home.join("inbox").join(format!("{handle}.jsonl"))) else {
+        return Vec::new();
+    };
+    let Some(end) = bytes.iter().rposition(|b| *b == b'\n') else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for (i, line) in bytes[..end].split(|b| *b == b'\n').enumerate() {
+        if (i as u64) < cursor || !counts(line, handle) {
+            continue;
+        }
+        let from = serde_json::from_slice::<serde_json::Value>(line).ok().and_then(|v| v.get("from")?.as_str().map(str::to_string));
+        if let Some(from) = from.filter(|f| !f.is_empty() && !out.contains(f)) {
+            out.push(from);
+        }
+    }
+    out
+}
+
 fn counts(line: &[u8], handle: &str) -> bool {
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) else {
         return false;

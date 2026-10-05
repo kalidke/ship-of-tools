@@ -546,6 +546,25 @@ mod comm_file_tests {
         assert!(code == "file_failed" && error.contains("not its folder's hub (guest-b)"), "{error}");
     }
 
+    // The wake's notice to a sender (`comm::wake::notice`) goes through this verdict like any mail: at a guest a sender on
+    // another box is reached by the same forward, the line still a broadcast copy from the daemon.
+    #[test]
+    fn a_guest_forwards_a_wake_notice_as_it_would_mail() {
+        let d = home();
+        let guest = Filer {
+            role: crate::comm::mail::inbox::Role::Guest,
+            own: "nfs4 A:/x".into(),
+            machine_id: Some("m-b".into()),
+            self_host: "guest-b".into(),
+        };
+        let notice = CommFileReq { from: "sotd".into(), to: "fresh".into(), text: "[sot-comm] notice".into(), broadcast: true, forwarded: false };
+        let sent = std::cell::RefCell::new(None);
+        let v = comm_file_verdict(Some(d.path()), &guest, || true, |fwd: &CommFileReq| { *sent.borrow_mut() = Some(fwd.clone()); Ok(json!({"ok": true})) }, &notice, NOW, 600, Duration::from_secs(1));
+        assert_eq!(v, Ok(()));
+        let sent = sent.into_inner().expect("forwarded");
+        assert!(sent.forwarded && sent.broadcast && sent.from == "sotd" && sent.to == "fresh" && sent.text == "[sot-comm] notice");
+    }
+
     // T4 — the cutoff: one second inside is fresh, one outside and the edge
     // are stale (the shell's `age >= stale`), malformed and absent are no
     // heartbeat.

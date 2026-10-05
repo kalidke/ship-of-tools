@@ -441,7 +441,11 @@ still unread ten minutes later at a free prompt. A row whose registry entry
 carries a `stop_at` under a minute old is running its Stop hook and is not typed
 into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
 and the hook reads the mail itself. A turn ended by Esc or an API error runs no
-Stop, so a mark over a minute old holds nothing. A busy session needs no
+Stop, so a mark over a minute old holds nothing. A row whose wake is refused for a minute
+tells the senders of its unread mail, once per refusal streak: the daemon files one line into each sender's
+inbox through the filer `comm.file` uses (so a sender on another box is reached by the same forward to the hub),
+as a broadcast copy (`to:""`), which `comm-poll.sh` shows and no wake or end-of-turn check counts, so a notice
+never starts a wake, a streak or a notice about itself. A busy session needs no
 typing: its end-of-turn check will not let a turn finish while unread mail
 waits. That check reads the inbox before anything else, so a turn that closes
 with a report marker is held too, and its row is stamped only at the turn end

@@ -64,6 +64,8 @@
 //! or permission prompt drawn, in it receives the Enter. A later wake refuses for whatever the screen then
 //! shows, and the refusal streak logs it.
 //!
+//! A row that keeps refusing for [`REFUSED_FOR`] also tells the senders of its unread mail, once per streak (`notice`).
+//!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
@@ -75,6 +77,7 @@ use crate::rows::run::headless::HeadlessError;
 use crate::rows::Workspaces;
 
 mod attempt;
+mod notice;
 mod screen;
 mod unread;
 
@@ -203,7 +206,10 @@ pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces
         }
         for (handle, check) in checks {
             if let Ok(step) = check.await {
-                settle(&mut woken, &mut streaks, handle, step, Instant::now());
+                let h = handle.clone();
+                if let Some(reason) = settle(&mut woken, &mut streaks, handle, step, Instant::now()) {
+                    notice::notify_senders(&comm_home, &workspaces, &h, reason).await;
+                }
             }
         }
     }
@@ -236,8 +242,9 @@ struct Streak {
     warned: bool,
 }
 
-/// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak.
-fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: String, step: Step, now: Instant) {
+/// One row's tick result into the task's memory. A wake or a read inbox ends the row's refusal streak. Returns the
+/// refusal's reason when the streak has just reached [`REFUSED_FOR`]: the one moment per streak the senders are told.
+fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Streak>, handle: String, step: Step, now: Instant) -> Option<&'static str> {
     match step {
         Step::Clear => {
             woken.remove(&handle);
@@ -256,10 +263,12 @@ fn settle(woken: &mut HashMap<String, Woken>, streaks: &mut HashMap<String, Stre
             if !s.logged && now.duration_since(s.since) >= REFUSED_FOR {
                 s.logged = true;
                 tracing::info!(handle = %handle, reason = ?r.reason, border = ?r.border, "comm wake: a row with unread mail keeps refusing the wake");
+                return Some(r.reason);
             }
         }
         Step::Skip => {}
     }
+    None
 }
 
 fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Option<Woken>) -> Step {
@@ -419,6 +428,22 @@ mod tests {
             at(REFUSED_FOR * 11, refused());
             assert_eq!(count(), 3);
         });
+    }
+
+    #[test]
+    fn a_streak_hands_back_its_reason_once_at_the_bound() {
+        let refused = || Step::Refused(Refusal { reason: "input not empty", border: String::new(), detail: None });
+        let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
+        let t0 = Instant::now();
+        let mut at = |d: Duration, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + d);
+        assert_eq!(at(Duration::ZERO, refused()), None);
+        assert_eq!(at(REFUSED_FOR - Duration::from_secs(1), refused()), None);
+        assert_eq!(at(REFUSED_FOR, refused()), Some("input not empty"));
+        assert_eq!(at(REFUSED_FOR * 2, refused()), None);
+        // A wake ends the streak; the next one is told again at its own bound.
+        assert_eq!(at(REFUSED_FOR * 3, Step::Woke(Woken { line: 1, at: t0, enter_owed: false })), None);
+        assert_eq!(at(REFUSED_FOR * 4, refused()), None);
+        assert_eq!(at(REFUSED_FOR * 5, refused()), Some("input not empty"));
     }
 
     #[test]
