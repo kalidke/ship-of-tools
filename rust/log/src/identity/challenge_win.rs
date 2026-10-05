@@ -188,8 +188,8 @@ pub fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
     }
 }
 
-/// Steps 1-3 of the OS-side identity check, shared by [`challenge()`] and
-/// [`authenticate_server()`]: read the server pid `P` via
+/// Steps 1-3 of the OS-side identity check, shared by [`challenge()`],
+/// [`authenticate_server()`] and `connect_own::own_pipe`: read the server pid `P` via
 /// `GetNamedPipeServerProcessId`, `OpenProcess` it, and compare its
 /// token-user SID against this account's. Returns the open handle plus
 /// `P` on a matching SID; `Foreign`/`Undetermined` are already the
