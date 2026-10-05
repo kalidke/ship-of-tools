@@ -36,3 +36,5 @@ charter in src/ui/; for a connection or a request, to src/net/.
 - `--ephemeral`, `--capture` and `--no-lease` never take a lease (`lease_exempt` in lease.rs).
 - Only `sot_protocol::is_release_build()` self-updates (`guard` in selfupdate.rs); a dev build never stages anything.
 - The state directory has one resolution rule, sot-log's, which the window calls directly.
+- The window clears its own inherited standard handles first thing in `main` (`sot_log::host::winhandle::harden_own_stdio`), as
+  the daemon does, so no child it starts holds its log files open (`the_window_clears_its_inherited_stdio_first`).

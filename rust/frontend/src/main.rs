@@ -65,6 +65,11 @@ fn log_subscriber<W: std::io::Write + 'static>(
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true) {
+        eprintln!("sot-fe: could not harden inherited stdio ({e}); continuing");
+    }
+
     // Parse before tracing init so `--version` exits with clean stdout —
     // the updater and scripts parse it (ADR 0030 §1).
     let cli = cli::Cli::parse();
@@ -190,5 +195,22 @@ mod tests {
         assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
         // No colour codes: on Windows this output is a file, and they would split a field name from its `=`.
         assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
+    }
+
+    /// ADR 0049's twin of the daemon's rule: the window clears its own inherited standard handles first thing in `main`
+    /// (on Windows the launcher hands it log files), so no child it starts holds them open. Read as text through the
+    /// production view, which blanks comments and this module and keeps every line in place.
+    #[test]
+    fn the_window_clears_its_inherited_stdio_first() {
+        let source = sot_log::test_scan::without_test_modules(include_str!("main.rs"));
+        let lines: Vec<&str> = source.lines().collect();
+        let at: Vec<usize> = (0..lines.len()).filter(|&n| lines[n] == "fn main() -> Result<()> {").collect();
+        assert_eq!(at.len(), 1, "expected exactly one `fn main`, found {at:?}");
+        let after: Vec<&str> = lines[at[0] + 1..].iter().map(|l| l.trim()).filter(|l| !l.is_empty()).take(2).collect();
+        assert_eq!(
+            after,
+            ["#[cfg(windows)]", "if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true) {"],
+            "main does not clear the window's inherited stdio first"
+        );
     }
 }
