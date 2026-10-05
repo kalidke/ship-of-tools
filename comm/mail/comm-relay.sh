@@ -52,12 +52,9 @@ ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
     sot_relay_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
-# nc preferred; on hosts without it (e.g. git-bash on Windows, which ships no
-# nc) fall back to bash's /dev/tcp for tcp endpoints. unix-socket endpoints
-# still require nc -U (/dev/tcp can't speak AF_UNIX). A pipe: endpoint uses
-# neither — see the EP_PIPE branch in nc_send below, which drive
-# comm-pipe-request.ps1 (PowerShell) instead, since git-bash cannot open a
-# named pipe itself.
+# A unix: endpoint needs nc -U; an ssh: endpoint goes through sot_ssh_bridge,
+# and a pipe: endpoint through comm-pipe-request.ps1 (PowerShell), since
+# git-bash cannot open a named pipe itself (nc_send below).
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
 # SOFT for `send` (see the file-first rule below): a target this box's
 # registry names is handed to comm-send.sh, which files it by its own route
@@ -97,8 +94,8 @@ case "$ENDPOINT" in
     *) echo "ERROR: bad endpoint '$ENDPOINT'" >&2; exit 1 ;;
 esac
 
-# Hello: the daemon reads each connection's first frame for the protocol version
-# and ignores its token field, so every connection below sends one first.
+# Hello: the daemon admits a connection only by its first frame, a hello it
+# accepts, and ignores its token field, so every connection below sends one first.
 # Token source: $SOT_TOKEN, else the 0600 token file in the (700) home. The
 # hello's reply is one more line on the wire: an accepted one is skipped, and a
 # refused one is read by the loop below (ADR 0049 `## User isolation`).
@@ -116,7 +113,7 @@ nc_send() {
         [ -f "$ps1" ] || {
             echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
         { printf '%s\n' "$hello"; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -File "$ps1" -PipeName "$EP_PIPE" -Mode Oneshot -Op agent.send -TimeoutSec 5
+            -File "$ps1" -PipeName "$EP_PIPE" -Op agent.send -TimeoutSec 5
         return
     fi
     if [ -n "$EP_SSH_TARGET" ]; then

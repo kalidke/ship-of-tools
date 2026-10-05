@@ -107,3 +107,23 @@ function Complete-LocalDaemonTest {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# agents\comm-pipe-request.ps1 as its own process, as the shell clients run it: $Lines on its stdin through a file, its
+# stdout and stderr to files, and a 20 s bound on the wait, so a transport that hangs fails its section with what it
+# wrote instead of stalling the job.
+function Invoke-PipeTransport([string]$Pipe, [string]$Op, [string[]]$Lines) {
+    $transport = Join-Path $repo 'agents\comm-pipe-request.ps1'
+    $base = Join-Path $root ('transport-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    [System.IO.File]::WriteAllText("$base.in", ($Lines -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
+    $argv = '-NoProfile -ExecutionPolicy Bypass -File "' + $transport + '" -PipeName ' + $Pipe + ' -Op ' + $Op + ' -TimeoutSec 10'
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $argv -RedirectStandardInput "$base.in" -RedirectStandardOutput "$base.out" -RedirectStandardError "$base.err" -WindowStyle Hidden -PassThru
+    $null = $proc.Handle   # Windows PowerShell 5.1 reads ExitCode as empty unless the handle was taken while the process ran
+    $hung = -not $proc.WaitForExit(20000)
+    if ($hung) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+    [pscustomobject]@{
+        Hung = $hung
+        Out  = @(Get-Content -LiteralPath "$base.out" -ErrorAction SilentlyContinue | Where-Object { $_ -ne '' })
+        Err  = (@(Get-Content -LiteralPath "$base.err" -ErrorAction SilentlyContinue) -join ' ')
+        Exit = $(if ($hung) { -1 } else { $proc.ExitCode })
+    }
+}

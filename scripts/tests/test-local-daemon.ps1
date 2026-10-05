@@ -251,30 +251,25 @@ try {
         try {
         $out5c = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5c -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         Check '5c: the daemon starts' (Wait-Pipe $pipe5c) "pipe never opened; log: $out5c"
-        $transport = Join-Path $PSScriptRoot '..\..\agents\comm-pipe-request.ps1'
         $sid5c = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         $host5c = ConvertTo-SotJsonString (Get-SotHelloHost)
         $request5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{}}'
         $old5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":2,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
         $new5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
-        function Invoke-Transport5c([string[]]$Lines) {
-            $ErrorActionPreference = 'Continue'
-            $script:out5c = @($Lines | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport -PipeName $pipe5c -Mode Oneshot -Op version.query -TimeoutSec 10 2>$null)
-            $script:exit5c = $LASTEXITCODE
-        }
-        Invoke-Transport5c @($old5c, $request5c)
-        $refused5c = $script:out5c
-        $refusedExit5c = $script:exit5c
+        $r5c = Invoke-PipeTransport $pipe5c version.query @($old5c, $request5c)
+        Check '5c: the transport ends on its own after a refused hello' (-not $r5c.Hung) "still running after 20 s; stdout: $($r5c.Out -join ' | ') stderr: $($r5c.Err)"
+        $refused5c = $r5c.Out
+        $refusedExit5c = $r5c.Exit
         Check '5c: a refused hello prints exactly its own reply' ($refused5c.Count -eq 1) "got $($refused5c.Count) lines: $($refused5c -join ' | ')"
         if ($refused5c.Count -eq 1) {
             $reply5c = $refused5c[0] | ConvertFrom-Json
             Check '5c: the reply is the hello refusal, with the daemon''s code' (($reply5c.op -eq 'hello') -and ($reply5c.payload.code -eq 'protocol_mismatch')) "reply was: $($refused5c[0])"
         }
         Check '5c: a refused hello exits 1' ($refusedExit5c -eq 1) "got $refusedExit5c"
-        Invoke-Transport5c @($new5c, $request5c)
-        $served5c = $script:out5c
-        $servedExit5c = $script:exit5c
-        Check '5c: an accepted hello gets the request answered' (($served5c.Count -eq 1) -and (($served5c[0] | ConvertFrom-Json).op -eq 'version.query')) "got: $($served5c -join ' | ')"
+        $r5c = Invoke-PipeTransport $pipe5c version.query @($new5c, $request5c)
+        $served5c = $r5c.Out
+        $servedExit5c = $r5c.Exit
+        Check '5c: an accepted hello gets the request answered' ((-not $r5c.Hung) -and ($served5c.Count -eq 1) -and (($served5c[0] | ConvertFrom-Json).op -eq 'version.query')) "hung: $($r5c.Hung) stdout: $($served5c -join ' | ') stderr: $($r5c.Err)"
         Check '5c: an accepted hello exits 0' ($servedExit5c -eq 0) "got $servedExit5c"
         } finally {
             $stop5c = & $script -Stop -Prefix $p3 -PipeName $pipe5c 6>&1 2>&1
@@ -441,25 +436,8 @@ try {
         # The fake answers the hello with FAKE_SOTD_HELLO_REFUSAL as its code and then still answers fe.lease. A refusal
         # for the protocol is followed by the request's own reply, which decides (exit 0); any other code ends the script
         # at once (exit 1), the lease reply that would follow never read.
-        $transport8d = Join-Path $PSScriptRoot '..\..\agents\comm-pipe-request.ps1'
         $hello8d = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":"t-host","os_user":"t-account","role":"cli"}}'
         $lease8d = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{}}'
-        # The transport runs as its own process with files for its three streams and a bound on the wait, so a transport
-        # that hangs fails this section with what it wrote instead of stalling the job.
-        function Invoke-Transport8d([string]$Pipe) {
-            $in8d = Join-Path $root "t8d-$Pipe.in"
-            $outf8d = Join-Path $root "t8d-$Pipe.out"
-            $errf8d = Join-Path $root "t8d-$Pipe.err"
-            [System.IO.File]::WriteAllText($in8d, (@($hello8d, $lease8d) -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
-            $argv8d = '-NoProfile -ExecutionPolicy Bypass -File "' + $transport8d + '" -PipeName ' + $Pipe + ' -Mode Oneshot -Op fe.lease -TimeoutSec 10'
-            $proc8d = Start-Process -FilePath 'powershell.exe' -ArgumentList $argv8d -RedirectStandardInput $in8d -RedirectStandardOutput $outf8d -RedirectStandardError $errf8d -WindowStyle Hidden -PassThru
-            $null = $proc8d.Handle   # Windows PowerShell 5.1 reads ExitCode as empty unless the handle was taken while the process ran
-            $script:hung8d = -not $proc8d.WaitForExit(20000)
-            if ($script:hung8d) { Stop-Process -Id $proc8d.Id -Force -ErrorAction SilentlyContinue }
-            $script:out8d = @(Get-Content -LiteralPath $outf8d -ErrorAction SilentlyContinue | Where-Object { $_ -ne '' })
-            $script:err8d = (@(Get-Content -LiteralPath $errf8d -ErrorAction SilentlyContinue) -join ' ')
-            $script:exit8d = if ($script:hung8d) { -1 } else { $proc8d.ExitCode }
-        }
         foreach ($code8d in @('protocol_mismatch', 'os_user_conflict')) {
             Clear-FakeEnv
             $env:FAKE_SOTD_HELLO_REFUSAL = $code8d
@@ -469,36 +447,20 @@ try {
             $fake8d = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe8d)) -WindowStyle Hidden -PassThru
             try {
                 Check "8d ($code8d): the fake pipe is up" (Wait-Pipe $pipe8d) 'pipe never answered'
-                # A plain client first (the shape the launcher's lease uses): shows the fake answers, whatever the transport does.
-                $plain8d = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe8d, [System.IO.Pipes.PipeDirection]::InOut)
-                $plainLines8d = @()
-                try {
-                    $plain8d.Connect(3000)
-                    $plainBytes8d = (New-Object System.Text.UTF8Encoding($false)).GetBytes($hello8d + "`n" + $lease8d + "`n")
-                    $plain8d.Write($plainBytes8d, 0, $plainBytes8d.Length)
-                    $plain8d.Flush()
-                    $plainReader8d = New-Object System.IO.StreamReader($plain8d, (New-Object System.Text.UTF8Encoding($false)), $false, 1024, $true)
-                    for ($i8d = 0; $i8d -lt 2; $i8d++) {
-                        $t8d = $plainReader8d.ReadLineAsync()
-                        if (-not $t8d.Wait(3000)) { break }
-                        $plainLines8d += $t8d.Result
-                    }
-                } catch { $plainLines8d += "error: $($_.Exception.Message)" } finally { $plain8d.Dispose() }
-                Check "8d ($code8d): the fake answers a plain client with the hello's reply and the lease's" ($plainLines8d.Count -eq 2) "got: $($plainLines8d -join ' | ')"
-                Invoke-Transport8d $pipe8d
+                $r8d = Invoke-PipeTransport $pipe8d fe.lease @($hello8d, $lease8d)
                 $fakeSaw8d = (@(Get-Content -LiteralPath $fakeLog8d -ErrorAction SilentlyContinue) -join ' | ')
-                Check "8d ($code8d): the transport ends on its own" (-not $script:hung8d) "still running after 20 s; stdout: $($script:out8d -join ' | ') stderr: $($script:err8d) fake saw: $fakeSaw8d"
+                Check "8d ($code8d): the transport ends on its own" (-not $r8d.Hung) "still running after 20 s; stdout: $($r8d.Out -join ' | ') stderr: $($r8d.Err) fake saw: $fakeSaw8d"
                 $first8d = $null
-                if ($script:out8d.Count -ge 1) { $first8d = $script:out8d[0] | ConvertFrom-Json }
-                Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($script:out8d -join ' | ')"
+                if ($r8d.Out.Count -ge 1) { $first8d = $r8d.Out[0] | ConvertFrom-Json }
+                Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($r8d.Out -join ' | ')"
                 if ($code8d -eq 'protocol_mismatch') {
                     $second8d = $null
-                    if ($script:out8d.Count -eq 2) { $second8d = $script:out8d[1] | ConvertFrom-Json }
-                    Check "8d ($code8d): the request's own reply follows, and decides" (($null -ne $second8d) -and ($second8d.op -eq 'fe.lease')) "stdout: $($script:out8d -join ' | ')"
-                    Check "8d ($code8d): exit 0" ($script:exit8d -eq 0) "got $($script:exit8d)"
+                    if ($r8d.Out.Count -eq 2) { $second8d = $r8d.Out[1] | ConvertFrom-Json }
+                    Check "8d ($code8d): the request's own reply follows, and decides" (($null -ne $second8d) -and ($second8d.op -eq 'fe.lease')) "stdout: $($r8d.Out -join ' | ')"
+                    Check "8d ($code8d): exit 0" ($r8d.Exit -eq 0) "got $($r8d.Exit)"
                 } else {
-                    Check "8d ($code8d): nothing else is printed" ($script:out8d.Count -eq 1) "stdout: $($script:out8d -join ' | ')"
-                    Check "8d ($code8d): exit 1" ($script:exit8d -eq 1) "got $($script:exit8d)"
+                    Check "8d ($code8d): nothing else is printed" ($r8d.Out.Count -eq 1) "stdout: $($r8d.Out -join ' | ')"
+                    Check "8d ($code8d): exit 1" ($r8d.Exit -eq 1) "got $($r8d.Exit)"
                 }
             } finally {
                 if ($fake8d -and -not $fake8d.HasExited) { Stop-Process -Id $fake8d.Id -Force -ErrorAction SilentlyContinue }

@@ -599,7 +599,7 @@ sot_oneshot_request() {
                 rm -f "${tmp:?}"; return 1; }
             _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
                 | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-                    -File "$ps1" -PipeName "$pipename" -Mode Oneshot -Op "$op" -TimeoutSec "$timeout_s" \
+                    -File "$ps1" -PipeName "$pipename" -Op "$op" -TimeoutSec "$timeout_s" \
                     > "$tmp" 2>/dev/null &
             ncpid=$!
             ;;
