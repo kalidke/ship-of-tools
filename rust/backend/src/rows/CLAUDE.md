@@ -25,6 +25,10 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 - Re-inserting a slug keeps its workspace id and takes every other field from the new row (`Workspaces::insert`).
 - Handle, account and agent change in place on the shared `Arc`, never through a replacing `insert`, so a destroyed row
   is not brought back (`set_agent_handle`, `set_account`, `reset_agent_to_none`).
+- No two rows hold one declared handle. At run time `set_agent_handle` clears it from every other row under the
+  registry's write lock and returns their ids for the caller to save; at boot `store::scan_disk` keeps a handle that
+  several tomls declare only on the row the comm registry names as its last joiner, if it is one of them
+  (`clear_shared_handles`).
 - `capsule_guard` returns a guard only for a registered row and creates it under the registry's write lock, so two
   first callers never mint two guards; `remove_by_id` drops it with the row, cancels and aborts the row's observer,
   and clears the default id if it was the removed row.

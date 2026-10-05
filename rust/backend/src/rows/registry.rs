@@ -243,6 +243,51 @@ impl Workspaces {
         Some((ws, moved))
     }
 
+    /// Boot's side of one row per handle (ADR 0049): every non-empty
+    /// declared handle that two or more rows hold stays only on the row
+    /// `keep(handle)` names (a workspace id) and is cleared on the rest; a
+    /// `keep` that names none of them clears it on all. `keep` runs with
+    /// no lock held; the clears run under the registry's write lock, like
+    /// [`set_agent_handle`](Self::set_agent_handle)'s. Returns each such
+    /// handle with the rows it was cleared on, for the caller to save.
+    pub(crate) fn clear_shared_handles(
+        &self,
+        keep: impl Fn(&str) -> Option<String>,
+    ) -> Vec<(String, Vec<Arc<Workspace>>)> {
+        let mut by_handle: std::collections::BTreeMap<String, Vec<Arc<Workspace>>> = Default::default();
+        for ws in self.list() {
+            let h = ws.agent_handle();
+            if !h.is_empty() {
+                by_handle.entry(h).or_default().push(ws);
+            }
+        }
+        let shared: Vec<(String, Vec<Arc<Workspace>>, Option<String>)> = by_handle
+            .into_iter()
+            .filter(|(_, rows)| rows.len() > 1)
+            .map(|(h, rows)| {
+                let kept = keep(&h);
+                (h, rows, kept)
+            })
+            .collect();
+        let _g = self.inner.write().expect("workspaces lock");
+        let mut out = Vec::new();
+        for (handle, rows, kept) in shared {
+            let mut cleared = Vec::new();
+            for ws in rows {
+                if kept.as_deref() == Some(ws.workspace_id.as_str()) {
+                    continue;
+                }
+                let mut cell = ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
+                if *cell == handle {
+                    cell.clear();
+                    cleared.push(ws.clone());
+                }
+            }
+            out.push((handle, cleared));
+        }
+        out
+    }
+
     /// Record which account this row's agent runs as (ADR 0046 decision
     /// 6, `workspace.reauth`), in place on the SHARED `Arc` exactly like
     /// [`set_agent_handle`](Self::set_agent_handle) — the row keeps its

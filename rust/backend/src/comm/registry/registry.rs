@@ -198,6 +198,15 @@ pub(crate) fn entry_row(entry: &serde_json::Value) -> Option<&str> {
     entry.get("workspace_id").and_then(|v| v.as_str()).filter(|id| !id.is_empty())
 }
 
+/// The row whose session last joined `handle` on `host`: the registry entry's
+/// `workspace_id` (`entry_row`), if the entry is this host's. `None` when there
+/// is no registry, no entry, another host's entry or no row id in it.
+pub(crate) fn last_joiner(handle: &str, host: &str) -> Option<String> {
+    let agents = read_comm_agents()?;
+    let entry = agents.get(handle).filter(|e| host_matches(e, host))?;
+    entry_row(entry).map(str::to_string)
+}
+
 /// Which sot-comm registry row is workspace `ws`'s? THE ONE place that
 /// answers this — `handle_workspace_list` (the FE's `state`/`summary`
 /// merge), `clear_comm_unread` (ADR 0044's read-clears-blue) and `comm.file`'s

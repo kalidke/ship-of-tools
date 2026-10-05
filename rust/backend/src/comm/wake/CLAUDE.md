@@ -17,7 +17,8 @@ backend; charter: comm/CLAUDE.md.
 ## Rules
 - The wake only reads `inbox/<h>.jsonl` and `read/<h>.cursor`.
 - "Last woken" lives in the tick's memory, so after a restart each row with unread mail is woken once.
-- Every TICK (2 s), `run` checks each capsule row with a declared handle; two rows declaring one handle: neither is woken.
+- Every TICK (2 s), `run` checks each capsule row with a declared handle; a handle is declared on one row only
+  (`set_agent_handle`, `scan_disk`).
 - `check_row` wakes only a Ready row with fresh mail, or mail unread past REPEAT_AFTER (600 s) (`decide`); a row owed an
   Enter (`Woken::enter_owed`) is instead sent Enter alone, fresh mail or not, until REPEAT_AFTER (`Decision::Complete`). It skips a row
   whose registry `stop_at` mark is under STOP_HOOK_BOUND (60 s) old (`stop_hook_running`).

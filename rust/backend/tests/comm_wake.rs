@@ -467,6 +467,56 @@ async fn a_newer_join_moves_the_handle_and_only_the_newer_row_is_woken() {
     row.env.kill_daemon_bounded().await;
 }
 
+/// Two tomls declaring one handle (a crash or a failed save between a join's two saves): at boot the handle stays
+/// only on the row the comm registry names as its last joiner, so the wake reaches that row alone.
+#[tokio::test]
+async fn two_tomls_on_one_handle_keep_it_on_the_last_joiner_at_boot() {
+    let _serial = SERIAL.lock().await;
+    let mut row = start("cwt", None, false).await;
+    let second = add_row(&mut row, "wake-row-2", "wakeh2", "second").await;
+    row.env.kill_daemon_bounded().await;
+    let dir = row.env.app_config_dir().join(format!("workspaces-{TEST_STATE_HOST}"));
+    let mut rewritten = 0;
+    for entry in std::fs::read_dir(&dir).expect("read the toml dir").flatten() {
+        let text = std::fs::read_to_string(entry.path()).unwrap();
+        if text.contains("\"wakeh2\"") {
+            std::fs::write(entry.path(), text.replace("\"wakeh2\"", &format!("\"{HANDLE}\""))).unwrap();
+            rewritten += 1;
+        }
+    }
+    assert_eq!(rewritten, 1, "the second row's toml must be the one rewritten");
+    set_entry(&row.env, serde_json::json!({ "host": TEST_STATE_HOST, "workspace_id": second }));
+    row.env.spawn_sotd_with_prepended_path(&row.stub_dir);
+    let (mut conn, mut next_id) = connect_and_hello(&row.env.socket_path).await;
+    for ws in [&row.ws, &second] {
+        poll_for_phase(&mut conn, &mut next_id, ws, "ready", BOUND.max(Duration::from_secs(60))).await;
+    }
+    let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    next_id += 1;
+    assert_eq!(find_row(&payload, &row.ws).expect("first row")["agent_handle"], "", "the older row kept the handle");
+    assert_eq!(find_row(&payload, &second).expect("second row")["agent_handle"], HANDLE);
+    let warning = "two row tomls declare one handle";
+    let hits: Vec<String> = daemon_log(&row.env).lines().filter(|l| l.contains(warning)).map(str::to_string).collect();
+    assert_eq!(hits.len(), 1, "the boot warning must appear once: {hits:?}");
+    assert!(hits[0].contains(HANDLE), "the warning must name the handle: {}", hits[0]);
+    // The harness's connection is the restarted daemon's: reuse it for the screens.
+    row.conn = conn;
+    row.next_id = next_id;
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no row was woken");
+    tokio::time::sleep(THREE_TICKS).await;
+    assert_eq!(pings(&row.log), 1, "the wake did not reach exactly one row");
+    assert!(!row.screen_has("[sot-comm]").await, "the older row was typed into");
+    let id = row.next_id;
+    row.next_id += 1;
+    let res = call(&mut row.conn, id, op::PTY_SCREEN, serde_json::json!({ "workspace_id": second })).await;
+    assert!(
+        res.payload["lines"].as_array().expect("lines").iter().any(|l| l.as_str().unwrap_or_default().contains("[sot-comm]")),
+        "the second row was not the one woken"
+    );
+    row.env.kill_daemon_bounded().await;
+}
+
 /// A row whose agent has exited holds unread mail: the wake types nothing and
 /// never restarts it. Nothing on the wake path restarts a row; this guards the
 /// outcome.
