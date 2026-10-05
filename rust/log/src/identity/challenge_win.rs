@@ -197,8 +197,8 @@ pub fn creation_filetime_bits(handle: HANDLE) -> std::io::Result<u64> {
 ///
 /// `access` is the process right step 2 asks for: the full challenge's
 /// mask ([`CHALLENGE_ACCESS`]), or only the query right a token read needs
-/// ([`pipe_server_is_own`]).
-fn authenticate_steps_1_to_3(
+/// ([`QUERY_ACCESS`], what `connect_own::own_pipe` asks for).
+pub(crate) fn authenticate_steps_1_to_3(
     pipe: HANDLE,
     access: u32,
 ) -> ChallengeOutcome<(OwnedHandle, u32)> {
@@ -237,6 +237,10 @@ fn authenticate_steps_1_to_3(
 /// The process rights the full challenge holds on the server it proves:
 /// the invalid-mgmt kill, the creation-time read, the death wait.
 const CHALLENGE_ACCESS: u32 = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+
+/// The one process right a token read needs: what `connect_own::own_pipe` asks for, where no kill, wait or reply-bound
+/// proof is wanted.
+pub(crate) const QUERY_ACCESS: u32 = PROCESS_QUERY_LIMITED_INFORMATION;
 
 /// The five pinned steps (ADR 0041 Lifecycle "The challenge"), in order:
 /// (1) read the server pid `P` via `GetNamedPipeServerProcessId`; (2)
@@ -340,16 +344,5 @@ pub fn authenticate_server(conn: &dyn PipeChallengeable) -> PeerAuthOutcome {
                 Err(_) => PeerAuthOutcome::Undetermined,
             }
         }
-    }
-}
-
-/// Steps 1-3 on a connected client pipe handle, asking only for the right a token read needs. No wire I/O, no
-/// `GetProcessTimes`, nothing retained: only whether the serving process runs as this account. The rule
-/// `crate::identity::connect_own::own_pipe` applies to every client of this box's daemon pipe.
-pub fn pipe_server_is_own(pipe: HANDLE) -> ChallengeOutcome<()> {
-    match authenticate_steps_1_to_3(pipe, PROCESS_QUERY_LIMITED_INFORMATION) {
-        ChallengeOutcome::Proven(_) => ChallengeOutcome::Proven(()),
-        ChallengeOutcome::Foreign => ChallengeOutcome::Foreign,
-        ChallengeOutcome::Undetermined => ChallengeOutcome::Undetermined,
     }
 }

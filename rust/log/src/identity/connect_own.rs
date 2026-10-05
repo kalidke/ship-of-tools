@@ -8,7 +8,7 @@ use crate::host::state_dir::is_private_dir;
 #[cfg(windows)]
 use crate::identity::challenge::ChallengeOutcome;
 #[cfg(windows)]
-use crate::identity::challenge_win::{pipe_server_is_own, PipeChallengeable};
+use crate::identity::challenge_win::{authenticate_steps_1_to_3, PipeChallengeable, QUERY_ACCESS};
 use crate::lane::transport::TransportError;
 
 /// Unix: refuse `path` unless its folder is a private folder of this OS account (`is_private_dir`). Runs before the
@@ -34,12 +34,13 @@ pub fn own_socket(path: &Path) -> std::io::Result<()> {
 }
 
 /// Windows: refuse the connected client end `pipe` unless the process serving it runs as this OS account
-/// (`pipe_server_is_own`). Runs before the first byte is written.
+/// (steps 1-3 of the challenge, `authenticate_steps_1_to_3`). Runs before the first byte is written.
 #[cfg(windows)]
 pub fn own_pipe(pipe: std::os::windows::io::BorrowedHandle<'_>, path: &Path) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
-    let why = match pipe_server_is_own(pipe.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE) {
-        ChallengeOutcome::Proven(()) => return Ok(()),
+    // Steps 1-3 only: no wire I/O, and the process handle they open is dropped at once.
+    let why = match authenticate_steps_1_to_3(pipe.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE, QUERY_ACCESS) {
+        ChallengeOutcome::Proven(_) => return Ok(()),
         ChallengeOutcome::Foreign => "another OS account serves this pipe",
         // An OS call that fails never admits.
         ChallengeOutcome::Undetermined => "cannot tell which OS account serves this pipe",
