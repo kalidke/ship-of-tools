@@ -13,7 +13,8 @@ computer's sessions end (ADR 0050).
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `Held`,
-  `ChildGuard`, `fire`, `fired`, `live_children`; contain.rs `Tree`, `prepare`, `adopt`, `exited`, `exited_pid`.
+  `ChildGuard`, `fire`, `fired`, `live_children`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`, `exited`,
+  `exited_pid`.
 - The bounds and exit codes in `sot_protocol::ops::lease`.
 - The window's half, rust/frontend/src/lease.rs.
 
@@ -37,6 +38,8 @@ computer's sessions end (ADR 0050).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
   releases or drops it or the signal fires; its leader is reaped only after that kill (`Contained::wait`,
   `Held::release`; `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
+- `main` resets `SIGCHLD` to its default before anything else (`reset_child_signal`), so an ignored one inherited from the
+  parent cannot make the kernel reap a contained leader early.
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections

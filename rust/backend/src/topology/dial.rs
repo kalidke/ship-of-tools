@@ -40,9 +40,8 @@ enum Conn {
 /// `split()` spawns and is only ever READ here, never waited for: a
 /// `read_to_string` on the child's stderr returns when EVERY write end of
 /// that pipe is closed, and killing this child closes none of the ends its
-/// own children inherited -- an operator's `ControlMaster`/`ControlPersist`
-/// or `ProxyCommand` entry applies even though the argv here sets none of
-/// them, and the mux master or proxy child then holds the pipe open. So the
+/// own children inherited -- an operator's `ProxyCommand` entry applies,
+/// and the proxy child then holds the pipe open. So the
 /// error path used to hang where it now reports (round-3 blocker), and a
 /// hang is strictly worse than a poor message.
 struct ChildGuard {
