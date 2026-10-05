@@ -79,7 +79,7 @@ impl Drop for Tree {
 /// number stays its own until its owner reaps it. With `block` this waits
 /// for the exit.
 #[cfg(unix)]
-pub(crate) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
+pub(super) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
     let options = libc::WEXITED | libc::WNOWAIT | if block { 0 } else { libc::WNOHANG };
     loop {
         // SAFETY: a zeroed siginfo_t is a valid out-parameter; waitid only writes it.

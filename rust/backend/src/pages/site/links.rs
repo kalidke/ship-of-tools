@@ -137,25 +137,12 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
         let _ = se.read_to_end(&mut v);
         v
     });
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        match c.exited(false) {
-            Ok(true) => break,
-            Ok(false) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10))
-            }
-            Ok(false) => {
-                let _ = c.kill();
-                return Err((false, "timed out after 10 s".into()));
-            }
-            Err(e) => {
-                let _ = c.kill();
-                return Err((false, e.to_string()));
-            }
-        }
-    }
     // Whatever git started dies with it, before the pipes are joined and the child is reaped.
-    let status = c.wait().map_err(|e| (false, e.to_string()))?;
+    let status = match c.wait_within(Duration::from_secs(10)) {
+        Ok(Some(status)) => status,
+        Ok(None) => return Err((false, "timed out after 10 s".into())),
+        Err(e) => return Err((false, e.to_string())),
+    };
     let out = t_out.join().unwrap_or_default();
     let err = t_err.join().unwrap_or_default();
     if status.success() {

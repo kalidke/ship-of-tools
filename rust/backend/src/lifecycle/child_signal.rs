@@ -1,5 +1,5 @@
 //! child_signal.rs — the one process-wide `fired` flag every child owner
-//! selects on, because `kill_on_drop` does not run at `process::exit`.
+//! selects on, because no drop runs at `process::exit`.
 //! [`Signal::spawn`] and [`Signal::spawn_std`] start a child in its own
 //! containment, and [`Contained`] and [`ContainedStd`] own it: firing the
 //! signal, or killing, waiting for or dropping either, ends the child and
@@ -95,7 +95,6 @@ impl Signal {
         #[cfg(unix)]
         let sigchld = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
         crate::lifecycle::contain::prepare(cmd.as_std_mut());
-        cmd.kill_on_drop(true);
         #[allow(clippy::disallowed_methods, reason = "the containment's own start: contain::prepare ran before it, and adopt and hold follow (ADR 0050, Shutdown)")]
         let mut child = cmd.spawn()?;
         let tree = match crate::lifecycle::contain::adopt(
@@ -153,6 +152,7 @@ impl Signal {
                 stderr: child.stderr.take(),
                 held,
                 child,
+                reaped: None,
             }),
             Err(e) => {
                 let _ = child.kill();
@@ -277,12 +277,18 @@ pub(crate) struct ContainedStd {
     pub(crate) stderr: Option<std::process::ChildStderr>,
     held: Held,
     child: std::process::Child,
+    /// The status of the reap, once `wait` or `kill` has done it: the pid is free from then on, so nothing asks the
+    /// kernel about it again.
+    reaped: Option<std::process::ExitStatus>,
 }
 
 impl ContainedStd {
     /// Whether the leader has exited, seen unreaped (without freeing its pid
     /// on Unix); with `block` this waits for the exit.
     pub(crate) fn exited(&mut self, block: bool) -> std::io::Result<bool> {
+        if self.reaped.is_some() {
+            return Ok(true);
+        }
         crate::lifecycle::contain::exited(&mut self.child, block)
     }
 
@@ -290,19 +296,49 @@ impl ContainedStd {
     /// descendant that holds the child's pipes open is killed too. The tree
     /// is killed and the child reaped even if seeing the exit failed.
     pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        if let Some(status) = self.reaped {
+            return Ok(status);
+        }
         let seen = self.exited(true);
         self.held.release();
         let status = self.child.wait();
+        self.reaped = status.as_ref().ok().copied();
         seen?;
         status
     }
 
-    /// Kill the tree, then the child, and reap it. Idempotent: once the tree
-    /// is released and the child reaped it does nothing but return the status.
+    /// Kill the tree, then the child, and reap it. Idempotent: once the child
+    /// is reaped it touches neither the tree nor the child and returns the status.
     pub(crate) fn kill(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        if let Some(status) = self.reaped {
+            return Ok(status);
+        }
         self.held.release();
         let _ = self.child.kill();
-        self.child.wait()
+        let status = self.child.wait();
+        self.reaped = status.as_ref().ok().copied();
+        status
+    }
+
+    /// [`wait`](Self::wait), bounded: polls for the leader's exit every 10 ms. At the exit it returns the status; when
+    /// `bound` passes it kills the tree, reaps the child and returns `None`; on a probe error it does the same and
+    /// returns the error.
+    pub(crate) fn wait_within(&mut self, bound: std::time::Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let deadline = std::time::Instant::now() + bound;
+        loop {
+            match self.exited(false) {
+                Ok(true) => return self.wait().map(Some),
+                Ok(false) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Ok(false) => {
+                    let _ = self.kill();
+                    return Ok(None);
+                }
+                Err(e) => {
+                    let _ = self.kill();
+                    return Err(e);
+                }
+            }
+        }
     }
 
     #[cfg(all(test, unix))]
@@ -321,12 +357,20 @@ impl Drop for ContainedStd {
 /// makes the kernel reap every child at its exit, so a contained leader
 /// would not stay a zombie holding its pid, and the pid is its group's
 /// number: the invariant is that a contained leader stays a zombie until its
-/// tree is killed. Called first thing in the daemon's `main`.
+/// tree is killed. It also unblocks `SIGCHLD` in the calling thread:
+/// `Contained::wait` learns of an exit from the signal, and a mask the parent
+/// blocked would hide it. `main` calls it on the main thread, which lives as
+/// long as the daemon. Called first thing in the daemon's `main`.
 #[cfg(unix)]
 pub(crate) fn reset_child_signal() {
-    // SAFETY: setting a disposition to SIG_DFL runs no handler code.
+    // SAFETY: setting a disposition to SIG_DFL runs no handler code, and the mask call only edits this thread's mask
+    // with a set built in place.
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGCHLD);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
     }
 }
 
@@ -530,7 +574,6 @@ pub(crate) mod tests {
     #[cfg(unix)]
     #[test]
     fn a_one_shot_takes_its_tree_after_it_exits() {
-        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         one_shot_takes_its_tree_after_it_exits();
     }
 
@@ -564,5 +607,97 @@ pub(crate) mod tests {
         unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) };
         reset_child_signal();
         one_shot_takes_its_tree_after_it_exits();
+    }
+
+    /// A parent that started the daemon with `SIGCHLD` blocked would hide every exit from `Contained::wait`, which
+    /// learns of one from the signal; the startup reset unblocks it. The mask is the starting thread's and survives
+    /// exec, so the scenario runs in a re-executed copy of this test binary whose parent blocked it.
+    #[cfg(unix)]
+    #[test]
+    fn a_blocked_sigchld_is_unblocked_at_startup() {
+        use std::os::unix::process::CommandExt;
+        let name = "lifecycle::child_signal::tests::blocked_sigchld_scenario";
+        let mut cmd = std::process::Command::new(std::env::current_exe().expect("current_exe"));
+        cmd.args(["--exact", name, "--test-threads=1", "--nocapture"]).env("SOT_TEST_SIGCHLD_BLOCKED", "1");
+        // SAFETY: only sigprocmask on a set built in place, which is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(|| {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGCHLD);
+                if libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let out = cmd.output().expect("re-execute the test binary");
+        let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "the child run failed:\n{text}");
+        assert!(text.contains(&format!("test {name} ... ok")), "the scenario did not run:\n{text}");
+    }
+
+    /// The re-executed half of `a_blocked_sigchld_is_unblocked_at_startup`; it does nothing in an ordinary run.
+    #[cfg(unix)]
+    #[test]
+    fn blocked_sigchld_scenario() {
+        if std::env::var_os("SOT_TEST_SIGCHLD_BLOCKED").is_none() {
+            return;
+        }
+        reset_child_signal();
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        rt.block_on(async {
+            let mut cmd = tokio::process::Command::new("sleep");
+            cmd.arg("1");
+            let mut contained = signal.spawn(&mut cmd).expect("spawn");
+            let status = tokio::time::timeout(Duration::from_secs(10), contained.wait())
+                .await
+                .expect("the wait never saw the leader's exit")
+                .expect("wait");
+            assert!(status.success());
+        });
+    }
+
+    /// Once a `ContainedStd` has reaped its child it answers from the reap: the freed pid is never probed again.
+    #[cfg(unix)]
+    #[test]
+    fn a_reaped_child_answers_from_its_reap() {
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("3112");
+        let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
+        let status = c.kill().expect("kill");
+        assert!(c.exited(false).expect("exited after the reap"), "a reaped child is not seen as exited");
+        assert_eq!(c.wait().expect("wait after the reap"), status);
+        assert_eq!(c.kill().expect("kill after the reap"), status);
+    }
+
+    /// A bounded wait returns the status of a child that exits in time.
+    #[cfg(unix)]
+    #[test]
+    fn wait_within_returns_a_prompt_exit() {
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "exit 3"]);
+        let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
+        let status = c.wait_within(Duration::from_secs(10)).expect("wait_within").expect("the child exited in time");
+        assert_eq!(status.code(), Some(3));
+    }
+
+    /// A child past its bound is ended with its tree, reaped, and counted out.
+    #[cfg(unix)]
+    #[test]
+    fn wait_within_ends_a_child_past_its_bound() {
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("3113");
+        let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
+        let pid = Leftover::of_pid(c.id() as i32);
+        assert!(c.wait_within(Duration::from_millis(200)).expect("wait_within").is_none(), "a child past its bound was waited for");
+        assert!(signal.held_groups().is_empty(), "the tree is still held");
+        drop(c);
+        assert_eq!(signal.live(), 0);
+        assert!(pid.gone(), "the child survived its bound");
     }
 }

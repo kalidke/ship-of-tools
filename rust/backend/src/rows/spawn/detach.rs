@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use sot_log::supervisor::StartMode;
 #[cfg(target_os = "linux")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::process::{Child, Command};
 
 /// `sot-capsule supervise`'s own `--first-leg-without --continue`, passed
@@ -360,21 +360,12 @@ fn user_scope_available() -> std::io::Result<()> {
         .stderr(Stdio::piped());
     // Contained like every process the daemon starts: the tree dies with the probe, and the leader is reaped only after that.
     let mut c = crate::lifecycle::child_signal::process().spawn_std(&mut command)?;
-    let deadline = Instant::now() + USER_SCOPE_PROBE_BOUND;
-    loop {
-        if c.exited(false)? {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = c.kill();
-            return Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                format!("systemd-run --user --scope did not answer within {USER_SCOPE_PROBE_BOUND:?}"),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let status = c.wait()?;
+    let Some(status) = c.wait_within(USER_SCOPE_PROBE_BOUND)? else {
+        return Err(std::io::Error::new(
+            ErrorKind::TimedOut,
+            format!("systemd-run --user --scope did not answer within {USER_SCOPE_PROBE_BOUND:?}"),
+        ));
+    };
     if status.success() {
         return Ok(());
     }

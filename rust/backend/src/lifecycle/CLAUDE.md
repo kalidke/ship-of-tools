@@ -41,8 +41,10 @@ computer's sessions end (ADR 0050).
   kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
   `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
-- `main` resets `SIGCHLD` to its default before anything else (`reset_child_signal`), so an ignored one inherited from the
-  parent cannot make the kernel reap a contained leader early.
+- `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
+  so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
+  keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a
+  thread to reach.
 - No Rust code in the workspace starts a process except through `Signal::spawn`, `Signal::spawn_std` or
   `Signal::output`, or at a start whose `#[allow(clippy::disallowed_methods)]` gives its reason: rust.yml's
   "Disallowed methods" step fails on any other (`rust/clippy.toml`, the process-spawns group). The rule cannot see a
