@@ -2,7 +2,6 @@
 
 use super::*;
 use serde_json::{json, Value};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// A `julia` stand-in speaking the shim's line protocol: it logs each request line, then acts on the code or path text.
@@ -177,8 +176,7 @@ async fn repl_execute_reports_are_unchanged() {
     let resources = dir.join("resources");
     std::fs::create_dir_all(resources.join("julia").join("repl")).unwrap();
     let julia = dir.join("julia");
-    std::fs::write(&julia, STUB).unwrap();
-    std::fs::set_permissions(&julia, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sot_log::test_exec::write_executable(&julia, STUB);
     let log = dir.join("julia.log");
     let _pin = pin_env(&julia, &resources);
 

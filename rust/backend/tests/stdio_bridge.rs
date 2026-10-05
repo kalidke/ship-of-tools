@@ -33,13 +33,12 @@ mod support;
 
 use std::io::{BufRead, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::path::Path;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use support::sotd_exe;
 #[cfg(target_os = "linux")]
 use support::{Env, TEST_STATE_HOST};
 
@@ -111,7 +110,7 @@ const BOUND: Duration = Duration::from_secs(20);
 const PAYLOAD: &[u8] = b"one\ntwo\r\nthree\rfour\x00\xff\nfive\r\n";
 
 fn spawn_bridge(args: &[&str]) -> Child {
-    let mut cmd = Command::new(sotd_exe());
+    let mut cmd = support::sotd_command();
     cmd.arg("stdio-bridge");
     for a in args {
         cmd.arg(a);
@@ -282,7 +281,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     // refuses to start there is one line saying so, and the wait below
     // has no other way to report why nothing ever bound.
     let daemon_stderr = env._tmp.path().join("sotd.stderr");
-    let daemon = Command::new(sotd_exe())
+    let daemon = support::sotd_command()
         .arg("--label")
         .arg(label)
         .arg("--project-root")
@@ -386,7 +385,7 @@ fn lease_through_stdio_bridge_refused() {
     let hosts_toml = env._tmp.path().join("hosts.toml");
     std::fs::write(&hosts_toml, format!("hub = \"{TEST_STATE_HOST}\"\n\n[host.{TEST_STATE_HOST}]\ndaemon = true\n")).expect("write hosts.toml");
     let daemon_stderr = env._tmp.path().join("sotd.stderr");
-    let daemon = Command::new(sotd_exe())
+    let daemon = support::sotd_command()
         .arg("--label")
         .arg(label)
         .arg("--project-root")

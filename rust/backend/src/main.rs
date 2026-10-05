@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use sot_log::secret::RedactingWriter;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 /// Restrict default file-creation permissions to owner-only (security
 /// review): without this, every file sotd creates — its own log, the
@@ -132,14 +133,11 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
     Some(Arc::new(Mutex::new(file)))
 }
 
-/// The daemon's log: events at the `RUST_LOG` level (default `info`), each masked of page secrets
+/// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
 /// (`sot_log::secret`) and written, without colour codes, through `TeeWriter` to stdout and the private file.
-fn log_subscriber(file: Option<Arc<Mutex<std::fs::File>>>) -> impl tracing::Subscriber + Send + Sync {
+fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<std::fs::File>>>) -> impl tracing::Subscriber + Send + Sync {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(filter)
         .with_ansi(false)
         .with_writer(move || RedactingWriter(TeeWriter { file: file.clone() }))
         .finish()
@@ -388,7 +386,8 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    log_subscriber(open_private_log_file()).init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    log_subscriber(filter, open_private_log_file()).init();
 
     let opts = parse_args().context("parsing command-line arguments")?;
 
@@ -543,11 +542,10 @@ mod log_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sotd.log");
         let file = std::fs::File::create(&path).unwrap();
-        let subscriber = log_subscriber(Some(Arc::new(Mutex::new(file))));
+        let subscriber = log_subscriber(EnvFilter::new("trace"), Some(Arc::new(Mutex::new(file))));
         let token = "0123456789abcdef0123456789abcdef";
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
-        });
+        let _log = sot_log::test_log::install(subscriber);
+        tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");
         assert!(!written.contains(token), "the token reached the file: {written}");

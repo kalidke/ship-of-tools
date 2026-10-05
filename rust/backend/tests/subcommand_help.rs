@@ -6,8 +6,11 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
+
+#[path = "support/sotd.rs"]
+mod sotd;
 
 fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     for e in std::fs::read_dir(dir).unwrap() {
@@ -35,14 +38,12 @@ fn make_env(tmp: &Path) {
     std::fs::set_permissions(tmp.join("run"), std::fs::Permissions::from_mode(0o700)).unwrap();
     for tool in ["ssh", "systemctl"] {
         let p = tmp.join("fakebin").join(tool);
-        std::fs::write(&p, format!("#!/bin/sh\ntouch {}/DIALED\nexit 1\n", tmp.display())).unwrap();
-        #[cfg(unix)]
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&p, format!("#!/bin/sh\ntouch {}/DIALED\nexit 1\n", tmp.display()));
     }
 }
 
 fn sotd_help<S: AsRef<std::ffi::OsStr>>(tmp: &Path, args: &[S]) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_sotd"))
+    let mut child = sotd::sotd_command()
         .args(args)
         .env_clear()
         .env("HOME", tmp.join("home"))

@@ -75,12 +75,10 @@ pub(super) fn home_with(default_logged_in: bool, named: &[(&str, bool)]) -> temp
 /// nothing and needs no fixture.
 #[cfg(unix)]
 pub(super) fn seed_claude_binary(home: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     let bin = home.join(".local/bin");
     std::fs::create_dir_all(&bin).unwrap();
     let claude = bin.join("claude");
-    std::fs::write(&claude, b"#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sot_log::test_exec::write_executable(&claude, b"#!/bin/sh\nexit 0\n");
 }
 #[cfg(windows)]
 pub(super) fn seed_claude_binary(_home: &Path) {}

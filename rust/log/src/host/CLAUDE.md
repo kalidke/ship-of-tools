@@ -31,9 +31,7 @@ workspace's bottom crate: every other Rust crate can reach it and it reaches non
   (`publish_noreplace`, `finish_publication`).
 - A lock is kernel-held: a dropped guard unlocks it at once (`WriterLock`'s Drop), the kernel releases it on any death, and no exec'd child holds it; a contended one fails within `RETRY_DEADLINE_MS` as "lock held"
   (`lock_writer`).
-- The workspace takes kernel file locks in two files: `lock.rs` here and the backend's
-  `rust/backend/src/comm/mail/inbox.rs` (`take_lock`); `every_kernel_file_lock_is_taken_in_a_listed_file` pins the
-  list.
+- Kernel file locks are taken only inside two guards whose `Drop` unlocks: `WriterLock` in `lock.rs` here and `InboxLock` in the backend's `rust/backend/src/comm/mail/inbox.rs`. rust/clippy.toml disallows `File`'s lock methods and `libc::flock` everywhere else.
 - The challenge's OS steps precede its wire steps and every step is bounded (`identity/`).
 
 ## Connections

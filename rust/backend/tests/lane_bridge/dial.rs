@@ -319,10 +319,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 fn stub_ssh_relaying_to(dir: &Path, addr: SocketAddr) {
     let script = format!("#!/bin/sh\nexec nc {} {}\n", addr.ip(), addr.port());
     let path = dir.join("ssh");
-    std::fs::write(&path, script).expect("write stub ssh");
-    let mut perms = std::fs::metadata(&path).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&path, perms).expect("chmod stub ssh");
+    sot_log::test_exec::write_executable(&path, script);
 }
 
 /// The dying twin: exits nonzero before ever touching a socket, with one
@@ -331,10 +328,7 @@ fn stub_ssh_relaying_to(dir: &Path, addr: SocketAddr) {
 fn stub_ssh_dying_with(dir: &Path, stderr_line: &str) {
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
-    std::fs::write(&path, script).expect("write dying stub ssh");
-    let mut perms = std::fs::metadata(&path).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&path, perms).expect("chmod dying stub ssh");
+    sot_log::test_exec::write_executable(&path, script);
 }
 
 /// Prepends `dir` to this PROCESS's `$PATH` — global, like the `SERIAL`

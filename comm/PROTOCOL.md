@@ -18,7 +18,7 @@ all clients are mutually addressable through the same registry and inboxes.
   registry.json.tmp        # a registry write's temp file, renamed over registry.json
   registry.json.new.<pid>.<n>  # the skeleton ensure_home links into place when there is no registry
   .registry.lock           # the registry-write lock: a file naming its holder (below)
-  .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever, but a daemon's own
+  .registry.lock.reclaim.<id>  # one marker per holder a waiter proved dead; kept forever, but a daemon's own
   .registry.lock.tmp.<id>      # a take's temp file, removed by the take
   inbox-lock-manager       # the hub daemon's record of the inbox lock's mount, written at boot
   .inbox-lock-manager.<id>.<pid>.<n>  # that record's temp file

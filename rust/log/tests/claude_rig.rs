@@ -12,7 +12,6 @@ use sot_log::claude::{run, ClaudeConfig, Fence, OperatorCmd};
 use sot_log::store::segment::{RetentionClass, SegmentReader};
 use sot_log::store::verify::verify_voyage;
 use sot_log::{Class, RefKind};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -117,11 +116,7 @@ done
         other => panic!("unknown scenario {other}"),
     };
     let path = dir.join(format!("fake-helper-{scenario}.sh"));
-    let mut f = std::fs::File::create(&path).unwrap();
-    f.write_all(body.as_bytes()).unwrap();
-    drop(f);
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sot_log::test_exec::write_executable(&path, body);
     path
 }
 

@@ -75,17 +75,14 @@ impl Staged {
         serde_json::from_slice(&std::fs::read(self.env.comm_root.join("registry.json")).expect("registry")).expect("registry json")
     }
 
-    /// Adds registry entries (host `testhost`, the given `last_seen`), tmp file then rename, with no lock. Every caller
-    /// writes before any row exists, and every registry write the daemon makes follows a row event (a stamp for a row it
-    /// runs, the destroy prune, the clear on activate), so nothing races this read-modify-write.
+    /// Adds registry entries (host `testhost`, the given `last_seen`) under the registry lock, as the daemon's own
+    /// registry writes take it.
     fn add_entries(&self, entries: &[(&str, String)]) {
-        let mut reg = self.registry();
-        for (handle, last_seen) in entries {
-            reg["agents"][*handle] = serde_json::json!({"host": TEST_STATE_HOST, "last_seen": last_seen});
-        }
-        let tmp = self.env.comm_root.join("registry.json.m4tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&reg).unwrap()).expect("write registry");
-        std::fs::rename(&tmp, self.env.comm_root.join("registry.json")).expect("rename registry");
+        support::write_registry(&self.env.comm_root, |reg| {
+            for (handle, last_seen) in entries {
+                reg["agents"][*handle] = serde_json::json!({"host": TEST_STATE_HOST, "last_seen": last_seen});
+            }
+        });
     }
 }
 
@@ -127,11 +124,8 @@ fn a_send_to_a_handle_no_live_session_holds_is_failed_and_appends_nothing() {
 
 /// A stub `claude` that stays up: the row it backs is Ready for as long as the daemon runs it.
 fn write_sleeping_claude(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
-    let claude = dir.join("claude");
-    std::fs::write(&claude, "#!/bin/sh\nexec sleep 600\n").expect("write stub claude");
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).expect("chmod stub claude");
+    sot_log::test_exec::write_executable(&dir.join("claude"), "#!/bin/sh\nexec sleep 600\n");
 }
 
 /// An idle row's handle has a stale entry. Its daemon stamps `last_seen` while the row runs, so a send

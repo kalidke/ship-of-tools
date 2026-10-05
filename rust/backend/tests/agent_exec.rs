@@ -12,13 +12,10 @@
 //! given flags land in order, before the bootstrap skill) and a nesting
 //! env var (so scrubbing is provably real, not merely undocumented).
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::Command;
 
-fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
-}
+#[path = "support/sotd.rs"]
+mod sotd;
 
 /// A `claude` stub at `<home>/.local/bin/claude` — found ONLY via
 /// `resolve_claude`'s HOME-derived fallback (the proof's own PATH never
@@ -31,7 +28,7 @@ fn seed_printing_claude_stub(home: &std::path::Path) -> PathBuf {
     let dir = home.join(".local").join("bin");
     std::fs::create_dir_all(&dir).expect("mkdir ~/.local/bin");
     let claude = dir.join("claude");
-    std::fs::write(
+    sot_log::test_exec::write_executable(
         &claude,
         b"#!/bin/sh\n\
           echo \"ARGV0=$0\"\n\
@@ -42,10 +39,7 @@ fn seed_printing_claude_stub(home: &std::path::Path) -> PathBuf {
           done\n\
           echo \"CLAUDECODE=${CLAUDECODE:-<unset>}\"\n\
           echo \"PATH=$PATH\"\n",
-    )
-    .expect("write fake claude stub");
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod fake claude stub");
+    );
     claude
 }
 
@@ -64,7 +58,7 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
     let home = tempfile::tempdir().expect("tempdir");
     let claude = seed_printing_claude_stub(home.path());
 
-    let out = Command::new(sotd_exe())
+    let out = sotd::sotd_command()
         .arg("agent-exec")
         .arg("claude")
         .arg("--x")
@@ -123,7 +117,7 @@ fn agent_exec_claude_resolves_scrubs_and_execs_with_no_continue() {
 /// explicitly asked for.
 #[test]
 fn agent_exec_unknown_kind_exits_2() {
-    let out = Command::new(sotd_exe())
+    let out = sotd::sotd_command()
         .arg("agent-exec")
         .arg("bogus")
         .env_clear()

@@ -48,7 +48,7 @@ impl Env {
             std::fs::set_permissions(runtime_tmp.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
         }
         let socket_path = runtime_tmp.path().join(format!("wire-{tag}.sock"));
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sotd"));
+        let mut cmd = support::sotd_command();
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -142,9 +142,7 @@ fn write_stub_ssh(dir: &Path, hub_socket: &Path, count: &Path) {
         s = hub_socket.display()
     );
     let path = dir.join("ssh");
-    std::fs::write(&path, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sot_log::test_exec::write_executable(&path, script);
 }
 
 fn inbox_lines(env: &Env, h: &str) -> Vec<serde_json::Value> {
@@ -171,7 +169,7 @@ async fn the_daemon_files_for_its_own_folder_over_a_link_that_restarts() {
         "live": {"host": "win-b", "last_seen": now_iso(0)},
         "stale": {"host": "win-b", "last_seen": now_iso(-100_000)},
     }});
-    std::fs::write(guest.comm_root.join("registry.json"), registry.to_string()).unwrap();
+    support::write_registry(&guest.comm_root, |doc| *doc = registry);
 
     // The link comes up after the daemon does: send until a receipt arrives.
     let mut n = 0;

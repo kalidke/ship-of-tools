@@ -96,12 +96,11 @@ mod tests {
             .with_ansi(false)
             .with_writer(move || RedactingWriter(sink.try_clone().unwrap()))
             .finish();
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::error!(
-                token = %token,
-                "open http://127.0.0.1:1234/edit?secret=Ab12Cd34&id=1 {padding}"
-            );
-        });
+        let _log = crate::test_log::install(subscriber);
+        tracing::error!(
+            token = %token,
+            "open http://127.0.0.1:1234/edit?secret=Ab12Cd34&id=1 {padding}"
+        );
         let mut written = String::new();
         let mut file = file;
         std::io::Seek::rewind(&mut file).unwrap();

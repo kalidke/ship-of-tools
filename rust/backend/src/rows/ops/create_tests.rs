@@ -213,36 +213,23 @@ mod refusal_tests {
         w
     }
 
-    /// Pins the two folders `rows::store::save` and the state root resolve under to the test's own folder, under the
-    /// crate-wide env lock, and restores them on drop.
+    /// Pins the three folders the config and state roots resolve under (the two XDG ones, and the Windows local-app-data
+    /// one) to the test's own folder, under the crate-wide env lock; the guards restore them before the lock drops.
     struct EnvPinned {
+        _guards: [crate::paths::EnvGuard; 3],
         _serial: std::sync::MutexGuard<'static, ()>,
-        config: Option<std::ffi::OsString>,
-        state: Option<std::ffi::OsString>,
     }
 
     impl EnvPinned {
         fn new(dir: &Path) -> Self {
             let serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let pinned = EnvPinned {
-                _serial: serial,
-                config: std::env::var_os("XDG_CONFIG_HOME"),
-                state: std::env::var_os("XDG_STATE_HOME"),
-            };
+            let guards = ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "LOCALAPPDATA"].map(crate::paths::EnvGuard::capture);
             std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
             std::env::set_var("XDG_STATE_HOME", dir.join("state"));
-            pinned
-        }
-    }
-
-    impl Drop for EnvPinned {
-        fn drop(&mut self) {
-            for (key, val) in [("XDG_CONFIG_HOME", &self.config), ("XDG_STATE_HOME", &self.state)] {
-                match val {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
+            std::env::set_var("LOCALAPPDATA", dir.join("local"));
+            let (state, config) = (crate::paths::state_dir(), crate::rows::store::app_config_dir());
+            assert!(state.starts_with(dir) && config.starts_with(dir), "the pin missed a root: {state:?}, {config:?}");
+            EnvPinned { _guards: guards, _serial: serial }
         }
     }
 

@@ -316,11 +316,9 @@ mod port_parse_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_pluto_child_during_the_ready_wait() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("stub-julia");
-        std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&stub, "#!/bin/sh\nexec sleep 30\n");
         let script = dir.path().join("start.jl");
         std::fs::write(&script, "").unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));

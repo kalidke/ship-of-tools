@@ -333,7 +333,6 @@ impl Repl {
 #[cfg(all(test, unix))]
 mod respawn_after_death_tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -352,15 +351,13 @@ mod respawn_after_death_tests {
 
     /// A `julia` stand-in that appends its argv to `log` and then runs `body`.
     fn write_stub(path: &Path, log: &Path, body: &str) {
-        std::fs::write(
+        sot_log::test_exec::write_executable(
             path,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}\n",
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
     }
 
     fn spawn_argv(log: &Path) -> Vec<String> {

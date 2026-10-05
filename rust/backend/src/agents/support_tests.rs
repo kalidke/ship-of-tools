@@ -24,7 +24,6 @@ pub(super) struct SelfFileEnvGuard {
     userprofile: Option<std::ffi::OsString>,
     sot_comm_home: Option<std::ffi::OsString>,
     sot_self_host: Option<std::ffi::OsString>,
-    path: Option<std::ffi::OsString>,
     /// Added for the auto-memory tests, which need it ABSENT (the daemon's
     /// own env carries none) or set to a fixture dir. Guarded here rather
     /// than saved and restored by hand at the call site, because a hand-
@@ -41,7 +40,6 @@ impl Drop for SelfFileEnvGuard {
             ("USERPROFILE", &self.userprofile),
             ("SOT_COMM_HOME", &self.sot_comm_home),
             ("SOT_SELF_HOST", &self.sot_self_host),
-            ("PATH", &self.path),
             ("CLAUDE_CONFIG_DIR", &self.claude_config_dir),
         ] {
             match val {
@@ -61,7 +59,6 @@ pub(super) fn self_file_env_guarded() -> SelfFileEnvGuard {
         userprofile: std::env::var_os("USERPROFILE"),
         sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
         sot_self_host: std::env::var_os("SOT_SELF_HOST"),
-        path: std::env::var_os("PATH"),
         claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR"),
         _serial: serial,
     }

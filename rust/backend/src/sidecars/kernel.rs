@@ -590,12 +590,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_kernel_child_and_never_respawns() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
         let stub = dir.path().join("stub-julia");
-        std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display()));
         let project = dir.path().join("kp");
         std::fs::create_dir(&project).unwrap();
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
@@ -603,10 +601,13 @@ mod tests {
         let (status, _keep) = watch::channel(Status::Starting);
         let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
         let began = std::time::Instant::now();
-        while sig.live() == 0 {
-            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
+        // The guard counts the child at its spawn, before the stub's first line has run; fire only once
+        // that line has written the counter, so the one-spawn precondition is true.
+        while std::fs::read_to_string(&counter).map_or(0, |s| s.lines().count()) == 0 {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never ran");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        assert!(sig.live() > 0, "the stub child exited before the fire");
         sig.fire();
         tokio::time::timeout(Duration::from_secs(3), task)
             .await

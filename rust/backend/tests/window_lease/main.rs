@@ -15,7 +15,7 @@ use sot_protocol::ops::{op, FeLeaseReq};
 use sot_protocol::{codec, Frame};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-use support::{call, connect_and_hello, find_row, poll_until, sotd_exe, try_connect, Conn, Env, TEST_STATE_HOST};
+use support::{call, connect_and_hello, find_row, poll_until, try_connect, Conn, Env, TEST_STATE_HOST};
 
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -32,7 +32,7 @@ fn state_dir(env: &Env) -> PathBuf {
 /// (the variables `Env::spawn_sotd` sets), owned by the test so its exit
 /// can be awaited.
 fn sotd_on(env: &Env, extra: &[(&str, &str)]) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(sotd_exe());
+    let mut cmd = tokio::process::Command::from(support::sotd_command());
     cmd.arg("--socket")
         .arg(&env.socket_path)
         .arg("--project-root")

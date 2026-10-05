@@ -57,8 +57,13 @@ pub fn resolve_shell(override_: Option<&str>) -> ResolvedShell {
 
 #[cfg(unix)]
 fn resolve_shell_auto() -> ResolvedShell {
-    // $SHELL is the authoritative user-preference on Unix.
-    if let Ok(shell) = std::env::var("SHELL") {
+    unix_shell(std::env::var("SHELL").ok().as_deref())
+}
+
+/// The Unix auto choice given the value of `$SHELL`, which is the authoritative user-preference.
+#[cfg(unix)]
+fn unix_shell(shell: Option<&str>) -> ResolvedShell {
+    if let Some(shell) = shell {
         let s = shell.trim().to_string();
         if !s.is_empty() {
             return ResolvedShell { program: s, args: vec![] };
@@ -568,15 +573,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolve_shell_unix_prefers_shell_env() {
-        // Temporarily set $SHELL and verify it is used.
-        let old = std::env::var_os("SHELL");
-        std::env::set_var("SHELL", "/bin/sh");
-        let s = resolve_shell(None);
-        // Restore before asserting so a failure doesn't leave state dirty.
-        match old {
-            Some(v) => std::env::set_var("SHELL", v),
-            None => std::env::remove_var("SHELL"),
-        }
-        assert_eq!(s.program, "/bin/sh");
+        assert_eq!(unix_shell(Some("/bin/sh")).program, "/bin/sh");
     }
 }
