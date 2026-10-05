@@ -33,9 +33,10 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
 - A registry entry's `workspace_id` is the row whose session last joined that handle (`comm-join.sh` writes it;
   `entry_row` reads it). The destroy prune (`remove_comm_agents_for_workspace`) removes an entry by the row's stored
   name only when the entry names no other row.
-- Every site that reads or writes a row's handle binding is listed in `binding_sites_tests.rs`;
-  `every_handle_binding_site_is_listed` fails on a site missing from the list or a listed site gone, and on a call of
-  the rule that passes no rows (`&[]`) outside tests.
+- Every site that reads or writes a row's handle binding is listed in `binding_sites_tests.rs` with the kinds of
+  binding it touches (the scan's needles). `every_handle_binding_site_is_listed` fails on a site or a kind missing from
+  the list or gone, and on a call of the rule with `&[]` before its first `)` outside tests; it does not see a second
+  binding of a kind a site already has, or an empty row list passed some other way.
 - `handle_agent_join` moves the declared handle (`set_agent_handle`) and answers `ok` only after the joining row is
   saved under its guard. Whatever that save did, a spawned task (`spawn_persist_moved`) then saves each row that lost
   the handle under that row's own guard, if it is still registered (`persist_moved`): the reply never waits on another

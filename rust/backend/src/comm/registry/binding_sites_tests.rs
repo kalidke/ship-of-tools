@@ -2,43 +2,44 @@
 
 use std::collections::BTreeSet;
 
-/// `(path under src/, site, what the site does with the binding)`. A site is the enclosing `fn` or `struct`.
-const SITES: &[(&str, &str, &str)] = &[
-    ("agents/env.rs", "capsule_supervisor_env", "pin: gives the session its stored name (`SOT_COMM_NAME`) and its self-file slot (`SOT_COMM_SELF_FILE`)"),
-    ("comm/mail/filer.rs", "file_comm", "rule: comm.file's running-row liveness through `running_row_holds`, with the daemon's rows"),
-    ("comm/mail/filer.rs", "running_row_holds", "rule: a running row holds `to` by `comm_handle_for_workspace`"),
-    ("comm/registry/join.rs", "join_row", "move: `set_agent_handle`"),
-    ("comm/registry/registry.rs", "clear_comm_unread", "rule: read-clears-done, by `comm_handle_for_workspace`"),
-    ("comm/registry/registry.rs", "comm_handle_for_workspace", "the rule: declared, else self-file, else stored name; a fallback another row declares binds nothing"),
-    ("comm/wake/mod.rs", "run", "declared: wakes each capsule row by its declared handle"),
-    ("lifecycle/shutdown.rs", "end_row", "prune: the stored name to `remove_comm_agents_for_workspace`"),
-    ("rows/anchor.rs", "end_default_row_run", "prune"),
-    ("rows/anchor.rs", "seed_default_row", "carry: the default row's stored name and declared handle into its boot re-seed"),
-    ("rows/mod.rs", "Workspace", "declared: the cell"),
-    ("rows/ops/create.rs", "handle_workspace_create", "pin: the requested stored name"),
-    ("rows/ops/create.rs", "resolve_create_agent", "pin: the requested stored name"),
-    ("rows/ops/create.rs", "start_created_capsule", "pin: the requested stored name"),
-    ("rows/ops/destroy.rs", "handle_workspace_destroy", "prune"),
-    ("rows/ops/lane_bridge.rs", "handle_lane_connect", "pin, at a start"),
-    ("rows/ops/list.rs", "handle_workspace_activate", "rule: `clear_comm_unread` with the daemon's rows"),
-    ("rows/ops/list.rs", "handle_workspace_list", "rule, the `agent_handle` field, and the stored-name display fallback of `agent_name`"),
-    ("rows/ops/pty.rs", "handle_pty_input", "pin, at a start"),
-    ("rows/ops/pty.rs", "handle_pty_screen", "pin, at a start"),
-    ("rows/ops/pty.rs", "start_on_attach", "pin, at a start"),
-    ("rows/reauth/restart.rs", "spawn_replacement", "pin, at a start"),
-    ("rows/registry.rs", "clear_shared_handles", "boot: a handle on several rows stays only on the row `keep` names"),
-    ("rows/registry.rs", "insert", "carry: a same-slug re-insert takes the new row's stored name and declared handle"),
-    ("rows/registry.rs", "set_agent_handle", "move"),
-    ("rows/run/resume.rs", "resume_all", "pin, at boot resume"),
-    ("rows/store/codec.rs", "strip_canonical_top_and_kernel", "persist: the toml keys the daemon owns"),
-    ("rows/store/mod.rs", "load_toml", "persist: loads the declared handle"),
-    ("rows/store/mod.rs", "save", "persist: writes both"),
-    ("rows/store/mod.rs", "scan_disk", "boot: `clear_shared_handles` with `last_joiner`"),
-    ("rows/workspace.rs", "agent_handle", "the reader of the declared handle"),
-    ("rows/workspace.rs", "agent_name", "the reader of the stored name"),
-    ("rows/workspace.rs", "fmt", "Debug"),
-    ("rows/workspace.rs", "meta_only", "the constructor"),
-    ("rows/workspace.rs", "reset_agent_in_place", "the clear of the stored name when a default row's run ends"),
+/// `(path under src/, site, the kinds of binding it touches (the scan's needles), what the site does with it)`. A
+/// site is the enclosing `fn` or `struct`.
+const SITES: &[(&str, &str, &[&str], &str)] = &[
+    ("agents/env.rs", "capsule_supervisor_env", &["SOT_COMM_NAME", "SOT_COMM_SELF_FILE"], "pin: gives the session its stored name (`SOT_COMM_NAME`) and its self-file slot (`SOT_COMM_SELF_FILE`)"),
+    ("comm/mail/filer.rs", "file_comm", &["running_row_holds("], "rule: comm.file's running-row liveness through `running_row_holds`, with the daemon's rows"),
+    ("comm/mail/filer.rs", "running_row_holds", &["comm_handle_for_workspace("], "rule: a running row holds `to` by `comm_handle_for_workspace`"),
+    ("comm/registry/join.rs", "join_row", &["set_agent_handle("], "move: `set_agent_handle`"),
+    ("comm/registry/registry.rs", "clear_comm_unread", &["comm_handle_for_workspace("], "rule: read-clears-done, by `comm_handle_for_workspace`"),
+    ("comm/registry/registry.rs", "comm_handle_for_workspace", &[".agent_name", "agent_handle", "capsule_comm_handle("], "the rule: declared, else self-file, else stored name; a fallback another row declares binds nothing"),
+    ("comm/wake/mod.rs", "run", &["agent_handle"], "declared: wakes each capsule row by its declared handle"),
+    ("lifecycle/shutdown.rs", "end_row", &[".agent_name", "remove_comm_agents_for_workspace("], "prune: the stored name to `remove_comm_agents_for_workspace`"),
+    ("rows/anchor.rs", "end_default_row_run", &["remove_comm_agents_for_workspace("], "prune"),
+    ("rows/anchor.rs", "seed_default_row", &[".agent_name", "agent_handle"], "carry: the default row's stored name and declared handle into its boot re-seed"),
+    ("rows/mod.rs", "Workspace", &["agent_handle"], "declared: the cell"),
+    ("rows/ops/create.rs", "handle_workspace_create", &[".agent_name"], "pin: the requested stored name"),
+    ("rows/ops/create.rs", "resolve_create_agent", &[".agent_name"], "pin: the requested stored name"),
+    ("rows/ops/create.rs", "start_created_capsule", &[".agent_name"], "pin: the requested stored name"),
+    ("rows/ops/destroy.rs", "handle_workspace_destroy", &[".agent_name", "remove_comm_agents_for_workspace("], "prune"),
+    ("rows/ops/lane_bridge.rs", "handle_lane_connect", &[".agent_name"], "pin, at a start"),
+    ("rows/ops/list.rs", "handle_workspace_activate", &["clear_comm_unread("], "rule: `clear_comm_unread` with the daemon's rows"),
+    ("rows/ops/list.rs", "handle_workspace_list", &[".agent_name", "agent_handle", "comm_handle_for_workspace("], "rule, the `agent_handle` field, and the stored-name display fallback of `agent_name`"),
+    ("rows/ops/pty.rs", "handle_pty_input", &[".agent_name"], "pin, at a start"),
+    ("rows/ops/pty.rs", "handle_pty_screen", &[".agent_name"], "pin, at a start"),
+    ("rows/ops/pty.rs", "start_on_attach", &[".agent_name"], "pin, at a start"),
+    ("rows/reauth/restart.rs", "spawn_replacement", &[".agent_name"], "pin, at a start"),
+    ("rows/registry.rs", "clear_shared_handles", &["agent_handle"], "boot: a handle on several rows stays only on the row `keep` names"),
+    ("rows/registry.rs", "insert", &[".agent_name", "agent_handle"], "carry: a same-slug re-insert takes the new row's stored name and declared handle"),
+    ("rows/registry.rs", "set_agent_handle", &["agent_handle"], "move"),
+    ("rows/run/resume.rs", "resume_all", &[".agent_name"], "pin, at boot resume"),
+    ("rows/store/codec.rs", "strip_canonical_top_and_kernel", &["agent_handle"], "persist: the toml keys the daemon owns"),
+    ("rows/store/mod.rs", "load_toml", &["agent_handle"], "persist: loads the declared handle"),
+    ("rows/store/mod.rs", "save", &[".agent_name", "agent_handle"], "persist: writes both"),
+    ("rows/store/mod.rs", "scan_disk", &["last_joiner("], "boot: `clear_shared_handles` with `last_joiner`"),
+    ("rows/workspace.rs", "agent_handle", &["agent_handle"], "the reader of the declared handle"),
+    ("rows/workspace.rs", "agent_name", &[".agent_name"], "the reader of the stored name"),
+    ("rows/workspace.rs", "fmt", &[".agent_name", "agent_handle"], "Debug"),
+    ("rows/workspace.rs", "meta_only", &["agent_handle"], "the constructor"),
+    ("rows/workspace.rs", "reset_agent_in_place", &[".agent_name"], "the clear of the stored name when a default row's run ends"),
 ];
 
 fn is_ident(c: Option<char>) -> bool {
@@ -104,17 +105,25 @@ fn scan() -> Vec<(String, String, &'static str, String)> {
 #[test]
 fn every_handle_binding_site_is_listed() {
     let found = scan();
-    let scanned: BTreeSet<(String, String)> = found.iter().map(|(p, s, _, _)| (p.clone(), s.clone())).collect();
-    let listed: BTreeSet<(String, String)> = SITES.iter().map(|(p, s, _)| (p.to_string(), s.to_string())).collect();
+    let scanned: BTreeSet<(String, String, String)> =
+        found.iter().map(|(p, s, n, _)| (p.clone(), s.clone(), n.to_string())).collect();
+    let listed: BTreeSet<(String, String, String)> = SITES
+        .iter()
+        .flat_map(|(p, s, ns, _)| ns.iter().map(move |n| (p.to_string(), s.to_string(), n.to_string())))
+        .collect();
     let how = "route it through `comm_handle_for_workspace(ws, rows)` or add it to this list with what it does";
     let added: Vec<_> = scanned.difference(&listed).collect();
     let missing: Vec<_> = listed.difference(&scanned).collect();
     let mut faults = Vec::new();
     if !added.is_empty() {
-        faults.push(format!("sites that read or write a handle binding and are not listed ({how}): {added:#?}"));
+        faults.push(format!(
+            "a site reads or writes a kind of binding the list does not give it, as (path, site, needle) ({how}): {added:#?}"
+        ));
     }
     if !missing.is_empty() {
-        faults.push(format!("listed sites the scan no longer finds (remove them from the list): {missing:#?}"));
+        faults.push(format!(
+            "a listed kind the scan no longer finds at that site, as (path, site, needle) (remove it from the list): {missing:#?}"
+        ));
     }
     for (path, site, needle, after) in &found {
         let rule_call = ["comm_handle_for_workspace(", "clear_comm_unread(", "running_row_holds("].contains(needle);
