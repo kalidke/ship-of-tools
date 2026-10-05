@@ -36,6 +36,42 @@ wire_send() {
     return 0
 }
 
+# On Windows `_sot_os_user` is the process token's user SID, read by the first of three probes (`whoami` called
+# directly, `whoami` through `cmd`, PowerShell) that prints one; a box where none does fails loudly and says what each
+# printed. Faked here with OS=Windows_NT and stubs first on PATH.
+case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one() {
+    local d="$WORK/sidfake" got err
+    sid_of() {  # <stubs...> -- run _sot_os_user with $d as the only probe dir
+        got="$(cd "$WORK" && PATH="$d:$PATH" OS=Windows_NT SOT_COMM_TEST_HOST="$HOST_PIN" bash -c '. "$1/comm-lib.sh"; _sot_os_user' _ "$SCRIPTS_DIR" 2>"$WORK/err.txt")" || true
+        err="$(cat "$WORK/err.txt")"
+    }
+    stub() {  # <name> <output...>
+        local n="$1"; shift
+        printf '#!/bin/sh\nprintf "%%s\\r\\n" %s\n' "$(printf "'%s' " "$@")" > "$d/$n"; chmod +x "$d/$n"
+    }
+    rm -rf "$d"; mkdir -p "$d"
+    stub whoami '"fakehost\\fakeuser","S-1-5-21-1-2-3-1001"'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1001" ] || { echo "  whoami probe: got '$got' ($err)"; return 1; }
+    rm -rf "$d"; mkdir -p "$d"
+    stub whoami 'not a sid'
+    stub cmd '"fakehost\\fakeuser","S-1-5-21-1-2-3-1002"'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1002" ] || { echo "  cmd probe: got '$got' ($err)"; return 1; }
+    rm -rf "$d"; mkdir -p "$d"
+    stub whoami 'not a sid'
+    stub cmd 'also not'
+    stub powershell.exe 'S-1-5-21-1-2-3-1003'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1003" ] || { echo "  powershell probe: got '$got' ($err)"; return 1; }
+    rm -rf "$d"; mkdir -p "$d"
+    stub whoami 'not a sid'
+    stub cmd 'also not'
+    stub powershell.exe 'nor this'
+    sid_of
+    [ -z "$got" ] || { echo "  no probe: got '$got'"; return 1; }
+    contains "$err" "no probe printed this process's user SID" && contains "$err" "[whoami: not a sid]" && contains "$err" "[cmd: also not]" \
+        && contains "$err" "_sot_os_user: this process's OS account is unreadable" || { echo "  err: $err"; return 1; }
+    return 0
+}
+
 # S4 — a directed wire send with no daemon found is that send's FAILED line.
 case_a_wire_send_with_no_daemon_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }

@@ -433,15 +433,40 @@ sot_json_escape() {
     printf '%s' "$1" | jq -Rs .
 }
 
+# _sot_windows_sid — the process token's user SID under git-bash, the value `own_account_id()` gives Rust on
+# Windows. Three probes in turn, the first that prints a SID wins: `whoami /user` called directly (MSYS must not
+# rewrite its `/user` style arguments as paths, hence MSYS2_ARG_CONV_EXCL), the same through `cmd`, and PowerShell's
+# WindowsIdentity. When none does, what each printed goes to stderr, so a runner or box where the account really
+# cannot be read says why.
+_sot_windows_sid() {
+    local probe out sid diag=""
+    for probe in whoami cmd powershell; do
+        case "$probe" in
+            whoami) out="$(MSYS2_ARG_CONV_EXCL='*' whoami /user /fo csv /nh 2>&1)" ;;
+            cmd) out="$(cmd //c "whoami /user /fo csv /nh" 2>&1)" ;;
+            powershell) out="$(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' 2>&1 </dev/null)" ;;
+        esac
+        out="$(printf '%s' "$out" | tr -d '\r')"
+        sid="$(printf '%s\n' "$out" | grep -oE 'S-1-[0-9]+(-[0-9]+)+' | tail -n 1)"
+        if [ -n "$sid" ]; then
+            printf '%s\n' "$sid"
+            return 0
+        fi
+        diag="$diag [$probe: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-120)]"
+    done
+    echo "_sot_windows_sid: no probe printed this process's user SID:$diag" >&2
+    return 1
+}
+
 # _sot_os_user — this shell's OS account as the operating system issued it, for the hello's `os_user` (ADR 0049
 # `## User isolation`; the same value `sot_log::identity::os_account::own_account_id()` gives the Rust builders):
-# `uid:<euid>` on Unix, the process token's user SID on Windows (git-bash: `whoami /user` through cmd). Cached in
+# `uid:<euid>` on Unix, the process token's user SID on Windows (`_sot_windows_sid`). Cached in
 # `_SOT_OS_USER`. Empty means unreadable: it fails, and no hello is sent. Never a name from the environment, and no
 # sotd call (an older installed sotd would break every send).
 _sot_os_user() {
     if [ -z "${_SOT_OS_USER:-}" ]; then
         if _sot_is_windows; then
-            _SOT_OS_USER="$(cmd //c "whoami /user /fo csv /nh" 2>/dev/null | tr -d '\r' | sed -n 's/^".*","\(S-[0-9-]*\)"$/\1/p')"
+            _SOT_OS_USER="$(_sot_windows_sid)"
         else
             _SOT_OS_USER="uid:$(id -u 2>/dev/null)"
             [ "$_SOT_OS_USER" = "uid:" ] && _SOT_OS_USER=""
