@@ -39,7 +39,9 @@ The owner asked for the fix as "agree on the one page comm system and then clean
 - **Waking** — every two seconds each daemon looks at every row it runs, and types one
   fixed line into a row with unread mail sitting at a free prompt — the cursor at the
   start of an empty input line; a dialog, menu, draft or working session is not free
-  and is never typed into. One line per batch, one more after ten minutes unread. A
+  and is never typed into. One line per batch, one more after ten minutes unread. A line
+  it typed that did not send is sent by a later tick, with Enter alone, once main's input
+  box holds just that line; it is never typed twice. A
   busy session needs no typing — its end-of-turn check will not let a turn finish with
   unread mail waiting. This is the only wake: no per-session watcher, listener, bridge
   or Monitor exists.

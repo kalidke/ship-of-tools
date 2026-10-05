@@ -559,3 +559,20 @@ async fn a_slow_echo_is_entered_in_the_same_attempt() {
     assert!(!daemon_log(&row.env).contains("did not show in main's input box"), "the wake gave up on the line");
     row.env.kill_daemon_bounded().await;
 }
+
+/// The typed line shows 8 s after the write, past OP_BUDGET and two ticks: the first attempt types it and sends no
+/// Enter, a later tick finds the box empty and does nothing, and the tick after the echo sends Enter alone. One ping,
+/// the line typed once, the "did not show" warning once.
+#[tokio::test]
+async fn a_wake_line_left_unsent_is_completed_by_the_next_tick() {
+    let _serial = SERIAL.lock().await;
+    let row = start_with("cwlu", None, false, &["echo-after=8"], &[]).await;
+    append_mail(&row.env, 1);
+    assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(pings(&row.log), 1);
+    assert_eq!(others(&row.log), 0, "the wake line was typed more than once");
+    let said = daemon_log(&row.env).matches("did not show in main's input box").count();
+    assert_eq!(said, 1, "the left line should be named once in the daemon log");
+    row.env.kill_daemon_bounded().await;
+}

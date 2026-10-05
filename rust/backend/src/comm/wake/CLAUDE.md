@@ -12,7 +12,7 @@ backend; charter: comm/CLAUDE.md.
 - `unread.rs`: how much mail is unread: the inbox against the cursor
 
 ## Start here
-`mod.rs` `check_row` for when a row is woken; `screen.rs` `refused_on` for what counts as a free prompt.
+`mod.rs` `check_row` for when a row is woken; `screen.rs` `prompt_of` for what counts as a free prompt.
 
 ## Rules
 - The wake only reads `inbox/<h>.jsonl` and `read/<h>.cursor`.
@@ -26,4 +26,5 @@ backend; charter: comm/CLAUDE.md.
   STILL_FOR (1.5 s), and the live screen must read free again.
 - After typing, `wake_if_free` waits up to OP_BUDGET (3 s) for `typed_refusal` to see the line alone in main's input
   box (`type_then_enter`); Enter goes only then.
-- A typed line counts as the wake whether or not Enter followed (`step_of`), so a batch is never typed twice.
+- A typed line counts as the wake and is never typed again for its batch; one left without Enter is sent, Enter alone,
+  by a later tick that finds it alone in main's input box (`decide`'s Complete, `Woken::enter_owed`).

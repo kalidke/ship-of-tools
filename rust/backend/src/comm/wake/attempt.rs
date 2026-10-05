@@ -1,7 +1,7 @@
 //! One wake attempt: attach, check the screen is a free prompt and holds still, type the line, wait for it, then Enter.
 
 use super::*;
-use super::screen::{free_test_lines, held_rows, wake_lines};
+use super::screen::{free_test_lines, held_rows, wake_lines, Prompt};
 use crate::rows::run::headless::{attach, checkpointed, send_enter, send_text, Client, HeadlessError, POLL_INTERVAL, SHUTDOWN_WAIT};
 
 /// What [`wake_if_free`] did.
@@ -34,9 +34,10 @@ pub(crate) fn unconfirmed(step: &'static str, e: HeadlessError) -> WakeOutcome {
 
 /// The comm wake's one attach (0031 B3): attach, checkpoint, test the
 /// screen on that same client with `is_free(lines, cursor, agent)` (the lines as
-/// [`free_test_lines`] reads them), and
+/// [`free_test_lines`] reads them; `None` refuses), and
 /// only then type `line` and, once the typed-line gate says it sits alone in main's input box (asked of the live
-/// screen until `op_budget` after the write), Enter ([`type_then_enter`]). A screen
+/// screen until `op_budget` after the write), Enter ([`type_then_enter`]). A box that already holds just the wake
+/// line (`Prompt::HoldsLine`, on the first frame and the live one) gets Enter alone and no second typing. A screen
 /// that is not free gets no hold (it still costs the attach); one that is
 /// must then hold identical (the cursor, and every row through the line
 /// under it) for `still_for`, else it is a working row and nothing is
@@ -47,7 +48,7 @@ pub fn wake_if_free(
     state_dir: &Path,
     controller_id: &str,
     line: &str,
-    is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> bool,
+    is_free: &dyn Fn(&[String], Option<(u16, u16)>, &str) -> Option<Prompt>,
     agent: &str,
     still_for: Duration,
     op_budget: Duration,
@@ -70,7 +71,8 @@ pub fn wake_if_free(
             }
         }
     };
-    let out = if !is_free(&seen, Some(cursor), agent) {
+    let first_prompt = is_free(&seen, Some(cursor), agent);
+    let out = if first_prompt.is_none() {
         Ok(WakeOutcome::NotFree)
     } else {
         mark("hold");
@@ -82,11 +84,18 @@ pub fn wake_if_free(
             still = client.screen().cursor_position() == cursor && held_rows(&wake_lines(client.screen()), cursor.0) == held_rows(&first, cursor.0);
         }
         // The live screen, not `seen`: the rows through the box can hold still while focus moves below them.
-        if still && is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) {
-            mark("final-ok");
-            Ok(type_then_enter(&mut client, line, agent, op_budget))
-        } else {
-            Ok(WakeOutcome::NotFree)
+        let live = if still { is_free(&free_test_lines(client.screen()), Some(client.screen().cursor_position()), agent) } else { None };
+        match live {
+            Some(prompt) if Some(prompt) == first_prompt => {
+                mark("final-ok");
+                if prompt == Prompt::HoldsLine {
+                    tracing::info!("comm wake: Enter for the wake line left in main's input box");
+                    Ok(wake_outcome(send_enter(&mut client, op_budget)))
+                } else {
+                    Ok(type_then_enter(&mut client, line, agent, op_budget))
+                }
+            }
+            _ => Ok(WakeOutcome::NotFree),
         }
     };
     client.shutdown(SHUTDOWN_WAIT);
@@ -140,7 +149,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_wake_without_a_lane_is_a_checkpoint_error() {
-        let free = |_: &[String], _: Option<(u16, u16)>, _: &str| true;
+        let free = |_: &[String], _: Option<(u16, u16)>, _: &str| Some(Prompt::Empty);
         let d = Duration::from_secs(5);
         let err = wake_if_free(Path::new("/nonexistent/sot-lu6c-test-state-dir"), "ctrl", "x", &free, "claude", d, d)
             .expect_err("no lane to wake");
