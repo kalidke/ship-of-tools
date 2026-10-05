@@ -107,12 +107,15 @@ fn no_secret_is_passed_as_a_command_line_argument() {
     );
 }
 
-/// The Rust listeners, as (file under rust/, name) of each `#[allow(clippy::disallowed_methods, reason = "listener: <name>:
-/// <guard>")]` on a statement that accepts or constructs a listener: the one TCP accept (`serve_own`), the daemon's
-/// session socket or pipe, and the capsule's lane socket and lane pipe. Another account can reach none of the last three (a private folder or an
-/// owner-only pipe), and `serve_own` checks the owner of every connection before a byte is read.
-const RUST_LISTENERS: [(&str, &str); 5] = [
+/// The Rust listeners' allowed statements, one entry per `#[allow(clippy::disallowed_methods, reason = "listener:
+/// <name>: <guard>")]` on a statement that accepts or constructs a listener, as (file under rust/, name): the one TCP
+/// accept (`serve_own`), the daemon's session socket or pipe (its constructor and its accept), and the capsule's lane
+/// socket and lane pipe (the pipe's accept and its constructor). Another account can reach none of the last three (a
+/// private folder or an owner-only pipe), and `serve_own` checks the owner of every connection before a byte is
+/// read. One entry per statement, so a second allowed accept in a listed file under a listed name fails too.
+const RUST_LISTENERS: [(&str, &str); 6] = [
     ("log/src/identity/peer_owner/mod.rs", "page (TCP)"),
+    ("backend/src/server/listen.rs", "session socket or pipe"),
     ("backend/src/server/listen.rs", "session socket or pipe"),
     ("log/src/lane/socket_unix/accept.rs", "capsule lane socket"),
     ("log/src/lane/pipe_win/accept.rs", "capsule lane pipe"),
@@ -124,8 +127,8 @@ const ACCEPT_MARKS: [&str; 8] =
     ["accept(", "incoming(", "ConnectNamedPipe(", "CreateNamedPipe", "create_tokio", "create_sync", "PipeListenerOptions", "ServerOptions"];
 
 /// ADR 0049, User isolation: every accept of the Rust processes is a listed listener. A statement under a
-/// `disallowed_methods` allow that accepts must be named `listener: <name>: <guard>` and be in `RUST_LISTENERS`, and the
-/// list holds no listener that is gone.
+/// `disallowed_methods` allow that accepts must be named `listener: <name>: <guard>` and be in `RUST_LISTENERS`, one
+/// entry per statement, and the list holds no listener that is gone.
 #[test]
 fn every_rust_listener_is_listed() {
     let source = production_source();
@@ -158,7 +161,6 @@ fn every_rust_listener_is_listed() {
     }
     assert!(unnamed.is_empty(), "an allowed accept without a `listener: <name>: <guard>` reason:\n{}", unnamed.join("\n"));
     found.sort();
-    found.dedup(); // a listener may have its constructor and its accept each under an allow
     let mut expected: Vec<(String, String)> =
         RUST_LISTENERS.iter().map(|(f, n)| (f.to_string(), n.to_string())).collect();
     expected.sort();
