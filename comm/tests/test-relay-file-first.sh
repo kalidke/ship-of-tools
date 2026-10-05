@@ -372,7 +372,8 @@ _stderr_text() {  # KIND
 # write_row_ssh_stub DIR COMMFILE RECEIPT ACK EXIT STDERR_KIND [RECEIVERS] [ID_MODE] [FILER]
 # -- a stub `ssh` (and the same script as `nc`, for a unix: endpoint) that says
 # exactly what one row asks for; each connection is one run of it. COMMFILE is
-# the hub's `comm.file` answer: ok, code, nocode, not_here, or none. The row is
+# the hub's `comm.file` answer: ok, code, nocode, not_here, or none. ACK is the
+# `agent.send` answer: yes (ok, with the roster), error, or no. The row is
 # baked into the script's own header (and its stderr text into a file beside
 # it, which keeps every quote in that text out of the generated script), so
 # the body below is one static template for all 54 rows. RECEIVERS is the
@@ -423,6 +424,8 @@ while IFS= read -r line; do
             id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
             if [ "$ack" = yes ]; then
                 printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":%s,"id":"%s"}}\n' "$receivers" "$id"
+            elif [ "$ack" = error ]; then
+                printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"error":"the daemon could not read this agent.send","code":"bad_request"}}\n'
             fi
             [ "$idmode" = wrong ] && id="$id-not-yours"
             if [ "$receipt" = yes ]; then
@@ -636,6 +639,25 @@ case_an_older_daemons_protocol_refusal_does_not_decide_a_broadcast() {
     return 0
 }
 
+# An ack that carries an error is the daemon's answer to the send and decides it, even behind an older daemon's protocol
+# refusal: the refusal is named only when nothing else decided.
+ACK_ERROR="the daemon could not read this agent.send"
+case_an_ack_with_an_error_decides_the_not_mine_leg() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" not_here no error 0 none
+    refuse_hello "$dir" protocol_mismatch
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  directed: exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: $ACK_ERROR" || { echo "  directed: stderr was '$RELAY_ERR', want the ack's words"; return 1; }
+    contains "$RELAY_ERR" "hello refused" && { echo "  directed: the refusal was named over the ack: '$RELAY_ERR'"; return 1; }
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send --all "to everyone"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  broadcast: exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: $ACK_ERROR" || { echo "  broadcast: stderr was '$RELAY_ERR', want the ack's words"; return 1; }
+    contains "$RELAY_ERR" "hello refused" && { echo "  broadcast: the refusal was named over the ack: '$RELAY_ERR'"; return 1; }
+    return 0
+}
+
 # A process that cannot name its OS account sends nothing, and says so: the builder's words, never "did not answer".
 UNREADABLE_ACCOUNT="_sot_os_user: this process's OS account is unreadable -- cannot declare an identity"
 case_an_unreadable_account_is_named_by_a_directed_send() {
@@ -678,6 +700,7 @@ check "a refused hello with nothing behind it is the verdict of a directed send,
 check "a refused hello with nothing behind it is the verdict of a broadcast, in the daemon's own words" case_a_refused_hello_is_the_verdict_for_a_broadcast
 check "an older daemon's protocol refusal does not decide a directed send: its answer does" case_an_older_daemons_protocol_refusal_does_not_decide_a_directed_send
 check "an older daemon's protocol refusal does not decide a broadcast: its answer does" case_an_older_daemons_protocol_refusal_does_not_decide_a_broadcast
+check "an ack that carries an error decides the not-mine leg, a directed send and a broadcast, over a protocol refusal" case_an_ack_with_an_error_decides_the_not_mine_leg
 check "an unreadable OS account is named by a directed send" case_an_unreadable_account_is_named_by_a_directed_send
 check "an unreadable OS account is named by a broadcast" case_an_unreadable_account_is_named_by_a_broadcast
 

@@ -445,13 +445,15 @@ and no receipt within 5 seconds gives `FAILED -> @h: nobody filed it within 5s: 
 anyone with no receipt within 5 seconds gives `NOT CONFIRMED: sent for @h;
 nobody claimed it within 5s. Attached: …`, the roster a diagnostic and never
 a verdict — so a handle no box knows gives `NOT CONFIRMED` whenever anything
-is attached; a refused hello with no ack and no receipt gives `FAILED -> @h:
-hello refused: <the daemon's own words>`; any other ack, or none, gives `FAILED -> @h: <reason>` when the
-transport failed with one to give, else `FAILED -> @h: the daemon did not
-answer at <endpoint>`. Every one of those but the receipt exits 1. A broadcast
-(`send --all`) still goes this way and prints `relayed -> <all> (<n>
-receiver(s)) via <endpoint>`, or `FAILED -> <all>: hello refused: <the daemon's own
-words>`. With no daemon found at all a wire send prints
+is attached; an ack that carries an error gives `FAILED -> @h: <its error>`; a
+refused hello, where no receipt came and no ack decided, gives `FAILED -> @h:
+hello refused: <the daemon's own words>`; any other ack, or none, gives
+`FAILED -> @h: <reason>` when the transport failed with one to give, else
+`FAILED -> @h: the daemon did not answer at <endpoint>`. Every one of those but
+the receipt exits 1. A broadcast (`send --all`) still goes this way and prints
+`relayed -> <all> (<n> receiver(s)) via <endpoint>`, `FAILED -> <all>: <the
+ack's error>` or `FAILED -> <all>: hello refused: <the daemon's own words>`.
+With no daemon found at all a wire send prints
 `FAILED -> @h: no sotd daemon found; …` and exits 1.
 
 Nothing is queued anywhere, and a failed send is not retried by another

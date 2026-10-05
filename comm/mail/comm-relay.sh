@@ -216,7 +216,7 @@ send_frame() {  # $1 to, $2 text
     #
     # The loop body runs in THIS shell (process substitution, never a pipe),
     # so the verdict variables below survive it.
-    local line op ack_ok=false ack_array=false
+    local line op ack_ok=false ack_array=false ack_error=""
     local rcpt_seen=false rcpt_filer="" hello_refused="" hello_code="" hello hello_why
     # The hello is built once, here, before any transport starts: a process that cannot name its host or OS account
     # sends nothing, and the builder's own words are the verdict.
@@ -246,6 +246,7 @@ send_frame() {  # $1 to, $2 text
                 if [ -n "$hello_refused" ] && [ "$hello_code" != protocol_mismatch ]; then break; fi
                 ;;
             agent.send)
+                ack_error="$(printf '%s' "$line" | sot_jq -r '.payload.error // empty' 2>/dev/null || true)"
                 # An EMPTY line must never pass as an ack: `jq -e` over zero
                 # input never sees a falsy last value and exits 0, which is
                 # how a missing socket once printed "relayed" (Codex review
@@ -284,8 +285,8 @@ send_frame() {  # $1 to, $2 text
     # THE VERDICT, decided in ONE place with ONE stated precedence:
     #
     #   1. this sender's own receipt -- the frame was appended;
-    #   2. the daemon's own ack -- what it said about the send;
-    #   2b. a refused hello -- the daemon's own words, where no ack came;
+    #   2. the daemon's own ack -- what it said about the send, an error it carries included;
+    #   2b. a refused hello -- the daemon's own words, where no receipt came and no ack decided;
     #   3. the bridge's reason -- consulted ONLY where 1 and 2 said nothing;
     #   4. the daemon did not answer.
     #
@@ -344,7 +345,16 @@ send_frame() {  # $1 to, $2 text
         echo "NOT CONFIRMED: sent for @$1; nobody claimed it within 5s. Attached: ${joined%, }." >&2
         return 1
     fi
-    # 2b. A refused hello and no ack: the daemon said no, in its own words.
+    # 2, its error: an ack that carries one is the daemon refusing the send, in its own words.
+    if [ -n "$ack_error" ]; then
+        if [ -z "$1" ]; then
+            echo "FAILED -> <all>: $ack_error" >&2
+        else
+            echo "FAILED -> @$1: $ack_error" >&2
+        fi
+        return 1
+    fi
+    # 2b. A refused hello, and nothing above decided: the daemon said no, in its own words.
     if [ -n "$hello_refused" ]; then
         if [ -z "$1" ]; then
             echo "FAILED -> <all>: hello refused: $hello_refused" >&2
