@@ -119,3 +119,52 @@ impl Frame {
         self
     }
 }
+
+#[cfg(test)]
+mod client_wire_tests {
+    use std::process::Command;
+
+    /// The bash a shell client runs under: Git Bash on Windows, `bash` elsewhere. `None` only where Git Bash is
+    /// missing and no CI is running; in CI a missing bash fails the test.
+    fn bash() -> Option<std::path::PathBuf> {
+        if !cfg!(windows) {
+            return Some("bash".into());
+        }
+        let found = std::env::var_os("ProgramFiles")
+            .map(|p| std::path::PathBuf::from(p).join("Git").join("bin").join("bash.exe"))
+            .filter(|p| p.exists());
+        assert!(found.is_some() || std::env::var_os("CI").is_none(), "CI has no Git Bash at %ProgramFiles%\\Git\\bin\\bash.exe");
+        found
+    }
+
+    /// ADR 0049 `## User isolation`: a hello names the OS account its process runs as, and two accounts on one
+    /// host are told apart by that string, so every client must write the same one. The Rust builders use
+    /// `own_account_id()`; the shell client reads `_sot_os_user`, the launcher's PowerShell the process token's
+    /// user SID. This runs the other two and holds each to the first, on whichever OS runs the test.
+    #[test]
+    fn every_client_declares_the_same_account() {
+        let own = sot_log::identity::os_account::own_account_id().expect("the OS issues this process's account");
+        if let Some(bash) = bash() {
+            let lib = format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
+            let scratch = std::env::temp_dir().join(format!("sot-protocol-os-user-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).expect("scratch home");
+            let out = Command::new(bash)
+                .args(["-c", &format!(". '{lib}' && _sot_os_user")])
+                .env("HOME", &scratch)
+                .env("SOT_COMM_HOME", scratch.join(".sot-comm"))
+                .output()
+                .expect("run bash");
+            let _ = std::fs::remove_dir_all(&scratch);
+            assert!(out.status.success(), "_sot_os_user failed: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), own, "the shell client's account");
+        }
+        #[cfg(windows)]
+        {
+            let out = Command::new("powershell")
+                .args(["-NoProfile", "-Command", "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"])
+                .output()
+                .expect("run powershell");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), own, "the launcher's account");
+        }
+    }
+}

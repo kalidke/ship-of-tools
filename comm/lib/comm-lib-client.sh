@@ -433,6 +433,27 @@ sot_json_escape() {
     printf '%s' "$1" | jq -Rs .
 }
 
+# _sot_os_user — this shell's OS account as the operating system issued it, for the hello's `os_user` (ADR 0049
+# `## User isolation`; the same value `sot_log::identity::os_account::own_account_id()` gives the Rust builders):
+# `uid:<euid>` on Unix, the process token's user SID on Windows (git-bash: `whoami /user` through cmd). Cached in
+# `_SOT_OS_USER`. Empty means unreadable: it fails, and no hello is sent. Never a name from the environment, and no
+# sotd call (an older installed sotd would break every send).
+_sot_os_user() {
+    if [ -z "${_SOT_OS_USER:-}" ]; then
+        if _sot_is_windows; then
+            _SOT_OS_USER="$(cmd //c "whoami /user /fo csv /nh" 2>/dev/null | tr -d '\r' | sed -n 's/^".*","\(S-[0-9-]*\)"$/\1/p')"
+        else
+            _SOT_OS_USER="uid:$(id -u 2>/dev/null)"
+            [ "$_SOT_OS_USER" = "uid:" ] && _SOT_OS_USER=""
+        fi
+    fi
+    if [ -z "$_SOT_OS_USER" ]; then
+        echo "_sot_os_user: this process's OS account is unreadable -- cannot declare an identity" >&2
+        return 1
+    fi
+    printf '%s\n' "$_SOT_OS_USER"
+}
+
 # sot_hello_frame — the ONE hello frame every comm script sends
 # before any other op (ADR 0046 decision 1: a connection declares
 # `{host, role, name}` once, and the daemon binds it — never recomputed

@@ -9,7 +9,7 @@ messaging; charter: comm/CLAUDE.md.
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
 - `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, jq and host helpers, ages
-- `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `sot_oneshot_request`, pty input and screen
+- `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account), `sot_oneshot_request`, pty input and screen
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads and a row's status
 - `comm-lib-inbox.sh`: the inbox append and its lock, `sot_comm_file`, the read cursor and the line counts
