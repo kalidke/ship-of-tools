@@ -82,6 +82,10 @@ set -uo pipefail
 # after the parent's own marker had stamped blocked (field report, 2026-09-18).
 # The launcher sets SOT_COMM_HOOKS=off; every status hook stands down on it.
 [ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
+# Everything this hook writes is the comm folder's, so private (ADR 0049, User isolation): 077 from here, and the
+# caller's mask back only where the auditor starts, whose `claude -p` writes the user's own files.
+_caller_umask="$(umask)"
+umask 077
 HOME_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$HOME_DIR/bin/comm-status.sh"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -123,7 +127,7 @@ blocked="" fb_file=""
 print_block() {  # BLOCK_JSON
     blocked=1
     [ -n "$fb_file" ] || { printf '%s\n' "$1"; return 0; }
-    { ( umask 077 && mkdir -p "$HOME_DIR/state" && printf '%s' "$1" | jq -c '.reason' >> "$fb_file" ); } 2>/dev/null || true
+    { mkdir -p "$HOME_DIR/state" && printf '%s' "$1" | jq -c '.reason' >> "$fb_file"; } 2>/dev/null || true
     printf '%s\n' "$1"
 }
 # Every other block (all but the lock fault's own once-block, whose reason is
@@ -235,8 +239,8 @@ else
     # block again.
     case "$input" in *'"stop_hook_active":true'*) turn_floor; exit 0 ;; esac
     if [ "$(cat "$tool_tick" 2>/dev/null || true)" != "$tool_miss" ]; then
-        ( umask 077 && mkdir -p "$HOME_DIR/state" ) 2>/dev/null || true
-        if ( umask 077 && printf '%s' "$tool_miss" > "$tool_tick" ) 2>/dev/null; then
+        mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+        if printf '%s' "$tool_miss" 2>/dev/null > "$tool_tick"; then
             print_block "$(printf '{"decision":"block","reason":"%s"}' "$tool_warn")"
             exit 0
         fi
@@ -405,14 +409,14 @@ if [ "$mail_pending" -gt 0 ]; then
     mail_tick="$HOME_DIR/state/mail-$(printf '%s' "$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
     mail_mark="$mail_total"
     if [ "$(cat "$mail_tick" 2>/dev/null || true)" != "$mail_mark" ]; then
-        ( umask 077 && mkdir -p "$HOME_DIR/state" ) 2>/dev/null || true
+        mkdir -p "$HOME_DIR/state" 2>/dev/null || true
         # FAIL OPEN when the tick cannot be recorded. With no tick there is
         # no bound, and a filesystem that refuses this write refuses
         # comm-poll.sh's cursor write too — so the block would return at
         # every turn end with no way for the session to clear it. A missed
         # announcement is acceptable; an inescapable block is not.
-        if ( umask 077 && printf '%s' "$mail_mark" > "$mail_tick" ) 2>/dev/null; then
-            [ -z "$lock_warn" ] || ( umask 077 && printf '%s' "$lock_warn" > "$fault_tick" ) 2>/dev/null || true
+        if printf '%s' "$mail_mark" 2>/dev/null > "$mail_tick"; then
+            [ -z "$lock_warn" ] || printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick" || true
             emit_block "$(jq -nc --arg n "$NAME" '{
               decision: "block",
               reason: ("New sot-comm mail for @" + $n + " — run comm-poll.sh now, act on it, then end the turn.")
@@ -427,8 +431,8 @@ fi
 # does (the loop guard below).
 if [ -n "$lock_warn" ] && [ "$(jqget '.stop_hook_active // false')" != "true" ] \
     && [ "$(cat "$fault_tick" 2>/dev/null || true)" != "$lock_warn" ]; then
-    ( umask 077 && mkdir -p "$HOME_DIR/state" ) 2>/dev/null || true
-    if ( umask 077 && printf '%s' "$lock_warn" > "$fault_tick" ) 2>/dev/null; then
+    mkdir -p "$HOME_DIR/state" 2>/dev/null || true
+    if printf '%s' "$lock_warn" 2>/dev/null > "$fault_tick"; then
         print_block "$(jq -nc --arg w "$lock_warn" '{decision: "block", reason: $w}')"
         exit 0
     fi
@@ -452,7 +456,7 @@ if [ -n "$marker_state" ]; then
     [ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
     AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
     if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
-        findings="$(SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
+        findings="$(umask "$_caller_umask"; SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
         if [ "$arc" -eq 0 ] && [ -n "$findings" ]; then
             # Same MSYS2 argv-conversion guard as the general auditor path
             # below: findings is free text and must not reach jq via --arg.
@@ -558,7 +562,7 @@ fi
 #   rc 3          → auditor off/unavailable → legacy '?' grep nudge below.
 AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
 if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
-    findings="$("$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
+    findings="$(umask "$_caller_umask"; "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
     if [ "$arc" -eq 0 ]; then
         if [ -n "$findings" ]; then
             # MSYS2 argv-conversion guard: on Windows git-bash, a NATIVE

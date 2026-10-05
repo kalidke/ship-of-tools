@@ -11,7 +11,8 @@
 #      bin/, VERSION and a symlink's target keep their modes.
 #   3. Where a comm script starts a writer of the user's own files, that writer keeps the caller's
 #      umask: (a) the auditor's `claude -p`, (b) the worktree `comm-worktree-new.sh` makes.
-#   4. The tightening says what is true: a file that vanishes under it is no failure, a path it leaves open is
+#   4. The Stop hook and the auditor, each the first writer of state/, make it private (a missing tool, a lock fault).
+#   5. The tightening says what is true: a file that vanishes under it is no failure, a path it leaves open is
 #      named in the warning, and a comm folder whose root is already private is not walked.
 #
 # Windows has no umask: a folder under the profile inherits the profile's access list, so this suite
@@ -182,7 +183,33 @@ else
     echo "    file.txt $(mode "$WTD/file.txt" 2>/dev/null || echo missing), worktrees/ $(mode "$WORK/worktrees" 2>/dev/null || echo missing); script said: $(tail -n 2 "$WORK/last.out" | tr '\n' ' ')"
 fi
 
-# ---- 4-6: the tightening says what is true: churn is not a failure, a path left open is named, a private root is not walked ----
+# ---- 4: the Stop hook and the auditor as the first writer of state/ ----
+fails=""
+BIN_F="$WORK/bin-fault"; cp -r "$BIN" "$BIN_F" && chmod -R u+w "$BIN_F" || { echo "FATAL: cannot copy the scripts" >&2; exit 1; }
+cat >> "$BIN_F/comm-lib.sh" <<'STUB'
+sot_mail_tools() { echo "jq flock perl s2-missing-tool"; }
+sot_inbox_read_lock() { SOT_INBOX_READ_WARNING="s2 lock fault"; return 0; }
+STUB
+export SOT_COMM_HOME="$WORK/h4/.sot-comm"; guard_refuse_live_home "$SOT_COMM_HOME"
+S2 "$BIN/comm-join.sh" --name s2-d
+ln -s "$BIN_F" "$SOT_COMM_HOME/bin"
+[ ! -e "$SOT_COMM_HOME/state" ] || fails+=$'\n'"    state/ existed before the Stop hook ran"
+for _ in 1 2; do ( cd "$FIX" && jq -nc --arg p "$TR1" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN_F/comm-status-idle.sh" ) > "$WORK/stop-4.out" 2>&1; done
+set -- "$SOT_COMM_HOME"/state/tool-fault-*.tick; fails+="$(missing "$1")"
+set -- "$SOT_COMM_HOME"/state/lock-fault-*.tick; fails+="$(missing "$1")"
+set -- "$SOT_COMM_HOME"/state/stop-feedback-*.jsonl; fails+="$(missing "$1")"
+fails+="$(loose_paths "$SOT_COMM_HOME")"
+export SOT_COMM_HOME="$WORK/h5/.sot-comm"; guard_refuse_live_home "$SOT_COMM_HOME"
+S2 "$BIN/comm-join.sh" --name s2-e
+ln -s "$BIN" "$SOT_COMM_HOME/bin"
+[ ! -e "$SOT_COMM_HOME/state" ] || fails+=$'\n'"    state/ existed before the auditor ran"
+( cd "$FIX" && jq -nc --arg p "$TR2" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN/comm-status-idle.sh" ) > "$WORK/stop-5.out" 2>&1
+fails+="$(missing "$SOT_COMM_HOME/state/auditor-s2-e")"
+fails+="$(loose_paths "$SOT_COMM_HOME")"
+if [ -z "$fails" ]; then ok "the Stop hook and the auditor, each the first writer of state/, make it private (tool fault, lock fault, signature)"
+else bad "the Stop hook and the auditor, each the first writer of state/, make it private (tool fault, lock fault, signature)"; printf '%s\n' "${fails#$'\n'}"; fi
+
+# ---- 5: the tightening says what is true: churn is not a failure, a path left open is named, a private root is not walked ----
 REAL_CHMOD="$(command -v chmod)"
 # lay_old DIR: a small folder as an older release left it (folders 755, files 644), with the paths the cases below use.
 lay_old() {
