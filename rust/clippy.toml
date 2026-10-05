@@ -5,6 +5,10 @@
 # error. A new connector method joins this list. Not expressible here: std::fs::OpenOptions::open on a pipe path;
 # rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and topology/dial.rs contain the rule's names, not
 # their order and not any other file's opener.
+#
+# Kernel file locks: a lock is held only in a guard whose Drop unlocks it (sot_log::host's WriterLock, the
+# backend's comm::mail::inbox InboxLock), because a forked child that has not yet exec'd shares the lock's open
+# file description. So std::fs::File's lock methods and libc::flock are disallowed too, outside those guards.
 disallowed-methods = [
   { path = "std::os::unix::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "std::os::unix::net::UnixStream::connect_addr", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
@@ -36,4 +40,9 @@ disallowed-methods = [
   { path = "sot_log::lane::socket_unix::client::connect_unix_socket_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_pipe_path_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_named_pipe_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  { path = "std::fs::File::lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "std::fs::File::try_lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "std::fs::File::lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "std::fs::File::try_lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "libc::flock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
 ]

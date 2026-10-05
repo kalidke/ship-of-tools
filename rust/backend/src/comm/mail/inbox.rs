@@ -153,7 +153,9 @@ fn take_lock(lock: File, own: &str, wait: Duration) -> Result<InboxLock, LockWai
     if own.starts_with("nfs4 ") {
         let deadline = Instant::now() + wait;
         loop {
-            match lock.try_lock() {
+            #[allow(clippy::disallowed_methods, reason = "the InboxLock built from this lock unlocks it in its Drop")]
+            let locked = lock.try_lock();
+            match locked {
                 Ok(()) => return Ok(InboxLock(lock)),
                 Err(std::fs::TryLockError::Error(e)) => return Err(LockWait::Io(e)),
                 Err(std::fs::TryLockError::WouldBlock) => {}
@@ -167,6 +169,7 @@ fn take_lock(lock: File, own: &str, wait: Duration) -> Result<InboxLock, LockWai
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        #[allow(clippy::disallowed_methods, reason = "the InboxLock built from this lock unlocks it in its Drop")]
         let locked = lock.lock().map(|()| InboxLock(lock));
         // A send that fails means the caller gave up: the guard comes back in
         // the error and is dropped at once, which unlocks.

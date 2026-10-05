@@ -54,7 +54,9 @@ pub fn lock_writer(lock_path: &Path) -> Result<WriterLock> {
     // fails here within the deadline.
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(RETRY_DEADLINE_MS);
     loop {
-        match file.try_lock() {
+        #[allow(clippy::disallowed_methods, reason = "the WriterLock built from this lock unlocks it in its Drop")]
+        let locked = file.try_lock();
+        match locked {
             Ok(()) => return Ok(WriterLock { file }),
             Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(e)) => return Err(Error::Io(e)),
@@ -184,7 +186,9 @@ pub fn try_lock_daemon(state_dir: &Path) -> std::io::Result<Option<DaemonLock>> 
         .create(true)
         .truncate(false)
         .open(daemon_lock_path(state_dir))?;
-    match file.try_lock() {
+    #[allow(clippy::disallowed_methods, reason = "the WriterLock built from this lock unlocks it in its Drop")]
+    let locked = file.try_lock();
+    match locked {
         Ok(()) => Ok(Some(DaemonLock(WriterLock { file }))),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(e)) => Err(e),
@@ -408,52 +412,6 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the supervisor did not finish");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-    }
-
-    /// A kernel file lock is released when its guard drops. These are the files
-    /// that take one; a new one joins this list in the commit that makes it, with
-    /// a guard whose Drop unlocks. The scan reads words, not types: a
-    /// `File::lock()` or `File::try_lock()` in a file that never writes
-    /// `fs::TryLockError` (a grouped `use std::fs::{..., TryLockError}` included)
-    /// is not seen here, and a reviewer checks for it. A pinned word in prose
-    /// elsewhere fails this test; reword the prose.
-    #[test]
-    fn every_kernel_file_lock_is_taken_in_a_listed_file() {
-        const WORDS: [&str; 6] = [
-            "fs::TryLockError",
-            "lock_shared(",
-            "libc::flock",
-            "F_SETLK",
-            "F_OFD_SETLK",
-            "LockFileEx",
-        ];
-        const LISTED: [&str; 2] = ["rust/backend/src/comm/mail/inbox.rs", "rust/log/src/host/lock.rs"];
-        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    walk(&path, files);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    files.push(path);
-                }
-            }
-        }
-        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).canonicalize().unwrap();
-        let mut files = Vec::new();
-        for krate in ["backend", "frontend", "log", "protocol", "updater"] {
-            walk(&root.join(krate).join("src"), &mut files);
-        }
-        assert!(files.len() > 100, "read only {} source files", files.len());
-        let mut holders: Vec<String> = files
-            .iter()
-            .filter(|p| {
-                let text = std::fs::read_to_string(p).unwrap();
-                WORDS.iter().any(|w| text.contains(w))
-            })
-            .map(|p| format!("rust/{}", p.strip_prefix(&root).unwrap().display()).replace('\\', "/"))
-            .collect();
-        holders.sort();
-        assert_eq!(holders, LISTED, "a kernel file lock is taken outside the listed files");
     }
 
     #[test]
