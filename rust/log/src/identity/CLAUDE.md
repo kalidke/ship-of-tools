@@ -2,7 +2,7 @@
 
 Before a reply on a local connection is trusted, the client proves the peer is this user's process, with a known pid and
 creation time. The OS-specific steps 1-3 run first, in one file per platform; the shared wire steps 4-5 follow. Part of
-platform; charter: rust/log/src/host/CLAUDE.md (written by a later unit, not yet present).
+platform; charter: rust/log/src/host/CLAUDE.md.
 
 ## Files
 - `mod.rs`: declares the modules below.

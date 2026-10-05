@@ -97,9 +97,9 @@ serves it; lane M1b builds that check. The video, site and site-pool servers, th
 redirect listener that opens a page in the browser accept only through `serve_own`,
 which drops another account's connection before reading a byte. Pluto's server and
 `wglshow`'s Bonito server are Julia children that listen on ports of their own, which
-any account can reach directly: only a listener Ship of Tools accepts on can be
-owner-checked, so for those two the guarantee is that their secret never reaches
-another account (not its command lines, files or logs).
+any account can reach directly. Ship of Tools does not accept on them, so no
+owner check reaches them; for those two the guarantee is that their secret never
+reaches another account (not its command lines, files or logs).
 The comm scripts create the comm folder and its inboxes with no mode of
 their own, so these are only as private as the creating shell's umask and the home
 folder above them; no lane is named for that yet.

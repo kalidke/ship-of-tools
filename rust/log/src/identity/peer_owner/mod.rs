@@ -353,8 +353,11 @@ mod imp {
     /// A pid is unique only while its process lives, and the table never updates the binder, so two checks stand
     /// between a pid and a verdict. Holding the handle keeps the pid from being reused from now on, and
     /// `still_binder` asks the table again to prove the row did not change meanwhile. The process must also have been
-    /// created no later than the bind: a process created after it can only be a stranger's pid, recycled. Another
-    /// account's process usually cannot be opened, which is a refusal like any other failure.
+    /// created no later than the bind: a process created after it can only be a stranger's pid, recycled. The two
+    /// times may come from clocks that tick at different intervals, so a legitimate process that binds within its first
+    /// tick could be refused (it fails closed, and an equal stamp is admitted); any tolerance would let a recycled pid
+    /// pass for the same window, so there is none. Another account's process usually cannot be opened, which is a
+    /// refusal like any other failure.
     pub(super) fn owner_of(
         binder: Binder,
         own: &str,
