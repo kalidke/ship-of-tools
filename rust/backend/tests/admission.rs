@@ -63,8 +63,12 @@ async fn write_together(conn: &mut Conn, frames: &[Frame]) {
 
 /// Every frame the daemon sends until it closes the connection.
 async fn until_closed(conn: &mut Conn, what: &str) -> Vec<Frame> {
+    until_closed_within(conn, what, CLOSE_WITHIN).await
+}
+
+async fn until_closed_within(conn: &mut Conn, what: &str, bound: Duration) -> Vec<Frame> {
     let mut seen = Vec::new();
-    let end = tokio::time::timeout(CLOSE_WITHIN, async {
+    let end = tokio::time::timeout(bound, async {
         while let Ok((frame, _blob)) = codec::read_frame(conn).await {
             seen.push(frame);
         }
@@ -313,5 +317,26 @@ async fn a_refused_hello_closes_the_connection() {
     let mut payload = hello("old-fe", "host-a", ACCOUNT_A, "fe");
     payload["protocol"] = json!(sot_protocol::PROTOCOL_VERSION - 1);
     assert_refused(&env, payload, "protocol_mismatch").await;
+    env.kill_daemon_bounded().await;
+}
+
+/// A peer of this account that connects and says nothing must not hold the daemon's task: a connection with no first
+/// frame, and a `handoff` connection with no next frame after its hello, are closed by the daemon's own read bound
+/// (10 s, `ADMISSION_READ_BOUND`), the first having been sent nothing and the second only its hello's reply.
+#[tokio::test]
+async fn a_connection_that_says_nothing_is_closed() {
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("admit-silent-close");
+    env.spawn_sotd();
+    let mut silent = open(&env).await;
+    let (mut half_said, reply) = said_hello(&env, hello("t-handoff", "host-a", ACCOUNT_A, HANDOFF)).await;
+    assert_eq!(code(&reply), None, "the handoff hello is accepted: {reply}");
+    let bound = Duration::from_secs(15);
+    let (first, second) = tokio::join!(
+        until_closed_within(&mut silent, "no first frame", bound),
+        until_closed_within(&mut half_said, "no frame after a handoff hello", bound),
+    );
+    assert!(first.is_empty(), "a connection that said nothing was sent {first:?}");
+    assert!(second.is_empty(), "a handoff connection was sent more than its hello's reply: {second:?}");
     env.kill_daemon_bounded().await;
 }

@@ -12,6 +12,12 @@ use super::reply::{finish_dispatch, write_reply, HandlerOutput, OutTx, OFFLOOP_C
 use super::*;
 use sot_protocol::HANDOFF_ROLE;
 
+/// How long a connection may take to send its first frame, and a `handoff` connection its next one after its hello: a
+/// peer of this account that connects and says nothing must not hold a task (ADR 0049 `## User isolation`). Every client
+/// writes its hello at once (the window's own hello bound is 30 s), so this never ends an honest connection. At the
+/// bound the connection is closed with nothing written.
+const ADMISSION_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Read deadline for a connection whose declared role is `fe` or `bridge`
 /// (topology plan §F step 2, D10 — the half-open-roster fix). Since 0.4.0
 /// the daemon has had no keepalive, and `WRITE_TIMEOUT` above never fires
@@ -143,10 +149,14 @@ where
     // the connection becomes: `handoff` leaves for a byte pipe or a lease after the hello's reply (`hand_off`);
     // every other role is a control session at once, so a client that only listens after its hello (the hub link)
     // is sent its events.
-    let (first, _blob) = match codec::read_frame(&mut buffered).await {
-        Ok(read) => read,
-        Err(e) => {
+    let (first, _blob) = match tokio::time::timeout(ADMISSION_READ_BOUND, codec::read_frame(&mut buffered)).await {
+        Ok(Ok(read)) => read,
+        Ok(Err(e)) => {
             tracing::debug!(error = %e, "first read failed before any frame; closing");
+            return Ok(());
+        }
+        Err(_) => {
+            tracing::debug!("no first frame within the admission bound; closing");
             return Ok(());
         }
     };
@@ -188,10 +198,14 @@ where
     if let Some((frame, blob)) = reply.into_iter().next() {
         write_reply(&mut tx, frame, blob).await?;
     }
-    let (next, _blob) = match codec::read_frame(&mut rx).await {
-        Ok(read) => read,
-        Err(e) => {
+    let (next, _blob) = match tokio::time::timeout(ADMISSION_READ_BOUND, codec::read_frame(&mut rx)).await {
+        Ok(Ok(read)) => read,
+        Ok(Err(e)) => {
             tracing::debug!(error = %e, "handoff connection closed before its frame");
+            return Ok(());
+        }
+        Err(_) => {
+            tracing::debug!("no frame after a handoff hello within the admission bound; closing");
             return Ok(());
         }
     };

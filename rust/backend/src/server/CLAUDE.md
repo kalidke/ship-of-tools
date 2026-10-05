@@ -38,6 +38,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 - Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
 - A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
   `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
+- A connection whose first frame has not arrived within 10 s, or a `handoff` connection whose next frame has not, is closed
+  with nothing sent (`ADMISSION_READ_BOUND`, `handle_connection`, `hand_off`).
 - A connection has one writer. Off-loop jobs hand their reply back over `OutTx` and the loop writes it with
   `write_reply`.
 - A handler `Err` is one `handler_error` frame and the connection stays (`finish_dispatch`); an over-cap envelope
