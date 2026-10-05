@@ -210,18 +210,7 @@ pub async fn connect_and_hello(socket_path: &Path) -> (Conn, u64) {
     )
     .await;
     let mut conn = tokio::io::BufReader::new(stream);
-    let hello = HelloReq {
-        client_id: "capsule-workspaces-test".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
-    };
+    let hello = HelloReq::this_process("capsule-workspaces-test", "", Some("host-a".to_string())).expect("this process's account");
     let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);
     (conn, 2)

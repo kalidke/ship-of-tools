@@ -251,18 +251,7 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
     let env = Env::spawn("a");
     let mut conn = poll_until_connected(&env.socket_path).await;
 
-    let hello = HelloReq {
-        client_id: "switch-latency-test".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
-    };
+    let hello = HelloReq::this_process("switch-latency-test", "", Some("host-a".to_string())).expect("this process's account");
     let hello_payload = serde_json::to_value(&hello).unwrap();
 
     let body = async {
@@ -319,18 +308,7 @@ async fn slow_concept_read_does_not_delay_a_later_cheap_reply_on_the_same_connec
 /// Write the `hello` (id 1) frame and block until its reply lands, exactly
 /// as every test below needs before any other op is served.
 async fn do_hello(conn: &mut Conn) {
-    let hello = HelloReq {
-        client_id: "switch-latency-test".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
-    };
+    let hello = HelloReq::this_process("switch-latency-test", "", Some("host-a".to_string())).expect("this process's account");
     codec::write_frame(conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
         .expect("write hello");

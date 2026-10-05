@@ -35,9 +35,9 @@ page (`Rules`), its `## Idea` or a code comment, and the row says which in its l
 | Provider | User | Carried by | The promise kept |
 |---|---|---|---|
 | wire | server, fe-net | `Frame`, `codec::read_frame`, `codec::write_frame` | An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB); `write_frame` fails with `EnvelopeTooLarge` before writing any byte, and a frame with `blob.len` is followed by exactly that many bytes. |
-| wire | server, fe-net | `hello` with `PROTOCOL_VERSION` (`protocol_gate`, `send_hello`) | Any incompatible change raises `PROTOCOL_VERSION`, and hello requires both sides to agree. |
+| wire | server, fe-net | `hello` with `PROTOCOL_VERSION` (`protocol_gate`, `send_hello`, `HelloReq::this_process`) | Any incompatible change raises `PROTOCOL_VERSION`, and hello requires both sides to agree; every hello names its host and its OS account (`os_user`). |
 | wire | server, fe-net | the op names in `rust/protocol/src/ops/mod.rs` and their payload types in `rust/protocol/src/ops/` | A payload grows only by `#[serde(default)]` fields. |
-| wire | agents | `sot_hello_frame` in `comm/lib/comm-lib-client.sh` | Hello requires both sides to agree on `PROTOCOL_VERSION`; this writer's `"protocol":2` is kept equal by hand, as the comment above it says. |
+| wire | agents | `sot_hello_frame` and `_sot_os_user` in `comm/lib/comm-lib-client.sh`, pinned by `comm_lib_hello_speaks_this_protocol` and `every_client_declares_the_same_account` | Hello requires both sides to agree on `PROTOCOL_VERSION`, which this writer's literal carries, and the OS account it declares is the one `own_account_id` gives. |
 | wire | distribution | the `fe.lease` and `fe.leaving` lines in `scripts/sot-lease.ps1`, pinned by `launcher_bounds_match_ops` in `scripts/tests/installer-state.sh` | A payload grows only by `#[serde(default)]` fields. |
 | wire | distribution | `is_release_build`, read by `rust/backend/src/update.rs` and `rust/frontend/src/selfupdate.rs` | The version string is bare `X.Y.Z` only for a CI build on its clean release tag, and `is_release_build` is the only question policy may ask. |
 | wire | server, fe-net, distribution | `version_line`, printed by every binary's `--version` | The version string is bare `X.Y.Z` only for a CI build on its clean release tag, and `is_release_build` is the only question policy may ask. |

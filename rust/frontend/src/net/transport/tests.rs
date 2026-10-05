@@ -222,6 +222,7 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
                 role: String::new(),
                 instance: None,
                 name: None,
+                os_user: None,
             })
             .unwrap(),
         ),

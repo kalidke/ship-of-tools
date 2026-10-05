@@ -126,7 +126,9 @@ while IFS= read -r line; do
 done
 FAKEPS
 } > "$WINFAKE/powershell.exe"
-chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe"
+# `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
+printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WINFAKE/cmd"
+chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
 win_send() {  # ANSWER
     rm -f "${WINHUB:?}"/*.log; printf '%s' "$1" > "$WINHUB/answer"
     SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \

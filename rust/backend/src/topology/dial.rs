@@ -250,16 +250,9 @@ pub(crate) fn dial_and_call_tracked(
     };
 
     let hello = HelloReq {
-        client_id: format!("sotd-topology-cli-{}", std::process::id()),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some(self_host.to_string()),
-        role: "cli".to_string(),
-        instance: None,
         name: Some(self_host.to_string()),
+        ..HelloReq::this_process(format!("sotd-topology-cli-{}", std::process::id()), "cli", Some(self_host.to_string()))
+            .map_err(|e| fold(&guard, format!("{endpoint}: {e}")))?
     };
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))

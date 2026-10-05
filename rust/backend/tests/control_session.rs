@@ -138,16 +138,8 @@ async fn control_session_replies_are_pinned() {
     let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "a third connection").await;
     let mut probe = tokio::io::BufReader::new(stream);
     let hello = HelloReq {
-        client_id: "mismatch-probe".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
         protocol: sot_protocol::PROTOCOL_VERSION + 1,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
+        ..HelloReq::this_process("mismatch-probe", "", Some("host-a".to_string())).expect("this process's account")
     };
     let reply = strict(&mut probe, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert_eq!(reply.payload["code"], "protocol_mismatch", "{:?}", reply.payload);
@@ -184,18 +176,7 @@ async fn control_session_replies_are_pinned() {
     );
     let after_bad = listed(&strict(&mut conn, next(), op::VERSION_QUERY, json!({})).await);
     assert_eq!(after_bad, before, "an unparsable hello never enters the roster");
-    let hello = HelloReq {
-        client_id: "mw18-after-bad".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
-    };
+    let hello = HelloReq::this_process("mw18-after-bad", "", Some("host-a".to_string())).expect("this process's account");
     let reply = strict(&mut bad, 2, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert!(reply.payload.get("code").is_none(), "a valid hello on the same connection is answered: {:?}", reply.payload);
     assert!(reply.payload["session_id"].is_string(), "{:?}", reply.payload);

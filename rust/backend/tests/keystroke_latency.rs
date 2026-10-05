@@ -204,18 +204,7 @@ async fn k3b_ssh_cold_dial() {
     );
 
     let hello = || {
-        let h = HelloReq {
-            client_id: "k3b".to_string(),
-            session_id: None,
-            last_seen_revision: 0,
-            token: None,
-            protocol: sot_protocol::PROTOCOL_VERSION,
-            app_version: sot_protocol::app_version(),
-            host: None,
-            role: String::new(),
-            instance: None,
-            name: None,
-        };
+        let h = HelloReq::this_process("k3b", "", Some("host-a".to_string())).expect("this process's account");
         Frame::req(1, op::HELLO, serde_json::to_value(&h).unwrap())
     };
     // The private daemon's session id; the local run's reply must carry the same one.

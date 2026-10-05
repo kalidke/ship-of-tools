@@ -195,8 +195,8 @@ mod protocol_gate_tests {
             protocol_gate(sot_protocol::PROTOCOL_VERSION),
             ProtocolGate::Accept
         );
-        // Concretely, protocol 2 is accepted today.
-        assert_eq!(protocol_gate(2), ProtocolGate::Accept);
+        // Concretely, protocol 3 is accepted today.
+        assert_eq!(protocol_gate(3), ProtocolGate::Accept);
     }
 
     #[test]
@@ -206,6 +206,8 @@ mod protocol_gate_tests {
         // 2) and a newer one are all rejected — the FE renders the
         // "update needed" screen naming both sides.
         assert_eq!(protocol_gate(sot_protocol::PROTOCOL_VERSION - 1), ProtocolGate::Reject);
+        // Every pre-0.6.6 client (frontend, hub link, comm scripts) speaks 2: it declares no OS account.
+        assert_eq!(protocol_gate(2), ProtocolGate::Reject);
         assert_eq!(protocol_gate(0), ProtocolGate::Reject);
         assert_eq!(protocol_gate(99), ProtocolGate::Reject);
     }

@@ -332,16 +332,8 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     }
 
     let hello = sot_protocol::HelloReq {
-        client_id: "bridge-it".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some(TEST_STATE_HOST.to_string()),
-        role: "fe".to_string(),
-        instance: None,
         name: Some("bridge-it".to_string()),
+        ..sot_protocol::HelloReq::this_process("bridge-it", "fe", Some(TEST_STATE_HOST.to_string())).expect("this process's account")
     };
     // The wire's own framing, written by hand: one JSON envelope and one
     // `\n` (`codec::write_frame`), so nothing async is needed to prove a

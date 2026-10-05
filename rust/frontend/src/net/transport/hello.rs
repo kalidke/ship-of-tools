@@ -72,24 +72,25 @@ pub(super) async fn send_hello<W: AsyncWrite + Unpin>(
     session: &SessionState,
     token: Option<&str>,
 ) -> Result<()> {
+    // ADR 0030 §2: `this_process` advertises our wire-contract protocol + product version so the backend can
+    // gate on protocol equality and name both sides in a mismatch error, and the OS account this window runs as
+    // (ADR 0049 `## User isolation`); an unreadable account sends no hello.
+    //
+    // This FE's own declared identity (ADR 0046 decision 1): `name` is its address, `fe@<host>` — the value a
+    // `--fe <host>` target matches against, so the daemon can name "the frontend a person is at"
+    // (`fe.presence`) without a second derivation.
+    let identity = crate::net::identity::frontend_identity();
     let hello = HelloReq {
-        client_id: session.memory.client_id.clone(),
         session_id: session.memory.session_id.clone(),
         last_seen_revision: session.memory.last_seen_revision,
         token: token.map(|s| s.to_string()),
-        // ADR 0030 §2: advertise our wire-contract protocol + product version
-        // so the backend can gate on protocol equality and name both sides in
-        // a mismatch error.
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        // This FE's own declared identity (ADR 0046 decision 1): `name`
-        // is its address, `fe@<host>` — the value a `--fe <host>` target
-        // matches against, so the daemon can name "the frontend a person
-        // is at" (`fe.presence`) without a second derivation.
-        host: Some(crate::net::identity::frontend_identity().host.clone()),
-        role: crate::net::identity::FrontendIdentity::ROLE.to_string(),
-        instance: Some(crate::net::identity::frontend_identity().instance.clone()),
-        name: Some(crate::net::identity::frontend_identity().name.clone()),
+        instance: Some(identity.instance.clone()),
+        name: Some(identity.name.clone()),
+        ..HelloReq::this_process(
+            session.memory.client_id.clone(),
+            crate::net::identity::FrontendIdentity::ROLE,
+            Some(identity.host.clone()),
+        )?
     };
     codec::write_frame(
         &mut tx,

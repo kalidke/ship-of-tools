@@ -101,17 +101,21 @@ esac
 # hello reply is an extra line on the wire, but every caller greps by op, so it
 # is ignored. client_id "sot-comm" so the roster/logs show what it is. The
 # frame itself is `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1),
-# stamped with no role (the daemon infers it).
+# which declares the host and the OS account (ADR 0049 `## User isolation`).
 
 # nc_out: send the single frame on stdin, return immediately (capture any reply line)
 nc_send() {
+    # The hello is built once, before any transport starts; a process that cannot name its host or OS account
+    # sends nothing (the builder says why on stderr).
+    local hello
+    hello="$(sot_hello_frame)" || return 1
     if [ -n "$EP_PIPE" ]; then
         command -v powershell.exe >/dev/null 2>&1 || {
             echo "ERROR: powershell.exe not found and endpoint is a named pipe" >&2; return 1; }
         local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
         [ -f "$ps1" ] || {
             echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
-        { sot_hello_frame; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        { printf '%s\n' "$hello"; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
             -File "$ps1" -PipeName "$EP_PIPE" -Mode Oneshot -Op agent.send -TimeoutSec 5
         return
     fi
@@ -139,7 +143,7 @@ nc_send() {
         local rc=0
         local raw_file=""
         [ -n "${_SOT_BRIDGE_FAIL_FILE:-}" ] && raw_file="${_SOT_BRIDGE_FAIL_FILE}.raw"
-        { sot_hello_frame; cat; } | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" 5 2>"${raw_file:-/dev/null}" || rc=${PIPESTATUS[1]}
+        { printf '%s\n' "$hello"; cat; } | sot_ssh_bridge "$EP_SSH_TARGET" "$EP_SSH_HOST" 5 2>"${raw_file:-/dev/null}" || rc=${PIPESTATUS[1]}
         if [ "$rc" -ne 0 ] && [ -n "${_SOT_BRIDGE_FAIL_FILE:-}" ]; then
             local detail; detail="$(tr '\n' ' ' < "$raw_file" 2>/dev/null)"
             if [ "$rc" -eq 124 ]; then
@@ -154,7 +158,7 @@ nc_send() {
         return "$rc"
     fi
     if [ "$HAVE_NC" = 1 ] && [ -n "$EP_UNIX" ]; then
-        { sot_hello_frame; cat; } | timeout 5 nc -U "$EP_UNIX"
+        { printf '%s\n' "$hello"; cat; } | timeout 5 nc -U "$EP_UNIX"
     else
         echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
     fi
