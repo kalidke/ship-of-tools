@@ -1,10 +1,12 @@
 // julia.rs — resolve the real `julia` binary the daemon spawns, shared by
-// kernel.rs, repl/mod.rs, and pluto.rs (each keeps its own supervisor; only
-// resolution is shared — one function, no privileged caller).
+// kernel.rs, repl/supervisor.rs, pluto.rs and pages/ops.rs's `run_quarto` (each
+// keeps its own supervisor; only resolution is shared — one function, no
+// privileged caller).
 //
 // Invariant: never spawn a PATH candidate this resolver has not verified is
-// plausibly real Julia. An explicit `SOT_JULIA_BIN` is exempt (an operator's
-// own choice, format-validated but not second-guessed).
+// plausibly real Julia, and never an app-execution alias, not even one
+// `SOT_JULIA_BIN` names. An explicit `SOT_JULIA_BIN` is otherwise exempt (an
+// operator's own choice, format-validated but not second-guessed).
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +16,8 @@ use serde_json::Value;
 const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 
 /// Resolve the `julia` binary honestly. Order:
-/// 1. `SOT_JULIA_BIN`, trimmed — must be an absolute path (upstream juliaup's
+/// 1. `SOT_JULIA_BIN`, trimmed — must not be a Windows app-execution alias
+///    (a hard error), and must be an absolute path (upstream juliaup's
 ///    own override semantics); a non-empty but relative value is a hard
 ///    error rather than a silently-ignored fall-through, so a typo in an
 ///    explicit override is never masked by auto-detection picking something
@@ -42,6 +45,12 @@ fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static st
     if let Some(v) = std::env::var_os("SOT_JULIA_BIN") {
         let trimmed = v.to_string_lossy().trim().to_string();
         if !trimmed.is_empty() {
+            if is_windows_apps_alias_path(Path::new(&trimmed)) {
+                return Err(format!(
+                    "SOT_JULIA_BIN={trimmed:?} is a Windows app-execution alias; a julia started through \
+                     one runs outside the daemon's containment (ADR 0050 residual 7)"
+                ));
+            }
             return if Path::new(&trimmed).is_absolute() {
                 Ok((trimmed, "SOT_JULIA_BIN"))
             } else {
@@ -84,23 +93,6 @@ fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static st
         "every `julia` on PATH was rejected (bare `julia` would resolve the same one) — {}",
         first_rejection.unwrap_or_default()
     ))
-}
-
-/// For callers that don't need the resolution failure reason (`repl/mod.rs`,
-/// `pluto.rs` — simpler supervisors than the kernel's, unchanged by this
-/// module beyond sharing this resolver) and want the OLD "just give me a
-/// string" ergonomics: falls back to bare `"julia"` on any resolution
-/// failure, logging why. The kernel supervisor calls `resolve_bin` directly
-/// instead, since its failure becomes a typed `Dead` reason, not a
-/// swallowed warning.
-pub(crate) fn resolve_bin_or_bare() -> String {
-    match resolve_bin() {
-        Ok((path, _source)) => path,
-        Err(reason) => {
-            tracing::warn!(reason, "julia resolution failed; falling back to bare `julia`");
-            "julia".to_string()
-        }
-    }
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -555,5 +547,14 @@ mod tests {
         
         let (bin, _source) = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap();
         assert_eq!(bin, "julia");
+    }
+
+    #[test]
+    fn sot_julia_bin_alias_is_a_hard_error() {
+        let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
+        std::env::set_var("SOT_JULIA_BIN", r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe");
+        let err = resolve_bin().unwrap_err();
+        assert!(err.contains("app-execution alias"), "unexpected error: {err}");
     }
 }

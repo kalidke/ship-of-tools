@@ -462,7 +462,7 @@ impl MonitorHub {
         for h in hub.hosts.iter().cloned() {
             let tick_tx = hub.tick_tx.clone();
             let rings = hub.rings.clone();
-            tokio::spawn(supervise(h, tick_tx, rings));
+            tokio::spawn(supervise(h, tick_tx, rings, crate::lifecycle::child_signal::process()));
         }
         hub
     }
@@ -523,14 +523,17 @@ async fn supervise(
     host: MonitorHost,
     tick_tx: broadcast::Sender<HostLatest>,
     rings: Arc<Mutex<HashMap<String, HostRing>>>,
+    sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     // The reason last logged for this host's death, so a target that stays
     // unreachable logs it once rather than on every ~5s respawn forever.
     let mut last_reason: Option<String> = None;
     loop {
-        let reason = match spawn_source(&host).await {
-            Ok(mut child) => {
-                let _child_guard = crate::lifecycle::child_signal::ChildGuard::new();
+        if sig.is_fired() {
+            return;
+        }
+        let reason = match spawn_source(&host, sig).await {
+            Ok((mut child, _contained)) => {
                 let mut stdout = child.stdout.take().map(|s| BufReader::new(s).lines());
                 let mut stderr = child.stderr.take().map(|s| BufReader::new(s).lines());
                 // ssh's own words for why the source died, kept only until
@@ -538,12 +541,9 @@ async fn supervise(
                 let mut stderr_line: Option<String> = None;
                 loop {
                     tokio::select! {
-                        // The daemon is shutting down: nothing kills this child at
-                        // `process::exit`, so it is killed here.
-                        _ = crate::lifecycle::child_signal::fired() => {
-                            let _ = child.kill().await;
-                            return;
-                        }
+                        // The daemon is shutting down: the signal has already
+                        // killed the sampler's tree.
+                        _ = sig.fired() => return,
                         line = next_or_pending(&mut stdout) => {
                             match line {
                                 Ok(Some(line)) => {
@@ -590,7 +590,7 @@ async fn supervise(
                         }
                     }
                 }
-                // child dropped here -> kill_on_drop reaps it.
+                // `_contained` drops before `child`: the sampler's tree dies, then it is reaped.
             }
             Err(e) => e.to_string(),
         };
@@ -609,14 +609,26 @@ async fn supervise(
             stale: true,
             sample: None,
         });
-        tokio::time::sleep(RESPAWN_BACKOFF).await;
+        tokio::select! {
+            _ = tokio::time::sleep(RESPAWN_BACKOFF) => {}
+            _ = sig.fired() => return,
+        }
     }
 }
 
 /// Spawn the sampler for one host and feed it the script over stdin.
-async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Child> {
+async fn spawn_source(
+    host: &MonitorHost,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+) -> std::io::Result<(tokio::process::Child, crate::lifecycle::child_signal::Contained)> {
     let interval = "1";
-    let mut cmd = if host.local {
+    #[cfg(test)]
+    let stub = tests::STUB_SAMPLER.lock().unwrap().iter().find(|(h, _)| *h == host.name).map(|(_, p)| p.clone());
+    #[cfg(not(test))]
+    let stub: Option<String> = None;
+    let mut cmd = if let Some(program) = stub {
+        Command::new(program)
+    } else if host.local {
         let mut c = Command::new("bash");
         c.arg("-s").arg("0").arg(interval);
         c
@@ -640,16 +652,15 @@ async fn spawn_source(host: &MonitorHost) -> std::io::Result<tokio::process::Chi
     };
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn()?;
+    let (mut child, contained) = sig.spawn(&mut cmd)?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(SAMPLER_SH.as_bytes()).await?;
         // Close stdin so `bash -s` hits EOF and starts executing the loop.
         let _ = stdin.shutdown().await;
     }
-    Ok(child)
+    Ok((child, contained))
 }
 
 

@@ -251,7 +251,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `SOT_PROBE_READ_TIMEOUT`, `SOT_PROBE_READY_WAIT` | env | agents | `agents/spawn/comm-probe.sh` |
 | `GH_OAUTH_CLIENT_ID`, `SOT_GH_SCOPES` (sot-gh-auth also honours gh's own `GH_HOST`, `GH_CONFIG_DIR`) | env | agents | `agents/sot-gh-auth.sh` |
 | `SOT_BACKEND_LABEL`, `SOT_RELAY_ENDPOINT`, `SOT_RELAY_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
-| `SOT_JULIA_BIN`, `SOT_NODE_BIN` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path` |
+| `SOT_JULIA_BIN`, `SOT_NODE_BIN`, `QUARTO_JULIA` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path`; `QUARTO_JULIA` is set for quarto by `rust/backend/src/pages/ops.rs` `run_quarto` |
 | which Julia binary the daemon runs (`julia::resolve_bin`: an absolute `SOT_JULIA_BIN`, juliaup's default channel, a verified PATH candidate) | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; second choice `rust/backend/src/update.rs` `prepare_spec` (see two owners) |
 | `SOT_WATCH_BUDGET` | env | files | `rust/backend/src/files/watcher.rs` `watch_budget` |
 | `SOT_VIDEO_PORT`, `SOT_DOCS_PORT`, `SOT_PROXY_EXTRA_PORTS` | env | pages | `rust/backend/src/pages/video.rs` `video_port`; `rust/backend/src/pages/site/mod.rs` `site_port`; `rust/backend/src/pages/proxy.rs` `allowed_proxy_ports` |
@@ -269,7 +269,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `LinkGate` (one per host; the window's transport is its only writer) | state | topology | `rust/protocol/src/topology/ssh_bridge.rs` `LinkGate`; written `rust/frontend/src/net/transport/mod.rs` |
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
-| `Signal`, `ChildGuard`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `ChildGuard`, `fire` |
+| `Signal` and its tree registry, `Signal::spawn`, `Contained`, `ChildGuard`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Contained`, `ChildGuard`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
 | quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |

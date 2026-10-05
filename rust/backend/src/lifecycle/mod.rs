@@ -2,6 +2,7 @@
 //! plan, the close and the child signal.
 
 pub(crate) mod child_signal;
+pub(crate) mod contain;
 pub(crate) mod lease;
 pub(crate) mod shutdown;
 pub(crate) mod startup;

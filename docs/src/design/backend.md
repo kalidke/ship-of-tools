@@ -32,7 +32,8 @@ julia --project=<repo>/julia/kernel \
   -e 'using ShipToolsKernel; ShipToolsKernel.serve(stdin, stdout)'
 ```
 
-Spawning is `tokio::process::Command` with `kill_on_drop(true)`. stderr is
+Spawning is `tokio::process::Command` through `lifecycle::child_signal::Signal::spawn`, which puts the
+child in its own process group (Unix) or job (Windows). stderr is
 captured into a backend log ring buffer — the *only* place kernel stderr
 surfaces, so user-facing errors must travel as protocol events, not prints.
 
@@ -43,11 +44,11 @@ Restart policy differs by process:
 | Kernel | auto-restart, exponential backoff (1s → 16s, then surface to UI); state rebuilds from disk, so restart is safe |
 | REPL | never auto-restarts — a crashed REPL is meaningful; the user decides, and the UI must say "REPL is dead, press X to restart" |
 
-Shutdown is platform-aware because orphaned `julia` processes are unacceptable:
-
-- **Linux** — SIGTERM, wait 5s, then SIGKILL.
-- **Windows** — `taskkill /F /T /PID <pid>`; tokio's `kill()` alone leaves
-  grandchildren, so SIGTERM semantics are not relied on.
+Orphaned `julia` processes are unacceptable, so a child's whole tree is killed
+(SIGKILL to its process group on Unix, `TerminateJobObject` on Windows) when its
+owner lets go of it or the shutdown fires, whichever comes first (ADR 0050, known limit (p)). There is no
+SIGTERM grace and no `taskkill`. A process that deliberately left, for example a
+Unix descendant that called `setsid`, is the one exception (ADR 0050, residual 7).
 
 ## Transport, persistence, reconnect
 

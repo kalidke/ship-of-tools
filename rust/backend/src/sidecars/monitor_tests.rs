@@ -250,6 +250,41 @@
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Program override per host name, so no test touches `bash` or `ssh`.
+    pub(super) static STUB_SAMPLER: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+    /// The respawn backoff is a bare sleep: after the shutdown the loop must
+    /// return, not wake and start another sampler.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn monitor_backoff_returns_on_shutdown() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("sampler");
+        std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        STUB_SAMPLER.lock().unwrap().push(("stub-backoff".to_string(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);
+        let host = MonitorHost { name: "stub-backoff".to_string(), ssh_alias: None, local: true };
+        let rings = Arc::new(Mutex::new(HashMap::from([(host.name.clone(), HostRing::new())])));
+        let task = tokio::spawn(supervise(host, tick_tx, rings, sig));
+        loop {
+            let tick = tokio::time::timeout(Duration::from_secs(5), ticks.recv())
+                .await
+                .expect("the stub sampler never died")
+                .expect("tick channel");
+            if tick.stale {
+                break;
+            }
+        }
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("the monitor backoff outlived the shutdown")
+            .expect("supervise task");
+    }
+
 #[cfg(test)]
 mod config_tests {
     use super::*;
