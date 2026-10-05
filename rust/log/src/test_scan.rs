@@ -1,5 +1,4 @@
-//! Test-only (feature `test-support`): the one walker of the workspace's Rust sources, shared by every source scan
-//! (`test_log`, `test_exec`, and the scans that pin a rule on every test).
+//! Test-only (feature `test-support`): the one walker of the workspace's Rust sources, shared by every source scan.
 
 use std::path::{Path, PathBuf};
 
