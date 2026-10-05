@@ -217,7 +217,7 @@ send_frame() {  # $1 to, $2 text
     # The loop body runs in THIS shell (process substitution, never a pipe),
     # so the verdict variables below survive it.
     local line op ack_ok=false ack_array=false
-    local rcpt_seen=false rcpt_filer=""
+    local rcpt_seen=false rcpt_filer="" hello_refused=""
     local -a receivers=()
     # Not `local`: nc_send below runs inside the process substitution's own
     # subshell (a fork, not this loop), so only a path on disk -- not a
@@ -227,6 +227,12 @@ send_frame() {  # $1 to, $2 text
         [ -z "$line" ] && continue
         op="$(printf '%s' "$line" | sot_jq -r '.op // empty' 2>/dev/null || true)"
         case "$op" in
+            hello)
+                # A refused hello (ADR 0049 `## User isolation`) ends the connection: the daemon's own words are
+                # the verdict, and nothing else is coming.
+                hello_refused="$(printf '%s' "$line" | sot_jq -r '.payload.error // empty' 2>/dev/null || true)"
+                [ -z "$hello_refused" ] || break
+                ;;
             agent.send)
                 # An EMPTY line must never pass as an ack: `jq -e` over zero
                 # input never sees a falsy last value and exits 0, which is
@@ -267,6 +273,7 @@ send_frame() {  # $1 to, $2 text
     #
     #   1. this sender's own receipt -- the frame was appended;
     #   2. the daemon's own ack -- what it said about the send;
+    #   2b. a refused hello -- the daemon's own words, where no ack came;
     #   3. the bridge's reason -- consulted ONLY where 1 and 2 said nothing;
     #   4. the daemon did not answer.
     #
@@ -323,6 +330,15 @@ send_frame() {  # $1 to, $2 text
         # in this file may compare a target to a receiver's name again.
         local joined; joined="$(printf '%s, ' "${receivers[@]}")"
         echo "NOT CONFIRMED: sent for @$1; nobody claimed it within 5s. Attached: ${joined%, }." >&2
+        return 1
+    fi
+    # 2b. A refused hello: the daemon answered and said no, in its own words.
+    if [ -n "$hello_refused" ]; then
+        if [ -z "$1" ]; then
+            echo "FAILED -> <all>: hello refused: $hello_refused" >&2
+        else
+            echo "FAILED -> @$1: hello refused: $hello_refused" >&2
+        fi
         return 1
     fi
     # 3. `ok` false, or `receivers` absent, or no ack at all: the record

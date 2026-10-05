@@ -62,6 +62,7 @@ try {
             (Join-Path $repo 'scripts\sot-freshness.ps1'),
             (Join-Path $repo 'scripts\sot-lease.ps1'),
             (Join-Path $repo 'scripts\shutdown-sot.ps1'),
+            (Join-Path $repo 'agents\comm-pipe-request.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon.ps1')
         )) {
         $errs = $null
@@ -238,6 +239,37 @@ try {
         Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
         } catch { Check '5b: section ran' $false $_.Exception.Message }
+        try {
+        Write-Host "`n=== 5c. the pipe transport of every sot-comm client against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request (ADR 0049) ===" -ForegroundColor Cyan
+        # agents\comm-pipe-request.ps1 matches a reply by its op. A refused hello is a reply to the hello, so the transport
+        # must hand it over (and fail) rather than wait out its bound and report a silent daemon: the caller names the
+        # refusal. (ii) is the same request with an accepted hello, so the transport's own answer path is exercised too.
+        . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
+        $pipe5c = New-TestPipeName
+        $out5c = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5c -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+        Check '5c: the daemon starts' (Wait-Pipe $pipe5c) "pipe never opened; log: $out5c"
+        $transport = Join-Path $PSScriptRoot '..\..\agents\comm-pipe-request.ps1'
+        $sid5c = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $host5c = ConvertTo-SotJsonString (Get-SotHelloHost)
+        $request5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{}}'
+        $old5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":2,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
+        $new5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
+        $refused5c = @(@($old5c, $request5c) | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport -PipeName $pipe5c -Mode Oneshot -Op version.query -TimeoutSec 10 2>$null)
+        $refusedExit5c = $LASTEXITCODE
+        Check '5c: a refused hello prints exactly its own reply' ($refused5c.Count -eq 1) "got $($refused5c.Count) lines: $($refused5c -join ' | ')"
+        if ($refused5c.Count -eq 1) {
+            $reply5c = $refused5c[0] | ConvertFrom-Json
+            Check '5c: the reply is the hello refusal, with the daemon''s code' (($reply5c.op -eq 'hello') -and ($reply5c.payload.code -eq 'protocol_mismatch')) "reply was: $($refused5c[0])"
+        }
+        Check '5c: a refused hello exits 1' ($refusedExit5c -eq 1) "got $refusedExit5c"
+        $served5c = @(@($new5c, $request5c) | & powershell -NoProfile -ExecutionPolicy Bypass -File $transport -PipeName $pipe5c -Mode Oneshot -Op version.query -TimeoutSec 10 2>$null)
+        $servedExit5c = $LASTEXITCODE
+        Check '5c: an accepted hello gets the request answered' (($served5c.Count -eq 1) -and (($served5c[0] | ConvertFrom-Json).op -eq 'version.query')) "got: $($served5c -join ' | ')"
+        Check '5c: an accepted hello exits 0' ($servedExit5c -eq 0) "got $servedExit5c"
+        $stop5c = & $script -Stop -Prefix $p3 -PipeName $pipe5c 6>&1 2>&1
+        Get-DaemonProcs (Get-PipePath $pipe5c) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+        } catch { Check '5c: section ran' $false $_.Exception.Message }
         try {
         Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
         # ADR 0042 L2b design C: no -PipeName override here -- the script

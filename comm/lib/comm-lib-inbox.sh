@@ -264,6 +264,13 @@ sot_comm_file() {  # HANDLE LINE
         return 0
     fi
     diag="${diag% }"
+    # A daemon that refused this client's hello (`sot_oneshot_request` names it on stderr) did answer: say what it
+    # said, not that it was silent.
+    case "$diag" in
+        *"sot_oneshot_request: hello refused: "*)
+            printf 'hello refused: %s\n' "${diag##*sot_oneshot_request: hello refused: }"
+            return 1 ;;
+    esac
     printf 'the daemon did not answer at %s%s\n' "$ENDPOINT" "${diag:+: $diag}"
     return 1
 }

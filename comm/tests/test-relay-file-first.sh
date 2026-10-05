@@ -484,6 +484,11 @@ receiver=$(printf '%s' "$receivers" | sed -n 's/^\["\([^"]*\)".*/\1/p')
 while IFS= read -r line; do
     case "$line" in
         *'"op":"hello"'*)
+            # A refusing daemon answers the hello with its error and closes: nothing else is read or answered.
+            if [ -s "$d/hello-refusal.txt" ]; then
+                printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"%s","code":"os_user_conflict"}}\n' "$(cat "$d/hello-refusal.txt")"
+                exit "$status"
+            fi
             printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
         *'"op":"comm.file"'*)
             printf '%s\n' "$line" >> "$d/comm-file.log"
@@ -653,6 +658,36 @@ case_every_combination_gets_the_verdict_the_rule_requires() {
     return 0
 }
 
+# A daemon that refuses this client's hello (ADR 0049 `## User isolation`) did answer, and says why: the verdict
+# carries those words, for a directed send (the hub's comm.file) and for a broadcast (the agent.send frame) alike.
+HELLO_REFUSAL="host-a has said hello as more than one OS account"
+case_a_refused_hello_is_the_verdict_for_a_directed_send() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    printf '%s' "$HELLO_REFUSAL" > "$dir/hello-refusal.txt"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: hello refused: $HELLO_REFUSAL" \
+        || { echo "  stderr was '$RELAY_ERR', want the refusal named"; return 1; }
+    contains "$RELAY_ERR" "did not answer" && { echo "  a daemon that answered was called silent: '$RELAY_ERR'"; return 1; }
+    [ -z "$RELAY_OUT" ] || { echo "  a refused send printed a verdict on stdout: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+
+case_a_refused_hello_is_the_verdict_for_a_broadcast() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    printf '%s' "$HELLO_REFUSAL" > "$dir/hello-refusal.txt"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send --all "to everyone"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: hello refused: $HELLO_REFUSAL" \
+        || { echo "  stderr was '$RELAY_ERR', want the refusal named"; return 1; }
+    [ -z "$RELAY_OUT" ] || { echo "  a refused broadcast printed a verdict on stdout: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "the hub's own answer is the delivery: one comm.file frame, no id, no filer named" case_the_hubs_answer_is_the_delivery
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
@@ -670,6 +705,8 @@ check "a receipt outranks the SIGPIPE (141) the child takes when the send succee
 check "a receipt outranks an abrupt ssh teardown (255) after the frame was filed" case_a_receipt_outranks_an_abrupt_teardown_exit
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
 check "all 16 comm.file answer/exit/stderr rows and 36+2 not-mine rows get the verdict the rule requires" case_every_combination_gets_the_verdict_the_rule_requires
+check "a refused hello is the verdict of a directed send, in the daemon's own words" case_a_refused_hello_is_the_verdict_for_a_directed_send
+check "a refused hello is the verdict of a broadcast, in the daemon's own words" case_a_refused_hello_is_the_verdict_for_a_broadcast
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

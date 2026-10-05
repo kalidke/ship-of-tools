@@ -22,6 +22,10 @@
 #     -Op (the daemon also broadcasts `kind:"evt"` frames on the same
 #     connection -- those are skipped, never matched), or -TimeoutSec
 #     elapses. Prints exactly that one matching line to stdout and exits 0;
+#     a `kind:"res"` reply to the hello that carries an `error` (the daemon
+#     refused this client: another OS account holds its host, or an older
+#     protocol) is printed the same way and exits 1, so the caller names the
+#     refusal;
 #     any failure -- a connect timeout, no matching reply, the pipe closing
 #     early -- prints ONE line to stderr and exits nonzero. This mirrors
 #     sot_oneshot_request's own unix:/tcp: arms, which match a reply by its
@@ -157,7 +161,9 @@ try {
             [Console]::Error.WriteLine("comm-pipe-request: no request frame on stdin")
             exit 1
         }
-        $writer.WriteLine($frameLine)
+        # A daemon that refuses the hello closes the pipe at once, which can break this write: the refusal is
+        # already on its way back, so a failed write waits for it in the read loop below.
+        try { $writer.WriteLine($frameLine) } catch { }
 
         $deadline = (Get-Date).AddSeconds($TimeoutSec)
         while ($true) {
@@ -181,12 +187,16 @@ try {
             } catch {
                 continue   # a garbled/partial line -- keep waiting, never match on it
             }
+            if ($obj.kind -eq 'res' -and $obj.op -eq 'hello' -and $obj.payload.error) {
+                Write-Output $line
+                exit 1
+            }
             if ($obj.kind -eq 'res' -and $obj.op -eq $Op) {
                 Write-Output $line
                 exit 0
             }
             # kind:"evt" (or a res for some other op, e.g. hello's own
-            # reply) -- not what we asked for; keep reading.
+            # accepted reply) -- not what we asked for; keep reading.
         }
     } else {
         # Hold: relay every line verbatim for up to $TimeoutSec seconds.
