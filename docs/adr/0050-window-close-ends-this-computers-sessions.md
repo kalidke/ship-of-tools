@@ -85,11 +85,11 @@ closing and new leases are refused, the listener dropped and the socket unlinked
 any row is touched; the run gate closes and in-flight starts drain, until the rows
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
-deadline, and a row of any other runtime is left running and counted not ended; the
-daemon's long-lived children (the kernel, the REPL, Pluto, MathJax, the monitor's sampler and a quarto
-render) are killed with everything they started that did not leave them (residual 7): each runs in its own
-process group on Unix and its own job on Windows, and their owners are given 3 s to let go; the final record is
-written; the
+deadline, and a row of any other runtime is left running and counted not ended; every
+process the daemon starts, but a capsule supervisor, the update pipeline's children (known limit (n)) and the
+hub's relay refresh (known limit (o)), is killed with everything it started that did not leave it (residual 7):
+each runs in its own process group on Unix and its own job on Windows, its leader is reaped only after that kill,
+and their owners are given 3 s to let go; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
@@ -196,7 +196,8 @@ connection is the only handle.
    `detach` (a `run(detach(cmd))` child has pgid = sid = its own pid), so Pluto's notebook workers, which Malt starts
    detached, and quarto's julia server, which quarto starts detached (measured with quarto 1.7.31). Under the systemd
    unit the daemon's cgroup ends them when the daemon exits; started without systemd, an idle worker exits when its
-   server socket closes and a busy one when its cell ends. Windows: nothing started inside a daemon child's job or a
+   server socket closes and a busy one when its cell ends. An ssh `ControlPersist` master leaves the same way, so
+   ending the daemon's ssh never ends an operator's shared connection. Windows: nothing started inside a daemon child's job or a
    row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
    julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
@@ -225,6 +226,12 @@ connection is the only handle.
   may resume them.
 - (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
   at the next window; it stays in the record until acknowledged.
+- (n) Every process `rust/updater` starts inside the daemon runs outside containment, with `kill_on_drop` only, which
+  does not run at the daemon's exit: the release check (update.rs `check`) and staging and prepare (update.rs
+  `stage_prepare_arm_inner`), whose children are curl or gh, tar, unzip or PowerShell, git, julia and npm. A
+  shutdown or exit while one runs leaves it and what it started to end on their own; under the systemd unit its
+  cgroup ends them.
+- (o) The hub's relay refresh runs `systemctl` outside containment (rust/backend/src/topology/relay_units.rs).
 - (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
   their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
   an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the

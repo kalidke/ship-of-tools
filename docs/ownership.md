@@ -269,7 +269,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `LinkGate` (one per host; the window's transport is its only writer) | state | topology | `rust/protocol/src/topology/ssh_bridge.rs` `LinkGate`; written `rust/frontend/src/net/transport/mod.rs` |
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
-| `Signal` and its tree registry, `Signal::spawn`, `Contained`, `ChildGuard`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Contained`, `ChildGuard`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
+| `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `Held`, `ChildGuard`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `Held`, `ChildGuard`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
 | quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |

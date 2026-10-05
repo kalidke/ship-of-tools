@@ -224,7 +224,7 @@ mod tests {
         // The two prepend writers and their guards, by trimmed line and count.
         let allowed: [(&str, &str, usize); 5] = [
             ("rust/backend/src/topology/dial.rs", concat!("std::env::set_var(\"", "PATH\", std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&real))).expect(\"join PATH\"));"), 1),
-            ("rust/backend/src/topology/dial.rs", concat!("let _path_guard = EnvGuard::capture(\"", "PATH\");"), 2),
+            ("rust/backend/src/topology/dial.rs", concat!("let _path_guard = EnvGuard::capture(\"", "PATH\");"), 3),
             ("rust/backend/src/comm/mail/forward.rs", concat!("let _path_guard = EnvGuard::capture(\"", "PATH\");"), 1),
             ("rust/backend/tests/lane_bridge/dial.rs", concat!("std::env::set_var(\"", "PATH\", new_path);"), 1),
             ("rust/backend/tests/lane_bridge/dial.rs", concat!("std::env::set_var(\"", "PATH\", &self.0);"), 1),

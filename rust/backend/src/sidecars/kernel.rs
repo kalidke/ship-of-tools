@@ -320,7 +320,7 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
 /// request/response loop every other op uses (no separate raw exchange),
 /// publish `Running` the moment it answers, then keep serving until it
 /// dies OR `status` closes (the owning `Kernel` was dropped — the
-/// contained tree dies as `_contained` goes out of scope on return). Returns
+/// contained tree dies as `contained` goes out of scope on return). Returns
 /// `(reached_running, reason)`: `reached_running` tells the caller whether
 /// to reset the backoff ladder; `reason` is the human-readable cause of
 /// this generation's end (spawn failure, the child's exit — before or
@@ -360,23 +360,23 @@ async fn run_one_generation(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // `_contained` is the one kill: it drops before `child` on every return,
-    // and the shutdown fires it from anywhere, so a child this loop is not
-    // polling for (a full stdin pipe) and what it started still die.
-    let (mut child, _contained) = match sig.spawn(&mut cmd) {
+    // `contained` is the one kill: it ends the tree before the child on every
+    // return, and the shutdown fires it from anywhere, so a child this loop is
+    // not polling for (a full stdin pipe) and what it started still die.
+    let mut contained = match sig.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => return (false, format!("spawn {julia_bin} failed: {e}")),
     };
 
-    let mut stdin = match child.stdin.take() {
+    let mut stdin = match contained.stdin.take() {
         Some(s) => s,
         None => return (false, "kernel child stdin missing".to_string()),
     };
-    let stdout = match child.stdout.take() {
+    let stdout = match contained.stdout.take() {
         Some(s) => s,
         None => return (false, "kernel child stdout missing".to_string()),
     };
-    let stderr = match child.stderr.take() {
+    let stderr = match contained.stderr.take() {
         Some(s) => s,
         None => return (false, "kernel child stderr missing".to_string()),
     };
@@ -415,7 +415,7 @@ async fn run_one_generation(
             }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
-            // function returning drops `_contained`, which kills the tree, and
+            // function returning drops `contained`, which kills the tree, and
             // `pending`'s senders (their receivers, if any caller is
             // somehow still awaiting one, just see a dropped channel —
             // nobody is watching `status` to read a `Dead` we could no
@@ -693,6 +693,9 @@ mod tests {
     async fn missing_kernel_project_reports_dead_without_spawning() {
         let dir = tempfile::tempdir().unwrap();
         let missing_project = dir.path().join("does-not-exist");
+        // A stand-in program, never spawned: the check under test comes after the julia lookup, and a host with
+        // no julia (a CI runner) fails that lookup first.
+        STUB_BIN.lock().unwrap().push((missing_project.clone(), "never-spawned".to_string()));
         let kernel = Kernel::new(missing_project, dir.path().to_path_buf());
         let err = kernel.request("kernel.hello", json!({})).await.unwrap_err();
         let unavailable = err

@@ -445,6 +445,10 @@ fn has_root_relative_refs(html: &str) -> bool {
 /// Run one `quarto render` to its end. `None` means `sig` fired first: the
 /// signal has already killed the render's whole tree (quarto, and the engines
 /// its executable chunks start), whether or not the launcher was reaped.
+/// Quarto is always given the daemon's own julia, replacing any
+/// `QUARTO_JULIA` it inherited; a julia the resolver refuses fails the
+/// render, `--no-execute` or not. The launcher is reaped only after its tree
+/// is killed.
 async fn run_quarto(
     program: &str,
     cwd: &std::path::Path,
@@ -469,13 +473,9 @@ async fn run_quarto(
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if std::env::var_os("QUARTO_JULIA").is_none() {
-        if let Ok((julia, _)) = crate::sidecars::julia::resolve_bin() {
-            cmd.env("QUARTO_JULIA", julia);
-        }
-    }
-    let (mut child, _contained) = sig.spawn(&mut cmd)?;
-    let (mut out, mut errs) = (child.stdout.take(), child.stderr.take());
+    cmd.env("QUARTO_JULIA", crate::sidecars::julia::resolve_bin().map_err(std::io::Error::other)?.0);
+    let mut contained = sig.spawn(&mut cmd)?;
+    let (mut out, mut errs) = (contained.stdout.take(), contained.stderr.take());
     let work = async {
         let (mut so, mut se) = (Vec::new(), Vec::new());
         let read_out = async {
@@ -488,7 +488,7 @@ async fn run_quarto(
                 let _ = e.read_to_end(&mut se).await;
             }
         };
-        let (_, _, status) = tokio::join!(read_out, read_err, child.wait());
+        let (_, _, status) = tokio::join!(read_out, read_err, contained.wait());
         status.map(|status| std::process::Output { status, stdout: so, stderr: se })
     };
     tokio::select! {
@@ -731,10 +731,70 @@ mod quarto_shutdown_tests {
     use super::*;
     use std::time::Duration;
 
+    /// Holds `ENV_TEST_LOCK` and pins the julia the daemon resolves, so a
+    /// render does not depend on a julia being installed; restores both
+    /// variables it touches.
+    struct JuliaPin {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<std::ffi::OsString>); 2],
+    }
+
+    impl JuliaPin {
+        fn new(julia: &std::path::Path, quarto_julia: Option<&str>) -> Self {
+            let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let saved = [
+                ("SOT_JULIA_BIN", std::env::var_os("SOT_JULIA_BIN")),
+                ("QUARTO_JULIA", std::env::var_os("QUARTO_JULIA")),
+            ];
+            std::env::set_var("SOT_JULIA_BIN", julia);
+            match quarto_julia {
+                Some(v) => std::env::set_var("QUARTO_JULIA", v),
+                None => std::env::remove_var("QUARTO_JULIA"),
+            }
+            Self { _serial, saved }
+        }
+    }
+
+    impl Drop for JuliaPin {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.iter_mut() {
+                match value.take() {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// SIGKILLs the pid a stub wrote to `file`, on every path out of the test.
+    struct KillSleeper(std::path::PathBuf);
+
+    impl Drop for KillSleeper {
+        fn drop(&mut self) {
+            if let Ok(pid) = std::fs::read_to_string(&self.0) {
+                if let Ok(pid) = pid.trim().parse::<i32>() {
+                    // SAFETY: a plain signal to a sleeper this test started.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+        }
+    }
+
+    /// Run `stub` (a script body) as `quarto render` to its end on a private signal.
+    fn run_stub_quarto(dir: &std::path::Path, body: &str) -> std::io::Result<Option<std::process::Output>> {
+        let stub = dir.join("stub-quarto");
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}"));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let program = stub.to_string_lossy().into_owned();
+        rt.block_on(run_quarto(&program, dir, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig))
+    }
+
     /// The shutdown signal kills the render's whole process group, engines included.
     #[tokio::test]
     async fn shutdown_kills_the_quarto_render_and_its_children() {
         let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let pid_file = dir.path().join("engine.pid");
         let stub = dir.path().join("stub-quarto");
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display()));
@@ -765,13 +825,15 @@ mod quarto_shutdown_tests {
         assert!(gone, "the engine child survived the shutdown");
     }
 
-    /// The group kill used the launcher's pid, which is gone once the
-    /// launcher is reaped: an engine still holding the render's pipes
-    /// outlived the shutdown.
+    /// An engine that holds the render's pipes after its launcher exits dies
+    /// with the launcher's tree, so the render ends by itself and no signal
+    /// is needed.
     #[tokio::test]
-    async fn quarto_engine_dies_after_its_launcher_is_reaped() {
+    async fn quarto_engine_dies_when_its_launcher_exits() {
         let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let pid_file = dir.path().join("engine.pid");
+        let _kill = KillSleeper(pid_file.clone());
         let stub = dir.path().join("stub-quarto");
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
@@ -779,26 +841,20 @@ mod quarto_shutdown_tests {
         let task = tokio::spawn(async move {
             run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
         });
-        let began = std::time::Instant::now();
-        while sig.live() == 0 || std::fs::read_to_string(&pid_file).map(|s| s.trim().is_empty()).unwrap_or(true) {
-            assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-        // The launcher has exited and been reaped by now; the engine still holds the pipes.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        sig.fire();
-        tokio::time::timeout(Duration::from_secs(3), task)
+        let done = tokio::time::timeout(Duration::from_secs(3), task)
             .await
-            .expect("the render outlived the shutdown")
+            .expect("the render outlived its launcher's exit")
             .expect("render task")
             .expect("run_quarto");
+        assert!(done.is_some_and(|out| out.status.success()), "the render did not finish on its own");
+        assert_eq!(sig.live(), 0);
+        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         let gone = (0..150).any(|_| {
             std::thread::sleep(Duration::from_millis(20));
             // SAFETY: signal 0 only probes the pid.
             unsafe { libc::kill(engine, 0) != 0 }
         });
-        assert!(gone, "the engine survived its reaped launcher");
+        assert!(gone, "the engine survived its launcher's exit");
     }
 
     /// Quarto runs `QUARTO_JULIA` for its julia engine and otherwise a bare
@@ -831,6 +887,72 @@ mod quarto_shutdown_tests {
             std::fs::read_to_string(&out).unwrap_or_default(),
             julia.to_string_lossy(),
             "quarto was not given the daemon's julia"
+        );
+    }
+
+    /// A group's number is its leader's pid and is free the moment the
+    /// leader is reaped: a tree still held after that names whatever process
+    /// next takes the number. The launcher here exits at once; a descendant
+    /// in its own session keeps the render's pipes open, so the render is
+    /// still running when the registry is read.
+    #[tokio::test]
+    async fn quarto_never_holds_a_freed_group_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(&dir.path().join("julia"), None);
+        let sleeper = dir.path().join("sleeper");
+        let _kill = KillSleeper(sleeper.clone());
+        let stub = dir.path().join("stub-quarto");
+        // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
+        let body = "setsid sleep 3106 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let task = tokio::spawn(async move {
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+        });
+        let began = std::time::Instant::now();
+        while std::fs::read_to_string(&sleeper).map(|s| s.trim().is_empty()).unwrap_or(true) {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!task.is_finished(), "the render ended while a descendant held its pipes");
+        for group in sig.held_groups() {
+            // SAFETY: signal 0 only probes the pid.
+            assert_eq!(unsafe { libc::kill(group, 0) }, 0, "a held tree names a process-group number nothing holds");
+        }
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the render outlived the shutdown")
+            .expect("render task")
+            .expect("run_quarto");
+    }
+
+    /// A julia the resolver refuses fails the render; nothing is started.
+    #[test]
+    fn quarto_refuses_what_the_resolver_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pin = JuliaPin::new(std::path::Path::new(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe"), None);
+        let out = dir.path().join("qj");
+        let ran = run_stub_quarto(dir.path(), &format!("printf '%s' \"$QUARTO_JULIA\" > {}\n", out.display()));
+        assert!(!out.exists(), "a refused julia still rendered");
+        let err = ran.expect_err("a refused julia must fail the render");
+        assert!(err.to_string().contains("app-execution alias"), "unexpected error: {err}");
+    }
+
+    /// The daemon's julia replaces one the environment already names.
+    #[test]
+    fn an_inherited_quarto_julia_is_overridden() {
+        let dir = tempfile::tempdir().unwrap();
+        let julia = dir.path().join("julia");
+        let _pin = JuliaPin::new(&julia, Some(r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe"));
+        let out = dir.path().join("qj");
+        run_stub_quarto(dir.path(), &format!("printf '%s' \"$QUARTO_JULIA\" > {}\n", out.display())).expect("run_quarto");
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap_or_default(),
+            julia.to_string_lossy(),
+            "quarto kept an inherited QUARTO_JULIA"
         );
     }
 }

@@ -29,12 +29,10 @@ const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 /// 3. A PATH candidate, rejected (and the search continued to the next
 ///    entry) if it is not a real executable (Unix: the executable bit is
 ///    unset) or is a Windows Store app-execution alias (a `WindowsApps`
-///    path component). If every candidate found is rejected, this is an
-///    error — bare `"julia"` would just re-resolve the same rejected file,
-///    so it is never offered as a fallback in that case. An EMPTY PATH
-///    search (no candidate file exists at all) still returns bare
-///    `"julia"`: there is nothing to have rejected, and the OS's own
-///    lookup might succeed via a mechanism this search didn't enumerate.
+///    path component). If no candidate exists, or every one found is
+///    rejected, this is an error: a bare `"julia"` is never offered, since
+///    the OS would resolve the same rejected file (and Windows resolves a
+///    bare name to the Store alias).
 pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
     resolve_bin_on(std::env::var_os("PATH").as_deref())
 }
@@ -73,7 +71,7 @@ fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static st
     }
     let candidates = candidates_on(path, JULIA_EXE);
     if candidates.is_empty() {
-        return Ok(("julia".to_string(), "PATH (unverified fallback)"));
+        return Err("no `julia` found: SOT_JULIA_BIN unset, no juliaup default channel, none on PATH".into());
     }
     let mut first_rejection = None;
     for candidate in candidates {
@@ -188,7 +186,7 @@ fn resolve_juliaup_julia_from_config(
 }
 
 /// True if `path`'s string form has a path component exactly equal to
-/// "WindowsApps" (case-insensitive), split on `\` — a STRING predicate
+/// "WindowsApps" (case-insensitive), split on `\` and `/` — a STRING predicate
 /// rather than `std::path::Path::components()`, which parses by the HOST
 /// platform's separator conventions and would not split a Windows-shaped
 /// path apart when run on Unix. Kept separate from `looks_like_fake_julia`
@@ -196,7 +194,7 @@ fn resolve_juliaup_julia_from_config(
 /// itself is unit-tested on every platform, not just compiled for one.
 fn is_windows_apps_alias_path(path: &Path) -> bool {
     path.to_string_lossy()
-        .split('\\')
+        .split(['\\', '/'])
         .any(|seg| seg.eq_ignore_ascii_case("WindowsApps"))
 }
 
@@ -267,6 +265,21 @@ mod tests {
         assert!(!is_windows_apps_alias_path(Path::new(
             r"C:\Users\x\MyWindowsAppsBackup\julia.exe"
         )));
+    }
+
+    #[test]
+    fn an_alias_named_with_forward_slashes_is_an_alias() {
+        for alias in [
+            "C:/Users/x/AppData/Local/Microsoft/WindowsApps/julia.exe",
+            r"c:\Users/x\AppData/Local\Microsoft/windowsapps/julia.exe",
+        ] {
+            assert!(is_windows_apps_alias_path(Path::new(alias)), "{alias} is an alias");
+        }
+        let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
+        std::env::set_var("SOT_JULIA_BIN", "C:/Users/x/AppData/Local/Microsoft/WindowsApps/julia.exe");
+        let err = resolve_bin().unwrap_err();
+        assert!(err.contains("app-execution alias"), "unexpected error: {err}");
     }
 
     #[test]
@@ -533,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_bare_julia_only_when_path_search_found_nothing_at_all() {
+    fn no_julia_anywhere_is_an_error_not_a_bare_name() {
         let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().unwrap();
         let empty_path_dir = tempfile::tempdir().unwrap();
@@ -544,9 +557,9 @@ mod tests {
         std::env::remove_var("SOT_JULIA_BIN");
         std::env::set_var("HOME", home.path());
         std::env::remove_var("JULIAUP_DEPOT_PATH");
-        
-        let (bin, _source) = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap();
-        assert_eq!(bin, "julia");
+
+        let err = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap_err();
+        assert!(err.contains("no `julia` found"), "unexpected message: {err}");
     }
 
     #[test]

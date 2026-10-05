@@ -27,8 +27,10 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound, and logs a refused
   port once per streak.
 - A connection's sites go when it disconnects (`remove_root`).
-- A quarto render starts through `Signal::spawn` and is given the daemon's julia as `QUARTO_JULIA` when none is set
-  (`run_quarto`).
+- A quarto render starts through `Signal::spawn` and is always given the daemon's julia as `QUARTO_JULIA`, an
+  inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,
+  since quarto runs `QUARTO_JULIA` for an `engine: julia` document even then; so a host without julia renders no
+  document through quarto. The site's `git` child runs through `Signal::spawn_std` (`run_git`).
 - `.git` and `..` are never served, and a link is followed only when git tracks it and its target lies under a
   declared data root (`site/` `resolve_and_open`).
 
@@ -38,7 +40,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `quarto.open`, `proxy.connect`, `ensure_proxy_for_url`, `pipe_one`, `record_browser_port`, `revoke_browser_ports`,
 `is_servable_video`, `start_page_servers`, `remove_root`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`.
 Uses: `LinkGate`, `proxy.connect`, `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`,
-`dispatch`, `Signal::spawn`, `Contained`, `Signal`, `child_signal::fired`, `child_signal::process`, `resolve_bin`,
+`dispatch`, `Signal::spawn`, `Signal::spawn_std`, `Contained`, `Held`, `Signal`, `child_signal::fired`, `child_signal::process`, `resolve_bin`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `bound_pluto_port`, `allowed_proxy_ports`, `lane_dial`, `ResolvedDial`.
 
 ## Folders

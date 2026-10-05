@@ -85,33 +85,33 @@ fn recipe_for(self_host: &str) -> Result<Option<sot_protocol::topology::ssh_brid
     sot_protocol::topology::ssh_bridge::SshRecipe::new(target, None).map(Some)
 }
 
-/// The ssh child. Tests swap the program for a stub, nothing else.
-fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Child, String> {
+/// The ssh command, for the signal to start. Tests swap the program for a stub, nothing else.
+fn spawn_link(recipe: &sot_protocol::topology::ssh_bridge::SshRecipe) -> Result<tokio::process::Command, String> {
     #[cfg(test)]
     if let Some(program) = tests::STUB_PROGRAM.lock().unwrap().as_ref() {
-        return tokio::process::Command::new(program)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("spawn {recipe}: {e}"));
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        return Ok(cmd);
     }
-    sot_protocol::topology::ssh_bridge::LinkGate::default().spawn_async(recipe).map_err(|e| format!("spawn {recipe}: {e}"))
+    sot_protocol::topology::ssh_bridge::LinkGate::default()
+        .command(recipe)
+        .map(tokio::process::Command::from)
+        .map_err(|e| format!("spawn {recipe}: {e}"))
 }
 
-/// One connection, from spawn to the first failure. The child dies with `child`.
+/// One connection, from spawn to the first failure. The child and what it
+/// started die with `contained`.
 async fn link_once(
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<(), String> {
-    let mut child = spawn_link(recipe)?;
-    let _child_guard = sig.guard();
-    let mut tx = child.stdin.take().ok_or("no stdin")?;
-    let mut rx = codec::buffered(child.stdout.take().ok_or("no stdout")?);
-    let stderr = child.stderr.take().ok_or("no stderr")?;
+    let mut cmd = spawn_link(recipe)?;
+    let mut contained = sig.spawn(&mut cmd).map_err(|e| format!("spawn {recipe}: {e}"))?;
+    let mut tx = contained.stdin.take().ok_or("no stdin")?;
+    let mut rx = codec::buffered(contained.stdout.take().ok_or("no stdout")?);
+    let stderr = contained.stderr.take().ok_or("no stderr")?;
     // ssh's last line is the diagnosis a dead link leaves behind; the pipe must be drained anyway.
     let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     {
@@ -130,12 +130,9 @@ async fn link_once(
     }
     let result = tokio::select! {
         result = converse(&mut tx, &mut rx, self_host, name) => result,
-        // The daemon is shutting down: nothing kills this child at
-        // `process::exit`, so it is killed here.
-        _ = sig.fired() => {
-            let _ = child.kill().await;
-            return Ok(());
-        }
+        // The daemon is shutting down: the signal has already killed the
+        // child's tree.
+        _ = sig.fired() => return Ok(()),
     };
     if result.is_err() {
         if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
@@ -312,14 +309,37 @@ mod tests {
 
     pub(super) static STUB_PROGRAM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-    /// The shutdown signal kills the ssh child; the loop neither reconnects nor leaves a guard counted.
+    /// SIGKILLs the pid a stub wrote to the file, on every path out of the test.
+    #[cfg(unix)]
+    struct KillBackground(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for KillBackground {
+        fn drop(&mut self) {
+            if let Some(pid) = std::fs::read_to_string(&self.0).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
+                // SAFETY: a plain signal to a sleeper this test started.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// The shutdown signal kills the ssh child and everything it started; the loop neither reconnects nor leaves a guard counted.
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_link_child_and_never_reconnects() {
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
+        let bg = dir.path().join("bg");
+        let _kill = KillBackground(bg.clone());
         let stub = dir.path().join("stub-ssh");
-        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display()));
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\necho x >> {}\nsleep 3108 >/dev/null 2>&1 &\necho $! > {}\nexec sleep 30\n",
+                counter.display(),
+                bg.display()
+            ),
+        );
         *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
@@ -332,12 +352,23 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(sig.live() > 0, "the stub child exited before the fire");
+        while std::fs::read_to_string(&bg).map(|s| s.trim().is_empty()).unwrap_or(true) {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub child never wrote its descendant's pid");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let descendant: i32 = std::fs::read_to_string(&bg).unwrap().trim().parse().unwrap();
         sig.fire();
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the link loop outlived the shutdown")
             .expect("link task");
         assert_eq!(sig.live(), 0);
+        // SAFETY: signal 0 only probes the pid.
+        let gone = (0..150).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            unsafe { libc::kill(descendant, 0) != 0 }
+        });
+        assert!(gone, "the link's descendant survived the shutdown");
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "reconnected after the fire");
         *STUB_PROGRAM.lock().unwrap() = None;

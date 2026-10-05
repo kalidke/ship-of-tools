@@ -44,11 +44,14 @@ Restart policy differs by process:
 | Kernel | auto-restart, exponential backoff (1s → 16s, then surface to UI); state rebuilds from disk, so restart is safe |
 | REPL | never auto-restarts — a crashed REPL is meaningful; the user decides, and the UI must say "REPL is dead, press X to restart" |
 
-Orphaned `julia` processes are unacceptable, so a child's whole tree is killed
-(SIGKILL to its process group on Unix, `TerminateJobObject` on Windows) when its
-owner lets go of it or the shutdown fires, whichever comes first (ADR 0050, known limit (p)). There is no
+Orphaned `julia` processes are unacceptable, so the whole tree of every process
+the daemon starts, but those ADR 0050 names as outside it, is killed (SIGKILL to its process
+group on Unix, `TerminateJobObject` on Windows) when its owner lets go of it or
+the shutdown fires, whichever comes first (ADR 0050, known limit (p)). The tree is killed before its
+leader is reaped, because the leader's pid is the group's number. There is no
 SIGTERM grace and no `taskkill`. A process that deliberately left, for example a
-Unix descendant that called `setsid`, is the one exception (ADR 0050, residual 7).
+Unix descendant that called `setsid` or `setpgid`, is the one exception (ADR 0050,
+residual 7).
 
 ## Transport, persistence, reconnect
 
