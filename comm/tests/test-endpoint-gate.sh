@@ -513,6 +513,7 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
     [ "$(uname -s)" = Linux ] && [ -r /proc/self/exe ] || { echo "  needs /proc"; return 2; }
     local spy="$WORK/spy" fakebin fakehome pida pidb out rc=0 ran
     mkdir -p "$spy"
+    spy="$(cd "$spy" && pwd -P)"
     cp "$(command -v bash)" "$spy/spybash"; cp "$(command -v bash)" "$spy/sotd"
     printf '%s\n' 'printf "%s\n" "$BASH" >> "$(dirname "$0")/ran"' > "$spy/session-socket-path"
     "$spy/spybash" -c 'sleep 30; :' & pida=$!
