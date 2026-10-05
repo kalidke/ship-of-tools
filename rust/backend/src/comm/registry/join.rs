@@ -226,7 +226,7 @@ mod agent_join_tests {
 
         // `workspace.list`'s own row-binding rule merges by the declared
         // handle — this is what makes the join visible there.
-        let merged = comm_handle_for_workspace(&resolved);
+        let merged = comm_handle_for_workspace(&resolved, &workspaces.list());
         assert_eq!(merged, "agentjoin-testhost");
 
         // workspace.changed published so the FE re-lists.

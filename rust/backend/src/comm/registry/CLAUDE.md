@@ -27,7 +27,11 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
 - `clear_comm_unread` removes `done` (and turns a `done` state to `idle`) on a person's view of a row. It is the
   daemon's only work-state write.
 - `comm_handle_for_workspace` is the one row-binding rule: the declared handle, else the pinned self-file, else the
-  stored agent name.
+  stored agent name; a self-file or stored name that names a handle another row declares binds nothing. Its callers
+  (`handle_workspace_list`, `clear_comm_unread`, `running_row_holds`) pass the daemon's rows.
+- A registry entry's `workspace_id` is the row whose session last joined that handle (`comm-join.sh` writes it;
+  `entry_row` reads it). The destroy prune (`remove_comm_agents_for_workspace`) removes an entry by the row's stored
+  name only when the entry names no other row.
 - `handle_agent_join` stores the declared handle under the row's guard, overwriting a previous one without a check
   (`set_agent_handle`); `ok` only after the row is persisted.
 - `spawn_registry_poll`, started by the server's `run`, publishes `agent_state` on the workspace bus when
