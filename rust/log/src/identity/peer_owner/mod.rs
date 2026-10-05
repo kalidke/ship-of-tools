@@ -478,6 +478,11 @@ mod tests {
         assert!(admit("test", local, peer));
     }
 
+    /// A process started while a connection is being closed can inherit the closed socket's handle on Windows, which
+    /// keeps the connection open at the other end until that process ends. The tests that start processes (the child
+    /// tests) and the one that waits for a refused connection to close therefore never run at the same time.
+    static CHILD_PROCESSES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A test that cannot run on this host says so and passes, except on CI: a hosted runner that silently stops
     /// running a test is a failure to be seen, not a pass.
     fn skip(reason: &str) {
@@ -530,6 +535,7 @@ mod tests {
     /// have answered.
     #[tokio::test]
     async fn a_connection_the_owner_check_refuses_reaches_no_handler() {
+        let _no_child_process_meanwhile = CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
         use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -715,6 +721,7 @@ mod tests {
             .env("SOT_PEER_OWNER_CHILD_ADDR", listener.local_addr().unwrap().to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         // The child fails or hangs instead of connecting: fail here after 30 s, not at the CI timeout.
@@ -733,20 +740,35 @@ mod tests {
             }
         };
         accepted.set_nonblocking(false).unwrap();
-        // The child's own line saying it is connected, within 30 s: a child that cannot say so fails the test here.
+        // The child's own line saying it is connected, within 30 s: a child that cannot say so fails the test here,
+        // with everything it did say.
         let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let (said, heard) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if line.is_ok_and(|l| l.trim() == "connected") {
-                    let _ = said.send(());
-                    break;
+        {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    seen.lock().unwrap().push_str(&format!("out: {line}\n"));
+                    // libtest has already printed "test <name> ... " on this line, so the child's word ends it.
+                    if line.trim().ends_with("connected") {
+                        let _ = said.send(());
+                    }
                 }
-            }
-        });
+            });
+        }
+        {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    seen.lock().unwrap().push_str(&format!("err: {line}\n"));
+                }
+            });
+        }
         if heard.recv_timeout(Duration::from_secs(30)).is_err() {
             let _ = child.kill();
-            panic!("the child connected but never said so");
+            panic!("the child connected but never said so; it said:\n{}", seen.lock().unwrap());
         }
         (child, accepted)
     }
@@ -759,6 +781,7 @@ mod tests {
     #[cfg(windows)]
     fn a_child_connection_names_the_child(bind: &str) {
         use std::process::{Command, Stdio};
+        let _no_refused_connection_meanwhile = CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
         let listener = std::net::TcpListener::bind(bind).unwrap();
         let (mut child, accepted) = child_connecting_to(&listener);
         let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
