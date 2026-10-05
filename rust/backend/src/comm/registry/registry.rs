@@ -482,3 +482,7 @@ mod tests;
 #[cfg(test)]
 #[path = "registry_write_tests.rs"]
 mod write_tests;
+
+#[cfg(test)]
+#[path = "binding_sites_tests.rs"]
+mod binding_sites_tests;
