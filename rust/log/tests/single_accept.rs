@@ -14,6 +14,19 @@ const ACCEPT_EXCEPTIONS: [(&str, &str); 3] = [
     ("log/src/lane/socket_unix/accept.rs", "the lanes' Unix socket, not TCP"),
 ];
 
+/// The platform opener literals only `browser_open.rs` may spell.
+const OPENER_LITERALS: [&str; 8] = [
+    "Command::new(\"xdg-open\")",
+    "Command::new(\"open\")",
+    "Command::new(\"rundll32\")",
+    "Command::new(\"explorer\")",
+    "Command::new(\"explorer.exe\")",
+    "\"xdg-open\"",
+    "\"rundll32\"",
+    "\"explorer.exe\"",
+];
+const OPENER_HOME: &str = "frontend/src/browser_open.rs";
+
 fn rust_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("sot-log sits under rust/").to_path_buf()
 }
@@ -155,6 +168,22 @@ fn no_tcp_accept_outside_peer_owner() {
         breaches.is_empty(),
         "a TCP accept outside `sot_log::identity::peer_owner::serve_own` (ADR 0049, User isolation); the only exceptions \
          are {ACCEPT_EXCEPTIONS:?}:\n{}",
+        breaches.join("\n")
+    );
+}
+
+/// ADR 0049, User isolation: no code but the page opener starts a browser. A page address on an opener's command line
+/// is readable by other accounts, so every served page goes through `browser_open::open_page`.
+#[test]
+fn no_browser_opener_outside_browser_open() {
+    let breaches: Vec<String> = production_source()
+        .into_iter()
+        .filter(|(rel, _, line)| rel != OPENER_HOME && OPENER_LITERALS.iter().any(|lit| line.contains(lit)))
+        .map(|(rel, n, line)| format!("{rel}:{n}: {}", line.trim()))
+        .collect();
+    assert!(
+        breaches.is_empty(),
+        "a browser opener outside {OPENER_HOME} (ADR 0049, User isolation):\n{}",
         breaches.join("\n")
     );
 }

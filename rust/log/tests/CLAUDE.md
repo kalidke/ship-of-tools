@@ -22,7 +22,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `macos_kernel_facts/`: the macOS kernel behaviours the lane rests on, one module per fact group (peer token, pty hangup, kqueue death watch, pty revoke); macOS only.
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
-- `single_accept.rs`: source guards (ADR 0049, User isolation): no TCP `.accept(` outside `serve_own`, found by walking the production source of every crate; every platform.
+- `single_accept.rs`: source guards (ADR 0049, User isolation): no TCP `.accept(` outside `serve_own` and no browser opener outside `browser_open.rs`, found by walking the production source of every crate; every platform.
 - `socket_unix/`: `SocketServer` and `SocketClient` over real Unix sockets, process-isolated: connect, teardown, close, client modules; Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
