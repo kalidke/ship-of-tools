@@ -88,8 +88,9 @@ async fn fe_client_reaches_a_capsule_row_through_the_daemon() {
 
 #[tokio::test]
 async fn an_old_daemon_is_a_terminal_no_bridge() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    let dir = tempfile::Builder::new().prefix("sot-old-daemon-").tempdir_in("/tmp").expect("fake daemon folder");
+    let path = dir.path().join("daemon.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
     let dials = Arc::new(AtomicUsize::new(0));
     let dials2 = Arc::clone(&dials);
     std::thread::spawn(move || {
@@ -114,7 +115,7 @@ async fn an_old_daemon_is_a_terminal_no_bridge() {
 
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
-        DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None },
+        DaemonLaneEndpoint { dial: LaneDial::Local(path), token: None },
         "row-old-daemon".to_string(),
         80,
         24,
@@ -302,7 +303,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 // -----------------------------------------------------------------------
 // C3 as amended (isolation-plan.md §3, dev/output/c3-second-connection-
 // amendment.md §7): `LaneDial::Ssh` reaches the SAME daemon-in-the-middle
-// as `LaneDial::Tcp` above, through a spawned child instead of an
+// as `LaneDial::Local` above, through a spawned child instead of an
 // already-open socket. A stub `ssh` first on `PATH` stands in for the
 // real binary — it ignores every option/command argv `ssh_bridge::argv`
 // builds and instead relays its stdin/stdout to the harness's own
@@ -312,12 +313,11 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 
 /// Writes an executable `ssh` (no extension: this is the Linux-only half
 /// of this file, `#![cfg(target_os = "linux")]` at the top) into a fresh
-/// temp dir that relays stdin/stdout to `addr` via `nc` — already this
-/// repo's own hermetic lever for a hostile/absent network peer
-/// (`comm-relay.sh`'s `/dev/tcp` self-heal path is the shell twin). The
-/// caller prepends the returned dir to `$PATH`.
-fn stub_ssh_relaying_to(dir: &Path, addr: SocketAddr) {
-    let script = format!("#!/bin/sh\nexec nc {} {}\n", addr.ip(), addr.port());
+/// temp dir that relays stdin/stdout to the Unix socket at `socket` via `nc -U`
+/// (`comm-relay.sh`'s own `nc -U` path is the shell twin). The caller
+/// prepends the returned dir to `$PATH`.
+fn stub_ssh_relaying_to(dir: &Path, socket: &Path) {
+    let script = format!("#!/bin/sh\nexec nc -U {}\n", socket.display());
     let path = dir.join("ssh");
     std::fs::write(&path, script).expect("write stub ssh");
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
@@ -368,7 +368,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-").tempdir().expect("tempdir");
-    stub_ssh_relaying_to(stub_dir.path(), relay.addr);
+    stub_ssh_relaying_to(stub_dir.path(), &relay.path);
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
@@ -393,7 +393,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
         assert!(Instant::now() < deadline, "never checkpointed through the ssh-child bridge");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // The peer report is the DAEMON's (proven the same way the Tcp case
+    // The peer report is the DAEMON's (proven the same way the direct case
     // above proves it: a live checkpoint only reaches this far once the
     // bridge's split-identity proof — `DaemonLaneEndpoint::challenge`
     // against the daemon's own `LaneConnectRes` report — has already

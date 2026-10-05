@@ -1,6 +1,6 @@
 // topology/dial.rs — the one-shot blocking client `sotd topology set` (and
 // `status`'s "cache diverged" line) use to reach a daemon over its
-// already-established endpoint spelling (`unix:`/`tcp:`/`pipe:`/`ssh:`, per
+// already-established endpoint spelling (`unix:`/`pipe:`/`ssh:`, per
 // `topology::endpoint::local_endpoint`/`relay_endpoint`). No new credential: per
 // `op::TOPOLOGY_SET`'s own doc, the dial itself IS the authorisation, so
 // this sends a plain unauthenticated `hello` (role `cli`) the same way any
@@ -16,7 +16,6 @@ use sot_protocol::{codec, Frame, HelloReq, Kind};
 enum Conn {
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
-    Tcp(std::net::TcpStream),
     #[cfg(windows)]
     Pipe(std::fs::File),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
@@ -130,10 +129,6 @@ impl Conn {
                 let r = s.try_clone()?;
                 Ok((Box::new(s), Box::new(r), None))
             }
-            Conn::Tcp(s) => {
-                let r = s.try_clone()?;
-                Ok((Box::new(s), Box::new(r), None))
-            }
             #[cfg(windows)]
             Conn::Pipe(f) => {
                 let r = f.try_clone()?;
@@ -184,9 +179,6 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
             return Err(format!("{endpoint}: unix endpoints are POSIX-only"));
         }
     }
-    if let Some(addr) = endpoint.strip_prefix("tcp:") {
-        return std::net::TcpStream::connect(addr).map(Conn::Tcp).map_err(|e| format!("{endpoint}: {e}"));
-    }
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
@@ -211,7 +203,7 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
         let child = sot_protocol::topology::ssh_bridge::LinkGate::default().spawn_sync(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
         return Ok(Conn::Bridged(child));
     }
-    Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))
+    Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/pipe:/ssh:)"))
 }
 
 /// Dial `endpoint`, send a `cli`-role hello declaring `self_host`, then one
@@ -244,7 +236,7 @@ pub(crate) fn dial_and_call_tracked(
     // error path below (round-2 item 3): a refused login otherwise
     // reaches the operator as the generic "no reply to topology.set
     // within 8 frames" -- the daemon looking mute when `ssh` was the
-    // thing that failed. A no-op for unix:/tcp:/pipe: (`guard` is `None`
+    // thing that failed. A no-op for unix:/pipe: (`guard` is `None`
     // there, nothing to fold) and safe to call after every kind of
     // failure: it reads a value the drain thread parked, so no error path
     // can block on a pipe whose other writers this process does not
@@ -490,8 +482,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unrecognised_scheme_names_all_four_dialable_spellings() {
+    fn unrecognised_scheme_names_the_dialable_spellings() {
         let err = connect("carrier-pigeon:whatever").err().expect("must be an error");
-        assert!(err.contains("unix:/tcp:/pipe:/ssh:"), "error should name all four schemes, got: {err}");
+        assert!(err.contains("unix:/pipe:/ssh:"), "error should name all three schemes, got: {err}");
+        let tcp = connect("tcp:127.0.0.1:1").err().expect("a tcp endpoint is not dialable");
+        assert!(tcp.contains("unrecognised endpoint spelling"), "{tcp}");
     }
 }

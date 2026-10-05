@@ -4,7 +4,7 @@
 //! protocol over a real local socket. Lifted out of `capsule_workspaces/main.rs`
 //! verbatim (ADR 0045 lane B4b) so `lane_bridge/main.rs`'s own cross-
 //! process proofs — an attach client reaching a capsule row THROUGH a
-//! daemon in the middle, over a test-owned TCP\u{2192}Unix relay — can
+//! daemon in the middle, over a test-owned Unix-socket relay — can
 //! stand up the identical `Env`/wire-protocol fixture without a second,
 //! drifting copy. Not itself a `tests/*.rs` file (Cargo only auto-
 //! discovers direct children of `tests/` as integration-test binaries,

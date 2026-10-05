@@ -83,14 +83,15 @@ section is the design built to it; where the two differ, the guarantee wins.
 The cost is one ssh login per frontend connection, attached lane and proxied page
 connection.
 
-**Status.** Built: the control plane listens on no TCP port. The daemon's one listener
+**Status.** Built: the control plane listens on no TCP port and dials none: the lane
+client's TCP dial and `sotd topology`'s `tcp:` endpoint are deleted, and a test fails if
+a control-plane TCP connect returns. The daemon's one listener
 is its session socket, whose directory must be private, or on Windows a named pipe
 with an owner-only descriptor, and a hub's per-host relay sockets are owner-only Unix
 sockets. Not built: the daemon serves its ops and events, mail included, to a
 connection that has sent no hello; the hello names no OS account; and the peer read at
 accept refuses another account only for a lease, so a hub cannot tell two OS users on
-one hub account apart. Lane M1 builds the hello admission and that refusal, and deletes
-`LaneDial::Tcp`, a TCP lane dial that only tests construct. On Windows the frontend,
+one hub account apart. Lane M1 builds the hello admission and that refusal. On Windows the frontend,
 its lease, `sotd stdio-bridge` and the lane client connect to whatever answers their
 pipe name, a name in the machine-wide pipe namespace, without checking which account
 serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept
