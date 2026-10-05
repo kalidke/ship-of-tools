@@ -145,6 +145,31 @@ case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge() {
     return 0
 }
 
+# H3: a count that fails with jq present is a fault, not a 0. The hook's bin is
+# a copy of $BIN whose sot_unread fails: with mail pending, the first turn end
+# blocks once with the count's own last stderr line, the second says nothing,
+# and once the real library is back the mail block comes with no warning and
+# the fault's tick is gone.
+case_a_count_that_fails_is_a_fault_named_once_never_a_zero() {
+    local warn h
+    warn="WARNING: the unread count for @$PEER failed (sot-comm: cannot count unread mail for @$PEER: test fault) — run comm-poll.sh to read your mail"
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    rm -f "${SOT_COMM_HOME:?}"/state/mail-*.tick "${SOT_COMM_HOME:?}"/state/lock-fault-*.tick
+    run_send "@$PEER" "h3-one"
+    rm -rf "${WORK:?}/bin-fault"; cp -r "$BIN" "$WORK/bin-fault"
+    printf '%s\n' 'sot_unread() { echo "sot-comm: cannot count unread mail for @$1: test fault" >&2; return 1; }' >> "$WORK/bin-fault/comm-lib.sh"
+    ln -sfn "$WORK/bin-fault" "$SOT_COMM_HOME/bin"
+    h="$(idle_hook 2>&1)"
+    [ "$h" = "{\"decision\":\"block\",\"reason\":\"$warn\"}" ] || { echo "  the first turn end was not the once-block: $h"; return 1; }
+    h="$(idle_hook 2>&1)"
+    ! contains "$h" '"decision"' || { echo "  the same fault blocked twice: $h"; return 1; }
+    ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
+    h="$(idle_hook 2>&1)"
+    contains "$h" "New sot-comm mail for @$PEER" && ! contains "$h" WARNING && ! fault_ticks \
+        || { echo "  after the library was back: $h"; return 1; }
+    return 0
+}
+
 # ...and a real held lock is still exit 75 and "being written", no warning.
 case_a_held_lock_is_still_try_again() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }

@@ -272,15 +272,70 @@ mod tests {
             let d = home(inbox, cursor);
             let out = std::process::Command::new("bash")
                 .arg("-c")
-                .arg(r#"source "$1"; sot_cursor_offset a 2>/dev/null"#)
+                .arg(r#"source "$1"; sot_cursor_offset a"#)
                 .arg("bash")
                 .arg(&lib)
                 .env("COMM_HOME", d.path())
                 .env("SOT_COMM_HOME", d.path())
                 .output()
                 .expect("run bash");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "the shell failed on inbox {inbox:?} cursor {cursor:?}: {err}");
             let shell: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("shell offset");
-            assert_eq!(cursor_offset(d.path(), "a"), shell, "inbox {inbox:?} cursor {cursor:?}");
+            assert_eq!(cursor_offset(d.path(), "a"), shell, "inbox {inbox:?} cursor {cursor:?}: {err}");
+        }
+    }
+
+    /// `sot_unread` is the shell's copy of `counts`: `<total> <unread>` for the
+    /// same inboxes and cursors, including every line `counts` refuses.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unread_agrees_with_the_shell() {
+        let lib = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../comm/lib/comm-lib.sh");
+        let ib = MINE.repeat(3);
+        let lines = [
+            MINE,
+            "{\"from\":\"a\",\"to\":\"a\",\"msg\":\"own\"}\n",
+            "{\"from\":\"b\",\"to\":\"c\",\"msg\":\"other\"}\n",
+            "{\"from\":\"b\",\"to\":5,\"msg\":\"num\"}\n",
+            "{\"from\":\"b\",\"msg\":\"no to\"}\n",
+            "{\"to\":\"a\",\"msg\":\"no from\"}\n",
+            "{\"from\":5,\"to\":\"a\",\"msg\":\"from 5\"}\n",
+            "{\"from\":\"b\",\"to\":\"\",\"msg\":\"broadcast\"}\n",
+            "not json\n",
+            "{\"to\":\"a\",\"m\":\"x\0y\"}\n",
+            "[1]\n",
+            "\"a\"\n",
+        ];
+        let mixed: String = lines.concat();
+        let torn = format!("{mixed}{{\"from\":\"b\",\"to\":\"a\"");
+        let mut cases: Vec<(String, Option<String>)> = vec![(ib.clone(), None), (ib.clone(), Some("1".into())), (ib.clone(), Some(hashed(2, &ib)))];
+        for l in lines {
+            cases.push((l.to_string(), None));
+        }
+        for inbox in [&mixed, &torn] {
+            cases.push((inbox.clone(), None));
+            cases.push((inbox.clone(), Some("1".into())));
+            cases.push((inbox.clone(), Some("0".into())));
+            cases.push((inbox.clone(), Some(hashed(3, inbox))));
+        }
+        for (inbox, cursor) in cases {
+            let d = home(&inbox, cursor.as_deref());
+            let out = std::process::Command::new("bash")
+                .arg("-c")
+                .arg(r#"source "$1"; sot_unread a"#)
+                .arg("bash")
+                .arg(&lib)
+                .env("COMM_HOME", d.path())
+                .env("SOT_COMM_HOME", d.path())
+                .output()
+                .expect("run bash");
+            let err = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "the shell failed on inbox {inbox:?} cursor {cursor:?}: {err}");
+            let got = scan(d.path(), "a", 0);
+            let want = format!("{} {}", got.total, got.unread);
+            let shell = String::from_utf8_lossy(&out.stdout);
+            assert_eq!(shell.trim_end(), want, "inbox {inbox:?} cursor {cursor:?}: {err}");
         }
     }
 

@@ -231,6 +231,8 @@ check "pending directed mail blocks the stop, naming comm-poll" case_pending_mai
 check "a second stop for the same pending mail does not block again" case_second_stop_in_the_same_turn_does_not_block_again
 check "a broadcast-only inbox never blocks the stop" case_broadcast_only_inbox_never_blocks
 check "a self-echo frame never blocks the stop" case_self_echo_never_blocks
+check "H1: a line addressed to another handle never blocks the stop" case_a_line_to_another_handle_never_blocks
+check "H2: a line with a numeric to never blocks the stop" case_a_line_with_a_numeric_to_never_blocks
 check "an offset cursor covering the inbox never blocks the stop" case_offset_cursor_covering_the_inbox_never_blocks
 check "a frame filed in the same second as one already read is still announced" case_same_second_frame_is_still_announced
 check "a torn inbox line does not silence pending mail" case_torn_line_does_not_silence_pending_mail

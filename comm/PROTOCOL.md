@@ -257,8 +257,10 @@ newline-terminated lines are ever counted.
 
 `to` equal to the handle is directed mail and counts as unread; `""` is a
 broadcast copy, filed and read at the next poll, never counted as unread. A
-line with no `to` key is legacy (pre-stamp, before 2026-06-12) and reads as
-directed.
+line whose `to` is missing, not a string or another handle's, or whose `from`
+is this handle, is shown at the next poll and never counted. One rule counts:
+the wake's `counts` in Rust and its shell twin `sot_unread`, pinned by
+`unread_agrees_with_the_shell`.
 
 ## Delivery
 
@@ -383,7 +385,10 @@ the file again, so a slow display never holds off a writer. A timeout means
 try again, never a skip: `comm-poll.sh` says the inbox is being written,
 leaves the cursor and exits 75, the end-of-turn hook prints that the inbox was
 busy and does not block the turn, and a wake reader checks again on its next
-tick. Only a held lock is "try again": any other lock fault, a lock file that
+tick. The end-of-turn hook counts only with `sot_unread`, and only when jq is on
+`PATH` (without jq its tool block is its one word on it); a count that fails
+with jq present is named like a lock fault (`WARNING: the unread count for @h
+failed (…) — run comm-poll.sh to read your mail`), never read as 0. Only a held lock is "try again": any other lock fault, a lock file that
 cannot be opened or any flock error, is named (flock's code and its own error
 text) where the session sees it (comm-poll's output, every block of the
 end-of-turn hook) and the read runs unlocked, covered by the hashed cursor. On

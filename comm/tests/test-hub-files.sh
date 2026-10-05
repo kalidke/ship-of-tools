@@ -190,6 +190,7 @@ check "S-A: a lock file that will not open is named, read unlocked, every line o
 check "flock inside a subshell leaves the shared lock held in the calling shell" case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller
 check "a lock fault blocks a marker turn once, unstamped, never in a continuation, once per session, and prefixes every nudge" case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge
 check "S-A: a real held lock is still exit 75 and being written, never a warning" case_a_held_lock_is_still_try_again
+check "H3: a count that fails is a fault named once, never a zero" case_a_count_that_fails_is_a_fault_named_once_never_a_zero
 check "S-B: a last line holding a NUL, ending in CR, or empty is shown once and never stepped back over" case_a_nul_a_cr_or_an_empty_last_line_is_shown_once
 
 echo "---"
