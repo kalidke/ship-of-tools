@@ -50,6 +50,9 @@ scripts/CLAUDE.md.
   runs on main and on demand, not on every branch push, so a lane merge gate runs the same line (`cargo clippy
   --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods`) on the merged
   tree before the merge.
+- The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
+  in `cargo test`; the job "containment, ignored tests (windows-latest)" runs them with julia installed
+  (rust/backend/src/lifecycle/contain.rs).
 - The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of
   the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
 - Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's

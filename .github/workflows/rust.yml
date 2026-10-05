@@ -457,6 +457,28 @@ jobs:
         timeout-minutes: 15
         run: cargo test -p sot-backend --test capsule_workspaces -- --nocapture
 
+  # The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
+  # in `cargo test` (rust/backend/src/lifecycle/contain.rs); this job runs them, with julia installed, on every run.
+  windows-ignored-containment:
+    name: containment, ignored tests (windows-latest)
+    runs-on: windows-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - name: Test the ignored containment tests
+        run: cargo test -p sot-backend --bins contain -- --include-ignored --test-threads=1
+
   p2-e2e:
     name: P2 e2e (real helper, offline)
     runs-on: ubuntu-latest
