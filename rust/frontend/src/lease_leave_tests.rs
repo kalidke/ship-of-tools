@@ -1,6 +1,6 @@
 //! Lease tests: leaving, and what the daemon is told on the way out.
 
-use super::grant_tests::bind;
+use super::grant_tests::{bind, read_handoff};
 use super::*;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -23,7 +23,7 @@ fn leave_fake(
         let conn = listener.accept().await.unwrap();
         let (rx, mut tx) = conn.split();
         let mut rx = codec::buffered(rx);
-        let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+        let (_, req) = read_handoff(&mut rx, &mut tx).await.expect("a handoff");
         if let Some((asked, open)) = gate {
             asked.send(()).unwrap();
             open.await.unwrap();
@@ -225,7 +225,7 @@ fn odd_reply_fake(
         let conn = listener.accept().await.unwrap();
         let (rx, mut tx) = conn.split();
         let mut rx = codec::buffered(rx);
-        let (req, _) = codec::read_frame(&mut rx).await.unwrap();
+        let (_, req) = read_handoff(&mut rx, &mut tx).await.expect("a handoff");
         let granted = serde_json::json!({"outcome": "granted"});
         codec::write_frame(&mut tx, &Frame::res(req.id, op::FE_LEASE, granted), None).await.unwrap();
         let (leave, _) = codec::read_frame(&mut rx).await.unwrap();

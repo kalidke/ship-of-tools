@@ -27,7 +27,7 @@
 use std::net::TcpListener as StdTcpListener;
 
 use sot_protocol::topology::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
-use sot_protocol::{codec, op, Frame, ProxyConnectReq};
+use sot_protocol::{codec, op, Frame, HelloReq, ProxyConnectReq, HANDOFF_ROLE};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -154,9 +154,8 @@ where
 
 /// Pipe one browser connection through an ssh child spawned from `recipe`
 /// for `port` (C3 as amended §3): spawn, do the `proxy.connect` handshake
-/// as the child's first bytes — the daemon peeks that op on ANY accepted
-/// connection (`server/conn.rs`), so the frames are byte-identical to the old
-/// tcp-forwarded leg — then splice bytes both ways until either side closes
+/// behind a handoff hello as the child's first bytes (`server/conn.rs`
+/// `hand_off`), then splice bytes both ways until either side closes
 /// (carrying a WebSocket upgrade verbatim). While the host's link is down
 /// (`gate`) no child is spawned and the browser connection closes at once.
 async fn pipe_one(
@@ -210,10 +209,20 @@ where
         port,
         token: token.map(|s| s.to_string()),
     };
-    let frame = Frame::req(1, op::PROXY_CONNECT, serde_json::to_value(&req)?);
-    codec::write_frame(d_wr, &frame, None).await?;
+    // The handoff hello (ADR 0049 `## User isolation`) and `proxy.connect` go out in one write, so the hello costs
+    // no round trip; the two replies come back through the one reader.
+    let hello = HelloReq::this_process("sot-fe-proxy", HANDOFF_ROLE, Some(crate::net::identity::frontend_identity().host.clone()))?;
+    let mut both = Vec::new();
+    codec::write_frame(&mut both, &Frame::req(1, op::HELLO, serde_json::to_value(&hello)?), None).await?;
+    codec::write_frame(&mut both, &Frame::req(2, op::PROXY_CONNECT, serde_json::to_value(&req)?), None).await?;
+    d_wr.write_all(&both).await?;
     d_wr.flush().await?;
 
+    let (hello_res, _blob) = codec::read_frame(d_buf).await?;
+    if hello_res.payload.get("error").is_some() {
+        let code = hello_res.payload.get("code").and_then(|v| v.as_str()).unwrap_or("error");
+        anyhow::bail!("daemon refused the hello for port {port}: {code}");
+    }
     let (res, _blob) = codec::read_frame(d_buf).await?;
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res
@@ -419,6 +428,16 @@ mod tests {
                     let (d_rd, mut d_wr) = tokio::io::split(daemon);
                     tokio::spawn(async move {
                         let mut d_buf = tokio::io::BufReader::new(d_rd);
+                        // The daemon's admission (ADR 0049 `## User isolation`): a handoff hello first, else
+                        // `unauthenticated` and the end.
+                        let (hello, _) = codec::read_frame(&mut d_buf).await.unwrap();
+                        if hello.op != op::HELLO || hello.payload["role"] != "handoff" {
+                            let refusal = serde_json::json!({ "error": "send a hello first", "code": "unauthenticated" });
+                            codec::write_frame(&mut d_wr, &Frame::res(hello.id, &hello.op, refusal), None).await.unwrap();
+                            return;
+                        }
+                        let accepted = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
+                        codec::write_frame(&mut d_wr, &Frame::res(hello.id, op::HELLO, accepted), None).await.unwrap();
                         let (req, _) = codec::read_frame(&mut d_buf).await.unwrap();
                         assert_eq!(req.op, op::PROXY_CONNECT);
                         let payload = if serving.load(SeqCst) {
