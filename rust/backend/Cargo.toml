@@ -47,11 +47,12 @@ uuid = { workspace = true }
 # under `[target.'cfg(windows)'.dev-dependencies]` below, promoted to a
 # real (non-dev) dependency since production code now names the type too.
 [target.'cfg(windows)'.dependencies]
+# `Win32_System_JobObjects`: lifecycle/contain.rs's per-child job.
 # `Win32_System_Registry`: comm/mail/inbox.rs's machine id (`MachineGuid`).
 # `Win32_System_Diagnostics_ToolHelp` + `Win32_System_Threading`: comm/registry/ancestors.rs's
 # process snapshot and per-process creation times; `Wdk_System_Threading`: its
 # command-line query.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Wdk_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Wdk_System_Threading"] }
 
 [[bin]]
 name = "sotd"

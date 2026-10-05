@@ -443,8 +443,8 @@ fn has_root_relative_refs(html: &str) -> bool {
 }
 
 /// Run one `quarto render` to its end. `None` means `sig` fired first: the
-/// render's whole process group (quarto, and the engines its executable chunks
-/// start) is killed and reaped before this returns.
+/// signal has already killed the render's whole tree (quarto, and the engines
+/// its executable chunks start), whether or not the launcher was reaped.
 async fn run_quarto(
     program: &str,
     cwd: &std::path::Path,
@@ -468,12 +468,13 @@ async fn run_quarto(
     }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    cmd.process_group(0);
-    let mut child = cmd.spawn()?;
-    let _child_guard = sig.guard();
+        .stderr(std::process::Stdio::piped());
+    if std::env::var_os("QUARTO_JULIA").is_none() {
+        if let Ok((julia, _)) = crate::sidecars::julia::resolve_bin() {
+            cmd.env("QUARTO_JULIA", julia);
+        }
+    }
+    let (mut child, _contained) = sig.spawn(&mut cmd)?;
     let (mut out, mut errs) = (child.stdout.take(), child.stderr.take());
     let work = async {
         let (mut so, mut se) = (Vec::new(), Vec::new());
@@ -492,17 +493,9 @@ async fn run_quarto(
     };
     tokio::select! {
         done = work => done.map(Some),
-        // The daemon is shutting down: nothing kills this child at
-        // `process::exit`, so it is killed here.
-        _ = sig.fired() => {
-            #[cfg(unix)]
-            if let Some(pid) = child.id() {
-                // SAFETY: plain signal to the group this function created.
-                unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
-            }
-            let _ = child.kill().await;
-            Ok(None)
-        }
+        // The daemon is shutting down: the signal has already killed the
+        // render's tree.
+        _ = sig.fired() => Ok(None),
     }
 }
 
@@ -772,5 +765,76 @@ mod quarto_shutdown_tests {
             unsafe { libc::kill(engine, 0) != 0 }
         });
         assert!(gone, "the engine child survived the shutdown");
+    }
+
+    /// The group kill used the launcher's pid, which is gone once the
+    /// launcher is reaped: an engine still holding the render's pipes
+    /// outlived the shutdown.
+    #[tokio::test]
+    async fn quarto_engine_dies_after_its_launcher_is_reaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("engine.pid");
+        let stub = dir.path().join("stub-quarto");
+        std::fs::write(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let task = tokio::spawn(async move {
+            run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
+        });
+        let began = std::time::Instant::now();
+        while sig.live() == 0 || std::fs::read_to_string(&pid_file).map(|s| s.trim().is_empty()).unwrap_or(true) {
+            assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        // The launcher has exited and been reaped by now; the engine still holds the pipes.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the render outlived the shutdown")
+            .expect("render task")
+            .expect("run_quarto");
+        let gone = (0..150).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            // SAFETY: signal 0 only probes the pid.
+            unsafe { libc::kill(engine, 0) != 0 }
+        });
+        assert!(gone, "the engine survived its reaped launcher");
+    }
+
+    /// Quarto runs `QUARTO_JULIA` for its julia engine and otherwise a bare
+    /// `julia`, which on Windows can be an app-execution alias that runs
+    /// outside the daemon's containment; the daemon hands it the one julia
+    /// it resolves for every other child.
+    #[test]
+    fn quarto_is_given_the_daemons_julia() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved = (std::env::var_os("SOT_JULIA_BIN"), std::env::var_os("QUARTO_JULIA"));
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("qj");
+        let stub = dir.path().join("stub-quarto");
+        std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display())).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let julia = dir.path().join("julia");
+        std::env::set_var("SOT_JULIA_BIN", &julia);
+        std::env::remove_var("QUARTO_JULIA");
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let ran = rt.block_on(run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig));
+        for (key, value) in [("SOT_JULIA_BIN", saved.0), ("QUARTO_JULIA", saved.1)] {
+            match value {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        ran.expect("run_quarto");
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap_or_default(),
+            julia.to_string_lossy(),
+            "quarto was not given the daemon's julia"
+        );
     }
 }

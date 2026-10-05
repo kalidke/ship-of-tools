@@ -31,7 +31,7 @@ lanes. The crate is `sot-log`, the workspace's bottom crate, so it also carries 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot-capsule supervise`,
 `supervisor_client`, `FeAttachClient`, `rust/backend/src/rows/run/headless.rs`,
-`rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`, `Endpoint`, `DaemonLaneEndpoint`. Uses:
+`rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`, `Endpoint`, `DaemonLaneEndpoint`, `AnonymousJob`. Uses:
 `DaemonLaneEndpoint`, `lane.connect`, `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`,
 `owner_protected_pipe_descriptor`, `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`.
 
