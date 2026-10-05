@@ -416,16 +416,6 @@ fn absent_kind_from_wire(s: Option<&str>) -> std::io::ErrorKind {
     }
 }
 
-/// `true` iff a wire `unauthenticated` refusal is an OLD daemon's ordinary
-/// control-loop auth gate (its "... send a token-valid hello first" text)
-/// answering a `lane.connect` it never recognized as a first-frame op. No
-/// daemon in this tree sends `unauthenticated`. There is no wire `code`
-/// for "predates the bridge", so the daemon's own message text is the only
-/// thing that marks the old gate.
-fn unauthenticated_is_actually_no_bridge(detail: &str) -> bool {
-    detail.contains("token-valid hello")
-}
-
 /// Classify one `lane.connect` reply frame into the daemon's own
 /// `(pid, created)` report, or a typed refusal/uncertainty. Matched
 /// BEFORE any `io::Error` conversion exists to unwrap these into.
@@ -465,10 +455,6 @@ fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
         // the absence window.
         Some("dial_failed") => Err(TransportError::Unreachable(std::io::Error::other(werr.error))),
         Some("undetermined") => Err(TransportError::Undetermined { via: "bridge", detail: werr.error }),
-        Some("unauthenticated") if unauthenticated_is_actually_no_bridge(&werr.error) => Err(TransportError::Refused {
-            code: "no_bridge".to_string(),
-            detail: format!("a daemon that predates the lane bridge (ADR 0045) refused with its ordinary control-loop gate: {}", werr.error),
-        }),
         Some(code) => Err(TransportError::Refused { code: code.to_string(), detail: werr.error }),
         None => Err(TransportError::Refused { code: "no_bridge".to_string(), detail: werr.error }),
     }
@@ -497,22 +483,49 @@ impl<'a> std::io::Write for ClientIo<'a> {
     }
 }
 
+/// The hello's reply, or why it is none: an `{error, code}` payload is the daemon refusing this client (an older
+/// protocol, an unnamed host or account, a second account on the host), typed `Refused` with the daemon's own code
+/// and message; anything that is not the hello's reply is a daemon that predates the lane bridge.
+fn classify_hello_reply(frame: Frame) -> Result<(), TransportError> {
+    if frame.kind != Kind::Res || frame.op != op::HELLO {
+        return Err(TransportError::Refused {
+            code: "no_bridge".to_string(),
+            detail: format!(
+                "unexpected reply to the hello (op={:?} kind={:?}) — a daemon that predates the lane bridge (ADR 0045), or a foreign wire protocol",
+                frame.op, frame.kind
+            ),
+        });
+    }
+    match serde_json::from_value::<WireError>(frame.payload) {
+        Ok(WireError { error, code, .. }) => Err(TransportError::Refused { code: code.unwrap_or_else(|| "hello_refused".to_string()), detail: error }),
+        Err(_) => Ok(()),
+    }
+}
+
 /// The ONE deadline helper the handshake shares across all
-/// transports: write the request, read ONE reply, as a SINGLE operation
-/// bounded by one absolute deadline — not a per-read socket timeout a
-/// trickle of bytes could extend indefinitely, and the write is bounded
-/// by the SAME deadline too (a slow/stalled write is no less a hang than
-/// a slow read). `on_timeout` is `stream.cancel()` — `shutdown(Both)` for
-/// `Unix`, `PipeClient`'s own OVERLAPPED cancel for `Pipe` — the
-/// SAME mechanism `exchange_identity`'s own wire round trip already uses
-/// for the POST-handshake attach hello, so the handshake and the hello
-/// that immediately follows it are bounded identically.
-fn run_handshake(stream: &LaneStream, req: &Frame, deadline: Instant) -> Result<(u32, u64), TransportError> {
+/// transports: write the hello and the `lane.connect` request in ONE write
+/// (the handoff pipelines, so the hello costs no round trip), read the
+/// hello's reply and then the request's through ONE reader, as a SINGLE
+/// operation bounded by one absolute deadline — not a per-read socket
+/// timeout a trickle of bytes could extend indefinitely, and the write is
+/// bounded by the SAME deadline too (a slow/stalled write is no less a
+/// hang than a slow read). `on_timeout` is `stream.cancel()` —
+/// `shutdown(Both)` for `Unix`, `PipeClient`'s own OVERLAPPED cancel for
+/// `Pipe` — the SAME mechanism `exchange_identity`'s own wire round trip
+/// already uses for the POST-handshake attach hello, so the handshake and
+/// the hello that immediately follows it are bounded identically.
+fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Instant) -> Result<(u32, u64), TransportError> {
     let outcome = sot_log::identity::deadline::run_with_deadline(deadline, || stream.cancel(), || -> Result<Frame, TransportError> {
-        let mut io = ClientIo(stream);
-        crate::codec::write_frame_blocking(&mut io, req).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
+        use std::io::Write as _;
+        let unreachable = |e: &dyn std::fmt::Display| TransportError::Unreachable(std::io::Error::other(e.to_string()));
+        let mut both = Vec::new();
+        crate::codec::write_frame_blocking(&mut both, hello).map_err(|e| unreachable(&e))?;
+        crate::codec::write_frame_blocking(&mut both, req).map_err(|e| unreachable(&e))?;
+        ClientIo(stream).write_all(&both).map_err(TransportError::Unreachable)?;
         let mut r = std::io::BufReader::new(ClientIo(stream));
-        crate::codec::read_frame_blocking(&mut r).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))
+        let hello_reply = crate::codec::read_frame_blocking(&mut r).map_err(|e| unreachable(&e))?;
+        classify_hello_reply(hello_reply)?;
+        crate::codec::read_frame_blocking(&mut r).map_err(|e| unreachable(&e))
     });
     match outcome {
         Some(Ok(frame)) => classify_reply(frame),
@@ -536,7 +549,10 @@ impl DaemonLaneEndpoint {
             voyage_id,
             token: self.token.clone(),
         };
-        let frame = Frame::req(1, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
+        let hello = crate::HelloReq::this_process("sot-lane-dial", crate::HANDOFF_ROLE, sot_log::host::state_dir::host_name().ok())
+            .map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
+        let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
+        let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
         let stream = match &self.dial {
             #[cfg(unix)]
@@ -576,7 +592,7 @@ impl DaemonLaneEndpoint {
         };
 
         let handshake_deadline = Instant::now() + CONNECT_BOUND;
-        let outcome = run_handshake(&stream, &frame, handshake_deadline);
+        let outcome = run_handshake(&stream, &hello, &frame, handshake_deadline);
         // A dying ssh child's stdout closes as a clean `Ok(0)` EOF, not
         // an `io::Error` `BridgedClient::read` has anything to wrap — the
         // codec layer above it turns that EOF into its own generic

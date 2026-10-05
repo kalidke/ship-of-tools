@@ -82,12 +82,14 @@ async fn fe_client_reaches_a_capsule_row_through_the_daemon() {
 }
 
 // -----------------------------------------------------------------------
-// (ii) An old daemon (no lane bridge) is a terminal "no bridge" — never a
-// second dial attempt.
+// (ii) An old daemon is a terminal refusal — never a second dial attempt: one
+// that predates the lane bridge answers `lane.connect` with the generic "unknown
+// op", and one that predates protocol 3 refuses the dial's hello.
 // -----------------------------------------------------------------------
 
-#[tokio::test]
-async fn an_old_daemon_is_a_terminal_no_bridge() {
+/// A fake daemon that answers the first bytes of every connection with `reply`; returns the status line the
+/// attach client went terminal with and how many connections it opened.
+async fn attach_to_a_daemon_that_answers(reply: Frame) -> (String, usize) {
     let dir = tempfile::Builder::new().prefix("sot-old-daemon-").tempdir_in("/tmp").expect("fake daemon folder");
     let path = dir.path().join("daemon.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
@@ -97,15 +99,11 @@ async fn an_old_daemon_is_a_terminal_no_bridge() {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             dials2.fetch_add(1, Ordering::SeqCst);
+            let reply = reply.clone();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf);
-                // The generic "unknown op" shape a daemon predating the
-                // lane bridge answers — matches `sot-protocol`'s own
-                // `lane_client.rs` unit test `an_unknown_op_reply_is_no_
-                // bridge` exactly.
-                let res = Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "error": "unknown op: lane.connect" }));
-                let mut line = serde_json::to_vec(&res).unwrap();
+                let mut line = serde_json::to_vec(&reply).unwrap();
                 line.push(b'\n');
                 let _ = stream.write_all(&line);
                 std::thread::sleep(Duration::from_millis(300));
@@ -124,18 +122,34 @@ async fn an_old_daemon_is_a_terminal_no_bridge() {
         None,
         wake,
     )
-    .expect("attach starts even against a bridge-less daemon");
+    .expect("attach starts even against an old daemon");
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while !client.is_dead() {
         client.pump();
-        assert!(Instant::now() < deadline, "client never went terminal against a no-bridge daemon");
+        assert!(Instant::now() < deadline, "client never went terminal against an old daemon");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(client.status_line().contains("no bridge"), "status must name the missing bridge, got {:?}", client.status_line());
-
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(dials.load(Ordering::SeqCst), 1, "a Refused{{no_bridge}} reply must be terminal — never a second dial");
+    (client.status_line().to_string(), dials.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn a_daemon_without_the_bridge_is_a_terminal_no_bridge() {
+    // The generic "unknown op" shape a daemon predating the lane bridge answers — matches `sot-protocol`'s own
+    // `lane_client.rs` unit test `an_unknown_op_reply_is_no_bridge` exactly.
+    let reply = Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "error": "unknown op: lane.connect" }));
+    let (status, dials) = attach_to_a_daemon_that_answers(reply).await;
+    assert!(status.contains("no bridge"), "status must name the missing bridge, got {status:?}");
+    assert_eq!(dials, 1, "a Refused{{no_bridge}} reply must be terminal — never a second dial");
+}
+
+#[tokio::test]
+async fn a_daemon_on_an_older_protocol_is_a_terminal_refusal() {
+    let payload = serde_json::json!({ "error": "protocol mismatch: update the older side", "code": "protocol_mismatch" });
+    let (status, dials) = attach_to_a_daemon_that_answers(Frame::res(1, op::HELLO, payload)).await;
+    assert!(status.contains("protocol_mismatch"), "status must name the daemon's refusal, got {status:?}");
+    assert_eq!(dials, 1, "a refused hello must be terminal — never a second dial");
 }
 
 // -----------------------------------------------------------------------

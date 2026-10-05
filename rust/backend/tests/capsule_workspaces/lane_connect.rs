@@ -5,44 +5,22 @@ use super::*;
 // --- ADR 0045 decision 2 (lane B3): `lane.connect`, the daemon-side lane
 // bridge --- //
 
-/// The raw bytes of a `lane.connect` request frame — split out of
-/// [`lane_connect`] so a caller that needs to prove peek-buffer
-/// preservation (Codex review SHOULD-FIX, 2026-09-11: the daemon's own
-/// `read_frame` peek must consume EXACTLY this envelope and leave
-/// whatever follows untouched for the raw pipe) can concatenate it with
-/// the FIRST lane bytes and write both in ONE call, before ever reading
-/// a reply.
-#[cfg(target_os = "linux")]
-fn lane_connect_envelope_bytes(target: &str, lane: &str, voyage_id: Option<&str>) -> Vec<u8> {
-    let mut req = serde_json::json!({ "target": target, "lane": lane });
-    if let Some(v) = voyage_id {
-        req["voyage_id"] = serde_json::json!(v);
-    }
-    let mut bytes = serde_json::to_vec(&Frame::req(1, op::LANE_CONNECT, req)).expect("serialize lane.connect envelope");
-    bytes.push(b'\n');
-    bytes
-}
-
-/// A FRESH connection to `env.socket_path` whose only frame is
-/// `lane.connect` (ADR 0045 decision 2: a dedicated connection, never
-/// through `connect_and_hello`'s multiplexed control loop). Returns the
-/// still-open connection — a `Conn` so a raw byte read/write afterward
-/// (on success) shares the SAME `BufReader` the response frame was read
-/// through, never a throwaway second reader that would lose whatever
-/// piped bytes it already buffered past the envelope — alongside the
-/// parsed response payload.
+/// A FRESH connection to `env.socket_path` that hands off to `lane.connect` (ADR 0045 decision 2: a dedicated
+/// connection, never through `connect_and_hello`'s multiplexed control loop): a handoff hello and the request in one
+/// write. Returns the still-open connection — a `Conn` so a raw byte read/write afterward (on success) shares the
+/// SAME `BufReader` the response frame was read through, never a throwaway second reader that would lose whatever
+/// piped bytes it already buffered past the envelope — alongside the parsed response payload.
 #[cfg(target_os = "linux")]
 async fn lane_connect(env: &Env, target: &str, lane: &str, voyage_id: Option<&str>) -> (Conn, serde_json::Value) {
     lane_connect_with_payload(env, target, lane, voyage_id, &[]).await
 }
 
-/// [`lane_connect`]'s own general form: the connect envelope AND
-/// `extra_payload` (raw bytes meant for the lane, once piped) are
-/// written in ONE `write_all` call, BEFORE this function ever reads
-/// anything back — the peek-buffer-preservation proof. Still returns
-/// only after the `LaneConnectRes` frame itself has been read (through
-/// the SAME `BufReader` the caller goes on to read any piped reply
-/// from), exactly like [`lane_connect`].
+/// [`lane_connect`]'s own general form: the hello, the connect envelope AND `extra_payload` (raw bytes meant for the
+/// lane, once piped) are written in ONE `write_all` call, BEFORE this function ever reads anything back — the
+/// peek-buffer-preservation proof (Codex review SHOULD-FIX, 2026-09-11: the daemon's own `read_frame` must consume
+/// EXACTLY the hello and this envelope and leave whatever follows untouched for the raw pipe). Still returns only
+/// after the `LaneConnectRes` frame itself has been read (through the SAME `BufReader` the caller goes on to read
+/// any piped reply from), exactly like [`lane_connect`].
 #[cfg(target_os = "linux")]
 async fn lane_connect_with_payload(
     env: &Env,
@@ -51,17 +29,11 @@ async fn lane_connect_with_payload(
     voyage_id: Option<&str>,
     extra_payload: &[u8],
 ) -> (Conn, serde_json::Value) {
-    use tokio::io::AsyncWriteExt;
-    let stream = poll_until(
-        || async { try_connect(&env.socket_path).await },
-        BOUND,
-        "sotd's local socket to accept a connection",
-    )
-    .await;
-    let mut conn = tokio::io::BufReader::new(stream);
-    let mut combined = lane_connect_envelope_bytes(target, lane, voyage_id);
-    combined.extend_from_slice(extra_payload);
-    conn.write_all(&combined).await.expect("write lane.connect envelope (+ payload) in ONE call");
+    let mut req = serde_json::json!({ "target": target, "lane": lane });
+    if let Some(v) = voyage_id {
+        req["voyage_id"] = serde_json::json!(v);
+    }
+    let mut conn = handoff_with(&env.socket_path, &Frame::req(1, op::LANE_CONNECT, req), extra_payload).await;
     let (frame, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
         .await
         .unwrap_or_else(|_| panic!("lane.connect reply did not arrive within {BOUND:?}"))

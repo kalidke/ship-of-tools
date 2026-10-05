@@ -12,10 +12,12 @@ use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::tokio::Stream as _;
 use sot_protocol::ops::{op, FeLeaseReq};
-use sot_protocol::{codec, Frame};
+use sot_protocol::{codec, Frame, HelloReq};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-use support::{call, connect_and_hello, find_row, poll_until, sotd_exe, try_connect, Conn, Env, TEST_STATE_HOST};
+use support::{call, connect_and_hello, find_row, handoff, poll_until, sotd_exe, try_connect, Conn, Env, TEST_STATE_HOST};
+#[cfg(target_os = "linux")]
+use support::handoff_on;
 
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -78,8 +80,17 @@ async fn lease_holder_child() {
     let mut rx = tokio::io::BufReader::new(rx);
     let req = FeLeaseReq { boot: who.boot, pid: who.pid, created: who.created, token: None };
     let lease = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
-    codec::write_frame(&mut tx, &lease, None).await.expect("write fe.lease");
+    // A handoff hello and the lease in one write, as the window does; the hello's reply comes first.
+    let hello = HelloReq::this_process("lease-holder-child", sot_protocol::HANDOFF_ROLE, Some("host-a".to_string()))
+        .expect("this process's account");
+    let hello = Frame::req(0, op::HELLO, serde_json::to_value(&hello).unwrap());
+    let both = format!("{}\n{}\n", serde_json::to_string(&hello).unwrap(), serde_json::to_string(&lease).unwrap());
+    tx.write_all(both.as_bytes()).await.expect("write the hello and fe.lease");
+    tx.flush().await.expect("flush the hello and fe.lease");
     let mut line = String::new();
+    rx.read_line(&mut line).await.expect("read the hello answer");
+    assert!(!line.contains("\"error\""), "the lease holder's hello was refused: {line}");
+    line.clear();
     rx.read_line(&mut line).await.expect("read the lease answer");
     println!("LEASE {}", line.trim());
 

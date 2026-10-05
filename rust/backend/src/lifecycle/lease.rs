@@ -2,7 +2,7 @@
 //! sessions, what the last one's departure decides, and `held.json`, the
 //! record that carries both across a daemon restart.
 //!
-//! A lease is a dedicated connection whose first frame is `fe.lease`; the
+//! A lease is a dedicated connection whose hello says `handoff` and whose next frame is `fe.lease`; the
 //! connection is the handle, so a lease's generation never goes on the
 //! wire. This module is the pure core the connection's holder calls: it
 //! does no IO but the record's write, and it never looks a process up. The

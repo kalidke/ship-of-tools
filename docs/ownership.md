@@ -159,7 +159,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, pinned by `comm_lib_hello_speaks_this_protocol`) |
 | product version, `is_release_build` | wire | wire | `rust/protocol/src/version.rs` `app_version`, `is_release_build`; `rust/protocol/build.rs` |
 | IR `TreeNode`, `PreviewPayload`, `BlobDescriptor` | wire | wire | `rust/protocol/src/ir.rs` |
-| `hello` | op | server | `rust/backend/src/server/hello.rs` `handle_hello`, `protocol_gate`, `admit_hello`; every Rust client builds it with `rust/protocol/src/ops/session.rs` `HelloReq::this_process` |
+| `hello` | op | server | `rust/backend/src/server/hello.rs` `handle_hello`, `protocol_gate`, `admit_hello`, `register_hello`; the host account record `rust/backend/src/clients.rs` `admit_account`; every Rust client builds it with `rust/protocol/src/ops/session.rs` `HelloReq::this_process` |
 | `ping` | op | server | `rust/backend/src/server/conn.rs` `handle_ping` |
 | `version.query` | op | server | `rust/backend/src/clients.rs` `handle_version_query` |
 | `fe.presence`; the active frontend | op, state | server | `rust/backend/src/clients.rs` `handle_fe_presence`, `ActiveFrontend`, `resolve_active` |
@@ -167,7 +167,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `FeCommand` meaning and its handling in the window | wire payload | fe-ui | `rust/frontend/src/ui/control/command.rs`; `rust/frontend/src/ui/control/dispatch.rs` |
 | `fe.sessions` | op | server | `rust/backend/src/clients.rs` `handle_fe_sessions`, `declare_sessions` (see two owners) |
 | client roster `by_conn`, `disconnected` | state | server | `rust/backend/src/clients.rs` `Clients`, `ClientGuard`, `disconnected_since` |
-| revision ring, `session_id`, replay at hello | state | server | `rust/backend/src/session.rs` `Session`, `bump`, `replay_after`; `rust/backend/src/server/hello.rs` `admit_hello` |
+| revision ring, `session_id`, replay at hello | state | server | `rust/backend/src/session.rs` `Session`, `bump`, `replay_after`; `rust/backend/src/server/hello.rs` `handle_hello` |
 | revision-ring event names `tree.invalidate`, `preview.served`, `preview.scale_set`, `image.cropped`, `concept.written`, `file.written`, `file.deleted`, `dir.created`, `workspace.created`, `workspace.destroyed`, and their `Session::bump` calls | wire event (replay only) | server | `rust/backend/src/session.rs` `bump`; bumps `rust/backend/src/files/tree_ops.rs`, `rust/backend/src/files/io_ops.rs`, `rust/backend/src/files/concept_ops.rs`, `rust/backend/src/files/preview/mod.rs`, `rust/backend/src/files/preview/scale.rs`, `rust/backend/src/files/preview/crop.rs`, `rust/backend/src/rows/ops/create.rs`, `rust/backend/src/rows/ops/destroy.rs` |
 | `fe.lease`, `fe.leaving`, `fe.notice_seen` | op | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `hold`, `depart`, `notice_seen`; `rust/frontend/src/lease.rs` `Leases`, `Leaving` |
 | lease timings `SHUTDOWN_BOUND`, `LAUNCH_WAIT`, `DAEMON_LOCK_WAIT`, ack waits | setting | lifecycle | `rust/protocol/src/ops/lease.rs` `SHUTDOWN_BOUND`, `LAUNCH_WAIT`, `DAEMON_LOCK_WAIT`, `CLOSE_ACK_WAIT` |
