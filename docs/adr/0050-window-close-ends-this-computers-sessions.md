@@ -86,10 +86,10 @@ any row is touched; the run gate closes and in-flight starts drain, until the ro
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
 deadline, and a row of any other runtime is left running and counted not ended; every
-process the daemon starts, but a capsule supervisor, the update pipeline's children (known limit (n)) and the
-hub's relay refresh (known limit (o)), is killed with everything it started that did not leave it (residual 7):
-each runs in its own process group on Unix and its own job on Windows, its leader is reaped only after that kill,
-and their owners are given 3 s to let go; the final record is written; the
+process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit
+(n)), is killed with everything it started that did not leave it (residual 7): each runs in its own process group
+on Unix and its own job on Windows, its leader is reaped only after that kill, and their owners are given 3 s to
+let go; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
@@ -231,7 +231,6 @@ connection is the only handle.
   `stage_prepare_arm_inner`), whose children are curl or gh, tar, unzip or PowerShell, git, julia and npm. A
   shutdown or exit while one runs leaves it and what it started to end on their own; under the systemd unit its
   cgroup ends them.
-- (o) The hub's relay refresh runs `systemctl` outside containment (rust/backend/src/topology/relay_units.rs).
 - (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
   their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
   an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the

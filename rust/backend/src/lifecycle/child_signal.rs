@@ -159,6 +159,43 @@ impl Signal {
             }
         }
     }
+
+    /// `Command::output` for a contained one-shot: stdin is null, and stdout
+    /// and stderr are each read to their end on a thread of their own. The
+    /// leader's exit is seen unreaped; then the [`Held`] drops, which kills
+    /// the tree and closes any pipe a descendant held; then the child is
+    /// reaped, and then both readers are joined. No bound is added, as
+    /// `output` has none.
+    pub(crate) fn output(&'static self, cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+        use std::process::Stdio;
+        cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (mut child, held) = self.spawn_std(cmd)?;
+        let stdout = read_to_end_on_a_thread(child.stdout.take());
+        let stderr = read_to_end_on_a_thread(child.stderr.take());
+        let seen = crate::lifecycle::contain::exited(&mut child, true);
+        drop(held);
+        let status = child.wait();
+        let (stdout, stderr) = (stdout.join(), stderr.join());
+        seen?;
+        Ok(std::process::Output { status: status?, stdout: joined(stdout)?, stderr: joined(stderr)? })
+    }
+}
+
+/// `pipe` read to its end on a thread of its own.
+fn read_to_end_on_a_thread<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut bytes)?;
+        }
+        Ok(bytes)
+    })
+}
+
+fn joined(read: std::thread::Result<std::io::Result<Vec<u8>>>) -> std::io::Result<Vec<u8>> {
+    read.map_err(|_| std::io::Error::other("a pipe reader panicked"))?
 }
 
 /// One tree in a [`Signal`]'s registry, and a count of one live child.
@@ -415,6 +452,23 @@ mod tests {
         drop(held);
         child.wait().expect("wait");
         assert!(gone(descendant), "the one-shot's descendant survived");
+    }
+
+    /// A one-shot's output is read to its end, and the tree dies after the
+    /// leader's exit: a descendant the exit leaves behind does not survive,
+    /// and nothing stays registered or counted.
+    #[cfg(unix)]
+    #[test]
+    fn output_takes_the_tree_after_the_exit() {
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "sleep 3111 >/dev/null 2>&1 & echo $!"]);
+        let out = signal.output(&mut cmd).expect("output");
+        assert!(out.status.success());
+        let descendant: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("descendant pid");
+        assert!(gone(descendant), "the one-shot's descendant survived");
+        assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
+        assert_eq!(signal.live(), 0);
     }
 
     #[cfg(unix)]
