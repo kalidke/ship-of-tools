@@ -17,6 +17,9 @@ pub enum WakeOutcome {
     /// A write on `step` (`"text"` or `"enter"`) returned an error (`detail`, the phase and its text), or its
     /// delivery is unknown: what that step wrote may still have reached the agent.
     Unconfirmed { step: &'static str, detail: String },
+    /// The text write failed in a phase other than `"input"`, or its delivery is unknown: the line may have reached
+    /// the agent (and may draw later), so it counts as typed.
+    TextUnknown { detail: String },
 }
 
 /// The outcome once the line is typed and the gate passed: the Enter write's result.
@@ -24,6 +27,15 @@ pub(crate) fn wake_outcome(enter: Result<(), HeadlessError>) -> WakeOutcome {
     match enter {
         Ok(()) => WakeOutcome::Woke,
         Err(e) => unconfirmed("enter", e),
+    }
+}
+
+/// A failed text write: only the stale refusal (phase `"input"`) wrote nothing, so only that is a clean refusal.
+fn text_failed(e: HeadlessError) -> WakeOutcome {
+    if e.phase == "input" {
+        unconfirmed("text", e)
+    } else {
+        WakeOutcome::TextUnknown { detail: format!("{}: {}", e.phase, e.detail) }
     }
 }
 
@@ -107,7 +119,7 @@ pub fn wake_if_free(
 /// writes Enter. A line that never shows alone gets no Enter ([`WakeOutcome::TypedNoEnter`]).
 fn type_then_enter(client: &mut Client, line: &str, agent: &str, op_budget: Duration) -> WakeOutcome {
     if let Err(e) = send_text(client, line.as_bytes(), op_budget) {
-        return unconfirmed("text", e);
+        return text_failed(e);
     }
     let deadline = Instant::now() + op_budget;
     loop {
@@ -134,6 +146,16 @@ mod tests {
         let failed = || HeadlessError { phase: "record", detail: "input delivery unknown".to_string(), submitted: true };
         assert_eq!(wake_outcome(Ok(())), WakeOutcome::Woke);
         assert_eq!(wake_outcome(Err(failed())), WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".to_string() });
+    }
+
+    #[test]
+    fn a_text_write_that_may_have_landed_is_not_a_clean_refusal() {
+        let failed = |phase| HeadlessError { phase, detail: "x".to_string(), submitted: true };
+        // Only the stale refusal (phase "input") wrote nothing; any other failure may have reached the agent.
+        assert_eq!(text_failed(failed("input")), WakeOutcome::Unconfirmed { step: "text", detail: "input: x".to_string() });
+        for phase in ["write", "record", "checkpoint"] {
+            assert_eq!(text_failed(failed(phase)), WakeOutcome::TextUnknown { detail: format!("{phase}: x") });
+        }
     }
 
     #[test]

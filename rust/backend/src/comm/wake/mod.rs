@@ -64,6 +64,10 @@
 //! or permission prompt drawn, in it receives the Enter. A later wake refuses for whatever the screen then
 //! shows, and the refusal streak logs it.
 //!
+//! A text write that fails after it may have landed (any phase but a stale `input` refusal) is treated as typed: the
+//! line is owed its Enter and is not typed again, so a write that was lost for good costs the row its wake until
+//! [`REPEAT_AFTER`] (the Complete bound) or a read inbox.
+//!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
@@ -311,6 +315,10 @@ fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<
             tracing::warn!(handle, border = ?border, "comm wake: typed the line but it did not show in main's input box ({reason}); no Enter sent");
             Step::Woke(Woken { line: total, at: now, enter_owed: true })
         }
+        Ok(WakeOutcome::TextUnknown { detail }) => {
+            tracing::warn!(handle, border = ?border, "comm wake: text not confirmed ({detail}); the line may have landed, so it is not typed again and its Enter is owed");
+            Step::Woke(Woken { line: total, at: now, enter_owed: true })
+        }
         Ok(WakeOutcome::Unconfirmed { step: "enter", detail }) => {
             tracing::warn!(handle, border = ?border, "comm wake: enter not confirmed ({detail}); the line was typed, so it is not typed again");
             Step::Woke(Woken { line: total, at: now, enter_owed: false })
@@ -443,6 +451,12 @@ mod tests {
             }
             _ => panic!("a failed text write is a refusal"),
         }
+    }
+
+    #[test]
+    fn a_text_write_of_unknown_delivery_owes_its_enter_and_is_not_typed_again() {
+        let out = WakeOutcome::TextUnknown { detail: "record: input delivery unknown".into() };
+        assert!(matches!(step_of("h", Ok(out), (None, "b".to_string()), 7, Instant::now()), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
     }
 
     #[test]
