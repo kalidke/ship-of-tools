@@ -51,19 +51,22 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `../../julia/sotlog/`: SotLog, the Julia reader of the golden segment fixtures.
 
 ## Files
-- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests.
+- `Cargo.toml`: the crate manifest; the `test-support` feature is switched on for this crate's own tests, and brings `test_log`, `test_exec` and `test_scan` (the backend, frontend and updater turn it on in their dev-dependencies).
 - `build.rs`: stamps the lane build id (`SOT_LOG_BUILD_SHA`) from the full git sha, or `SOT_BUILD_ID`.
 - `claude-sdk-helper/`: the Node helper that drives one Claude Agent SDK session.
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
+- `src/test_exec.rs`: `write_executable`, how a test writes a program it will run (feature `test-support`), and its source scan.
+- `src/test_log.rs`: `capture()` and `install()`, the test-only way to install a subscriber (feature `test-support`), and its source scan.
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
 - `src/identity/`: the peer challenge and identity exchange.
+- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`), and the scan that no test changes the process `PATH` or `SHELL`.
 - `src/host/`: per-machine facts and platform primitives.
 - `src/bin/`: `sot-capsule`, `sot-log` and the three test-fixture binaries.
 
@@ -75,4 +78,8 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
+- No test takes the system folders out of the process `PATH` or changes `SHELL`; code under test takes them from its caller (`test_scan::tests::no_test_changes_the_process_path_or_shell`).
+- Every subscriber a test installs goes through `test_log` (`capture()` to read a thread's tracing output, `install()` for a test of a production log writer); besides it, only the two binaries' `main` set up a subscriber (`test_log::tests::only_test_log_makes_a_subscriber`).
+- A test writes a program it will run only through `test_exec::write_executable`, so no process holds it open for writing when it runs (`test_exec::tests::only_test_exec_makes_a_test_program_executable`).
+- Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.

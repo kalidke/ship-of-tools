@@ -529,12 +529,7 @@ mod capsule_sibling_present_tests {
         let dir = scratch_dir("present");
         let daemon = dir.join("sotd");
         let sibling = dir.join(CAPSULE_SIBLING_NAME);
-        std::fs::write(&sibling, b"#!/bin/sh\n").expect("write sibling");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&sibling, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        }
+        sot_log::test_exec::write_executable(&sibling, b"#!/bin/sh\n");
         assert!(capsule_sibling_present(&daemon));
         std::fs::remove_dir_all(&dir).ok();
     }

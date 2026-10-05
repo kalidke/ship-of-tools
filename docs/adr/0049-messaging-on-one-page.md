@@ -1,10 +1,12 @@
 # ADR 0049: messaging on one page
 
 **Status:** current — accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
-0048 (filer receipts). Part of what follows is built (the daemon's wake, the inbox lock, one row
-per handle; `comm/CLAUDE.md` says what one row per handle leaves unbuilt); the relay's single
-verdict (lane M4) is not yet. The rest lands in stages, and the per-session watcher, listener
-and bridge machinery it replaces stays in place until each stage does.
+0048 (filer receipts). Built: the daemon's wake, the inbox lock, one row per handle
+(`comm/CLAUDE.md` says what one row per handle leaves unbuilt), and one meaning of `filed` (every
+route checks the receiver's liveness, one fact in the registry, before it appends). The hub's
+fallback for a handle its folder does not list (`agent.send`, ending `NOT CONFIRMED`) stays until
+B2. The rest lands in stages, and the per-session watcher, listener and bridge machinery it
+replaces stays in place until each stage does.
 
 2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
 guarantees, this ADR the design.
@@ -32,7 +34,10 @@ The owner asked for the fix as "agree on the one page comm system and then clean
   A daemon on a box with its own disk keeps its own link to the hub, opened when it
   starts and reopened if it drops, so the box is reachable whenever its rows run,
   window open or not; its sessions send through that same link. A liveness check runs
-  first — a row still running that handle, or active in the last ten minutes.
+  first, on one fact in the comm folder's registry: the receiver's `last_seen` is under ten
+  minutes old. The session stamps it as it works, and the daemon that runs its row stamps it
+  every minute while the row runs, so an idle row stays live, through a daemon restart too,
+  until ten minutes after its last stamp.
 - **The one result** — `filed -> @h` (exit 0), or `FAILED -> @h: <reason>` (exit 1): no
   box knows the handle, no live session holds it, the hub is unreachable, or no daemon
   says "filed" within 5 seconds. Nothing is queued; there is no second route.

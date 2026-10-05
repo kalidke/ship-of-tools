@@ -47,13 +47,15 @@
         @test !isfile(fresh_dst * ".tmp")
 
         # A genuine permission failure (closer to the field defect than a
-        # missing source) tells the same story. Skipped if running as
-        # root, where a mode of 0 still reads fine.
+        # missing source) tells the same story. Skipped where the installer's
+        # own copy can still read a mode-0 file (as root, and on Windows).
         unreadable_src = joinpath(dir, "unreadable.txt")
         write(unreadable_src, "secret")
         chmod(unreadable_src, 0o000)
         can_still_read = try
-            read(unreadable_src, String)
+            probe = joinpath(dir, "probe.txt")
+            cp(unreadable_src, probe)
+            rm(probe)
             true
         catch
             false
@@ -71,6 +73,8 @@
             fl2 = split(err2.msg, '\n'; limit = 2)[1]
             @test occursin(old_dst, fl2)
             @test occursin("denied", lowercase(fl2)) || occursin("eacces", lowercase(fl2))
+        else
+            @test_skip false
         end
         chmod(unreadable_src, 0o644)  # let mktempdir clean up
 
@@ -166,8 +170,13 @@ end
         @test any(occursin("missing.sh", p) for p in probs)
         @test any(occursin(dir, p) for p in probs)
 
-        probs2 = ShipTools._check_installed(dir, ["present.sh"]; executable = Returns(true))
-        @test any(occursin("present.sh", p) for p in probs2)
+        # Windows has no execute bit: every existing file is executable there.
+        if !Sys.isexecutable(joinpath(dir, "present.sh"))
+            probs2 = ShipTools._check_installed(dir, ["present.sh"]; executable = Returns(true))
+            @test any(occursin("present.sh", p) for p in probs2)
+        else
+            @test_skip false
+        end
 
         chmod(joinpath(dir, "present.sh"), 0o755)
         @test isempty(ShipTools._check_installed(dir, ["present.sh"]; executable = Returns(true)))

@@ -240,7 +240,10 @@ mod tests {
         let spawn_needle = "spawn_detached_supervisor(";
         let mut resets = 0;
         let mut spawn_calls = 0;
-        for (path, text) in crate::source_scan_tests::production_sources() {
+        let backend = sot_log::test_scan::production_sources()
+            .into_iter()
+            .filter_map(|(p, t)| p.strip_prefix("rust/backend/src/").map(|rel| (rel.to_string(), t)));
+        for (path, text) in backend {
             for (pos, _) in text.match_indices(reset_needle) {
                 resets += 1;
                 let enclosing = text[..pos].rfind("fn ").map(|at| &text[at + 3..]).unwrap_or("");

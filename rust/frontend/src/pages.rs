@@ -343,24 +343,9 @@ mod tests {
         use tokio::io::AsyncReadExt;
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        #[derive(Clone)]
-        struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Buf {
-            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(b);
-                Ok(b.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let log = Buf(Arc::new(std::sync::Mutex::new(Vec::new())));
-        let writer = log.clone();
-        // #[tokio::test] runs every task on this thread, so a thread default sees the listener's spawned tasks.
-        let _log = tracing::subscriber::set_default(
-            tracing_subscriber::fmt().with_ansi(false).with_max_level(tracing::Level::WARN).with_writer(move || writer.clone()).finish(),
-        );
-        let warns = || String::from_utf8_lossy(&log.0.lock().unwrap()).matches("WARN").count();
+        // #[tokio::test] runs every task on this thread, so the capture sees the listener's spawned tasks.
+        let log = sot_log::test_log::capture();
+        let warns = || log.text().lines().filter(|l| l.contains(" WARN ")).count();
         let dials = Arc::new(AtomicUsize::new(0));
         let arm = Arc::new(super::Arm::default());
         let dial = {

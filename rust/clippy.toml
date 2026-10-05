@@ -76,6 +76,17 @@ disallowed-methods = [
   { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_duplex", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_recv_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_send_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  # File locks: a lock is held only in a guard whose Drop unlocks it (sot_log::host's WriterLock, the backend's
+  # comm::mail::inbox InboxLock), because a forked child that has not yet exec'd shares the lock's open file
+  # description. So std::fs::File's lock methods and libc::flock are disallowed too, outside those guards.
+  # fcntl's F_SETLK, F_SETLKW and F_OFD_SETLK are arguments, not methods: this lint cannot see them, and no code uses them.
+  { path = "std::fs::File::lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "std::fs::File::try_lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "std::fs::File::lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "std::fs::File::try_lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "libc::flock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "windows_sys::Win32::Storage::FileSystem::LockFileEx", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "windows_sys::Win32::Storage::FileSystem::LockFile", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   # TCP dials (ADR 0049, User isolation): the control plane dials no TCP port; a Rust process reaches a daemon through
   # its socket or pipe, or an ssh login. The one sanctioned TCP dial is the page plane's: the daemon's proxy reaching a
   # page port it serves on loopback (`handle_proxy_connect`, rust/backend/src/pages/proxy.rs).

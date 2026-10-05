@@ -18,7 +18,7 @@ all clients are mutually addressable through the same registry and inboxes.
   registry.json.tmp        # a registry write's temp file, renamed over registry.json
   registry.json.new.<pid>.<n>  # the skeleton ensure_home links into place when there is no registry
   .registry.lock           # the registry-write lock: a file naming its holder (below)
-  .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever, but a daemon's own
+  .registry.lock.reclaim.<id>  # one marker per holder a waiter proved dead; kept forever, but a daemon's own
   .registry.lock.tmp.<id>      # a take's temp file, removed by the take
   inbox-lock-manager       # the hub daemon's record of the inbox lock's mount, written at boot
   .inbox-lock-manager.<id>.<pid>.<n>  # that record's temp file
@@ -64,10 +64,17 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
 }
 ```
 
-**Liveness** is heartbeat-based, not pane-based: an agent is *live* if
-`now - last_seen <= SOT_COMM_STALE_SECS` (default 600). This is what lets a
-session on one machine consider a session on another reachable. `host` +
-`workspace_id` are the address a same-host daemon resolves.
+**Liveness** is one fact, `last_seen`: a handle is *live* when its `last_seen` is a
+`YYYY-MM-DDTHH:MM:SSZ` stamp under 600 seconds old (`COMM_LIVE_SECS`, `LIVE_SECS`). The
+session stamps it (join, send, poll, status, and each turn's heartbeat), and the daemon that
+runs a Starting or Ready row stamps that row's handle every minute (`liveness.rs`), so an
+idle row stays live while it runs, through a daemon restart, and until ten minutes after its
+last stamp. A daemon that cannot take the registry lock, or read or write the registry,
+stamps nothing. Its warning says so each minute, and ten minutes after a row's last stamp a
+send to that row fails as `no live session holds @h`; the lock rules are below, and
+`comm-registry-lock-clear.sh` clears a lock by hand. An age is read against the reader's
+clock, so skew between two boxes moves the ten minutes by the skew. `host` + `workspace_id`
+are the address a same-host daemon resolves.
 
 **Work-state** (`state` + `summary`, stamped by `status_at`) powers the ADE
 *state-nav* at-a-glance view, and is distinct from the lifecycle `status` above.
@@ -257,8 +264,14 @@ newline-terminated lines are ever counted.
 
 `to` equal to the handle is directed mail and counts as unread; `""` is a
 broadcast copy, filed and read at the next poll, never counted as unread. A
-line with no `to` key is legacy (pre-stamp, before 2026-06-12) and reads as
-directed.
+line whose `to` is missing, not a string or another handle's, or whose `from`
+is this handle, is shown at the next poll and never counted. One rule counts:
+the wake's `counts` in Rust and its shell twin `sot_unread`, pinned by
+`unread_agrees_with_the_shell`. They agree on every line a product writer emits
+(jq -c, serde_json); a line that is not strict JSON (invalid UTF-8, a
+byte-order mark, NaN, a number out of range, nesting past 127) may be counted
+by the shell and not by the wake, so the hook holds one turn for mail comm-poll
+shows.
 
 ## Delivery
 
@@ -383,7 +396,10 @@ the file again, so a slow display never holds off a writer. A timeout means
 try again, never a skip: `comm-poll.sh` says the inbox is being written,
 leaves the cursor and exits 75, the end-of-turn hook prints that the inbox was
 busy and does not block the turn, and a wake reader checks again on its next
-tick. Only a held lock is "try again": any other lock fault, a lock file that
+tick. The end-of-turn hook counts only with `sot_unread`, and only when jq is on
+`PATH` (without jq its tool block is its one word on it); a count that fails
+with jq present is named like a lock fault (`WARNING: the unread count for @h
+failed (…) — run comm-poll.sh to read your mail`), never read as 0. Only a held lock is "try again": any other lock fault, a lock file that
 cannot be opened or any flock error, is named (flock's code and its own error
 text) where the session sees it (comm-poll's output, every block of the
 end-of-turn hook) and the read runs unlocked, covered by the hashed cursor. On
@@ -392,9 +408,11 @@ last line read. The accepted residual: a reader on a
 mismatched host may deliver a line whose sender was told `FAILED`, so a retry
 can duplicate it; it can never lose one.
 
-The daemon's filer checks liveness first: a row still runs a session with
-that handle, or the session was active in the last ten minutes. A script's
-own append in route 1 does not check it yet.
+Every route checks liveness before it appends, by the one rule above: a script that reads the
+receiver's entry refuses a handle that is not live itself, and the daemon's filer refuses it
+the same way, so `filed` is never printed for a handle no live session holds. The shell's
+`sot_heartbeat_fresh` and the filer's `heartbeat_fresh` are one rule, pinned by
+`heartbeat_agrees_with_the_shell`.
 
 **The one result**, nothing else:
 

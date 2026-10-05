@@ -22,6 +22,7 @@ use std::sync::mpsc;
 use anyhow::Result;
 use sot_log::secret::RedactingWriter;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 /// Windows taskbar grouping: declare an explicit Application User Model ID so
@@ -50,16 +51,14 @@ fn set_app_user_model_id() {
     }
 }
 
-/// The window's log: events at the `RUST_LOG` level (default `info`), each masked of page secrets
+/// The window's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
 /// (`sot_log::secret`) and written, without colour codes, to a writer from `make`.
 fn log_subscriber<W: std::io::Write + 'static>(
+    filter: EnvFilter,
     make: impl Fn() -> W + Send + Sync + 'static,
 ) -> impl tracing::Subscriber + Send + Sync {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(filter)
         .with_ansi(false)
         .with_writer(move || RedactingWriter(make()))
         .finish()
@@ -70,7 +69,8 @@ fn main() -> Result<()> {
     // the updater and scripts parse it (ADR 0030 §1).
     let cli = cli::Cli::parse();
 
-    log_subscriber(std::io::stdout).init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    log_subscriber(filter, std::io::stdout).init();
 
     // Set the taskbar AUMID before any window exists so the running window
     // merges into the pinned shortcut's button (Windows-only; see above).
@@ -179,11 +179,10 @@ mod tests {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
         let path = std::env::temp_dir().join(format!("sot-window-log-{}-{nanos}.log", std::process::id()));
         let file = std::fs::File::create(&path).unwrap();
-        let subscriber = log_subscriber(move || file.try_clone().unwrap());
+        let subscriber = log_subscriber(EnvFilter::new("trace"), move || file.try_clone().unwrap());
         let token = "0123456789abcdef0123456789abcdef";
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
-        });
+        let _log = sot_log::test_log::install(subscriber);
+        tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
         let written = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");

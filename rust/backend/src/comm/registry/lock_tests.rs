@@ -425,8 +425,10 @@ fn one_rust_thread_and_two_shell_waiters_hold_one_at_a_time() {
     let lock = home.join(".registry.lock");
     let cs = home.join("cs");
     let crit = format!("crit() {{ mkdir '{0}' || echo OVERLAP; sleep 0.01; rmdir '{0}'; echo held; }}", cs.display());
+    let mut seen = std::collections::BTreeSet::new();
     for round in 0..100 {
         dead_shell_holder(&home);
+        let dead = fs::read_to_string(&lock).unwrap();
         let waiters: Vec<Child> = (0..2)
             .map(|_| {
                 Command::new("bash")
@@ -444,15 +446,27 @@ fn one_rust_thread_and_two_shell_waiters_hold_one_at_a_time() {
         std::thread::sleep(Duration::from_millis(10));
         fs::remove_dir(&cs).unwrap();
         drop(held);
+        let pids: Vec<u32> = waiters.iter().map(|w| w.id()).collect();
         for w in waiters {
             let out = w.wait_with_output().unwrap();
             assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "held", "round {round}");
         }
         assert!(!lock.exists(), "round {round}: released");
-        let markers = fs::read_dir(&home).unwrap().filter(|e| {
-            e.as_ref().unwrap().file_name().to_string_lossy().starts_with(".registry.lock.reclaim.")
-        });
-        assert_eq!(markers.count(), round + 1, "round {round}: one new marker");
+        // A shell waiter that reads another waiter's record, which then releases, exits and is reaped
+        // by this test before the judge, proves it dead (a zombie still reads as alive): its marker is
+        // the protocol's own leftover, so it is allowed.
+        let new: Vec<String> = fs::read_dir(&home)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".registry.lock.reclaim.") && seen.insert(n.clone()))
+            .collect();
+        let owed = marker_for(&lock, dead.trim());
+        assert!(owed.exists(), "round {round}: no marker for the dead holder {}", owed.display());
+        for name in &new {
+            let pid = name.rsplit('.').nth(1).and_then(|p| p.parse::<u32>().ok());
+            let owned = owed.file_name().is_some_and(|n| n.to_string_lossy() == *name);
+            assert!(owned || pid.is_some_and(|p| pids.contains(&p)), "round {round}: marker {name} is neither the dead holder's nor a waiter's; new {new:?}, waiters {pids:?}");
+        }
     }
     let _ = fs::remove_dir_all(&home);
 }

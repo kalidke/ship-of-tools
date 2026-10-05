@@ -63,7 +63,6 @@ printf '\r\n'
 /// byte (`READ_SLOW_ECHO`; with `focus-after` also not before the stub has moved focus), then ends the line at Enter as usual. The stub logs `ping` for exactly the wake line
 /// and `other` for anything else, so a line typed twice shows.
 fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir).expect("mkdir stub bin");
     let claude = dir.join("claude");
     let slow = dir.join("read-slow-echo.sh");
@@ -101,8 +100,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
         ctl = ctl.display(),
         log = log.display(),
     );
-    std::fs::write(&claude, script).expect("write stub claude");
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).expect("chmod stub claude");
+    sot_log::test_exec::write_executable(&claude, script);
     dir.to_path_buf()
 }
 
@@ -306,19 +304,9 @@ fn iso_at(off: i64) -> String {
     String::from_utf8(out.stdout).expect("utf8").trim().to_string()
 }
 
-/// Sets `agents.HANDLE` in the harness's registry, creating it if absent;
-/// written to a temp file and renamed.
+/// Sets `agents.HANDLE` in the harness's registry, creating it if absent, under the registry lock.
 fn set_entry(env: &Env, entry: serde_json::Value) {
-    let path = env.comm_root.join("registry.json");
-    let mut doc: serde_json::Value = std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_else(|| serde_json::json!({ "agents": {} }));
-    doc["agents"][HANDLE] = entry;
-    let tmp = env.comm_root.join("registry.json.tmp");
-    std::fs::create_dir_all(&env.comm_root).expect("mkdir comm root");
-    std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
-    std::fs::rename(&tmp, &path).expect("rename registry");
+    support::write_registry(&env.comm_root, |doc| doc["agents"][HANDLE] = entry);
 }
 
 /// A row whose Stop hook is running (a fresh `stop_at`) is not typed into,

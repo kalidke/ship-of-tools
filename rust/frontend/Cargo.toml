@@ -94,6 +94,10 @@ tree-sitter-toml-ng = "0.7"
 # Same dep as the backend; version locked here to match.
 portable-pty = "0.9"
 
+[dev-dependencies]
+# `test_log`, through which every subscriber a test installs goes, and `test_scan`, through which this crate's source scans read the source (dev-only: resolver 2 keeps the feature out of builds).
+sot-log = { path = "../log", features = ["test-support"] }
+
 # Windows-only: force the relaunched window to the OS foreground. winit's
 # focus_window() is blocked by the Win32 foreground lock for a freshly
 # spawned process (ADR 0017 self-relaunch), so we do the AttachThreadInput

@@ -394,30 +394,14 @@ mod tests {
         dres.unwrap();
     }
 
-    /// A log sink for one test: `tracing` writes here while the test's subscriber is the default.
-    #[derive(Clone, Default)]
-    struct LogBuf(std::sync::Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for LogBuf {
-        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(b);
-            Ok(b.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[tokio::test]
     async fn a_refused_port_is_logged_once_per_streak() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("SOT_PROXY_EXTRA_PORTS");
-        let buf = LogBuf::default();
-        let sink = buf.clone();
-        let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
-        let _sub = tracing::subscriber::set_default(sub);
+        let log = sot_log::test_log::capture();
         let warns = || {
-            let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
-            text.lines()
+            log.text()
+                .lines()
                 .filter(|l| l.contains("WARN") && l.contains("port not in allowlist") && l.contains("port=65011"))
                 .count()
         };

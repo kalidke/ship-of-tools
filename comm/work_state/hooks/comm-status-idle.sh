@@ -353,17 +353,22 @@ fi
 # bounded to one block per pending batch by a tick file keyed like the
 # heartbeat's, so a model that refuses to poll is nudged once, not in a loop.
 #
-# What counts as mail: `to` non-empty (a BROADCAST, to == "", never fires this —
-# the same demotion rule the sender and the daemon's wake apply), `from` neither
-# this handle (self-echo), and the line sitting PAST the read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
+# What counts as mail is the daemon wake's rule, through comm-lib.sh's one copy
+# of it (sot_unread): a JSON object whose `to` is a string equal to THIS handle
+# (a BROADCAST, to == "", a line to another handle or one with no string `to`
+# never fires this), `from` not this handle (self-echo), and the line sitting
+# PAST the read cursor. The cursor is a LINE OFFSET (comm-lib.sh's sot_cursor_offset owns
 # the format, including the one-shot conversion of a legacy ts cursor, which
 # is NEVER written back from here). Timestamps could not do this job: they are second-resolution
 # and every comparison was strictly-greater, so a frame filed in the same second
 # as one already read would be announced to nobody while its sender was told it
 # had landed. This hook never advances the cursor — only a real comm-poll.sh
-# does, which is what keeps "read" an honest word. Any jq failure yields no mail
-# and no block: the same fail-open discipline as the rest of the hook, which
-# must never be able to wedge a turn.
+# does, which is what keeps "read" an honest word. The count needs jq: with jq
+# missing the once-per-episode tool block above is the hook's word on it and no
+# count runs. A count that fails with jq present is never a silent 0: it is a
+# fault like a lock fault (below), so the session is told to run comm-poll.sh.
+# The hook still fails open (a fault blocks once, never loops), and must never
+# be able to wedge a turn.
 MAIL_INBOX="$HOME_DIR/inbox/$NAME.jsonl"
 # Both counters start at 0 OUTSIDE the gate.
 mail_total=0; mail_pending=0
@@ -380,26 +385,21 @@ mail_total=0; mail_pending=0
 # carry it, the hook blocks once per fault through its own tick file, keyed by
 # handle and session so a session relaunched under the handle is told too, and
 # the next clean check removes it so a new fault blocks again.
-# A missing library or any failure yields no mail (fail open).
+# A missing library yields no mail (fail open).
 lock_warn=""
 fault_tick="$HOME_DIR/state/lock-fault-$(printf '%s' "$NAME.$mail_key" | tr -c 'A-Za-z0-9._-' '_').tick"
-if [ -r "$MAIL_INBOX" ]; then
+if [ -r "$MAIL_INBOX" ] && command -v jq >/dev/null 2>&1; then
     mail_out="$( ( . "$FE_LIB" >/dev/null 2>&1 || exit 0
         sot_inbox_read_lock "$NAME" || { echo busy; exit 0; }
-        mail_pos="$(sot_cursor_offset "$NAME" 2>/dev/null)"
-        mail_total="$(sot_inbox_lines "$NAME")"
-        mail_pending=0
-        if [ "$mail_total" -gt "$mail_pos" ]; then
-            mail_pending="$(sed -n "$((mail_pos + 1)),${mail_total}p" "$MAIL_INBOX" 2>/dev/null \
-                | jq -Rrs --arg me "$NAME" '[ split("\n")[] | select(length > 0)
-                    | (fromjson? // empty) | select(type == "object")
-                    | select(((.to // "") != "") and (.from // "") != $me)
-                  ] | length' 2>/dev/null || echo 0)"
-        fi
-        echo "$mail_total $mail_pending"
+        # One line: `<total> <unread>`, or `failed <the count's last stderr line>`.
+        if mail_count="$(sot_unread "$NAME" 2>&1)"; then echo "$mail_count"
+        else echo "failed ${mail_count##*$'\n'}"; fi
         printf '%s\n' "${SOT_INBOX_READ_WARNING:-}" ) 2>/dev/null || true )"
     case "$mail_out" in
         busy) echo "comm-status-idle: the inbox for @$NAME is being written; it will be checked again at the next turn end" >&2 ;;
+        failed*)
+            { IFS= read -r count_fail; IFS= read -r lock_warn; } <<< "$mail_out" || true
+            lock_warn="${lock_warn:+$lock_warn }WARNING: the unread count for @$NAME failed (${count_fail#failed }) — run comm-poll.sh to read your mail" ;;
         *)  { read -r mail_total mail_pending; IFS= read -r lock_warn; } <<< "$mail_out" || true
             [ -n "$lock_warn" ] || [ -z "$mail_out" ] || rm -f "${fault_tick:?}"
             case "$mail_total" in ''|*[!0-9]*) mail_total=0 ;; esac

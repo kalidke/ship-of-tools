@@ -63,9 +63,12 @@ pub const BOUND: Duration = Duration::from_secs(30);
 /// runner has (`host_name()`'s fallback).
 /// `Env::seed_default_capsule_toml` computes the same path from it.
 pub const TEST_STATE_HOST: &str = "testhost";
-pub fn sotd_exe() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_sotd"))
-}
+#[allow(dead_code)] // only some suites write a registry
+mod registry;
+mod sotd;
+#[allow(unused_imports)] // likewise
+pub use registry::write_registry;
+pub use sotd::{sotd_command, sotd_program};
 /// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).
 #[allow(dead_code)]
@@ -92,7 +95,7 @@ pub const CAPSULE_EXE_NAME: &str = "sot-capsule";
 /// since a `tests/*.rs` binary itself lives in `target/<profile>/deps/`,
 /// not `target/<profile>/`.
 pub fn sot_capsule_exe() -> PathBuf {
-    sotd_exe().with_file_name(CAPSULE_EXE_NAME)
+    sotd_program().with_file_name(CAPSULE_EXE_NAME)
 }
 /// This test file's own daemon-wire socket for `tag` — a named pipe on
 /// Windows, a plain filesystem path on Linux (`interprocess::local_socket`'s

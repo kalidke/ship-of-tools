@@ -327,10 +327,7 @@ pub(crate) mod tests {
     #[cfg(unix)]
     pub(crate) fn write_ssh_script(dir: &std::path::Path, body: &str) {
         let script = dir.join("ssh");
-        std::fs::write(&script, format!("#!/bin/sh\n{body}")).expect("write stub ssh");
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&script, perms).expect("chmod stub ssh");
+        sot_log::test_exec::write_executable(&script, format!("#!/bin/sh\n{body}"));
     }
 
     /// PREPENDS `dir` to `PATH` rather than replacing it -- see the first

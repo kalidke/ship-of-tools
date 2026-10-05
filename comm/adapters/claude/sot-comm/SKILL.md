@@ -88,7 +88,7 @@ evidence the message was lost (peer was deaf or restarted).
 it picks the route itself (`comm-relay.sh` is the plumbing underneath, not a
 verb you call). A handle this box's registry names is filed through this box's comm folder
 (`filed -> @handle` — the file IS the ack, read at that session's next turn
-boundary); one it cannot name goes to the hub as one `comm.file` request, and
+boundary), but only when it is live: its session was active, or the daemon running its row stamped it, in the last ten minutes; one it cannot name goes to the hub as one `comm.file` request, and
 the hub's answer is the verdict: `filed -> @handle` means the hub appended your
 frame. A failure is loud, non-zero and one form:
 
@@ -109,13 +109,6 @@ not a delivery.
 A refusal means nothing was appended; with no answer, or `NOT CONFIRMED`, the
 frame may have landed and only the claim that it did is missing.
 There is no "only a reply proves it" rule any more.
-
-`filed -> @handle` carries one more factual clause when the registry can
-support it — `(working, stamped 12s ago — reply expected at its turn
-boundary)`, `(needs its own user, stamped 6m ago: "...")`, `(idle, stamped
-32m ago)`, or `(no heartbeat for 8h — may be gone)`, this last overriding
-the others. Read it before assuming silence means ignored; a missing clause
-means the registry had nothing to say, not that the peer is fine.
 
 ## Naming — from the repo, never the task
 
@@ -185,8 +178,8 @@ spawning: `references/spawning.md`.
 - **Anti-groupthink tags:** `[design]` `[question]` `[breaks]` `[challenge]`
   `[consensus]` (no `[consensus]` without a prior `[breaks]` in the thread).
 - Delivery is durable (queued to the recipient's inbox, picked up on
-  `comm-poll.sh`); liveness is heartbeat-based (`comm-list.sh` shows
-  live/stale) — `poll`/`send`/`join` all refresh yours.
+  `comm-poll.sh`); liveness is a `last_seen` under ten minutes old (`comm-list.sh` shows
+  live/stale), which your `poll`/`send`/`join`, your turns and your row's daemon (every minute) all refresh.
 
 ## Which frontend am I on
 

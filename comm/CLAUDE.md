@@ -24,14 +24,17 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 
 ## Promises
 - `filed` is printed only on the appender's word: a local append that synced, a daemon's `comm.file` answer `ok`, or a
-  filer's receipt carrying this send's id. `FAILED` appended nothing.
+  filer's receipt carrying this send's id, and only for a live handle: one whose registry `last_seen` is under 600 s
+  old (`sot_heartbeat_fresh`, `heartbeat_fresh`), stamped by the session and, every minute, by the daemon running its
+  row. `FAILED` appended nothing.
 - Every appender takes flock on `inbox/<h>.lock` and appends locally only when its own lock manager equals line 1 of
   `inbox-lock-manager`; otherwise the frame goes to a daemon as `comm.file`.
 - Readers count newline-terminated lines only; only `comm-poll.sh` moves a cursor.
 - Every registry write is `registry_replace` under `with_lock` (scripts) or `with_comm_registry_lock` (daemon).
 - A process acts as a handle only if at most one agent lies between it and its row's capsule (`sot_require_agent`).
-- A rule written in both shell and Rust changes in both in one commit; parity tests cover the cursor, the lock record
-  and the lock identity.
+- A rule written in both shell and Rust changes in both in one commit; parity tests cover the cursor, the lock record,
+  the lock identity, the unread count (`unread_agrees_with_the_shell`) and the heartbeat
+  (`heartbeat_agrees_with_the_shell`).
 - Scripts run under bash 3.2 and git-bash; a value that may start with `/` never goes through `jq --arg`
   (`sot_jq_rawfile`).
 - A change to locking states its writer set and is proven by concurrent appends from two hosts to one inbox; there is

@@ -310,7 +310,10 @@ sot_comm_file() {  # HANDLE LINE
 #     back, like any other cut-back.
 #
 # Anything unreadable yields 0. On doubt this biases LOW: showing a frame twice
-# is tolerable where dropping one is not.
+# is tolerable where dropping one is not. One exception: the timestamp form
+# needs jq, and a box without it would read 0 -- the whole inbox as unread, or
+# for a counter a false "nothing" -- so it says so and returns 1, printing no
+# offset.
 sot_cursor_offset() {
     local handle="$1" cur n cnt hash="" total
     # $COMM_HOME, not the source-time $READ_DIR: a script may re-derive its
@@ -346,6 +349,7 @@ sot_cursor_offset() {
             fi
             printf '%s\n' "$cnt"; return 0 ;;
     esac
+    sot_require_tools "read the timestamp cursor of @$handle" jq || return 1
     n="$(sot_jq -Rrs --arg cur "$cur" '
         [ split("\n")[] | select(length > 0)
           | ((((fromjson? | objects) // {}) | (.ts // "")) > $cur) ] as $past
@@ -408,4 +412,32 @@ sot_file_lines() {
 # sot_inbox_lines HANDLE — the inbox's line count (0 when absent).
 sot_inbox_lines() {
     sot_file_lines "$COMM_HOME/inbox/$1.jsonl"
+}
+
+# sot_unread HANDLE — THE unread count, the shell twin of the wake's `counts`
+# (rust/backend/src/comm/wake/unread.rs; `unread_agrees_with_the_shell` pins
+# them). Prints one line, `<total> <unread>`, as its last output: the inbox's
+# line count and how many lines past the read cursor are JSON objects whose
+# `to` is a string equal to HANDLE and whose `from` is not HANDLE. A line
+# addressed to another handle, broadcast (`to` ""), or with no string `to`
+# never counts, and neither does a line holding a NUL (not JSON to the wake). Takes no lock: the caller holds the read lock. A count that
+# cannot be made prints nothing on stdout and returns 1 with the reason on
+# stderr, never 0: without jq, or when jq fails.
+sot_unread() {
+    local h="$1" pos total n=0
+    sot_require_tools "count unread mail for @$h" jq || return 1
+    pos="$(sot_cursor_offset "$h" 2>/dev/null)" || return 1
+    total="$(sot_inbox_lines "$h")"
+    if [ "$total" -gt "$pos" ]; then
+        n="$(sed -n "$((pos + 1)),${total}p" "$COMM_HOME/inbox/$h.jsonl" 2>/dev/null \
+            | sot_jq -Rrs --arg me "$h" '[ split("\n")[] | select(length > 0)
+                | select((explode | index(0)) == null)
+                | (fromjson? // empty) | select(type == "object")
+                | select((.to | type) == "string" and .to == $me and (.from // "") != $me)
+              ] | length' 2>&1)"
+        [[ "$n" =~ ^[0-9]+$ ]] || {
+            printf 'sot-comm: cannot count unread mail for @%s: %s\n' "$h" "${n##*$'\n'}" >&2
+            return 1; }
+    fi
+    printf '%s %s\n' "$total" "$n"
 }

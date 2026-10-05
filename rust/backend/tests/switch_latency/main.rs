@@ -42,7 +42,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::tokio::Stream as LocalStream;
@@ -153,7 +153,7 @@ impl Env {
             }
         };
 
-        let mut cmd = Command::new(support::sotd_exe());
+        let mut cmd = support::sotd_command();
         cmd.arg("--socket")
             .arg(&socket_path)
             .arg("--project-root")
@@ -385,11 +385,7 @@ while IFS= read -r line; do
     fi
 done
 "#;
-    std::fs::write(&path, script).expect("write fake kernel stub");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(&path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&path, perms).expect("chmod fake kernel stub");
+    sot_log::test_exec::write_executable(&path, script);
     path
 }
 

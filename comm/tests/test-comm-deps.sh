@@ -103,6 +103,20 @@ has "all tools: cold session start reports identity=ok" "$out" "identity=ok"
 out="$(STOP "$PATH")"
 check "all tools: stop hook prints no block" "$out" ""
 
+# D1, D2: a count that needs jq never reads 0 without it. With jq off the PATH,
+# a timestamp cursor's offset and the unread count each exit nonzero, print
+# nothing on stdout and name jq on stderr.
+PJ="$(path_without jq)"
+printf '%s\n' "$(jq -nc --arg n "$NAME" '{ts:"2026-09-30T00:00:00Z",from:"peer",to:$n,msg:"hi"}')" > "$INBOX_DIR/$NAME.jsonl"
+printf '%s' "2026-01-01T00:00:00Z" > "$READ_DIR/$NAME.cursor"
+for fn in sot_cursor_offset sot_unread; do
+    out="$(PATH="$PJ" "$BASH_BIN" -c 'source "$1"; '"$fn"' "$2"' _ "$SCRIPTS_DIR/comm-lib.sh" "$NAME" 2>"$WORK/deps.err")"; rc=$?
+    [ "$rc" -ne 0 ] && ok "D: $fn exits nonzero without jq" || bad "D: $fn exits nonzero without jq"
+    check "D: $fn prints nothing on stdout without jq" "$out" ""
+    has "D: $fn names jq on stderr" "$(cat "$WORK/deps.err")" "jq is missing"
+done
+rm -f "${INBOX_DIR:?}/$NAME.jsonl" "${READ_DIR:?}/$NAME.cursor"
+
 # A mode this script no longer has (the retired --context) must fail loudly
 # and write nothing, not fall through to the joining default.
 before="$(cksum < "$REGISTRY")"

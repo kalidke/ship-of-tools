@@ -12,8 +12,9 @@ license.workspace = true
 # feature is the SEPARATE path a `tests/*.rs` integration-test crate in
 # this same package needs, since those compile the library WITHOUT
 # `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
-# a future `sot-capsule` caller) unless it explicitly opts in.
-test-support = []
+# a future `sot-capsule` caller) unless it explicitly opts in. It also brings
+# `test_log`, `test_exec` and `test_scan`: the way a test installs a subscriber, the one way a test writes a program it runs, and the walker the source scans share.
+test-support = ["dep:tracing-subscriber"]
 
 [dependencies]
 serde = { workspace = true }
@@ -35,6 +36,8 @@ tokio = { workspace = true }
 # string -- this crate had no tracing dep before this. Same version the
 # rest of the workspace pins.
 tracing = { workspace = true }
+# `test_log` and secret.rs's log-writer test (feature `test-support`) use it: the subscribers' formatter.
+tracing-subscriber = { workspace = true, optional = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
 # (L1-unix LU2a): `capsule/` is no longer
@@ -82,7 +85,6 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tracing-subscriber = { workspace = true }
 # Self-referential dev-dependency (a standard Cargo idiom): enables
 # `test-support` for every target `cargo test -p sot-log` builds --
 # this crate's own `tests/*.rs` integration binaries included — without

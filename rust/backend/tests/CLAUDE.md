@@ -10,9 +10,10 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`
+- `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the refused hellos
-- `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change
+- `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; a spawned daemon inherits no `SOT_` variable the test did not set, and `sotd_command` is the only spawn site
 - `hub_link.rs`: messaging; a hub `sotd` and a guest `sotd` joined by a stub `ssh`, broadcast filed on the guest
 - `keystroke_latency.rs`: rows; keystroke timing against a private daemon, every test `#[ignore]`
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
@@ -28,7 +29,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a Unix-socket relay that can be cut, blackholed and throttled
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
-- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
+- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
 ## Start here
@@ -37,7 +38,10 @@ shows the shape.
 
 ## Rules
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
-  (capsule_workspaces, comm_wake, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
+  (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
+- Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, which drops every inherited `SOT_` variable;
+  `sotd_exe` is private there (`daemon_boot.rs` checks that `CARGO_BIN_EXE_sotd` appears nowhere else).
+- A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
 - Every wait is bounded: `support::poll_until` and `BOUND`.
 - A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`).
 - A binary over 800 lines is `<name>/main.rs` plus modules, loading `#[path = "../support/mod.rs"] mod support;`.

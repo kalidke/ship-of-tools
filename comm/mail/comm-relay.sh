@@ -60,9 +60,11 @@ resolve_endpoint() {
 # named pipe itself.
 HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
 # SOFT for `send` (see the file-first rule below): a target this box's
-# registry names is reached by appending to its inbox, which needs no daemon at
-# all — so a missing daemon must not refuse the send. Every path that really
-# needs the wire calls _require_endpoint and fails there instead.
+# registry names is handed to comm-send.sh, which files it by its own route
+# (its own append, this box's daemon, or the hub when this box has no daemon)
+# -- so an endpoint this script could not resolve must not refuse the send.
+# Every path that really needs the wire calls _require_endpoint and fails
+# there instead.
 # A directed send (HANDLE given) reports it as that send's verdict.
 _endpoint_missing() {  # [HANDLE]
     local why="no sotd daemon found; set SOT_RELAY_ENDPOINT=unix:/path, ssh:target[/host], or (Windows) pipe:name"
@@ -374,9 +376,11 @@ send_frame() {  # $1 to, $2 text
 }
 
 # FILE-FIRST (messaging ruling, 2026-09-26). A target with a row in THIS box's
-# registry shares this $SOT_COMM_HOME, so its inbox is a plain local append:
-# comm-send.sh files the frame (the daemon wakes an idle row), and the FILE is the
-# acknowledgement. The wire is only for targets this box cannot name. `relayed`
+# registry shares this $SOT_COMM_HOME, so comm-send.sh files it: refused when the
+# target is not live, else appended under the inbox lock by that script, or,
+# when the lock is not provably shared, by this box's daemon or, on a box with
+# none, the hub; the FILE is the acknowledgement (the daemon wakes an idle row).
+# The wire is only for targets this box cannot name. `relayed`
 # was never proof of delivery — it reported the daemon's own success — and the
 # "only a reply proves the path" rule it forced on every caller is withdrawn.
 # The question BOTH doors must ask (ADR 0048): does this box's registry give

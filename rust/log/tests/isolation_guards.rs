@@ -4,9 +4,6 @@
 
 use std::path::{Path, PathBuf};
 
-/// The crates whose `src/` the guards read, under `rust/`.
-const TREES: [&str; 5] = ["backend", "frontend", "log", "protocol", "updater"];
-
 /// The platform opener literals only `browser_open.rs` may spell.
 const OPENER_LITERALS: [&str; 8] = [
     "Command::new(\"xdg-open\")",
@@ -18,50 +15,20 @@ const OPENER_LITERALS: [&str; 8] = [
     "\"rundll32\"",
     "\"explorer.exe\"",
 ];
-const OPENER_HOME: &str = "frontend/src/browser_open.rs";
+const OPENER_HOME: &str = "rust/frontend/src/browser_open.rs";
 
 fn rust_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("sot-log sits under rust/").to_path_buf()
 }
 
-fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display())) {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            collect(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            out.push(path);
-        }
-    }
-}
-
-/// A file that is test code as a whole: `tests.rs`, `*_tests.rs`, `test_support.rs`, or anything under a `tests` folder.
-fn is_test_file(rel: &str) -> bool {
-    let name = rel.rsplit('/').next().unwrap_or(rel);
-    rel.split('/').any(|part| part == "tests")
-        || name == "tests.rs"
-        || name == "test_support.rs"
-        || name.ends_with("_tests.rs")
-}
-
-/// Every line of every non-test source file the guards read, as `(path under rust/, line number, text)`; comment-only
-/// lines are left out. A file is test code as a whole or not at all: an inline test module is read like the rest.
+/// Every line of the production source, as `(repo-relative path, line number, text)`: the workspace's one
+/// definition, `sot_log::test_scan::production_sources()`, which leaves out test files, test modules and comment
+/// lines. Empty lines are skipped.
 fn production_source() -> Vec<(String, usize, String)> {
-    let root = rust_root();
-    let mut files = Vec::new();
-    for tree in TREES {
-        collect(&root.join(tree).join("src"), &mut files);
-    }
-    assert!(files.len() >= 100, "the walk found only {} source files: is the layout still rust/<crate>/src?", files.len());
     let mut out = Vec::new();
-    for file in files {
-        let rel = file.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-        if is_test_file(&rel) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("read {rel}: {e}"));
-        for (n, line) in source.lines().enumerate() {
-            if !line.trim_start().starts_with("//") {
+    for (rel, text) in sot_log::test_scan::production_sources() {
+        for (n, line) in text.lines().enumerate() {
+            if !line.trim().is_empty() {
                 out.push((rel.clone(), n + 1, line.to_string()));
             }
         }
@@ -108,18 +75,18 @@ fn no_secret_is_passed_as_a_command_line_argument() {
 }
 
 /// The Rust listeners' allowed statements, one entry per `#[allow(clippy::disallowed_methods, reason = "listener:
-/// <name>: <guard>")]` on a statement that accepts or constructs a listener, as (file under rust/, name): the one TCP
+/// <name>: <guard>")]` on a statement that accepts or constructs a listener, as (repo-relative file, name): the one TCP
 /// accept (`serve_own`), the daemon's session socket or pipe (its constructor and its accept), and the capsule's lane
 /// socket and lane pipe (the pipe's accept and its constructor). Another account can reach none of the last three (a
 /// private folder or an owner-only pipe), and `serve_own` checks the owner of every connection before a byte is
 /// read. One entry per statement, so a second allowed accept in a listed file under a listed name fails too.
 const RUST_LISTENERS: [(&str, &str); 6] = [
-    ("log/src/identity/peer_owner/mod.rs", "page (TCP)"),
-    ("backend/src/server/listen.rs", "session socket or pipe"),
-    ("backend/src/server/listen.rs", "session socket or pipe"),
-    ("log/src/lane/socket_unix/accept.rs", "capsule lane socket"),
-    ("log/src/lane/pipe_win/accept.rs", "capsule lane pipe"),
-    ("log/src/lane/pipe_win/registry.rs", "capsule lane pipe"),
+    ("rust/log/src/identity/peer_owner/mod.rs", "page (TCP)"),
+    ("rust/backend/src/server/listen.rs", "session socket or pipe"),
+    ("rust/backend/src/server/listen.rs", "session socket or pipe"),
+    ("rust/log/src/lane/socket_unix/accept.rs", "capsule lane socket"),
+    ("rust/log/src/lane/pipe_win/accept.rs", "capsule lane pipe"),
+    ("rust/log/src/lane/pipe_win/registry.rs", "capsule lane pipe"),
 ];
 
 /// What marks a statement as one that accepts.
