@@ -105,9 +105,23 @@ this account on Windows and a socket in a folder private to this account on Unix
 its server cannot act as the account before the check. The Unix check covers the socket's own folder only. The
 daemon's bind check covers more for a derived path (the runtime folder and every folder below it down to the socket's)
 and the same single folder for a custom one; neither covers the folders above: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR`
-or `XDG_RUNTIME_DIR` under another account's writable, non-sticky folder is not covered. The video, site and site-pool servers and the frontend's page proxy accept
-a connection from any account and rely on the URL's secret alone; lane S1 builds their
-owner check. The comm folder and everything in it but the installed scripts and
+or `XDG_RUNTIME_DIR` under another account's writable, non-sticky folder is not covered. The video, site and site-pool servers, the frontend's page proxy and the one-use redirect listener that opens a page
+in the browser accept only through `serve_own`, which drops another account's connection before reading a byte.
+Pluto's server, its notebook workers and `wglshow`'s Bonito server are Julia processes listening on loopback ports of
+their own, which any account on the computer can reach; Ship of Tools does not accept on them, so no owner check
+reaches them. Each is locked instead by a secret drawn from the OS's secure generator, and the guarantee is that the
+secret never reaches another account (not its command lines, files or logs): Pluto's server by its session secret, which is also the first segment of
+every path Pluto serves, so a request without it gets nothing, Pluto's own files and `/ping` included; every Pluto notebook worker by the
+Distributed cluster cookie (16 characters), which the worker reads from its stdin and checks on every connection
+before it reads a message (Pluto's default Malt worker accepted the first connection with no secret and is not used:
+`julia/pluto/session_options.jl`); and a `wglshow` page by its secret path and its websocket by its session id, the
+page carrying its scripts and files inside it, so that nothing on that port answers without one of them
+(`julia/repl/src/wgl.jl`). Every listener of the Rust processes, the Julia children and the Node helpers is listed,
+and a new one fails `rust/log/tests/isolation_guards.rs` or, on Linux, the listener census of
+`julia/pluto/test/runtests.jl` and `julia/repl/test/bonito/runtests.jl`. The cost is on Windows only: in this mode
+Pluto cannot stop a running cell there (it says so; restoring interrupt is planned for 0.6.7). The guarantee is
+isolation, not availability: another account can still fill a listener's backlog and delay this account's own
+connections; each connection it opens is refused, or answered with nothing, quickly. The comm folder and everything in it but the installed scripts and
 their version stamp are its user's alone: every writer creates them owner-only (0700
 folders, 0600 files), and the next join removes the group and other permissions an
 older release left on the layout's own entries, while anything else in the folder

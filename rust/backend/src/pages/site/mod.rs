@@ -59,7 +59,9 @@ use anyhow::{Context, Result};
 use tokio::io::AsyncReadExt;
 #[cfg(test)]
 use tokio::io::AsyncWriteExt;
-use tokio::net::{TcpListener, TcpStream};
+#[cfg(test)]
+use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 use super::random_token;
 use crate::pages::http::{content_type, serve_file, write_simple};
@@ -303,7 +305,7 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     const BIND_RETRY_DELAY: Duration = Duration::from_millis(300);
     let mut bound = None;
     for attempt in 1..=BIND_ATTEMPTS {
-        match TcpListener::bind(("127.0.0.1", preferred)).await {
+        match crate::pages::bind_page_listener(preferred) {
             Ok(l) => {
                 bound = Some(l);
                 break;
@@ -311,7 +313,7 @@ pub async fn spawn(preferred: u16) -> Result<()> {
             Err(e) if attempt == BIND_ATTEMPTS => {
                 tracing::warn!(preferred, error = %e, "static-site preferred port taken after {BIND_ATTEMPTS} attempts — falling back to an ephemeral port (multi-user host?)");
                 bound = Some(
-                    TcpListener::bind(("127.0.0.1", 0)).await.context(
+                    crate::pages::bind_page_listener(0).context(
                         "bind static-site server on an ephemeral 127.0.0.1 port",
                     )?,
                 );
@@ -326,22 +328,11 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     let port = listener.local_addr().context("static-site server local_addr")?.port();
     BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
-                            tracing::debug!(error = %e, "static-site conn ended");
-                        }
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "static-site accept failed");
-                }
-            }
+    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs", |stream| async move {
+        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
+            tracing::debug!(error = %e, "static-site conn ended");
         }
-    });
+    }));
     Ok(())
 }
 
@@ -371,11 +362,11 @@ pub async fn spawn_pool() {
     // to the full range (codex r3).
     POOL_SPAWNED.store(true, std::sync::atomic::Ordering::SeqCst);
     for preferred in pool_ports() {
-        let listener = match TcpListener::bind(("127.0.0.1", preferred)).await {
+        let listener = match crate::pages::bind_page_listener(preferred) {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!(preferred, error = %e, "pool preferred port taken — falling back to an ephemeral port (multi-user host?)");
-                match TcpListener::bind(("127.0.0.1", 0)).await {
+                match crate::pages::bind_page_listener(0) {
                     Ok(l) => l,
                     Err(e) => {
                         tracing::warn!(error = %e, "pool ephemeral bind failed — pool shrinks by one");
@@ -396,22 +387,11 @@ pub async fn spawn_pool() {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(port);
-        tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _peer)) => {
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
-                                tracing::debug!(error = %e, port, "pool-site conn ended");
-                            }
-                        });
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, port, "pool-site accept failed");
-                    }
-                }
+        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| async move {
+            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
+                tracing::debug!(error = %e, port, "pool-site conn ended");
             }
-        });
+        }));
     }
 }
 

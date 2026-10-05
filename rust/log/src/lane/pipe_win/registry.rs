@@ -25,6 +25,7 @@ pub(super) fn create_pipe_instance(
         lpSecurityDescriptor: descriptor.as_ptr(),
         bInheritHandle: 0,
     };
+    #[allow(clippy::disallowed_methods, reason = "listener: capsule lane pipe: an owner-only DACL, then the identity challenge")]
     let h = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),

@@ -32,8 +32,13 @@ const ANNOUNCED_BROWSER_URLS = Set{String}()
 # `wglshow(fig; open=false)` followed by returning `browserview(url)` in the
 # same eval must still emit the open=true frame (one no-open announce for the
 # allowlist, then one deliberate open), and vice versa. Identical-policy
-# repeats still dedupe to one frame.
-browser_announce_key(bv::BrowserView) = string(bv.url, '|', bv.open)
+# repeats still dedupe to one frame. The key includes the target.
+browser_announce_key(bv::BrowserView) = string(bv.url, '|', bv.open, '|', something(bv.fe, ""))
+
+# The `browser` frame for `bv`; `fe` is present only when the frame names its one frontend.
+browser_frame(bv::BrowserView) = bv.fe === nothing ?
+    Dict(:kind => "browser", :url => bv.url, :open => bv.open) :
+    Dict(:kind => "browser", :url => bv.url, :open => bv.open, :fe => bv.fe)
 
 """
     announce_browserview(bv::BrowserView) -> bv
@@ -47,7 +52,7 @@ function announce_browserview(bv::BrowserView)
     em === nothing && return bv
     browser_announce_key(bv) in ANNOUNCED_BROWSER_URLS && return bv
     try
-        em(Dict(:kind => "browser", :url => bv.url, :open => bv.open))
+        em(browser_frame(bv))
         push!(ANNOUNCED_BROWSER_URLS, browser_announce_key(bv))
     catch
         # Emission is best-effort: a failed announce must not break the serve
@@ -179,7 +184,7 @@ function value_frames_for(result)
         # `browserview(url)` as the last expression) was never announced and
         # still emits here.
         browser_announce_key(result) in ANNOUNCED_BROWSER_URLS && return out
-        push!(out, Dict(:kind => "browser", :url => result.url, :open => result.open))
+        push!(out, browser_frame(result))
         return out
     end
     img_mimes = (MIME"image/png"(), MIME"image/svg+xml"())

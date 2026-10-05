@@ -7,6 +7,15 @@ pub(super) mod proxy;
 pub(super) mod site;
 pub(super) mod video;
 
+/// A loopback listener on `port` for a page server (0: the OS picks). Bound through std, whose Windows sockets are
+/// made non-inheritable at creation, and handed to tokio, whose own sockets are inheritable: a child process the daemon
+/// starts must not hold a page listener (ADR 0049, User isolation). Call it inside the runtime.
+pub(crate) fn bind_page_listener(port: u16) -> std::io::Result<tokio::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+    listener.set_nonblocking(true)?;
+    tokio::net::TcpListener::from_std(listener)
+}
+
 /// Binds the video, static-site and site-pool servers at boot; a failed bind is logged and the daemon runs on.
 pub(crate) async fn start_page_servers() {
     // Loopback video file server for browser playback (ADR 0018). Bound at
@@ -48,4 +57,19 @@ fn random_token() -> Option<String> {
         return None;
     }
     Some(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+#[cfg(all(test, windows))]
+mod bind_tests {
+    /// ADR 0049, User isolation: a page listener is not inherited by the daemon's child processes.
+    #[tokio::test]
+    async fn a_page_listener_is_not_inheritable() {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+        let listener = super::bind_page_listener(0).unwrap();
+        let mut flags = 0u32;
+        let ok = unsafe { GetHandleInformation(listener.as_raw_socket() as _, &mut flags) };
+        assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0, "the page listener's socket is inheritable");
+    }
 }

@@ -106,14 +106,15 @@ impl State {
             }
             FeCommand::OpenUrl { url } => {
                 // Scheme already allowlisted (http/https) at route time.
-                tracing::info!(%url, "fe-command: open_url");
+                let origin = crate::browser_open::origin_of(&url);
+                tracing::info!(page = %origin, "fe-command: open_url");
                 // The URL is loopback on the daemon that sent this command; a
                 // command-file / internal dispatch names no host and gets the
                 // default — the only proxied one anyway.
                 let host = from_host.cloned().unwrap_or_else(|| self.default_host());
                 if self.ensure_proxy_for_url(&host, &url) {
-                    match open_url_in_browser(&url) {
-                        Ok(()) => self.status = format!("opened in browser · {url}"),
+                    match crate::browser_open::open_page(&url) {
+                        Ok(()) => self.status = format!("opened in browser · {origin}"),
                         Err(e) => self.status = format!("open_url failed · {e}"),
                     }
                 }

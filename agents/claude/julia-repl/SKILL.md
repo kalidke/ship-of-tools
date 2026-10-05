@@ -143,8 +143,12 @@ the eval and read the file.
 
 **Headless.** The kernel inherits the daemon's environment; nothing sets
 `DISPLAY` and nothing runs xvfb. CairoMakie works and its figures come back
-as figure paths. For interactive figures use WGLMakie and `wglshow`, which
-serves over loopback. `using GLMakie` on a headless backend is a GLFW init
+as figure paths. For an interactive figure use WGLMakie and `wglshow(fig)`: it serves the figure on a port the OS assigns, at an
+address with a secret in it, so no other account on the box can open it, and every attached frontend opens it.
+With more than one frontend attached use `wglshow(fig; open = "<fe>")` (the name `sot-fe --fe` takes): only that
+frontend opens it. Never copy a figure's address into a command, `sot-fe open-url` included: every account on the
+box can read a command line. Serve every page you want to look at through `wglshow`. A page your own code serves
+on a port it opens itself can be opened by any account on that box. `using GLMakie` on a headless backend is a GLFW init
 error.
 
 **Revise is not loaded.** Editing a source file does not change the next run:

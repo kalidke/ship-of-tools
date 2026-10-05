@@ -201,6 +201,8 @@ OS-assigned port — which also ends the *same-user* collision where a second
 workspace's REPL child couldn't serve because the first held 1241. An
 explicitly passed `wglshow(fig; port=N)` is honored verbatim (loud failure).
 
+> *Note (0.6.6, decision 0031): `wglshow` no longer prefers 1241 and `SOT_WGL_PORT` is gone; it binds an OS-assigned port and serves under a secret path. Every page listener a daemon or frontend opens now closes another OS account's connection (transport page, "Browser-facing ports"). Every page the frontend opens reaches the browser through a one-use, owner-checked redirect on loopback (`rust/frontend/src/browser_open.rs`), so no page address is on a command line; an explicit `port=N` that is taken now throws.*
+
 Trust note: a REPL child is the user's own arbitrary code and the proxy
 client is the same authenticated user, so user code authorizing a loopback
 port for the user's own browser adds no privilege over what either side can

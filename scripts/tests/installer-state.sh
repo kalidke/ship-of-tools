@@ -476,6 +476,32 @@ check "the oldest five go and the newest three stay" "567" \
 reap_stub "$d"
 
 # ---------------------------------------------------------------------------
+case_start "ensure_log_folder_is_owner_only"
+# The daemon copies every log line to its stdout log, and old logs hold unmasked secrets, so the folder is what keeps
+# other accounts out: new, and a folder an earlier install made 755 with its files (ADR 0049, User isolation).
+d="$WORK/logs-mode"; mkdir -p "$d/home"
+( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo unreadable; }
+check "a new logs folder is owner-only under umask 022" "700" "$(mode_of "$d/prefix/logs")"
+reap_stub "$d"
+d="$WORK/logs-mode-old"; mkdir -p "$d/home" "$d/prefix/logs"
+chmod 755 "$d/prefix/logs"
+printf 'earlier\n' > "$d/prefix/logs/sotd.log"; chmod 644 "$d/prefix/logs/sotd.log"
+( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )
+check "an existing 755 logs folder becomes owner-only" "700" "$(mode_of "$d/prefix/logs")"
+check "its earlier log keeps its line" "earlier" "$(cat "$d/prefix/logs/sotd.log")"
+reap_stub "$d"
+# An install that ran nohup before and is systemd-owned now keeps a 755 folder with its old logs: the ensure
+# secures it on the systemd path too.
+d="$WORK/logs-mode-systemd"; mkdir -p "$d/home/.config/systemd/user" "$d/prefix/logs"
+chmod 755 "$d/prefix/logs"
+printf '{"service": "systemd"}\n' > "$d/prefix/install.json"
+render_sotd_unit "$d/prefix" "$(dirname "$0")/../../deploy/sotd.service" "$d/home/.config/systemd/user/sotd.service"
+( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 1 )
+check "a systemd-owned install's existing logs folder becomes owner-only" "700" "$(mode_of "$d/prefix/logs")"
+reap_stub "$d"
+
+# ---------------------------------------------------------------------------
 case_start "a_live_writers_log_is_kept"
 # The oldest log names this shell's own live pid, as a daemon still shutting
 # down names its own; six newer dead ones put the dir over the count.
