@@ -54,7 +54,11 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   those five. The suites of the row-lifecycle CLIs, the launchers and `sot-gh-auth.sh` are in `agents/tests/` and source this folder's guard.
 - A shell rule that has a Rust twin is checked by a text scan or a parity test here (`test-hub-files.sh` T13 over
   `inbox.rs`, `test-registry-lock.sh` t15 over `lock.rs`); change both arms in one commit.
-- A suite's verdict never depends on how fast the host runs: a bound on how long something took is a count of the code's
-  own waits (a logging `sleep` first on PATH), or a bound no shorter than the longest wait the code has (10 s), which
-  only a hang reaches; a step a case starts in the background is awaited by a signal it gives, never a fixed sleep, and
-  ends before the case returns. Lower bounds ("waited at least the deadline") stay: load only lengthens a wait.
+- A suite's verdict never depends on how fast the host runs. A case bounds a duration from above only to rule out a
+  slower behaviour its exit status and output cannot show, and then by a count of the code's own waits (a logging
+  `sleep` first on PATH) or, where nothing can be counted, by that behaviour's own length (a lock's full 10 s wait in
+  place of a shortened one). A case that needs a step only to return sets no bound: the run's timeout turns a hang into
+  a failure (`scripts/tests/rc-gate.sh` gives each suite 20 minutes, the CI job 60). A step a case starts in the
+  background is awaited by a signal it gives (a file it writes, the stopped state of a holder that stops itself), never
+  a fixed sleep, and ends before the case returns. Lower bounds ("waited at least the deadline") stay: load only
+  lengthens a wait.

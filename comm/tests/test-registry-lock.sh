@@ -3,9 +3,9 @@
 # made by link(2), and reclaimed only when its holder is proved dead on this
 # machine. One Linux box, hermetic.
 #
-#   1 a SIGKILLed holder is reclaimed: the waiter holds within the lock's
-#     10 s wait, the marker reclaim.<D> holds the waiter's ID, registry.json
-#     still parses;
+#   1 a SIGKILLed holder is reclaimed: the waiter holds (one left waiting
+#     would run out its wait and fail), the marker reclaim.<D> holds the
+#     waiter's ID, registry.json still parses;
 #   2 a live holder is never reclaimed: FAILED names it and "it is running",
 #     the lock is byte-identical, there is no marker, and the record's pid is
 #     the process that holds (the ID is computed there, never in a subshell);
@@ -40,9 +40,10 @@
 #     retake, and FAILs at once: nothing chains, counted (review SF2);
 #  13 the clock is EPOCHREALTIME's digits under a comma decimal, and an unset
 #     or non-numeric one is FAILED naming the clock, never the holder;
-#  14 a dead holder D whose marker reclaim.<D> names D: the next writer and
-#     the clear each stop at that marker within their bound, say to remove
-#     the lock by hand, and leave lock and marker as they were (review B1);
+#  14 a dead holder D whose marker reclaim.<D> names D: the next writer stops
+#     at that marker without running out the lock's full 10 s wait, the clear
+#     stops at it too, both say to remove the lock by hand, and leave lock and
+#     marker as they were (review B1);
 #  15 an ID with no proof fields is never judged mine (review SF1), and no
 #     call site compares a record to the own ID but through the one test;
 #  16 a clear forcing a proof-less holder whose lock a new holder N takes
@@ -131,12 +132,9 @@ record_then() {
 }
 
 t1() {
-    reset; local d t0 ms me
+    reset; local d me
     d="$(dead_holder)"
-    t0=$(date +%s%N)
     lib '_sot_lock_self_id; echo "$_SOT_LOCK_ID" > "'"$WORK"'/me"; with_lock registry_touch x' || { echo "waiter failed"; return 1; }
-    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-    [ "$ms" -lt 10000 ] || { echo "took ${ms}ms"; return 1; }
     me="$(cat "$WORK/me")"
     [ "$(cat "$(marker "$d")")" = "$me" ] || { echo "marker does not hold the waiter's ID"; return 1; }
     [ ! -e "$P" ] || { echo "lock not released"; return 1; }
@@ -419,10 +417,7 @@ t14() {
     [ "$ms" -lt 10000 ] || { echo "a 1 s writer took ${ms}ms"; return 1; }
     contains "$out" "its reclaim marker $(marker "$d") names $d, which its reclaim chain already holds" \
         && contains "$out" "remove $P by hand" || { echo "$out"; return 1; }
-    t0=$(date +%s%N)
     out="$(timeout 20 bash "$BIN/comm-registry-lock-clear.sh" 2>&1)" && { echo "cleared: $out"; return 1; }
-    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-    [ "$ms" -lt 10000 ] || { echo "the clear took ${ms}ms"; return 1; }
     contains "$out" "its reclaim marker $(marker "$d") names $d" && contains "$out" "remove the lock by hand" \
         || { echo "$out"; return 1; }
     [ "$(cat "$P")" = "$d" ] && [ "$(cat "$(marker "$d")")" = "$d" ] || { echo "the lock or its marker changed"; return 1; }
