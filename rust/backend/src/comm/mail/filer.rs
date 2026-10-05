@@ -567,88 +567,65 @@ mod comm_file_tests {
         }
     }
 
-    // The inbox has no writer but the verdict (and the one-time move of an old
-    // frontend inbox): every daemon route ends in `comm_file_verdict`, and the
-    // last_seen readers and writers, and every open for append, are the listed
-    // files in every crate. A new member fails here.
+    // Every daemon route ends in `comm_file_verdict`; the one appender chain is `file_frame` -> `file_frame_with` ->
+    // `append_line`; the `last_seen` users and every open for append are the listed files in every crate; a new
+    // member fails here.
     #[test]
     fn every_inbox_append_is_the_verdicts_or_the_move() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for e in std::fs::read_dir(dir).unwrap() {
-                let p = e.unwrap().path();
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if p.extension().is_some_and(|x| x == "rs")
-                    && !p.file_name().unwrap().to_string_lossy().ends_with("_tests.rs")
-                {
-                    out.push(p);
-                }
-            }
-        }
-        let rust = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let mut files = Vec::new();
-        for krate in std::fs::read_dir(&rust).unwrap() {
-            let src = krate.unwrap().path().join("src");
-            if src.is_dir() {
-                walk(&src, &mut files);
-            }
-        }
-        assert!(files.len() > 200, "the walk found {} files", files.len());
+        use sot_log::test_scan::{enclosing, is_ident, production_sources};
+        let files = production_sources();
         let word = |text: &str, w: &str| {
             text.match_indices(w).any(|(i, _)| {
-                let before = text[..i].chars().next_back();
-                let after = text[i + w.len()..].chars().next();
-                !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                !is_ident(text[..i].chars().next_back()) && !is_ident(text[i + w.len()..].chars().next())
             })
+        };
+        // The non-definition calls of `name(` in `text`: their positions.
+        let calls = |text: &str, name: &str| -> Vec<usize> {
+            text.match_indices(name)
+                .filter(|(i, _)| !is_ident(text[..*i].chars().next_back()) && !text[..*i].trim_end().ends_with("fn"))
+                .map(|(i, _)| i)
+                .collect()
         };
         let (mut appenders, mut last_seen, mut opens) = (Vec::new(), Vec::new(), Vec::new());
         let mut inbox_text = String::new();
-        for f in &files {
-            let text = std::fs::read_to_string(f).unwrap();
-            let text = text.split("\n#[cfg(test)]").next().unwrap();
-            let rel = f.strip_prefix(&rust).unwrap().to_string_lossy().replace('\\', "/");
-            let calls = text.matches("file_frame(").count() - text.matches("pub fn file_frame(").count();
-            if calls > 0 {
-                appenders.push((rel.clone(), calls));
+        for (path, text) in &files {
+            let n = calls(text, "file_frame(").len();
+            if n > 0 {
+                appenders.push((path.clone(), n));
             }
             if word(text, "last_seen") {
-                last_seen.push(rel.clone());
+                last_seen.push(path.clone());
             }
             let n = text.matches(".append(true)").count();
             if n > 0 {
-                opens.push((rel.clone(), n));
+                opens.push((path.clone(), n));
             }
-            if rel == "backend/src/comm/mail/inbox.rs" {
-                inbox_text = text.to_string();
+            if path == "rust/backend/src/comm/mail/inbox.rs" {
+                inbox_text = text.clone();
             }
         }
         appenders.sort();
         last_seen.sort();
         opens.sort();
-        assert_eq!(appenders, vec![("backend/src/comm/mail/filer.rs".to_string(), 1), ("backend/src/comm/mail/hub_link.rs".to_string(), 1)]);
         assert_eq!(
-            last_seen,
-            [
-                "backend/src/comm/mail/filer.rs",
-                "backend/src/comm/registry/liveness.rs",
-                "backend/src/comm/registry/poll.rs",
-                "backend/src/comm/registry/registry.rs",
-                "backend/src/server/mod.rs",
-            ]
+            appenders,
+            vec![("rust/backend/src/comm/mail/filer.rs".to_string(), 1), ("rust/backend/src/comm/mail/hub_link.rs".to_string(), 1)]
         );
+        assert_eq!(last_seen, ["rust/backend/src/comm/mail/filer.rs", "rust/backend/src/comm/registry/registry.rs"]);
         assert_eq!(
             opens,
             vec![
-                ("backend/src/comm/mail/inbox.rs".to_string(), 2),
-                ("backend/src/main.rs".to_string(), 1),
-                ("backend/src/rows/spawn/detach.rs".to_string(), 1),
+                ("rust/backend/src/comm/mail/inbox.rs".to_string(), 2),
+                ("rust/backend/src/main.rs".to_string(), 1),
+                ("rust/backend/src/rows/spawn/detach.rs".to_string(), 1),
             ]
         );
-        // `append_line` is defined once and called once, by `file_frame_with`, which `file_frame` calls.
-        assert_eq!(inbox_text.matches("append_line(").count(), 2, "append_line has a new caller");
-        let from = inbox_text.find("fn file_frame_with(").expect("file_frame_with");
-        let body = &inbox_text[from..];
-        let end = body[1..].find("\nfn ").or_else(|| body[1..].find("\npub fn ")).map_or(body.len(), |i| i + 1);
-        assert_eq!(body[..end].matches("append_line(").count(), 1, "append_line is not called by file_frame_with");
+        // The chain in inbox.rs: one caller of each link, in the previous one.
+        let with = calls(&inbox_text, "file_frame_with(");
+        assert_eq!(with.len(), 1, "file_frame_with has a new caller");
+        assert_eq!(enclosing(&inbox_text, with[0]), "file_frame");
+        let append = calls(&inbox_text, "append_line(");
+        assert_eq!(append.len(), 1, "append_line has a new caller");
+        assert_eq!(enclosing(&inbox_text, append[0]), "file_frame_with");
     }
 }

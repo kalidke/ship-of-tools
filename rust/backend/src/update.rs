@@ -600,8 +600,7 @@ mod tests {
     /// which the launchers read as "stay down".
     #[test]
     fn update_exit_code_is_restart() {
-        let src = include_str!("update.rs");
-        let body = &src[..src.find("#[cfg(test)]").expect("the test module")];
+        let body = sot_log::test_scan::without_test_modules(include_str!("update.rs"));
         assert!(!body.contains(&format!("process::exit({})", 0)), "update.rs exits 0, a requested shutdown");
         assert_eq!(body.matches("process::exit(").count(), body.matches("process::exit(code)").count(), "an update exits only with the code exit_for_update hands it");
         assert_eq!(body.matches("exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)").count(), 1, "the update's one exit is a restart");
