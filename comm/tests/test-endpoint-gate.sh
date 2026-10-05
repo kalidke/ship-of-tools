@@ -486,6 +486,26 @@ EOF
 }
 check "a source-built box (no release install) resolves its relay endpoint via a live process's /proc/pid/exe" case_source_built_box_resolves_relay_endpoint_via_proc_exe
 
+# =========================================================================
+# 8. E1: a `sotd --socket` in another process's argv is never an endpoint. The
+#    last-resort scrape of a development daemon's argv could hand a line to a
+#    stranger's or a test daemon, which would then answer for this comm folder.
+# =========================================================================
+case_an_argv_socket_of_another_process_is_never_an_endpoint() {
+    local fakebin fakehome out rc=0
+    fakebin="$(mktemp -d "$WORK/scrape-fakebin-XXXXXX")"
+    fakehome="$(mktemp -d "$WORK/scrape-home-XXXXXX")"
+    printf '#!/bin/sh\necho "4242 sotd --socket /tmp/m4-scrape.sock"\n' > "$fakebin/pgrep"
+    chmod +x "$fakebin/pgrep"
+    out="$(
+        unset SOTD_BIN SOT_SOCKET
+        PATH="$fakebin:$PATH" HOME="$fakehome" sot_daemon_endpoint 2>/dev/null
+    )" || rc=$?
+    [ -z "$out" ] && [ "$rc" -ne 0 ] || { echo "  rc $rc, endpoint '$out': a scraped argv socket was used"; return 1; }
+    return 0
+}
+check "no sotd --socket in another process's argv is ever an endpoint" case_an_argv_socket_of_another_process_is_never_an_endpoint
+
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]

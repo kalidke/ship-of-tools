@@ -357,30 +357,6 @@ sot_daemon_endpoint() {
         done < <(pgrep -af 'sotd' 2>/dev/null || true)
     fi
 
-    # LAST resort — a development daemon launched with an explicit --socket.
-    # Below the canonical session socket on purpose (2026-09-08): a lane's
-    # test daemon (`--socket /tmp/sotrt-*/...`) scraped from argv hijacked
-    # every comm script's discovery while the real daemon sat on its
-    # label-derived socket, so despawn "found no workspace" and the row
-    # survived. A scratch daemon is targeted explicitly (SOT_RELAY_ENDPOINT
-    # / --endpoint), never by luck of process order. `--tcp` scraping is
-    # GONE (dead since 0.4.0 -- `sotd` rejects `--tcp` outright,
-    # `rust/backend/src/main.rs`'s `parse_args`). pgrep is not on a stock git-bash
-    # PATH and must never be reached for on Windows.
-    if ! _sot_is_windows; then
-        local line
-        while IFS= read -r line; do
-            case "$line" in
-                *comm-relay*|*comm-spawn*|*comm-despawn*|*comm-poll*|*sot-fe*|*sot-nav*)
-                    continue
-                    ;;
-            esac
-            if [[ "$line" =~ --socket[[:space:]]+([^[:space:]]+) ]]; then
-                _sot_emit_endpoint "unix:${BASH_REMATCH[1]}" && return 0
-            fi
-        done < <(pgrep -af 'sotd' 2>/dev/null || true)
-    fi
-
     return 1
 }
 
