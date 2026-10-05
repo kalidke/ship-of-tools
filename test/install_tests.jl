@@ -8,8 +8,7 @@
         stuckdir = joinpath(home, ".claude", "skills", skill, "SKILL.md")
         mkpath(stuckdir)
         write(joinpath(stuckdir, "marker.txt"), "keepme")
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             err = try
                 ShipTools.update_comm(clis = [:claude]); nothing
             catch e
@@ -32,8 +31,7 @@ end
     withhome(f) = mktempdir() do home
         bin = joinpath(home, ".sot-comm", "bin")
         mkpath(bin)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             f(home, bin)
         end
     end
@@ -147,11 +145,7 @@ end
 
 @testset "update_comm installs no CLAUDE.md" begin
     mktempdir() do home
-        # On Windows Julia's `homedir()` reads USERPROFILE, so the home is set there as well.
-        withenv("HOME" => home, "USERPROFILE" => home, "HOMEDRIVE" => splitdrive(home)[1],
-                "HOMEPATH" => splitdrive(home)[2], "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-            @test homedir() == home
+        in_home(home) do
             ShipTools.update_comm(clis = [:claude, :codex])
         end
         @test isfile(joinpath(home, ".sot-comm", "bin", "comm-poll.sh"))
@@ -174,7 +168,7 @@ end
         published = String[]
         bad = String[]
         unset = [k => nothing for k in keys(ENV) if startswith(k, "SOT_")]
-        withenv(unset..., "HOME" => home, "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home, unset...) do
             # install_comm's own loop; after each rename it makes, a script starts and sources the library.
             function rename(src, dst)
                 Base.Filesystem.rename(src, dst)
@@ -209,8 +203,7 @@ end
     if Sys.isunix()
         mktempdir() do home
             unset = [k => nothing for k in keys(ENV) if startswith(k, "SOT_")]
-            withenv(unset..., "HOME" => home, "SOT_COMM_HOME" => joinpath(home, ".sot-comm"),
-                    "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing) do
+            in_home(home, unset...) do
                 # A bin an install from this repo's split layout left: the parts as files, and recorded.
                 bin = mkpath(joinpath(home, ".sot-comm", "bin"))
                 parts = vcat(values(parts_of)...)

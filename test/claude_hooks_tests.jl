@@ -10,8 +10,7 @@
     mktempdir() do home
         acct_dir = joinpath(home, ".claude-auth", "acct")
         mkpath(acct_dir)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools.update_comm(clis = [:claude])
             @test isempty(readdir(acct_dir))
             @test readdir(joinpath(home, ".claude-auth")) == ["acct"]
@@ -78,8 +77,7 @@ end
         b = joinpath(auth, "b", "settings.json")
         mkpath(dirname(b)); symlink(default, b)
         c = joinpath(auth, "c"); mkpath(c)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(ShipTools.claude_home())
 
             # Each real file holds each comm hook exactly once.
@@ -119,8 +117,7 @@ end
         write(target, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user.sh"}]}]}}""")
         link = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(link)); symlink(target, link)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(ShipTools.claude_home())
             @test islink(link) && readlink(link) == target
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -137,8 +134,7 @@ end
     mktempdir() do home
         mkpath(joinpath(home, ".claude"))
         c = joinpath(home, ".claude-auth", "c"); mkpath(c)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(c)
             @test isempty(readdir(c))
             f = joinpath(home, ".claude", "settings.json")
@@ -183,8 +179,7 @@ end
             f = joinpath(home, ".claude", "settings.json")
             mkpath(dirname(f)); write(f, "{}")
             chmod(f, 0o604)  # a mode no umask produces
-            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+            in_home(home) do
                 ShipTools._install_claude_hooks(joinpath(home, ".claude"))
                 @test filemode(f) & 0o777 == 0o604
                 for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -225,8 +220,7 @@ end
         auth = joinpath(home, ".claude-auth")
         c = joinpath(auth, "c"); mkpath(c)
         symlink(c, joinpath(home, "alias"))
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             cd(home) do
                 ShipTools._install_claude_hooks(joinpath(".claude-auth", "c"))
             end
@@ -278,8 +272,7 @@ end
             if !restrained
                 @test_skip false
             else
-                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                in_home(home) do
                     @test_throws ErrorException ShipTools._install_claude_hooks(ro)
                     for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
                         @test count(==(ShipTools._hook_command(script)), cmds(a, ev)) == 1
@@ -304,8 +297,7 @@ end
         mkpath(joinpath(home, ".claude-auth"))
         team = joinpath(home, ".claude-auth", "team")
         symlink(elsewhere, team)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(team)
             @test isempty(readdir(elsewhere))
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -330,8 +322,7 @@ end
             if !restrained
                 @test_skip false
             else
-                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                in_home(home) do
                     logger = Test.TestLogger(min_level = Base.CoreLogging.Warn)
                     Base.CoreLogging.with_logger(logger) do
                         ShipTools.update_comm(clis = [:claude])
