@@ -221,7 +221,8 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     if sot_service_owned "$prefix"; then
         mode=systemd
     else
-        mkdir -p "$logdir" || { echo "ERROR: cannot create $logdir" >&2; return 1; }
+        # The logs folder is owner-only, new or old: it keeps every log in it, past and future, from other accounts.
+        { mkdir -p "$logdir" && chmod 700 "$logdir"; } || { echo "ERROR: cannot create or secure $logdir" >&2; return 1; }
         sot_prune_logs "$logdir"
         # Milliseconds where date has %N (GNU); 000 where it does not (BSD).
         stamp="$(date -u +%Y%m%d-%H%M%S-%3N)"
@@ -229,7 +230,6 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         logfile="$logdir/sotd.${stamp}Z-$$.log"
         # Append, never truncate: the name is new, and a file another daemon
         # still writes is never cut short.
-        ( umask 077 && : >>"$logfile" )  # owner-only: the daemon copies every log line to it; the mv below keeps the mode
         nohup "$sotd_bin" --socket "$socket" --project-root "$HOME" --label sot >>"$logfile" 2>&1 </dev/null &
         pid=$!
         # Name the log for the daemon that writes it, so a prune keeps it while

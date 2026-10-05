@@ -476,14 +476,20 @@ check "the oldest five go and the newest three stay" "567" \
 reap_stub "$d"
 
 # ---------------------------------------------------------------------------
-case_start "ensure_log_is_owner_only"
-# The shell's own redirect makes the daemon's log, so its mode would be the caller's umask's, and the daemon copies
-# every log line to that stdout: any account that can reach the prefix would read it (ADR 0049, User isolation).
+case_start "ensure_log_folder_is_owner_only"
+# The daemon copies every log line to its stdout log, and old logs hold unmasked secrets, so the folder is what keeps
+# other accounts out: new, and a folder an earlier install made 755 with its files (ADR 0049, User isolation).
 d="$WORK/logs-mode"; mkdir -p "$d/home"
 ( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )
-mode_log="$(newest_log "$d/prefix/logs")"
-check "the daemon's log is owner-only under umask 022" "600" \
-    "$(stat -c %a "$mode_log" 2>/dev/null || stat -f %Lp "$mode_log" 2>/dev/null || echo unreadable)"
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo unreadable; }
+check "a new logs folder is owner-only under umask 022" "700" "$(mode_of "$d/prefix/logs")"
+reap_stub "$d"
+d="$WORK/logs-mode-old"; mkdir -p "$d/home" "$d/prefix/logs"
+chmod 755 "$d/prefix/logs"
+printf 'earlier\n' > "$d/prefix/logs/sotd.log"; chmod 644 "$d/prefix/logs/sotd.log"
+( umask 022; STUB_DELAY=0 run_ensure "$d" "$d/prefix" 0 )
+check "an existing 755 logs folder becomes owner-only" "700" "$(mode_of "$d/prefix/logs")"
+check "its earlier log keeps its line" "earlier" "$(cat "$d/prefix/logs/sotd.log")"
 reap_stub "$d"
 
 # ---------------------------------------------------------------------------
