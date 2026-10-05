@@ -14,8 +14,9 @@ pub enum WakeOutcome {
     /// The line was typed but the live screen then did not show it alone in main's input box, for `reason`
     /// (the gate's own); `border` is the line above the cursor's row at the gate. No Enter was sent.
     TypedNoEnter { reason: &'static str, border: String },
-    /// A write on `step` (`"text"` or `"enter"`) returned an error (`detail`, the phase and its text), or its
-    /// delivery is unknown: what that step wrote may still have reached the agent.
+    /// The Enter write (`step` `"enter"`) returned an error or its delivery is unknown (`detail`, the phase and its
+    /// text): the Enter may still have reached the agent. For `step` `"text"` it is only the stale refusal (phase
+    /// `input`), which wrote nothing.
     Unconfirmed { step: &'static str, detail: String },
     /// The text write failed in a phase other than `"input"`, or its delivery is unknown: the line may have reached
     /// the agent (and may draw later), so it counts as typed.
@@ -153,18 +154,10 @@ mod tests {
         let failed = |phase| HeadlessError { phase, detail: "x".to_string(), submitted: true };
         // Only the stale refusal (phase "input") wrote nothing; any other failure may have reached the agent.
         assert_eq!(text_failed(failed("input")), WakeOutcome::Unconfirmed { step: "text", detail: "input: x".to_string() });
-        for phase in ["write", "record", "checkpoint"] {
+        // The phases `send_text` returns: `input` (stale), `record` (delivery unknown or the deadline), `take` (the client died).
+        for phase in ["record", "take"] {
             assert_eq!(text_failed(failed(phase)), WakeOutcome::TextUnknown { detail: format!("{phase}: x") });
         }
-    }
-
-    #[test]
-    fn text_write_failure_is_unconfirmed_not_skipped() {
-        // The mapping `wake_if_free` applies to a `send_text` error; a real text-write failure needs a stub
-        // supervisor with no seam here, so the mapping is tested directly.
-        let failed = HeadlessError { phase: "write", detail: "broken pipe".to_string(), submitted: true };
-        let out = unconfirmed("text", failed);
-        assert_eq!(out, WakeOutcome::Unconfirmed { step: "text", detail: "write: broken pipe".to_string() });
     }
 
     // Observed on Linux only: the attach client's worker is the same code elsewhere, but no host here runs it.

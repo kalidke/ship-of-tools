@@ -27,9 +27,9 @@ pub(crate) const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
 
 /// What a headless op failed to do, and where. `phase` is one of
 /// `size` (the size gate, before any attach), `attach`, `checkpoint`,
-/// `take` (the pen was asked for but never granted, and — since
-/// nothing reached [`Client::send_input`]'s own wire flush yet —
-/// `submitted` is `false` here), `input` (a definite
+/// `take` (the pen was asked for but never granted, with `submitted`
+/// `false` — or, from `send_and_wait_recorded`, the client died after the
+/// input was handed to it: `submitted` is `true` and delivery is unknown), `input` (a definite
 /// `input_refused_stale`; never retried by this module), `record`
 /// (the record's own verdict is UNKNOWABLE: either the wire said
 /// `input_delivery_unknown`, or the deadline expired after the input

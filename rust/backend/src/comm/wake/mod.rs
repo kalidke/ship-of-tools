@@ -57,7 +57,7 @@
 //! focus on the panel that draws nothing reads free ([`panel_refusal`]).
 //! Enter goes only after a screen read shows the typed line alone in main's input box ([`typed_refusal`]), which the
 //! wake waits up to [`OP_BUDGET`] for after typing; otherwise no Enter goes, the
-//! attempt counts as the wake (the line is not typed again before [`REPEAT_AFTER`] or a read inbox) and owes its Enter, and a warning names
+//! attempt counts as the wake (within one daemon run the line is not typed again before [`REPEAT_AFTER`] or a read inbox) and owes its Enter, and a warning names
 //! it. A later tick ([`Decision::Complete`]) sends Enter alone, never typing, once the first frame and the live screen after the hold both show just the wake line in main's box. That gate withholds Enter after a stray key between the
 //! final read and the typing; the line itself has then gone, without Enter, wherever that key put focus (the
 //! panel or a draft). Nothing guards the window between the gate's read and the Enter: a key pressed, or a dialog
@@ -306,8 +306,9 @@ fn check_row(home: &Path, handle: &str, state_dir: &Path, agent: &str, prior: Op
 /// What one wake attempt means for the row. A line that was typed counts as the wake whether or not Enter followed or
 /// was confirmed (ADR 0049: one line per batch): typing it again would repeat it wherever focus went, or send it twice.
 /// One typed without Enter is owed it (`enter_owed`): a later tick sends Enter alone once the line shows alone ([`Decision::Complete`]).
-/// A text write that failed or whose delivery is unknown is a refusal, decided by the next tick's screen read and
-/// warned once per streak ([`settle`]). An attach or checkpoint failure is no row this tick.
+/// A text write refused as stale (phase `input`, nothing written) is a refusal, decided by the next tick's screen read
+/// and warned once per streak ([`settle`]); any other text-write failure may have landed, so it counts as typed and
+/// owes its Enter ([`WakeOutcome::TextUnknown`]). An attach or checkpoint failure is no row this tick.
 fn step_of(handle: &str, out: Result<WakeOutcome, HeadlessError>, seen: (Option<&'static str>, String), total: u64, now: Instant) -> Step {
     let (reason, border) = seen;
     match out {
@@ -437,21 +438,24 @@ mod tests {
         assert!(matches!(step_of("h", out, (None, String::new()), 1, Instant::now()), Step::Skip));
     }
 
+    /// The one text refusal left: `send_and_wait_recorded`'s phase `input`, in the wake's `phase: detail` shape.
+    const STALE: &str = "input: input refused as stale (the take epoch changed); this op is never retried";
+
     #[test]
-    fn a_typed_line_counts_as_the_wake_and_a_failed_write_is_tried_again() {
+    fn a_typed_line_counts_as_the_wake_and_a_write_refused_as_stale_is_tried_again() {
         let now = Instant::now();
         let seen = || (None, "b".to_string());
         let typed_no_enter = WakeOutcome::TypedNoEnter { reason: "typed text not in main's input box", border: String::new() };
         assert!(matches!(step_of("h", Ok(typed_no_enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: true, .. })));
         let enter = WakeOutcome::Unconfirmed { step: "enter", detail: "record: input delivery unknown".into() };
         assert!(matches!(step_of("h", Ok(enter), seen(), 7, now), Step::Woke(Woken { line: 7, enter_owed: false, .. })));
-        let text = WakeOutcome::Unconfirmed { step: "text", detail: "record: input delivery unknown".into() };
+        let text = WakeOutcome::Unconfirmed { step: "text", detail: STALE.into() };
         match step_of("h", Ok(text), seen(), 7, now) {
             Step::Refused(r) => {
                 assert_eq!(r.reason, "text not confirmed");
-                assert_eq!(r.detail.as_deref(), Some("record: input delivery unknown"));
+                assert_eq!(r.detail.as_deref(), Some(STALE));
             }
-            _ => panic!("a failed text write is a refusal"),
+            _ => panic!("a text write refused as stale is a refusal"),
         }
     }
 
@@ -466,8 +470,8 @@ mod tests {
         let buf = LogBuf::default();
         let sink = buf.clone();
         let sub = tracing_subscriber::fmt().with_writer(move || sink.clone()).with_ansi(false).finish();
-        let count = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap().matches("text not confirmed (record: input delivery unknown)").count();
-        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some("record: input delivery unknown".to_string()) });
+        let count = || String::from_utf8(buf.0.lock().unwrap().clone()).unwrap().matches(&format!("text not confirmed ({STALE})")).count();
+        let u = || Step::Refused(Refusal { reason: "text not confirmed", border: "b".to_string(), detail: Some(STALE.to_string()) });
         let (mut woken, mut streaks) = (HashMap::new(), HashMap::new());
         let t0 = Instant::now();
         let mut at = |secs: u64, step: Step| settle(&mut woken, &mut streaks, "h".to_string(), step, t0 + Duration::from_secs(secs));
