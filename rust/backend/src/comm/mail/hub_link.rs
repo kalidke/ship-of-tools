@@ -309,20 +309,6 @@ mod tests {
 
     pub(super) static STUB_PROGRAM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-    /// SIGKILLs the pid a stub wrote to the file, on every path out of the test.
-    #[cfg(unix)]
-    struct KillBackground(PathBuf);
-
-    #[cfg(unix)]
-    impl Drop for KillBackground {
-        fn drop(&mut self) {
-            if let Some(pid) = std::fs::read_to_string(&self.0).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
-                // SAFETY: a plain signal to a sleeper this test started.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
-        }
-    }
-
     /// The shutdown signal kills the ssh child and everything it started; the loop neither reconnects nor leaves a guard counted.
     #[cfg(unix)]
     #[tokio::test]
@@ -330,7 +316,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
         let bg = dir.path().join("bg");
-        let _kill = KillBackground(bg.clone());
+        let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
         let stub = dir.path().join("stub-ssh");
         sot_log::test_exec::write_executable(
             &stub,
@@ -356,19 +342,13 @@ mod tests {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never wrote its descendant's pid");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let descendant: i32 = std::fs::read_to_string(&bg).unwrap().trim().parse().unwrap();
         sig.fire();
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the link loop outlived the shutdown")
             .expect("link task");
         assert_eq!(sig.live(), 0);
-        // SAFETY: signal 0 only probes the pid.
-        let gone = (0..150).any(|_| {
-            std::thread::sleep(Duration::from_millis(20));
-            unsafe { libc::kill(descendant, 0) != 0 }
-        });
-        assert!(gone, "the link's descendant survived the shutdown");
+        assert!(descendant.gone(), "the link's descendant survived the shutdown");
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "reconnected after the fire");
         *STUB_PROGRAM.lock().unwrap() = None;

@@ -412,19 +412,6 @@ pub(crate) mod tests {
         assert!(connect("ssh:Hub", crate::lifecycle::child_signal::process()).is_err(), "an uppercase target must be refused (not a plain host name)");
     }
 
-    /// Kills the stub's background `sleep` on every path out of the test.
-    #[cfg(unix)]
-    struct KillHolder(std::path::PathBuf);
-
-    #[cfg(unix)]
-    impl Drop for KillHolder {
-        fn drop(&mut self) {
-            if let Ok(pid) = std::fs::read_to_string(&self.0) {
-                let _ = std::process::Command::new("kill").arg(pid.trim()).status();
-            }
-        }
-    }
-
     /// Dropping the dial takes the ssh child and what it started: an ssh
     /// that starts a background process (a `ProxyCommand`) leaves nothing.
     #[cfg(unix)]
@@ -434,26 +421,18 @@ pub(crate) mod tests {
         let _path_guard = EnvGuard::capture("PATH");
         let dir = tempfile::tempdir().expect("tempdir");
         let bg = dir.path().join("bg");
-        let _holder = KillHolder(bg.clone());
+        let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
         write_ssh_script(dir.path(), &format!("sleep 3109 >/dev/null 2>&1 &\necho $! > '{}'\nexec cat\n", bg.display()));
         prepend_to_path(dir.path());
         let conn = connect("ssh:hub", crate::lifecycle::child_signal::process()).expect("connect");
         let (_w, _r, guard) = conn.split().expect("split");
         let began = std::time::Instant::now();
-        let pid: i32 = loop {
-            if let Some(pid) = std::fs::read_to_string(&bg).ok().and_then(|s| s.trim().parse().ok()) {
-                break pid;
-            }
+        while std::fs::read_to_string(&bg).map_or(true, |s| s.trim().is_empty()) {
             assert!(began.elapsed() < std::time::Duration::from_secs(5), "the stub ssh never wrote its descendant's pid");
             std::thread::sleep(std::time::Duration::from_millis(10));
-        };
+        }
         drop(guard);
-        let gone = (0..150).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            // SAFETY: signal 0 only probes the pid.
-            unsafe { libc::kill(pid, 0) != 0 }
-        });
-        assert!(gone, "the dial's ssh left a descendant alive");
+        assert!(descendant.gone(), "the dial's ssh left a descendant alive");
     }
 
     /// ROUND-3 BLOCKER: no error path may WAIT on the ssh child's stderr.
@@ -489,7 +468,7 @@ pub(crate) mod tests {
             dir.path(),
             &format!("echo 'Permission denied (publickey).' >&2\nsleep 30 >/dev/null &\necho $! > '{}'\nexit 255\n", pid_file.display()),
         );
-        let _holder = KillHolder(pid_file.clone());
+        let _holder = crate::lifecycle::child_signal::tests::Leftover::of_file(pid_file.clone());
         prepend_to_path(dir.path());
 
         let started = std::time::Instant::now();

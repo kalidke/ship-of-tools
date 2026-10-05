@@ -339,6 +339,7 @@ mod port_parse_tests {
     async fn pluto_grandchild_dies_with_shutdown() {
         let dir = tempfile::tempdir().unwrap();
         let gc_file = dir.path().join("gc");
+        let gc = crate::lifecycle::child_signal::tests::Leftover::of_file(gc_file.clone());
         let stub = dir.path().join("stub-julia");
         sot_log::test_exec::write_executable(
             &stub,
@@ -354,13 +355,8 @@ mod port_parse_tests {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub never wrote its grandchild pid");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let gc: i32 = std::fs::read_to_string(&gc_file).unwrap().trim().parse().unwrap();
         sig.fire();
-        let gone = (0..150).any(|_| {
-            std::thread::sleep(Duration::from_millis(20));
-            // SAFETY: signal 0 only probes the pid.
-            unsafe { libc::kill(gc, 0) != 0 }
-        });
+        let gone = gc.gone();
         drop(tx);
         assert!(gone, "the Pluto grandchild survived the shutdown");
     }

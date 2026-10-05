@@ -353,18 +353,61 @@ pub(crate) fn live_children() -> usize {
 
 #[cfg(test)]
 #[cfg(unix)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::time::Duration;
 
-    /// A pid is gone once a probe fails.
-    #[cfg(unix)]
-    fn gone(pid: i32) -> bool {
+    /// A pid is gone once a probe fails, polled for up to 3 s.
+    pub(crate) fn gone(pid: i32) -> bool {
         (0..150).any(|_| {
             std::thread::sleep(Duration::from_millis(20));
             // SAFETY: signal 0 only probes the pid.
             unsafe { libc::kill(pid, 0) != 0 }
         })
+    }
+
+    /// A process a test started: dropped, it is SIGKILLed unless the test saw it gone. Built from its pid, or from a
+    /// file the stub wrote the pid to, read when the pid is first needed.
+    pub(crate) struct Leftover {
+        pid: std::cell::Cell<Option<i32>>,
+        file: Option<std::path::PathBuf>,
+        seen_gone: std::cell::Cell<bool>,
+    }
+
+    impl Leftover {
+        pub(crate) fn of_pid(pid: i32) -> Self {
+            Leftover { pid: std::cell::Cell::new(Some(pid)), file: None, seen_gone: std::cell::Cell::new(false) }
+        }
+
+        pub(crate) fn of_file(file: impl Into<std::path::PathBuf>) -> Self {
+            Leftover { pid: std::cell::Cell::new(None), file: Some(file.into()), seen_gone: std::cell::Cell::new(false) }
+        }
+
+        fn pid(&self) -> Option<i32> {
+            if let (None, Some(file)) = (self.pid.get(), &self.file) {
+                self.pid.set(std::fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()));
+            }
+            self.pid.get()
+        }
+
+        /// Whether the process is gone, polled as [`gone`] does. Once it is, the drop signals nothing, so a pid the
+        /// OS may have reused is never signalled.
+        pub(crate) fn gone(&self) -> bool {
+            let gone = self.pid().is_some_and(gone);
+            if gone {
+                self.seen_gone.set(true);
+            }
+            gone
+        }
+    }
+
+    impl Drop for Leftover {
+        fn drop(&mut self) {
+            if let (false, Some(pid)) = (self.seen_gone.get(), self.pid()) {
+                // SAFETY: a plain signal to a process this test started and has not seen gone.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
     }
 
     /// An owner stuck writing to a child that never reads cannot poll the
@@ -384,7 +427,7 @@ mod tests {
         tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(contained.stdout.take().unwrap()), &mut line)
             .await
             .unwrap();
-        let grandchild: i32 = line.trim().parse().expect("grandchild pid");
+        let grandchild = Leftover::of_pid(line.trim().parse().expect("grandchild pid"));
         let mut stdin = contained.stdin.take().unwrap();
         let owner = tokio::spawn(async move {
             let _ = stdin.write_all(&vec![0u8; 1 << 20]).await;
@@ -396,7 +439,7 @@ mod tests {
             .await
             .expect("the blocked owner did not return")
             .expect("owner task");
-        assert!(gone(grandchild), "the grandchild survived the shutdown");
+        assert!(grandchild.gone(), "the grandchild survived the shutdown");
         assert_eq!(signal.live(), 0);
     }
 
@@ -419,8 +462,8 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-        assert!(gone(pid), "the refused child survived");
+        let refused = Leftover::of_file(&pid_file);
+        assert!(refused.gone(), "the refused child survived");
     }
 
     /// The leader's exit takes everything it started with it, before the
@@ -436,9 +479,9 @@ mod tests {
         tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(contained.stdout.take().unwrap()), &mut line)
             .await
             .unwrap();
-        let descendant: i32 = line.trim().parse().expect("descendant pid");
+        let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
         contained.wait().await.expect("wait");
-        assert!(gone(descendant), "the leader's descendant survived its exit");
+        assert!(descendant.gone(), "the leader's descendant survived its exit");
         assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
         drop(contained);
         assert_eq!(signal.live(), 0);
@@ -457,14 +500,14 @@ mod tests {
         let pgid = c.id() as i32;
         let mut line = String::new();
         std::io::BufReader::new(c.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        let descendant: i32 = line.trim().parse().expect("descendant pid");
+        let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
         assert!(c.exited(true).expect("exited"), "the child had not exited");
         assert!(signal.held_groups().contains(&pgid), "the tree was released before its owner let go");
         // SAFETY: signal 0 only probes the pid.
         assert_eq!(unsafe { libc::kill(pgid, 0) }, 0, "the exit was seen by reaping it");
         c.wait().expect("wait");
         assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
-        assert!(gone(descendant), "the one-shot's descendant survived");
+        assert!(descendant.gone(), "the one-shot's descendant survived");
     }
 
     /// A one-shot's output is read to its end, and the tree dies after the
@@ -478,8 +521,8 @@ mod tests {
         cmd.args(["-c", "sleep 3111 >/dev/null 2>&1 & echo $!"]);
         let out = signal.output(&mut cmd).expect("output");
         assert!(out.status.success());
-        let descendant: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().expect("descendant pid");
-        assert!(gone(descendant), "the one-shot's descendant survived");
+        let descendant = Leftover::of_pid(String::from_utf8_lossy(&out.stdout).trim().parse().expect("descendant pid"));
+        assert!(descendant.gone(), "the one-shot's descendant survived");
         assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
         assert_eq!(signal.live(), 0);
     }

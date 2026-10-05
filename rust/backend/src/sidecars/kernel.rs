@@ -562,6 +562,8 @@ fn log_hello(payload: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::lifecycle::child_signal::tests::Leftover;
 
     /// Program-path override per kernel project, so no test touches the process env.
     pub(super) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
@@ -621,6 +623,7 @@ mod tests {
     async fn blocked_kernel_write_does_not_outlive_shutdown() {
         let dir = tempfile::tempdir().unwrap();
         let (gc_file, stub_file) = (dir.path().join("gc"), dir.path().join("stub"));
+        let (gc, shell) = (Leftover::of_file(gc_file.clone()), Leftover::of_file(stub_file.clone()));
         let stub = dir.path().join("stub-julia");
         sot_log::test_exec::write_executable(
             &stub,
@@ -662,16 +665,7 @@ mod tests {
             .await
             .expect("the supervisor loop outlived the shutdown")
             .expect("supervisor task");
-        let pid_of = |f: &std::path::Path| -> i32 { std::fs::read_to_string(f).unwrap().trim().parse().unwrap() };
-        let (stub_pid, gc_pid) = (pid_of(&stub_file), pid_of(&gc_file));
-        let gone = |pid: i32| {
-            (0..150).any(|_| {
-                std::thread::sleep(Duration::from_millis(20));
-                // SAFETY: signal 0 only probes the pid.
-                unsafe { libc::kill(pid, 0) != 0 }
-            })
-        };
-        assert!(gone(stub_pid) && gone(gc_pid), "the kernel tree survived the shutdown");
+        assert!(shell.gone() && gc.gone(), "the kernel tree survived the shutdown");
         assert_eq!(sig.live(), 0);
         drop(replies);
     }

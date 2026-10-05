@@ -729,6 +729,7 @@ mod find_site_root_tests {
 #[cfg(all(test, unix))]
 mod quarto_shutdown_tests {
     use super::*;
+    use crate::lifecycle::child_signal::tests::Leftover;
     use std::time::Duration;
 
     /// Holds `ENV_TEST_LOCK` and pins the julia the daemon resolves, so a
@@ -766,20 +767,6 @@ mod quarto_shutdown_tests {
         }
     }
 
-    /// SIGKILLs the pid a stub wrote to `file`, on every path out of the test.
-    struct KillSleeper(std::path::PathBuf);
-
-    impl Drop for KillSleeper {
-        fn drop(&mut self) {
-            if let Ok(pid) = std::fs::read_to_string(&self.0) {
-                if let Ok(pid) = pid.trim().parse::<i32>() {
-                    // SAFETY: a plain signal to a sleeper this test started.
-                    unsafe { libc::kill(pid, libc::SIGKILL) };
-                }
-            }
-        }
-    }
-
     /// Run `stub` (a script body) as `quarto render` to its end on a private signal.
     fn run_stub_quarto(dir: &std::path::Path, body: &str) -> std::io::Result<Option<std::process::Output>> {
         let stub = dir.join("stub-quarto");
@@ -796,6 +783,7 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let pid_file = dir.path().join("engine.pid");
+        let engine = Leftover::of_file(pid_file.clone());
         let stub = dir.path().join("stub-quarto");
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
@@ -808,7 +796,6 @@ mod quarto_shutdown_tests {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
         sig.fire();
         let done = tokio::time::timeout(Duration::from_secs(3), task)
             .await
@@ -817,12 +804,7 @@ mod quarto_shutdown_tests {
             .expect("run_quarto");
         assert!(done.is_none(), "a killed render has no output");
         assert_eq!(sig.live(), 0);
-        let gone = (0..50).any(|_| {
-            std::thread::sleep(Duration::from_millis(20));
-            // SAFETY: signal 0 only probes the pid.
-            unsafe { libc::kill(engine, 0) != 0 }
-        });
-        assert!(gone, "the engine child survived the shutdown");
+        assert!(engine.gone(), "the engine child survived the shutdown");
     }
 
     /// An engine that holds the render's pipes after its launcher exits dies
@@ -833,7 +815,7 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let pid_file = dir.path().join("engine.pid");
-        let _kill = KillSleeper(pid_file.clone());
+        let engine = Leftover::of_file(pid_file.clone());
         let stub = dir.path().join("stub-quarto");
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
@@ -848,13 +830,7 @@ mod quarto_shutdown_tests {
             .expect("run_quarto");
         assert!(done.is_some_and(|out| out.status.success()), "the render did not finish on its own");
         assert_eq!(sig.live(), 0);
-        let engine: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-        let gone = (0..150).any(|_| {
-            std::thread::sleep(Duration::from_millis(20));
-            // SAFETY: signal 0 only probes the pid.
-            unsafe { libc::kill(engine, 0) != 0 }
-        });
-        assert!(gone, "the engine survived its launcher's exit");
+        assert!(engine.gone(), "the engine survived its launcher's exit");
     }
 
     /// Quarto runs `QUARTO_JULIA` for its julia engine and otherwise a bare
@@ -901,7 +877,7 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let sleeper = dir.path().join("sleeper");
-        let _kill = KillSleeper(sleeper.clone());
+        let _leftover = Leftover::of_file(sleeper.clone());
         let stub = dir.path().join("stub-quarto");
         // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
         let body = "setsid sleep 3106 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";

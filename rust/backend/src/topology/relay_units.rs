@@ -563,18 +563,14 @@ mod tests {
     /// The program `systemctl()` starts in place of the real one while a test holds it; `None` outside such a test.
     pub(super) static STUB_SYSTEMCTL: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
-    /// Clears the stub program, and SIGKILLs the pid a stub wrote to the file, on every path out of the test.
+    /// Clears the stub program on every path out of the test.
     #[cfg(target_os = "linux")]
-    struct StubGuard(PathBuf);
+    struct ClearStub;
 
     #[cfg(target_os = "linux")]
-    impl Drop for StubGuard {
+    impl Drop for ClearStub {
         fn drop(&mut self) {
             *STUB_SYSTEMCTL.lock().unwrap() = None;
-            if let Some(pid) = std::fs::read_to_string(&self.0).ok().and_then(|s| s.trim().parse::<i32>().ok()) {
-                // SAFETY: a plain signal to a sleeper this test started.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
         }
     }
 
@@ -585,18 +581,13 @@ mod tests {
     fn the_relay_probe_takes_its_tree() {
         let dir = tempfile::tempdir().expect("tempdir");
         let bg = dir.path().join("bg");
-        let _guard = StubGuard(bg.clone());
+        let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
+        let _clear = ClearStub;
         let stub = dir.path().join("systemctl");
         sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display()));
         *STUB_SYSTEMCTL.lock().unwrap() = Some(stub);
         assert_eq!(supervised_by_systemd(), Ok(false));
-        let pid: i32 = std::fs::read_to_string(&bg).unwrap().trim().parse().expect("the stub's descendant pid");
-        let gone = (0..150).any(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            // SAFETY: signal 0 only probes the pid.
-            unsafe { libc::kill(pid, 0) != 0 }
-        });
-        assert!(gone, "the relay probe's descendant survived");
+        assert!(descendant.gone(), "the relay probe's descendant survived");
     }
 }
 
