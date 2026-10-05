@@ -200,28 +200,47 @@ impl Workspaces {
     /// Record the sot-comm handle a session inside `workspace_id` DECLARED
     /// via `agent.join` (ADR 0046 decision 1) — the daemon is told once
     /// instead of re-deriving it from a self-file read-back on every
-    /// `workspace.list`/`clear_comm_unread` call. `None` if `workspace_id`
-    /// is not registered (the `agent.join` handler reports this as
-    /// `unknown_workspace`).
+    /// `workspace.list`/`clear_comm_unread` call — and MOVE it: ADR 0049
+    /// gives a handle to one row only, so every OTHER row whose declared
+    /// handle equals `handle` loses it (cell cleared) in the same step.
+    /// Returns the row and the ids of the rows that lost the handle, for
+    /// the caller to persist; an empty `handle` moves nothing. `None` if
+    /// `workspace_id` is not registered (the `agent.join` handler reports
+    /// this as `unknown_workspace`).
     ///
     /// Manager review (S6, Codex finding B5): a GUARDED IN-PLACE update,
-    /// never a replacement `insert`. The row is looked up once under the
-    /// registry's read lock; the write lands on the row's OWN interior
-    /// `agent_handle` cell (the SAME `Arc<Workspace>`, resource caches —
-    /// kernel, repl, watcher — untouched), not on a freshly reconstructed
-    /// `Workspace` that would start every cache cold. This also closes the
-    /// destroy race the old replace-based version had: since this method
-    /// never touches `by_id`/`by_slug`, a `destroy` that removes the row
-    /// between the lookup and this write leaves the row destroyed — the
-    /// write lands on an orphaned `Arc` nobody can `resolve()` to anymore,
-    /// never a resurrection.
-    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<Arc<Workspace>> {
-        let ws = {
-            let g = self.inner.read().expect("workspaces lock");
-            g.by_id.get(workspace_id)?.clone()
-        };
+    /// never a replacement `insert`. The write lands on each row's OWN
+    /// interior `agent_handle` cell (the SAME `Arc<Workspace>`, resource
+    /// caches — kernel, repl, watcher — untouched), not on a freshly
+    /// reconstructed `Workspace` that would start every cache cold. This
+    /// also closes the destroy race the old replace-based version had:
+    /// since this method never touches `by_id`/`by_slug`, a `destroy` that
+    /// removes the row between the lookup and this write leaves the row
+    /// destroyed — the write lands on an orphaned `Arc` nobody can
+    /// `resolve()` to anymore, never a resurrection.
+    ///
+    /// The registry's WRITE lock is held across the whole move, so two
+    /// concurrent declarations of one handle serialise and the later one
+    /// wins; a cell is locked only for one clone or one write, so taking
+    /// cells under the registry lock cannot deadlock.
+    pub fn set_agent_handle(&self, workspace_id: &str, handle: &str) -> Option<(Arc<Workspace>, Vec<String>)> {
+        let g = self.inner.write().expect("workspaces lock");
+        let ws = g.by_id.get(workspace_id)?.clone();
+        let mut moved = Vec::new();
+        if !handle.is_empty() {
+            for (id, other) in g.by_id.iter() {
+                if id == workspace_id {
+                    continue;
+                }
+                let mut cell = other.agent_handle.lock().unwrap_or_else(|e| e.into_inner());
+                if *cell == handle {
+                    cell.clear();
+                    moved.push(id.clone());
+                }
+            }
+        }
         *ws.agent_handle.lock().unwrap_or_else(|e| e.into_inner()) = handle.to_string();
-        Some(ws)
+        Some((ws, moved))
     }
 
     /// Record which account this row's agent runs as (ADR 0046 decision
@@ -353,7 +372,8 @@ mod tests {
 
         let joined = reg
             .set_agent_handle(&row.workspace_id, "capsuleprobe-testhost")
-            .expect("the row is registered");
+            .expect("the row is registered")
+            .0;
         assert_eq!(joined.workspace_id, original_id, "set_agent_handle must preserve the id");
         assert_eq!(joined.agent_handle(), "capsuleprobe-testhost");
         assert_eq!(joined.runtime, "capsule", "unrelated metadata must survive the update");
@@ -392,7 +412,7 @@ mod tests {
         let _ = row.kernel();
         assert!(row.kernel_built(), "test setup: the kernel cache must be built before the join");
 
-        let joined = reg.set_agent_handle(&row.workspace_id, "capsuleprobe2-testhost").unwrap();
+        let joined = reg.set_agent_handle(&row.workspace_id, "capsuleprobe2-testhost").unwrap().0;
         assert!(
             joined.kernel_built(),
             "a guarded in-place update must never discard a live resource cache"

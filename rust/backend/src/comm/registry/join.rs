@@ -28,15 +28,35 @@ use crate::server::reply::HandlerOutput;
 /// restart. Publishes `workspace.changed` so the FE re-lists on success.
 /// Refuses `bad_handle` for an invalid handle, `unknown_workspace` for a
 /// workspace this daemon doesn't have (destroyed or never existed).
+///
+/// A newer declaration MOVES the handle (ADR 0049, B5): `set_agent_handle`
+/// clears it from every other row that held it, in memory, and this handler
+/// logs one line per move. The reply follows the joining row's own save
+/// alone. Whatever that save did, the rows that lost the handle are saved
+/// after the reply, each under its own guard if still registered
+/// (`persist_moved`, in a spawned task, one guard at a time); a failed save
+/// there is a warning.
 pub async fn handle_agent_join(
     req_id: u64,
     payload_json: serde_json::Value,
     workspaces: &Workspaces,
     ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
 ) -> Result<HandlerOutput> {
+    Ok(join_row(req_id, payload_json, workspaces, ws_events_tx).await?.0)
+}
+
+/// The join itself: the reply, and the task saving the rows that lost the
+/// handle (`None` when none did, or the join was refused). The handler
+/// lets that task run on its own; tests await it.
+async fn join_row(
+    req_id: u64,
+    payload_json: serde_json::Value,
+    workspaces: &Workspaces,
+    ws_events_tx: &broadcast::Sender<WorkspaceChanged>,
+) -> Result<(HandlerOutput, Option<tokio::task::JoinHandle<()>>)> {
     let req: AgentJoinReq = serde_json::from_value(payload_json).context("agent.join payload")?;
     if !valid_name(&req.handle) {
-        return Ok(vec![(
+        return Ok((vec![(
             Frame::res(
                 req_id,
                 op::AGENT_JOIN,
@@ -46,7 +66,7 @@ pub async fn handle_agent_join(
                 }),
             ),
             None,
-        )]);
+        )], None));
     }
     // Manager review round 2 (Codex finding B1): take the SAME per-row
     // lifecycle guard `destroy_capsule_workspace` takes (ADR 0043
@@ -62,7 +82,7 @@ pub async fn handle_agent_join(
     // gone by the time we ask for the guard refuses immediately, same as
     // before.
     let Some(guard) = workspaces.capsule_guard(&req.workspace_id) else {
-        return Ok(vec![(
+        return Ok((vec![(
             Frame::res(
                 req_id,
                 op::AGENT_JOIN,
@@ -72,17 +92,17 @@ pub async fn handle_agent_join(
                 }),
             ),
             None,
-        )]);
+        )], None));
     };
-    let _held = guard.lock().await;
+    let held = guard.lock().await;
     // Re-check under the guard: `capsule_guard`'s own registration check
     // ran before we actually acquired the lock above — a destroy that
     // was already mid-flight (holding this same guard) could have
     // finished removing the row in the interim. `set_agent_handle` does
     // its own fresh lookup, so this one call is both the re-check and
     // the mutation.
-    let Some(ws) = workspaces.set_agent_handle(&req.workspace_id, &req.handle) else {
-        return Ok(vec![(
+    let Some((ws, moved)) = workspaces.set_agent_handle(&req.workspace_id, &req.handle) else {
+        return Ok((vec![(
             Frame::res(
                 req_id,
                 op::AGENT_JOIN,
@@ -92,7 +112,7 @@ pub async fn handle_agent_join(
                 }),
             ),
             None,
-        )]);
+        )], None));
     };
     // Manager review (S7, Codex finding B9): `ok` depends on the save
     // actually succeeding — a persisted daemon restart with no toml
@@ -103,11 +123,21 @@ pub async fn handle_agent_join(
     // point (guarded in-place, S6) — a save failure is reported, not
     // rolled back, so the caller can retry the SAME join rather than
     // re-deriving a value that already matches memory. Still under
-    // `_held`: the save that recreates the toml must finish before a
+    // `held`: the save that recreates the toml must finish before a
     // waiting destroy can start deleting it.
-    if let Err(e) = crate::rows::store::save(&ws) {
+    for from in &moved {
+        tracing::info!(handle = %req.handle, from = %from, to = %req.workspace_id, "agent.join: the handle moved off an older row");
+    }
+    let saved = crate::rows::store::save(&ws);
+    drop(held);
+    // The rows that lost the handle are saved after the reply, whatever
+    // the joiner's own save did: a failed save here must not leave their
+    // tomls on the handle, and the reply must not wait on another row's
+    // guard (a crash-looping row holds its for seconds).
+    let saves = (!moved.is_empty()).then(|| spawn_persist_moved(workspaces.clone(), moved, req.handle.clone()));
+    if let Err(e) = saved {
         tracing::warn!(error = %e, workspace_id = %req.workspace_id, "agent.join: toml persist failed");
-        return Ok(vec![(
+        return Ok((vec![(
             Frame::res(
                 req_id,
                 op::AGENT_JOIN,
@@ -117,7 +147,7 @@ pub async fn handle_agent_join(
                 }),
             ),
             None,
-        )]);
+        )], saves));
     }
     tracing::info!(workspace_id = %req.workspace_id, handle = %req.handle, "agent.join");
     let _ = ws_events_tx.send(WorkspaceChanged {
@@ -125,14 +155,42 @@ pub async fn handle_agent_join(
         slug: ws.slug.clone(),
         workspace_id: ws.workspace_id.clone(),
     });
-    Ok(vec![(
+    Ok((vec![(
         Frame::res(
             req_id,
             op::AGENT_JOIN,
             serde_json::to_value(AgentJoinRes { ok: true })?,
         ),
         None,
-    )])
+    )], saves))
+}
+
+/// Save the rows that lost `handle`, one at a time, in a task of their own.
+fn spawn_persist_moved(workspaces: Workspaces, moved: Vec<String>, handle: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        for from in &moved {
+            persist_moved(&workspaces, from, &handle).await;
+        }
+    })
+}
+
+/// Persist a row that lost its handle to a newer `agent.join`, under that
+/// row's own guard: a row destroyed meanwhile (no guard, or gone once the
+/// guard is held) is left alone, so no save recreates its toml. The row is
+/// re-resolved by id for the save: a re-inserted slug rebuilds the row and
+/// blanks its handle, so the `Arc` the move saw may no longer be the
+/// registered one. A failed save is a warning: the joiner cannot repair it.
+async fn persist_moved(workspaces: &Workspaces, workspace_id: &str, handle: &str) {
+    let Some(guard) = workspaces.capsule_guard(workspace_id) else {
+        return;
+    };
+    let _held = guard.lock().await;
+    let Some(ws) = workspaces.resolve(Some(workspace_id)) else {
+        return;
+    };
+    if let Err(e) = crate::rows::store::save(&ws) {
+        tracing::warn!(error = %e, workspace_id = %workspace_id, handle = %handle, "agent.join: toml persist failed for a row that lost the handle");
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +211,7 @@ mod agent_join_tests {
         home: Option<std::ffi::OsString>,
         localappdata: Option<std::ffi::OsString>,
         userprofile: Option<std::ffi::OsString>,
+        sot_comm_home: Option<std::ffi::OsString>,
     }
     impl Drop for EnvGuard {
         fn drop(&mut self) {
@@ -161,6 +220,7 @@ mod agent_join_tests {
                 ("HOME", &self.home),
                 ("LOCALAPPDATA", &self.localappdata),
                 ("USERPROFILE", &self.userprofile),
+                ("SOT_COMM_HOME", &self.sot_comm_home),
             ] {
                 match val {
                     Some(v) => std::env::set_var(key, v),
@@ -187,10 +247,13 @@ mod agent_join_tests {
             home: std::env::var_os("HOME"),
             localappdata: std::env::var_os("LOCALAPPDATA"),
             userprofile: std::env::var_os("USERPROFILE"),
+            sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
             _serial: serial,
         };
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         std::env::set_var("LOCALAPPDATA", &dir);
+        // No `scan_disk` in these tests may read a live comm registry.
+        std::env::set_var("SOT_COMM_HOME", &dir);
         std::env::remove_var("USERPROFILE");
         (g, dir)
     }
@@ -331,6 +394,165 @@ mod agent_join_tests {
     #[tokio::test]
     async fn agent_join_interleaved_with_destroy_never_recreates_the_toml_capsule() {
         agent_join_blocks_on_held_guard_then_destroy_wins("capsule", "agentjoin-race-capsule").await;
+    }
+
+    // One join, then the task that saves the rows it took the handle from.
+    async fn join(workspaces: &Workspaces, id: &str, handle: &str) -> serde_json::Value {
+        let (ws_events_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let payload = serde_json::json!({"workspace_id": id, "handle": handle});
+        let (out, saves) = join_row(1, payload, workspaces, &ws_events_tx).await.expect("handler must not error");
+        if let Some(saves) = saves {
+            saves.await.expect("the moved-row saves must not panic");
+        }
+        out[0].0.payload.clone()
+    }
+
+    fn handles_by_slug(workspaces: &Workspaces) -> Vec<(String, String)> {
+        let mut v: Vec<_> = workspaces.list().iter().map(|w| (w.slug.clone(), w.agent_handle())).collect();
+        v.sort();
+        v
+    }
+
+    // ADR 0049 (B5): a newer declaration moves the handle off the older row,
+    // in memory and in that row's toml.
+    #[tokio::test]
+    async fn a_newer_join_moves_the_handle_off_the_older_row_in_memory_and_on_disk() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let other = workspaces.insert(mk_ws("m5-other")).workspace_id.clone();
+        let older = workspaces.insert(mk_ws("m5-older")).workspace_id.clone();
+        let newer = workspaces.insert(mk_ws("m5-newer")).workspace_id.clone();
+        for (id, handle) in [(&other, "m5-someone"), (&older, "m5-shared"), (&newer, "m5-shared")] {
+            let res = join(&workspaces, id, handle).await;
+            assert_eq!(res.get("ok").and_then(|v| v.as_bool()), Some(true), "{res:?}");
+        }
+        let want = |a: &str, b: &str, c: &str| {
+            vec![
+                ("m5-newer".to_string(), a.to_string()),
+                ("m5-older".to_string(), b.to_string()),
+                ("m5-other".to_string(), c.to_string()),
+            ]
+        };
+        let mut expected = want("m5-shared", "", "m5-someone");
+        expected.sort();
+        assert_eq!(handles_by_slug(&workspaces), expected);
+
+        // The same three values load back from the tomls.
+        let fresh = Workspaces::new();
+        assert_eq!(crate::rows::store::scan_disk(&fresh, false).unwrap(), 3);
+        assert_eq!(handles_by_slug(&fresh), expected);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A row that lost the handle is saved after the join's reply, only under
+    // its own guard and only while registered: the reply never waits on that
+    // guard, no save lands while another holder has it, and a destroy that
+    // wins the guard is never undone.
+    #[tokio::test]
+    async fn a_join_never_recreates_the_toml_of_a_destroyed_row_it_took_the_handle_from() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let older = workspaces.insert(mk_ws("m5-race-older")).workspace_id.clone();
+        let newer = workspaces.insert(mk_ws("m5-race-newer")).workspace_id.clone();
+        let res = join(&workspaces, &older, "m5-race").await;
+        assert_eq!(res.get("ok").and_then(|v| v.as_bool()), Some(true));
+        let toml_path = crate::rows::store::toml_path_for("m5-race-older");
+        assert!(toml_path.exists(), "test setup: the older row's toml must exist");
+
+        let guard = workspaces.capsule_guard(&older).expect("row is registered");
+        let held = guard.lock().await;
+        let (ws_events_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let payload = serde_json::json!({"workspace_id": newer, "handle": "m5-race"});
+        let (out, saves) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            join_row(1, payload, &workspaces, &ws_events_tx),
+        )
+        .await
+        .expect("the reply must not wait on the older row's held guard")
+        .expect("handler must not error");
+        assert_eq!(out[0].0.payload.get("ok").and_then(|v| v.as_bool()), Some(true), "{:?}", out[0].0.payload);
+        let saves = saves.expect("a row lost the handle");
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!saves.is_finished(), "the save must wait for the older row's guard");
+        assert!(
+            std::fs::read_to_string(&toml_path).unwrap().contains("= \"m5-race\""),
+            "the older row must not be saved while another holder has its guard"
+        );
+
+        std::fs::remove_file(&toml_path).expect("remove the older toml");
+        workspaces.remove_by_id(&older);
+        drop(held);
+        saves.await.expect("the moved-row saves must not panic");
+        assert!(!toml_path.exists(), "the destroyed row's toml must never be recreated");
+        assert!(workspaces.resolve(Some(&older)).is_none(), "the destroyed row must stay gone");
+        assert_eq!(workspaces.resolve(Some(&newer)).unwrap().agent_handle(), "m5-race");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The joiner's own save failing does not keep the older row's toml on
+    // the handle: its client's retry would find nothing left to move.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_failed_save_of_the_joiner_still_saves_the_row_that_lost_the_handle() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let older = workspaces.insert(mk_ws("m5-fail-older")).workspace_id.clone();
+        let newer = workspaces.insert(mk_ws("m5-fail-newer")).workspace_id.clone();
+        let res = join(&workspaces, &older, "m5-fail").await;
+        assert_eq!(res.get("ok").and_then(|v| v.as_bool()), Some(true));
+        // A directory where the newer row's toml goes makes only its save fail.
+        std::fs::create_dir_all(crate::rows::store::toml_path_for("m5-fail-newer")).unwrap();
+
+        let res = join(&workspaces, &newer, "m5-fail").await;
+        assert_eq!(res.get("code").and_then(|v| v.as_str()), Some("persist_failed"), "{res:?}");
+        let text = std::fs::read_to_string(crate::rows::store::toml_path_for("m5-fail-older")).unwrap();
+        assert!(!text.contains("= \"m5-fail\""), "the older row's toml still names the moved handle: {text}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Crossing joins of one handle: A re-joins while B joins. If a join kept
+    // its own guard while saving the row it took the handle from, each would
+    // wait for the other's guard for good (tokio's Mutex is FIFO, so this
+    // order is deterministic on the test runtime).
+    #[tokio::test]
+    async fn crossing_joins_of_one_handle_never_deadlock() {
+        let (_g, dir) = env_guarded();
+        let workspaces = Workspaces::new();
+        let a = workspaces.insert(mk_ws("m5-cross-a")).workspace_id.clone();
+        let b = workspaces.insert(mk_ws("m5-cross-b")).workspace_id.clone();
+        let res = join(&workspaces, &a, "m5-cross").await;
+        assert_eq!(res.get("ok").and_then(|v| v.as_bool()), Some(true));
+
+        let guard = workspaces.capsule_guard(&a).expect("row is registered");
+        let held = guard.lock().await;
+        let (wa, a2) = (workspaces.clone(), a.clone());
+        let join_a = tokio::spawn(async move { join(&wa, &a2, "m5-cross").await });
+        tokio::task::yield_now().await;
+        let (wb, b2) = (workspaces.clone(), b.clone());
+        let join_b = tokio::spawn(async move { join(&wb, &b2, "m5-cross").await });
+        tokio::task::yield_now().await;
+        assert_eq!(workspaces.resolve(Some(&b)).unwrap().agent_handle(), "m5-cross", "B's join must have taken the handle");
+        drop(held);
+
+        for task in [join_a, join_b] {
+            let res = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .expect("crossing joins of one handle deadlocked")
+                .expect("join task must not panic");
+            assert_eq!(res.get("ok").and_then(|v| v.as_bool()), Some(true), "{res:?}");
+        }
+        let expected = vec![("m5-cross-a".to_string(), "m5-cross".to_string()), ("m5-cross-b".to_string(), String::new())];
+        assert_eq!(handles_by_slug(&workspaces), expected);
+        let fresh = Workspaces::new();
+        assert_eq!(crate::rows::store::scan_disk(&fresh, false).unwrap(), 2);
+        assert_eq!(handles_by_slug(&fresh), expected);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

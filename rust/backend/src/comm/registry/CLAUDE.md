@@ -32,8 +32,10 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
 - A registry entry's `workspace_id` is the row whose session last joined that handle (`comm-join.sh` writes it;
   `entry_row` reads it). The destroy prune (`remove_comm_agents_for_workspace`) removes an entry by the row's stored
   name only when the entry names no other row.
-- `handle_agent_join` stores the declared handle under the row's guard, overwriting a previous one without a check
-  (`set_agent_handle`); `ok` only after the row is persisted.
+- `handle_agent_join` moves the declared handle (`set_agent_handle`) and answers `ok` only after the joining row is
+  saved under its guard. Whatever that save did, a spawned task (`spawn_persist_moved`) then saves each row that lost
+  the handle under that row's own guard, if it is still registered (`persist_moved`): the reply never waits on another
+  row's guard, and no two guards are held at once. A failed save there is a warning; each move is one info line.
 - `spawn_registry_poll`, started by the server's `run`, publishes `agent_state` on the workspace bus when
   `project_comm_registry` changes between polls; `last_seen` is not in the projection.
 - `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib-registry-lock.sh's `with_lock` takes. Both write the same one-line
