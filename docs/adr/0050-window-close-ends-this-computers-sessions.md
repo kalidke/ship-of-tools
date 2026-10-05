@@ -196,8 +196,8 @@ connection is the only handle.
    `run(detach(cmd))` child has pgid = sid = its own pid) and so Pluto's notebook workers,
    which Malt starts detached. Under the systemd unit the daemon's cgroup ends them when the
    daemon exits; started without systemd, an idle worker exits when its server socket closes
-   and a busy one when its cell ends. An ssh `ControlPersist` master leaves the same way, so
-   ending the daemon's ssh never ends an operator's shared connection. Windows: on Windows nothing started inside a daemon
+   and a busy one when its cell ends. The daemon's ssh bridges set `ControlMaster=no`, `ControlPath=none`
+   and `ControlPersist=no`, so none leaves a master behind. Windows: on Windows nothing started inside a daemon
    child's job or a row's job can leave it. Outside it are a process a broker starts (WMI,
    COM activation, the task scheduler, a service) and a program started through an
    app-execution alias, which the Store install of juliaup makes `julia`: a julia started

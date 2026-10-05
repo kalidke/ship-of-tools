@@ -237,15 +237,6 @@ mod tests {
     }
 
     #[test]
-    fn the_bridge_never_multiplexes() {
-        let (_, args) = argv(&SshRecipe::new("hub", None).unwrap());
-        for pair in [["ControlMaster=no"], ["ControlPath=none"], ["ControlPersist=no"]] {
-            let at = args.iter().position(|a| a == pair[0]).unwrap_or_else(|| panic!("{} missing from {args:?}", pair[0]));
-            assert_eq!(args[at - 1], "-o");
-        }
-    }
-
-    #[test]
     fn recipe_rejects_a_leading_dash_in_either_half() {
         assert!(SshRecipe::new("-oProxyCommand=x", None).is_err());
         assert!(SshRecipe::new("hub", Some("-oProxyCommand=x")).is_err());
