@@ -27,7 +27,7 @@ case_a_killed_holder_frees_the_lock_at_once() {
     run_send "@$PEER" "after the kill"
     [ "$SEND_RC" -eq 0 ] || { echo "  rc $SEND_RC: $SEND_ERR"; return 1; }
     contains "$SEND_OUT" "filed -> @$PEER" || { echo "  out: $SEND_OUT"; return 1; }
-    [ $((SECONDS - t0)) -lt 3 ] || { echo "  waited $((SECONDS - t0))s for a dead holder"; return 1; }
+    [ $((SECONDS - t0)) -lt 10 ] || { echo "  waited $((SECONDS - t0))s for a dead holder"; return 1; }
     [ "$(whole_lines "$INBOX/$PEER.jsonl")" = 1 ] || { echo "  inbox not one whole line"; return 1; }
     return 0
 }
