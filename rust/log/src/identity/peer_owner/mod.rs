@@ -93,14 +93,16 @@ where
     let handle = Arc::new(handle);
     let lookups = Arc::new(tokio::sync::Semaphore::new(MAX_LOOKUPS));
     loop {
+        // The turn comes before the accept, so a flood beyond the bound waits in the kernel's backlog and not as accepted
+        // streams, each holding one of the process's descriptors.
+        let Ok(turn) = Arc::clone(&lookups).acquire_owned().await else { return };
         #[allow(clippy::disallowed_methods, reason = "the one TCP accept of the Rust processes: every connection it returns is checked before use (ADR 0049, User isolation)")]
         let accepted = listener.accept().await;
         match accepted {
             Ok((stream, peer)) => {
-                let (handle, lookups) = (Arc::clone(&handle), Arc::clone(&lookups));
+                let handle = Arc::clone(&handle);
                 tokio::spawn(async move {
                     let Ok(local) = stream.local_addr() else { return };
-                    let Ok(turn) = lookups.acquire_owned().await else { return };
                     let admitted = tokio::task::spawn_blocking(move || admit(name, local, peer)).await.unwrap_or(false);
                     drop(turn);
                     if !admitted {
@@ -583,6 +585,40 @@ mod tests {
         assert!(MOST.load(SeqCst) <= MAX_LOOKUPS, "{} lookups ran at once", MOST.load(SeqCst));
         assert!(MOST.load(SeqCst) > 1, "the lookups did not overlap, so the bound was not exercised");
         task.abort();
+    }
+
+    /// ADR 0049, User isolation: the connections beyond the lookup bound wait in the kernel's backlog, which is bounded,
+    /// not as accepted streams each holding a descriptor of the daemon (a flood must not reach EMFILE). Linux, where
+    /// the process's descriptors can be counted.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_flood_waits_in_the_backlog_not_in_open_streams() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        static RELEASE: AtomicBool = AtomicBool::new(false);
+        fn held(_: &'static str, _: SocketAddr, _: SocketAddr) -> bool {
+            let end = std::time::Instant::now() + Duration::from_secs(10);
+            while !RELEASE.load(SeqCst) && std::time::Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            true
+        }
+        let fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
+        const FLOOD: usize = 64;
+        let before = fds();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve(listener, "test", held, |_s| async {}));
+        let mut clients = Vec::new();
+        for _ in 0..FLOOD {
+            clients.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The listener and the clients are ours; the server side may hold at most the lookups in flight (and slack for
+        // descriptors other tests open meanwhile), not one stream per waiting connection.
+        let open = fds().saturating_sub(before);
+        RELEASE.store(true, SeqCst);
+        task.abort();
+        assert!(open <= 1 + FLOOD + MAX_LOOKUPS + 16, "{open} descriptors for {FLOOD} clients and {MAX_LOOKUPS} lookups");
     }
 
     /// ADR 0049, User isolation: this account's connection is served through the real check.
