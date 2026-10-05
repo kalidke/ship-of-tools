@@ -120,6 +120,7 @@ mod windows {
         let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
             let client = connect_own(std::path::Path::new(name)).unwrap_or_else(|e| panic!("refused {name}: {e}"));
             client.write_all(b"x").expect("write one byte");
+            client
         });
         assert_eq!(level, SecurityIdentification);
     }

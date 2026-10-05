@@ -312,8 +312,9 @@ pub(crate) mod tests {
     fn the_pipe_arm_opens_at_identification_level() {
         use std::io::Write;
         let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
-            let (mut writer, _reader, _guard) = connect(&format!("pipe:{name}")).expect("connect").split().expect("split");
+            let (mut writer, reader, guard) = connect(&format!("pipe:{name}")).expect("connect").split().expect("split");
             writer.write_all(b"x").expect("write one byte");
+            (writer, reader, guard)
         });
         assert_eq!(level, windows_sys::Win32::Security::SecurityIdentification);
     }

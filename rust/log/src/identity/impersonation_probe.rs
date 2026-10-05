@@ -16,11 +16,13 @@ use windows_sys::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-/// Serve a one-instance pipe at a fresh name, run `dial(name)` on another thread (it must connect and write one byte),
-/// and return the token impersonation level the server gets by impersonating that client after reading the byte:
+/// Serve a one-instance pipe at a fresh name; the server half (accept, read one byte, impersonate the client, read the
+/// token's impersonation level, revert) runs on its own thread and sends the level back. `dial(name)` runs on the calling
+/// thread and must connect and write one byte; it returns its connection, which stays open until the level has arrived,
+/// so the client never closes before the server measures. A dial that panics fails the test at once. Returns the level:
 /// `SecurityIdentification` (1) when the client opened the pipe at identification level, `SecurityImpersonation` (2) at
-/// the default. Panics on any OS failure.
-pub fn level_seen_by_server(dial: impl FnOnce(&str) + Send + 'static) -> i32 {
+/// the default. Panics on any OS failure or if no level arrives within 10 s.
+pub fn level_seen_by_server<R>(dial: impl FnOnce(&str) -> R) -> i32 {
     let name = format!(r"\\.\pipe\sot-impersonation-probe-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::SeqCst));
     let wide = wide_null(&name);
     let server: HANDLE = unsafe {
@@ -36,10 +38,28 @@ pub fn level_seen_by_server(dial: impl FnOnce(&str) + Send + 'static) -> i32 {
         )
     };
     assert_ne!(server, INVALID_HANDLE_VALUE, "CreateNamedPipeW: {}", std::io::Error::last_os_error());
-    let dialer = std::thread::spawn({
-        let name = name.clone();
-        move || dial(&name)
+    let (tx, rx) = std::sync::mpsc::channel();
+    // A HANDLE is a raw pointer, which a thread will not take; its value crosses as an integer.
+    let server_addr = server as usize;
+    let serving = std::thread::spawn(move || {
+        let level = serve_one(server_addr as HANDLE);
+        let _ = tx.send(level);
+        unsafe {
+            DisconnectNamedPipe(server_addr as HANDLE);
+            CloseHandle(server_addr as HANDLE);
+        }
     });
+    let connection = dial(&name);
+    let level = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the server half sent no level: it panicked or timed out");
+    drop(connection);
+    serving.join().expect("the server half panicked");
+    level
+}
+
+/// Accept one client on `server`, read its byte, impersonate it and return the token's impersonation level.
+fn serve_one(server: HANDLE) -> i32 {
     let connected = unsafe { ConnectNamedPipe(server, std::ptr::null_mut()) } != 0
         || std::io::Error::last_os_error().raw_os_error() == Some(ERROR_PIPE_CONNECTED as i32);
     assert!(connected, "ConnectNamedPipe: {}", std::io::Error::last_os_error());
@@ -58,11 +78,6 @@ pub fn level_seen_by_server(dial: impl FnOnce(&str) + Send + 'static) -> i32 {
     unsafe {
         RevertToSelf();
         CloseHandle(token);
-    }
-    dialer.join().expect("the dial panicked");
-    unsafe {
-        DisconnectNamedPipe(server);
-        CloseHandle(server);
     }
     level
 }
