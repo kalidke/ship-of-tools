@@ -304,19 +304,9 @@ fn iso_at(off: i64) -> String {
     String::from_utf8(out.stdout).expect("utf8").trim().to_string()
 }
 
-/// Sets `agents.HANDLE` in the harness's registry, creating it if absent;
-/// written to a temp file and renamed.
+/// Sets `agents.HANDLE` in the harness's registry, creating it if absent, under the registry lock.
 fn set_entry(env: &Env, entry: serde_json::Value) {
-    let path = env.comm_root.join("registry.json");
-    let mut doc: serde_json::Value = std::fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_else(|| serde_json::json!({ "agents": {} }));
-    doc["agents"][HANDLE] = entry;
-    let tmp = env.comm_root.join("registry.json.tmp");
-    std::fs::create_dir_all(&env.comm_root).expect("mkdir comm root");
-    std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
-    std::fs::rename(&tmp, &path).expect("rename registry");
+    support::write_registry(&env.comm_root, |doc| doc["agents"][HANDLE] = entry);
 }
 
 /// A row whose Stop hook is running (a fresh `stop_at`) is not typed into,

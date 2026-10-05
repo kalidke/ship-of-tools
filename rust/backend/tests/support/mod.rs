@@ -63,7 +63,9 @@ pub const BOUND: Duration = Duration::from_secs(30);
 /// runner has (`host_name()`'s fallback).
 /// `Env::seed_default_capsule_toml` computes the same path from it.
 pub const TEST_STATE_HOST: &str = "testhost";
+mod registry;
 mod sotd;
+pub use registry::write_registry;
 pub use sotd::{sotd_command, sotd_program};
 /// Copy of `rust/log/tests/fe_client/`'s own `wake_flag` helper (a separate test
 /// binary; not worth a shared dependency for four lines).

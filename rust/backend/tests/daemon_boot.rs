@@ -18,14 +18,13 @@ fn serial() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Sets the one agent's `state` in the harness's registry; written to a temp file and renamed.
+/// Sets the one agent's `state` in the harness's registry, under the registry lock.
 fn write_registry(env: &Env, state: &str) {
-    let doc = serde_json::json!({ "agents": { "boot-probe": {
-        "state": state, "summary": "", "status_at": "", "host": "h",
-    } } });
-    let tmp = env.comm_root.join("registry.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&doc).expect("encode")).expect("write registry tmp");
-    std::fs::rename(&tmp, env.comm_root.join("registry.json")).expect("rename registry");
+    support::write_registry(&env.comm_root, |doc| {
+        *doc = serde_json::json!({ "agents": { "boot-probe": {
+            "state": state, "summary": "", "status_at": "", "host": "h",
+        } } });
+    });
 }
 
 #[tokio::test]
@@ -120,4 +119,50 @@ fn every_sotd_spawn_starts_from_sotd_command() {
         }
     }
     assert_eq!(found, ["rust/backend/tests/support/sotd.rs"], "{needle} may appear only in support/sotd.rs");
+}
+
+/// A registry write waits for the lock the daemon and the comm scripts take.
+#[test]
+fn write_registry_waits_for_a_held_registry_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock = dir.path().join(".registry.lock");
+    std::fs::write(&lock, format!("holder:-:-:-:{}:-\n", std::process::id())).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = dir.path().to_path_buf();
+    let writer = std::thread::spawn(move || {
+        support::write_registry(&root, |doc| {
+            *doc = serde_json::json!({ "agents": { "waited": {} } });
+            tx.send(()).unwrap();
+        })
+    });
+    assert!(
+        matches!(rx.recv_timeout(Duration::from_millis(500)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
+        "the update ran while the lock was held"
+    );
+    std::fs::remove_file(&lock).unwrap();
+    rx.recv_timeout(Duration::from_secs(10)).expect("the update after the lock was released");
+    writer.join().unwrap();
+    let written = std::fs::read_to_string(dir.path().join("registry.json")).unwrap();
+    assert!(written.contains("waited"), "{written}");
+}
+
+/// A comm registry is written only through `support::write_registry`: no other file in the tests folder writes or
+/// renames a registry file or names its temp.
+#[test]
+fn every_registry_write_takes_the_registry_lock() {
+    // Built with `concat!`, so this file does not hold the texts it looks for.
+    let file = concat!("registry", ".json");
+    let calls = [concat!("wri", "te("), concat!("rena", "me("), concat!("registry", ".json", ".")];
+    let mut found = Vec::new();
+    for (rel, text) in sot_log::test_scan::rust_sources() {
+        if !rel.starts_with("rust/backend/tests/") || rel == "rust/backend/tests/support/registry.rs" {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            if line.contains(file) && calls.iter().any(|c| line.contains(c)) {
+                found.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "a registry is written outside support::write_registry:\n{}", found.join("\n"));
 }

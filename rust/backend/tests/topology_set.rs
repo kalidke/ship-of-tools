@@ -230,7 +230,7 @@ async fn a_guests_forward_files_at_the_hub_over_the_real_wire() {
     let now = Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]).output().expect("date").stdout;
     let now = String::from_utf8(now).unwrap().trim().to_string();
     let registry = serde_json::json!({"agents": {"peer": {"host": "hub-a", "last_seen": now}}});
-    std::fs::write(hub.comm_root.join("registry.json"), registry.to_string()).expect("write registry");
+    support::write_registry(&hub.comm_root, |doc| *doc = registry);
 
     let guest = Env::spawn_guest("fwd-guest", "guest-b", GUEST_TOML, &hub);
     let (mut conn, id) = connect_and_hello(&guest.socket_path, "guest-sender", "guest-b").await;

@@ -27,7 +27,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a TCP-to-Unix relay
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
-- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command`, also loaded alone by suites that need nothing else), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
+- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
 ## Start here
@@ -39,6 +39,7 @@ shows the shape.
   (capsule_workspaces, comm_wake, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, which drops every inherited `SOT_` variable;
   `sotd_exe` is private there (`daemon_boot.rs` checks that `CARGO_BIN_EXE_sotd` appears nowhere else).
+- A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
 - Every wait is bounded: `support::poll_until` and `BOUND`.
 - A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`).
 - A binary over 800 lines is `<name>/main.rs` plus modules, loading `#[path = "../support/mod.rs"] mod support;`.

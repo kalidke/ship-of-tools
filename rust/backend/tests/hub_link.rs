@@ -169,7 +169,7 @@ async fn the_daemon_files_for_its_own_folder_over_a_link_that_restarts() {
         "live": {"host": "win-b", "last_seen": now_iso(0)},
         "stale": {"host": "win-b", "last_seen": now_iso(-100_000)},
     }});
-    std::fs::write(guest.comm_root.join("registry.json"), registry.to_string()).unwrap();
+    support::write_registry(&guest.comm_root, |doc| *doc = registry);
 
     // The link comes up after the daemon does: send until a receipt arrives.
     let mut n = 0;
