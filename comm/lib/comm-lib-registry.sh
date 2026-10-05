@@ -49,9 +49,9 @@ _sot_comm_own() {
       if [ "$1" = root ]; then find . -prune "${open[@]}" -print; exit 0; fi
       find inbox read self state probe -maxdepth 0 -type d "${open[@]}" "${act[@]}"
       find probe -maxdepth 1 -mindepth 1 -type d "${open[@]}" "${act[@]}"
-      find . "${one[@]}" \( -name registry.json -o -name registry.json.tmp -o -name 'registry.json.new.*' -o -name .registry.lock \
-          -o -name '.registry.lock.tmp.*' -o -name '.registry.lock.reclaim.*' -o -name inbox-lock-manager \
-          -o -name '.inbox-lock-manager.*' -o -name gh-device-auth.json \) "${open[@]}" "${act[@]}"
+      find . "${one[@]}" \( -name inbox-lock-manager -o -name '.inbox-lock-manager.*' -o -name gh-device-auth.json \
+          -o -name registry.json -o -name registry.json.tmp -o -name 'registry.json.new.*' \
+          -o -name .registry.lock -o -name '.registry.lock.tmp.*' -o -name '.registry.lock.reclaim.*' \) "${open[@]}" "${act[@]}"
       find inbox "${one[@]}" \( -name '*.jsonl' -o -name '*.lock' \) "${open[@]}" "${act[@]}"
       find read "${one[@]}" -name '*.cursor' "${open[@]}" "${act[@]}"
       find self "${one[@]}" -name '*.txt' "${open[@]}" "${act[@]}"
