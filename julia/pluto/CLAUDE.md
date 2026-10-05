@@ -23,6 +23,9 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
   the secret (32 hex characters from the OS's secure generator). A request without it gets 403 or 404, Pluto's own
   files and `/ping` included. A URL is `http://127.0.0.1:<port>/<secret>/edit?secret=<secret>&id=<id>`, the query's
   secret before `id` (`edit_url`).
+- The path segment must stay the session secret. Under it Pluto serves a path that ends in an asset extension (`.js`,
+  `.css`, `.json` and others) without the query secret, and its static route does not keep the file inside Pluto's
+  own folder (on Windows a drive path there reads any such file). A separate or shareable path would open both.
 - Every notebook runs in a Distributed worker (`workspace_use_distributed_stdlib`), which checks the cluster cookie it
   read from its stdin on every connection before it reads a message; `configure_session!` draws the cookie from the
   OS's secure generator. Pluto's default Malt worker accepts the first connection with no secret and is not used. On
