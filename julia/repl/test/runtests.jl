@@ -35,6 +35,17 @@ const DR = ShipToolsRepl
         @test strip(frames[1][:text]) == "42"
     end
 
+    @testset "a BrowserView shows its origin, never its secret path (decision 0031)" begin
+        # A wrapped BrowserView is rendered as text like any value; that text reaches logs and sot-fe output.
+        bv = DR.BrowserView("http://127.0.0.1:41234/0123456789abcdef0123456789abcdef", false)
+        for s in (repr(bv), string(bv), sprint(show, MIME"text/plain"(), bv), repr((bv,)),
+                  sprint(show, MIME"text/plain"(), [bv]), sprint(show, MIME"text/plain"(), Dict(:fig => bv)))
+            @test !occursin("0123456789abcdef", s)
+            @test occursin("127.0.0.1:41234", s)
+        end
+        @test all(f -> !occursin("0123456789abcdef", string(get(f, :text, ""))), DR.value_frames_for((bv,)))
+    end
+
     @testset "value_frames_for: BrowserView emits a browser frame (ADR 0032)" begin
         url = "http://127.0.0.1:1237/browser-display/abcd"
         frames = DR.value_frames_for(DR.BrowserView(url))

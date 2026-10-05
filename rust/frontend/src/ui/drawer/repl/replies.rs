@@ -263,7 +263,8 @@ impl State {
                     // debug, not info — one line per streamed frame
                     // is too noisy for the default log. Raise to
                     // RUST_LOG=debug to watch live-append timing.
-                    tracing::debug!(eval_id, frame = ?other, "repl.frame: append");
+                    // Not the frame itself: its text can carry anything the eval printed.
+                    tracing::debug!(eval_id, "repl.frame: append");
                     entry.frames.push(other);
                 }
             }
