@@ -9,8 +9,8 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Per daemon one Pluto (`Pluto`, pluto.rs) and one MathJax node child (`MathJax`, mathjax.rs).
 - One sampler per monitored host (`MonitorHub::start` and `supervise`, monitor.rs).
 - The julia choice: `julia::resolve_bin` takes `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH
-  entry, refuses an `SOT_JULIA_BIN` that names an app-execution alias, and never returns a bare `julia`: none found
-  is an error.
+  entry; it never returns an app-execution alias, wherever it found one, and never a bare `julia`: none found is an
+  error. The kernel, the REPL, Pluto, quarto (`run_quarto`) and the update prepare (`prepare_julia`) all run its answer.
 
 ## Promises
 - A kernel caller waits at most `KERNEL_REQUEST_TIMEOUT` (10 s, `Kernel::request`) and never spawns or kills.

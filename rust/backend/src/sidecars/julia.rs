@@ -1,12 +1,13 @@
 // julia.rs — resolve the real `julia` binary the daemon spawns, shared by
-// kernel.rs, repl/supervisor.rs, pluto.rs and pages/ops.rs's `run_quarto` (each
-// keeps its own supervisor; only resolution is shared — one function, no
-// privileged caller).
+// kernel.rs, repl/supervisor.rs, pluto.rs, pages/ops.rs's `run_quarto` and
+// update.rs's `prepare_julia` (each keeps its own supervisor; only resolution
+// is shared — one function, no privileged caller).
 //
 // Invariant: never spawn a PATH candidate this resolver has not verified is
-// plausibly real Julia, and never an app-execution alias, not even one
-// `SOT_JULIA_BIN` names. An explicit `SOT_JULIA_BIN` is otherwise exempt (an
-// operator's own choice, format-validated but not second-guessed).
+// plausibly real Julia, and never an app-execution alias, wherever it was
+// found, not even one `SOT_JULIA_BIN` names. An explicit `SOT_JULIA_BIN` is
+// otherwise exempt (an operator's own choice, format-validated but not
+// second-guessed).
 
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,8 @@ const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 ///    explicit override is never masked by auto-detection picking something
 ///    else.
 /// 2. juliaup's DEFAULT-CHANNEL binary, resolved by reading `juliaup.json`
-///    directly (bypasses the launcher shim) — re-resolved on every call, so
+///    directly (bypasses the launcher shim; an app-execution alias there is an
+///    error like any other) — re-resolved on every call, so
 ///    a channel update or a removed version recovers on the very next spawn
 ///    attempt rather than replaying a permanently cached path.
 /// 3. A PATH candidate, rejected (and the search continued to the next
@@ -38,8 +40,21 @@ pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
 }
 
 /// [`resolve_bin`] with the `PATH` value passed in: the one place the PATH search reads it, so a test supplies its own
-/// and never changes the process's.
+/// and never changes the process's. Whatever [`find_on`] finds is checked once more here, so no answer is an
+/// app-execution alias, wherever it was found (a juliaup version's `Path` may point anywhere).
 fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), String> {
+    let (bin, source) = find_on(path)?;
+    if is_windows_apps_alias_path(Path::new(&bin)) {
+        return Err(format!(
+            "{bin:?} ({source}) is a Windows app-execution alias; a julia started through one runs outside the \
+             daemon's containment (ADR 0050 residual 7)"
+        ));
+    }
+    Ok((bin, source))
+}
+
+/// The search itself: the override, juliaup's default channel, then the PATH candidates.
+fn find_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), String> {
     if let Some(v) = std::env::var_os("SOT_JULIA_BIN") {
         let trimmed = v.to_string_lossy().trim().to_string();
         if !trimmed.is_empty() {
@@ -568,6 +583,36 @@ mod tests {
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         std::env::set_var("SOT_JULIA_BIN", r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe");
         let err = resolve_bin().unwrap_err();
+        assert!(err.contains("app-execution alias"), "unexpected error: {err}");
+    }
+
+    /// A juliaup version whose `Path` points outside juliaup's own folder, into a `WindowsApps` folder, is an alias
+    /// like any other: the check covers every answer the resolver finds, not only the override and the PATH search.
+    #[test]
+    fn a_juliaup_version_outside_its_folder_is_alias_checked() {
+        let _serial = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let juliaup_dir = home.path().join(".julia").join("juliaup");
+        std::fs::create_dir_all(&juliaup_dir).unwrap();
+        let version_dir = home.path().join("WindowsApps").join("jl");
+        std::fs::create_dir_all(version_dir.join("bin")).unwrap();
+        std::fs::write(version_dir.join("bin").join(JULIA_EXE), b"not a program").unwrap();
+        let config = serde_json::json!({
+            "Default": "release",
+            "InstalledChannels": { "release": { "Version": "1.12.6" } },
+            "InstalledVersions": { "1.12.6": { "Path": version_dir.to_string_lossy() } },
+        });
+        std::fs::write(juliaup_dir.join("juliaup.json"), config.to_string()).unwrap();
+
+        let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
+        let _g2 = EnvGuard::capture("HOME");
+        let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");
+        std::env::remove_var("SOT_JULIA_BIN");
+        std::env::set_var("HOME", home.path());
+        std::env::remove_var("JULIAUP_DEPOT_PATH");
+
+        let empty_path_dir = tempfile::tempdir().unwrap();
+        let err = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap_err();
         assert!(err.contains("app-execution alias"), "unexpected error: {err}");
     }
 }

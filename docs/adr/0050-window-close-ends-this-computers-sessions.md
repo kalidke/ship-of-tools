@@ -201,7 +201,9 @@ connection is the only handle.
    row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
    julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
-   mechanism is not documented). Code a row or a REPL runs can start one.
+   mechanism is not documented). The daemon never starts one: every julia it runs, the update prepare's
+   included, comes from `resolve_bin` (`rust/backend/src/sidecars/julia.rs`), which refuses one wherever it found it;
+   code a row or a REPL runs can.
 
 ## Known limits (0.6.6)
 

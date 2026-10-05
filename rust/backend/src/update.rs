@@ -215,7 +215,13 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         tracing::info!(tag = %id.tag, "staged (no install manifest — prepare/arm skipped)");
         return;
     };
-    let spec = prepare_spec(&install, cfg, id);
+    let spec = match prepare_spec(&install, cfg, id) {
+        Ok(spec) => spec,
+        Err(e) => {
+            tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming");
+            return;
+        }
+    };
     #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
     let state = match sot_updater::prepare::prepare(&spec).await {
         Ok(s) => s,
@@ -272,18 +278,22 @@ fn backend_role_wanted(install: &InstallManifest) -> bool {
     backend_role_from_topology(topo.as_ref(), &me, install.daemon)
 }
 
-fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> PrepareSpec {
+/// The julia an update's prepare runs for its envs: only a backend role runs one, and it is the resolver's answer, the
+/// one every other daemon child runs, with the resolver's reason when there is none.
+fn prepare_julia(backend_role: bool) -> Result<Option<String>, String> {
+    backend_role.then(|| crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin)).transpose()
+}
+
+fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<PrepareSpec, String> {
     let backend_role = backend_role_wanted(install);
-    PrepareSpec {
+    Ok(PrepareSpec {
         identity: id.clone(),
         repo_dir: install.prefix.join("repo"),
         stage_dir: sot_updater::stage_dir(&cfg.updates_root, id),
         origin_url: None,
-        julia_bin: backend_role.then(|| {
-            std::env::var("SOT_JULIA_BIN").unwrap_or_else(|_| "julia".to_string())
-        }),
+        julia_bin: prepare_julia(backend_role)?,
         npm: backend_role,
-    }
+    })
 }
 
 /// Notify text ADR 0030 §4 specifies.
@@ -599,6 +609,22 @@ mod tests {
         assert_eq!(repo_from_env(), DEFAULT_REPO);
         std::env::set_var("SOT_UPDATE_REPO", "  fork/x  ");
         assert_eq!(repo_from_env(), "fork/x");
+    }
+
+    /// The julia an update's prepare runs is the resolver's, which never returns an app-execution alias; only a backend
+    /// role runs one.
+    #[test]
+    fn the_update_prepare_runs_the_resolvers_julia() {
+        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _restore = crate::paths::EnvGuard::capture("SOT_JULIA_BIN");
+        std::env::set_var("SOT_JULIA_BIN", r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe");
+        let err = prepare_julia(true).unwrap_err();
+        assert!(err.contains("app-execution alias"), "unexpected error: {err}");
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("julia");
+        std::env::set_var("SOT_JULIA_BIN", &stub);
+        assert_eq!(prepare_julia(true), Ok(Some(stub.to_string_lossy().into_owned())));
+        assert_eq!(prepare_julia(false), Ok(None));
     }
 
     /// An update's exit is a restart (75), never a requested shutdown (0),
