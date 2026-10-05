@@ -63,7 +63,7 @@ end
     # a copy-then-rename onto the LINK path would replace the link with
     # a plain copy, so this also proves a link stays a link.
     jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
     mktempdir() do home
         shared = joinpath(home, "dotfiles", "claude-settings.json")
         mkpath(dirname(shared))
@@ -110,7 +110,7 @@ end
 
 @testset "_install_claude_hooks: a linked settings.json stays a link" begin
     jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
     mktempdir() do home
         target = joinpath(home, "elsewhere", "settings.json")
         mkpath(dirname(target))
@@ -130,7 +130,7 @@ end
 
 @testset "_install_claude_hooks: never creates a settings.json in an account folder" begin
     jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
     mktempdir() do home
         mkpath(joinpath(home, ".claude"))
         c = joinpath(home, ".claude-auth", "c"); mkpath(c)
@@ -174,7 +174,7 @@ end
         @test_skip false
     else
         jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
         mktempdir() do home
             f = joinpath(home, ".claude", "settings.json")
             mkpath(dirname(f)); write(f, "{}")
@@ -213,7 +213,7 @@ end
 
 @testset "_install_claude_hooks: nothing is created in .claude-auth through a relative, linked or bare config dir" begin
     jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
     mktempdir() do home
         default = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(default)); write(default, "{}")
@@ -261,7 +261,7 @@ end
 
 @testset "_install_claude_hooks: a merge that throws fails the install, after the other files are done" begin
     jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
     mktempdir() do home
         a = joinpath(home, ".claude-auth", "a", "settings.json")
         mkpath(dirname(a)); write(a, "{}")
@@ -288,7 +288,7 @@ end
 
 @testset "_install_claude_hooks: an account folder that is a link counts as inside .claude-auth" begin
     jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
+    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), r"\r?\n"; keepempty = false)
     mktempdir() do home
         default = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(default)); write(default, "{}")
@@ -330,9 +330,10 @@ end
                     summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     msg = string(only(summaries).message)
-                    @test occursin(lockd, msg)
-                    @test occursin(empty, msg)
-                    @test !occursin(default, msg)
+                    # The summary names real paths: on Windows mktempdir() is an 8.3 short path and realpath the long one.
+                    @test occursin(realpath(lockd), msg)
+                    @test occursin(realpath(empty), msg)
+                    @test !occursin(realpath(default), msg)
                     @test read(lockd, String) == "{}"   # left exactly as it was
                 end
             end
@@ -372,14 +373,14 @@ end
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"},{"type":"command","command":"/usr/local/bin/mine.sh"}]}]}}""")
         ShipTools._remove_stale_comm_hooks!(settings)
-        got = split(readchomp(`jq -r '.hooks.Notification[].hooks[].command' $settings`), '\n'; keepempty = false)
+        got = split(readchomp(`jq -r '.hooks.Notification[].hooks[].command' $settings`), r"\r?\n"; keepempty = false)
         @test got == ["/usr/local/bin/mine.sh"]
     end
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/comm-status-report.sh"}]}]}}""")
         ShipTools._remove_stale_comm_hooks!(settings)
-        got = split(readchomp(`jq -r '.hooks.Stop[].hooks[].command' $settings`), '\n'; keepempty = false)
+        got = split(readchomp(`jq -r '.hooks.Stop[].hooks[].command' $settings`), r"\r?\n"; keepempty = false)
         @test got == ["/usr/local/bin/comm-status-report.sh"]
     end
 end
