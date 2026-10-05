@@ -12,7 +12,7 @@ _sot_comm_tighten() {
     local why left
     why="$(_sot_comm_refusal)"
     if [ -n "$why" ]; then
-        echo "WARNING: the comm folder $COMM_HOME is $why, so it was not made private; nothing was changed" >&2
+        echo "WARNING: the comm folder $COMM_HOME is $why, so its permissions were not changed" >&2
         return 0
     fi
     [ -n "$(_sot_comm_own root)" ] || return 0
@@ -25,8 +25,8 @@ _sot_comm_tighten() {
 # _sot_comm_refusal — why the comm folder must not be tightened (it names a folder that is not a comm folder), or nothing.
 _sot_comm_refusal() {
     local phys home=""
-    phys="$(cd "$COMM_HOME" 2>/dev/null && pwd -P)" || return 0
-    [ -z "${HOME:-}" ] || home="$(cd "$HOME" 2>/dev/null && pwd -P)"
+    phys="$(cd -- "$COMM_HOME" 2>/dev/null && pwd -P)" || return 0
+    [ -z "${HOME:-}" ] || home="$(cd -- "$HOME" 2>/dev/null && pwd -P)"
     if [ "$phys" = / ]; then echo "the root folder"
     elif [ -n "$home" ] && [ "$phys" = "$home" ]; then echo "the home folder"
     elif [ -e "$phys/.git" ]; then echo "a git checkout"
@@ -36,21 +36,25 @@ _sot_comm_refusal() {
 # _sot_comm_own root|print|fix — the comm layout's own entries open to group or other, and nothing else: the folder,
 # inbox/ read/ self/ state/ probe/ and the folders in probe/ (a probe row's project root); registry.json and its temp
 # files, the registry lock and its markers, the lock manager's record and temp, gh-device-auth.json; and the files of
-# inbox/ (.jsonl, .lock), read/ (.cursor), self/ (.txt) and state/ (all). Symlinks and bin/ and VERSION are never
-# in it. `root` prints the folder itself if it is open, `print` every entry open, `fix` removes group and other bits.
+# inbox/ (.jsonl, .lock), read/ (.cursor), self/ (.txt) and state/ (all). find is handed the layout folders and
+# descends one level itself, so a layout folder that is a symlink is never followed; bin/ and VERSION are never in the
+# list. `root` prints the folder itself if it is open, `print` every entry open, `fix` removes group and other bits,
+# the folder itself last: a pass cut short leaves it open, and the next call walks again.
 _sot_comm_own() {
-    ( set +e   # a name not there makes find fail, and the second find must still run
-      cd "$COMM_HOME" 2>/dev/null || exit 0
-      shopt -s nullglob dotglob
+    ( cd -- "$COMM_HOME" 2>/dev/null || exit 0
       local open=( \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) )
-      local act=( -print )
+      local act=( -print ) one=( -maxdepth 1 -mindepth 1 -type f )
       [ "$1" != fix ] || act=( -exec chmod go-rwx {} + )
       if [ "$1" = root ]; then find . -prune "${open[@]}" -print; exit 0; fi
-      local dirs=( . inbox read self state probe probe/* )
-      local files=( registry.json registry.json.tmp registry.json.new.* .registry.lock .registry.lock.* inbox-lock-manager
-          .inbox-lock-manager.* gh-device-auth.json inbox/*.jsonl inbox/*.lock read/*.cursor self/*.txt state/* )
-      find "${dirs[@]}" -prune -type d "${open[@]}" "${act[@]}"
-      find "${files[@]}" -prune -type f "${open[@]}" "${act[@]}"
+      find inbox read self state probe -maxdepth 0 -type d "${open[@]}" "${act[@]}"
+      find probe -maxdepth 1 -mindepth 1 -type d "${open[@]}" "${act[@]}"
+      find . "${one[@]}" \( -name registry.json -o -name 'registry.json.*' -o -name '.registry.lock*' -o -name inbox-lock-manager \
+          -o -name '.inbox-lock-manager.*' -o -name gh-device-auth.json \) "${open[@]}" "${act[@]}"
+      find inbox "${one[@]}" \( -name '*.jsonl' -o -name '*.lock' \) "${open[@]}" "${act[@]}"
+      find read "${one[@]}" -name '*.cursor' "${open[@]}" "${act[@]}"
+      find self "${one[@]}" -name '*.txt' "${open[@]}" "${act[@]}"
+      find state "${one[@]}" "${open[@]}" "${act[@]}"
+      find . -maxdepth 0 -type d "${open[@]}" "${act[@]}"
       exit 0 ) 2>/dev/null
 }
 

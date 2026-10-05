@@ -26,7 +26,9 @@ all clients are mutually addressable through the same registry and inboxes.
                            # leaves one. Bounded per-session litter, and nothing sweeps it.
 ```
 
-Every folder here is 0700 and every file 0600, except `bin/` and `VERSION` (the installer's); `ensure_home` makes it so.
+The folders above and the files in them are 0700 and 0600, created so by every writer; `ensure_home` closes an older
+folder's entries at the next join. Anything else in the folder, and `bin/` and `VERSION` (the installer's), keep their modes
+behind the 0700 folder. On Windows the folder inherits the profile's access list.
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
 shared place to publish, not a live broker. In an optional shared-home

@@ -100,8 +100,9 @@ a connection from any account and rely on the URL's secret alone; lane S1 builds
 owner check. The comm folder and everything in it but the installed scripts and
 their version stamp are its user's alone: every writer creates them owner-only (0700
 folders, 0600 files), and the next join removes the group and other permissions an
-older release left; on Windows the folder under the profile inherits the profile's
-access list (the user, SYSTEM and Administrators).
+older release left on the layout's own entries, while anything else in the folder
+keeps its mode behind the folder's own 0700; on Windows the folder under the profile
+inherits the profile's access list (the user, SYSTEM and Administrators).
 
 ## Why the daemon and not the frontend
 

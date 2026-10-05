@@ -18,6 +18,8 @@ PROTOCOL_VERSION=1
 
 # The one comm-folder rule; the daemon spells it as `sot_comm_home` (rust/backend/src/comm/mod.rs).
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
+# Absolute, so a later cd or an exported CDPATH cannot make two commands mean two folders.
+case "$COMM_HOME" in /*|[A-Za-z]:*) ;; *) COMM_HOME="$PWD/$COMM_HOME" ;; esac
 REGISTRY="$COMM_HOME/registry.json"
 INBOX_DIR="$COMM_HOME/inbox"
 SELF_DIR="$COMM_HOME/self"

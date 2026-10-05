@@ -13,9 +13,11 @@
 #      umask: (a) the auditor's `claude -p`, (b) the worktree `comm-worktree-new.sh` makes.
 #   4. The Stop hook and the auditor, each the first writer of state/, make it private (a missing tool, a lock fault).
 #   5. The tightening says what is true: a file that vanishes under it is no failure, a path it leaves open is
-#      named in the warning, and a comm folder whose root is already private is not walked, it touches only the layout's own
-#      entries (an unknown file or folder keeps its mode), and it refuses, changing nothing, a comm folder that is the
-#      home folder, the root or a git checkout.
+#      named in the warning, a comm folder whose root is already private is not walked, only the layout's own
+#      entries are touched (an unknown file or folder keeps its mode), and a comm folder that is the home folder,
+#      the root or a git checkout is refused with its permissions unchanged.
+#   6. The tightening closes one entry of every name in its list, follows no layout folder that is a symlink,
+#      closes the comm folder last, and takes a relative comm folder as the folder under the current directory.
 #
 # Windows has no umask: a folder under the profile inherits the profile's access list, so this suite
 # prints one SKIP there. The locked local append and the hooks' mail read are Linux's, so other systems skip too.
@@ -174,8 +176,17 @@ ln -s "$BIN" "$SOT_COMM_HOME/bin"
 rm -f "${S2_CLAUDE_UMASK:?}"
 ( cd "$FIX" && jq -nc --arg p "$TR2" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN/comm-status-idle.sh" ) > "$WORK/stop-3.out" 2>&1
 got="$(cat "$S2_CLAUDE_UMASK" 2>/dev/null || echo none)"
-[ "$got" = 0022 ] && ok "the auditor's claude -p starts under the caller's umask" \
-    || { bad "the auditor's claude -p starts under the caller's umask"; echo "    umask there: $got (want 0022)"; }
+# The same through the marker path's artifact audit: a closing SITREP after a Write of a file never shown.
+TRM="$WORK/transcript-marker.jsonl"
+{ jq -nc '{type:"user",message:{content:"go"}}'
+  jq -nc '{type:"assistant",message:{content:[{type:"tool_use",id:"t0",name:"Write",input:{file_path:"/tmp/brief.md"}}]}}'
+  jq -nc '{type:"user",message:{content:[{type:"tool_result",tool_use_id:"t0",content:"ok"}]}}'
+  jq -nc '{type:"assistant",message:{content:[{type:"text",text:"SITREP: wrote the brief"}]}}'; } > "$TRM"
+rm -f "${S2_CLAUDE_UMASK:?}"
+( cd "$FIX" && jq -nc --arg p "$TRM" '{transcript_path:$p, stop_hook_active:false}' | bash "$BIN/comm-status-idle.sh" ) > "$WORK/stop-3m.out" 2>&1
+got_marker="$(cat "$S2_CLAUDE_UMASK" 2>/dev/null || echo none)"
+[ "$got" = 0022 ] && [ "$got_marker" = 0022 ] && ok "the auditor's claude -p starts under the caller's umask" \
+    || { bad "the auditor's claude -p starts under the caller's umask"; echo "    umask there: $got after a question, $got_marker after a marker (want 0022)"; }
 S2 "$BIN/comm-worktree-new.sh" s2 --no-spawn
 WTD="$WORK/worktrees/fixture-wt-s2"
 if [ -f "$WTD/file.txt" ] && [ "$(mode "$WTD/file.txt")" = 644 ] && [ "$(mode "$WORK/worktrees")" = 755 ]; then
@@ -268,7 +279,7 @@ refused() {  # NAME DIR WORD [env VAR=VAL...]
     S2 env "$@" SOT_COMM_HOME="$dir" "$BIN/comm-join.sh" --name s2-a || rc=$?
     local f=""
     [ "$rc" = 0 ] || f+=$'\n'"    the join failed ($rc): $(tail -n 2 "$WORK/last.out" | tr '\n' ' ')"
-    grep -q "WARNING: the comm folder .* is $word, so it was not made private" "$WORK/last.out" || f+=$'\n'"    no refusal line naming $word"
+    grep -q "WARNING: the comm folder .* is $word, so its permissions were not changed" "$WORK/last.out" || f+=$'\n'"    no refusal line naming $word"
     for kept in . inbox inbox/s2-a.jsonl state/x.tick notes.txt; do
         [ "$(mode "$dir/$kept")" = "$([ -d "$dir/$kept" ] && echo 755 || echo 644)" ] || f+=$'\n'"    $kept is $(mode "$dir/$kept"): the refusal changed it"
     done
@@ -279,6 +290,58 @@ P="$WORK/refuse-home"; guard_refuse_live_home "$P"; refused home "$P" "the home 
 G="$WORK/git-home/.sot-comm"; guard_refuse_live_home "$G"; mkdir -p "$G/.git"; refused git "$G" "a git checkout"
 [ "$(bash -c 'source "$1"; COMM_HOME=/; _sot_comm_refusal' _ "$BIN/comm-lib.sh")" = "the root folder" ] \
     && ok "a comm folder that is the root folder is refused" || bad "a comm folder that is the root folder is refused"
+
+# ---- 6: every name of the list, a layout folder that is a symlink, the order of the chmods, a relative comm folder ----
+# ensure_direct DIR [VAR=VAL...]: ensure_home alone, from the library: no writer that rewrites a file along the way.
+ensure_direct() {
+    local dir="$1"; shift
+    ( cd "$FIX" && env SOT_COMM_HOME="$dir" "$@" bash -c 'source "$1/comm-lib.sh"; ensure_home' _ "$BIN" ) > "$WORK/last.out" 2>&1
+}
+T="$WORK/table-home/.sot-comm"; guard_refuse_live_home "$T"
+mkdir -p "$T/inbox" "$T/read" "$T/self" "$T/state" "$T/probe/p"
+TABLE_FILES="registry.json registry.json.tmp registry.json.new.1 .registry.lock .registry.lock.tmp.x .registry.lock.reclaim.x inbox-lock-manager .inbox-lock-manager.m.1.0 gh-device-auth.json inbox/a.jsonl inbox/a.lock read/a.cursor self/h__w.txt state/t.tick state/.hb-ctx-1 state/auditor-x"
+for f in $TABLE_FILES; do : > "$T/$f"; done
+ensure_direct "$T"
+fails=""
+for d in . inbox read self state probe probe/p; do
+    [ "$(mode "$T/$d")" = 700 ] || fails+=$'\n'"    $d is $(mode "$T/$d"), not 700"
+done
+for f in $TABLE_FILES; do
+    [ "$(mode "$T/$f")" = 600 ] || fails+=$'\n'"    $f is $(mode "$T/$f"), not 600"
+done
+if [ -z "$fails" ]; then ok "the tightening closes one entry of every name in its list"
+else bad "the tightening closes one entry of every name in its list"; printf '%s\n' "${fails#$'\n'}"; fi
+# A layout folder that is a symlink is never followed: what lies behind it keeps its mode.
+SL="$WORK/symlink-home/.sot-comm"; OUT="$WORK/outside"; guard_refuse_live_home "$SL"
+mkdir -p "$SL" "$OUT/inbox" "$OUT/read" "$OUT/self" "$OUT/state" "$OUT/probe/proj"
+for f in inbox/a.jsonl inbox/a.lock read/a.cursor self/h.txt state/t.tick state/.hb probe/f; do : > "$OUT/$f"; done
+for d in inbox read self state probe; do ln -s "$OUT/$d" "$SL/$d"; done
+ensure_direct "$SL"
+fails=""
+for f in inbox/a.jsonl inbox/a.lock read/a.cursor self/h.txt state/t.tick state/.hb probe/f; do
+    [ "$(mode "$OUT/$f")" = 644 ] || fails+=$'\n'"    $f behind a symlink is $(mode "$OUT/$f"), not 644"
+done
+for d in inbox read self state probe probe/proj; do
+    [ "$(mode "$OUT/$d")" = 755 ] || fails+=$'\n'"    $d behind a symlink is $(mode "$OUT/$d"), not 755"
+done
+if [ -z "$fails" ]; then ok "a layout folder that is a symlink is not followed: what lies behind it keeps its mode"
+else bad "a layout folder that is a symlink is not followed: what lies behind it keeps its mode"; printf '%s\n' "${fails#$'\n'}"; fi
+# The folder itself is closed last, so a pass cut short leaves it open and the next call walks again.
+N="$WORK/order-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"
+mkdir -p "$WORK/log-bin"; : > "$WORK/chmod.log"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexec "%s" "$@"\n' "$WORK/chmod.log" "$REAL_CHMOD" > "$WORK/log-bin/chmod"; "$REAL_CHMOD" +x "$WORK/log-bin/chmod"
+ensure_direct "$N" PATH="$WORK/log-bin:$PATH"
+[ "$(tail -n 1 "$WORK/chmod.log")" = "go-rwx ." ] && ok "the comm folder itself is closed last" \
+    || { bad "the comm folder itself is closed last"; echo "    chmod calls: $(tr '\n' ';' < "$WORK/chmod.log")"; }
+# A relative comm folder is made absolute once: an exported CDPATH cannot send the tightening to another folder.
+R="$WORK/cdpath"; mkdir -p "$R/x/rel/state" "$R/cwd"; : > "$R/x/rel/state/x"
+( cd "$R/cwd" && env SOT_COMM_HOME=rel CDPATH="$R/x" bash -c 'source "$1/comm-lib.sh"; ensure_home' _ "$BIN" ) > "$WORK/last.out" 2>&1
+if [ "$(mode "$R/x/rel")" = 755 ] && [ "$(mode "$R/x/rel/state/x")" = 644 ] && ! grep -q WARNING "$WORK/last.out" && [ "$(mode "$R/cwd/rel")" = 700 ]; then
+    ok "a relative comm folder is the folder under the current directory, whatever CDPATH holds"
+else
+    bad "a relative comm folder is the folder under the current directory, whatever CDPATH holds"
+    echo "    CDPATH folder rel is $(mode "$R/x/rel") (want 755), its state/x $(mode "$R/x/rel/state/x") (want 644), cwd/rel $(mode "$R/cwd/rel" 2>/dev/null || echo missing) (want 700); said: $(tr '\n' ' ' < "$WORK/last.out")"
+fi
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
