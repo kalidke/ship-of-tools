@@ -260,7 +260,11 @@ broadcast copy, filed and read at the next poll, never counted as unread. A
 line whose `to` is missing, not a string or another handle's, or whose `from`
 is this handle, is shown at the next poll and never counted. One rule counts:
 the wake's `counts` in Rust and its shell twin `sot_unread`, pinned by
-`unread_agrees_with_the_shell`.
+`unread_agrees_with_the_shell`. They agree on every line a product writer emits
+(jq -c, serde_json); a line that is not strict JSON (invalid UTF-8, a
+byte-order mark, NaN, a number out of range, nesting past 127) may be counted
+by the shell and not by the wake, so the hook holds one turn for mail comm-poll
+shows.
 
 ## Delivery
 

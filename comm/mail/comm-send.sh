@@ -106,10 +106,9 @@ deliver() {  # $1 = target name
     # never `filed`. Stamp `to` so
     # the recipient can rank:
     # a directed send (to == their own name) wakes the session; a broadcast
-    # copy (to == "") files silently for comm-poll — the same demotion rule
-    # the daemon wake applies. Lines without a `to` key (pre-stamp senders)
-    # read as directed, which is why a --broadcast used to wake the whole
-    # network (observed 2026-06-12: an @sot help blast woke every session).
+    # copy (to == "") files silently for comm-poll -- the same demotion rule
+    # the daemon wake applies. A line without a `to` string is never counted as
+    # mail (the wake's rule), so every send stamps one.
     local to_stamp="$t"
     [ "$BROADCAST" = true ] && to_stamp=""
     ts="$(now_iso)"

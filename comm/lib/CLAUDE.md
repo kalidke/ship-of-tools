@@ -57,7 +57,7 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   the wake's rule; a count that cannot be made returns 1, never 0).
 - Every endpoint leaves through `_sot_emit_endpoint`.
 - A value that may start with `/` goes through `sot_jq_rawfile`, never `jq --arg`.
-- A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity).
+- A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count).
 - The host part `comm-context.sh` gives an unpinned self file, and `comm-despawn.sh`'s match of it, come from `sot_raw_host`
   (raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first), not `sot_host`. A capsule's pinned self file is
   named by the daemon with its declared host, which is `sot_host`'s rule.

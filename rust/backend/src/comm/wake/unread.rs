@@ -287,7 +287,10 @@ mod tests {
     }
 
     /// `sot_unread` is the shell's copy of `counts`: `<total> <unread>` for the
-    /// same inboxes and cursors, including every line `counts` refuses.
+    /// same inboxes and cursors, including every line `counts` refuses. They agree
+    /// on every line a product writer emits (jq -c, serde_json). A line that is
+    /// not strict JSON (invalid UTF-8, a byte-order mark, NaN, a number out of
+    /// range, nesting past 127) may be counted by the shell and not by the wake.
     #[cfg(target_os = "linux")]
     #[test]
     fn unread_agrees_with_the_shell() {
@@ -313,6 +316,8 @@ mod tests {
         for l in lines {
             cases.push((l.to_string(), None));
         }
+        // A timestamp cursor: the first line is read, the second is not.
+        cases.push((ts_inbox(&["1T00:00:01", "1T00:00:09"]), Some("2026-01-01T00:00:05Z".into())));
         for inbox in [&mixed, &torn] {
             cases.push((inbox.clone(), None));
             cases.push((inbox.clone(), Some("1".into())));
