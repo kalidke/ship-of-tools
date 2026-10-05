@@ -49,19 +49,19 @@ case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one() {
         local n="$1"; shift
         printf '#!/bin/sh\nprintf "%%s\\r\\n" %s\n' "$(printf "'%s' " "$@")" > "$d/$n"; chmod +x "$d/$n"
     }
-    rm -rf "$d"; mkdir -p "$d"
+    rm -rf "${d:?}"; mkdir -p "$d"
     stub whoami '"fakehost\\fakeuser","S-1-5-21-1-2-3-1001"'
     sid_of; [ "$got" = "S-1-5-21-1-2-3-1001" ] || { echo "  whoami probe: got '$got' ($err)"; return 1; }
-    rm -rf "$d"; mkdir -p "$d"
+    rm -rf "${d:?}"; mkdir -p "$d"
     stub whoami 'not a sid'
     stub cmd '"fakehost\\fakeuser","S-1-5-21-1-2-3-1002"'
     sid_of; [ "$got" = "S-1-5-21-1-2-3-1002" ] || { echo "  cmd probe: got '$got' ($err)"; return 1; }
-    rm -rf "$d"; mkdir -p "$d"
+    rm -rf "${d:?}"; mkdir -p "$d"
     stub whoami 'not a sid'
     stub cmd 'also not'
     stub powershell.exe 'S-1-5-21-1-2-3-1003'
     sid_of; [ "$got" = "S-1-5-21-1-2-3-1003" ] || { echo "  powershell probe: got '$got' ($err)"; return 1; }
-    rm -rf "$d"; mkdir -p "$d"
+    rm -rf "${d:?}"; mkdir -p "$d"
     stub whoami 'not a sid'
     stub cmd 'also not'
     stub powershell.exe 'nor this'
