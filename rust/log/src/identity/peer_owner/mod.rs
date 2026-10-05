@@ -471,19 +471,40 @@ mod tests {
         assert!(admit("test", local, peer));
     }
 
+    /// A test that cannot run on this host says so and passes, except on CI: a hosted runner that silently stops
+    /// running a test is a failure to be seen, not a pass.
+    fn skip(reason: &str) {
+        eprintln!("skipped: {reason}");
+        assert!(std::env::var_os("GITHUB_ACTIONS").is_none(), "a test skipped on CI: {reason}");
+    }
+
     /// ADR 0049, User isolation: a client on a dual-stack socket (Java's default, among others) reaches a 127.0.0.1
     /// listener with an IPv4-mapped address, so its row is in the IPv6 table (Linux `tcp6`) and the verdict must still
-    /// name its owner. Skipped where the OS gives no such socket (Windows' sockets are IPv6-only by default).
+    /// name its owner. Not on Windows, whose sockets are IPv6-only by default (its IPv6 path has the next test).
+    #[cfg(not(windows))]
     #[test]
     fn a_dual_stack_client_of_an_ipv4_listener_is_mine() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let Ok(_client) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(), port)) else {
-            eprintln!("skipped: no dual-stack connect on this host");
-            return;
+            return skip("no dual-stack connect on this host");
         };
         let (accepted, _) = listener.accept().unwrap();
         let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine, "{local} <- {peer}");
+    }
+
+    /// ADR 0049, User isolation: both ends on `[::1]`, so the row is in the IPv6 table on every platform (Linux `tcp6`,
+    /// macOS's IPv6 records, Windows' `MIB_TCP6ROW_OWNER_MODULE` rows) and the verdict names its owner.
+    #[test]
+    fn a_loopback_ipv6_client_of_an_ipv6_listener_is_mine() {
+        let Ok(listener) = std::net::TcpListener::bind("[::1]:0") else {
+            return skip("no IPv6 loopback on this host");
+        };
+        let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        assert!(local.is_ipv6() && peer.is_ipv6(), "{local} <- {peer}");
         assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine, "{local} <- {peer}");
     }
 
@@ -616,45 +637,93 @@ mod tests {
         assert_eq!(imp::pid_owner(me, i64::MAX, &own), PeerOwner::Mine);
     }
 
-    /// The child side of `a_connection_from_a_child_process_names_the_child`: connect to the port the parent names,
-    /// then hold the connection until the parent closes our stdin. A plain run of this test (no variable) does nothing.
+    /// The child side of the child-process tests: connect to the address the parent names, then hold the connection
+    /// until the parent closes our stdin. A plain run of this test (no variable) does nothing.
     #[cfg(windows)]
     #[test]
     fn child_client_helper() {
         use std::io::Read;
-        let Ok(port) = std::env::var("SOT_PEER_OWNER_CHILD_PORT") else { return };
-        let _held = std::net::TcpStream::connect(("127.0.0.1", port.parse::<u16>().unwrap())).unwrap();
+        let Ok(addr) = std::env::var("SOT_PEER_OWNER_CHILD_ADDR") else { return };
+        let _held = std::net::TcpStream::connect(addr.parse::<SocketAddr>().unwrap()).unwrap();
         println!("connected");
         let _ = std::io::stdin().read_to_end(&mut Vec::new());
     }
 
-    /// The Windows orientation and attribution check the one-process tests cannot make: the row that matches a
-    /// connection is the peer's own row, so its binder is the child that connected, not this process, and the bind
-    /// happened after that child began.
+    /// This test binary run as a child that connects to `listener` and holds the connection: the child, the accepted
+    /// stream and the stdin that ends it.
     #[cfg(windows)]
-    #[test]
-    fn a_connection_from_a_child_process_names_the_child() {
+    fn child_connecting_to(listener: &std::net::TcpListener) -> (std::process::Child, std::net::TcpStream) {
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "identity::peer_owner::tests::child_client_helper", "--nocapture", "--test-threads=1"])
-            .env("SOT_PEER_OWNER_CHILD_PORT", port.to_string())
+            .env("SOT_PEER_OWNER_CHILD_ADDR", listener.local_addr().unwrap().to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let (accepted, _) = listener.accept().unwrap();
+        // The child fails or hangs instead of connecting: fail here after 30 s, not at the CI timeout.
+        listener.set_nonblocking(true).unwrap();
+        let end = std::time::Instant::now() + Duration::from_secs(30);
+        let accepted = loop {
+            match listener.accept() {
+                Ok((s, _)) => break s,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < end => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    panic!("the child never connected: {e}");
+                }
+            }
+        };
+        accepted.set_nonblocking(false).unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         while !lines.next().map_or(true, |l| l.is_ok_and(|l| l.trim() == "connected")) {}
+        (child, accepted)
+    }
+
+    /// The Windows orientation, attribution and unit checks the one-process tests cannot make, for a listener on
+    /// `bind`: the row that matches a connection is the peer's own row, so its binder is the child that connected, not
+    /// this process; the bind happened after that child began; a process started after the bind, given the real bind
+    /// time, is refused; and the real bind time is a FILETIME no later than now (so the unit and time base are the
+    /// ones `GetProcessTimes` uses, in both directions).
+    #[cfg(windows)]
+    fn a_child_connection_names_the_child(bind: &str) {
+        use std::process::{Command, Stdio};
+        let listener = std::net::TcpListener::bind(bind).unwrap();
+        let (mut child, accepted) = child_connecting_to(&listener);
         let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
         let binder = imp::binder_of(local, peer).unwrap().expect("the child's row");
         let verdict = tcp_peer_owner(local, peer);
+        // A process that began after the bind, held open while it is judged.
+        let mut later = Command::new("cmd").args(["/C", "more"]).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap();
+        let own = crate::identity::os_account::own_account_id().unwrap();
+        let later_binder = imp::Binder { pid: later.id(), bound: binder.bound };
+        let later_verdict = imp::owner_of(later_binder, &own, || Ok(Some(later_binder)));
+        drop(later.stdin.take());
+        let _ = later.wait();
         drop(child.stdin.take());
         let _ = child.wait();
+        let now = {
+            let since_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+            ((since_unix.as_secs() + 11_644_473_600) * 10_000_000 + u64::from(since_unix.subsec_nanos()) / 100) as i64
+        };
         assert_eq!(binder.pid, child.id(), "the row named this process, not the child that connected");
-        assert!(binder.bound > 0);
+        assert!(binder.bound > 0 && binder.bound <= now, "bind time {} against now {now}", binder.bound);
         assert_eq!(verdict, PeerOwner::Mine);
+        assert_ne!(later_verdict, PeerOwner::Mine, "a process begun after the bind passed for its owner");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_connection_from_a_child_process_names_the_child() {
+        a_child_connection_names_the_child("127.0.0.1:0");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_connection_from_a_child_process_over_ipv6_names_the_child() {
+        a_child_connection_names_the_child("[::1]:0");
     }
 }
