@@ -13,6 +13,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="$(cd "$SCRIPT_DIR/../work_state/hooks" && pwd)"
@@ -271,7 +272,6 @@ check "race: a done committed while stop waits for the lock is kept" case_race_d
 check "race: a machine start committed while stop waits ends gray, not blue" case_race_machine_start_while_stop_waits_ends_gray
 check "a failed declaration write exits non-zero and leaves the row untouched" case_failed_declaration_write_exits_nonzero
 check "a failed prompt-event write exits non-zero and leaves the row untouched" case_failed_prompt_write_exits_nonzero
-rmmarker
 
 echo ""
 echo "$PASS passed, $FAIL failed"

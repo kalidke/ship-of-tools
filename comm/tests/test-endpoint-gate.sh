@@ -7,6 +7,7 @@
 # real `~/.sot-comm`, a real daemon, or a real network connection.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-endpoint-gate-XXXXXX")"
@@ -516,11 +517,12 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
     printf '%s\n' 'printf "%s\n" "$BASH" >> "$(dirname "$0")/ran"' > "$spy/session-socket-path"
     "$spy/spybash" -c 'sleep 30; :' & pida=$!
     "$spy/sotd" -c 'sleep 30; :' & pidb=$!
-    local tries=0
-    while { [ ! -r "/proc/$pida/exe" ] || [ ! -r "/proc/$pidb/exe" ]; } && [ "$tries" -lt 50 ]; do sleep 0.05; tries=$((tries + 1)); done
+    exe_is() { [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; }
+    await exe_is "$pida" "$spy/spybash" && await exe_is "$pidb" "$spy/sotd" \
+        || { kill "$pida" "$pidb" 2>/dev/null; echo "  the two stub children never ran"; return 1; }
     fakebin="$(mktemp -d "$WORK/spy-fakebin-XXXXXX")"
     fakehome="$(mktemp -d "$WORK/spy-home-XXXXXX")"
-    printf '#!/bin/sh\necho "%s spybash -c sleep 30 sotd"\necho "%s sotd -c sleep 30"\n' "$pida" "$pidb" > "$fakebin/pgrep"
+    printf '#!/bin/sh\necho "%s spybash sotd"\necho "%s sotd"\n' "$pida" "$pidb" > "$fakebin/pgrep"
     chmod +x "$fakebin/pgrep"
     out="$(
         cd "$spy" && unset SOT_SOCKET SOTD_BIN
