@@ -27,12 +27,14 @@ const WAKE_WITHIN: Duration = Duration::from_secs(30);
 /// (2 x 1.5 s) apart.
 const MAX_SPREAD: Duration = Duration::from_secs(3);
 
-/// The stub's `echo-after` reader: `$1` seconds, `$2` the file the line goes to. No echo and no line editing, so the
-/// first byte is seen when it arrives; what has arrived by then plus `$1` seconds is printed in one go.
+/// The stub's `echo-after` reader: `$1` seconds, `$2` the file the line goes to, `$3` (optional) a file the echo also
+/// waits for. No echo and no line editing, so the first byte is seen when it arrives; what has arrived by then, after
+/// `$1` seconds and `$3`, is printed in one go.
 const READ_SLOW_ECHO: &str = r#"stty -echo -icanon min 1 time 0
 IFS= read -r -N1 first
 sleep "$1"
-if IFS= read -r -t 0.3 -n 4096 rest; then ended=1; else ended=0; fi
+while [ -n "$3" ] && [ ! -f "$3" ]; do sleep 0.05; done
+if IFS= read -r -t 0.05 -n 4096 rest; then ended=1; else ended=0; fi
 printf '%s%s' "$first" "$rest"
 [ $ended = 1 ] || IFS= read -r more
 printf '%s%s' "$first" "$rest$more" > "$2"
@@ -58,7 +60,7 @@ printf '\r\n'
 /// the panel's first line. Rows through the box, and for `focus-hold` the cursor, stay as they were. The stub
 /// writes `marks/focus-moved` at the moment it redraws for either of them. `echo-after` (its content, the seconds)
 /// reads typed input without the tty's echo and prints it where the cursor is that many seconds after its first
-/// byte (`READ_SLOW_ECHO`), then ends the line at Enter as usual. The stub logs `ping` for exactly the wake line
+/// byte (`READ_SLOW_ECHO`; with `focus-after` also not before the stub has moved focus), then ends the line at Enter as usual. The stub logs `ping` for exactly the wake line
 /// and `other` for anything else, so a line typed twice shows.
 fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &Path, ctl: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
@@ -84,7 +86,7 @@ fn write_stub_claude(dir: &Path, log: &Path, dialog: &Path, spin: &Path, foot: &
            fi\n\
            ( n=0; fh=0; fa=0; while :; do n=$((n+1)); if [ -f '{spin}' ]; then printf '\\0337\\033[2A\\r spinner %d\\033[K\\0338' $n; fi; if [ -f '{foot}' ]; then printf '\\0337\\033[2B\\r footer %d\\033[K\\0338' $n; fi; if [ -f '{ctl}/panel' ]; then if [ $fh = 0 ] && [ -f '{ctl}/marks/hold' ] && [ -f '{ctl}/focus-hold' ]; then fh=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338'; : > '{ctl}/marks/focus-moved'; fi; if [ $fa = 0 ] && [ -f '{ctl}/marks/final-ok' ] && [ -f '{ctl}/focus-after' ]; then fa=1; printf '\\0337\\033[2B\\r\\342\\235\\257 \\342\\227\\217 main\\033[K\\033[2B\\r\\033[K\\0338\\033[2B\\r'; : > '{ctl}/marks/focus-moved'; fi; fi; sleep 0.2; done ) &\n\
            spid=$!\n\
-           if [ -f '{ctl}/echo-after' ]; then bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line'; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
+           if [ -f '{ctl}/echo-after' ]; then w=''; [ -f '{ctl}/focus-after' ] && w='{ctl}/marks/focus-moved'; bash '{slow}' \"$(cat '{ctl}/echo-after')\" '{ctl}/line' \"$w\"; line=$(cat '{ctl}/line'); else IFS= read -r line; fi\n\
            kill $spid\n\
            case \"$line\" in\n\
              quit) exit 0 ;;
@@ -545,12 +547,12 @@ async fn focus_moving_after_the_final_check_gets_no_enter() {
     row.env.kill_daemon_bounded().await;
 }
 
-/// The typed line shows a second after the write, past the old 0.3 s quiet read: the wake waits for it, then sends
+/// The typed line shows 0.65 s after the write, past the old 0.3 s quiet read, with 2 s of slack to OP_BUDGET: the wake waits for it, then sends
 /// Enter in the same attempt. One ping, the line typed once, and no "left unsent" warning.
 #[tokio::test]
 async fn a_slow_echo_is_entered_in_the_same_attempt() {
     let _serial = SERIAL.lock().await;
-    let row = start_with("cwse", None, false, &["echo-after=1"], &[]).await;
+    let row = start_with("cwse", None, false, &["echo-after=0.6"], &[]).await;
     append_mail(&row.env, 1);
     assert!(wait_pings(&row.log, 1, WAKE_WITHIN).await, "no wake within {WAKE_WITHIN:?}");
     tokio::time::sleep(Duration::from_secs(5)).await;
