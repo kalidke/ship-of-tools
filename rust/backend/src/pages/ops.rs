@@ -773,8 +773,7 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("engine.pid");
         let stub = dir.path().join("stub-quarto");
-        std::fs::write(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
@@ -813,8 +812,7 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("qj");
         let stub = dir.path().join("stub-quarto");
-        std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display()));
         let julia = dir.path().join("julia");
         std::env::set_var("SOT_JULIA_BIN", &julia);
         std::env::remove_var("QUARTO_JULIA");

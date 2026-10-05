@@ -339,16 +339,13 @@ mod port_parse_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn pluto_grandchild_dies_with_shutdown() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let gc_file = dir.path().join("gc");
         let stub = dir.path().join("stub-julia");
-        std::fs::write(
+        sot_log::test_exec::write_executable(
             &stub,
             format!("#!/bin/sh\nsleep 3103 &\necho $! > {}\necho \"READY http://127.0.0.1:1/\"\nexec sleep 3103\n", gc_file.display()),
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let script = dir.path().join("start.jl");
         std::fs::write(&script, "").unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
