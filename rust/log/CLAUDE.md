@@ -58,7 +58,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
 - `src/test_log.rs`: `capture()`, the test-only reader of tracing output (feature `test-support`), and its source scan.
-- `src/test_scan.rs`: `rust_sources()`, every workspace member's Rust source for the source scans (feature `test-support`).
+- `src/test_scan.rs`: `rust_sources()`, every workspace member's Rust source for the source scans (feature `test-support`), and the scan that no test changes the process `PATH` or `SHELL`.
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.
@@ -76,5 +76,6 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
+- No test takes the system folders out of the process `PATH` or changes `SHELL`; code under test takes them from its caller (`test_scan::tests::no_test_changes_the_process_path_or_shell`).
 - A test reads tracing output only through `test_log::capture()`; besides it, only the two binaries' `main` set up a subscriber (`test_log::tests::only_test_log_makes_a_subscriber`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.

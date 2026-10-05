@@ -20,6 +20,11 @@ use anyhow::{Context, Result};
 /// one per module (Codex review, PR #175: two separate mutexes — this
 /// file's own and `rows/store/`'s — meant a test in one module could
 /// still race a test in the other over the same env vars).
+///
+/// No test takes the system folders out of the process `PATH` or changes `SHELL`, so a bare program name always
+/// resolves; code under test takes both from its caller (`agents::argv::AgentEnv`, `sidecars::julia::resolve_bin_on`).
+/// The one `PATH` writer left, `topology::dial::tests::prepend_to_path`, puts a stub `ssh` first under this lock, and
+/// only the tests that call it run a bare `ssh` (`sot_log::test_scan::tests::no_test_changes_the_process_path_or_shell`).
 #[cfg(test)]
 pub(crate) static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

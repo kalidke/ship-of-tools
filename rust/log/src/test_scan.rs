@@ -37,3 +37,50 @@ pub fn rust_sources() -> Vec<(String, String)> {
     assert!(out.len() > 300, "the scan read only {} files", out.len());
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No test takes the system folders out of the process `PATH` or changes `SHELL`, so a bare program name always
+    /// resolves; code under test takes both from its caller. The one `PATH` writer left puts a stub `ssh` first.
+    #[test]
+    fn no_test_changes_the_process_path_or_shell() {
+        // Built with `concat!`, so this file does not hold the texts it looks for.
+        let words = [
+            concat!("set_var(\"", "PATH\""),
+            concat!("remove_var(\"", "PATH\""),
+            concat!("capture(\"", "PATH\")"),
+            concat!("set_var(\"", "SHELL\""),
+            concat!("remove_var(\"", "SHELL\""),
+            concat!("capture(\"", "SHELL\")"),
+        ];
+        // The two prepend writers and their guards, by trimmed line and count.
+        let allowed: [(&str, &str, usize); 5] = [
+            ("rust/backend/src/topology/dial.rs", concat!("std::env::set_var(\"", "PATH\", std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&real))).expect(\"join PATH\"));"), 1),
+            ("rust/backend/src/topology/dial.rs", concat!("let _path_guard = EnvGuard::capture(\"", "PATH\");"), 2),
+            ("rust/backend/src/comm/mail/forward.rs", concat!("let _path_guard = EnvGuard::capture(\"", "PATH\");"), 1),
+            ("rust/backend/tests/lane_bridge/dial.rs", concat!("std::env::set_var(\"", "PATH\", new_path);"), 1),
+            ("rust/backend/tests/lane_bridge/dial.rs", concat!("std::env::set_var(\"", "PATH\", &self.0);"), 1),
+        ];
+        let mut found = Vec::new();
+        for (rel, text) in rust_sources() {
+            if rel == "rust/log/src/test_scan.rs" {
+                continue;
+            }
+            let mut used = std::collections::HashMap::new();
+            for (n, line) in text.lines().enumerate() {
+                if !words.iter().any(|w| line.contains(w)) {
+                    continue;
+                }
+                let seen = used.entry(line.trim().to_string()).or_insert(0usize);
+                *seen += 1;
+                let room = allowed.iter().find(|(f, l, _)| *f == rel && *l == line.trim()).map_or(0, |(_, _, c)| *c);
+                if *seen > room {
+                    found.push(format!("{rel}:{}: {}", n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(found.is_empty(), "a test changes the process PATH or SHELL:\n{}", found.join("\n"));
+    }
+}

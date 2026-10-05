@@ -33,6 +33,12 @@ const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 ///    `"julia"`: there is nothing to have rejected, and the OS's own
 ///    lookup might succeed via a mechanism this search didn't enumerate.
 pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
+    resolve_bin_on(std::env::var_os("PATH").as_deref())
+}
+
+/// [`resolve_bin`] with the `PATH` value passed in: the one place the PATH search reads it, so a test supplies its own
+/// and never changes the process's.
+fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), String> {
     if let Some(v) = std::env::var_os("SOT_JULIA_BIN") {
         let trimmed = v.to_string_lossy().trim().to_string();
         if !trimmed.is_empty() {
@@ -56,7 +62,7 @@ pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
             ),
         }
     }
-    let candidates = candidates_on_path(JULIA_EXE);
+    let candidates = candidates_on(path, JULIA_EXE);
     if candidates.is_empty() {
         return Ok(("julia".to_string(), "PATH (unverified fallback)"));
     }
@@ -236,10 +242,10 @@ fn looks_like_fake_julia(path: &Path) -> Option<&'static str> {
 /// relying on the OS's own single-candidate lookup (`Command::new` spawning
 /// straight off PATH can't skip a rejected first match and try the next
 /// entry — this can).
-fn candidates_on_path(exe_name: &str) -> Vec<PathBuf> {
-    std::env::var_os("PATH")
+fn candidates_on(path: Option<&std::ffi::OsStr>, exe_name: &str) -> Vec<PathBuf> {
+    path
         .map(|p| {
-            std::env::split_paths(&p)
+            std::env::split_paths(p)
                 .map(|dir| dir.join(exe_name))
                 .filter(|c| c.is_file())
                 .collect()
@@ -499,13 +505,11 @@ mod tests {
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
         let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");
-        let _g4 = EnvGuard::capture("PATH");
         std::env::remove_var("SOT_JULIA_BIN");
         std::env::set_var("HOME", home.path());
         std::env::remove_var("JULIAUP_DEPOT_PATH");
-        std::env::set_var("PATH", path_dir.path());
-
-        let (bin, source) = resolve_bin().unwrap();
+        
+        let (bin, source) = resolve_bin_on(Some(path_dir.path().as_os_str())).unwrap();
         assert_eq!(source, "PATH");
         assert_eq!(bin, real_julia.to_string_lossy());
     }
@@ -530,13 +534,11 @@ mod tests {
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
         let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");
-        let _g4 = EnvGuard::capture("PATH");
         std::env::remove_var("SOT_JULIA_BIN");
         std::env::set_var("HOME", home.path());
         std::env::remove_var("JULIAUP_DEPOT_PATH");
-        std::env::set_var("PATH", joined_path);
-
-        let (bin, source) = resolve_bin().unwrap();
+        
+        let (bin, source) = resolve_bin_on(Some(joined_path.as_os_str())).unwrap();
         assert_eq!(source, "PATH");
         assert_eq!(bin, real_julia.to_string_lossy());
     }
@@ -552,13 +554,11 @@ mod tests {
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
         let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");
-        let _g4 = EnvGuard::capture("PATH");
         std::env::remove_var("SOT_JULIA_BIN");
         std::env::set_var("HOME", home.path());
         std::env::remove_var("JULIAUP_DEPOT_PATH");
-        std::env::set_var("PATH", path_dir.path());
-
-        let err = resolve_bin().unwrap_err();
+        
+        let err = resolve_bin_on(Some(path_dir.path().as_os_str())).unwrap_err();
         assert!(err.contains("rejected"), "unexpected message: {err}");
     }
 
@@ -571,13 +571,11 @@ mod tests {
         let _g1 = EnvGuard::capture("SOT_JULIA_BIN");
         let _g2 = EnvGuard::capture("HOME");
         let _g3 = EnvGuard::capture("JULIAUP_DEPOT_PATH");
-        let _g4 = EnvGuard::capture("PATH");
         std::env::remove_var("SOT_JULIA_BIN");
         std::env::set_var("HOME", home.path());
         std::env::remove_var("JULIAUP_DEPOT_PATH");
-        std::env::set_var("PATH", empty_path_dir.path());
-
-        let (bin, _source) = resolve_bin().unwrap();
+        
+        let (bin, _source) = resolve_bin_on(Some(empty_path_dir.path().as_os_str())).unwrap();
         assert_eq!(bin, "julia");
     }
 }

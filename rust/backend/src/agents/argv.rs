@@ -3,16 +3,39 @@
 use std::path::{Path, PathBuf};
 use super::memory::auto_memory_settings;
 
+/// The process environment this module reads: the one place `PATH`, `HOME` and `SHELL` are read. The `_in` functions
+/// take one, so a test passes its own and never changes the process's.
+#[cfg_attr(windows, allow(dead_code))]
+struct AgentEnv {
+    path: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    shell: Option<String>,
+}
+
+impl AgentEnv {
+    fn of_process() -> Self {
+        AgentEnv {
+            path: std::env::var_os("PATH"),
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            shell: std::env::var("SHELL").ok(),
+        }
+    }
+}
+
 /// The agent argv `sot-capsule supervise` spawns as its producer.
 /// `"claude"` and `"codex"` (Unix only) each get their own launcher
 /// recipe, sharing ONE resume token, `--continue`, stripped from a row's
 /// first-ever leg ([`first_leg_without_continue`]). `"none"` is the bare
 /// platform shell; every other kind is refused, never substituted.
 pub fn agent_argv(agent_kind: &str, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
+    agent_argv_in(&AgentEnv::of_process(), agent_kind, memory_cwd)
+}
+
+fn agent_argv_in(env: &AgentEnv, agent_kind: &str, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     match agent_kind {
-        "none" => Ok(vec![none_argv()]),
-        "claude" => claude_argv(memory_cwd),
-        "codex" => codex_argv(),
+        "none" => Ok(vec![none_argv(env)]),
+        "claude" => claude_argv(env, memory_cwd),
+        "codex" => codex_argv(env),
         other => Err(format!(
             "agent {other:?} has no capsule launcher yet (only \"claude\", \"codex\", and \"none\" are supported on this host)"
         )),
@@ -26,12 +49,18 @@ pub fn agent_argv(agent_kind: &str, memory_cwd: Option<&Path>) -> Result<Vec<Str
 /// crate happens to compile on (only [`claude_argv`]'s resolution is
 /// scoped narrower, to Linux specifically).
 #[cfg(windows)]
-fn none_argv() -> String {
+fn none_argv(_env: &AgentEnv) -> String {
     "cmd.exe".to_string()
 }
 #[cfg(not(windows))]
-fn none_argv() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+fn none_argv(env: &AgentEnv) -> String {
+    login_shell(env.shell.as_deref())
+}
+
+/// The login shell: the value of `$SHELL`, or `/bin/sh` when it is unset.
+#[cfg(not(windows))]
+fn login_shell(shell: Option<&str>) -> String {
+    shell.unwrap_or("/bin/sh").to_string()
 }
 
 /// Whether a caller already passed `--settings` (either spelling), in
@@ -104,7 +133,7 @@ fn claude_recipe(resume: bool, extra: &[String], memory_cwd: Option<&Path>) -> V
 /// the daemon's own `PATH` (a detached child inherits it); that stays
 /// out of scope here, not a gap this decision closes.
 #[cfg(windows)]
-fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
+fn claude_argv(_env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
     Ok(claude_recipe(true, &[], memory_cwd))
 }
 /// macOS lane: widened from `target_os = "linux"` to `unix`, a DELETION
@@ -116,11 +145,8 @@ fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
 /// differs from `agent-exec`'s only by `--continue` cannot need a
 /// narrower platform gate than the resolver it calls.
 #[cfg(unix)]
-fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
-    let claude = resolve_claude(
-        std::env::var_os("PATH").as_deref(),
-        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-    )?;
+fn claude_argv(env: &AgentEnv, memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
+    let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
     let mut argv = claude_recipe(true, &[], memory_cwd);
     argv[0] = claude;
     Ok(argv)
@@ -138,15 +164,20 @@ fn claude_argv(memory_cwd: Option<&Path>) -> Result<Vec<String>, String> {
 /// enough and nothing is copied. The id is never persisted on the row:
 /// once this leg has taken a turn, the new account's own selector names
 /// this conversation and an ordinary [`claude_argv`] restart lands on it.
-#[cfg(unix)]
 pub fn claude_resume_argv(
     session_id: &str,
     memory_cwd: Option<&Path>,
 ) -> Result<Vec<String>, String> {
-    let claude = resolve_claude(
-        std::env::var_os("PATH").as_deref(),
-        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-    )?;
+    claude_resume_argv_in(&AgentEnv::of_process(), session_id, memory_cwd)
+}
+
+#[cfg(unix)]
+fn claude_resume_argv_in(
+    env: &AgentEnv,
+    session_id: &str,
+    memory_cwd: Option<&Path>,
+) -> Result<Vec<String>, String> {
+    let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
     let mut argv = claude_recipe(
         false,
         &["--resume".to_string(), session_id.to_string()],
@@ -158,7 +189,8 @@ pub fn claude_resume_argv(
 /// Windows twin: the literal name from [`claude_recipe`], resolved by the
 /// daemon's own `PATH` exactly as [`claude_argv`]'s Windows arm is.
 #[cfg(windows)]
-pub fn claude_resume_argv(
+fn claude_resume_argv_in(
+    _env: &AgentEnv,
     session_id: &str,
     memory_cwd: Option<&Path>,
 ) -> Result<Vec<String>, String> {
@@ -178,18 +210,15 @@ pub fn claude_resume_argv(
 /// mechanism. The separate `not(any(windows, linux))` arm that refused
 /// "codex has no capsule launcher on this host" is DELETED with it.
 #[cfg(unix)]
-fn codex_argv() -> Result<Vec<String>, String> {
-    let ccx = resolve_ccx(
-        std::env::var_os("PATH").as_deref(),
-        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-    )?;
+fn codex_argv(env: &AgentEnv) -> Result<Vec<String>, String> {
+    let ccx = resolve_ccx(env.path.as_deref(), env.home.as_deref())?;
     Ok(vec![ccx, "--capsule".to_string(), "--continue".to_string()])
 }
 
 /// Windows has no `ccx`, so a `codex` row's spawn fails with this reason
 /// rather than launching something else.
 #[cfg(windows)]
-fn codex_argv() -> Result<Vec<String>, String> {
+fn codex_argv(_env: &AgentEnv) -> Result<Vec<String>, String> {
     Err("codex has no capsule launcher on Windows (ccx is a bash script with no .ps1 counterpart)".to_string())
 }
 
@@ -217,12 +246,14 @@ fn codex_argv() -> Result<Vec<String>, String> {
 /// whose own error text surfaces verbatim for a truly unknown kind.
 #[cfg(unix)]
 pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, String> {
+    agent_exec_argv_in(&AgentEnv::of_process(), kind, extra)
+}
+
+#[cfg(unix)]
+fn agent_exec_argv_in(env: &AgentEnv, kind: &str, extra: &[String]) -> Result<Vec<String>, String> {
     match kind {
         "claude" => {
-            let claude = resolve_claude(
-                std::env::var_os("PATH").as_deref(),
-                std::env::var_os("HOME").map(PathBuf::from).as_deref(),
-            )?;
+            let claude = resolve_claude(env.path.as_deref(), env.home.as_deref())?;
             // `agent-exec` EXECS this process in place (never spawns a
             // child), so this process's own cwd is already the directory
             // the session will run in — `ccb`'s caller chose it.
@@ -237,7 +268,7 @@ pub fn agent_exec_argv(kind: &str, extra: &[String]) -> Result<Vec<String>, Stri
             // the one kind that succeeds there but still has no recipe
             // HERE (see doc above), so it falls through to its own
             // refusal below.
-            agent_argv(other, None)?;
+            agent_argv_in(env, other, None)?;
             Err(format!(
                 "agent-exec has no recipe for {other:?} yet (only \"claude\" is supported)"
             ))
@@ -389,9 +420,11 @@ mod tests {
         std::fs::write(&claude, b"#!/bin/sh\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::env::set_var("PATH", dir.path());
+        // `claude_recipe` reads HOME (the account home); the guard restores it.
         std::env::remove_var("HOME");
-        let argv = agent_exec_argv(
+        let env = AgentEnv { path: Some(dir.path().into()), home: None, shell: None };
+        let argv = agent_exec_argv_in(
+            &env,
             "claude",
             &["--continue".to_string(), "--x".to_string()],
         )
@@ -453,27 +486,11 @@ mod tests {
     fn agent_argv_claude_fails_closed_when_nothing_resolves() {
         // No PATH, no HOME: nothing to search, so this must refuse
         // rather than hand `sot-capsule` an unresolved bare "claude" it
-        // would only fail to spawn later, one layer down. `agent_argv`
-        // reads the REAL process PATH/HOME (unlike `resolve_claude`'s own
-        // dependency-injected tests below), and a real dev box typically
-        // DOES have a real `claude` installed somewhere on one of them —
-        // so both are cleared here, under the shared env-test lock, to
-        // make the "nothing resolves" precondition true regardless of
-        // the host running this test.
-        let _guard = self_file_env_guarded();
-        let prior_path = std::env::var_os("PATH");
-        let prior_home = std::env::var_os("HOME");
-        std::env::remove_var("PATH");
-        std::env::remove_var("HOME");
-        let result = agent_argv("claude", None);
-        match prior_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        match prior_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
+        // would only fail to spawn later, one layer down. The environment
+        // is passed in, so the precondition holds on any host, a real
+        // `claude` on its `PATH` included.
+        let env = AgentEnv { path: None, home: None, shell: None };
+        let result = agent_argv_in(&env, "claude", None);
         assert!(result.is_err());
     }
 
@@ -486,20 +503,8 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn agent_argv_none_is_the_login_shell_or_bin_sh() {
-        // `self_file_env_guarded` doesn't itself save/restore SHELL (it
-        // guards a different, fixed set of vars) — still acquired here
-        // for its SERIALIZATION lock, shared with every other env-var
-        // test in this file; SHELL is saved/restored by hand around it.
-        let _guard = self_file_env_guarded();
-        let prior_shell = std::env::var_os("SHELL");
-        std::env::set_var("SHELL", "/bin/zsh");
-        assert_eq!(agent_argv("none", None).unwrap(), vec!["/bin/zsh"]);
-        std::env::remove_var("SHELL");
-        assert_eq!(agent_argv("none", None).unwrap(), vec!["/bin/sh"]);
-        match prior_shell {
-            Some(v) => std::env::set_var("SHELL", v),
-            None => std::env::remove_var("SHELL"),
-        }
+        assert_eq!(login_shell(Some("/bin/zsh")), "/bin/zsh");
+        assert_eq!(login_shell(None), "/bin/sh");
     }
 
     /// `agent-exec` passes `ccb`'s own `"$@"` through, so a caller that
@@ -565,37 +570,11 @@ mod tests {
         assert!(agent_argv("bogus", None).is_err());
     }
 
-    /// Guards PATH/HOME/SOT_COMM_HOME for one `agent_argv("codex", None)` call.
+    /// `agent_argv("codex")` over a `PATH` and `HOME` of the test's own.
     #[cfg(unix)]
-    fn with_codex_env<T>(path: Option<&std::path::Path>, home: Option<&std::path::Path>, comm_home: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
-        let _guard = self_file_env_guarded();
-        let prior = (std::env::var_os("PATH"), std::env::var_os("HOME"), std::env::var_os("SOT_COMM_HOME"));
-        match path {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
-        match home {
-            Some(p) => std::env::set_var("HOME", p),
-            None => std::env::remove_var("HOME"),
-        }
-        match comm_home {
-            Some(p) => std::env::set_var("SOT_COMM_HOME", p),
-            None => std::env::remove_var("SOT_COMM_HOME"),
-        }
-        let result = f();
-        match prior.0 {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        match prior.1 {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match prior.2 {
-            Some(v) => std::env::set_var("SOT_COMM_HOME", v),
-            None => std::env::remove_var("SOT_COMM_HOME"),
-        }
-        result
+    fn codex_over(path: Option<&std::path::Path>, home: Option<&std::path::Path>) -> Result<Vec<String>, String> {
+        let env = AgentEnv { path: path.map(Into::into), home: home.map(Into::into), shell: None };
+        agent_argv_in(&env, "codex", None)
     }
 
     #[cfg(unix)]
@@ -611,7 +590,7 @@ mod tests {
         let ccx = dir.path().join("ccx");
         write_stub_ccx(&ccx);
 
-        let result = with_codex_env(Some(dir.path()), None, None, || agent_argv("codex", None));
+        let result = codex_over(Some(dir.path()), None);
         assert_eq!(
             result.unwrap(),
             vec![ccx.to_string_lossy().into_owned(), "--capsule".to_string(), "--continue".to_string()]
@@ -621,7 +600,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn agent_argv_codex_fails_closed_when_nothing_resolves() {
-        let result = with_codex_env(None, None, None, || agent_argv("codex", None));
+        let result = codex_over(None, None);
         assert!(result.is_err());
     }
 
