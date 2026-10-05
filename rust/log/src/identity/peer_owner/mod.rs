@@ -590,9 +590,11 @@ mod tests {
         task.abort();
     }
 
-    /// ADR 0049, User isolation: the connections beyond the lookup bound wait in the kernel's backlog, which is bounded,
-    /// not as accepted streams each holding a descriptor of the daemon (a flood must not reach EMFILE). Linux, where
-    /// the process's descriptors can be counted.
+    /// ADR 0049, User isolation: the connections beyond the lookup bound wait in the kernel's backlog, which is
+    /// bounded, not as accepted streams each holding a descriptor of the daemon (a flood must not reach EMFILE). Linux,
+    /// measured on the property itself: the server-side rows of `/proc/net/tcp` on the listener's port, ESTABLISHED
+    /// with an inode, are the accepted streams (a connection still in the backlog has inode 0), whatever else this
+    /// process is doing meanwhile.
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_flood_waits_in_the_backlog_not_in_open_streams() {
@@ -605,9 +607,19 @@ mod tests {
             }
             true
         }
-        let fds = || std::fs::read_dir("/proc/self/fd").unwrap().count();
+        fn accepted_streams(port: u16) -> usize {
+            let table = std::fs::read_to_string("/proc/net/tcp").unwrap();
+            table
+                .lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let f: Vec<&str> = line.split_whitespace().collect();
+                    let local = parse_endpoint(f.get(1)?)?;
+                    (local.port() == port && *f.get(3)? == "01" && *f.get(9)? != "0").then_some(())
+                })
+                .count()
+        }
         const FLOOD: usize = 64;
-        let before = fds();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(serve(listener, "test", held, |_s| async {}));
@@ -616,12 +628,11 @@ mod tests {
             clients.push(tokio::net::TcpStream::connect(addr).await.unwrap());
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
-        // The listener and the clients are ours; the server side may hold at most the lookups in flight (and slack for
-        // descriptors other tests open meanwhile), not one stream per waiting connection.
-        let open = fds().saturating_sub(before);
+        let accepted = accepted_streams(addr.port());
         RELEASE.store(true, SeqCst);
         task.abort();
-        assert!(open <= 1 + FLOOD + MAX_LOOKUPS + 16, "{open} descriptors for {FLOOD} clients and {MAX_LOOKUPS} lookups");
+        assert!(accepted > 0, "no accepted stream seen: the measurement did not see the server's rows");
+        assert!(accepted <= MAX_LOOKUPS, "{accepted} accepted streams for {FLOOD} clients and {MAX_LOOKUPS} lookups");
     }
 
     /// ADR 0049, User isolation: this account's connection is served through the real check.
@@ -673,7 +684,10 @@ mod tests {
     fn a_process_created_after_the_bind_is_refused() {
         let own = crate::identity::os_account::own_account_id().unwrap();
         let me = std::process::id();
-        assert_ne!(imp::pid_owner(me, 0, &own), PeerOwner::Mine, "this process began after tick 0");
+        assert!(
+            matches!(imp::pid_owner(me, 0, &own), PeerOwner::Unknown(ref why) if why.contains("created after the bind")),
+            "this process began after tick 0"
+        );
         assert_eq!(imp::pid_owner(me, i64::MAX, &own), PeerOwner::Mine);
     }
 
@@ -752,7 +766,10 @@ mod tests {
         assert_eq!(binder.pid, child.id(), "the row named this process, not the child that connected");
         assert!(binder.bound > 0 && binder.bound <= now, "bind time {} against now {now}", binder.bound);
         assert_eq!(verdict, PeerOwner::Mine);
-        assert_ne!(later_verdict, PeerOwner::Mine, "a process begun after the bind passed for its owner");
+        assert!(
+            matches!(later_verdict, PeerOwner::Unknown(ref why) if why.contains("created after the bind")),
+            "a process begun after the bind was not refused for that reason: {later_verdict:?}"
+        );
     }
 
     #[cfg(windows)]
