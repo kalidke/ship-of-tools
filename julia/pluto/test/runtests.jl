@@ -67,6 +67,17 @@ function listeners()
     return found
 end
 
+@testset "the session secret is drawn per session from the OS's generator" begin
+    secrets = String[]
+    for _ in 1:2
+        session = Pluto.ServerSession()
+        configure_session!(session, "127.0.0.1", 1234)
+        push!(secrets, session.secret)
+    end
+    @test all(s -> occursin(r"^[0-9a-f]{32}$", s), secrets)
+    @test secrets[1] != secrets[2]
+end
+
 @testset "the cluster cookie is drawn per session from the OS's generator" begin
     cookies = String[]
     for _ in 1:2

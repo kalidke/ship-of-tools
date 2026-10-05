@@ -23,6 +23,9 @@ function configure_session!(session, host::AbstractString, port::Integer)
     # every request need `session.secret` (URL query param or the cookie Pluto
     # sets after the first authenticated hit); the `URL` line in start.jl appends
     # it, so the `o`-opens-Pluto flow keeps working with no frontend change.
+    # The secret is the only lock on Pluto's pages, so it is 128 bits from the OS's secure generator, like every page
+    # secret of Ship of Tools, and not the 8 characters Pluto draws from the default RNG.
+    session.secret = bytes2hex(rand(Random.RandomDevice(), UInt8, 16))
     session.options.security.require_secret_for_open_links = true
     session.options.security.require_secret_for_access = true
     session.options.security.warn_about_untrusted_code = true
