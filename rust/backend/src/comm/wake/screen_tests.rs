@@ -2,16 +2,8 @@
 
 use super::*;
 
-fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Option<&'static str> {
-    match prompt_of(lines, cursor, agent, windows) {
-        Ok(Prompt::Empty) => None,
-        Ok(Prompt::HoldsLine) => Some("wake text left unsent"),
-        Err(reason) => Some(reason),
-    }
-}
-
 fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
-    refused_on(lines, cursor, agent, windows).is_none()
+    prompt_of(lines, cursor, agent, windows) == Ok(Prompt::Empty)
 }
 
 fn lines(l: &[&str]) -> Vec<String> {
@@ -36,7 +28,7 @@ fn a_box_holding_the_wake_line_names_it() {
     let end = 2 + WAKE_LINE.chars().count() as u16;
     assert_eq!(prompt_of(&boxed(&held), Some((1, end)), "claude", false), Ok(Prompt::HoldsLine));
     assert_eq!(prompt_of(&boxed("\u{276f}\u{a0}"), Some((1, 2)), "claude", false), Ok(Prompt::Empty));
-    assert_eq!(refused_on(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", false), Some("input not empty"));
+    assert_eq!(prompt_of(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", false), Err("input not empty"));
 }
 
 fn bfree(line: &str, col: u16, windows: bool) -> bool {
@@ -208,7 +200,7 @@ fn cc288_agent_view_off_rest_reads_free() {
         let (l, cur) = cc288(text, true);
         assert_eq!((l.len(), cur), (24, (15, 2)));
         for windows in [false, true] {
-            assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
+            assert_eq!(prompt_of(&l, Some(cur), "claude", windows), Ok(Prompt::Empty));
         }
     }
 }
@@ -219,7 +211,7 @@ fn cc288_rest_with_the_one_agent_footer_reads_free() {
     let (mut l, cur) = cc288(include_str!("../../../tests/fixtures/comm_wake/cc288-avoff-1-rest.txt"), true);
     l[19] = "  ⏵⏵ auto mode on (shift+tab to cycle) · /tasks to see subagents · ← 1 agent".to_string();
     for windows in [false, true] {
-        assert_eq!(refused_on(&l, Some(cur), "claude", windows), None);
+        assert_eq!(prompt_of(&l, Some(cur), "claude", windows), Ok(Prompt::Empty));
     }
 }
 
@@ -228,8 +220,8 @@ fn a_pane_too_narrow_for_the_wake_line_is_refused() {
     let b = |w: usize| vec!["\u{2500}".repeat(w), "\u{276f}\u{a0}".to_string(), "\u{2500}".repeat(w)];
     let need = 2 + WAKE_LINE.chars().count() + 2;
     for windows in [false, true] {
-        assert_eq!(refused_on(&b(need - 1), Some((1, 2)), "claude", windows), Some("pane too narrow for the wake line"));
-        assert_eq!(refused_on(&b(need), Some((1, 2)), "claude", windows), None);
+        assert_eq!(prompt_of(&b(need - 1), Some((1, 2)), "claude", windows), Err("pane too narrow for the wake line"));
+        assert_eq!(prompt_of(&b(need), Some((1, 2)), "claude", windows), Ok(Prompt::Empty));
     }
 }
 
@@ -454,7 +446,7 @@ fn the_leader_view_reads_free() {
     let named = format!("{} named-session \u{2500}", "\u{2500}".repeat(64));
     for top in [rule80(), named] {
         for windows in [false, true] {
-            assert_eq!(refused_on(&probe(&top, "\u{276f}\u{a0}", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), None);
+            assert_eq!(prompt_of(&probe(&top, "\u{276f}\u{a0}", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), Ok(Prompt::Empty));
         }
     }
 }
@@ -503,15 +495,15 @@ fn a_view_of_another_agent_is_refused() {
     // placeholder `Message @general-purpose…` as the wake reads it if dim (blank), and as plain text.
     let top = format!("{} background task \u{2500}", "\u{2500}".repeat(62));
     let viewing = ["  ◯ main", "❯ ● general-purpose  background task                    13s · ↓ 41.0k tokens"];
-    assert_eq!(refused_on(&probe(&top, "\u{276f}\u{a0}", F_SELECT, viewing), Some(AT), "claude", false), Some("agents panel focused or unrecognised"));
-    assert_eq!(refused_on(&probe(&top, "\u{276f}\u{a0}Message @general-purpose…", F_SELECT, viewing), Some(AT), "claude", false), Some("input not empty"));
+    assert_eq!(prompt_of(&probe(&top, "\u{276f}\u{a0}", F_SELECT, viewing), Some(AT), "claude", false), Err("agents panel focused or unrecognised"));
+    assert_eq!(prompt_of(&probe(&top, "\u{276f}\u{a0}Message @general-purpose…", F_SELECT, viewing), Some(AT), "claude", false), Err("input not empty"));
 }
 
 #[test]
 fn the_dot_on_another_agent_is_refused() {
     // DERIVED from capture 08 with no panel cursor, under the leader footer.
     let dot_on_sub = ["  ◯ main", "  ● general-purpose  background task                    13s · ↓ 41.0k tokens"];
-    assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_LEADER, dot_on_sub), Some(AT), "claude", false), Some("the panel's dot is not on main"));
+    assert_eq!(prompt_of(&probe(&rule80(), "\u{276f}\u{a0}", F_LEADER, dot_on_sub), Some(AT), "claude", false), Err("the panel's dot is not on main"));
 }
 
 #[test]
@@ -519,7 +511,7 @@ fn panel_focus_is_refused() {
     // Captures 06 and 09 (the panel cursor on main) and 07 (on the agent): an Enter there opens a view.
     let on_sub = "❯ ◯ general-purpose  background task                    13s · ↓ 41.0k tokens";
     for (footer, panel) in [(F_SELECT, ["❯ ● main", P_SUB]), (F_VIEW, [P_MAIN, on_sub])] {
-        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", footer, panel), Some(AT), "claude", false), Some("agents panel focused or unrecognised"));
+        assert_eq!(prompt_of(&probe(&rule80(), "\u{276f}\u{a0}", footer, panel), Some(AT), "claude", false), Err("agents panel focused or unrecognised"));
     }
 }
 
@@ -527,7 +519,7 @@ fn panel_focus_is_refused() {
 fn an_unknown_panel_layout_is_refused() {
     // DERIVED: a panel with no line for main, and a dot on a name other than main.
     for panel in [[P_SUB, ""], ["  ● team-lead", P_SUB]] {
-        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_LEADER, panel), Some(AT), "claude", false), Some("the panel's dot is not on main"));
+        assert_eq!(prompt_of(&probe(&rule80(), "\u{276f}\u{a0}", F_LEADER, panel), Some(AT), "claude", false), Err("the panel's dot is not on main"));
     }
 }
 
@@ -535,8 +527,8 @@ fn an_unknown_panel_layout_is_refused() {
 fn a_draft_reads_not_free_wherever_its_cursor_sits() {
     // At Home the cursor sits where an empty prompt's does (col 2); only the text after the NBSP tells.
     for windows in [false, true] {
-        assert_eq!(refused_on(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", windows), Some("input not empty"));
-        assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}hello", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), Some("input not empty"));
+        assert_eq!(prompt_of(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", windows), Err("input not empty"));
+        assert_eq!(prompt_of(&probe(&rule80(), "\u{276f}\u{a0}hello", F_LEADER, [P_MAIN, P_SUB]), Some(AT), "claude", windows), Err("input not empty"));
     }
 }
 
@@ -545,11 +537,11 @@ fn a_dim_suggestion_reads_empty_and_a_draft_does_not() {
     let p = parsed("\u{276f}\u{a0}\x1b[2mtry this\x1b[22m");
     let seen = free_test_lines(p.screen());
     assert_eq!(seen[1], "\u{276f}\u{a0}");
-    assert_eq!(refused_on(&seen, Some(p.screen().cursor_position()), "claude", false), None);
+    assert_eq!(prompt_of(&seen, Some(p.screen().cursor_position()), "claude", false), Ok(Prompt::Empty));
     let p = parsed("\u{276f}\u{a0}try this");
     let seen = free_test_lines(p.screen());
     assert_eq!(seen[1], "\u{276f}\u{a0}try this");
-    assert_eq!(refused_on(&seen, Some(p.screen().cursor_position()), "claude", false), Some("input not empty"));
+    assert_eq!(prompt_of(&seen, Some(p.screen().cursor_position()), "claude", false), Err("input not empty"));
     // Only the cursor's row is read this way: a dim line elsewhere keeps its text.
     let mut p = parsed("\u{276f}\u{a0}");
     p.process(b"\x1b[4;1H\x1b[2mfooter\x1b[22m\x1b[2;3H");
@@ -574,9 +566,9 @@ fn cc288_agent_view_off_panel_focus_is_refused() {
     ] {
         let (l, cur) = cc288(text, true);
         assert_eq!(cur, (23, 0));
-        assert_eq!(refused_on(&l, Some(cur), "claude", false), Some("not in an input box"));
+        assert_eq!(prompt_of(&l, Some(cur), "claude", false), Err("not in an input box"));
         // The cursor put back on the prompt: the panel cursor alone refuses.
-        assert_eq!(refused_on(&l, Some((15, 2)), "claude", false), Some("agents panel focused or unrecognised"));
+        assert_eq!(prompt_of(&l, Some((15, 2)), "claude", false), Err("agents panel focused or unrecognised"));
     }
 }
 
@@ -592,7 +584,7 @@ fn cc288_the_ticking_panel_is_not_held() {
 fn agent_view_focus_that_draws_nothing_reads_free() {
     // Capture 05 (2.1.287, agent view ON, the first ↓): focus left the input and nothing shows it. The named gap
     // of `panel_refusal`.
-    assert_eq!(refused_on(&probe(&rule80(), "\u{276f}\u{a0}", F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false), None);
+    assert_eq!(prompt_of(&probe(&rule80(), "\u{276f}\u{a0}", F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false), Ok(Prompt::Empty));
     assert_eq!(typed_refusal(&probe(&rule80(), &format!("\u{276f}\u{a0}{WAKE_LINE}"), F_DOWN, [P_MAIN, P_SUB]), Some(AT), "claude", false, WAKE_LINE), None);
 }
 
@@ -600,7 +592,7 @@ fn agent_view_focus_that_draws_nothing_reads_free() {
 fn a_wake_line_with_more_or_less_is_a_draft() {
     for text in [format!("{WAKE_LINE} and more"), WAKE_LINE[..WAKE_LINE.len() - 5].to_string()] {
         let held = format!("\u{276f}\u{a0}{text}");
-        assert_eq!(refused_on(&boxed(&held), Some((1, 2)), "claude", false), Some("input not empty"));
+        assert_eq!(prompt_of(&boxed(&held), Some((1, 2)), "claude", false), Err("input not empty"));
         assert!(typed_refusal(&boxed(&held), Some((1, 2)), "claude", false, WAKE_LINE).is_some());
     }
 }

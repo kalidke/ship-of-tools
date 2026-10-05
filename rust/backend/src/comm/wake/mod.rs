@@ -67,6 +67,8 @@
 //! A text write that fails after it may have landed (any phase but a stale `input` refusal) is treated as typed: the
 //! line is owed its Enter and is not typed again, so a write that was lost for good costs the row its wake until
 //! [`REPEAT_AFTER`] (the Complete bound) or a read inbox.
+//! Enter alone also goes to a box that holds exactly the wake line for another reason: a line recalled from history with Up or returned to the box by Esc, once it has held still for
+//! [`STILL_FOR`]. The check cannot tell it from a line the wake left (it never reads the cursor column).
 //!
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
