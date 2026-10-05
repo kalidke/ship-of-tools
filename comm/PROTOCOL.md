@@ -426,8 +426,8 @@ sitting at the start of the input line marked by the prompt glyph (`❯`,
 or on Windows `❯` or `>`, the latter being Claude Code's fallback when its
 unicode check fails), followed by a no-break space, between the input box's
 two rules (on every OS; on Windows a bare glyph too, for now), so a grey
-suggestion or any other decoration does not count as a draft, while a draft
-counts unless its cursor sits at its very start, and the screen down to the
+suggestion (drawn dim) or any other dim decoration does not count as a draft, while
+a draft is not free wherever its cursor sits, and the screen down to the
 input box's lower rule (the background-agent footer below it is not watched)
 must then hold still for a second and a half before anything is typed, so a working
 session is not typed into while its screen is still changing — the daemon
@@ -437,7 +437,9 @@ sender — several frontends can show one row and each would type, and a
 closed window would leave the row deaf. It types a fixed notice, never the
 message itself: a pasted message is never marked read, so it would show
 again. One line per new batch of mail; one more if it is
-still unread ten minutes later at a free prompt. A row whose registry entry
+still unread ten minutes later at a free prompt. A line it typed that did not
+send is sent by a later tick, with Enter alone, once main's input box holds just
+that line; within one daemon run it is never typed twice (a restart forgets it). A row whose registry entry
 carries a `stop_at` under a minute old is running its Stop hook and is not typed
 into: the hook stamps it as it starts, its `stop` deletes it when the turn ends,
 and the hook reads the mail itself. A turn ended by Esc or an API error runs no
