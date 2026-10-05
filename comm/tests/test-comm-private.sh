@@ -262,9 +262,10 @@ S2 env SOT_COMM_HOME="$N" "$BIN/comm-join.sh" --name s2-a
 # An unknown file or folder in the comm folder keeps its mode; the layout's own entries do not.
 N="$WORK/unknown-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"
 mkdir -p "$N/extra" "$N/state/sub"; : > "$N/notes.txt"; : > "$N/extra/f"; : > "$N/inbox/notes.txt"; : > "$N/state/sub/g"
+: > "$N/read/notes.txt"; : > "$N/self/notes.json"; : > "$N/registry.json.bak"; : > "$N/.registry.lockX"
 S2 env SOT_COMM_HOME="$N" "$BIN/comm-join.sh" --name s2-a
 fails=""
-for kept in notes.txt extra extra/f inbox/notes.txt state/sub state/sub/g; do
+for kept in notes.txt extra extra/f inbox/notes.txt read/notes.txt self/notes.json registry.json.bak .registry.lockX state/sub state/sub/g; do
     [ "$(mode "$N/$kept")" = "$([ -d "$N/$kept" ] && echo 755 || echo 644)" ] || fails+=$'\n'"    $kept is $(mode "$N/$kept"): an unknown entry was changed"
 done
 for own in . inbox state registry.json inbox/s2-a.jsonl state/x.tick; do
@@ -283,8 +284,8 @@ refused() {  # NAME DIR WORD [env VAR=VAL...]
     for kept in . inbox inbox/s2-a.jsonl state/x.tick notes.txt; do
         [ "$(mode "$dir/$kept")" = "$([ -d "$dir/$kept" ] && echo 755 || echo 644)" ] || f+=$'\n'"    $kept is $(mode "$dir/$kept"): the refusal changed it"
     done
-    if [ -z "$f" ]; then ok "a comm folder that is $word is not tightened, and nothing is changed"
-    else bad "a comm folder that is $word is not tightened, and nothing is changed"; printf '%s\n' "${f#$'\n'}"; fi
+    if [ -z "$f" ]; then ok "a comm folder that is $word is not tightened: its permissions are unchanged"
+    else bad "a comm folder that is $word is not tightened: its permissions are unchanged"; printf '%s\n' "${f#$'\n'}"; fi
 }
 P="$WORK/refuse-home"; guard_refuse_live_home "$P"; refused home "$P" "the home folder" HOME="$P"
 G="$WORK/git-home/.sot-comm"; guard_refuse_live_home "$G"; mkdir -p "$G/.git"; refused git "$G" "a git checkout"
@@ -336,11 +337,12 @@ ensure_direct "$N" PATH="$WORK/log-bin:$PATH"
 # A relative comm folder is made absolute once: an exported CDPATH cannot send the tightening to another folder.
 R="$WORK/cdpath"; mkdir -p "$R/x/rel/state" "$R/cwd"; : > "$R/x/rel/state/x"
 ( cd "$R/cwd" && env SOT_COMM_HOME=rel CDPATH="$R/x" bash -c 'source "$1/comm-lib.sh"; ensure_home' _ "$BIN" ) > "$WORK/last.out" 2>&1
-if [ "$(mode "$R/x/rel")" = 755 ] && [ "$(mode "$R/x/rel/state/x")" = 644 ] && ! grep -q WARNING "$WORK/last.out" && [ "$(mode "$R/cwd/rel")" = 700 ]; then
+rel_seen="$( cd "$R/cwd" && env SOT_COMM_HOME=rel bash -c 'source "$1/comm-lib.sh"; bash -c "printf %s \"\$SOT_COMM_HOME\""' _ "$BIN" 2>&1 )"
+if [ "$(mode "$R/x/rel")" = 755 ] && [ "$(mode "$R/x/rel/state/x")" = 644 ] && ! grep -q WARNING "$WORK/last.out" && [ "$(mode "$R/cwd/rel")" = 700 ] && [ "$rel_seen" = "$R/cwd/rel" ]; then
     ok "a relative comm folder is the folder under the current directory, whatever CDPATH holds"
 else
     bad "a relative comm folder is the folder under the current directory, whatever CDPATH holds"
-    echo "    CDPATH folder rel is $(mode "$R/x/rel") (want 755), its state/x $(mode "$R/x/rel/state/x") (want 644), cwd/rel $(mode "$R/cwd/rel" 2>/dev/null || echo missing) (want 700); said: $(tr '\n' ' ' < "$WORK/last.out")"
+    echo "    CDPATH folder rel is $(mode "$R/x/rel") (want 755), its state/x $(mode "$R/x/rel/state/x") (want 644), cwd/rel $(mode "$R/cwd/rel" 2>/dev/null || echo missing) (want 700), children see SOT_COMM_HOME=$rel_seen (want $R/cwd/rel); said: $(tr '\n' ' ' < "$WORK/last.out")"
 fi
 
 echo "$pass passed, $fail failed"

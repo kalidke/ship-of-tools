@@ -34,9 +34,10 @@ _sot_comm_refusal() {
 }
 
 # _sot_comm_own root|print|fix — the comm layout's own entries open to group or other, and nothing else: the folder,
-# inbox/ read/ self/ state/ probe/ and the folders in probe/ (a probe row's project root); registry.json and its temp
-# files, the registry lock and its markers, the lock manager's record and temp, gh-device-auth.json; and the files of
-# inbox/ (.jsonl, .lock), read/ (.cursor), self/ (.txt) and state/ (all). find is handed the layout folders and
+# inbox/ read/ self/ state/ probe/ and the folders in probe/ (a probe row's project root); registry.json,
+# registry.json.tmp and registry.json.new.*, .registry.lock and its .tmp.* and .reclaim.* files, inbox-lock-manager and
+# .inbox-lock-manager.*, gh-device-auth.json; and the files of inbox/ (.jsonl, .lock), read/ (.cursor), self/ (.txt) and
+# state/ (all). This is comm/PROTOCOL.md's layout block, and test-comm-private.sh's table lays one of each. find is handed the layout folders and
 # descends one level itself, so a layout folder that is a symlink is never followed; bin/ and VERSION are never in the
 # list. `root` prints the folder itself if it is open, `print` every entry open, `fix` removes group and other bits,
 # the folder itself last: a pass cut short leaves it open, and the next call walks again.
@@ -48,7 +49,8 @@ _sot_comm_own() {
       if [ "$1" = root ]; then find . -prune "${open[@]}" -print; exit 0; fi
       find inbox read self state probe -maxdepth 0 -type d "${open[@]}" "${act[@]}"
       find probe -maxdepth 1 -mindepth 1 -type d "${open[@]}" "${act[@]}"
-      find . "${one[@]}" \( -name registry.json -o -name 'registry.json.*' -o -name '.registry.lock*' -o -name inbox-lock-manager \
+      find . "${one[@]}" \( -name registry.json -o -name registry.json.tmp -o -name 'registry.json.new.*' -o -name .registry.lock \
+          -o -name '.registry.lock.tmp.*' -o -name '.registry.lock.reclaim.*' -o -name inbox-lock-manager \
           -o -name '.inbox-lock-manager.*' -o -name gh-device-auth.json \) "${open[@]}" "${act[@]}"
       find inbox "${one[@]}" \( -name '*.jsonl' -o -name '*.lock' \) "${open[@]}" "${act[@]}"
       find read "${one[@]}" -name '*.cursor' "${open[@]}" "${act[@]}"

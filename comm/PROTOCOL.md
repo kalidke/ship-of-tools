@@ -13,22 +13,30 @@ all clients are mutually addressable through the same registry and inboxes.
 ```
 ~/.sot-comm/
   bin/                     # installed scripts (the reference client)
+  VERSION                  # the installer's commit stamp
   registry.json            # who is reachable + liveness  (source of truth for discovery)
+  registry.json.tmp        # a registry write's temp file, renamed over registry.json
+  registry.json.new.<pid>.<n>  # the skeleton ensure_home links into place when there is no registry
   .registry.lock           # the registry-write lock: a file naming its holder (below)
   .registry.lock.reclaim.<id>  # one marker per dead holder reclaimed; kept forever, but a daemon's own
   .registry.lock.tmp.<id>      # a take's temp file, removed by the take
+  inbox-lock-manager       # the hub daemon's record of the inbox lock's mount, written at boot
+  .inbox-lock-manager.<id>.<pid>.<n>  # that record's temp file
+  gh-device-auth.json      # sot-gh-auth.sh's device-flow state
   inbox/<name>.jsonl       # durable per-recipient inbox (append-only)
+  inbox/<name>.lock        # that inbox's lock file
   read/<name>.cursor       # per-recipient read cursor (`<count> <crc>-<len>`: lines shown, and a hash of the last)
   self/<host>__<pane>.txt  # this pane's declared agent name (identity recovery)
   state/                   # per-session scratch; the end-of-turn check keeps mail-<key>.tick,
                            # lock-fault-<handle>.<key>.tick and stop-feedback-<key>.jsonl here.
                            # Nothing removes a mail tick, so every session ever held on mail
                            # leaves one. Bounded per-session litter, and nothing sweeps it.
+  probe/<handle>/          # a probe row's project root (comm-probe.sh)
 ```
 
-The folders above and the files in them are 0700 and 0600, created so by every writer; `ensure_home` closes an older
-folder's entries at the next join. Anything else in the folder, and `bin/` and `VERSION` (the installer's), keep their modes
-behind the 0700 folder. On Windows the folder inherits the profile's access list.
+Every entry above except `bin/` and `VERSION` (the installer's) is 0700 (a folder) or 0600 (a file), created so by every
+writer; `ensure_home` closes an older folder's entries at the next join. Anything else in the folder keeps its mode behind
+the 0700 folder. On Windows the folder inherits the profile's access list.
 
 The registry and inboxes are **data at rest** — discovery and catch-up need a
 shared place to publish, not a live broker. In an optional shared-home
