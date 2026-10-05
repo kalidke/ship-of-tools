@@ -90,7 +90,7 @@ Uses: `DaemonLaneEndpoint`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/fr
 - `events.rs`: `drain_events`, which applies each daemon event (`IncomingEvt`) to the window by variant.
 - `connections.rs`: the window's view of its connection set: `send`, `send_to`, `default_host`, `ordered_hosts`.
 - `page_proxy.rs`: arming a local listener so a remote daemon's page opens (`ensure_proxy_for_url`).
-- `scan_tests.rs`: the crate's own source for the tests that scan it (focus writes, leave, paste).
+- `scan_tests.rs`: the crate's own source for the tests that scan it (focus writes, leave, paste), read through `sot_log::test_scan`.
 - `agent_pane/`: the agent pane (its own page).
 - `app/`: the winit application and exit path (its own page).
 - `chrome/`: the pane chrome (its own page).
