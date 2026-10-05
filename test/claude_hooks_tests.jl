@@ -43,7 +43,7 @@ end
         @test ShipTools._claude_settings_targets(home, own) ==
               [realpath(default), realpath(a)]
         # Nothing was created through the dangling link.
-        @test islink(d) && !ispath(d)
+        @test islink(d) && !ispath(joinpath(home, "missing.json"))
 
         # The daemon's name rule, character for character.
         for ok in ("team", "a_b-2", "0x")

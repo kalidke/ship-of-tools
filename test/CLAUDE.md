@@ -22,7 +22,7 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
   (runtests.jl): HOME, USERPROFILE, HOMEDRIVE and HOMEPATH (Julia's `homedir()` reads USERPROFILE on Windows), the comm
   home under it, CLAUDE_CONFIG_DIR and CODEX_HOME unset, and an error before the body if `homedir()` is not that home.
   Every test writes only under `mktempdir()`.
-- A test that needs Unix mode bits probes at run time and skips itself.
+- A test that needs Unix mode bits probes at run time, with the operation the code under test uses, and skips itself.
 - The bash checks (sourcing a library, running an installed script) run only where `Sys.isunix()`; the rest runs everywhere.
 - A subject file defines its own helpers inside its testsets; `in_home` is the one helper they share.
 - Comm paths come from ShipTools' constants (`ShipTools.CLAUDE_SKILL_SRCS`, `ShipTools._comm_bin_files()`), never a literal
