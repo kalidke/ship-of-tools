@@ -48,14 +48,13 @@ pub enum IncomingEvt {
     Disconnected {
         reason: String,
     },
-    /// The backend refused the handshake because the FE↔BE wire-contract
-    /// protocol versions differ (ADR 0030 §2). Unlike a transient
-    /// `Disconnected`, this is a hard, self-diagnosing skew: the chrome shows a
-    /// persistent blocking full-pane "update needed" message carrying both
-    /// sides' versions + protocols + the dev fix hint. `message` is the
-    /// pre-formatted multi-line body to display; its first line is also the
-    /// agent pane's state ("frontend out of date" / "daemon out of date").
-    ProtocolMismatch {
+    /// The backend refused the hello (ADR 0049 `## User isolation`): another protocol (ADR 0030 §2), no host or OS
+    /// account named, or a second OS account on this host. Unlike a transient `Disconnected`, a refusal is
+    /// self-diagnosing and the person's to read: the chrome shows a persistent blocking full-pane message. For a
+    /// version skew it is the pre-formatted "update needed" body carrying both sides' versions + protocols + the dev
+    /// fix hint, for any other refusal the daemon's own message. `message` is the body to display; its first line is
+    /// also the agent pane's state ("frontend out of date" / "daemon out of date").
+    HelloRefused {
         message: String,
     },
     /// A `file.download` chunk landed and the transport wrote it to `dest`.

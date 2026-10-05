@@ -24,8 +24,6 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tokio::net::{TcpListener, UnixStream};
-
 const SAMPLES: usize = 200;
 const PROBE: u8 = b'Z';
 
@@ -46,23 +44,6 @@ fn percentiles(label: &str, mut v: Vec<Duration>) {
     v.sort();
     let at = |q: f64| v[(((v.len() - 1) as f64) * q).round() as usize].as_secs_f64() * 1000.0;
     println!("{label}: n={} p50={:.2}ms p95={:.2}ms max={:.2}ms", v.len(), at(0.5), at(0.95), at(1.0));
-}
-
-/// Plain loopback TCP in front of the daemon's Unix socket.
-async fn tcp_front(unix_path: std::path::PathBuf) -> std::net::SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
-    let addr = listener.local_addr().expect("local_addr");
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut tcp, _)) = listener.accept().await else { break };
-            let path = unix_path.clone();
-            tokio::spawn(async move {
-                let Ok(mut unix) = UnixStream::connect(&path).await else { return };
-                let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
-            });
-        }
-    });
-    addr
 }
 
 async fn create_row(env: &Env, conn: &mut Conn, next_id: &mut u64) -> String {
@@ -94,10 +75,10 @@ fn wait_for(client: &mut FeAttachClient<DaemonLaneEndpoint>, what: &str, done: i
     }
 }
 
-async fn measure(env: &Env, tcp: bool) {
+async fn measure(env: &Env) {
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let target = create_row(env, &mut conn, &mut next_id).await;
-    let dial = if tcp { LaneDial::Tcp(tcp_front(env.socket_path.clone()).await) } else { LaneDial::Local(env.socket_path.clone()) };
+    let dial = LaneDial::Local(env.socket_path.clone());
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         DaemonLaneEndpoint { dial, token: None },
         target,
@@ -178,7 +159,7 @@ async fn k1_loopback_unix() {
     env.spawn_sotd();
     println!("k1 fsync per op on the state root: {:.3}ms", fsync_per_op(&env.state_root));
     println!("k1_loopback_unix");
-    measure(&env, false).await;
+    measure(&env).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,15 +170,6 @@ async fn k2_loopback_unix_tmpfs() {
     let env = Env::new_with_state_root_on_tmpfs("k2");
     println!("k2 fsync per op on the tmpfs state root: {:.3}ms", fsync_per_op(&env.state_root));
     println!("k2_loopback_unix_tmpfs: no row can be created on tmpfs, so no keystroke samples");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
-async fn k_tcp_loopback() {
-    let env = Env::new("ktcp");
-    env.spawn_sotd();
-    println!("k_tcp_loopback");
-    measure(&env, true).await;
 }
 
 /// The bridge resolves its socket as `$XDG_RUNTIME_DIR/sot/sessions/sot.sock`,
@@ -232,18 +204,7 @@ async fn k3b_ssh_cold_dial() {
     );
 
     let hello = || {
-        let h = HelloReq {
-            client_id: "k3b".to_string(),
-            session_id: None,
-            last_seen_revision: 0,
-            token: None,
-            protocol: sot_protocol::PROTOCOL_VERSION,
-            app_version: sot_protocol::app_version(),
-            host: None,
-            role: String::new(),
-            instance: None,
-            name: None,
-        };
+        let h = HelloReq::this_process("k3b", "", Some("host-a".to_string())).expect("this process's account");
         Frame::req(1, op::HELLO, serde_json::to_value(&h).unwrap())
     };
     // The private daemon's session id; the local run's reply must carry the same one.

@@ -2,7 +2,7 @@
 //! sessions, what the last one's departure decides, and `held.json`, the
 //! record that carries both across a daemon restart.
 //!
-//! A lease is a dedicated connection whose first frame is `fe.lease`; the
+//! A lease is a dedicated connection whose hello says `handoff` and whose next frame is `fe.lease`; the
 //! connection is the handle, so a lease's generation never goes on the
 //! wire. This module is the pure core the connection's holder calls: it
 //! does no IO but the record's write, and it never looks a process up. The
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::{Deserialize, Serialize};
-use sot_log::identity::challenge::{PeerAuthOutcome, ProcessIdentity};
+use sot_log::identity::challenge::{PeerAuthenticated, ProcessIdentity};
 use sot_protocol::ops::{
     lease as bounds, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeLeavingRes, FeNoticeSeenReq, FeNoticeSeenRes,
     LeaseOutcome, LeaveIntent,
@@ -267,7 +267,7 @@ impl Leases {
     }
 
     /// The grant rule, in order: `Closing` once a shutdown has begun;
-    /// `Undetermined` if the peer is, or this daemon's boot is unknown;
+    /// `Undetermined` if this daemon's boot is unknown;
     /// `Granted` iff the claim equals this boot and
     /// the peer's OS identity; otherwise `Foreign`. A grant carries its
     /// generation and clears an in-process handover and a pending start:
@@ -278,7 +278,7 @@ impl Leases {
     pub(crate) fn grant(
         &self,
         req: &FeLeaseReq,
-        peer: &PeerAuthOutcome,
+        peer: &PeerAuthenticated,
     ) -> (LeaseOutcome, Option<u64>) {
         let mut st = self.lock();
         if st.phase != Phase::Open {
@@ -552,7 +552,7 @@ pub(crate) async fn hold<R, W>(
     mut rx: R,
     mut tx: W,
     first: Frame,
-    peer: PeerAuthOutcome,
+    peer: PeerAuthenticated,
     leases: &Leases,
     state_root: Option<&Path>,
 ) -> anyhow::Result<()>
@@ -709,15 +709,10 @@ pub(crate) fn write_or_delete(path: &Path, rec: &HeldRecord) -> std::io::Result<
 fn claim(
     own_boot: Option<&str>,
     req: &FeLeaseReq,
-    peer: &PeerAuthOutcome,
+    peer: &PeerAuthenticated,
 ) -> Result<ProcessIdentity, (LeaseOutcome, &'static str)> {
     let Some(own_boot) = own_boot else {
         return Err((LeaseOutcome::Undetermined, "own boot unknown"));
-    };
-    let peer = match peer {
-        PeerAuthOutcome::Undetermined => return Err((LeaseOutcome::Undetermined, "peer undetermined")),
-        PeerAuthOutcome::Foreign => return Err((LeaseOutcome::Foreign, "peer foreign")),
-        PeerAuthOutcome::Authenticated(peer) => peer,
     };
     if !boots_match(&req.boot, own_boot, cfg!(windows)) {
         return Err((LeaseOutcome::Foreign, "boot mismatch"));

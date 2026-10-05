@@ -147,10 +147,10 @@ impl State {
         // had declared until its own next reconnect.
         self.host = Some(host_label(&self.hosts.declared_host, &self.active_host).to_string());
         // ADR 0042 L2a: preview_fatal is a lazily-rebuilt PROJECTION of
-        // protocol_mismatch for whichever host is active (rebuild_fatal_overlay
+        // hello_refused for whichever host is active (rebuild_fatal_overlay
         // only refills it when it's None) -- an active-host switch must
         // invalidate it, or a stale overlay built for the DEPARTING host
-        // could keep showing (or a real mismatch on the ENTERING host could
+        // could keep showing (or a real refusal on the ENTERING host could
         // stay hidden behind an empty cached buffer) until something else
         // happens to clear it.
         self.preview_fatal = None;

@@ -15,8 +15,8 @@ use anyhow::{anyhow, Result};
 use interprocess::local_socket::tokio::prelude::*;
 use sot_log::identity::challenge::self_identity;
 use sot_protocol::ops::{lease, op, FeLeaseReq, FeLeaseRes, FeLeavingReq, FeNoticeSeenReq, LeaveIntent, LeaseOutcome};
-use sot_protocol::{codec, Frame};
-use tokio::io::{AsyncBufRead, AsyncWrite};
+use sot_protocol::{codec, Frame, HelloReq, HANDOFF_ROLE};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt as _};
 use tokio::sync::{mpsc, oneshot};
 use tokio::sync::oneshot::error::TryRecvError;
 
@@ -33,6 +33,23 @@ const LEAVE_UNCONFIRMED_CLOSE: &str =
     "closing: this computer's backend did not confirm the sessions ended";
 const LEAVE_UNCONFIRMED_KEEP: &str =
     "keep was not confirmed: this computer's backend may have ended the sessions";
+
+/// What the daemon sent back to the hello and the lease request: the lease's own reply, or the hello's refusal.
+enum Replies {
+    Lease(Frame),
+    Refused { code: String, error: String },
+}
+
+/// Reads the hello's reply and then the lease's, through the one reader, so the caller's wait rule covers both.
+async fn read_replies<R: AsyncBufRead + Unpin>(rx: &mut R) -> Result<Replies> {
+    let (hello_reply, _) = codec::read_frame(rx).await?;
+    if let Some(error) = hello_reply.payload.get("error").and_then(|e| e.as_str()) {
+        let code = hello_reply.payload.get("code").and_then(|c| c.as_str()).unwrap_or("");
+        return Ok(Replies::Refused { code: code.to_string(), error: error.to_string() });
+    }
+    let (reply, _) = codec::read_frame(rx).await?;
+    Ok(Replies::Lease(reply))
+}
 
 /// A window that never leases: `--ephemeral`, `--capture`, `--no-lease`.
 pub fn lease_exempt(ephemeral: bool, capture: bool, no_lease: bool) -> bool {
@@ -213,15 +230,25 @@ impl Leases {
         };
         let req = FeLeaseReq { boot: ident.boot, pid: ident.pid, created: ident.created, token: token.map(str::to_string) };
         // Connect and write are bounded: failing here changes nothing at the
-        // daemon. Once the request is written the reply is awaited for as long
-        // as the connection lasts, since the daemon may still grant it and a
-        // dropped granted connection departs as a Close.
+        // daemon. The hello (a handoff, ADR 0049 `## User isolation`) and the
+        // lease go out in one write. Once they are written the replies are
+        // awaited for as long as the connection lasts, since the daemon may
+        // still grant the lease and a dropped granted connection departs as a
+        // Close.
         let sent = tokio::time::timeout(self.reply_wait, async {
             let stream = connect_pipe(path).await?;
             let (rx, mut tx) = stream.split();
             let rx = codec::buffered(rx);
-            let frame = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req)?);
-            codec::write_frame(&mut tx, &frame, None).await?;
+            let hello = HelloReq::this_process(
+                "sot-fe-lease",
+                HANDOFF_ROLE,
+                Some(crate::net::identity::frontend_identity().host.clone()),
+            )?;
+            let mut both = Vec::new();
+            codec::write_frame(&mut both, &Frame::req(1, op::HELLO, serde_json::to_value(&hello)?), None).await?;
+            codec::write_frame(&mut both, &Frame::req(2, op::FE_LEASE, serde_json::to_value(&req)?), None).await?;
+            tx.write_all(&both).await?;
+            tx.flush().await?;
             Ok::<_, anyhow::Error>((rx, tx))
         })
         .await;
@@ -239,7 +266,7 @@ impl Leases {
             }
         };
         let replied = {
-            let read = codec::read_frame(&mut rx);
+            let read = read_replies(&mut rx);
             tokio::pin!(read);
             match tokio::time::timeout(self.reply_wait, &mut read).await {
                 Ok(r) => r,
@@ -250,7 +277,14 @@ impl Leases {
             }
         };
         let reply = match replied {
-            Ok((reply, _)) => reply,
+            Ok(Replies::Lease(reply)) => reply,
+            // Not a failed connect: the data connection's own hello is refused the same way and shows the
+            // daemon's message on the blocking screen, which an `Err` here would never let it reach.
+            Ok(Replies::Refused { code, error }) => {
+                self.set(host, Standing::Undetermined, None);
+                tracing::warn!(%host, %code, %error, "window lease: the backend refused this window's hello");
+                return Ok(0);
+            }
             Err(e) => {
                 self.set(host, Standing::Unreached, None);
                 tracing::warn!(%host, error = %format_args!("{e:#}"), "window lease: not taken");
@@ -653,7 +687,8 @@ where
         }
     });
     tokio::spawn(async move {
-        let mut next_id: u64 = 2;
+        // The hello took id 1 and the lease id 2.
+        let mut next_id: u64 = 3;
         // The one table of awaited replies, by request id. A second leave (an
         // X during a Keep) is written at once, while the first still awaits
         // its reply. Nothing awaits `fe.notice_seen`'s reply, which matches no

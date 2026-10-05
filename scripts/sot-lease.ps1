@@ -13,28 +13,52 @@ function Get-SotBootId {
     }
 }
 
+# This computer's name as the daemon's hello declares it: $env:SOT_SELF_HOST, else the first label of the machine
+# name, lowercased (rust/log/src/host/state_dir.rs host_name). The lease is local on an owner-only pipe, so this
+# need not equal the window's own spelling.
+function Get-SotHelloHost {
+    if ($env:SOT_SELF_HOST) { return $env:SOT_SELF_HOST }
+    return ([System.Net.Dns]::GetHostName().Split('.')[0]).ToLowerInvariant()
+}
+
+# One JSON string literal, quotes included (host and SID are plain, but a quote or backslash must never break the line).
+function ConvertTo-SotJsonString([string]$Text) {
+    return '"' + $Text.Replace('\', '\\').Replace('"', '\"') + '"'
+}
+
 # Open a lease on the local daemon: emits the open pipe stream when granted and
 # NOTHING otherwise (callers collect with @()). Never throws: $ErrorActionPreference
-# is Stop and an escaped throw would kill the supervisor.
+# is Stop and an escaped throw would kill the supervisor. The first line is the hello the daemon admits every
+# connection by (ADR 0049, User isolation): role handoff, this computer and the OS account (the process token's user
+# SID); the lease line follows in the same write and the two replies are read in order.
 function Open-SotLease([string]$PipePath) {
     $client = $null
     $why = ''
     try {
         $name = $PipePath -replace '^\\\\\.\\pipe\\', ''
         $created = [System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToFileTimeUtc()
-        $line = '{"v":2,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $PID + '}}'
+        $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
+        $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $PID + '}}'
         $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name, [System.IO.Pipes.PipeDirection]::InOut)
         $client.Connect($LeaseReplyWaitMs)
-        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($line + "`n")
+        $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($hello + "`n" + $line + "`n")
         $client.Write($bytes, 0, $bytes.Length)
         $client.Flush()
         $reader = New-Object System.IO.StreamReader($client, (New-Object System.Text.UTF8Encoding($false)), $false, 1024, $true)
         $task = $reader.ReadLineAsync()
         if (-not $task.Wait($LeaseReplyWaitMs)) { throw 'no reply' }
-        $why = (ConvertFrom-Json $task.Result).payload.outcome
-        if ($why -eq 'granted') {
-            Write-SupLog 'relaunch: lease granted'
-            return $client
+        $helloReply = (ConvertFrom-Json $task.Result).payload
+        if ($helloReply.error) {
+            $why = 'hello refused: ' + $helloReply.code
+        } else {
+            $task = $reader.ReadLineAsync()
+            if (-not $task.Wait($LeaseReplyWaitMs)) { throw 'no reply' }
+            $why = (ConvertFrom-Json $task.Result).payload.outcome
+            if ($why -eq 'granted') {
+                Write-SupLog 'relaunch: lease granted'
+                return $client
+            }
         }
     } catch {
         $why = $_.Exception.Message
@@ -47,7 +71,7 @@ function Open-SotLease([string]$PipePath) {
 function Close-SotLeases {
     foreach ($c in @($global:SotLeases)) {
         try {
-            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":2,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
+            $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes('{"v":3,"id":2,"kind":"req","op":"fe.leaving","payload":{"intent":"handover"}}' + "`n")
             $c.Write($bytes, 0, $bytes.Length)
             $c.Flush()
         } catch { }

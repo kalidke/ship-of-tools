@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
 
-    use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
+    use sot_log::identity::challenge::PeerAuthenticated;
     use sot_protocol::ops::{FeLeaseReq, LeaseOutcome};
 
     use crate::lifecycle::lease::HeldRecord;
@@ -171,7 +171,7 @@ mod tests {
         let (ws_events, _rx) = broadcast::channel(4);
         let leases = begin(Some(state.path().to_path_buf()), &workspaces, &ws_events);
         let req = FeLeaseReq { boot: own, pid: 1, created: 7001, token: None };
-        let peer = PeerAuthOutcome::Authenticated(PeerAuthenticated { pid: 1, created: 7001 });
+        let peer = PeerAuthenticated { pid: 1, created: 7001 };
         assert_eq!(leases.grant(&req, &peer).0, LeaseOutcome::Granted);
         assert_eq!(
             lease::read_record(&path).unwrap().map(|r| r.forget),

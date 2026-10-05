@@ -1,13 +1,16 @@
-//! One connection: its read-deadline reaper, its first-frame peek (`handle_connection`) and its control loop
-//! (`serve_control`, with `select_once` for one pass of its select).
+//! One connection: its read-deadline reaper, its admission at the first frame (`handle_connection`), the handoff of a
+//! connection that becomes a pipe or a lease (`hand_off`) and its control loop (`serve_control`, with `select_once`
+//! for one pass of its select).
 
 use super::dispatch::dispatch;
 use super::events::{
     recv_or_pending, write_agent_message, write_agent_receipt, write_fe_command, write_monitor_tick,
     write_preview_changed, write_repl_frame, write_topology_changed, write_workspace_changed,
 };
-use super::reply::{write_reply, HandlerOutput, OutTx, OFFLOOP_CONCURRENCY};
+use super::hello::{admit_hello, handle_hello, parse_first_frame, register_hello, Admitted, HelloRefusal};
+use super::reply::{finish_dispatch, write_reply, HandlerOutput, OutTx, OFFLOOP_CONCURRENCY};
 use super::*;
+use sot_protocol::HANDOFF_ROLE;
 
 /// Read deadline for a connection whose declared role is `fe` or `bridge`
 /// (topology plan §F step 2, D10 — the half-open-roster fix). Since 0.4.0
@@ -94,7 +97,7 @@ pub(super) fn touch_person_input(clients: &Clients, guard: &Option<ClientGuard>)
 
 pub(super) async fn handle_connection<R, W>(
     rx: R,
-    tx: W,
+    mut tx: W,
     session: Session,
     mathjax: MathJax,
     pluto: Pluto,
@@ -110,7 +113,7 @@ pub(super) async fn handle_connection<R, W>(
     clients: Clients,
     topology_store: Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>,
-    peer_identity: sot_log::identity::challenge::PeerAuthOutcome,
+    peer: sot_log::identity::challenge::PeerAuthenticated,
     leases: Arc<crate::lifecycle::lease::Leases>,
 ) -> Result<()>
 where
@@ -131,78 +134,94 @@ where
     // same latent footgun. Flagged from the Windows side 2026-05-26.
     let mut buffered = codec::buffered(rx);
 
-    // ADR 0035: a proxy connection announces itself with `proxy.connect` as
-    // its VERY FIRST frame and then becomes a raw byte pipe — it must never
-    // enter the multiplexed control loop below (where it would
-    // share the loop with requests and could head-of-line-block pty/repl traffic). Peek that
-    // one frame here, before the persistent read future is armed. On
-    // proxy.connect, hand the (buffered) reader + write half straight to the
-    // pipe and return. Otherwise, remember the frame and feed it to the loop
-    // as its first dispatched frame (`pending_first`), so the peek costs the
-    // control path nothing.
-    let pending_first: Option<(Frame, Option<Vec<u8>>)> = match codec::read_frame(&mut buffered)
-        .await
-    {
-        Ok((f, blob)) => {
-            if f.kind == Kind::Req && f.op == op::PROXY_CONNECT {
-                tracing::info!("proxy.connect — leaving control loop for a raw pipe");
-                return crate::pages::proxy::handle_proxy_connect(
-                    buffered,
-                    tx,
-                    f,
-                )
-                .await;
-            }
-            // ADR 0045 decision 2: peeked on every host, exactly like
-            // `rows/ops/lane_bridge.rs` itself is compiled on every host (macOS
-            // wiring lane) — one attach path, local or remote, with no
-            // platform where `lane.connect` silently falls through to
-            // the "unknown op" answer instead.
-            if f.kind == Kind::Req && f.op == op::LANE_CONNECT {
-                tracing::info!("lane.connect — leaving control loop for a raw pipe");
-                return crate::rows::ops::lane_bridge::handle_lane_connect(
-                    buffered,
-                    tx,
-                    f,
-                    &workspaces,
-                )
-                .await;
-            }
-            // A lease (1.2) is a connection of its own: it never enters
-            // the connection's request loop, the reaper or any handler.
-            if f.kind == Kind::Req && f.op == op::FE_LEASE {
-                tracing::info!(?peer_identity, "fe.lease — a lease connection");
-                let state_root = sot_log::host::state_dir::sot_state_dir();
-                return crate::lifecycle::lease::hold(
-                    buffered,
-                    tx,
-                    f,
-                    peer_identity,
-                    &leases,
-                    state_root.as_deref(),
-                )
-                .await;
-            }
-            Some((f, blob))
-        }
+    // ADR 0035: a proxy connection becomes a raw byte pipe — it must never enter the multiplexed control loop below
+    // (where it would share the loop with requests and could head-of-line-block pty/repl traffic).
+    //
+    // Admission two (ADR 0049 `## User isolation`; admission one is the peer read at accept): every connection
+    // starts with a hello that parses and is accepted — protocol, declared host and OS account, the host's account
+    // record — and until then nothing is served and nothing is sent but its refusal. The hello's role says what
+    // the connection becomes: `handoff` leaves for a byte pipe or a lease after the hello's reply (`hand_off`);
+    // every other role is a control session at once, so a client that only listens after its hello (the hub link)
+    // is sent its events.
+    let (first, _blob) = match codec::read_frame(&mut buffered).await {
+        Ok(read) => read,
         Err(e) => {
             tracing::debug!(error = %e, "first read failed before any frame; closing");
             return Ok(());
         }
     };
+    let admitted = parse_first_frame(&first).and_then(|hello| admit_hello(hello, &clients));
+    let hello = match admitted {
+        Ok(hello) => hello,
+        Err(HelloRefusal(payload)) => {
+            let (_, revision) = session.snapshot().await;
+            let refusal = Frame::res(first.id, &first.op, payload).with_rev(revision);
+            return write_reply(&mut tx, refusal, None).await;
+        }
+    };
+    if hello.hello().role == HANDOFF_ROLE {
+        return hand_off(buffered, tx, first.id, hello, &session, &files_mode, &label, &workspaces, &clients, peer, &leases).await;
+    }
 
     serve_control(
-        tx, buffered, pending_first, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
+        tx, buffered, first.id, hello, session, mathjax, pluto, files_mode, preview_changed_tx, label, workspaces,
         ws_events_tx, agent_events_tx, agent_receipt_tx, fe_command_tx, repl_frame_tx, clients, topology_store,
         topo_changed_tx, leases,
     )
     .await
 }
 
+/// A connection whose hello said `handoff`: answers the hello, reads its one next frame and gives the connection to
+/// that frame's owner — a proxied page port (`proxy.connect`), a capsule lane (`lane.connect`) or a window lease
+/// (`fe.lease`). Any other frame is `bad_request` and the end. It is never listed in the roster and never serves the
+/// control ops.
+async fn hand_off<R, W>(
+    mut rx: tokio::io::BufReader<R>, mut tx: W, hello_id: u64, hello: Admitted, session: &Session,
+    files_mode: &FilesMode, label: &Option<String>, workspaces: &Workspaces, clients: &Clients,
+    peer: sot_log::identity::challenge::PeerAuthenticated, leases: &crate::lifecycle::lease::Leases,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let reply = handle_hello(hello_id, hello.into_hello(), session, files_mode, label.as_deref(), clients).await?;
+    if let Some((frame, blob)) = reply.into_iter().next() {
+        write_reply(&mut tx, frame, blob).await?;
+    }
+    let (next, _blob) = match codec::read_frame(&mut rx).await {
+        Ok(read) => read,
+        Err(e) => {
+            tracing::debug!(error = %e, "handoff connection closed before its frame");
+            return Ok(());
+        }
+    };
+    match (next.kind, next.op.as_str()) {
+        (Kind::Req, op::PROXY_CONNECT) => {
+            tracing::info!("proxy.connect — a raw pipe");
+            crate::pages::proxy::handle_proxy_connect(rx, tx, next).await
+        }
+        // ADR 0045 decision 2: on every host, exactly like `rows/ops/lane_bridge.rs` itself is compiled on every
+        // host — one attach path, local or remote.
+        (Kind::Req, op::LANE_CONNECT) => {
+            tracing::info!("lane.connect — a raw pipe");
+            crate::rows::ops::lane_bridge::handle_lane_connect(rx, tx, next, workspaces).await
+        }
+        // A lease (1.2) is a connection of its own: it never enters the request loop, the reaper or any handler.
+        (Kind::Req, op::FE_LEASE) => {
+            tracing::info!(?peer, "fe.lease — a lease connection");
+            let state_root = sot_log::host::state_dir::sot_state_dir();
+            crate::lifecycle::lease::hold(rx, tx, next, peer, leases, state_root.as_deref()).await
+        }
+        _ => {
+            let message = "a handoff connection's next frame is proxy.connect, lane.connect or fe.lease";
+            crate::server::pipe::reject(&mut tx, next.id, &next.op, "bad_request", message).await
+        }
+    }
+}
+
 /// Runs one control session: the per-connection state, then the frame loop and its op table.
 async fn serve_control<R, W>(
-    mut tx: W, buffered: tokio::io::BufReader<R>, mut pending_first: Option<(Frame, Option<Vec<u8>>)>,
-    session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
+    mut tx: W, buffered: tokio::io::BufReader<R>, hello_id: u64, hello: Admitted, session: Session, mathjax: MathJax, pluto: Pluto, files_mode: Arc<FilesMode>,
     preview_changed_tx: broadcast::Sender<PreviewChanged>, label: Arc<Option<String>>, workspaces: Workspaces,
     ws_events_tx: broadcast::Sender<WorkspaceChanged>, agent_events_tx: broadcast::Sender<AgentMessage>,
     agent_receipt_tx: broadcast::Sender<AgentReceipt>, fe_command_tx: broadcast::Sender<FeCommandEvt>,
@@ -218,32 +237,14 @@ where
     tracing::debug!("connection ready");
 
 
-    // Connected-client registry entry (ADR 0010/0013). Registered on the
-    // first `hello` (when this connection's client_id is known) and held
-    // for the connection's lifetime; the guard deregisters on any exit
-    // path (clean EOF, error, task drop). `None` until hello arrives.
-    let mut client_guard: Option<crate::clients::ClientGuard> = None;
-    // This connection's own declared host (`HelloReq.host`, ADR 0046
-    // decision 1), captured at hello — `topology.set`'s "can't remove
-    // yourself" refusal reads it (`server/dispatch.rs`, `op::TOPOLOGY_SET`).
-    let mut hello_host: Option<String> = None;
-    // This connection's own declared sot-comm name (`HelloReq.name`, the
-    // same value `Clients::receivers_for` reports), captured at hello:
-    // `agent.filed` stamps it as the `filer` (ADR 0048). Read from the
-    // hello, never from a request body — that is what makes a receipt
-    // unforgeable. `None` for a connection that declared no name, which
-    // therefore cannot vouch for anything.
-    let mut hello_name: Option<String> = None;
-
     // Half-open long-lived-role reaper (topology plan §F step 2). A
     // tunnelled `fe`/`bridge` connection reaches this daemon as sshd's
     // Unix-socket side, so `WRITE_TIMEOUT` above never fires for it — a
     // half-open peer's death is otherwise noticed only when the OS-level
-    // TCP side gives up (15 min to 2 h). `is_long_lived_role` flips true on
-    // hello, exactly when this connection's declared role resolves to
-    // `fe`/`bridge` (`cli`/`agent`, one-shot roles, stay false forever and
-    // are never deadline-gated) — it is only ELIGIBILITY, not the gate
-    // itself.
+    // TCP side gives up (15 min to 2 h). `is_long_lived_role` is true
+    // exactly when this connection's declared role is `fe`/`bridge`
+    // (`cli`/`agent`, one-shot roles, are never deadline-gated) — it is
+    // only ELIGIBILITY, not the gate itself.
     //
     // Opt-in by ping (manager compatibility fix, post-review): the gate is
     // `deadline_armed`, which flips true only on this connection's FIRST
@@ -264,7 +265,6 @@ where
     // itself push it out. The initial `Instant::now()` here is never
     // acted on: the corresponding select! arm and the bump below are both
     // `deadline_armed`-gated, and that starts false.
-    let mut is_long_lived_role = false;
     let mut deadline_armed = false;
     let mut read_deadline = tokio::time::Instant::now();
 
@@ -365,35 +365,45 @@ where
     let mut jobs: JoinSet<()> = JoinSet::new();
     let job_sem = Arc::new(Semaphore::new(OFFLOOP_CONCURRENCY));
 
+    // Connected-client registry entry (ADR 0010/0013): registered here, after the bus subscriptions above so no
+    // event between them is lost and before the hello's reply so `clients_connected` counts this connection, and
+    // held for its lifetime; the guard deregisters on any exit path (clean EOF, error, task drop). The roster holds
+    // control sessions only. The connection's declared host (`HelloReq.host`, ADR 0046 decision 1) is what
+    // `topology.set`'s "can't remove yourself" refusal reads (`server/dispatch.rs`, `op::TOPOLOGY_SET`); its declared
+    // sot-comm name (`HelloReq.name`, the value `Clients::receivers_for` reports) is what `agent.filed` stamps as the
+    // `filer` (ADR 0048), read from the hello and never from a request body, which is what makes a receipt
+    // unforgeable (`None` for a connection that declared no name, which therefore cannot vouch for anything).
+    let client_guard = Some(register_hello(&hello, &clients));
+    let hello_host = hello.hello().host.clone();
+    let hello_name = hello.hello().name.clone();
+    let is_long_lived_role = matches!(hello.hello().role.as_str(), "fe" | "bridge");
+    let hello_reply = handle_hello(hello_id, hello.into_hello(), &session, &files_mode, label.as_deref(), &clients).await;
+    for (frame, blob) in finish_dispatch(op::HELLO, hello_id, std::time::Instant::now(), hello_reply) {
+        write_reply(&mut tx, frame, blob).await?;
+    }
+
     loop {
-        // ADR 0035: the peeked first frame (any non-proxy first frame, e.g.
-        // hello) is dispatched here before the first socket read, so the
-        // proxy detection above costs the control path nothing.
-        let frame = if let Some((f, _blob)) = pending_first.take() {
-            f
-        } else {
-            match select_once(
-                &mut tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
-                &mut agent_events_rx, &mut agent_receipt_rx, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
-                &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
-                &client_guard,
-            )
-            .await?
-            {
-                Woke::Read(done) => {
-                    let (rx_back, wire) = done;
-                    read_fut = Some(Box::pin(read_owned(rx_back)));
-                    match wire {
-                        Ok((f, _blob)) => f,
-                        Err(e) => {
-                            tracing::debug!(error = %e, "read_frame returned; closing");
-                            return Ok(());
-                        }
+        let frame = match select_once(
+            &mut tx, &mut read_fut, &mut out_rx, &mut watcher_rx, &mut ws_events_rx, &mut topo_changed_rx,
+            &mut agent_events_rx, &mut agent_receipt_rx, &mut fe_command_rx, &mut repl_frame_rx, &mut monitor_rx,
+            &mut jobs, read_deadline, deadline_armed, monitor_subscribed, &active_workspace, &workspaces,
+            &client_guard,
+        )
+        .await?
+        {
+            Woke::Read(done) => {
+                let (rx_back, wire) = done;
+                read_fut = Some(Box::pin(read_owned(rx_back)));
+                match wire {
+                    Ok((f, _blob)) => f,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "read_frame returned; closing");
+                        return Ok(());
                     }
                 }
-                Woke::Again => continue,
-                Woke::Reap => return Ok(()),
             }
+            Woke::Again => continue,
+            Woke::Reap => return Ok(()),
         };
 
         // Any frame from an ARMED connection is proof of life — push the
@@ -410,11 +420,16 @@ where
             tracing::debug!(?frame.kind, op = %frame.op, "ignoring non-req frame");
             continue;
         }
+        // One hello per connection, the one that admitted it: a second closes the connection with no reply.
+        if frame.op == op::HELLO {
+            tracing::info!("a second hello on one connection: closing it unanswered");
+            return Ok(());
+        }
 
         dispatch(
-            &mut tx, frame, &session, &mathjax, &pluto, &files_mode, &label, &workspaces, &ws_events_tx,
+            &mut tx, frame, &session, &mathjax, &pluto, &workspaces, &ws_events_tx,
             &agent_events_tx, &agent_receipt_tx, &fe_command_tx, &clients, &topology_store, &topo_changed_tx, &leases,
-            &mut client_guard, &mut hello_host, &mut hello_name, &mut is_long_lived_role, &mut deadline_armed,
+            &client_guard, &hello_host, &hello_name, is_long_lived_role, &mut deadline_armed,
             &mut read_deadline, &mut active_workspace, &mut monitor_subscribed, &mut jobs, &job_sem, &out_tx,
         )
         .await?;

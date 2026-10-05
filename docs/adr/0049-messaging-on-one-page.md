@@ -85,14 +85,25 @@ section is the design built to it; where the two differ, the guarantee wins.
 The cost is one ssh login per frontend connection, attached lane and proxied page
 connection.
 
-**Status.** Built: the control plane listens on no TCP port. The daemon's one listener
-is its session socket, whose directory must be private, or on Windows a named pipe
-with an owner-only descriptor, and a hub's per-host relay sockets are owner-only Unix
-sockets. Not built: the daemon serves its ops and events, mail included, to a
-connection that has sent no hello; the hello names no OS account; and the peer read at
-accept refuses another account only for a lease, so a hub cannot tell two OS users on
-one hub account apart. Lane M1 builds the hello admission and that refusal, and deletes
-`LaneDial::Tcp`, a TCP lane dial that only tests construct. Built by lane M1b: the
+**Status.** Built: the control plane listens on no TCP port and dials none: the lane
+client's TCP dial and `sotd topology`'s `tcp:` endpoint are deleted, and a test fails if
+a control-plane TCP connect returns. The daemon's one listener is its session socket,
+whose directory must be private, or on Windows a named pipe with an owner-only
+descriptor, and a hub's per-host relay sockets are owner-only Unix sockets. Every
+connection to the daemon is admitted twice, each in one place: at accept, by the
+account of its process (Linux and macOS compare the peer's effective uid with the
+daemon's; on Windows the pipe's owner-only descriptor decides), and at its first frame,
+which must be a hello naming its host and the OS account it runs as (wire protocol 3);
+until the hello is accepted nothing is served and nothing is sent but its refusal. A
+hello whose role is `handoff` leaves the control loop after its reply for the one frame
+it carried behind it (`proxy.connect`, `lane.connect` or `fe.lease`). A daemon refuses,
+with `os_user_conflict` and a close, every hello for a host that has said hello as two
+OS accounts, until it restarts, and leaves connections already open alone. The account
+a hello names is the one its client read from its own operating system (`uid:<euid>`,
+or the user's SID on Windows), so the refusal catches two accounts sharing one hub
+account through Ship of Tools' own clients; a client changed to name another account
+is not caught, and for a connection from another computer the boundary is the ssh login
+to the hub account. Built by lane M1b: the
 frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` speak
 only to an endpoint their own OS account serves, a pipe whose serving process runs as
 this account on Windows and a socket in a folder private to this account on Unix

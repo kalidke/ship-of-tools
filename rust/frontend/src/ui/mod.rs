@@ -1192,7 +1192,7 @@ struct State {
     /// its own next successful `Connected` (not every host's). `preview_fatal`
     /// is the shaped buffer for whichever host is CURRENTLY active, rebuilt
     /// on set + on resize + on an active-host switch.
-    protocol_mismatch: HashMap<HostKey, String>,
+    hello_refused: HashMap<HostKey, String>,
     preview_fatal: Option<MarkdownPreview>,
     /// Last preview source (mime + raw bytes) cached so a font-size
     /// change can rebuild the preview at the new scale without a
