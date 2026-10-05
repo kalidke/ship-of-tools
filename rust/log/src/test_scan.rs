@@ -1,5 +1,4 @@
-//! Test-only (feature `test-support`): the one walker of the workspace's Rust sources, shared by every source scan
-//! (the inbox-append pin, the handle-binding scan, the permit scan, `update.rs`'s exit check).
+//! Test-only (feature `test-support`): the one walker of the workspace's Rust sources, shared by every source scan.
 
 use std::path::{Path, PathBuf};
 
@@ -38,43 +37,56 @@ pub fn rust_sources() -> Vec<(String, String)> {
     out
 }
 
-/// Whether an attribute line is a `#[cfg(...)]` whose predicate requires `test`: `cfg(test)`, or `cfg(all(...))`
-/// with `test` as one operand.
-fn requires_test(line: &str) -> bool {
-    let Some(inner) = line.trim().strip_prefix("#[cfg(").and_then(|s| s.strip_suffix(")]")) else {
+/// Whether a path (`rust/<member>/...`) is a test file: inside a `tests` folder, or named `tests.rs`, `test_support.rs`,
+/// `*_tests.rs`, `tests_*.rs`, `*_tests_*.rs` or `test_*.rs` (the last covers the `test-support` modules themselves).
+fn is_test_path(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or("");
+    let in_tests_folder = rel.rsplit_once('/').is_some_and(|(dirs, _)| dirs.split('/').any(|d| d == "tests"));
+    in_tests_folder
+        || name == "tests.rs"
+        || name == "test_support.rs"
+        || name.ends_with("_tests.rs")
+        || name.starts_with("tests_")
+        || name.contains("_tests_")
+        || name.starts_with("test_")
+}
+
+/// Whether an attribute line is `#[cfg(test)]`, or `#[cfg(all(..))]` with `test` among its top-level arguments.
+fn requires_test(attr: &str) -> bool {
+    let Some(inner) = attr.trim().strip_prefix("#[cfg(").and_then(|s| s.strip_suffix(")]")) else {
         return false;
     };
     if inner.trim() == "test" {
         return true;
     }
-    let Some(operands) = inner.trim().strip_prefix("all(").and_then(|s| s.strip_suffix(')')) else {
+    let Some(args) = inner.trim().strip_prefix("all(").and_then(|s| s.strip_suffix(')')) else {
         return false;
     };
     let mut depth = 0usize;
     let mut start = 0;
     let mut parts = Vec::new();
-    for (i, c) in operands.char_indices() {
+    for (i, c) in args.char_indices() {
         match c {
             '(' => depth += 1,
             ')' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
-                parts.push(&operands[start..i]);
+                parts.push(&args[start..i]);
                 start = i + 1;
             }
             _ => {}
         }
     }
-    parts.push(&operands[start..]);
+    parts.push(&args[start..]);
     parts.iter().any(|p| p.trim() == "test")
 }
 
-/// `text` without its test modules and its comment lines. A removed line is blanked, not deleted, so line N of the
-/// view is line N of the file. A test module is a `#[cfg(...)]` that requires `test` followed at once by a `mod`,
-/// and it ends at the first `}` line at its own indentation (counting braces would miscount the ones inside string
-/// literals). A test item that is not a `mod` stays in as production text: a false alarm, never a miss.
-pub fn without_test_modules(text: &str) -> String {
+/// `source` without its test modules and its comment lines.
+/// A module ends at the first `}` line at its own indentation; counting
+/// braces would miscount the ones inside string literals. A removed line becomes an empty line, so line N of the
+/// result is line N of `source`.
+pub fn without_test_modules(source: &str) -> String {
     let mut out = String::new();
-    let mut lines = text.lines().peekable();
+    let mut lines = source.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("//") {
@@ -86,9 +98,8 @@ pub fn without_test_modules(text: &str) -> String {
             next.starts_with("mod ") || next.starts_with("pub mod ") || next.starts_with("pub(crate) mod ")
         });
         if requires_test(trimmed) && next_is_mod {
-            out.push('\n');
             let header = lines.next().unwrap_or_default();
-            out.push('\n');
+            out.push_str("\n\n");
             if header.trim_end().ends_with(';') || header.trim_end().ends_with('}') {
                 continue;
             }
@@ -107,25 +118,18 @@ pub fn without_test_modules(text: &str) -> String {
     out
 }
 
-/// Every non-test `.rs` file under a member's `src/` as (repo-relative path, its text through
-/// [`without_test_modules`]). A test file is by name: inside a `tests` folder, `tests.rs`, `*_tests.rs`,
-/// `test_support.rs`, `tests_*.rs` or `*_tests_*.rs`.
+/// Every non-test `.rs` file under a member's `src/` (`is_test_path` is false), each text through
+/// [`without_test_modules`], sorted by path (`rust/<member>/src/...`). Panics if it read too few files, so a scan
+/// never passes on nothing.
 pub fn production_sources() -> Vec<(String, String)> {
-    rust_sources()
+    let mut out: Vec<(String, String)> = rust_sources()
         .into_iter()
-        .filter(|(path, _)| {
-            let Some((_, under_src)) = path.split_once("/src/") else { return false };
-            let name = path.rsplit('/').next().unwrap_or("");
-            let in_tests_folder = under_src.rsplit_once('/').is_some_and(|(dirs, _)| dirs.split('/').any(|d| d == "tests"));
-            !(in_tests_folder
-                || name.ends_with("_tests.rs")
-                || name == "tests.rs"
-                || name == "test_support.rs"
-                || name.starts_with("tests_")
-                || name.contains("_tests_"))
-        })
+        .filter(|(path, _)| path.contains("/src/") && !is_test_path(path))
         .map(|(path, text)| (path, without_test_modules(&text)))
-        .collect()
+        .collect();
+    out.sort();
+    assert!(out.len() > 100, "the production scan read only {} files", out.len());
+    out
 }
 
 /// Whether `c` can be part of an identifier.
@@ -159,20 +163,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn without_test_modules_keeps_line_numbers() {
-        let text = "fn a() {}\n// a comment\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\nfn after() {}\n#[cfg(all(test, unix))]\nmod unix_tests {\n    fn u() {}\n}\nfn last() {}\n";
+    fn without_test_modules_keeps_code_below_a_mid_file_test_module() {
+        let text = "fn a() {}\n// a comment\n#[cfg(test)]\nmod t {\n    fn t() {}\n}\nfn after() {}\nfn last() {}\n";
         let view = without_test_modules(text);
         assert_eq!(view.lines().count(), text.lines().count());
-        assert_eq!(view.lines().nth(6), Some("fn after() {}"), "production text after a mid-file test module moved");
-        assert_eq!(view.lines().nth(11), Some("fn last() {}"));
-        assert!(!view.contains("fn t()") && !view.contains("fn u()"), "a test module stayed in: {view}");
+        assert_eq!(view.lines().nth(6), Some("fn after() {}"), "code after a mid-file test module moved");
+        assert_eq!(view.lines().nth(7), Some("fn last() {}"));
+        assert_eq!((view.lines().nth(2), view.lines().nth(3), view.lines().nth(5)), (Some(""), Some(""), Some("")));
+        assert!(!view.contains("fn t()"), "the test module stayed in: {view}");
     }
 
-    /// No source scan cuts a file at its first test attribute: the text `#[cfg(test)]` followed at once by a double
-    /// quote is what a string-literal cut on the attribute (`find`, `split`, `==`) contains, and such a cut misses
-    /// every production line after a test-only item in the middle of a file.
     #[test]
-    fn no_source_scan_cuts_at_a_test_attribute() {
+    fn a_cfg_all_test_module_is_blanked() {
+        let text = "fn a() {}\n#[cfg(all(test, unix))]\nmod t {\n    fn t() {}\n}\nfn after() {}\n";
+        let view = without_test_modules(text);
+        assert_eq!(view.lines().count(), text.lines().count());
+        assert_eq!(view.lines().nth(5), Some("fn after() {}"));
+        assert!(!view.contains("fn t()"), "the cfg(all(test, ..)) module stayed in: {view}");
+        let kept = "#[cfg(all(unix, windows))]\nmod m {\n    fn m() {}\n}\n";
+        assert!(without_test_modules(kept).contains("fn m()"), "a cfg without test was removed");
+    }
+
+    #[test]
+    fn production_sources_reads_no_test_path() {
+        let files = production_sources();
+        assert!(files.iter().all(|(path, _)| !is_test_path(path)), "a test path was returned");
+        assert!(files.iter().any(|(path, _)| path == "rust/backend/src/main.rs"), "main.rs is not among them");
+    }
+
+    /// No scan cuts a file at its first `#[cfg(test)]`: the text of that attribute followed at once by a double
+    /// quote is what a string-literal cut (`find`, `split`, `==`) contains, and such a cut misses every production
+    /// line after a test-only item in the middle of a file.
+    #[test]
+    fn no_scan_cuts_a_file_at_its_first_cfg_test() {
         // Built with `concat!`, so this file does not hold the text it looks for.
         let needle = concat!("#[cfg(test)]", "\"");
         let hits: Vec<String> = rust_sources()
