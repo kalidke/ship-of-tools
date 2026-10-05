@@ -86,6 +86,8 @@ set -uo pipefail
 # caller's mask back only where the auditor starts, whose `claude -p` writes the user's own files.
 _caller_umask="$(umask)"
 umask 077
+# audit — the auditor, under the caller's mask: its claude -p writes the user's own files (it sets 077 again for its own writes).
+audit() { ( umask "$_caller_umask"; "$AUDITOR" "$NAME" "$tp" ); }
 HOME_DIR="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$HOME_DIR/bin/comm-status.sh"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -456,7 +458,7 @@ if [ -n "$marker_state" ]; then
     [ "$(jqget '.stop_hook_active // false')" = "true" ] && { turn_floor; exit 0; }
     AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
     if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
-        findings="$(umask "$_caller_umask"; SOT_AUDITOR_CHECKS=artifact "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
+        findings="$(SOT_AUDITOR_CHECKS=artifact audit 2>/dev/null)"; arc=$?
         if [ "$arc" -eq 0 ] && [ -n "$findings" ]; then
             # Same MSYS2 argv-conversion guard as the general auditor path
             # below: findings is free text and must not reach jq via --arg.
@@ -562,7 +564,7 @@ fi
 #   rc 3          → auditor off/unavailable → legacy '?' grep nudge below.
 AUDITOR="$SELF_DIR/comm-turn-auditor.sh"
 if [ -x "$AUDITOR" ] && [ -n "$tp" ]; then
-    findings="$(umask "$_caller_umask"; "$AUDITOR" "$NAME" "$tp" 2>/dev/null)"; arc=$?
+    findings="$(audit 2>/dev/null)"; arc=$?
     if [ "$arc" -eq 0 ]; then
         if [ -n "$findings" ]; then
             # MSYS2 argv-conversion guard: on Windows git-bash, a NATIVE
