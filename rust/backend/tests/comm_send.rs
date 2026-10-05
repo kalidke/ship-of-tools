@@ -76,8 +76,8 @@ impl Staged {
     }
 
     /// Adds registry entries (host `testhost`, the given `last_seen`), tmp file then rename, with no lock. Every caller
-    /// writes before any row exists, and the daemon writes the registry only to stamp a row it runs, so nothing races
-    /// this read-modify-write.
+    /// writes before any row exists, and every registry write the daemon makes follows a row event (a stamp for a row it
+    /// runs, the destroy prune, the clear on activate), so nothing races this read-modify-write.
     fn add_entries(&self, entries: &[(&str, String)]) {
         let mut reg = self.registry();
         for (handle, last_seen) in entries {

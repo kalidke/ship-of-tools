@@ -5,9 +5,9 @@ problems — read which one you actually have before picking a recipe.
 
 - **`identity=MISMATCH`** — it joined you anyway, but under an ESCALATED
   handle (e.g. `<repo>-<parentdir>-<host>` instead of the bare
-  `<repo>-<host>`) because your CANONICAL handle was live under your
-  uid at join time: its `last_seen` was under ten minutes old, stamped by a session's own activity or by the daemon
-  running its row. Recipe below.
+  `<repo>-<host>`) because your CANONICAL handle was live under your uid at
+  join time: its `last_seen` was under ten minutes old, stamped by a
+  session's own activity or by the daemon running its row. Recipe below.
 - **`identity=FAIL` with a `REFUSED:` line** — it did NOT join at all: the
   self-file at this identity slot already names a different, validated
   project, and no `$SOT_COMM_NAME`/`$SOT_COMM_SELF_FILE` pin was given to
@@ -19,18 +19,20 @@ Monitor or watcher to arm, move or stop.
 
 ## MISMATCH recipe
 
-A live canonical handle is usually your own earlier identity, but a running row of a different project with the
-same basename on this box looks identical from the outside, so verify before reclaiming. **The no-arg `comm-join.sh` is the
-WRONG move here.** No-args derives a handle from scratch; derivation sees
-your own canonical handle's row as "held by an unknown project" and
-escalates away from it again — which is how you got here. Reclaim
-explicitly instead.
+A live canonical handle is usually your own earlier identity, but a running
+row of a different project with the same basename on this box looks
+identical from the outside, so verify before reclaiming. **The no-arg
+`comm-join.sh` is the WRONG move here.** No-args derives a handle from
+scratch; derivation sees your own canonical handle's row as "held by an
+unknown project" and escalates away from it again — which is how you got
+here. Reclaim explicitly instead.
 
 1. **Prove sole ownership of the canonical handle before reclaiming it.**
-   Confirm exactly one live session has this repo
-   as its cwd and no other row on this box holds the canonical handle. `comm-list.sh` shows which handles are live
-   and when each was last stamped; an idle row's daemon stamps its handle every minute, so a live handle may be a
-   running row rather than a session that just acted. If you can't confirm sole ownership, stop and ask a human —
+   Confirm exactly one live session has this repo as its cwd and no other row
+   on this box holds the canonical handle. `comm-list.sh` shows which handles
+   are live, not who stamped them: an idle row's daemon stamps its handle every
+   minute, so a live handle may be a running row rather than a session that
+   just acted. If you can't confirm sole ownership, stop and ask a human —
    reclaiming someone else's live handle strands *them* instead of fixing
    you.
 

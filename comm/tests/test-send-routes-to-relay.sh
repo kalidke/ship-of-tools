@@ -295,14 +295,14 @@ case_a_stamp_with_a_trailing_newline_is_no_heartbeat() {
 # or writes or reads a last_seen; a new member must be added here, with its check, on purpose. Over the
 # tracked files of the checkout that are not pages, not Rust (filer.rs has that pin) and not tests.
 case_every_append_and_last_seen_file_is_pinned() {
-    local repo files got want
+    local repo got want
     repo="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)" || { echo "  not in a git checkout"; return 1; }
-    files="$(git -C "$repo" ls-files | grep -v '\.md$' | grep -v '\.rs$' | grep -vE '(^|/)tests?/')"
-    [ "$(printf '%s\n' "$files" | grep -c .)" -ge 100 ] || { echo "  the walk found too few files"; return 1; }
     pin() {  # GREP-ARGS... -- WANT...
-        local args=() w
+        local args=() rc=0
         while [ "$1" != -- ]; do args+=("$1"); shift; done; shift
-        got="$(cd "$repo" && printf '%s\n' "$files" | xargs grep -l "${args[@]}" 2>/dev/null | sort | tr '\n' ' ')"
+        got="$(git -C "$repo" grep -l "${args[@]}" -- ':(exclude)*.md' ':(exclude)*.rs' ':(exclude,glob)**/tests/**' ':(exclude,glob)**/test/**')" || rc=$?
+        [ "$rc" -le 1 ] || { echo "  git grep failed ($rc) for ${args[*]}"; return 1; }
+        got="$(printf '%s\n' "$got" | sort | tr '\n' ' ')"
         want="$(printf '%s\n' "$@" | sort | tr '\n' ' ')"
         [ "$got" = "$want" ] || { echo "  files matching ${args[*]}: $got, want $want"; return 1; }
     }
