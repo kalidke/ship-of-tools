@@ -42,7 +42,7 @@ scripts/CLAUDE.md.
   pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library and binary on all three legs. `rust/clippy.toml` holds one array in labelled groups, each opening with its
-  rule (local endpoint dials and accepts so far; ADR 0049, User isolation). A sanctioned site carries
+  rule (local endpoint dials, accepts and TCP dials (`TcpStream` and `TcpSocket` connects: the control plane dials no TCP port, ADR 0049, User isolation) so far). A sanctioned site carries
   `#[allow(clippy::disallowed_methods, reason = "...")]` on the one statement that calls the method; a new method joins
   its group, and a new rule is a new group in the same array. Like the other clippy steps it runs on main and on
   demand, not on every branch push, so a lane merge gate runs the same line (`cargo clippy --workspace --exclude

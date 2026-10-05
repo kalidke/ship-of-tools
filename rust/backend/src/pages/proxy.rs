@@ -188,6 +188,7 @@ where
 
     // Dial the backend service. A short connect timeout keeps a wedged
     // target from parking the proxy task forever.
+    #[allow(clippy::disallowed_methods, reason = "the page plane: the daemon's proxy dials a page port it serves on loopback (ADR 0049, User isolation)")]
     let dial = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         TcpStream::connect(("127.0.0.1", req.port)),

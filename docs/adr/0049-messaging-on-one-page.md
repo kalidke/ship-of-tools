@@ -86,8 +86,9 @@ The cost is one ssh login per frontend connection, attached lane and proxied pag
 connection.
 
 **Status.** Built: the control plane listens on no TCP port and dials none: the lane
-client's TCP dial and `sotd topology`'s `tcp:` endpoint are deleted, and a test fails if
-a control-plane TCP connect returns. The daemon's one listener is its session socket,
+client's TCP dial and `sotd topology`'s `tcp:` endpoint are deleted, and rust.yml's
+"Disallowed methods" lint fails on any TCP connect but the page proxy's own
+(`rust/clippy.toml`). The daemon's one listener is its session socket,
 whose directory must be private, or on Windows a named pipe with an owner-only
 descriptor, and a hub's per-host relay sockets are owner-only Unix sockets. Every
 connection to the daemon is admitted twice, each in one place: at accept, by the

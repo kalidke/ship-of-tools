@@ -76,4 +76,11 @@ disallowed-methods = [
   { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_duplex", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_recv_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_send_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  # TCP dials (ADR 0049, User isolation): the control plane dials no TCP port; a Rust process reaches a daemon through
+  # its socket or pipe, or an ssh login. The one sanctioned TCP dial is the page plane's: the daemon's proxy reaching a
+  # page port it serves on loopback (`handle_proxy_connect`, rust/backend/src/pages/proxy.rs).
+  { path = "std::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  { path = "std::net::TcpStream::connect_timeout", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpSocket::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
 ]
