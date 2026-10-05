@@ -17,7 +17,7 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Rules
 - Run from the repo root: `julia --project=. -e 'using Pkg; Pkg.test()'`.
-- The settings-merge tests call `jq`; its lines are split on `\r?\n` (a Windows `jq` ends lines with CRLF), and a path the installer names is compared as `realpath` (Windows `mktempdir()` is an 8.3 short path).
+- The settings-merge tests call `jq`; its lines are split on `\r?\n` (a Windows `jq` ends lines with CRLF), and an existing settings file the installer names is compared as `realpath` (Windows `mktempdir()` is an 8.3 short path).
 - The suite runs inside a temporary home, and a test that needs a home of its own sets it only through `in_home(home)`
   (runtests.jl): HOME, USERPROFILE, HOMEDRIVE and HOMEPATH (Julia's `homedir()` reads USERPROFILE on Windows), the comm
   home under it, CLAUDE_CONFIG_DIR and CODEX_HOME unset, and an error before the body if `homedir()` is not that home.

@@ -330,10 +330,11 @@ end
                     summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     msg = string(only(summaries).message)
-                    # The summary names real paths: on Windows mktempdir() is an 8.3 short path and realpath the long one.
+                    # An existing settings.json is named by its realpath, a folder without one as walked from the home:
+                    # on Windows mktempdir() is an 8.3 short path and realpath the long one.
                     @test occursin(realpath(lockd), msg)
-                    @test occursin(realpath(empty), msg)
-                    @test !occursin(realpath(default), msg)
+                    @test occursin(empty, msg)
+                    @test !occursin(default, msg) && !occursin(realpath(default), msg)
                     @test read(lockd, String) == "{}"   # left exactly as it was
                 end
             end
