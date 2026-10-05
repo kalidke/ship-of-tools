@@ -3,7 +3,11 @@
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Numbers the lock record of each call, so two threads of one process never share a record or its temp.
+static CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Removes `.registry.lock` when dropped, so a panic in `update` does not leave it behind.
 struct Held(PathBuf);
@@ -21,10 +25,11 @@ pub fn write_registry(comm_root: &Path, update: impl FnOnce(&mut serde_json::Val
     std::fs::create_dir_all(comm_root).expect("mkdir comm root");
     let pid = std::process::id();
     let lock = comm_root.join(".registry.lock");
-    let temp = comm_root.join(format!(".registry.lock.tmp.test.-.-.-.{pid}.-"));
+    let name = format!("test-{}", CALLS.fetch_add(1, Ordering::Relaxed));
+    let temp = comm_root.join(format!(".registry.lock.tmp.{name}.-.-.-.{pid}.-"));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        std::fs::write(&temp, format!("test:-:-:-:{pid}:-\n")).expect("write the lock record");
+        std::fs::write(&temp, format!("{name}:-:-:-:{pid}:-\n")).expect("write the lock record");
         let linked = std::fs::hard_link(&temp, &lock);
         let _ = std::fs::remove_file(&temp);
         match linked {

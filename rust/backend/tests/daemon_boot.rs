@@ -147,7 +147,8 @@ fn write_registry_waits_for_a_held_registry_lock() {
 }
 
 /// A comm registry is written only through `support::write_registry`: no other file in the tests folder writes or
-/// renames a registry file or names its temp.
+/// renames a registry file or names its temp. It sees a write whose `registry.json` and call share a line; a path built
+/// on one line and written on another is not seen, and a reviewer checks for it.
 #[test]
 fn every_registry_write_takes_the_registry_lock() {
     // Built with `concat!`, so this file does not hold the texts it looks for.

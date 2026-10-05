@@ -36,7 +36,7 @@ shows the shape.
 
 ## Rules
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
-  (capsule_workspaces, comm_wake, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
+  (capsule_workspaces, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, which drops every inherited `SOT_` variable;
   `sotd_exe` is private there (`daemon_boot.rs` checks that `CARGO_BIN_EXE_sotd` appears nowhere else).
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).

@@ -79,9 +79,12 @@ disallowed-methods = [
   # File locks: a lock is held only in a guard whose Drop unlocks it (sot_log::host's WriterLock, the backend's
   # comm::mail::inbox InboxLock), because a forked child that has not yet exec'd shares the lock's open file
   # description. So std::fs::File's lock methods and libc::flock are disallowed too, outside those guards.
+  # fcntl's F_SETLK, F_SETLKW and F_OFD_SETLK are arguments, not methods: this lint cannot see them, and no code uses them.
   { path = "std::fs::File::lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "std::fs::File::try_lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "std::fs::File::lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "std::fs::File::try_lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "libc::flock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "windows_sys::Win32::Storage::FileSystem::LockFileEx", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  { path = "windows_sys::Win32::Storage::FileSystem::LockFile", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
 ]
