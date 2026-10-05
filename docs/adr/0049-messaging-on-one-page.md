@@ -1,7 +1,8 @@
 # ADR 0049: messaging on one page
 
 **Status:** current — accepted as the design of record; supersedes ADR 0047 (ping wake) and ADR
-0048 (filer receipts). Built: the daemon's wake, the inbox lock, and one meaning of `filed` (every
+0048 (filer receipts). Built: the daemon's wake, the inbox lock, one row per handle
+(`comm/CLAUDE.md` says what one row per handle leaves unbuilt), and one meaning of `filed` (every
 route checks the receiver's liveness, one fact in the registry, before it appends). The hub's
 fallback for a handle its folder does not list (`agent.send`, ending `NOT CONFIRMED`) stays until
 B2. The rest lands in stages, and the per-session watcher, listener and bridge machinery it

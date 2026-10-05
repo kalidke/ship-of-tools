@@ -161,7 +161,7 @@ mod clear_write_tests {
         let _guard = guarded();
         let (dir, registry_path, _, ws) = seed("bytes");
 
-        clear_comm_unread(&ws, "host-4");
+        clear_comm_unread(&ws, &[], "host-4");
 
         let mut expected = serde_json::to_vec_pretty(&serde_json::json!({
             "agents": {"h": {"host": "host-4", "state": "idle", "summary": "s"}}
@@ -185,7 +185,7 @@ mod clear_write_tests {
         #[cfg(not(unix))]
         std::fs::create_dir(dir.join("registry.json.tmp")).unwrap();
 
-        clear_comm_unread(&ws, "host-4");
+        clear_comm_unread(&ws, &[], "host-4");
         assert_eq!(std::fs::read(&registry_path).unwrap(), seeded);
 
         let _ = std::fs::remove_dir_all(&dir);

@@ -24,3 +24,6 @@ subsystem; charter: `rust/backend/src/rows/CLAUDE.md`.
 - The reader and writer escape as a pair: `toml_quote` writes what `toml_unquote` undoes on load.
 - The state dirs are per host: `workspaces_dir` and `sessions_dir` carry `declared_host()`, so one box never reads
   another's rows.
+- `scan_disk` leaves no declared handle on two rows: a handle several tomls declare stays only on the row
+  `last_joiner` names (the comm registry's host-matched entry for it) and is cleared, saved and logged once on the
+  rest; with no such entry it is cleared on all of them.

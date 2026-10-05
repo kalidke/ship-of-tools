@@ -1,5 +1,5 @@
 //! `sot-pty-helper [--child]`
-//! `sot-pty-helper --flood <total-bytes> [--linger]`
+//! `sot-pty-helper --flood <total-bytes> [--linger] [--wait-line]`
 //! `sot-pty-helper --script [repeats] [--linger]`
 //! `sot-pty-helper --script [repeats] --drip`
 //!
@@ -27,6 +27,13 @@ fn main() {
             .nth(pos + 1)
             .and_then(|s| s.parse().ok())
             .expect("--flood needs a byte count");
+        if std::env::args().any(|a| a == "--wait-line") {
+            // Flood only after one line arrives on stdin, so the test, not
+            // the spawn, decides when the flood starts.
+            let mut go = String::new();
+            std::io::stdin().lock().read_line(&mut go).expect("read go line");
+            assert_eq!(go.trim_end(), "go", "the flood waits for the test's go line");
+        }
         flood(total, &flood_pattern(64 * 1024));
         if std::env::args().any(|a| a == "--linger") {
             // Stay alive after the flood until externally terminated --

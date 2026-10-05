@@ -1,5 +1,5 @@
 //! `sot-conpty-helper [--child]`
-//! `sot-conpty-helper --flood <total-bytes> [--linger]`
+//! `sot-conpty-helper --flood <total-bytes> [--linger] [--wait-line]`
 //! `sot-conpty-helper --script [repeats] [--linger]`
 //! `sot-conpty-helper --script [repeats] --drip`
 //!
@@ -32,7 +32,8 @@
 //! capsule's own teardown draining the flood completely before sealing.
 //! Content is deliberately not meaningful: the test verifies byte COUNT
 //! (all of it survived the 8 MiB budget without loss or duplication), not
-//! content.
+//! content. With `--wait-line` it first reads one line from stdin, so the
+//! test chooses when the flood starts.
 //!
 //! `--script [repeats]` (default 20) is ADR 0041 step 5's attach-fidelity
 //! test's producer (finding 13: a deterministic byte-emitting helper, not
@@ -104,6 +105,13 @@ fn main() {
             .nth(pos + 1)
             .and_then(|s| s.parse().ok())
             .expect("--flood needs a byte count");
+        if std::env::args().any(|a| a == "--wait-line") {
+            // Flood only after one line arrives on stdin, so the test, not
+            // the spawn, decides when the flood starts.
+            let mut go = String::new();
+            std::io::stdin().lock().read_line(&mut go).expect("read go line");
+            assert_eq!(go.trim_end(), "go", "the flood waits for the test's go line");
+        }
         flood(total, &flood_pattern(64 * 1024));
         if std::env::args().any(|a| a == "--linger") {
             // Stay alive after the flood until externally terminated: a

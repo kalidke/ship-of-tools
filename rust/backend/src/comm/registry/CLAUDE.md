@@ -5,8 +5,9 @@ comm/CLAUDE.md.
 
 ## Files
 - `ancestors.rs`: the process-ancestry walk printed by `sotd ancestors`
+- `binding_sites_tests.rs`: every site that reads or writes a row's handle binding, and the scan that pins the list
 - `join.rs`: `agent.join`: a session declares its handle on its row
-- `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`)
+- `liveness.rs`: the row liveness stamp: each Starting or Ready row's handle gets a fresh `last_seen` every minute (`run`, `held`, `held_handles`)
 - `lock.rs`: the daemon's arm of the registry lock, `.registry.lock`
 - `lock_tests.rs`: the lock's tests, including the shell-parity test (Linux)
 - `mod.rs`: declares the files
@@ -27,15 +28,27 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
   `remove_comm_agents_for_workspace` prunes a destroyed row's entry.
 - `clear_comm_unread` removes `done` (and turns a `done` state to `idle`) on a person's view of a row. It is the
   daemon's only work-state write.
-- `stamp_last_seen` writes only `last_seen`, only on entries that exist, for the handles `held` names
-  (`comm_handle_for_workspace` of each Starting or Ready row); a pass that would change nothing writes nothing. `run`
-  stamps when that set changes and every `STAMP_EVERY` (60 s). `held` resolves a handle only for a Starting
-  or Ready row, inside the pass's `spawn_blocking`. A failed pass is one warning naming the rows whose sends fail
-  once their last stamp is ten minutes old, and is retried at the next. It is the daemon's only liveness write.
+- `stamp_last_seen` writes only `last_seen`, only on entries that exist, for the handles `held_handles` names:
+  each Starting or Ready row's handle by `comm_handle_for_workspace` given the daemon's whole row list, so a
+  running row never stamps a handle it reaches by a self-file or stored name that another row declares. A pass
+  that would change nothing writes nothing. `run` stamps when that set changes and every `STAMP_EVERY` (60 s).
+  `held` resolves a handle only for a Starting or Ready row, inside the pass's `spawn_blocking`. A failed pass is
+  one warning naming the rows whose sends fail once their last stamp is ten minutes old, and is retried at the
+  next. It is the daemon's only liveness write.
 - `comm_handle_for_workspace` is the one row-binding rule: the declared handle, else the pinned self-file, else the
-  stored agent name.
-- `handle_agent_join` stores the declared handle under the row's guard, overwriting a previous one without a check
-  (`set_agent_handle`); `ok` only after the row is persisted.
+  stored agent name; a self-file or stored name that names a handle another row declares binds nothing. Its callers
+  (`handle_workspace_list`, `clear_comm_unread`, `held_handles`) pass the daemon's rows.
+- A registry entry's `workspace_id` is the row whose session last joined that handle (`comm-join.sh` writes it;
+  `entry_row` reads it). The destroy prune (`remove_comm_agents_for_workspace`) removes an entry by the row's stored
+  name only when the entry names no other row.
+- Every site that reads or writes a row's handle binding is listed in `binding_sites_tests.rs` with the kinds of
+  binding it touches (the scan's needles; it walks the sources through `sot_log::test_scan::production_sources`). `every_handle_binding_site_is_listed` fails on a site or a kind missing from
+  the list or gone, and on a call of the rule with `&[]` before its first `)` outside tests; it does not see a second
+  binding of a kind a site already has, or an empty row list passed some other way.
+- `handle_agent_join` moves the declared handle (`set_agent_handle`) and answers `ok` only after the joining row is
+  saved under its guard. Whatever that save did, a spawned task (`spawn_persist_moved`) then saves each row that lost
+  the handle under that row's own guard, if it is still registered (`persist_moved`): the reply never waits on another
+  row's guard, and no two guards are held at once. A failed save there is a warning; each move is one info line.
 - `spawn_registry_poll`, started by the server's `run`, publishes `agent_state` on the workspace bus when
   `project_comm_registry` changes between polls; `last_seen` is not in the projection.
 - `acquire` takes `<comm home>/.registry.lock`, the lock comm-lib-registry-lock.sh's `with_lock` takes. Both write the same one-line

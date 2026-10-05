@@ -48,11 +48,11 @@ pub async fn handle_workspace_list(
     let ws_list = workspaces.list();
     // Pure memory: kept current by the row's lifecycle observer, no lane query.
     let mut entries: Vec<WorkspaceListEntry> = ws_list
-        .into_iter()
+        .iter()
         .map(|ws| {
             // Which registry row is this workspace's — one rule, shared with
             // `clear_comm_unread` (`comm_handle_for_workspace`).
-            let handle = comm_handle_for_workspace(&ws);
+            let handle = comm_handle_for_workspace(ws, &ws_list);
             // The registry `state` IS the badge — no pane scrape, no merge, no
             // precedence to arbitrate. A prior version of this comment described
             // a registry-vs-pane precedence merge that no longer exists here; it
@@ -149,7 +149,8 @@ pub async fn handle_workspace_activate(
     if req.read {
         if let Some(ws) = resolved_ws.clone() {
             let host = crate::rows::store::declared_host();
-            let _ = tokio::task::spawn_blocking(move || clear_comm_unread(&ws, &host)).await;
+            let rows = workspaces.list();
+            let _ = tokio::task::spawn_blocking(move || clear_comm_unread(&ws, &rows, &host)).await;
         }
     }
     tracing::info!(
@@ -299,6 +300,93 @@ mod workspace_activate_read_tests {
         assert!(row.get("done").is_none(), "the done fact must be removed");
         assert_eq!(row["summary"], "capsule probe summary");
         assert_eq!(row["status_at"], "2026-09-08T00:00:00Z");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ADR 0049: one row per handle. A row that lost its handle to a newer
+    // `agent.join` (declared handle empty) still has a self-file naming it;
+    // that fallback must bind nothing while another row declares the handle,
+    // in the list and in the read-clears-done alike.
+    #[tokio::test]
+    async fn a_row_whose_self_file_names_a_declared_handle_neither_shows_nor_clears_it() {
+        let _guard = guarded();
+        let dir = std::env::temp_dir().join(format!(
+            "sot-workspace-activate-moved-handle-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("self")).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        std::env::set_var("SOT_SELF_HOST", "host-4");
+        let registry_path = dir.join("registry.json");
+
+        let (reg, older_id) = seed_capsule_workspace("m5-older", "");
+        let mut newer = Workspace::from_label(
+            "m5-newer",
+            std::path::PathBuf::from("/p/x"),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        );
+        newer.runtime = "capsule".to_string();
+        newer.agent_handle = std::sync::Mutex::new("m5-shared".to_string());
+        let newer_id = reg.insert(newer).workspace_id.clone();
+        std::fs::write(
+            dir.join("self").join(format!("host-4__{older_id}.txt")),
+            "m5-shared\nrepo=m5\nroot=/p/x\n",
+        )
+        .unwrap();
+        let write_registry = || {
+            std::fs::write(
+                &registry_path,
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "agents": {
+                        "m5-shared": {
+                            "host": "host-4",
+                            "state": "done",
+                            "done": true,
+                            "summary": "the newer row's summary",
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_registry();
+
+        let out = handle_workspace_list(1, serde_json::json!({}), &reg)
+            .await
+            .expect("handler must not error");
+        let payload = out[0].0.payload.clone();
+        let entries = payload.get("workspaces").unwrap().as_array().unwrap();
+        let field = |id: &str, f: &str| {
+            entries
+                .iter()
+                .find(|e| e.get("workspace_id").and_then(|v| v.as_str()) == Some(id))
+                .and_then(|e| e.get(f))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>")
+                .to_string()
+        };
+        assert_eq!(field(&older_id, "agent_state"), "");
+        assert_eq!(field(&older_id, "agent_summary"), "");
+        assert_eq!(field(&newer_id, "agent_state"), "done");
+
+        let still_done = || {
+            let v: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&registry_path).unwrap()).unwrap();
+            v["agents"]["m5-shared"].get("done").is_some()
+        };
+        activate(&reg, &older_id, true).await;
+        assert!(still_done(), "the older row's self-file must not clear a handle the newer row declares");
+        activate(&reg, &newer_id, true).await;
+        assert!(!still_done(), "the declaring row's own read clears it");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

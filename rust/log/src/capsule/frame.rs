@@ -8,11 +8,12 @@ fn hex_idem_key(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn epoch_ms(t: SystemTime) -> i64 {
+    t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
 pub fn wall_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    epoch_ms(SystemTime::now())
 }
 
 /// The writer loop's frame factory: sequential seq, capsule clocks, and the
@@ -341,12 +342,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wall_ms_is_unix_epoch_milliseconds_now() {
-        let ms = |t: SystemTime| t.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-        let before = ms(SystemTime::now());
-        let got = wall_ms();
-        let after = ms(SystemTime::now());
-        assert!(before <= got && got <= after, "{before} <= {got} <= {after}");
+    fn epoch_ms_is_unix_epoch_milliseconds() {
+        let t = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        assert_eq!(epoch_ms(t), 1_700_000_000_123);
+        assert_eq!(epoch_ms(UNIX_EPOCH - Duration::from_secs(1)), 0, "a time before the epoch reads 0");
     }
 
     // -- commit_run_end_marker: ADR 0041 EndRun steps 1-2, proven directly

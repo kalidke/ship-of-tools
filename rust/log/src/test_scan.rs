@@ -177,8 +177,7 @@ mod tests {
         let needle = concat!("#[cfg(test)]", "\"");
         let hits: Vec<String> = rust_sources()
             .into_iter()
-            // start.rs still carries its own copy of the rule until the merge of the release line replaces it.
-            .filter(|(path, text)| path != "rust/log/src/test_scan.rs" && path != "rust/backend/src/rows/run/start.rs" && text.contains(needle))
+            .filter(|(path, text)| path != "rust/log/src/test_scan.rs" && text.contains(needle))
             .map(|(path, _)| path)
             .collect();
         assert!(hits.is_empty(), "a scan cuts a file at its first test attribute (use test_scan::without_test_modules): {hits:?}");
