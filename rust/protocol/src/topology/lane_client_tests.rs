@@ -482,12 +482,15 @@ fn a_failed_lane_write_names_its_error_and_the_ssh_line_once() {
     let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
     match handshake(LaneStream::Bridged(client), &hello, &request) {
         Err(TransportError::Unreachable(e)) => {
+            // Normally the write fails (`lane write: <the io error>: <the line>`). A test running beside others can
+            // have the pipe's read end held for an instant by a sibling's forked child, so the write succeeds and the
+            // read ends before a frame instead (`<the read's words>: <the line>`): either way the error keeps its
+            // words and the line follows them, once.
             let text = e.to_string();
-            let own = text.strip_prefix("lane write: ").and_then(|t| t.strip_suffix(": a line ssh wrote to stderr"));
-            assert!(
-                own.is_some_and(|w| !w.is_empty() && !w.contains("a line ssh wrote to stderr")),
-                "want `lane write: <the io error>: <the line>`, got: {text}"
-            );
+            let line = "a line ssh wrote to stderr";
+            assert_eq!(text.matches(line).count(), 1, "the login's line is named once: {text}");
+            let words = text.strip_prefix("lane write: ").unwrap_or(&text).strip_suffix(&format!(": {line}"));
+            assert!(words.is_some_and(|w| !w.is_empty()), "want `<the error's words>: <the line>`, got: {text}");
         }
         other => panic!("a write to a login that has gone is Unreachable, got {:?}", other.map(|_| ())),
     }
