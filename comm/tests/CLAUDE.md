@@ -35,7 +35,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
-- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first, and every clock read in comm/tests and agents/tests matches its row in the clock table, which may only fall
+- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first, and every clock read and every `sleep N` or `sleep $X` in comm/tests and agents/tests match their row in the wait table, which may only fall
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire and a hit files locally, never both
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
@@ -60,8 +60,11 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   timeout (`scripts/tests/rc-gate.sh` gives each suite 20 minutes, the CI job 60), which turns a hang into a failure. A
   case bounds a duration from above only to rule out a slower behaviour its exit status and output cannot show, and
   then by counting the code's own waits (`sleep_log`, lib-wait.sh). A wait the code under test enforces is set longer
-  than every hang guard in the suite, unless its expiry is what the case tests. A step a case starts in the background
-  is awaited by a signal it gives (`await`; `stopped` for a holder that stops itself), never a fixed sleep, and ends
-  before the case returns. Lower bounds ("waited at least the deadline") stay: load only lengthens a wait. The suites
-  that need peer hosts and comm-matrix.sh time real boxes and are outside this rule. test-rm-guard.sh pins every clock read in comm/tests and agents/tests to its clock table; a row
-  may only fall, and the rows marked owed are waits this rule still has to replace.
+  than every hang guard in the suite where the case can set it, unless its expiry is what the case tests (the registry
+  lock's 10 s is fixed when the library is sourced, so status_floor's race() keeps it around one jq, mv and rmdir). A
+  step a case starts in the background is awaited by a signal it gives (`await`; `stopped` for a holder that stops
+  itself), never a fixed sleep, and ends before the case returns. Lower bounds ("waited at least the deadline") stay:
+  load only lengthens a wait. The suites that need peer hosts and comm-matrix.sh time real boxes and are outside this
+  rule. test-rm-guard.sh pins every clock read and every `sleep N` or `sleep $X` in comm/tests and agents/tests to its
+  wait table (a wait spelled another way, through a quoted or variable command name or perl's `select`, is the review's
+  to read); a row may only fall, and the rows marked owed are the waits this rule still has to replace.
