@@ -54,11 +54,7 @@ impl Signal {
         let _ = rx.wait_for(|fired| *fired).await;
     }
 
-    fn guard(&'static self) -> ChildGuard {
-        self.live.fetch_add(1, Ordering::SeqCst);
-        ChildGuard(&self.live)
-    }
-
+    /// Children whose [`Held`] is alive.
     pub(crate) fn live(&self) -> usize {
         self.live.load(Ordering::SeqCst)
     }
@@ -85,7 +81,8 @@ impl Signal {
             }
         }
         drop(trees);
-        Ok(Held { sig: self, id, _live: self.guard() })
+        self.live.fetch_add(1, Ordering::SeqCst);
+        Ok(Held { sig: self, id })
     }
 
     /// Start `cmd` in its own containment and register the tree. The owner
@@ -205,7 +202,6 @@ fn joined(read: std::thread::Result<std::io::Result<Vec<u8>>>) -> std::io::Resul
 pub(crate) struct Held {
     sig: &'static Signal,
     id: u64,
-    _live: ChildGuard,
 }
 
 impl Held {
@@ -220,6 +216,7 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         self.release();
+        self.sig.live.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -297,19 +294,9 @@ pub(crate) async fn fired() {
     process().fired().await
 }
 
-/// Children whose [`ChildGuard`] is still alive.
+/// Children whose [`Held`] is alive.
 pub(crate) fn live_children() -> usize {
     process().live()
-}
-
-/// Counts one child alive until dropped. [`Held`] holds one, so it drops
-/// once the child's owner lets go of the tree.
-pub(crate) struct ChildGuard(&'static AtomicUsize);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 #[cfg(test)]
@@ -317,32 +304,6 @@ impl Drop for ChildGuard {
 mod tests {
     use super::*;
     use std::time::Duration;
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn child_guard_killed_on_fire() {
-        // A private signal: firing the process's own would kill every other
-        // test's children.
-        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let mut child = tokio::process::Command::new("sleep").arg("30").spawn().expect("spawn sleep");
-        let guard = signal.guard();
-        assert_eq!(signal.live(), 1);
-        let owner = tokio::spawn(async move {
-            let _guard = guard;
-            tokio::select! {
-                _ = child.wait() => {}
-                _ = signal.fired() => { let _ = child.kill().await; }
-            }
-            child.try_wait().ok().flatten()
-        });
-        signal.fire();
-        let status = tokio::time::timeout(Duration::from_secs(3), owner)
-            .await
-            .expect("the child was not reaped within 3 s")
-            .expect("owner task");
-        assert!(status.is_some(), "the child was killed but not reaped");
-        assert_eq!(signal.live(), 0);
-    }
 
     /// A pid is gone once a probe fails.
     #[cfg(unix)]
