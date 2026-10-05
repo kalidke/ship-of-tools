@@ -41,7 +41,6 @@ mod tests {
     fn the_test_process_never_holds_a_written_program_open() {
         use std::io::Read;
         use std::os::unix::ffi::OsStrExt;
-        use std::os::unix::fs::OpenOptionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().canonicalize().unwrap().join("program");
         let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
@@ -51,30 +50,24 @@ mod tests {
             let path = path.clone();
             move || write_executable(&path, vec![b'#'; 1 << 20])
         });
-        // A non-blocking open succeeds with no writer, so a helper that never opens the path fails the wait below
-        // instead of hanging the test.
-        let mut reader = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&path).unwrap();
-        let mut first = Vec::new();
-        let mut chunk = [0u8; 4096];
-        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while first.len() < 4096 {
-            assert!(std::time::Instant::now() < give_up, "the helper never opened the program for writing");
-            match reader.read(&mut chunk) {
-                Ok(n) if n > 0 => first.extend_from_slice(&chunk[..n]),
-                _ => std::thread::sleep(std::time::Duration::from_millis(5)),
-            }
-        }
+        // A helper thread opens the reader, which blocks until the writer opens; a helper that never opens the path
+        // fails the wait below instead of hanging the test.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn({
+            let path = path.clone();
+            move || tx.send(std::fs::File::open(&path).unwrap())
+        });
+        let mut reader = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("the helper never opened the program for writing"));
+        let mut first = [0u8; 4096];
+        reader.read_exact(&mut first).unwrap();
         let holders = std::fs::read_dir("/proc/self/fd")
             .unwrap()
             .flatten()
             .filter(|fd| std::fs::read_link(fd.path()).is_ok_and(|link| link == path))
             .count();
         assert_eq!(holders, 1, "this process holds {holders} descriptors on the program; only the reader's is allowed");
-        // SAFETY: clears O_NONBLOCK on this test's own reader so the drain below blocks until the writer is done.
-        unsafe {
-            let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
-            libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) & !libc::O_NONBLOCK);
-        }
         std::io::copy(&mut reader, &mut std::io::sink()).unwrap();
         writer.join().unwrap();
     }
