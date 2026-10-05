@@ -27,4 +27,4 @@ Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the pl
 - `created` is compared for equality only, in each OS's own unit: FILETIME bits, `/proc` start ticks, pidversion.
 - The macOS kernel fact the challenge rests on (a client reading `LOCAL_PEERTOKEN` on its own fd sees the server's pid
   and a nonzero pidversion) is pinned by `rust/log/tests/macos_kernel_facts/`.
-- A client that reaches this box's daemon or a relay socket by name speaks to it only after `connect_own`'s rule passes: on Unix before the connect, on Windows before the first byte.
+- A client that reaches this box's daemon or a relay socket by name speaks to it only after `connect_own`'s rule passes: on Unix before the connect, on Windows before the first byte. The Unix rule checks the socket's own folder only, not the folders above it (a custom runtime path under another account's writable, non-sticky folder is not covered, and the daemon's bind check has the same limit); a Windows pipe is opened at identification level (`SECURITY_IDENTIFICATION`) by every client.

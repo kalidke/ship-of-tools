@@ -96,7 +96,10 @@ one hub account apart. Lane M1 builds the hello admission and that refusal, and 
 frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` speak
 only to an endpoint their own OS account serves, a pipe whose serving process runs as
 this account on Windows and a socket in a folder private to this account on Unix
-(`rust/log/src/identity/connect_own.rs`). The video, site and site-pool servers and the frontend's page proxy accept
+(`rust/log/src/identity/connect_own.rs`); a client opens that pipe at identification level, so
+its server cannot act as the account before the check. The Unix check covers the socket's own folder, as the
+daemon's does when it binds, and not the folders above it: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR` or
+`XDG_RUNTIME_DIR` under another account's writable, non-sticky folder is not covered. The video, site and site-pool servers and the frontend's page proxy accept
 a connection from any account and rely on the URL's secret alone; lane S1 builds their
 owner check. The comm folder and everything in it but the installed scripts and
 their version stamp are its user's alone: every writer creates them owner-only (0700
