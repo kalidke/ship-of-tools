@@ -125,6 +125,15 @@ fn open_lock(inbox_dir: &Path, to: &str) -> std::io::Result<File> {
         .open(inbox_dir.join(format!("{to}.lock")))
 }
 
+/// The held exclusive lock; dropping it unlocks, whatever other descriptors of the file are open.
+struct InboxLock(File);
+
+impl Drop for InboxLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 enum LockWait {
     Timeout,
     Io(std::io::Error),
@@ -137,14 +146,15 @@ enum LockWait {
 /// and time out: under `nfs4 ` a non-blocking try is repeated every 15-25 ms
 /// instead. NLM (v3) and one machine's own kernel lock (`local …`, `none@…`)
 /// wake a blocked waiter on release, so those block, on a helper thread that
-/// the caller bounds. A `flock` belongs to the open file description, so it
-/// travels with the `File`.
-fn take_lock(lock: File, own: &str, wait: Duration) -> Result<File, LockWait> {
+/// the caller bounds. A `flock` belongs to the open file description, which a
+/// forked child shares until it execs, so the lock is held by an `InboxLock`,
+/// whose `Drop` unlocks it: the lock never outlives its holder's drop.
+fn take_lock(lock: File, own: &str, wait: Duration) -> Result<InboxLock, LockWait> {
     if own.starts_with("nfs4 ") {
         let deadline = Instant::now() + wait;
         loop {
             match lock.try_lock() {
-                Ok(()) => return Ok(lock),
+                Ok(()) => return Ok(InboxLock(lock)),
                 Err(std::fs::TryLockError::Error(e)) => return Err(LockWait::Io(e)),
                 Err(std::fs::TryLockError::WouldBlock) => {}
             }
@@ -157,9 +167,9 @@ fn take_lock(lock: File, own: &str, wait: Duration) -> Result<File, LockWait> {
     }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let locked = lock.lock().map(|()| lock);
-        // A send that fails means the caller gave up: the `File` comes back in
-        // the error and is dropped at once, which releases the lock.
+        let locked = lock.lock().map(|()| InboxLock(lock));
+        // A send that fails means the caller gave up: the guard comes back in
+        // the error and is dropped at once, which unlocks.
         let _ = tx.send(locked);
     });
     match rx.recv_timeout(wait) {

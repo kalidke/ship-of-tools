@@ -329,6 +329,23 @@ fn both_waits_give_the_same_sentence_at_the_bound() {
     }
 }
 
+/// A forked child that has not exec'd yet shares the lock's open file description; a clone of the file is the same
+/// thing without a fork. The dropped guard must free the lock anyway.
+#[test]
+fn a_dropped_inbox_lock_is_free_while_another_descriptor_of_it_is_open() {
+    let d = tempfile::tempdir().unwrap();
+    for own in ["local m", "nfs4 srv:/export"] {
+        let wait = Duration::from_secs(1);
+        let first = take_lock(open_lock(d.path(), "h").unwrap(), own, wait).ok().expect("the first take");
+        let clone = first.0.try_clone().unwrap();
+        drop(first);
+        let second = take_lock(open_lock(d.path(), "h").unwrap(), own, wait).ok();
+        assert!(second.is_some(), "{own}: the dropped lock was still held by the other descriptor");
+        drop(second);
+        drop(clone);
+    }
+}
+
 #[test]
 fn a_windows_folder_is_own_disk_only_on_a_fixed_non_unc_drive() {
     assert!(windows_own_disk(true, r"\\?\C:\x"));

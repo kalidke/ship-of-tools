@@ -21,7 +21,8 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
 ## Rules
 - `file_frame` appends one line to `inbox/<h>.jsonl` under flock on `inbox/<h>.lock`, the lock comm-lib-inbox.sh's
   `sot_inbox_append` takes, waiting at most `inbox_lock_wait` (`SOT_INBOX_LOCK_WAIT_SECS`, 10 by default in both
-  languages). `append_line` first cuts an unterminated tail back, syncs the line (`File::sync_data`) before `Ok`, and
+  languages). The lock is released when its guard drops (`InboxLock`'s `Drop`), not when the last copy of its descriptor
+  closes. `append_line` first cuts an unterminated tail back, syncs the line (`File::sync_data`) before `Ok`, and
   cuts the file back on any error. An `Err` is the sentence printed after `FAILED -> @h: `: nothing was appended.
   `handle_comm_file` answers `ok` only when `file_frame` returned `Ok`, so only after the sync.
 - `route` appends locally only when line 1 of `inbox-lock-manager` equals this daemon's own `lock_identity`; otherwise
