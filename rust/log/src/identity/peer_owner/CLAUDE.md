@@ -2,7 +2,7 @@
 
 An accepted loopback TCP connection is judged by the OS account that owns its far end: one lookup per connection, on a
 blocking thread. Linux reads the kernel's TCP table; Windows reads the owner-pid TCP table and then that process's
-token SID; macOS searches this account's own sockets for the peer within a budget; any other platform refuses. Part of platform; charter: rust/log/src/host/CLAUDE.md
+token SID; macOS reads the kernel's TCP table (`net.inet.tcp.pcblist_n`) and judges the socket's creator; any other platform refuses. Part of platform; charter: rust/log/src/host/CLAUDE.md
 (written by a later unit, not yet present).
 
 ## Files
@@ -13,4 +13,5 @@ Read `mod.rs`: `PeerOwner`, then `tcp_peer_owner` and `admit`.
 
 ## Rules
 - Only `PeerOwner::Mine` is served; every failure is `Unknown` and refuses (`admit`).
+- A table walker accepts only the record sequence the kernel writes; a truncated or disordered table refuses.
 - The first refusal per listener, port and owner is a warning; later ones are debug lines.

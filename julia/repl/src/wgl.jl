@@ -52,8 +52,13 @@ frontend `sot-fe --fe <name>` names.
 """
 browserview(url::AbstractString; open::Union{Bool,AbstractString} = true) = BrowserView(url, open)
 
+# Decision 0031, the page helper: one server per REPL child, bound once on a port the OS assigns and kept for the
+# child's life, so its listener never closes while its secret is valid. A secret lives exactly as long as its
+# server: it is minted when the server is bound, and a server that closes takes it along, so whoever binds a
+# closed port learns only a dead one.
 # The one Bonito server `wglshow` binds per REPL child (see `page_server`); a re-serve replaces its app, never its
-# listener. `Any`: ShipToolsRepl never loads Bonito.
+# listener. `nothing` or `(server = <Bonito server>, path = "/<32 hex>")`: the path holds the secret and lives
+# exactly as long as its server. `Any`: ShipToolsRepl never loads Bonito.
 const WGL_SERVER = Ref{Any}(nothing)
 
 # WGLMakie's General-registry UUID, used to look it up in Base.loaded_modules
@@ -185,12 +190,6 @@ function wgl_warn_if_widgets(fig)
     flush(stderr)
 end
 
-# Decision 0031, the page helper: one server per REPL child, bound once on a port the OS assigns and kept for the
-# child's life, so its listener never closes while its secret is valid. A secret lives exactly as long as its
-# server: it is minted when the server is bound, and a server that closes takes it along, so whoever binds a
-# closed port learns only a dead one.
-const PAGE_SECRET = Ref{String}("")
-
 # A Bonito server on `host`:`port` (0: the OS picks). Bonito moves a taken port to the next one with a warning; a
 # pinned port that is taken throws instead. `proxy_url` is this server's own loopback origin, so its asset and
 # websocket addresses use 127.0.0.1 (a remote frontend's page proxy binds 127.0.0.1 only).
@@ -268,17 +267,17 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
         Base.UUID("824d6782-a2ef-11e9-3a09-e5662e0c26f8"), "Bonito"))
     port === nothing || 1 <= port <= 65535 || throw(ArgumentError("wglshow: port must be in 1:65535"))
     host = "127.0.0.1"
-    server = WGL_SERVER[]
-    if server === nothing || (port !== nothing && port != server.port)
+    page = WGL_SERVER[]
+    if page === nothing || (port !== nothing && port != page.server.port)
         # Bind the new server first: a taken pinned port throws here and leaves the live page as it was.
-        fresh = page_server(Bonito, host, port === nothing ? 0 : Int(port))
+        fresh = (server = page_server(Bonito, host, port === nothing ? 0 : Int(port)),
+                 path = "/" * bytes2hex(rand(Random.RandomDevice(), UInt8, 16)))
         old = WGL_SERVER[]
-        PAGE_SECRET[] = bytes2hex(rand(Random.RandomDevice(), UInt8, 16))
         WGL_SERVER[] = fresh
-        old === nothing || try Base.invokelatest(close, old) catch end
-        server = fresh
+        old === nothing || try Base.invokelatest(close, old.server) catch end
+        page = fresh
     end
-    external = "http://$host:$(server.port)"
+    external = "http://$host:$(page.server.port)"
     # Warn (never silently) if the figure carries interactive Makie widgets —
     # wglshow can't make them respond over the browser (see wgl_warn_if_widgets).
     wgl_warn_if_widgets(fig)
@@ -294,7 +293,7 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
     # activate!'s set_screen_config! resets per call, so setting it here wins.
     Base.invokelatest(WGL.activate!; resize_to = :parent, use_html_widgets = false)
     Base.invokelatest(Bonito.configure_server!;
-        listen_url = host, listen_port = server.port, proxy_url = external)
+        listen_url = host, listen_port = page.server.port, proxy_url = external)
     # Mount the figure in a viewport-filling container so a resize_to=:parent
     # figure grows with the browser window instead of Bonito's content-sized
     # default (which pinned it to ~1/3 width — ImagingSystemDesign finding, 2026-07-13).
@@ -312,9 +311,8 @@ function wglshow(fig; port::Union{Integer,Nothing} = nothing, open::Union{Bool,A
             Bonito.DOM.div(fig; style = "position:fixed; inset:0; margin:0")))
     # Decision 0031: the figure lives at the server's secret path; `/` answers 404. `route!` replaces the previous
     # figure in place, so the listener and the URL outlive every re-serve.
-    path = "/" * PAGE_SECRET[]
-    Base.invokelatest(Bonito.route!, server, path => no_referrer_page(Bonito, app))
+    Base.invokelatest(Bonito.route!, page.server, page.path => no_referrer_page(Bonito, app))
     # Announce at serve time, not only via the last value: a wrapper that swallows the return value would
     # otherwise leave the port unallowlisted and the page unopened.
-    return announce_browserview(BrowserView(external * path, open))
+    return announce_browserview(BrowserView(external * page.path, open))
 end

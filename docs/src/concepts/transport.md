@@ -122,13 +122,12 @@ A browser can only speak TCP, so the pages a daemon serves (video,
 documentation and its pool) and the frontend's page proxy keep loopback
 ports. Every one of them checks which OS account owns each incoming
 connection before reading a byte, and closes any other account's
-connection without answering: on Linux from the kernel's TCP table, on
-Windows from the account of the process that owns the connection, on
-macOS by finding the connection among this account's own programs (a
-lookup that takes longer than 0.2 s refuses). The first refusal per
-account and port is logged as a warning. A connection the daemon makes
-itself, the proxy reaching a page for a remote frontend, is the daemon's
-own account and is served.
+connection without answering: on Linux and macOS from the kernel's TCP
+table, which records the account that opened each connection, and on
+Windows from the account of the process that owns the connection. The
+first refusal per account and port is logged as a warning. A connection
+the daemon makes itself, the proxy reaching a page for a remote
+frontend, is the daemon's own account and is served.
 
 Figures served with `wglshow` bind a port the operating system assigns
 and carry a secret in the page's address, so another account that finds

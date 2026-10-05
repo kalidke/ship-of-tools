@@ -187,17 +187,16 @@ dynamically) and returns `browserview(url)`.
   > `wglshow(fig; open = false)` / `browserview(url; open = false)` set
   > `open: false` on the `browser` frame — it still flows (so the ADR-0035
   > proxy allowlist learns the port) but NO frontend auto-opens; the caller
-  > then targets exactly one FE with `sot-fe open-url <url> --fe <handle>`
-  > (whose per-URL proxy arms on demand). Motivated by a live multi-FE
+  > names the one FE that opens it with `wglshow(fig; open = "<fe>")` /
+  > `browserview(url; open = "<fe>")` (0.6.6, decision 0031: the frame carries `fe`; the
+  > earlier `sot-fe open-url <url> --fe <handle>` recipe put the page's secret on a command
+  > line and is gone). Motivated by a live multi-FE
   > failure: two browser clients on one served figure race the shared
   > layout (`resize_to = :parent`), corrupting axis placement and hitboxes.
   > The workspace-gate refinement above remains open (it addresses roaming,
   > not two FEs on the same workspace).
   >
-  > *Note (0.6.6, decision 0031): the targeted open is now `wglshow(fig; open = "<fe>")`: the `browser` frame
-  > carries `fe`, and only that frontend opens it. `sot-fe open-url <url>` put the page's secret on a command line
-  > and is no longer the recipe for a served page. Every page the frontend opens reaches the browser through a
-  > one-use redirect, and wglshow keeps one server per REPL.*
+  > *Note (0.6.6, decision 0031): every page the frontend opens reaches the browser through a one-use redirect, and wglshow keeps one server per REPL.*
 - **Focus**: opening a browser window is a deliberate, user-initiated action
   (the user returned a `BrowserView`), so it does not violate the no-yank
   show-image doctrine — it is the requested show, on the user's own machine.

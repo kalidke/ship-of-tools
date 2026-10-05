@@ -24,5 +24,5 @@ Part of the sidecars; charter: rust/backend/src/sidecars/CLAUDE.md (not yet writ
 - Every request gets a terminal `res` (`emit_fallback_done`).
 - A `BrowserView` is announced once per (url, open) (`announce_browserview`).
 - WGLMakie code lives only in ext/.
-- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`PAGE_SECRET`); `/` answers 404.
+- `wglshow` serves from one Bonito server per child (`page_server`), on a port the OS assigns, at a secret path minted with that server (`WGL_SERVER` holds both); `/` answers 404.
 - `write_envelope` has a twin in julia/kernel.

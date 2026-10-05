@@ -267,15 +267,8 @@ where
     Ok(Answer::Piped)
 }
 
-/// Hand `url`, an address with NO secret in it (a local file, the public manual), to the OS opener. A served page
-/// goes through `crate::browser_open::open_page`, never here: this argument lands on command lines other accounts
-/// can read.
-pub(crate) fn open_url_in_browser(url: &str) -> std::io::Result<()> {
-    crate::browser_open::spawn_opener(url)
-}
-
 /// Write `html_bytes` to a unique temp file and hand it off to the OS
-/// default browser via `open_url_in_browser`. We don't delete the temp
+/// default browser via `crate::browser_open::spawn_opener`. We don't delete the temp
 /// file (the OS cleans temp on its own schedule; a fresh path per call
 /// also prevents the browser from showing a stale cached version).
 pub(crate) fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
@@ -287,7 +280,7 @@ pub(crate) fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
     path.push(format!("sot-preview-{now}.html"));
     std::fs::write(&path, html_bytes)?;
     let path_str = path.to_string_lossy().to_string();
-    open_url_in_browser(&path_str)
+    crate::browser_open::spawn_opener(&path_str)
 }
 
 #[cfg(test)]
