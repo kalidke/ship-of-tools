@@ -34,9 +34,13 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   variable and a part run by another command are not seen). A part sources nothing, and uses no `BASH_SOURCE`, no
   `LINENO` and no top-level `return`, so inlined it defines the same functions and globals.
 - Every script that sources the library writes under umask 077, except `comm-worktree-new.sh`, which sets the caller's
-  mask back for the worktree. `ensure_home` removes group and other permissions from everything under the comm folder
-  but `bin/`, `VERSION` and symlinks, and only while the folder itself is open to group or other; it warns only when a
-  re-check of the end state still finds a path open, naming it. `comm-join.sh` runs it at every join.
+  mask back for the worktree. `ensure_home` (`_sot_comm_tighten`) removes group and other permissions from the layout's
+  own entries only (`_sot_comm_own` names them: the folder, `inbox/`, `read/`, `self/`, `state/`, `probe/` and its
+  folders, `registry.json` and its temp files, the registry lock and its markers, the lock manager's record, the
+  files of those folders), never an unknown file or folder, `bin/`, `VERSION` or a symlink, and only while the comm
+  folder itself is open to group or other. It refuses, with one warning and no change, a comm folder that is the root,
+  the home folder or a git checkout, and warns of a failed tightening only when a re-check of the end state finds an
+  entry still open, naming it. `comm-join.sh` runs it at every join.
 - One registry write (`registry_replace` under `with_lock`) and one read (`sot_registry_read`: 0 present, 1 absent, 2
   unreadable).
 - One inbox append (`sot_inbox_append`) and one `comm.file` request (`sot_comm_file`).

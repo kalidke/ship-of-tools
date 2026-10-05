@@ -13,7 +13,9 @@
 #      umask: (a) the auditor's `claude -p`, (b) the worktree `comm-worktree-new.sh` makes.
 #   4. The Stop hook and the auditor, each the first writer of state/, make it private (a missing tool, a lock fault).
 #   5. The tightening says what is true: a file that vanishes under it is no failure, a path it leaves open is
-#      named in the warning, and a comm folder whose root is already private is not walked.
+#      named in the warning, and a comm folder whose root is already private is not walked, it touches only the layout's own
+#      entries (an unknown file or folder keeps its mode), and it refuses, changing nothing, a comm folder that is the
+#      home folder, the root or a git checkout.
 #
 # Windows has no umask: a folder under the profile inherits the profile's access list, so this suite
 # prints one SKIP there. The locked local append and the hooks' mail read are Linux's, so other systems skip too.
@@ -226,7 +228,7 @@ mkdir -p "$WORK/noop-bin"
 cat > "$WORK/noop-bin/chmod" <<STUB
 #!/bin/sh
 n=\$#
-while [ \$n -gt 0 ]; do a=\$1; shift; n=\$((n - 1)); [ "\$a" = ./state/x.tick ] || set -- "\$@" "\$a"; done
+while [ \$n -gt 0 ]; do a=\$1; shift; n=\$((n - 1)); [ "\$a" = state/x.tick ] || set -- "\$@" "\$a"; done
 exec "$REAL_CHMOD" "\$@"
 STUB
 chmod +x "$WORK/churn-bin/chmod" "$WORK/noop-bin/chmod"
@@ -245,6 +247,38 @@ N="$WORK/private-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"; "$R
 S2 env SOT_COMM_HOME="$N" "$BIN/comm-join.sh" --name s2-a
 [ "$(mode "$N/state/x.tick")" = 644 ] && ok "a comm folder that is already private is not walked" \
     || { bad "a comm folder that is already private is not walked"; echo "    state/x.tick is $(mode "$N/state/x.tick"), the walk ran"; }
+
+# An unknown file or folder in the comm folder keeps its mode; the layout's own entries do not.
+N="$WORK/unknown-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"
+mkdir -p "$N/extra" "$N/state/sub"; : > "$N/notes.txt"; : > "$N/extra/f"; : > "$N/inbox/notes.txt"; : > "$N/state/sub/g"
+S2 env SOT_COMM_HOME="$N" "$BIN/comm-join.sh" --name s2-a
+fails=""
+for kept in notes.txt extra extra/f inbox/notes.txt state/sub state/sub/g; do
+    [ "$(mode "$N/$kept")" = "$([ -d "$N/$kept" ] && echo 755 || echo 644)" ] || fails+=$'\n'"    $kept is $(mode "$N/$kept"): an unknown entry was changed"
+done
+for own in . inbox state registry.json inbox/s2-a.jsonl state/x.tick; do
+    [ $(( 8#$(mode "$N/$own") & 077 )) -eq 0 ] || fails+=$'\n'"    $own is $(mode "$N/$own"): a layout entry was left open"
+done
+if [ -z "$fails" ]; then ok "the tightening touches the layout's own entries only: an unknown file or folder keeps its mode"
+else bad "the tightening touches the layout's own entries only: an unknown file or folder keeps its mode"; printf '%s\n' "${fails#$'\n'}"; fi
+# refused: the comm folder is the home folder, or a git checkout; nothing changes and the join still succeeds.
+refused() {  # NAME DIR WORD [env VAR=VAL...]
+    local name="$1" dir="$2" word="$3" rc=0; shift 3
+    lay_old "$dir"; : > "$dir/notes.txt"
+    S2 env "$@" SOT_COMM_HOME="$dir" "$BIN/comm-join.sh" --name s2-a || rc=$?
+    local f=""
+    [ "$rc" = 0 ] || f+=$'\n'"    the join failed ($rc): $(tail -n 2 "$WORK/last.out" | tr '\n' ' ')"
+    grep -q "WARNING: the comm folder .* is $word, so it was not made private" "$WORK/last.out" || f+=$'\n'"    no refusal line naming $word"
+    for kept in . inbox inbox/s2-a.jsonl state/x.tick notes.txt; do
+        [ "$(mode "$dir/$kept")" = "$([ -d "$dir/$kept" ] && echo 755 || echo 644)" ] || f+=$'\n'"    $kept is $(mode "$dir/$kept"): the refusal changed it"
+    done
+    if [ -z "$f" ]; then ok "a comm folder that is $word is not tightened, and nothing is changed"
+    else bad "a comm folder that is $word is not tightened, and nothing is changed"; printf '%s\n' "${f#$'\n'}"; fi
+}
+P="$WORK/refuse-home"; guard_refuse_live_home "$P"; refused home "$P" "the home folder" HOME="$P"
+G="$WORK/git-home/.sot-comm"; guard_refuse_live_home "$G"; mkdir -p "$G/.git"; refused git "$G" "a git checkout"
+[ "$(bash -c 'source "$1"; COMM_HOME=/; _sot_comm_refusal' _ "$BIN/comm-lib.sh")" = "the root folder" ] \
+    && ok "a comm folder that is the root folder is refused" || bad "a comm folder that is the root folder is refused"
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

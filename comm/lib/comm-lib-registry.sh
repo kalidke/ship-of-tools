@@ -1,21 +1,62 @@
 # comm-lib-registry.sh: the registry file: ensure_home, the writers, the reads and a row's status.
 # Sourced by comm-lib.sh; defines functions only.
 
+# _sot_comm_tighten — close to group and other what an older release left open in the comm folder (ADR 0049, User
+# isolation). It touches only the layout's own entries (_sot_comm_own), never an unknown file or folder, and refuses,
+# changing nothing, a comm folder that is the root, the home folder or a git checkout (a mistaken SOT_COMM_HOME). Not
+# on Windows, where the profile's access list is the mechanism. It walks only while the folder itself is open: once it
+# is 0700 nothing new is reached through it. The warning comes from a re-check of the end state, so a file that
+# vanished under the chmod is no failure; the caller goes on either way.
+_sot_comm_tighten() {
+    _sot_is_windows && return 0
+    local why left
+    why="$(_sot_comm_refusal)"
+    if [ -n "$why" ]; then
+        echo "WARNING: the comm folder $COMM_HOME is $why, so it was not made private; nothing was changed" >&2
+        return 0
+    fi
+    [ -n "$(_sot_comm_own root)" ] || return 0
+    _sot_comm_own fix >/dev/null 2>&1 || true
+    left="$(_sot_comm_own print | head -n 1)" || left=""
+    [ -z "$left" ] || echo "WARNING: the comm folder $COMM_HOME could not be made private: $left is still $(ls -ld -- "$COMM_HOME/$left" 2>/dev/null | cut -c1-10)" >&2
+    return 0
+}
+
+# _sot_comm_refusal — why the comm folder must not be tightened (it names a folder that is not a comm folder), or nothing.
+_sot_comm_refusal() {
+    local phys home=""
+    phys="$(cd "$COMM_HOME" 2>/dev/null && pwd -P)" || return 0
+    [ -z "${HOME:-}" ] || home="$(cd "$HOME" 2>/dev/null && pwd -P)"
+    if [ "$phys" = / ]; then echo "the root folder"
+    elif [ -n "$home" ] && [ "$phys" = "$home" ]; then echo "the home folder"
+    elif [ -e "$phys/.git" ]; then echo "a git checkout"
+    fi
+}
+
+# _sot_comm_own root|print|fix — the comm layout's own entries open to group or other, and nothing else: the folder,
+# inbox/ read/ self/ state/ probe/ and the folders in probe/ (a probe row's project root); registry.json and its temp
+# files, the registry lock and its markers, the lock manager's record and temp, gh-device-auth.json; and the files of
+# inbox/ (.jsonl, .lock), read/ (.cursor), self/ (.txt) and state/ (all). Symlinks and bin/ and VERSION are never
+# in it. `root` prints the folder itself if it is open, `print` every entry open, `fix` removes group and other bits.
+_sot_comm_own() {
+    ( set +e   # a name not there makes find fail, and the second find must still run
+      cd "$COMM_HOME" 2>/dev/null || exit 0
+      shopt -s nullglob dotglob
+      local open=( \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) )
+      local act=( -print )
+      [ "$1" != fix ] || act=( -exec chmod go-rwx {} + )
+      if [ "$1" = root ]; then find . -prune "${open[@]}" -print; exit 0; fi
+      local dirs=( . inbox read self state probe probe/* )
+      local files=( registry.json registry.json.tmp registry.json.new.* .registry.lock .registry.lock.* inbox-lock-manager
+          .inbox-lock-manager.* gh-device-auth.json inbox/*.jsonl inbox/*.lock read/*.cursor self/*.txt state/* )
+      find "${dirs[@]}" -prune -type d "${open[@]}" "${act[@]}"
+      find "${files[@]}" -prune -type f "${open[@]}" "${act[@]}"
+      exit 0 ) 2>/dev/null
+}
+
 ensure_home() {
     mkdir -p "$COMM_HOME" "$INBOX_DIR" "$SELF_DIR" "$READ_DIR"
-    # A folder or file an older release left open to group and other is closed (ADR 0049, User
-    # isolation), bin/ and VERSION (the installer's) and every symlink excepted; not on Windows,
-    # where the profile's access list is the mechanism. The walk runs only while the folder itself
-    # is open: once it is 0700 nothing new is reached through it. The warning comes from a re-check
-    # of the end state, so a file that vanished under the walk is no failure; the caller goes on.
-    if ! _sot_is_windows; then
-        local open=( \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) ) left
-        if [ -n "$(find -H "$COMM_HOME" -prune "${open[@]}" -print 2>/dev/null)" ]; then
-            ( cd "$COMM_HOME" && find . \( -path ./bin -o -path ./VERSION \) -prune -o ! -type l "${open[@]}" -exec chmod go-rwx {} + ) >/dev/null 2>&1
-            left="$( cd "$COMM_HOME" 2>/dev/null && find . \( -path ./bin -o -path ./VERSION \) -prune -o ! -type l "${open[@]}" -print 2>/dev/null | head -n 1 )" || left=""
-            [ -z "$left" ] || echo "WARNING: the comm folder $COMM_HOME could not be made private: $left is still $(ls -ld -- "$COMM_HOME/$left" 2>/dev/null | cut -c1-10)" >&2
-        fi
-    fi
+    _sot_comm_tighten
     # Create only, never truncate: `test -f` is false on any stat error (an
     # ESTALE during another host's rename), and a plain `>` then wiped a live
     # registry. So the skeleton is written to its own tmp (noclobber: O_EXCL, so
