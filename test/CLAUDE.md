@@ -4,7 +4,7 @@ The tests of the Julia installer package (`ShipTools`), one file per installer c
 as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Files
-- `runtests.jl`: the entry: `in_home`, the suite's temporary home, the home-variable scan, then the six subject files inside one "Ship of Tools" testset
+- `runtests.jl`: the entry: `in_home`, the suite's temporary home, then the six subject files and the home-variable scan inside one "Ship of Tools" testset
 - `codex_tests.jl`: Codex hooks payload, marketplace registry and home profile export parsing (src/codex.jl)
 - `publish_tests.jl`: `install_file` and `_install_files` publishing, staging names, marker reaping (src/publish.jl)
 - `skills_tests.jl`: skill install, orphan sweep, retired session-start aliases, shipped project-local skills (src/skills.jl, src/launchers.jl)
@@ -20,8 +20,11 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 - The settings-merge tests call `jq` and read its raw output through `jq_lines` (claude_hooks_tests.jl), which takes the one CR off each line on Windows, where jq writes CRLF line endings.
 - The suite runs inside a temporary home, and a test that needs a home of its own sets it only through `in_home(home)`
   (runtests.jl): HOME, USERPROFILE, HOMEDRIVE and HOMEPATH (Julia's `homedir()` reads USERPROFILE on Windows), the comm
-  home under it, CLAUDE_CONFIG_DIR and CODEX_HOME unset, and an error before the body if `homedir()` is not that home.
-  Every test writes only under `mktempdir()`.
+  home and CODEX_HOME under it (the codex CLI the installer may start keeps its state in CODEX_HOME), CLAUDE_CONFIG_DIR
+  unset, every other SOT_ variable unset (no comm script a test runs reaches the session's self file or daemon), and an
+  error before the body if `homedir()` is not that home. The suite's last set fails a subject file that names a home
+  variable as a string, and reads `in_home`'s contract back on the suite home. Every test writes only under
+  `mktempdir()`. No hosted runner carries codex, so a real codex under these tests on Windows is untested.
 - A test that needs Unix mode bits probes at run time, with the operation the code under test uses, and skips itself.
 - The bash checks (sourcing a library, running an installed script) run only where `Sys.isunix()`; the rest runs everywhere.
 - A subject file defines its own helpers, inside a testset or, when several of its testsets share one, once at its top; `in_home` (runtests.jl) is the one helper the files share.

@@ -167,8 +167,7 @@ end
         foreach(((f, n),) -> write(joinpath(bin, n), n == "comm-lib.sh" ? "old=1\n" : "# previous release\n"), files)
         published = String[]
         bad = String[]
-        unset = [k => nothing for k in keys(ENV) if startswith(k, "SOT_")]
-        in_home(home, unset...) do
+        in_home(home) do
             # install_comm's own loop; after each rename it makes, a script starts and sources the library.
             function rename(src, dst)
                 Base.Filesystem.rename(src, dst)
@@ -202,8 +201,7 @@ end
     end
     if Sys.isunix()
         mktempdir() do home
-            unset = [k => nothing for k in keys(ENV) if startswith(k, "SOT_")]
-            in_home(home, unset...) do
+            in_home(home) do
                 # A bin an install from this repo's split layout left: the parts as files, and recorded.
                 bin = mkpath(joinpath(home, ".sot-comm", "bin"))
                 parts = vcat(values(parts_of)...)
