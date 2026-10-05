@@ -359,15 +359,14 @@ fn user_scope_available() -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     // Contained like every process the daemon starts: the tree dies with the probe, and the leader is reaped only after that.
-    let (mut child, held) = crate::lifecycle::child_signal::process().spawn_std(&mut command)?;
+    let mut c = crate::lifecycle::child_signal::process().spawn_std(&mut command)?;
     let deadline = Instant::now() + USER_SCOPE_PROBE_BOUND;
     loop {
-        if crate::lifecycle::contain::exited(&mut child, false)? {
+        if c.exited(false)? {
             break;
         }
         if Instant::now() >= deadline {
-            drop(held);
-            let _ = child.wait();
+            let _ = c.kill();
             return Err(std::io::Error::new(
                 ErrorKind::TimedOut,
                 format!("systemd-run --user --scope did not answer within {USER_SCOPE_PROBE_BOUND:?}"),
@@ -375,12 +374,11 @@ fn user_scope_available() -> std::io::Result<()> {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    drop(held);
-    let status = child.wait()?;
+    let status = c.wait()?;
     if status.success() {
         return Ok(());
     }
-    let stderr = child
+    let stderr = c
         .stderr
         .take()
         .map(|pipe| drain_stderr_bounded(pipe, STDERR_DRAIN_BOUND))

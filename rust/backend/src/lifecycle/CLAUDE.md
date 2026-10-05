@@ -13,7 +13,7 @@ computer's sessions end (ADR 0050).
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
-  `Contained`, `Held`, `fire`, `fired`, `live_children`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
+  `Contained`, `ContainedStd`, `fire`, `fired`, `live_children`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
@@ -38,8 +38,9 @@ computer's sessions end (ADR 0050).
   shutdown has begun (`Leases::while_open`, called by update.rs).
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
-  releases or drops it or the signal fires; its leader is reaped only after that kill (`Contained::wait`,
-  `Held::release`; `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
+  kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
+  that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
+  `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
 - `main` resets `SIGCHLD` to its default before anything else (`reset_child_signal`), so an ignored one inherited from the
   parent cannot make the kernel reap a contained leader early.
 - No Rust code in the workspace starts a process except through `Signal::spawn`, `Signal::spawn_std` or
@@ -52,7 +53,7 @@ computer's sessions end (ADR 0050).
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `Contained`, `Held`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `accepted_peer`,
+`Signal::output`, `Contained`, `ContainedStd`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `accepted_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`.
@@ -62,7 +63,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `rust/frontend/src/lease.rs`: a file, the window's half.
 
 ## Files
-- `child_signal.rs`: the process-wide `fired` flag, the registry of contained trees (`Held`) and the live-child count.
+- `child_signal.rs`: the process-wide signal, the registry of contained trees, the contained children (`Contained`,
+  `ContainedStd`) and the live-child count.
 - `contain.rs`: the platform half of containment: the process group or job, adopting a child, the kill.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.

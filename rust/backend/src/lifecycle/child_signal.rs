@@ -1,9 +1,9 @@
 //! child_signal.rs — the one process-wide `fired` flag every child owner
 //! selects on, because `kill_on_drop` does not run at `process::exit`.
 //! [`Signal::spawn`] and [`Signal::spawn_std`] start a child in its own
-//! containment and [`Held`] is the kill: firing the signal, or releasing or
-//! dropping the `Held`, ends the child and everything it started, and the
-//! child is reaped only after.
+//! containment, and [`Contained`] and [`ContainedStd`] own it: firing the
+//! signal, or killing, waiting for or dropping either, ends the child and
+//! everything it started, and the child is reaped only after.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -127,13 +127,10 @@ impl Signal {
         })
     }
 
-    /// [`spawn`](Self::spawn) for a blocking caller, which keeps the
-    /// `Child` itself: the [`Held`] ends the tree when released or dropped,
-    /// and the caller reaps the child only after that.
-    pub(crate) fn spawn_std(
-        &'static self,
-        cmd: &mut std::process::Command,
-    ) -> std::io::Result<(std::process::Child, Held)> {
+    /// [`spawn`](Self::spawn) for a blocking caller. The [`ContainedStd`] owns
+    /// the child: only its `wait`, `kill` and drop reap it, each after the
+    /// tree's kill.
+    pub(crate) fn spawn_std(&'static self, cmd: &mut std::process::Command) -> std::io::Result<ContainedStd> {
         crate::lifecycle::contain::prepare(cmd);
         #[allow(clippy::disallowed_methods, reason = "the containment's own start: contain::prepare ran before it, and adopt and hold follow (ADR 0050, Shutdown)")]
         let mut child = cmd.spawn()?;
@@ -150,7 +147,13 @@ impl Signal {
             }
         };
         match self.hold(tree) {
-            Ok(held) => Ok((child, held)),
+            Ok(held) => Ok(ContainedStd {
+                stdin: child.stdin.take(),
+                stdout: child.stdout.take(),
+                stderr: child.stderr.take(),
+                held,
+                child,
+            }),
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -161,21 +164,18 @@ impl Signal {
 
     /// `Command::output` for a contained one-shot: stdin is null, and stdout
     /// and stderr are each read to their end on a thread of their own. The
-    /// leader's exit is seen unreaped; then the [`Held`] drops, which kills
-    /// the tree and closes any pipe a descendant held; then the child is
-    /// reaped, and then both readers are joined. No bound is added, as
-    /// `output` has none.
+    /// leader's exit is seen unreaped; then the tree is killed, which closes
+    /// any pipe a descendant held; then the child is reaped (all of that is
+    /// [`ContainedStd::wait`]), and then both readers are joined. No bound is
+    /// added, as `output` has none.
     pub(crate) fn output(&'static self, cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
         use std::process::Stdio;
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let (mut child, held) = self.spawn_std(cmd)?;
+        let mut child = self.spawn_std(cmd)?;
         let stdout = read_to_end_on_a_thread(child.stdout.take());
         let stderr = read_to_end_on_a_thread(child.stderr.take());
-        let seen = crate::lifecycle::contain::exited(&mut child, true);
-        drop(held);
         let status = child.wait();
         let (stdout, stderr) = (stdout.join(), stderr.join());
-        seen?;
         Ok(std::process::Output { status: status?, stdout: joined(stdout)?, stderr: joined(stderr)? })
     }
 }
@@ -201,13 +201,13 @@ fn joined(read: std::thread::Result<std::io::Result<Vec<u8>>>) -> std::io::Resul
 /// [`release`](Self::release), or dropping it, kills the tree under the
 /// registry lock if the shutdown has not already; the child's leader is
 /// reaped only after that, because its pid is the group's number.
-pub(crate) struct Held {
+struct Held {
     sig: &'static Signal,
     id: u64,
 }
 
 impl Held {
-    pub(crate) fn release(&self) {
+    fn release(&self) {
         let mut trees = self.sig.trees.lock().unwrap_or_else(|e| e.into_inner());
         let tree = trees.as_mut().and_then(|map| map.remove(&self.id));
         drop(tree);
@@ -264,6 +264,56 @@ impl Contained {
         self.held.release();
         let _ = self.child.start_kill();
         self.child.wait().await
+    }
+}
+
+/// One contained child for a blocking caller, with its pipes. Like
+/// [`Contained`] it owns the `Child`: only [`wait`](Self::wait),
+/// [`kill`](Self::kill) and dropping reap it, each after the tree's kill, and
+/// no caller is handed the child to reap first. `held` comes before `child`.
+pub(crate) struct ContainedStd {
+    pub(crate) stdin: Option<std::process::ChildStdin>,
+    pub(crate) stdout: Option<std::process::ChildStdout>,
+    pub(crate) stderr: Option<std::process::ChildStderr>,
+    held: Held,
+    child: std::process::Child,
+}
+
+impl ContainedStd {
+    /// Whether the leader has exited, seen unreaped (without freeing its pid
+    /// on Unix); with `block` this waits for the exit.
+    pub(crate) fn exited(&mut self, block: bool) -> std::io::Result<bool> {
+        crate::lifecycle::contain::exited(&mut self.child, block)
+    }
+
+    /// Wait for the leader to exit, kill what it started, then reap it. A
+    /// descendant that holds the child's pipes open is killed too. The tree
+    /// is killed and the child reaped even if seeing the exit failed.
+    pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let seen = self.exited(true);
+        self.held.release();
+        let status = self.child.wait();
+        seen?;
+        status
+    }
+
+    /// Kill the tree, then the child, and reap it. Idempotent: once the tree
+    /// is released and the child reaped it does nothing but return the status.
+    pub(crate) fn kill(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.held.release();
+        let _ = self.child.kill();
+        self.child.wait()
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn id(&self) -> u32 {
+        self.child.id()
+    }
+}
+
+impl Drop for ContainedStd {
+    fn drop(&mut self) {
+        let _ = self.kill();
     }
 }
 
@@ -395,25 +445,25 @@ mod tests {
     }
 
     /// A blocking caller sees the exit unreaped: the leader's number is still
-    /// its own and the tree is still held, until the caller lets go of the
-    /// `Held`; only then is it reaped.
+    /// its own and the tree is still held, until the caller waits; only then
+    /// is the tree killed and the leader reaped.
     #[cfg(unix)]
     fn one_shot_takes_its_tree_after_it_exits() {
         use std::io::BufRead;
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
         let mut cmd = std::process::Command::new("sh");
         cmd.args(["-c", "sleep 3107 >/dev/null 2>&1 & echo $!"]).stdout(std::process::Stdio::piped());
-        let (mut child, held) = signal.spawn_std(&mut cmd).expect("spawn_std");
-        let pgid = child.id() as i32;
+        let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
+        let pgid = c.id() as i32;
         let mut line = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        std::io::BufReader::new(c.stdout.take().unwrap()).read_line(&mut line).unwrap();
         let descendant: i32 = line.trim().parse().expect("descendant pid");
-        assert!(crate::lifecycle::contain::exited(&mut child, true).expect("exited"), "the child had not exited");
+        assert!(c.exited(true).expect("exited"), "the child had not exited");
         assert!(signal.held_groups().contains(&pgid), "the tree was released before its owner let go");
         // SAFETY: signal 0 only probes the pid.
         assert_eq!(unsafe { libc::kill(pgid, 0) }, 0, "the exit was seen by reaping it");
-        drop(held);
-        child.wait().expect("wait");
+        c.wait().expect("wait");
+        assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
         assert!(gone(descendant), "the one-shot's descendant survived");
     }
 

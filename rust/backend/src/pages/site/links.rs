@@ -124,9 +124,9 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let (mut child, held) = crate::lifecycle::child_signal::process().spawn_std(&mut cmd).map_err(|e| (false, e.to_string()))?;
-    let mut so = child.stdout.take().expect("piped");
-    let mut se = child.stderr.take().expect("piped");
+    let mut c = crate::lifecycle::child_signal::process().spawn_std(&mut cmd).map_err(|e| (false, e.to_string()))?;
+    let mut so = c.stdout.take().expect("piped");
+    let mut se = c.stderr.take().expect("piped");
     let t_out = std::thread::spawn(move || {
         let mut v = Vec::new();
         let _ = so.read_to_end(&mut v);
@@ -139,28 +139,23 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Vec<u8>, (bool, String)> {
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match crate::lifecycle::contain::exited(&mut child, false) {
+        match c.exited(false) {
             Ok(true) => break,
             Ok(false) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(10))
             }
             Ok(false) => {
-                drop(held);
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = c.kill();
                 return Err((false, "timed out after 10 s".into()));
             }
             Err(e) => {
-                drop(held);
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = c.kill();
                 return Err((false, e.to_string()));
             }
         }
     }
     // Whatever git started dies with it, before the pipes are joined and the child is reaped.
-    drop(held);
-    let status = child.wait().map_err(|e| (false, e.to_string()))?;
+    let status = c.wait().map_err(|e| (false, e.to_string()))?;
     let out = t_out.join().unwrap_or_default();
     let err = t_err.join().unwrap_or_default();
     if status.success() {

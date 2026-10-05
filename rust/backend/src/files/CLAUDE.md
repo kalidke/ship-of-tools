@@ -33,7 +33,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
 `rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
-`is_servable_video`, `Signal::spawn_std`, `Held`, `child_signal::process`.
+`is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`.
 
 ## Folders
 - `examples/preview/` (repo root): sample files that previews are tried on.

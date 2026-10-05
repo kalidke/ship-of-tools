@@ -8,7 +8,8 @@
 //! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows).
 //! A group's number is its leader's pid, and a pid (a zombie's too) is not
 //! reused before its reap, so a group is killed only while its leader is
-//! unreaped: the owners of [`crate::lifecycle::child_signal::Contained`] reap the leader
+//! unreaped: the owners of [`crate::lifecycle::child_signal::Contained`] and
+//! [`crate::lifecycle::child_signal::ContainedStd`] reap the leader
 //! after the tree's kill, never before, and the kill runs under the
 //! registry lock. [`crate::lifecycle::child_signal::Signal::spawn`] owns the registry; this
 //! module holds nothing but the platform calls.
@@ -98,7 +99,7 @@ pub(crate) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
 
 /// Whether `child` has exited, without freeing its pid on Unix; with `block`
 /// this waits for the exit.
-pub(crate) fn exited(child: &mut std::process::Child, block: bool) -> std::io::Result<bool> {
+pub(super) fn exited(child: &mut std::process::Child, block: bool) -> std::io::Result<bool> {
     #[cfg(unix)]
     {
         exited_pid(child.id(), block)
@@ -215,15 +216,14 @@ mod tests {
         assert!(fire_takes_the_grandchild(ping_tree().into()).await, "the grandchild survived the shutdown");
     }
 
-    /// A blocking caller that lets go of its `Held` takes the tree, with the
-    /// child still unreaped.
+    /// A blocking caller that drops its `ContainedStd` takes the tree.
     #[test]
     fn a_dropped_std_child_takes_its_windows_tree() {
         use std::io::BufRead;
         let sig: &'static Signal = Box::leak(Box::new(Signal::new()));
         let mut cmd = ping_tree();
         cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
-        let (mut child, held) = sig.spawn_std(&mut cmd).expect("spawn_std");
+        let mut child = sig.spawn_std(&mut cmd).expect("spawn_std");
         let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
         let pid: u32 = loop {
             let line = lines.next().expect("stdout closed before a pid arrived").expect("read");
@@ -231,9 +231,7 @@ mod tests {
                 break pid;
             }
         };
-        drop(held);
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(child);
         assert!(exits_within(pid, 3000), "the dropped child's descendant survived");
     }
 

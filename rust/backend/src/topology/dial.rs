@@ -22,9 +22,8 @@ enum Conn {
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
     /// `sot_protocol::topology::ssh_bridge`) -- there is no separate "connect" step
     /// the way a socket has one, so this variant holds the not-yet-split
-    /// `Child` rather than a stream, and the [`Held`](crate::lifecycle::child_signal::Held)
-    /// that kills its tree.
-    Bridged(std::process::Child, crate::lifecycle::child_signal::Held),
+    /// [`ContainedStd`](crate::lifecycle::child_signal::ContainedStd) rather than a stream.
+    Bridged(crate::lifecycle::child_signal::ContainedStd),
 }
 
 /// Kills and reaps the ssh child `Conn::Bridged` hands to [`Conn::split`]
@@ -46,13 +45,10 @@ enum Conn {
 /// hang is strictly worse than a poor message.
 struct ChildGuard {
     /// Shared with a [`Track`] so a cancel kills the child through this same handle.
-    child: std::sync::Arc<std::sync::Mutex<std::process::Child>>,
+    child: std::sync::Arc<std::sync::Mutex<crate::lifecycle::child_signal::ContainedStd>>,
     last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Set for a forwarded call that a caller may cut short; see [`Track`].
     track: Option<std::sync::Arc<Track>>,
-    /// Kills the child's tree and counts it among the live ones; `Drop` lets
-    /// go of it before it reaps the child.
-    held: Option<crate::lifecycle::child_signal::Held>,
 }
 
 /// How a forwarding caller reaches the ssh child a dial thread owns: the
@@ -62,7 +58,7 @@ pub(crate) struct Track {
     sig: &'static crate::lifecycle::child_signal::Signal,
     /// The dial thread's child while its guard holds it unreaped; `None` before the spawn and from the moment the
     /// guard starts reaping.
-    child: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<std::process::Child>>>>,
+    child: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<crate::lifecycle::child_signal::ContainedStd>>>>,
     cancelled: std::sync::atomic::AtomicBool,
 }
 
@@ -71,13 +67,13 @@ impl Track {
         Self { sig, child: std::sync::Mutex::new(None), cancelled: std::sync::atomic::AtomicBool::new(false) }
     }
 
-    /// Kill the child, if there is one yet; the dial thread's blocking read
-    /// then fails and its `ChildGuard` reaps it.
+    /// Kill the child's tree, if there is one yet; the dial thread's blocking
+    /// read then fails and its `ChildGuard` drops.
     pub(crate) fn cancel(&self) {
         use std::sync::atomic::Ordering::SeqCst;
         self.cancelled.store(true, SeqCst);
-        // Held across the kill: the guard takes the child out of this slot before it reaps, so a kill here only ever
-        // reaches a live, unreaped child — its own handle, never a pid another process may now hold.
+        // Held across the kill: the guard takes the child out of this slot before it drops, and the kill reaches the
+        // tree through its own handle, never a pid another process may now hold.
         let slot = self.child.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(child) = slot.as_ref() {
             let _ = child.lock().unwrap_or_else(|p| p.into_inner()).kill();
@@ -110,10 +106,7 @@ impl Drop for ChildGuard {
             track.child.lock().unwrap_or_else(|p| p.into_inner()).take();
         }
         // The tree is killed before the child is reaped: its pid is the group's number.
-        drop(self.held.take());
-        let mut child = self.child.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = child.kill();
-        let _ = child.wait();
+        let _ = self.child.lock().unwrap_or_else(|p| p.into_inner()).kill();
     }
 }
 
@@ -141,7 +134,7 @@ impl Conn {
                 let r = f.try_clone()?;
                 Ok((Box::new(f), Box::new(r), None))
             }
-            Conn::Bridged(mut child, held) => {
+            Conn::Bridged(mut child) => {
                 let stdin = child.stdin.take().expect("the ssh command pipes stdin");
                 let stdout = child.stdout.take().expect("the ssh command pipes stdout");
                 // The child's last non-empty stderr line, drained on its own
@@ -166,7 +159,7 @@ impl Conn {
                         }
                     });
                 }
-                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr, track: None, held: Some(held) })))
+                Ok((Box::new(stdin), Box::new(stdout), Some(ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr, track: None })))
             }
         }
     }
@@ -226,8 +219,8 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
         };
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new(target, host).map_err(|e| format!("{endpoint}: {e}"))?;
         let mut cmd = sot_protocol::topology::ssh_bridge::LinkGate::default().command(&recipe).map_err(|e| format!("{endpoint}: {e}"))?;
-        let (child, held) = sig.spawn_std(&mut cmd).map_err(|e| format!("{endpoint}: {e}"))?;
-        return Ok(Conn::Bridged(child, held));
+        let child = sig.spawn_std(&mut cmd).map_err(|e| format!("{endpoint}: {e}"))?;
+        return Ok(Conn::Bridged(child));
     }
     Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))
 }
@@ -516,8 +509,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// A cancel kills the tracked child through the guard's own handle on every platform, and the guard then reaps it
-    /// and releases the live count. Fails on the unchanged Windows cancel, which only set the flag.
+    /// A cancel kills the tracked child's tree through the guard's own handle on every platform, and the guard's drop
+    /// releases the live count. Fails on the unchanged Windows cancel, which only set the flag.
     #[test]
     fn cancel_kills_the_tracked_child_through_its_own_handle() {
         // Other tests swap PATH under this lock; the child below is found through PATH.
@@ -532,18 +525,21 @@ pub(crate) mod tests {
         let mut cmd = std::process::Command::new("ping");
         #[cfg(windows)]
         cmd.args(["-n", "31", "127.0.0.1"]);
-        let child = cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null()).spawn().expect("a sleeper child");
-        let mut guard = ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)),
-            last_stderr: Default::default(), track: None, held: None };
+        let child = sig
+            .spawn_std(cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()))
+            .expect("a sleeper child");
+        assert_eq!(sig.live(), 1);
+        let mut guard = ChildGuard { child: std::sync::Arc::new(std::sync::Mutex::new(child)), last_stderr: Default::default(), track: None };
         assert!(!guard.attach(&track), "a fresh track is not cancelled");
         track.cancel();
+        // A killed and reaped child is gone: on Unix its pid no longer answers `waitid`, on Windows its status is kept.
         let exited = (0..100).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(20));
-            guard.child.lock().unwrap().try_wait().ok().flatten().is_some()
+            guard.child.lock().unwrap().exited(false).unwrap_or(true)
         });
         assert!(exited, "cancel left the tracked child running");
         drop(guard);
+        assert_eq!(sig.live(), 0, "the guard left the child counted");
         assert!(track.child.lock().unwrap().is_none(), "the guard left its child published after reaping it");
         track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
     }
