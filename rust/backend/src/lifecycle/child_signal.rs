@@ -322,7 +322,7 @@ mod tests {
     async fn fire_kills_a_tree_whose_owner_is_blocked() {
         use tokio::io::AsyncWriteExt;
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let mut cmd = tokio::process::Command::new("sh");
+        let mut cmd = tokio::process::Command::new("/bin/sh");
         cmd.args(["-c", "sleep 3104 & echo $!; exec sleep 3104"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
@@ -356,7 +356,7 @@ mod tests {
         signal.fire();
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("f");
-        let mut cmd = tokio::process::Command::new("sh");
+        let mut cmd = tokio::process::Command::new("/bin/sh");
         cmd.args(["-c", &format!("echo $$ > {}; exec sleep 3105", pid_file.display())]);
         assert!(signal.spawn(&mut cmd).is_err(), "a spawn after the fire was accepted");
         assert_eq!(signal.live(), 0);
@@ -377,7 +377,7 @@ mod tests {
     #[tokio::test]
     async fn wait_kills_the_tree_at_the_leaders_exit() {
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let mut cmd = tokio::process::Command::new("sh");
+        let mut cmd = tokio::process::Command::new("/bin/sh");
         cmd.args(["-c", "sleep 3107 >/dev/null 2>&1 & echo $!"]).stdout(std::process::Stdio::piped());
         let mut contained = signal.spawn(&mut cmd).expect("spawn");
         let mut line = String::new();
@@ -399,7 +399,7 @@ mod tests {
     fn one_shot_takes_its_tree_after_it_exits() {
         use std::io::BufRead;
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let mut cmd = std::process::Command::new("sh");
+        let mut cmd = std::process::Command::new("/bin/sh");
         cmd.args(["-c", "sleep 3107 >/dev/null 2>&1 & echo $!"]).stdout(std::process::Stdio::piped());
         let (mut child, held) = signal.spawn_std(&mut cmd).expect("spawn_std");
         let pgid = child.id() as i32;
@@ -422,7 +422,7 @@ mod tests {
     #[test]
     fn output_takes_the_tree_after_the_exit() {
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let mut cmd = std::process::Command::new("sh");
+        let mut cmd = std::process::Command::new("/bin/sh");
         cmd.args(["-c", "sleep 3111 >/dev/null 2>&1 & echo $!"]);
         let out = signal.output(&mut cmd).expect("output");
         assert!(out.status.success());

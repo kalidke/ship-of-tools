@@ -585,12 +585,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_kernel_child_and_never_respawns() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
         let stub = dir.path().join("stub-julia");
-        std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\necho x >> {}\nexec sleep 30\n", counter.display()));
         let project = dir.path().join("kp");
         std::fs::create_dir(&project).unwrap();
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
@@ -598,7 +596,7 @@ mod tests {
         let (status, _keep) = watch::channel(Status::Starting);
         let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
         let began = std::time::Instant::now();
-        while sig.live() == 0 {
+        while sig.live() == 0 || !counter.exists() {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -618,20 +616,17 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn blocked_kernel_write_does_not_outlive_shutdown() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let (gc_file, stub_file) = (dir.path().join("gc"), dir.path().join("stub"));
         let stub = dir.path().join("stub-julia");
-        std::fs::write(
+        crate::paths::write_stub(
             &stub,
             format!(
                 "#!/bin/sh\nsleep 3101 &\necho $! > {}\necho $$ > {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":0}}}}'\nexec sleep 3101\n",
                 gc_file.display(),
                 stub_file.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let project = dir.path().join("kp");
         std::fs::create_dir(&project).unwrap();
         STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));

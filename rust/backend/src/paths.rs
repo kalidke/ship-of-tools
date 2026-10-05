@@ -42,6 +42,24 @@ impl Drop for EnvGuard {
     }
 }
 
+/// Writes `body` to `path` as an executable stub script, through a short-lived `sh` that does the writing. No thread
+/// of the test process then ever holds the stub open for writing: a parallel test's `fork` would copy such a
+/// descriptor into its child until the child's `exec`, and an `exec` of the stub in that window fails with
+/// `ETXTBSY` ("Text file busy"), which a test that starts the stub reads as a spawn failure.
+#[cfg(all(test, unix))]
+pub(crate) fn write_stub(path: &Path, body: impl AsRef<[u8]>) {
+    use std::io::Write;
+    // By absolute path: other tests replace `PATH` for the whole process while they run.
+    let mut sh = std::process::Command::new("/bin/sh")
+        .args(["-c", r#"cat > "$1" && chmod 755 "$1""#, "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sh to write a stub");
+    sh.stdin.take().expect("sh stdin").write_all(body.as_ref()).expect("feed the stub to sh");
+    assert!(sh.wait().expect("wait for sh").success(), "writing the stub {} failed", path.display());
+}
+
 /// Resolve a REPO-ROOT-RELATIVE resource path (e.g. `julia/kernel`,
 /// `rust/backend/sidecars/mathjax/render.mjs`) for both deployment layouts
 /// (ADR 0030 §4). Resolution order, first EXISTING path wins:

@@ -262,11 +262,9 @@
     #[cfg(unix)]
     #[tokio::test]
     async fn monitor_backoff_returns_on_shutdown() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("sampler");
-        std::fs::write(&stub, "#!/bin/sh\nexit 1\n").unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, "#!/bin/sh\nexit 1\n");
         STUB_SAMPLER.lock().unwrap().push(("stub-backoff".to_string(), stub.to_string_lossy().into_owned()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (tick_tx, mut ticks) = broadcast::channel::<HostLatest>(16);

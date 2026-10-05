@@ -570,15 +570,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_relay_probe_takes_its_tree() {
-        use std::os::unix::fs::PermissionsExt;
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _path = crate::paths::EnvGuard::capture("PATH");
         let dir = tempfile::tempdir().expect("tempdir");
         let bg = dir.path().join("bg");
         let _kill = KillBackground(bg.clone());
         let stub = dir.path().join("systemctl");
-        std::fs::write(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display()));
         crate::topology::dial::tests::prepend_to_path(dir.path());
         assert_eq!(supervised_by_systemd(), Ok(false));
         let pid: i32 = std::fs::read_to_string(&bg).unwrap().trim().parse().expect("the stub's descendant pid");

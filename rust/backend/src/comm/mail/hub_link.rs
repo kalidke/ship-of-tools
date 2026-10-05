@@ -330,14 +330,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_link_child_and_never_reconnects() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("spawns");
         let bg = dir.path().join("bg");
         let _kill = KillBackground(bg.clone());
         let stub = dir.path().join("stub-ssh");
-        std::fs::write(&stub, format!("#!/bin/sh\necho x >> {}\nsleep 3108 >/dev/null 2>&1 &\necho $! > {}\nexec sleep 30\n", counter.display(), bg.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\necho x >> {}\nsleep 3108 >/dev/null 2>&1 &\necho $! > {}\nexec sleep 30\n", counter.display(), bg.display()));
         *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();

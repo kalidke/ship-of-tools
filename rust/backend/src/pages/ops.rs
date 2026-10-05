@@ -729,7 +729,6 @@ mod find_site_root_tests {
 #[cfg(all(test, unix))]
 mod quarto_shutdown_tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     /// Holds `ENV_TEST_LOCK` and pins the julia the daemon resolves, so a
@@ -784,8 +783,7 @@ mod quarto_shutdown_tests {
     /// Run `stub` (a script body) as `quarto render` to its end on a private signal.
     fn run_stub_quarto(dir: &std::path::Path, body: &str) -> std::io::Result<Option<std::process::Output>> {
         let stub = dir.join("stub-quarto");
-        std::fs::write(&stub, format!("#!/bin/sh\n{body}")).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\n{body}"));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let program = stub.to_string_lossy().into_owned();
@@ -799,8 +797,7 @@ mod quarto_shutdown_tests {
         let _pin = JuliaPin::new(&dir.path().join("julia"), None);
         let pid_file = dir.path().join("engine.pid");
         let stub = dir.path().join("stub-quarto");
-        std::fs::write(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\nsleep 30 &\necho $! > {}\nwait\n", pid_file.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
@@ -838,8 +835,7 @@ mod quarto_shutdown_tests {
         let pid_file = dir.path().join("engine.pid");
         let _kill = KillSleeper(pid_file.clone());
         let stub = dir.path().join("stub-quarto");
-        std::fs::write(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\nsleep 3102 &\necho $! > {}\nexit 0\n", pid_file.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
@@ -872,8 +868,7 @@ mod quarto_shutdown_tests {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("qj");
         let stub = dir.path().join("stub-quarto");
-        std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\nprintf '%s' \"$QUARTO_JULIA\" > {}\n", out.display()));
         let julia = dir.path().join("julia");
         std::env::set_var("SOT_JULIA_BIN", &julia);
         std::env::remove_var("QUARTO_JULIA");
@@ -910,8 +905,7 @@ mod quarto_shutdown_tests {
         let stub = dir.path().join("stub-quarto");
         // The pid is written once the sleeper has its own session: until then a kill of the launcher's group takes it too.
         let body = "setsid sleep 3106 &\np=$!\nwhile [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$(cut -d' ' -f6 /proc/$$/stat)\" ]; do sleep 0.02; done\n";
-        std::fs::write(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display())).unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::paths::write_stub(&stub, format!("#!/bin/sh\n{body}echo $p > {}\nexit 0\n", sleeper.display()));
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (program, cwd) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move {
