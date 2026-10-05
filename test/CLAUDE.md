@@ -8,7 +8,7 @@ as `ShipTools.<name>`. Part of distribution; charter: scripts/CLAUDE.md.
 - `codex_tests.jl`: Codex hooks payload, marketplace registry and home profile export parsing (src/codex.jl)
 - `publish_tests.jl`: `install_file` and `_install_files` publishing, staging names, marker reaping (src/publish.jl)
 - `skills_tests.jl`: skill install, orphan sweep, retired session-start aliases, shipped project-local skills (src/skills.jl, src/launchers.jl)
-- `install_tests.jl`: `update_comm` reporting, pruning of retired comm scripts, the one-file library and sot-fe (inlining, refusal, comm-lib.sh's functions and globals equal to the loader's), and install_comm's publish order and failures, driven through its own loop, and a new comm folder 0700 (src/install.jl, src/comm_bin.jl)
+- `install_tests.jl`: `update_comm` reporting, pruning of retired comm scripts, the one-file library and sot-fe (inlining, refusal, comm-lib.sh's functions and globals equal to the loader's), and install_comm's publish order and failures, driven through its own loop, a new comm folder 0700, and a refusal that leaves no file open (src/install.jl, src/comm_bin.jl)
 - `homes_tests.jl`: env-dir resolution (src/homes.jl)
 - `claude_hooks_tests.jl`: Claude settings targets and hook merging, including `jq` calls (src/claude_hooks.jl)
 
