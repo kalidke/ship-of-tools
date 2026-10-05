@@ -9,7 +9,9 @@
 //! and only from its own machine; nothing else is ever forced, so a waiter
 //! fails closed at its bound naming the holder. A waiter that proves the
 //! holder D dead takes the marker `.registry.lock.reclaim.<D>`, settles, reads
-//! the lock again fresh, and removes it only if it still names D. Markers are
+//! the lock again fresh, and removes it only if it still names D. A holder that
+//! releases, exits and is reaped between a waiter's read and its proof is
+//! proved dead too; its marker stays, and the re-read leaves the lock alone. Markers are
 //! kept forever, but for the one this daemon takes for a lock naming itself,
 //! which it removes when that reclaim removes the lock or finds it gone. File
 //! names map ':' to '.', because
