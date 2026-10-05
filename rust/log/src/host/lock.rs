@@ -428,29 +428,10 @@ mod tests {
             "LockFileEx",
         ];
         const LISTED: [&str; 2] = ["rust/backend/src/comm/mail/inbox.rs", "rust/log/src/host/lock.rs"];
-        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                if path.is_dir() {
-                    walk(&path, files);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    files.push(path);
-                }
-            }
-        }
-        let root = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).canonicalize().unwrap();
-        let mut files = Vec::new();
-        for krate in ["backend", "frontend", "log", "protocol", "updater"] {
-            walk(&root.join(krate).join("src"), &mut files);
-        }
-        assert!(files.len() > 100, "read only {} source files", files.len());
-        let mut holders: Vec<String> = files
-            .iter()
-            .filter(|p| {
-                let text = std::fs::read_to_string(p).unwrap();
-                WORDS.iter().any(|w| text.contains(w))
-            })
-            .map(|p| format!("rust/{}", p.strip_prefix(&root).unwrap().display()).replace('\\', "/"))
+        let mut holders: Vec<String> = crate::test_scan::rust_sources()
+            .into_iter()
+            .filter(|(rel, text)| rel.contains("/src/") && WORDS.iter().any(|w| text.contains(w)))
+            .map(|(rel, _)| rel)
             .collect();
         holders.sort();
         assert_eq!(holders, LISTED, "a kernel file lock is taken outside the listed files");

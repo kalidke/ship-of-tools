@@ -76,5 +76,7 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
-- Every source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
+- Every source-text scan reads through `test_scan` but the window crate's `crate_source`
+  (rust/frontend/src/ui/scan_tests.rs), whose crate does not turn on `test-support`; none cuts a file at its first
+  `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.
