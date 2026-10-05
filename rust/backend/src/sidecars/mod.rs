@@ -21,7 +21,7 @@ struct WireRequest<'a> {
     payload: &'a Value,
 }
 
-/// What `f` logs on this thread at INFO or above, as text: the one capture the sidecars' log-content tests share.
+/// What `f` logs on this thread at every level, as text: the one capture the sidecars' log-content tests share.
 #[cfg(test)]
 pub(super) fn logged_by(f: impl FnOnce()) -> String {
     let log = sot_log::test_log::capture();

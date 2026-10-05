@@ -36,7 +36,7 @@ tokio = { workspace = true }
 # string -- this crate had no tracing dep before this. Same version the
 # rest of the workspace pins.
 tracing = { workspace = true }
-# Only `test_log` (feature `test-support`) uses it: the capture subscriber's formatter.
+# `test_log` and secret.rs's log-writer test (feature `test-support`) use it: the subscribers' formatter.
 tracing-subscriber = { workspace = true, optional = true }
 # The live vt100 parser the unified capsule runtime keeps across the run
 # (ADR 0041 "Terminal state"). Ungated as of ADR 0043 "Decisions for LU2"
