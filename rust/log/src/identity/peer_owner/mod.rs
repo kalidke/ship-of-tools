@@ -7,11 +7,12 @@
 //!   process's token user SID.
 //! - macOS: the kernel's TCP table (sysctl `net.inet.tcp.pcblist_n`, the one netstat reads); the peer's own
 //!   connection carries the uid that created its socket, as on Linux.
-//! Every failure refuses: only [`PeerOwner::Mine`] is served.
+//! Every failure refuses: only [`PeerOwner::Mine`] is served. [`serve_own`] is the one TCP accept loop that applies it.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PeerOwner {
@@ -23,8 +24,8 @@ pub enum PeerOwner {
     Unknown(String),
 }
 
-/// The check every page listener runs; [`admit`] outside tests.
-pub type Admit = fn(&'static str, std::net::SocketAddr, std::net::SocketAddr) -> bool;
+/// The check [`serve`] runs on each connection; [`admit`] outside tests.
+type Admit = fn(&'static str, std::net::SocketAddr, std::net::SocketAddr) -> bool;
 
 /// `local` is the accepted stream's own address (the listener side), `peer` its remote address.
 pub fn tcp_peer_owner(local: SocketAddr, peer: SocketAddr) -> PeerOwner {
@@ -40,7 +41,7 @@ static DROPPED: Mutex<BTreeSet<(&'static str, u16, String)>> = Mutex::new(BTreeS
 /// Serve only this account's connections. The first refusal per (listener, port, owner) is a warning; later ones
 /// are debug, so a retrying stranger cannot flood the log and the operator still learns of it once. Bounded by
 /// accounts x listeners on one box ("unknown" is one key, whatever its reason).
-pub fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> bool {
+fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> bool {
     let owner = tcp_peer_owner(local, peer);
     let key = match &owner {
         PeerOwner::Mine => return true,
@@ -57,6 +58,46 @@ pub fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> boo
         tracing::debug!(listener, port = local.port(), ?owner, "closed a connection that is not this OS account's");
     }
     false
+}
+
+/// The only TCP accept loop Ship of Tools runs (ADR 0049, User isolation). Each accepted connection is checked in
+/// its own task, on a blocking thread, before a byte is read: only this OS account's reaches `handle`; any other is
+/// closed with nothing read or written (the first refusal per listener, port and owner is a warning). An accept
+/// error is logged and retried after 50 ms. Runs until its future is dropped.
+pub async fn serve_own<H, Fut>(listener: tokio::net::TcpListener, name: &'static str, handle: H)
+where
+    H: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    serve(listener, name, admit, handle).await
+}
+
+/// [`serve_own`] with the check as a parameter, so this module's tests can refuse a connection that is really ours.
+async fn serve<H, Fut>(listener: tokio::net::TcpListener, name: &'static str, admit: Admit, handle: H)
+where
+    H: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
+    let handle = Arc::new(handle);
+    loop {
+        match listener.accept().await {
+            Ok((stream, peer)) => {
+                let handle = Arc::clone(&handle);
+                tokio::spawn(async move {
+                    let Ok(local) = stream.local_addr() else { return };
+                    if !tokio::task::spawn_blocking(move || admit(name, local, peer)).await.unwrap_or(false) {
+                        return; // `stream` drops here: closed with no byte read or written
+                    }
+                    handle(stream).await;
+                });
+            }
+            Err(e) => {
+                tracing::warn!(listener = name, port, error = %e, "page accept failed");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
 }
 
 /// The account the table names against this process's own: equal is mine, anything else is another's.
@@ -390,6 +431,53 @@ mod tests {
         };
         assert_ne!(tcp_peer_owner(loopback(q), loopback(1)), PeerOwner::Mine);
         assert!(!admit("test", loopback(q), loopback(1)));
+    }
+
+    /// ADR 0049, User isolation: a connection the owner check refuses reaches no handler, though the handler would
+    /// have answered.
+    #[tokio::test]
+    async fn a_connection_the_owner_check_refuses_reaches_no_handler() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_in = Arc::clone(&ran);
+        let task = tokio::spawn(serve(listener, "test", |_, _, _| false, move |mut s| {
+            let ran = Arc::clone(&ran_in);
+            async move {
+                ran.fetch_add(1, SeqCst);
+                let _ = s.write_all(b"served").await;
+            }
+        }));
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut raw = Vec::new();
+        // A reset counts as the end.
+        let _ = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut raw))
+            .await
+            .expect("the refused connection must close");
+        assert!(raw.is_empty(), "got: {}", String::from_utf8_lossy(&raw));
+        assert_eq!(ran.load(SeqCst), 0, "a refused connection must never reach the handler");
+        task.abort();
+    }
+
+    /// ADR 0049, User isolation: this account's connection is served through the real check.
+    #[tokio::test]
+    async fn this_accounts_connection_reaches_the_handler() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let task = tokio::spawn(serve_own(listener, "test", |mut s| async move {
+            let _ = s.write_all(b"served").await;
+        }));
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut raw = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut raw))
+            .await
+            .expect("this account's connection must be served")
+            .unwrap();
+        assert_eq!(raw, b"served");
+        task.abort();
     }
 
     #[cfg(windows)]

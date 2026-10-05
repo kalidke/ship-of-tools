@@ -93,9 +93,9 @@ one hub account apart. Lane M1 builds the hello admission and that refusal, and 
 `LaneDial::Tcp`, a TCP lane dial that only tests construct. On Windows the frontend,
 its lease, `sotd stdio-bridge` and the lane client connect to whatever answers their
 pipe name, a name in the machine-wide pipe namespace, without checking which account
-serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept
-a connection from any account and rely on the URL's secret alone; lane S1 builds their
-owner check. The comm scripts create the comm folder and its inboxes with no mode of
+serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept only
+through `serve_own`, which drops another account's connection before reading a byte.
+The comm scripts create the comm folder and its inboxes with no mode of
 their own, so these are only as private as the creating shell's umask and the home
 folder above them; no lane is named for that yet.
 

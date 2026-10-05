@@ -326,7 +326,11 @@ pub async fn spawn(preferred: u16) -> Result<()> {
     let port = listener.local_addr().context("static-site server local_addr")?.port();
     BOUND_SITE_PORT.store(port, std::sync::atomic::Ordering::SeqCst);
     tracing::info!(port, "static-site server listening");
-    crate::pages::video::spawn_accept_loop(listener, "docs", sot_log::identity::peer_owner::admit, |s| handle_conn(s, ServeMode::Prefix));
+    tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs", |stream| async move {
+        if let Err(e) = handle_conn(stream, ServeMode::Prefix).await {
+            tracing::debug!(error = %e, "static-site conn ended");
+        }
+    }));
     Ok(())
 }
 
@@ -381,7 +385,11 @@ pub async fn spawn_pool() {
             .write()
             .unwrap_or_else(|p| p.into_inner())
             .insert(port);
-        crate::pages::video::spawn_accept_loop(listener, "docs-pool", sot_log::identity::peer_owner::admit, move |s| handle_conn(s, ServeMode::Pool(port)));
+        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "docs-pool", move |stream| async move {
+            if let Err(e) = handle_conn(stream, ServeMode::Pool(port)).await {
+                tracing::debug!(error = %e, port, "pool-site conn ended");
+            }
+        }));
     }
 }
 

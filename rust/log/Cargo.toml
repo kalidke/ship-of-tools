@@ -28,6 +28,8 @@ thiserror = "2"
 # directly for the same fact.
 gethostname = "0.5"
 getrandom = { version = "0.3", features = ["std"] } # std: the io::Error From impl
+# `identity::peer_owner::serve_own`, the one TCP accept loop (ADR 0049, User isolation).
+tokio = { workspace = true }
 # ADR 0030 §8 "Where it is shown": mirror an FE attach client's terminal
 # reason to `tracing` (`attach_client/client.rs`), not only the pane's own status
 # string -- this crate had no tracing dep before this. Same version the

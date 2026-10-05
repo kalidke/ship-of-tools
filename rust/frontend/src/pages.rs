@@ -101,71 +101,42 @@ pub fn spawn_proxy_manager(
                 }
             };
             tracing::info!(port, %recipe, "proxy: accepting browser connections for backend port");
-            tokio::spawn(serve_listener(listener, port, arm, sot_log::identity::peer_owner::admit, move |browser| {
+            let dial = move |browser| {
                 let (r, g, t) = (recipe.clone(), gate.clone(), token.clone());
                 async move { pipe_one(browser, &r, &g, port, t.as_deref()).await }
+            };
+            tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+                let arm = std::sync::Arc::clone(&arm);
+                let done = dial(browser);
+                async move { serve_browser(port, &arm, done).await }
             }));
         }
         tracing::debug!("proxy: listener channel closed; manager exiting");
     });
 }
 
-/// One listener's accept loop. Each browser connection runs `dial` unless the port is parked (`Arm`), in which case
-/// it is dropped here: no ssh login, no log line. The listener never closes, so the port stays this frontend's for
-/// its whole life, as it always has. `dial` must start no work before its future is polled: a connection `admit`
-/// refuses is dropped unpolled.
-async fn serve_listener<D, Fut>(
-    listener: tokio::net::TcpListener,
-    port: u16,
-    arm: std::sync::Arc<Arm>,
-    admit: sot_log::identity::peer_owner::Admit,
-    dial: D,
-)
+/// One browser connection `serve_own` has admitted, as `done`, the future of its `dial`. A port the daemon refused
+/// (`Arm`) is parked: the connection is dropped here, with no ssh login and no log line. Otherwise `dial` runs and its
+/// answer is logged. The listener never closes, so the port stays this frontend's for its whole life.
+async fn serve_browser<Fut>(port: u16, arm: &Arm, done: Fut)
 where
-    D: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = anyhow::Result<Answer>> + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<Answer>>,
 {
-    loop {
-        match listener.accept().await {
-            Ok((browser, peer)) => {
-                let Some(armed) = arm.dial() else {
-                    continue; // parked: `browser` drops here, closing the connection at once
-                };
-                let local = match browser.local_addr() {
-                    Ok(a) => a,
-                    Err(_) => continue,
-                };
-                let done = dial(browser);
-                let arm = std::sync::Arc::clone(&arm);
-                tokio::spawn(async move {
-                    // Decision 0031: this port serves only this OS account. `done` has not run (`dial` returns a future that does
-                    // nothing until awaited), so dropping it closes another account's connection with no byte written, no ssh
-                    // login and no answer: a stranger can neither dial the daemon nor park the port.
-                    if !tokio::task::spawn_blocking(move || admit("page-proxy", local, peer)).await.unwrap_or(false) {
-                        return;
-                    }
-                    match done.await {
-                        Ok(Answer::Piped | Answer::LinkDown) => {}
-                        Ok(Answer::NotServed) => {
-                            if arm.refused(armed) {
-                                tracing::warn!(port, "proxy: the daemon does not serve this port (bad_port); parked: browser connections to it close here until the page is opened again");
-                            }
-                        }
-                        // A dead child here is a blank page with no
-                        // other carrier — `debug!` → `warn!` (C3 as
-                        // amended §6): a reason at `debug` is
-                        // invisible in a normal run.
-                        Err(e) => tracing::warn!(port, error = %e, "proxy: connection ended"),
-                    }
-                });
-            }
-            Err(e) => {
-                // A transient accept error shouldn't kill the
-                // listener; back off a beat and keep serving.
-                tracing::warn!(port, error = %e, "proxy: accept error");
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let Some(armed) = arm.dial() else {
+        return; // parked: `done` drops unpolled, closing the connection at once
+    };
+    match done.await {
+        Ok(Answer::Piped | Answer::LinkDown) => {}
+        Ok(Answer::NotServed) => {
+            if arm.refused(armed) {
+                tracing::warn!(port, "proxy: the daemon does not serve this port (bad_port); parked: browser connections to it close here until the page is opened again");
             }
         }
+        // A dead child here is a blank page with no
+        // other carrier — `debug!` → `warn!` (C3 as
+        // amended §6): a reason at `debug` is
+        // invisible in a normal run.
+        Err(e) => tracing::warn!(port, error = %e, "proxy: connection ended"),
     }
 }
 
@@ -285,6 +256,25 @@ pub(crate) fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A proxy listener as production runs it: `serve_own` with the real owner check, each admitted connection handed to
+    /// `serve_browser` with the future of its `dial` (ADR 0049, User isolation).
+    fn serve<D, Fut>(
+        listener: tokio::net::TcpListener,
+        port: u16,
+        arm: std::sync::Arc<super::Arm>,
+        dial: D,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        D: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<super::Answer>> + Send + 'static,
+    {
+        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+            let arm = std::sync::Arc::clone(&arm);
+            let done = dial(browser);
+            async move { super::serve_browser(port, &arm, done).await }
+        }))
+    }
+
     /// ADR 0045 decision 4: with the host's link down a browser connection
     /// closes at once with `Answer::LinkDown` and no ssh child is spawned.
     #[tokio::test]
@@ -354,9 +344,7 @@ mod tests {
                 }
             }
         };
-        // This test is about parking, not ownership; its dial drops the stream at once, and the real check refuses a
-        // connection whose far end has already closed.
-        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), |_, _, _| true, dial));
+        let task = serve(listener, port, arm.clone(), dial);
         for _ in 0..6 {
             let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             let mut buf = [0u8; 1];
@@ -424,7 +412,7 @@ mod tests {
                 }
             }
         };
-        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), sot_log::identity::peer_owner::admit, dial));
+        let task = serve(listener, port, arm.clone(), dial);
         let browse = || async move {
             let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             let mut buf = [0u8; 1];
@@ -458,45 +446,6 @@ mod tests {
         assert_eq!(dials.load(SeqCst), 5, "a re-opened page dials again");
         assert!(arm.dial().is_some());
         assert!(!task.is_finished(), "the listener never closes");
-        task.abort();
-    }
-
-    /// Decision 0031: a connection another account owns is closed with no byte, no dial and no parking.
-    #[tokio::test]
-    async fn a_connection_another_account_owns_is_closed_without_a_dial() {
-        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-        use std::sync::Arc;
-        use std::time::Duration;
-        use tokio::io::AsyncReadExt;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let arm = Arc::new(super::Arm::default());
-        let polled = Arc::new(AtomicUsize::new(0));
-        let task = {
-            let polled = polled.clone();
-            tokio::spawn(super::serve_listener(listener, port, arm.clone(), |_, _, _| false, move |b| {
-                let polled = polled.clone();
-                async move {
-                    polled.fetch_add(1, SeqCst);
-                    drop(b);
-                    Ok(super::Answer::Piped)
-                }
-            }))
-        };
-        for _ in 0..5 {
-            let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-            let mut buf = [0u8; 1];
-            let n = tokio::time::timeout(Duration::from_secs(2), client.read(&mut buf))
-                .await
-                .expect("the refused connection must end")
-                .unwrap_or(0);
-            assert_eq!(n, 0);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(polled.load(SeqCst), 0, "a refused connection must never reach the dial");
-        assert!(arm.dial().is_some(), "a refused stranger must not park the port");
-        assert!(!task.is_finished());
         task.abort();
     }
 

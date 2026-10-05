@@ -3929,6 +3929,7 @@ dependencies = [
  "sot-log",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "uuid",
  "vt100-ctt",
