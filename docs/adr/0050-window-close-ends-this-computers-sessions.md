@@ -230,7 +230,7 @@ connection is the only handle.
   does not run at the daemon's exit: the release check (update.rs `check`) and staging and prepare (update.rs
   `stage_prepare_arm_inner`), whose children are curl or gh, tar, unzip or PowerShell, git, julia and npm. A
   shutdown or exit while one runs leaves it and what it started to end on their own; under the systemd unit its
-  cgroup ends them.
+  cgroup ends them. The three calls carry `clippy::disallowed_methods` allows naming this limit.
 - (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
   their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
   an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
