@@ -615,17 +615,13 @@ async fn supervise(
     }
 }
 
-/// Spawn the sampler for one host and feed it the script over stdin.
-async fn spawn_source(
-    host: &MonitorHost,
-    sig: &'static crate::lifecycle::child_signal::Signal,
-) -> std::io::Result<crate::lifecycle::child_signal::Contained> {
-    let interval = "1";
+/// The command that runs the sampler for one host, before its pipes are set.
+fn sampler_command(host: &MonitorHost, interval: &str) -> Command {
     #[cfg(test)]
     let stub = tests::STUB_SAMPLER.lock().unwrap().iter().find(|(h, _)| *h == host.name).map(|(_, p)| p.clone());
     #[cfg(not(test))]
     let stub: Option<String> = None;
-    let mut cmd = if let Some(program) = stub {
+    if let Some(program) = stub {
         Command::new(program)
     } else if host.local {
         let mut c = Command::new("bash");
@@ -634,21 +630,17 @@ async fn spawn_source(
     } else {
         let alias = host.ssh_alias.as_deref().unwrap_or(&host.name);
         let mut c = Command::new("ssh");
-        c.arg("-o")
-            .arg("BatchMode=yes")
-            .arg("-o")
-            .arg("ConnectTimeout=10")
-            .arg("-o")
-            .arg("ServerAliveInterval=15")
-            .arg("-o")
-            .arg("ServerAliveCountMax=3")
-            .arg(alias)
-            .arg("bash")
-            .arg("-s")
-            .arg("0")
-            .arg(interval);
+        c.args(sot_protocol::topology::ssh_bridge::SSH_OPTS).arg(alias).args(["bash", "-s", "0", interval]);
         c
-    };
+    }
+}
+
+/// Spawn the sampler for one host and feed it the script over stdin.
+async fn spawn_source(
+    host: &MonitorHost,
+    sig: &'static crate::lifecycle::child_signal::Signal,
+) -> std::io::Result<crate::lifecycle::child_signal::Contained> {
+    let mut cmd = sampler_command(host, "1");
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

@@ -19,6 +19,8 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Every sidecar child starts through `Signal::spawn`, so the shutdown signal kills it with everything it started: the
   kernel, Pluto and the monitor take the `Signal` passed in, the REPL and MathJax use `child_signal::process()` and
   `fired()`; the monitor's respawn backoff ends at the fire.
+- A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
+  (`sampler_command`).
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
 - A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason is logged once per change
   (`should_log`).
@@ -35,7 +37,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Kernel::request`, `file.preview`,
 `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`,
 `monitor.subscribe`, `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `bound_pluto_port`,
-`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`. Uses: `dispatch`, `Signal::spawn`, `Contained`, `Signal`, `child_signal::fired`,
+`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`. Uses: `dispatch`, `SSH_OPTS`, `Signal::spawn`, `Contained`, `Signal`, `child_signal::fired`,
 `child_signal::process`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
 `revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`.

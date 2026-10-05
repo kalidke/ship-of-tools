@@ -253,6 +253,19 @@
     /// Program override per host name, so no test touches `bash` or `ssh`.
     pub(super) static STUB_SAMPLER: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
 
+    /// A remote sampler's ssh is built from the bridges' option list, so it turns ssh sharing off as they do: no master
+    /// forks away from the tree the daemon kills.
+    #[test]
+    fn a_remote_sampler_turns_ssh_sharing_off() {
+        let host = MonitorHost { name: "h-name".to_string(), ssh_alias: Some("h-alias".to_string()), local: false };
+        let cmd = sampler_command(&host, "1");
+        assert_eq!(cmd.as_std().get_program(), "ssh");
+        let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let want: Vec<String> =
+            sot_protocol::topology::ssh_bridge::SSH_OPTS.iter().copied().chain(["h-alias", "bash", "-s", "0", "1"]).map(String::from).collect();
+        assert_eq!(args, want);
+    }
+
     /// The respawn backoff is a bare sleep: after the shutdown the loop must
     /// return, not wake and start another sampler.
     #[cfg(unix)]
