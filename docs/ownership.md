@@ -270,6 +270,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
 | `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `Held`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `Held`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
+| process-start rule: each start outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
 | quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |

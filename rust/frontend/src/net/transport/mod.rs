@@ -267,6 +267,7 @@ async fn connect_and_run(
             .await
         }
         Dial::Ssh(recipe) => {
+            #[allow(clippy::disallowed_methods, reason = "the window's control ssh, owned by the window")]
             let mut child = sot_protocol::topology::ssh_bridge::LinkGate::probe(recipe)
                 .with_context(|| format!("spawn ssh {recipe}"))?;
             let stdin = child.stdin.take().expect("spawned with a piped stdin");

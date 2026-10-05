@@ -191,6 +191,7 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
+    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
     let out = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
     if !out.update_available {
         tracing::info!(status = %out.status, current = %cfg.current_version, "fe self-update: no newer release — nothing to do");
@@ -218,7 +219,9 @@ async fn run(install: InstallManifest, current: String) {
         partial_bytes = at.partial_bytes.unwrap_or(0),
         "fe self-update: newer release found — continuing from what is already on disk"
     );
-    if let Err(e) = sot_updater::stage(&cfg, &id).await {
+    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
+    let staged = sot_updater::stage(&cfg, &id).await;
+    if let Err(e) = staged {
         tracing::warn!(tag = %id.tag, error = %e, "fe self-update: staging failed");
         return;
     }
@@ -233,6 +236,7 @@ async fn run(install: InstallManifest, current: String) {
         julia_bin: None,
         npm: false,
     };
+    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
     let state = match sot_updater::prepare::prepare(&spec).await {
         Ok(s) => s,
         Err(e) => {
@@ -291,6 +295,7 @@ pub fn print_status() -> ! {
     let code = rt.block_on(async {
         // Same 45 s ceiling the daemon's handler uses: a wedged network path
         // must degrade to a printed status, not hang at the keyboard.
+        #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
         let check = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher);
         let Ok(out) = tokio::time::timeout(std::time::Duration::from_secs(45), check).await else {
             println!("  release        check unavailable: timed out");

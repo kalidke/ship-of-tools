@@ -270,7 +270,9 @@ fn spawn_detached(
     let _ = workspace_id;
     let mut cmd = build("normal", false);
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
-    match cmd.spawn() {
+    #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+    let first = cmd.spawn();
+    match first {
         Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
             tracing::warn!(
                 state_dir = ?state_dir,
@@ -279,7 +281,9 @@ fn spawn_detached(
             );
             let mut cmd = build("degraded", false);
             cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-            cmd.spawn()
+            #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+            let degraded = cmd.spawn();
+            degraded
         }
         other => other,
     }
@@ -451,7 +455,9 @@ fn spawn_detached(
             Ok(())
         });
     }
-    cmd.spawn()
+    #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+    let spawned = cmd.spawn();
+    spawned
 }
 
 /// Every platform `sotd` ships for. The gate this module carried until
@@ -514,7 +520,9 @@ fn spawn_detached(
             Ok(())
         });
     }
-    cmd.spawn()
+    #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+    let spawned = cmd.spawn();
+    spawned
 }
 
 #[cfg(test)]

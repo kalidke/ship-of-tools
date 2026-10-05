@@ -121,7 +121,9 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await
+        #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
+        let checked = sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await;
+        checked
     }
 }
 
@@ -191,7 +193,9 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 }
 
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
-    if let Err(e) = sot_updater::stage(cfg, id).await {
+    #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
+    let staged = sot_updater::stage(cfg, id).await;
+    if let Err(e) = staged {
         // The whole chain, not just the outermost context: the OS error is the
         // thing that names the fault, and `%e` drops it.
         let cause = e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": ");
@@ -212,6 +216,7 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
         return;
     };
     let spec = prepare_spec(&install, cfg, id);
+    #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
     let state = match sot_updater::prepare::prepare(&spec).await {
         Ok(s) => s,
         Err(e) => {

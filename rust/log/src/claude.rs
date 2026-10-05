@@ -552,6 +552,7 @@ pub fn run(config: ClaudeConfig, operator: mpsc::Receiver<OperatorCmd>) -> Resul
             });
         }
     }
+    #[allow(clippy::disallowed_methods, reason = "the Claude adapter starts its helper inside its cgroup fence (ADR 0040)")]
     let mut child = cmd.spawn()?;
 
     let (tx, rx) = mpsc::channel::<Event>();

@@ -158,7 +158,9 @@ pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher)
 
 /// Back-compat wrapper: check via a full config (ignores the root).
 pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
-    check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await
+    #[allow(clippy::disallowed_methods, reason = "the updater's own wrapper around its entry point")]
+    let checked = check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
+    checked
 }
 
 /// The completed-stage directory for one release identity. Keyed by tag AND

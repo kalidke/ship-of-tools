@@ -96,6 +96,7 @@ impl Signal {
         let sigchld = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
         crate::lifecycle::contain::prepare(cmd.as_std_mut());
         cmd.kill_on_drop(true);
+        #[allow(clippy::disallowed_methods, reason = "the containment's own start: contain::prepare ran before it, and adopt and hold follow (ADR 0050, Shutdown)")]
         let mut child = cmd.spawn()?;
         let tree = match crate::lifecycle::contain::adopt(
             child.id(),
@@ -134,6 +135,7 @@ impl Signal {
         cmd: &mut std::process::Command,
     ) -> std::io::Result<(std::process::Child, Held)> {
         crate::lifecycle::contain::prepare(cmd);
+        #[allow(clippy::disallowed_methods, reason = "the containment's own start: contain::prepare ran before it, and adopt and hold follow (ADR 0050, Shutdown)")]
         let mut child = cmd.spawn()?;
         let tree = match crate::lifecycle::contain::adopt(
             Some(child.id()),

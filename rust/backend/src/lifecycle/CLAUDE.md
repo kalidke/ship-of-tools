@@ -15,6 +15,8 @@ computer's sessions end (ADR 0050).
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
   `Contained`, `Held`, `fire`, `fired`, `live_children`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
   `exited`, `exited_pid`.
+- Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
+  exception's allow.
 - The bounds and exit codes in `sot_protocol::ops::lease`.
 - The window's half, rust/frontend/src/lease.rs.
 
@@ -40,6 +42,10 @@ computer's sessions end (ADR 0050).
   `Held::release`; `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
 - `main` resets `SIGCHLD` to its default before anything else (`reset_child_signal`), so an ignored one inherited from the
   parent cannot make the kernel reap a contained leader early.
+- No Rust code in the workspace starts a process except through `Signal::spawn`, `Signal::spawn_std` or
+  `Signal::output`, or at a start whose `#[allow(clippy::disallowed_methods)]` gives its reason: rust.yml's
+  "Disallowed methods" step fails on any other (`rust/clippy.toml`, the process-spawns group). The rule cannot see a
+  dependency's own function that starts a process.
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections

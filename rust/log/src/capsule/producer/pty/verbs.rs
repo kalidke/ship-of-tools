@@ -238,6 +238,7 @@ impl Producer for PtyProducer {
                 Ok(())
             });
         }
+        #[allow(clippy::disallowed_methods, reason = "the capsule starts the row's agent inside the capsule's own containment (ADR 0041, ADR 0043)")]
         let child = cmd.spawn().map_err(Error::Io)?;
         let pid = child.id() as libc::pid_t;
         // From here on this producer tracks the leader ITSELF, via raw

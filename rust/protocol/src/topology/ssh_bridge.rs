@@ -114,7 +114,9 @@ fn command(recipe: &SshRecipe) -> std::process::Command {
 /// implements `sot_log::lane::client::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
 fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
-    command(recipe).spawn()
+    #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
+    let child = command(recipe).spawn();
+    child
 }
 
 /// Spawn the child for an async/tokio caller — the frontend's control
@@ -123,7 +125,9 @@ fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
 /// orphaned `ssh` running past its client — the async twin of
 /// `BridgedClient`'s own explicit `Drop` on the sync side.
 fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
-    tokio::process::Command::from(command(recipe)).kill_on_drop(true).spawn()
+    #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
+    let child = tokio::process::Command::from(command(recipe)).kill_on_drop(true).spawn();
+    child
 }
 
 /// Why a gated spawn did not start a child.

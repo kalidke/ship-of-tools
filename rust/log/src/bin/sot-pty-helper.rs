@@ -71,6 +71,7 @@ fn main() {
         // `sot-conpty-helper.rs`'s identical doc for the Windows-job
         // analogue of this same reasoning.
         #[allow(clippy::zombie_processes)]
+        #[allow(clippy::disallowed_methods, reason = "a test rig binary for the capsule's containment tests")]
         let mut grandchild = std::process::Command::new(exe)
             .arg("--child")
             .stdin(std::process::Stdio::null())

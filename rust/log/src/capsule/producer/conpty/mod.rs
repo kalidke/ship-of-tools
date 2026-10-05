@@ -660,6 +660,7 @@ impl ConptySpawn {
         startup.lpAttributeList = attrs.as_ptr();
 
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        #[allow(clippy::disallowed_methods, reason = "the capsule starts the row's agent inside the capsule's own containment (ADR 0041, ADR 0043)")]
         let ok = unsafe {
             CreateProcessW(
                 std::ptr::null(), // lpApplicationName: NULL — argv[0] is the first command-line token (see build_command_line)

@@ -122,6 +122,7 @@ pub fn spawn_opener(arg: &str) -> std::io::Result<()> {
     {
         // Avoid `cmd /c start`: shell metacharacters in URLs, especially
         // `&secret=...` on Pluto links, are otherwise parsed by cmd.exe.
+        #[allow(clippy::disallowed_methods, reason = "the window hands the address to the OS browser, which outlives the window by design")]
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", arg])
             .spawn()
@@ -129,6 +130,7 @@ pub fn spawn_opener(arg: &str) -> std::io::Result<()> {
     }
     #[cfg(target_os = "linux")]
     {
+        #[allow(clippy::disallowed_methods, reason = "the window hands the address to the OS browser, which outlives the window by design")]
         std::process::Command::new("xdg-open")
             .arg(arg)
             .spawn()
@@ -136,6 +138,7 @@ pub fn spawn_opener(arg: &str) -> std::io::Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
+        #[allow(clippy::disallowed_methods, reason = "the window hands the address to the OS browser, which outlives the window by design")]
         std::process::Command::new("open")
             .arg(arg)
             .spawn()

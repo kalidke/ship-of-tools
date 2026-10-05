@@ -222,11 +222,13 @@ fn pid_alive(pid: i32) -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        std::process::Command::new("sh")
+        #[allow(clippy::disallowed_methods, reason = "an updater step; started inside the daemon it is ADR 0050 known limit (n)")]
+        let alive = std::process::Command::new("sh")
             .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
             .status()
             .map(|s| s.success())
-            .unwrap_or(false)
+            .unwrap_or(false);
+        alive
     }
 }
 

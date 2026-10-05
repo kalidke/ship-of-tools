@@ -154,6 +154,7 @@ async fn pipe_one(
     port: u16,
     token: Option<&str>,
 ) -> anyhow::Result<Answer> {
+    #[allow(clippy::disallowed_methods, reason = "the window's page-proxy ssh, owned by the window")]
     let mut child = match gate.spawn_async(recipe) {
         Ok(child) => child,
         Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),

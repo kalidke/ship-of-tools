@@ -241,6 +241,7 @@ async fn validate_tree(dir: &Path, top: &str) -> Result<()> {
 async fn run(cmd: &mut tokio::process::Command, what: &str) -> Result<Vec<u8>> {
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
+    #[allow(clippy::disallowed_methods, reason = "an updater step; started inside the daemon it is ADR 0050 known limit (n)")]
     let out = match tokio::time::timeout(EXTRACT_TIMEOUT, cmd.output()).await {
         Err(_) => bail!("{what} timed out after {}s", EXTRACT_TIMEOUT.as_secs()),
         Ok(r) => r.with_context(|| format!("spawning {what}"))?,
