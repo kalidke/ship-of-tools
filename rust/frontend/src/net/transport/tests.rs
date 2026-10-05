@@ -152,6 +152,9 @@ async fn a_tree_root_error_reply_does_not_end_the_session() {
 async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
     use interprocess::local_socket::{tokio::prelude::*, GenericFilePath, ListenerOptions};
 
+    // A named-pipe path on Windows, a socket file elsewhere -- both go
+    // through `GenericFilePath`, exactly the route `connect_pipe` takes.
+    #[cfg(windows)]
     let unique = format!(
         "sot-transport-test-{}-{}",
         std::process::id(),
@@ -160,8 +163,6 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
             .unwrap()
             .as_nanos()
     );
-    // A named-pipe path on Windows, a socket file elsewhere -- both go
-    // through `GenericFilePath`, exactly the route `connect_pipe` takes.
     #[cfg(windows)]
     let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\{unique}"));
     // `connect_pipe` refuses a socket outside a private folder (ADR 0049, User isolation), so the socket gets its own,
