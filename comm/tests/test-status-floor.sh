@@ -269,7 +269,6 @@ check "race: a done committed while stop waits for the lock is kept" case_race_d
 check "race: a machine start committed while stop waits ends gray, not blue" case_race_machine_start_while_stop_waits_ends_gray
 check "a failed declaration write exits non-zero and leaves the row untouched" case_failed_declaration_write_exits_nonzero
 check "a failed prompt-event write exits non-zero and leaves the row untouched" case_failed_prompt_write_exits_nonzero
-rmmarker
 
 echo ""
 echo "$PASS passed, $FAIL failed"
