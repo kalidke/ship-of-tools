@@ -52,6 +52,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PipeName,
 
+    # Mode: accepted, Oneshot only, for the previous release's comm-relay.sh, which passes it and is published after
+    # this file (comm/bin-folders.txt); nothing in this release passes it. The next release deletes it.
+    [ValidateSet('Oneshot')]
+    [string]$Mode = 'Oneshot',
+
     # The reply-matching key; required.
     [string]$Op,
 
