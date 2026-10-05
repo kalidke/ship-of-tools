@@ -316,6 +316,37 @@ end
     end
 end
 
+@testset "a refusal lets go of the file it was reading" begin
+    # An error inside a line loop over an open file would hold the file until GC; on Windows a held file cannot be
+    # removed. GC stays off, so a leaked stream would still be open at the check.
+    held(path) = Sys.iswindows() ? !(try rm(path); true catch; false end) :
+        (rp = realpath(path); any(fd -> (try readlink(joinpath("/proc/self/fd", fd)) catch; "" end) == rp, readdir("/proc/self/fd")))
+    mktempdir() do root
+        list = joinpath(root, "list.txt")
+        write(list, "missing\n")
+        lib = mkpath(joinpath(root, "lib"))
+        write(joinpath(lib, "lib.sh"), "source \"\$(dirname \"\${BASH_SOURCE[0]}\")/part.sh\" || return 1\n")
+        part = joinpath(lib, "part.sh")
+        write(part, "p=1\n")
+        chmod(part, 0o000)
+        unreadable = try read(part); false catch; true end
+        GC.enable(false)
+        try
+            @test (try ShipTools._comm_bin_folders(list, root); false catch; true end)
+            Sys.isapple() ? (@test_skip false) : (@test !held(list))
+            if unreadable && !Sys.isapple()
+                @test (try ShipTools._comm_bin_text(lib, "lib.sh"); false catch; true end)
+                @test !held(joinpath(lib, "lib.sh"))
+            else
+                @test_skip false
+            end
+        finally
+            GC.enable(true)
+            chmod(part, 0o644)
+        end
+    end
+end
+
 @testset "install_comm makes a new comm folder its user's alone" begin
     # The process mask: set it and get the old one back. Windows has no umask, so its branch is never lowered there.
     @static if Sys.iswindows()
