@@ -527,11 +527,36 @@ fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Inst
         classify_hello_reply(hello_reply)?;
         crate::codec::read_frame_blocking(&mut r).map_err(|e| unreachable(&e))
     });
+    // Only a failure in which the daemon sent nothing (the write, a read that ends before a frame, the bound) is
+    // explained by the ssh child's last stderr line; a refused hello and every reply's own classification are the
+    // daemon's answer and are returned as it gave them (BLOCKER 2: a stderr line used to replace them).
     match outcome {
         Some(Ok(frame)) => classify_reply(frame),
+        Some(Err(TransportError::Unreachable(e))) => Err(TransportError::Unreachable(with_ssh_line(stream, e))),
         Some(Err(e)) => Err(e),
-        None => Err(TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"))),
+        None => Err(TransportError::Unreachable(with_ssh_line(
+            stream,
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"),
+        ))),
     }
+}
+
+/// `e`, with the ssh child's last stderr line after it when `stream` is one: a dying child's stdout closes as a clean
+/// `Ok(0)` EOF that the codec turns into its own generic text, so the child's own complaint is the diagnosis to add.
+fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
+    if let LaneStream::Bridged(bridged) = stream {
+        if let Some(line) = bridged.poll_last_stderr() {
+            return std::io::Error::new(e.kind(), format!("{e}: {line}"));
+        }
+    }
+    e
+}
+
+/// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
+/// client that holds the stream and the peer the daemon reported.
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame) -> Result<DaemonLaneClient, TransportError> {
+    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + CONNECT_BOUND)?;
+    Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
 }
 
 impl DaemonLaneEndpoint {
@@ -582,27 +607,7 @@ impl DaemonLaneEndpoint {
             }
         };
 
-        let handshake_deadline = Instant::now() + CONNECT_BOUND;
-        let outcome = run_handshake(&stream, &hello, &frame, handshake_deadline);
-        // A dying ssh child's stdout closes as a clean `Ok(0)` EOF, not
-        // an `io::Error` `BridgedClient::read` has anything to wrap — the
-        // codec layer above it turns that EOF into its own generic
-        // parse-failure text before `Client::read`'s error path (the
-        // `diagnose` this same struct otherwise gives `write_all`/`read`)
-        // ever gets a look. This is the one place both paths funnel
-        // through, so it is where the substitution has to happen for the
-        // EOF case: on ANY handshake failure over a `Bridged` stream,
-        // prefer the child's last stderr line over whatever codec text
-        // resulted, matching `write_all`/`read`'s existing rule.
-        if outcome.is_err() {
-            if let LaneStream::Bridged(bridged) = &stream {
-                if let Some(line) = bridged.poll_last_stderr() {
-                    return Err(TransportError::Unreachable(std::io::Error::other(line)));
-                }
-            }
-        }
-        let (pid, created) = outcome?;
-        Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
+        handshake(stream, &hello, &frame)
     }
 }
 

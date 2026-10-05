@@ -60,3 +60,5 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   `relay_command_line()` and sot-backend has no library target.
 - Read hosts.toml only through `locate`, `load` and `parse`; build an ssh login only through `SshRecipe`.
 - The local endpoint is never the literal `sot`: on Windows the daemon's label is `local`.
+- Over an ssh child, the lane dial returns a daemon's answer, a refused hello included, as the daemon gave it; the
+  child's last stderr line is added only to a failure in which the daemon sent nothing (`run_handshake`).

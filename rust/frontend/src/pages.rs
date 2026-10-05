@@ -153,11 +153,22 @@ async fn pipe_one(
     port: u16,
     token: Option<&str>,
 ) -> anyhow::Result<Answer> {
-    let mut child = match gate.spawn_async(recipe) {
+    let child = match gate.spawn_async(recipe) {
         Ok(child) => child,
         Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),
         Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
     };
+    pipe_child(child, browser, port, token).await
+}
+
+/// The rest of [`pipe_one`] over a spawned child (an ssh login, or in a test a stand-in): the handshake, the splice,
+/// and, when it fails, the child's last stderr line after the error's own words.
+async fn pipe_child(
+    mut child: tokio::process::Child,
+    browser: tokio::net::TcpStream,
+    port: u16,
+    token: Option<&str>,
+) -> anyhow::Result<Answer> {
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
     let d_rd = child.stdout.take().expect("spawned with a piped stdout");
     let stderr = child.stderr.take().expect("spawned with a piped stderr");
@@ -172,14 +183,15 @@ async fn pipe_one(
     let mut d_buf = BufReader::new(d_rd);
     let result = pipe_one_over(&mut d_wr, &mut d_buf, browser, port, token).await;
     // `child` drops here (`kill_on_drop`), ending this connection's ssh
-    // login. The child's last stderr line is the diagnosis when it died
-    // before or during the splice — beats a generic broken-pipe message.
-    if result.is_err() {
-        if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
-            return Err(anyhow::anyhow!(line));
-        }
+    // login. The child's last stderr line is added after the error's own words when it died
+    // before or during the splice: the daemon's answer (a refused hello) stays first.
+    match result {
+        Err(e) => match sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+            Some(line) => Err(anyhow::anyhow!("{e:#}: {line}")),
+            None => Err(e),
+        },
+        ok => ok,
     }
-    result
 }
 
 async fn pipe_one_over<W, R>(
@@ -511,5 +523,29 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A refused hello keeps the daemon's words first and takes the ssh login's last stderr line after them, never the
+    /// line alone (BLOCKER 2 of review round 1). The login is `sh`, which writes the line and refuses the hello.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_hello_keeps_its_words_before_the_ssh_line() {
+        use sot_protocol::{op, Frame};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (browser, _) = listener.accept().await.unwrap();
+        let refusal = Frame::res(1, op::HELLO, serde_json::json!({ "error": "no thanks", "code": "os_user_conflict" }));
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo 'a line ssh wrote to stderr' >&2; read a; read b; printf '%s\\n' \"$REFUSAL\"")
+            .env("REFUSAL", serde_json::to_string(&refusal).unwrap())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let err = super::pipe_child(child, browser, port, None).await.map(|_| ()).unwrap_err();
+        assert_eq!(err.to_string(), format!("daemon refused the hello for port {port}: os_user_conflict: a line ssh wrote to stderr"));
     }
 }

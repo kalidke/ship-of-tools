@@ -408,3 +408,54 @@ fn bridged_cancel_unblocks_a_parked_read_via_kill() {
         other => panic!("expected cancel to unblock the read as EOF or an error, got {other:?}"),
     }
 }
+
+/// An ssh login stood in for by `sh`: it writes one line to stderr, reads the hello and the request, and answers with
+/// the given reply lines (none at all for a login that dies first).
+#[cfg(unix)]
+fn ssh_stand_in(replies: &[serde_json::Value]) -> std::process::Child {
+    let lines: Vec<String> = replies.iter().map(|v| serde_json::to_string(v).unwrap()).collect();
+    let mut script = String::from("echo 'a line ssh wrote to stderr' >&2; read a; read b;");
+    for i in 0..lines.len() {
+        script.push_str(&format!(" printf '%s\\n' \"$REPLY_{i}\";"));
+    }
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(script).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    for (i, line) in lines.iter().enumerate() {
+        cmd.env(format!("REPLY_{i}"), line);
+    }
+    cmd.spawn().expect("`sh` must be on PATH for this test")
+}
+
+#[cfg(unix)]
+fn handshake_over_ssh_stand_in(replies: &[serde_json::Value]) -> Result<DaemonLaneClient, TransportError> {
+    let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
+    let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
+    handshake(LaneStream::Bridged(BridgedClient::wrap(ssh_stand_in(replies)).expect("wrap")), &hello, &request)
+}
+
+/// Over an ssh login a daemon's answer is returned as the daemon gave it, never replaced by the login's stderr (BLOCKER 2
+/// of review round 1: a stderr line used to turn a refused hello into a line of ssh's own); only a failure in which the
+/// daemon sent nothing takes the login's last line, after the error's own words.
+#[cfg(unix)]
+#[test]
+fn a_daemons_answer_over_ssh_is_never_replaced_by_its_stderr() {
+    let refused_hello = Frame::res(1, op::HELLO, serde_json::json!({ "error": "no thanks", "code": "os_user_conflict" }));
+    match handshake_over_ssh_stand_in(&[serde_json::to_value(&refused_hello).unwrap()]) {
+        Err(TransportError::Refused { code, detail }) => assert_eq!((code.as_str(), detail.as_str()), ("os_user_conflict", "no thanks")),
+        other => panic!("a refused hello must stay Refused, got {:?}", other.map(|_| ())),
+    }
+
+    let accepted_hello = Frame::res(1, op::HELLO, serde_json::json!({ "ok": true }));
+    let refused_lane = Frame::res(2, op::LANE_CONNECT, serde_json::json!({ "error": "no such row", "code": "unknown_workspace" }));
+    match handshake_over_ssh_stand_in(&[serde_json::to_value(&accepted_hello).unwrap(), serde_json::to_value(&refused_lane).unwrap()]) {
+        Err(TransportError::Refused { code, .. }) => assert_eq!(code, "unknown_workspace"),
+        other => panic!("a refused lane.connect must stay Refused, got {:?}", other.map(|_| ())),
+    }
+
+    match handshake_over_ssh_stand_in(&[]) {
+        Err(TransportError::Unreachable(e)) => {
+            assert!(e.to_string().ends_with(": a line ssh wrote to stderr"), "the login's line follows the error's own words: {e}");
+        }
+        other => panic!("a login that died without a word is Unreachable, got {:?}", other.map(|_| ())),
+    }
+}
