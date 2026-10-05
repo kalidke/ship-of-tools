@@ -8,6 +8,7 @@
 // winit drives the main thread for window/input/redraw; tokio carries the
 // Unix-socket protocol traffic to/from the backend (ADR 0010).
 
+mod browser_open;
 mod cli;
 mod lease;
 mod net;
@@ -19,6 +20,8 @@ mod ui;
 use std::sync::mpsc;
 
 use anyhow::Result;
+use sot_log::secret::RedactingWriter;
+use tracing_subscriber::util::SubscriberInitExt;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 /// Windows taskbar grouping: declare an explicit Application User Model ID so
@@ -47,17 +50,27 @@ fn set_app_user_model_id() {
     }
 }
 
-fn main() -> Result<()> {
-    // Parse before tracing init so `--version` exits with clean stdout —
-    // the updater and scripts parse it (ADR 0030 §1).
-    let cli = cli::Cli::parse();
-
+/// The window's log: events at the `RUST_LOG` level (default `info`), each masked of page secrets
+/// (`sot_log::secret`) and written, without colour codes, to a writer from `make`.
+fn log_subscriber<W: std::io::Write + 'static>(
+    make: impl Fn() -> W + Send + Sync + 'static,
+) -> impl tracing::Subscriber + Send + Sync {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
-        .init();
+        .with_ansi(false)
+        .with_writer(move || RedactingWriter(make()))
+        .finish()
+}
+
+fn main() -> Result<()> {
+    // Parse before tracing init so `--version` exits with clean stdout —
+    // the updater and scripts parse it (ADR 0030 §1).
+    let cli = cli::Cli::parse();
+
+    log_subscriber(std::io::stdout).init();
 
     // Set the taskbar AUMID before any window exists so the running window
     // merges into the pinned shortcut's button (Windows-only; see above).
@@ -154,4 +167,29 @@ fn main() -> Result<()> {
     let mut app = ui::App::new(evt_rx, rt, cli, evt_tx, conns, Some(pending_transports), leases);
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADR 0049, User isolation: the window's log never holds a page secret an event carries.
+    #[test]
+    fn the_window_log_masks_page_secrets() {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let path = std::env::temp_dir().join(format!("sot-window-log-{}-{nanos}.log", std::process::id()));
+        let file = std::fs::File::create(&path).unwrap();
+        let subscriber = log_subscriber(move || file.try_clone().unwrap());
+        let token = "0123456789abcdef0123456789abcdef";
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
+        });
+        let written = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");
+        assert!(!written.contains(token), "the token reached the file: {written}");
+        assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
+        // No colour codes: on Windows this output is a file, and they would split a field name from its `=`.
+        assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
+    }
 }

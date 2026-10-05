@@ -44,7 +44,7 @@ use crate::ui::preview::markdown::media::{
 use crate::ui::persist::settings::Settings;
 use crate::net::transport::OutgoingReq;
 use crate::net::hosts::{PendingTransport, lane_dial, resolve_default_host, resolve_monitor_host};
-use crate::pages::{open_html_in_browser, open_url_in_browser};
+use crate::pages::open_html_in_browser;
 use crate::lease::{ExitReason, ExitStep, close_now, exit_intent};
 use crate::relaunch::relaunch_sentinel_path;
 #[cfg(windows)]

@@ -116,6 +116,55 @@ speaking the protocol; its last stderr line is the diagnosis, surfaced in
 the pane's own status text or, for a proxied page, a log line — no
 per-cause exit codes to learn.
 
+## Browser-facing ports
+
+A browser can only speak TCP, so the pages a daemon serves (video,
+documentation and its pool) and the frontend's page proxy keep loopback
+ports. Every one of them checks which OS account owns each incoming
+connection before reading a byte, and closes any other account's
+connection without answering: on Linux and macOS from the kernel's TCP
+table, which records the account that opened each connection, and on
+Windows from the account of the process that bound the connection's
+socket, refused if that process started after the bind. The first refusal
+per account and port is logged as a warning. A connection the daemon makes
+itself, the proxy reaching a page for a remote frontend, is the daemon's
+own account and is served.
+
+Pluto's server and the server `wglshow` starts in your REPL are Julia's
+own listeners on loopback ports, which any account on the box can reach,
+so each answers nothing without a secret drawn from the operating system's
+secure generator. Pluto serves everything, its own files included,
+under a path that is Pluto's session secret, and each
+notebook runs in a worker that checks a cluster cookie, read from its
+standard input, on every connection. A `wglshow` figure is served on a port
+the operating system assigns, at an address with a secret in it, and its
+websocket under an unguessable session id; the page carries its scripts and
+files inside it, so another account that finds the port gets nothing. One
+server per REPL keeps its port and its secret for the REPL's life, so the
+secret is never valid on a port it has let go. The page is sent with
+`Referrer-Policy: no-referrer`.
+
+No page address goes on a command line, where another account could read
+it. The frontend hands the browser only the address of a one-use loopback
+listener of its own. That listener serves this account alone, answers the
+browser's first request with a redirect to the page, and then closes. Log
+files mask page secrets (`sot_log::secret`), and a `BrowserView` displays
+only a page's host and port. The logs and the screen are this account's own;
+the channels another account can read are command lines and ports, and
+neither carries a page secret.
+
+An address your own code takes out of a `BrowserView` (`bv.url`) and returns
+or prints is your own output, shown like any other value on this account's
+own channels. An address you pass to `sot-fe open-url` is on that command's
+line: open a figure on one frontend with `wglshow(fig; open = "<fe>")`. A
+page your own code serves on a port it binds itself is a socket Ship of
+Tools never opened. Any account on that box can reach it, and nothing here
+can change that. Serve figures with `wglshow`.
+
+Another account can still fill one of these listeners' queues and slow your
+own connections; each connection it opens is refused, or answered with
+nothing, quickly. The guarantee is isolation, not availability.
+
 ## What this page does not yet cover
 
 Known limits of the link gate:
@@ -131,6 +180,5 @@ The window and the bridge speak only to an endpoint of their own OS account: a
 socket in a folder private to that account on Unix, a pipe served by that
 account's process on Windows.
 
-Later work in this same design (per-user isolation for the browser-facing
-ports and the daemon-side account guard) lands in stages after this one and
-extends this page when it does.
+Later work in this same design (the daemon-side account guard) lands in stages after this one and extends this page
+when it does.

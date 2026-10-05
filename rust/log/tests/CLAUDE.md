@@ -21,8 +21,10 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `fixtures/`: committed bytes: the golden `.sotseg` segments, the pinned lane `.bin` files and the fake Messages API script.
 - `golden.rs`: the v1 segment bytes pinned against the committed `.sotseg` fixtures; Unix and Windows.
 - `macos_kernel_facts/`: the macOS kernel behaviours the lane rests on, one module per fact group (peer token, pty hangup, kqueue death watch, pty revoke); macOS only.
+- `other_account.rs`: a client run as `sudo -n -u nobody` gets no byte from a `serve_own` listener, a client of this account does (ADR 0049, User isolation); Unix, skipped where passwordless sudo is not available.
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
+- `isolation_guards.rs`: the source guards of ADR 0049, User isolation, that a lint cannot make, over the production source: every accept of the Rust processes is a listed listener; the listeners the Julia children and Node helpers open in their source are listed; no browser opener outside `browser_open.rs`; no secret, token or address as a command-line argument; every platform.
 - `socket_unix/`: `SocketServer` and `SocketClient` over real Unix sockets, process-isolated: connect, teardown, close, client modules; Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).

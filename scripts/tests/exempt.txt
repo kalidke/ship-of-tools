@@ -22,7 +22,6 @@ no-page **/skills/**          E5 every skill folder: its SKILL.md is its page
 no-page docs/*/**             E5 everything below docs/
 
 # E5: one-file folders kept for packaging
-no-page julia/pluto                      E5 sidecar start.jl, one file
 no-page julia/plugins/*                  E5 one-file plugin package, no page each
 no-page examples/*/**                    E5 the folders below examples/
 no-page rust/backend/sidecars/mathjax/** E5 packaged sidecar

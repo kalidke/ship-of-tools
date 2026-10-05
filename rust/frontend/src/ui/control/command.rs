@@ -125,7 +125,8 @@ pub(in crate::ui) fn route_fe_command(evt: &sot_protocol::ops::FeCommandEvt, sel
             // launch arbitrary local handlers (file:, javascript:, custom
             // protocol hijacks). Browsers own http/https; nothing else.
             if !(url.starts_with("https://") || url.starts_with("http://")) {
-                tracing::warn!(%url, "fe-command open_url: non-http(s) scheme refused");
+                let origin = crate::browser_open::origin_of(&url);
+                tracing::warn!(scheme = %origin, "fe-command open_url: non-http(s) scheme refused");
                 return None;
             }
             Some(FeCommand::OpenUrl { url })

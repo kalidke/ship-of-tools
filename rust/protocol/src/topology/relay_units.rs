@@ -350,6 +350,8 @@ frontend = true
         let sock = relay_socket_unit("remote-a");
         assert!(sock.contains(&format!("ListenStream={}\n", relay_socket_path("remote-a").display())), "{sock}");
         assert!(sock.contains("\nAccept=yes\n"), "{sock}");
+        // ADR 0049, User isolation: a route into another box's daemon is owner-only.
+        assert!(sock.contains("\nSocketMode=0600\n"), "{sock}");
         assert!(sock.contains("sot-host-relay-remote-a@.service"), "{sock}");
 
         let svc = relay_service_unit("remote-a");
