@@ -733,8 +733,21 @@ mod tests {
             }
         };
         accepted.set_nonblocking(false).unwrap();
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        while !lines.next().map_or(true, |l| l.is_ok_and(|l| l.trim() == "connected")) {}
+        // The child's own line saying it is connected, within 30 s: a child that cannot say so fails the test here.
+        let stdout = child.stdout.take().unwrap();
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if line.is_ok_and(|l| l.trim() == "connected") {
+                    let _ = said.send(());
+                    break;
+                }
+            }
+        });
+        if heard.recv_timeout(Duration::from_secs(30)).is_err() {
+            let _ = child.kill();
+            panic!("the child connected but never said so");
+        }
         (child, accepted)
     }
 
@@ -751,14 +764,25 @@ mod tests {
         let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
         let binder = imp::binder_of(local, peer).unwrap().expect("the child's row");
         let verdict = tcp_peer_owner(local, peer);
-        // A process that began after the bind, held open while it is judged.
-        let mut later = Command::new("cmd").args(["/C", "more"]).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap();
+        // A process that began after the bind, held open while it is judged (ping sleeps for a minute; it is killed below).
+        let mut later = Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
         let own = crate::identity::os_account::own_account_id().unwrap();
         let later_binder = imp::Binder { pid: later.id(), bound: binder.bound };
         let later_verdict = imp::owner_of(later_binder, &own, || Ok(Some(later_binder)));
-        drop(later.stdin.take());
+        let _ = later.kill();
         let _ = later.wait();
         drop(child.stdin.take());
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = child.kill(); // after its stdin closed it exits by itself; a child that does not is ended here
         let _ = child.wait();
         let now = {
             let since_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
