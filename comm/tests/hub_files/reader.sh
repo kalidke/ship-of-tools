@@ -20,7 +20,11 @@ case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
     poll_peer
     contains "$POLL_OUT" "first" || { echo "  first not shown: $POLL_OUT"; return 1; }
     local cur; cur="$(peer_cursor)"
+    local size i; size="$(wc -c < "$INBOX/$PEER.jsonl")"
     start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; exec sleep 60' || { echo "  holder never took the lock"; return 1; }
+    # The holder signals ready BEFORE it writes the partial line: wait for the bytes, never kill it first.
+    for i in $(seq 600); do [ "$(wc -c < "$INBOX/$PEER.jsonl")" -gt "$size" ] && break; sleep 0.05; done
+    [ "$(wc -c < "$INBOX/$PEER.jsonl")" -gt "$size" ] || { echo "  the holder never wrote its partial line"; kill -9 "$HOLDER"; return 1; }
     kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
     poll_peer
     contains "$POLL_OUT" "No new messages." || { echo "  poll showed the partial: $POLL_OUT"; return 1; }
@@ -38,26 +42,36 @@ case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
 }
 
 # Main's test: a FROZEN writer that wrote a whole line holds the lock. A poll
-# and the end-of-turn hook both return within the read bound with the
-# try-again line, the cursor is unchanged, and after SIGCONT every line is
-# delivered exactly once.
+# and the end-of-turn hook both return with the try-again line, which only a
+# wait that ran out prints, after at least the read bound (1 s: a lower bound, which
+# load only lengthens) of shared-lock tries (a logging flock sees them; the wait
+# is the library's own clock, so no count and no upper bound); the cursor is
+# unchanged, and after SIGCONT every line is delivered exactly once.
 case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     run_send "@$PEER" "one"; poll_peer
     local cur t0; cur="$(peer_cursor)"
+    mkdir -p "$WORK/logflock"
+    printf '#!/bin/sh\necho "$*" >> "%s/flock.log"\nexec %s "$@"\n' "$WORK" "$(command -v flock)" > "$WORK/logflock/flock"
+    chmod +x "$WORK/logflock/flock"
     start_holder 'printf "%s\n" "{\"from\":\"holder\",\"to\":\"t-peer\",\"repo\":\"r\",\"msg\":\"two\",\"ts\":\"t\"}" >&8; kill -STOP $$; :' \
         || { echo "  holder never took the lock"; return 1; }
+    rm -f "${WORK:?}/flock.log"
     t0=$SECONDS
-    SOT_INBOX_READ_WAIT_SECS=1 poll_peer_env
-    [ $((SECONDS - t0)) -lt 10 ] || { echo "  poll took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
+    PATH="$WORK/logflock:$PATH" SOT_INBOX_READ_WAIT_SECS=1 poll_peer_env
+    # A hang guard only: the bound is the logged `-w 1` below.
+    [ $((SECONDS - t0)) -lt 120 ] || { echo "  poll took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
+    grep -q -e ' -s 9$' "$WORK/flock.log" && [ $((SECONDS - t0)) -ge 1 ] || { echo "  the poll made no shared-lock tries over 1 s ($((SECONDS - t0))s)"; kill -CONT "$HOLDER"; return 1; }
     [ "$POLL_RC" -eq 75 ] && contains "$POLL_OUT" "the inbox for @$PEER is being written — nothing was read; run comm-poll.sh again" \
         || { echo "  rc $POLL_RC: $POLL_OUT"; kill -CONT "$HOLDER"; return 1; }
     [ "$(peer_cursor)" = "$cur" ] || { echo "  cursor moved"; kill -CONT "$HOLDER"; return 1; }
     local hout hrc
     ln -sfn "$BIN" "$SOT_COMM_HOME/bin"
+    rm -f "${WORK:?}/flock.log"
     t0=$SECONDS
-    hout="$(SOT_INBOX_READ_WAIT_SECS=1 idle_hook 2>&1)"; hrc=$?
-    [ $((SECONDS - t0)) -lt 10 ] || { echo "  hook took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
+    hout="$(PATH="$WORK/logflock:$PATH" SOT_INBOX_READ_WAIT_SECS=1 idle_hook 2>&1)"; hrc=$?
+    [ $((SECONDS - t0)) -lt 120 ] || { echo "  hook took $((SECONDS - t0))s"; kill -CONT "$HOLDER"; return 1; }
+    grep -q -e ' -s 9$' "$WORK/flock.log" && [ $((SECONDS - t0)) -ge 1 ] || { echo "  the hook made no shared-lock tries over 1 s ($((SECONDS - t0))s)"; kill -CONT "$HOLDER"; return 1; }
     contains "$hout" "the inbox for @$PEER is being written; it will be checked again at the next turn end" \
         || { echo "  hook said: $hout (rc $hrc)"; kill -CONT "$HOLDER"; return 1; }
     ! contains "$hout" '"decision"' || { echo "  the hook blocked the turn on a busy inbox"; kill -CONT "$HOLDER"; return 1; }

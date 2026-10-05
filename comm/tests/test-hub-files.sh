@@ -171,7 +171,7 @@ check "the comm.file read window outlasts the hub's lock wait: a line filed afte
 check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike
 
 check "a dead writer's partial line is never counted; the next send cuts it and says so; nothing is skipped" case_a_dead_writers_partial_line_is_never_counted_and_is_cut
-check "a frozen writer makes a poll and the end-of-turn hook say try again within the bound; nothing is skipped" case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang
+check "a frozen writer makes a poll and the end-of-turn hook say try again after their read bound; nothing is skipped" case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang
 check "stubbed fsync failure (shell arm), locked reader: waits, counts nothing, skips nothing" case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back
 check "stubbed fsync failure (shell arm), unlocked reader: steps back one line and skips nothing" case_an_unlocked_reader_steps_back_one_line_after_a_cut_back
 check "the cursor takes a bare count, a ts and a hash, and a mismatch steps back exactly one line" case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one
