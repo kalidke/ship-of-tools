@@ -7,6 +7,7 @@
 # real `~/.sot-comm`, a real daemon, or a real network connection.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh" || exit 2
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/sot-endpoint-gate-XXXXXX")"
@@ -485,6 +486,57 @@ EOF
     return 0
 }
 check "a source-built box (no release install) resolves its relay endpoint via a live process's /proc/pid/exe" case_source_built_box_resolves_relay_endpoint_via_proc_exe
+
+# =========================================================================
+# 8. E1: a `sotd --socket` in another process's argv is never an endpoint. The
+#    last-resort scrape of a development daemon's argv could hand a line to a
+#    stranger's or a test daemon, which would then answer for this comm folder.
+# =========================================================================
+case_an_argv_socket_of_another_process_is_never_an_endpoint() {
+    local fakebin fakehome out rc=0
+    fakebin="$(mktemp -d "$WORK/scrape-fakebin-XXXXXX")"
+    fakehome="$(mktemp -d "$WORK/scrape-home-XXXXXX")"
+    printf '#!/bin/sh\necho "4242 sotd --socket /tmp/m4-scrape.sock"\n' > "$fakebin/pgrep"
+    chmod +x "$fakebin/pgrep"
+    out="$(
+        unset SOTD_BIN SOT_SOCKET
+        PATH="$fakebin:$PATH" HOME="$fakehome" sot_daemon_endpoint 2>/dev/null
+    )" || rc=$?
+    [ -z "$out" ] && [ "$rc" -ne 0 ] || { echo "  rc $rc, endpoint '$out': a scraped argv socket was used"; return 1; }
+    return 0
+}
+check "no sotd --socket in another process's argv is ever an endpoint" case_an_argv_socket_of_another_process_is_never_an_endpoint
+
+# E2: pgrep matches any command line that mentions sotd. A process is asked for
+# a daemon socket (run, as its own binary) only when that binary is named sotd.
+case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
+    [ "$(uname -s)" = Linux ] && [ -r /proc/self/exe ] || { echo "  needs /proc"; return 2; }
+    local spy="$WORK/spy" fakebin fakehome pida pidb out rc=0 ran
+    mkdir -p "$spy"
+    spy="$(cd "$spy" && pwd -P)"
+    cp "$(command -v bash)" "$spy/spybash"; cp "$(command -v bash)" "$spy/sotd"
+    printf '%s\n' 'printf "%s\n" "$BASH" >> "$(dirname "$0")/ran"' > "$spy/session-socket-path"
+    "$spy/spybash" -c 'sleep 30; :' & pida=$!
+    "$spy/sotd" -c 'sleep 30; :' & pidb=$!
+    exe_is() { [ "$(readlink "/proc/$1/exe" 2>/dev/null)" = "$2" ]; }
+    await exe_is "$pida" "$spy/spybash" && await exe_is "$pidb" "$spy/sotd" \
+        || { kill "$pida" "$pidb" 2>/dev/null; echo "  the two stub children never ran"; return 1; }
+    fakebin="$(mktemp -d "$WORK/spy-fakebin-XXXXXX")"
+    fakehome="$(mktemp -d "$WORK/spy-home-XXXXXX")"
+    printf '#!/bin/sh\necho "%s spybash sotd"\necho "%s sotd"\n' "$pida" "$pidb" > "$fakebin/pgrep"
+    chmod +x "$fakebin/pgrep"
+    out="$(
+        cd "$spy" && unset SOT_SOCKET SOTD_BIN
+        PATH="$fakebin:$PATH" HOME="$fakehome" sot_daemon_endpoint 2>/dev/null
+    )" || rc=$?
+    kill "$pida" "$pidb" 2>/dev/null; wait "$pida" "$pidb" 2>/dev/null
+    ran="$(cat "$spy/ran" 2>/dev/null)"
+    [ "$rc" -ne 0 ] && [ -z "$out" ] || { echo "  rc $rc, endpoint '$out'"; return 1; }
+    contains "$ran" "$spy/sotd" || { echo "  the sotd-named binary was never asked: '$ran'"; return 1; }
+    contains "$ran" "$spy/spybash" && { echo "  a process not named sotd was run: '$ran'"; return 1; }
+    return 0
+}
+check "a process is asked for a socket only when its binary is named sotd" case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

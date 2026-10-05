@@ -37,6 +37,20 @@ case_self_echo_never_blocks() {
     local out; out="$(IT 'all done.')"
     [ -z "$out" ] || { echo "    a self-echo frame blocked the stop: '$out'"; return 1; }
 }
+# H1, H2: the hook counts by the wake's rule (sot_unread), so a line the wake
+# never wakes for never holds a turn: one addressed to another handle, or one
+# whose `to` is not a string.
+case_a_line_to_another_handle_never_blocks() {
+    seed idle; _mail_reset; _mail_line "someone-else"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    a line to another handle blocked the stop: '$out'"; return 1; }
+}
+case_a_line_with_a_numeric_to_never_blocks() {
+    seed idle; _mail_reset
+    jq -nc '{from:"peer",to:5,repo:"r",msg:"look at this"}' >> "$SOT_COMM_HOME/inbox/$NAME.jsonl"
+    local out; out="$(IT 'all done.')"
+    [ -z "$out" ] || { echo "    a line with a numeric to blocked the stop: '$out'"; return 1; }
+}
 case_offset_cursor_covering_the_inbox_never_blocks() {
     seed idle; _mail_reset; _mail_line "$NAME"
     # The cursor is a LINE OFFSET: one line filed, one line read.

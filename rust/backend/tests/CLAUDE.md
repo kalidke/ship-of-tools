@@ -9,6 +9,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
 - `ancestors.rs`: messaging; `sotd ancestors`, the process-ancestor listing comm-lib.sh counts agents with
 - `comm_file.rs`: messaging; the inbox lock held by the daemon's filer and by the scripts' `sot_inbox_append`
+- `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the protocol-gated roster
 - `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; a spawned daemon inherits no `SOT_` variable the test did not set, and `sotd_command` is the only spawn site
@@ -36,7 +37,7 @@ shows the shape.
 
 ## Rules
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
-  (capsule_workspaces, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
+  (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, which drops every inherited `SOT_` variable;
   `sotd_exe` is private there (`daemon_boot.rs` checks that `CARGO_BIN_EXE_sotd` appears nowhere else).
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).

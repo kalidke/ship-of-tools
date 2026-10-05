@@ -1,5 +1,11 @@
 # Tests for src/claude_hooks.jl: Claude settings targets and hook merging (calls jq).
 
+# jq's raw output, one string per line. On Windows jq writes CRLF line endings (its text mode), so there the one CR
+# before each LF is the line ending; any other CR is data and stays.
+jq_lines(cmd::Cmd) = [Sys.iswindows() ? chopsuffix(l, "\r") : l for l in split(read(cmd, String), '\n'; keepempty = false)]
+# The hook commands settings file `f` runs for event `ev`.
+cmds(f, ev) = jq_lines(`jq -r --arg e $ev "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command" $f`)
+
 @testset "accounts: an account with no settings.json is left for the daemon's link" begin
     # A named account shares the default `~/.claude` folder by SYMLINK,
     # created by the daemon at spawn (`rust/backend/src/agents/accounts.rs::
@@ -10,8 +16,7 @@
     mktempdir() do home
         acct_dir = joinpath(home, ".claude-auth", "acct")
         mkpath(acct_dir)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools.update_comm(clis = [:claude])
             @test isempty(readdir(acct_dir))
             @test readdir(joinpath(home, ".claude-auth")) == ["acct"]
@@ -44,7 +49,7 @@ end
         @test ShipTools._claude_settings_targets(home, own) ==
               [realpath(default), realpath(a)]
         # Nothing was created through the dangling link.
-        @test islink(d) && !ispath(d)
+        @test islink(d) && !ispath(joinpath(home, "missing.json"))
 
         # The daemon's name rule, character for character.
         for ok in ("team", "a_b-2", "0x")
@@ -63,8 +68,6 @@ end
     # default here is itself a link to a file outside every claude dir:
     # a copy-then-rename onto the LINK path would replace the link with
     # a plain copy, so this also proves a link stays a link.
-    jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
     mktempdir() do home
         shared = joinpath(home, "dotfiles", "claude-settings.json")
         mkpath(dirname(shared))
@@ -78,8 +81,7 @@ end
         b = joinpath(auth, "b", "settings.json")
         mkpath(dirname(b)); symlink(default, b)
         c = joinpath(auth, "c"); mkpath(c)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(ShipTools.claude_home())
 
             # Each real file holds each comm hook exactly once.
@@ -90,8 +92,8 @@ end
             # hook in the account's own file is gone.
             @test "/usr/local/bin/user-shared.sh" in cmds(shared, "Stop")
             @test "/usr/local/bin/user-a.sh" in cmds(a, "Stop")
-            @test readchomp(`jq -r .model $shared`) == "shared"
-            @test readchomp(`jq -r .model $a`) == "own"
+            @test jq_lines(`jq -r .model $shared`) == ["shared"]
+            @test jq_lines(`jq -r .model $a`) == ["own"]
             @test isempty(cmds(a, "Notification"))
             # Links stay links, to the same targets; the empty account stays empty.
             @test islink(default) && readlink(default) == shared
@@ -111,16 +113,13 @@ end
 end
 
 @testset "_install_claude_hooks: a linked settings.json stays a link" begin
-    jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
     mktempdir() do home
         target = joinpath(home, "elsewhere", "settings.json")
         mkpath(dirname(target))
         write(target, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/user.sh"}]}]}}""")
         link = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(link)); symlink(target, link)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(ShipTools.claude_home())
             @test islink(link) && readlink(link) == target
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -132,13 +131,10 @@ end
 end
 
 @testset "_install_claude_hooks: never creates a settings.json in an account folder" begin
-    jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
     mktempdir() do home
         mkpath(joinpath(home, ".claude"))
         c = joinpath(home, ".claude-auth", "c"); mkpath(c)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(c)
             @test isempty(readdir(c))
             f = joinpath(home, ".claude", "settings.json")
@@ -177,14 +173,11 @@ end
     if Sys.iswindows()
         @test_skip false
     else
-        jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-        cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
         mktempdir() do home
             f = joinpath(home, ".claude", "settings.json")
             mkpath(dirname(f)); write(f, "{}")
             chmod(f, 0o604)  # a mode no umask produces
-            withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                    "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+            in_home(home) do
                 ShipTools._install_claude_hooks(joinpath(home, ".claude"))
                 @test filemode(f) & 0o777 == 0o604
                 for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -217,16 +210,13 @@ end
 end
 
 @testset "_install_claude_hooks: nothing is created in .claude-auth through a relative, linked or bare config dir" begin
-    jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
     mktempdir() do home
         default = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(default)); write(default, "{}")
         auth = joinpath(home, ".claude-auth")
         c = joinpath(auth, "c"); mkpath(c)
         symlink(c, joinpath(home, "alias"))
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             cd(home) do
                 ShipTools._install_claude_hooks(joinpath(".claude-auth", "c"))
             end
@@ -266,8 +256,6 @@ end
 end
 
 @testset "_install_claude_hooks: a merge that throws fails the install, after the other files are done" begin
-    jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
     mktempdir() do home
         a = joinpath(home, ".claude-auth", "a", "settings.json")
         mkpath(dirname(a)); write(a, "{}")
@@ -278,8 +266,7 @@ end
             if !restrained
                 @test_skip false
             else
-                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                in_home(home) do
                     @test_throws ErrorException ShipTools._install_claude_hooks(ro)
                     for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
                         @test count(==(ShipTools._hook_command(script)), cmds(a, ev)) == 1
@@ -294,8 +281,6 @@ end
 end
 
 @testset "_install_claude_hooks: an account folder that is a link counts as inside .claude-auth" begin
-    jqprog = "(.hooks[\$e] // [])[] | (.hooks // [])[] | .command"
-    cmds(f, ev) = split(readchomp(`jq -r --arg e $ev $jqprog $f`), '\n'; keepempty = false)
     mktempdir() do home
         default = joinpath(home, ".claude", "settings.json")
         mkpath(dirname(default)); write(default, "{}")
@@ -304,8 +289,7 @@ end
         mkpath(joinpath(home, ".claude-auth"))
         team = joinpath(home, ".claude-auth", "team")
         symlink(elsewhere, team)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools._install_claude_hooks(team)
             @test isempty(readdir(elsewhere))
             for (ev, script, _) in ShipTools._COMM_STATE_HOOKS
@@ -330,8 +314,7 @@ end
             if !restrained
                 @test_skip false
             else
-                withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                        "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+                in_home(home) do
                     logger = Test.TestLogger(min_level = Base.CoreLogging.Warn)
                     Base.CoreLogging.with_logger(logger) do
                         ShipTools.update_comm(clis = [:claude])
@@ -339,9 +322,11 @@ end
                     summaries = filter(r -> occursin("The comm hooks are NOT in these Claude settings", string(r.message)), logger.logs)
                     @test length(summaries) == 1
                     msg = string(only(summaries).message)
-                    @test occursin(lockd, msg)
+                    # A file the install could not merge is named by the real path it writes (links and short names
+                    # resolved); a folder with no settings.json is named as found.
+                    @test occursin(realpath(lockd), msg)
                     @test occursin(empty, msg)
-                    @test !occursin(default, msg)
+                    @test !occursin(realpath(default), msg)
                     @test read(lockd, String) == "{}"   # left exactly as it was
                 end
             end
@@ -381,14 +366,14 @@ end
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{"Notification":[{"hooks":[{"type":"command","command":"\$HOME/.sot-comm/bin/comm-status-blocked.sh"},{"type":"command","command":"/usr/local/bin/mine.sh"}]}]}}""")
         ShipTools._remove_stale_comm_hooks!(settings)
-        got = split(readchomp(`jq -r '.hooks.Notification[].hooks[].command' $settings`), '\n'; keepempty = false)
+        got = jq_lines(`jq -r '.hooks.Notification[].hooks[].command' $settings`)
         @test got == ["/usr/local/bin/mine.sh"]
     end
     mktempdir() do dir
         settings = joinpath(dir, "settings.json")
         write(settings, """{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/local/bin/comm-status-report.sh"}]}]}}""")
         ShipTools._remove_stale_comm_hooks!(settings)
-        got = split(readchomp(`jq -r '.hooks.Stop[].hooks[].command' $settings`), '\n'; keepempty = false)
+        got = jq_lines(`jq -r '.hooks.Stop[].hooks[].command' $settings`)
         @test got == ["/usr/local/bin/comm-status-report.sh"]
     end
 end

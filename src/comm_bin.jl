@@ -35,7 +35,7 @@ const COMM_MANIFEST = ".sot-comm-installed"
 # lines are skipped and CR is stripped, so a CRLF checkout reads the same.
 function _comm_bin_folders(list::AbstractString = COMM_BIN_FOLDERS, root::AbstractString = REPO_ROOT)
     folders = String[]
-    for line in eachline(list)
+    for line in readlines(list)
         line = strip(line)
         isempty(line) && continue
         dir = joinpath(root, split(line, '/')...)
@@ -122,7 +122,7 @@ end
 # replaces with one rename.
 function _comm_bin_text(folder::AbstractString, name::AbstractString)
     io = IOBuffer()
-    for line in eachline(joinpath(folder, name); keep = true)
+    for line in readlines(joinpath(folder, name); keep = true)
         p = _comm_part_of(folder, line)
         p === nothing && (write(io, line); continue)
         part = read(joinpath(folder, p))

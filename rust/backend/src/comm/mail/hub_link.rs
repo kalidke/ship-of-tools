@@ -16,14 +16,13 @@ use std::time::{Duration, Instant};
 
 use sot_protocol::{codec, op, Frame, HelloReq, Kind};
 
-use crate::rows::Workspaces;
 
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// A connection that lasted this long was a working one: the next wait starts over.
 const STABLE: Duration = Duration::from_secs(60);
 
-pub async fn run(workspaces: Workspaces) {
+pub async fn run() {
     // Before the first connection: a failed move leaves the old inbox where it was.
     if let Err(e) = tokio::task::spawn_blocking(move_fe_inbox).await.unwrap_or_else(|e| Err(e.to_string())) {
         tracing::warn!("hub link: the old frontend inbox was not moved: {e}");
@@ -39,7 +38,7 @@ pub async fn run(workspaces: Workspaces) {
     };
     let name = format!("sotd-{self_host}");
     tracing::info!(%recipe, %name, "hub link starting");
-    hold_link(&recipe, &self_host, &name, &workspaces, crate::lifecycle::child_signal::process()).await;
+    hold_link(&recipe, &self_host, &name, crate::lifecycle::child_signal::process()).await;
 }
 
 /// Keep the link up until `sig` fires; it never reconnects after.
@@ -47,7 +46,6 @@ async fn hold_link(
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
-    workspaces: &Workspaces,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) {
     let mut wait = BACKOFF_FLOOR;
@@ -56,7 +54,7 @@ async fn hold_link(
             return;
         }
         let began = Instant::now();
-        match link_once(recipe, self_host, name, workspaces, sig).await {
+        match link_once(recipe, self_host, name, sig).await {
             Ok(()) => tracing::info!("hub link closed"),
             Err(e) => tracing::warn!("hub link dropped: {e}"),
         }
@@ -107,7 +105,6 @@ async fn link_once(
     recipe: &sot_protocol::topology::ssh_bridge::SshRecipe,
     self_host: &str,
     name: &str,
-    workspaces: &Workspaces,
     sig: &'static crate::lifecycle::child_signal::Signal,
 ) -> Result<(), String> {
     let mut child = spawn_link(recipe)?;
@@ -132,7 +129,7 @@ async fn link_once(
         });
     }
     let result = tokio::select! {
-        result = converse(&mut tx, &mut rx, self_host, name, workspaces) => result,
+        result = converse(&mut tx, &mut rx, self_host, name) => result,
         // The daemon is shutting down: nothing kills this child at
         // `process::exit`, so it is killed here.
         _ = sig.fired() => {
@@ -148,7 +145,7 @@ async fn link_once(
     result
 }
 
-async fn converse<W, R>(tx: &mut W, rx: &mut R, self_host: &str, name: &str, workspaces: &Workspaces) -> Result<(), String>
+async fn converse<W, R>(tx: &mut W, rx: &mut R, self_host: &str, name: &str) -> Result<(), String>
 where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
@@ -191,7 +188,7 @@ where
             continue;
         }
         let req = hub_frame_req(from, to.clone(), text);
-        match crate::comm::mail::filer::file_comm(req, workspaces).await {
+        match crate::comm::mail::filer::file_comm(req).await {
             Ok(Ok(())) => {
                 tracing::info!(%to, %id, "hub link filed");
                 let filed = serde_json::json!({ "id": id });
@@ -326,8 +323,7 @@ mod tests {
         *STUB_PROGRAM.lock().unwrap() = Some(stub.to_string_lossy().into_owned());
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("hub", None).unwrap();
-        let workspaces = Workspaces::new();
-        let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", &workspaces, sig).await });
+        let task = tokio::spawn(async move { hold_link(&recipe, "self", "sotd-self", sig).await });
         let began = Instant::now();
         // The guard counts the child at its spawn, before the stub's first line has run; fire only once
         // that line has written the counter, so the one-spawn precondition is true.

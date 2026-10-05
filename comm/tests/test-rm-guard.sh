@@ -25,6 +25,16 @@
 # check first proves it flags a copy of test-hub-files.sh without its source
 # line.
 #
+# The same walk pins the suites' clock reads and sleeps (comm/tests/CLAUDE.md's
+# timing rule): every tracked `*.sh` under comm/tests and agents/tests but this
+# file is counted, on its non-comment lines, for clock reads (`EPOCHREALTIME`,
+# `date ... +%s...`, `SECONDS`) and for sleeps (`sleep` followed by a number or
+# a `$`), and both counts must equal its row in the wait table; a file with no
+# row has neither. A wait spelled another way (a quoted or variable command
+# name, perl's `select`) is not counted: the review reads those. A row may only
+# fall: a new or raised row is a review question against the rule. The count
+# first proves itself on its own table of lines.
+#
 # Usage: comm/tests/test-rm-guard.sh
 # Exit: 0 if no unguarded site or suite, 1 naming each one.
 set -uo pipefail
@@ -97,9 +107,48 @@ done
 [ "$table_bad" -eq 0 ] || exit 1
 echo "PASS: the delete pattern flags and passes each of its $n table rows"
 
-files=(); suites=()
+# The waits: CLOCK SLEEP FILE for each file with either count non-zero, over the non-comment lines. The sleep
+# alternative has no left boundary on purpose: it counts a sleep written into a stub through printf, and skips
+# sleep_log and "$REAL_SLEEP" (no space and number after `sleep`).
+WAIT_SCAN='
+for my $f (@ARGV) {
+    open my $fh, "<", $f or next;
+    my ($c, $s) = (0, 0);
+    while (my $line = <$fh>) {
+        next if $line =~ /^\s*#/;
+        $c++ while $line =~ /EPOCHREALTIME|\bdate\b[^;&|)\n]*\+%s|\bSECONDS\b/g;
+        $s++ while $line =~ /sleep +(?:"?\$|[0-9])/g;
+    }
+    print "$c $s $f\n" if $c + $s;
+}'
+# Its own table: each row is the clock and sleep counts the pattern must give, and one line.
+n=0
+while IFS= read -r row; do
+    n=$((n + 1)); read -r want_c want_s line <<< "$row"; printf '%s\n' "$line" > "$T/wait-row"
+    read -r got_c got_s _ <<< "$(perl -e "$WAIT_SCAN" "$T/wait-row")"
+    [ "${got_c:-0}" = "$want_c" ] && [ "${got_s:-0}" = "$want_s" ] \
+        || { echo "FAIL: the wait pattern's table row $n must count $want_c and $want_s: $line"; exit 1; }
+done <<'EOF'
+1 0 t0=$(date +%s%N)
+1 0 now=$(date -u +%s)
+2 0 a=$EPOCHREALTIME; b=$EPOCHREALTIME
+1 0 [ $((SECONDS - t0)) -lt 3 ] || exit 1
+0 0 # t0=$(date +%s%N); sleep 1
+0 1 sleep 0.05
+0 1 bash -c 'exec sleep 60' &
+0 1 ( sleep "$1"; mv a b ) &
+0 1 printf 'x\nsleep 0.05\n' > stub
+0 0 "$REAL_SLEEP" 0.2
+0 0 "sleep" 300 &
+0 0 sleep_log "$WORK/shim" "$WORK/sleeps.log"
+0 0 stamp=$(date +%Y-%m-%dT%H:%M:%SZ)
+EOF
+printf 'PASS: the wait pattern counts each of its %s table rows\n' "$n"
+
+files=(); suites=(); waitfiles=()
 while IFS= read -r f; do
     case "$f" in comm/*|agents/*) case "${f##*/}" in test-*.sh) suites+=("$REPO/$f") ;; esac ;; esac
+    case "$f" in comm/tests/test-rm-guard.sh) ;; comm/tests/*.sh|agents/tests/*.sh) waitfiles+=("$REPO/$f") ;; esac
     case "${f##*/}" in
         *.sh) files+=("$REPO/$f") ;;
         *.*) ;;
@@ -111,6 +160,7 @@ done < <(git -C "$REPO" ls-files)
 [ "${#suites[@]}" -ge 29 ] || { echo "FATAL: found ${#suites[@]} comm suites, expected at least 29" >&2; exit 1; }
 
 sites="$(perl -e "$RM_SCAN" "${files[@]}")"
+wait_got="$(perl -e "$WAIT_SCAN" "${waitfiles[@]}" | sed "s#^\([0-9]* [0-9]*\) $REPO/#\1 #" | sort -k3)"
 
 # unguarded SUITE... — each suite whose first command other than `set` is not
 # the guard's source line.
@@ -142,6 +192,57 @@ else
     printf '%s\n' "$bad" | sed "s#^$REPO/##" | while IFS= read -r f; do
         echo "FAIL: $f does not source lib-home-guard.sh before any command but set"
     done
+    rc=1
+fi
+
+# The wait table: CLOCK SLEEP PATH REASON. A row may only fall; an `owed` row is a wait the timing rule still has to replace.
+wait_table="$(cat <<'EOF'
+2 1 agents/tests/test-despawn-resolve.sh owed: a 5 s wall-clock wait for the stub socket
+2 1 agents/tests/test-sot-fe-reauth.sh owed: a 5 s wall-clock wait for the stub socket
+2 1 agents/tests/test-sot-fe-version.sh owed: a 5 s wall-clock wait for the stub socket
+2 1 agents/tests/test-spawn-capsule-workspace.sh owed: a 5 s wall-clock wait for the stub socket
+2 1 agents/tests/test-spawn-remote-no-local-row.sh owed: a 5 s wall-clock wait for the stub socket
+0 2 comm/tests/agent_layers/end_to_end.sh owed: the orphan's fixed 1 s head start and a 100 x 0.1 s cap on its rc file
+4 1 comm/tests/comm-matrix.sh live matrix over real boxes: times and polls delivery on purpose
+0 1 comm/tests/hub_files/lock_faults.sh scenario: a lock holder's sleep
+2 1 comm/tests/hub_files/lock_shell.sh a lower bound (the send behind a frozen holder waited its 1 s); scenario: a lock holder's sleep
+0 1 comm/tests/hub_files/reader.sh scenario: the slow jq's 50 ms per call
+0 1 comm/tests/hub_files/wire.sh scenario: the hub stub's answer delay
+4 2 comm/tests/join_disambiguation/slot_guard.sh owed: two 10 s wall-clock waits
+4 2 comm/tests/join_disambiguation/spawn_and_lock.sh owed: two 10 s wall-clock waits
+0 1 comm/tests/lib-wait.sh await's 50 ms poll, the one shared wait
+2 1 comm/tests/test-agent-join.sh owed: a 5 s wall-clock wait for the stub socket
+0 6 comm/tests/test-comm-deps.sh owed: a fixed 3 s wait for the logged line and a 50 x 0.1 s cap; scenario: the retired loop's two 2 s sleeps, a 30 s tether, a 6 s window load can only lengthen
+8 16 comm/tests/test-comm-e2e-readers.sh needs peer hosts: times delivery on purpose
+2 6 comm/tests/test-endpoint-gate.sh owed: a 3 s upper bound its rc 124 check already covers and two 50 x 0.05 s caps; scenario: a stub child's 5 s sleep, one fake pgrep line, two 30 s stub children
+2 8 comm/tests/test-inbox-lock-onehost.sh needs a peer host: prints the elapsed time and paces its writers
+14 10 comm/tests/test-inbox-lock-twohost.sh needs peer hosts: times holders across boxes
+2 1 comm/tests/test-join-disambiguation.sh owed: a 5 s wall-clock wait for the stub socket
+0 4 comm/tests/test-registry-io.sh owed: swaps at fixed delays; the 1 s cases need the reader's retry window to end before the swap
+15 3 comm/tests/test-registry-lock.sh lower bounds (t8, t10, comm-status's 10 s) and t13's test of the lock's own clock; scenario: a holder's poll, the older waiter's verbatim loop, t4's critical section
+0 2 comm/tests/test-registry-lock-twohost.sh needs peer hosts
+3 1 comm/tests/test-registry-twohost.sh needs peer hosts: a timed run window
+3 1 comm/tests/test-relay-file-first.sh a lower bound (the full 5 s receipt window); scenario: a stub that hangs
+EOF
+)"
+wait_bad=0; wait_rows=0
+while read -r got_c got_s file; do
+    [ -n "$file" ] || continue
+    read -r row_c row_s <<< "$(printf '%s\n' "$wait_table" | awk -v f="$file" '$3 == f { print $1, $2 }')"
+    if [ -z "${row_c:-}" ]; then
+        echo "FAIL: $file reads the clock $got_c times and sleeps $got_s times and has no row"; wait_bad=1
+    elif [ "$got_c" != "$row_c" ] || [ "$got_s" != "$row_s" ]; then
+        echo "FAIL: $file reads the clock $got_c times and sleeps $got_s times, its row says $row_c and $row_s (a new one: count the code's waits with sleep_log or await a signal; a lower count: lower the row)"; wait_bad=1
+    fi
+    wait_rows=$((wait_rows + 1))
+done <<< "$wait_got"
+while read -r _ _ file _; do
+    printf '%s\n' "$wait_got" | awk -v f="$file" '$3 == f { found = 1 } END { exit !found }' \
+        || { echo "FAIL: $file has a row but neither reads the clock nor sleeps (delete the row)"; wait_bad=1; }
+done <<< "$wait_table"
+if [ "$wait_bad" -eq 0 ]; then
+    printf 'PASS: every clock read and every `sleep N` or `sleep $X` in comm/tests and agents/tests matches its row (%s files)\n' "$wait_rows"
+else
     rc=1
 fi
 exit "$rc"

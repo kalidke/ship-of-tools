@@ -47,6 +47,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -128,7 +129,9 @@ whole_lines() {
 # A holder of the peer's inbox lock, in the background: takes the lock, then
 # runs $1 (`exec sleep 60` holds it; the frozen case writes half a line and
 # stops itself). `exec` so the recorded pid IS the lock holder — a child that
-# inherited fd 9 would keep the lock past the kill.
+# inherited fd 9 would keep the lock past the kill. `ready` means the lock is held; a
+# case that needs the body's own writes first has the body stop itself (`kill -STOP $$`)
+# and awaits `stopped`.
 start_holder() {
     local body="$1"
     rm -f "${WORK:?}/ready"
@@ -136,9 +139,7 @@ start_holder() {
         _ "$INBOX" "$PEER" "$WORK/ready" &
     HOLDER=$!
     HOLDERS+=("$HOLDER")
-    local i=0
-    while [ ! -e "$WORK/ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-    [ -e "$WORK/ready" ]
+    await test -e "$WORK/ready"
 }
 
 . "$(dirname "${BASH_SOURCE[0]}")/hub_files/lock_shell.sh"
@@ -149,7 +150,7 @@ start_holder() {
 
 check "the home guard refuses a live comm home, and only that" case_the_home_guard_refuses_a_live_comm_home
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
-check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
+check "a holder killed with -9 frees the lock and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
 check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
@@ -171,7 +172,7 @@ check "the comm.file read window outlasts the hub's lock wait: a line filed afte
 check "T6: a hub-filed and a locally-filed line read alike and both advance the cursor" case_a_hub_line_and_a_local_line_read_alike
 
 check "a dead writer's partial line is never counted; the next send cuts it and says so; nothing is skipped" case_a_dead_writers_partial_line_is_never_counted_and_is_cut
-check "a frozen writer makes a poll and the end-of-turn hook say try again within the bound; nothing is skipped" case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang
+check "a frozen writer makes a poll and the end-of-turn hook say try again after their read bound; nothing is skipped" case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang
 check "stubbed fsync failure (shell arm), locked reader: waits, counts nothing, skips nothing" case_a_reader_on_the_shared_lock_never_counts_a_line_that_is_cut_back
 check "stubbed fsync failure (shell arm), unlocked reader: steps back one line and skips nothing" case_an_unlocked_reader_steps_back_one_line_after_a_cut_back
 check "the cursor takes a bare count, a ts and a hash, and a mismatch steps back exactly one line" case_the_cursor_takes_a_bare_count_a_ts_and_a_hash_and_steps_back_one
@@ -181,7 +182,7 @@ check "B-2: the cursor hashes the line the reader held; a line filed after a cut
 check "S-1: a hashed cursor one past the end steps back one; further past, or a bare count, gives 0" case_a_cursor_one_past_the_end_steps_back_one_and_further_gives_zero
 check "S-2: a slow display does not hold off a writer" case_a_slow_display_does_not_hold_off_a_writer
 
-check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block, both follow a release" case_the_lock_wait_is_chosen_by_lock_kind
+check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block" case_the_lock_wait_is_chosen_by_lock_kind
 
 check "S-A: a shared lock failing 71 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_71_is_named_and_the_inbox_read_unlocked
 check "S-A: a shared lock failing 65 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_65_is_named_and_the_inbox_read_unlocked
@@ -190,6 +191,7 @@ check "S-A: a lock file that will not open is named, read unlocked, every line o
 check "flock inside a subshell leaves the shared lock held in the calling shell" case_a_shared_lock_taken_inside_a_subshell_holds_in_the_caller
 check "a lock fault blocks a marker turn once, unstamped, never in a continuation, once per session, and prefixes every nudge" case_a_lock_fault_blocks_a_marker_turn_once_and_prefixes_every_nudge
 check "S-A: a real held lock is still exit 75 and being written, never a warning" case_a_held_lock_is_still_try_again
+check "H3: a count that fails is a fault named once, never a zero" case_a_count_that_fails_is_a_fault_named_once_never_a_zero
 check "S-B: a last line holding a NUL, ending in CR, or empty is shown once and never stepped back over" case_a_nul_a_cr_or_an_empty_last_line_is_shown_once
 
 echo "---"
