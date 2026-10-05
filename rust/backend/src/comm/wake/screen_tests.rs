@@ -2,6 +2,14 @@
 
 use super::*;
 
+fn refused_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> Option<&'static str> {
+    match prompt_of(lines, cursor, agent, windows) {
+        Ok(Prompt::Empty) => None,
+        Ok(Prompt::HoldsLine) => Some("wake text left unsent"),
+        Err(reason) => Some(reason),
+    }
+}
+
 fn prompt_free_on(lines: &[String], cursor: Option<(u16, u16)>, agent: &str, windows: bool) -> bool {
     refused_on(lines, cursor, agent, windows).is_none()
 }
@@ -23,10 +31,11 @@ fn boxed(line: &str) -> Vec<String> {
 #[test]
 fn a_box_holding_the_wake_line_names_it() {
     let held = format!("\u{276f}\u{a0}{WAKE_LINE}");
-    assert_eq!(refused_on(&boxed(&held), Some((1, 2)), "claude", false), Some("wake text left unsent"));
+    assert_eq!(prompt_of(&boxed(&held), Some((1, 2)), "claude", false), Ok(Prompt::HoldsLine));
     // As a wake leaves it: the cursor at the END of the text.
     let end = 2 + WAKE_LINE.chars().count() as u16;
-    assert_eq!(refused_on(&boxed(&held), Some((1, end)), "claude", false), Some("wake text left unsent"));
+    assert_eq!(prompt_of(&boxed(&held), Some((1, end)), "claude", false), Ok(Prompt::HoldsLine));
+    assert_eq!(prompt_of(&boxed("\u{276f}\u{a0}"), Some((1, 2)), "claude", false), Ok(Prompt::Empty));
     assert_eq!(refused_on(&boxed("\u{276f}\u{a0}hello"), Some((1, 2)), "claude", false), Some("input not empty"));
 }
 
