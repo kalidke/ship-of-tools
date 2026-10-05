@@ -556,6 +556,16 @@ fn a_dim_suggestion_reads_empty_and_a_draft_does_not() {
     assert_eq!(free_test_lines(p.screen())[3], "footer");
 }
 
+/// Claude Code 2.1.288's suggested reply, as captured from a live session on Linux (`run it` after a turn): the text after
+/// the prompt's NBSP is SGR 2 and ends with a full reset (`ESC[0m`), not `ESC[22m`, and the cursor sits at column 2.
+#[test]
+fn cc288_a_suggested_reply_reads_empty() {
+    let p = parsed("\u{276f}\u{a0}\x1b[2mrun it\x1b[0m\x1b[2;3H");
+    let seen = free_test_lines(p.screen());
+    assert_eq!(seen[1], "\u{276f}\u{a0}");
+    assert_eq!(prompt_of(&seen, Some(p.screen().cursor_position()), "claude", false), Ok(Prompt::Empty));
+}
+
 #[test]
 fn cc288_agent_view_off_panel_focus_is_refused() {
     for text in [
