@@ -24,6 +24,8 @@ scripts/CLAUDE.md.
 ## Rules
 - Publish only through `install_file` (copy, then rename), never `cp` or `mv` with `force=true`.
 - Prune only names recorded or listed (`_prune_comm_bin`).
+- A file the installer reads line by line is read whole first (`readlines`), so an error inside the loop leaves no file
+  open: Windows cannot remove an open file.
 - The bin gets every folder listed in comm/bin-folders.txt, whatever `clis` (`_comm_bin_files`); a missing folder or a
   name shipped by two folders fails the install.
 - A part (a file another file of its folder sources by `COMM_PART_LINE`) installs only inside the files that source it

@@ -8,8 +8,7 @@
         stuckdir = joinpath(home, ".claude", "skills", skill, "SKILL.md")
         mkpath(stuckdir)
         write(joinpath(stuckdir, "marker.txt"), "keepme")
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             err = try
                 ShipTools.update_comm(clis = [:claude]); nothing
             catch e
@@ -32,8 +31,7 @@ end
     withhome(f) = mktempdir() do home
         bin = joinpath(home, ".sot-comm", "bin")
         mkpath(bin)
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             f(home, bin)
         end
     end
@@ -147,11 +145,7 @@ end
 
 @testset "update_comm installs no CLAUDE.md" begin
     mktempdir() do home
-        # On Windows Julia's `homedir()` reads USERPROFILE, so the home is set there as well.
-        withenv("HOME" => home, "USERPROFILE" => home, "HOMEDRIVE" => splitdrive(home)[1],
-                "HOMEPATH" => splitdrive(home)[2], "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
-            @test homedir() == home
+        in_home(home) do
             ShipTools.update_comm(clis = [:claude, :codex])
         end
         @test isfile(joinpath(home, ".sot-comm", "bin", "comm-poll.sh"))
@@ -173,8 +167,7 @@ end
         foreach(((f, n),) -> write(joinpath(bin, n), n == "comm-lib.sh" ? "old=1\n" : "# previous release\n"), files)
         published = String[]
         bad = String[]
-        unset = [k => nothing for k in keys(ENV) if startswith(k, "SOT_")]
-        withenv(unset..., "HOME" => home, "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             # install_comm's own loop; after each rename it makes, a script starts and sources the library.
             function rename(src, dst)
                 Base.Filesystem.rename(src, dst)
@@ -208,9 +201,7 @@ end
     end
     if Sys.isunix()
         mktempdir() do home
-            unset = [k => nothing for k in keys(ENV) if startswith(k, "SOT_")]
-            withenv(unset..., "HOME" => home, "SOT_COMM_HOME" => joinpath(home, ".sot-comm"),
-                    "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing) do
+            in_home(home) do
                 # A bin an install from this repo's split layout left: the parts as files, and recorded.
                 bin = mkpath(joinpath(home, ".sot-comm", "bin"))
                 parts = vcat(values(parts_of)...)
@@ -296,12 +287,12 @@ end
         # The scan lists a file it cannot read (where mode bits are enforced), so only that file's folder fails.
         chmod(joinpath(app, "app.sh"), 0o000)
         unreadable = try read(joinpath(app, "app.sh")); false catch; true end
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) == files
+        unreadable ? (@test ShipTools._comm_bin_files([lib, app]) == files) : (@test_skip false)
         # A folder with two files, one unreadable at the scan: both names stay listed. A shorter list would
         # let the install's prune delete the folder's other scripts from the bin and record the shorter list,
         # when the file reads again at its folder's publish and the install succeeds.
         write(joinpath(app, "app2.sh"), "z=1\n")
-        unreadable && @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
+        unreadable ? (@test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]) : (@test_skip false)
         chmod(joinpath(app, "app.sh"), 0o644)
         @test ShipTools._comm_bin_files([lib, app]) == [(lib, "lib.sh"), (app, "app.sh"), (app, "app2.sh")]
     end
@@ -325,21 +316,51 @@ end
     end
 end
 
-# The process mask: set it and get the old one back. Windows has no umask, so its branch is never lowered there.
-@static if Sys.iswindows()
-    set_process_umask(mask) = nothing
-else
-    set_process_umask(mask) = ccall(:umask, Base.Cmode_t, (Base.Cmode_t,), mask)
+@testset "a refusal lets go of the file it was reading" begin
+    # An error inside a line loop over an open file would hold the file until GC; on Windows a held file cannot be
+    # removed. GC stays off, so a leaked stream would still be open at the check.
+    held(path) = Sys.iswindows() ? !(try rm(path); true catch; false end) :
+        (rp = realpath(path); any(fd -> (try readlink(joinpath("/proc/self/fd", fd)) catch; "" end) == rp, readdir("/proc/self/fd")))
+    mktempdir() do root
+        list = joinpath(root, "list.txt")
+        write(list, "missing\n")
+        lib = mkpath(joinpath(root, "lib"))
+        write(joinpath(lib, "lib.sh"), "source \"\$(dirname \"\${BASH_SOURCE[0]}\")/part.sh\" || return 1\n")
+        part = joinpath(lib, "part.sh")
+        write(part, "p=1\n")
+        chmod(part, 0o000)
+        unreadable = try read(part); false catch; true end
+        GC.enable(false)
+        try
+            @test (try ShipTools._comm_bin_folders(list, root); false catch; true end)
+            Sys.isapple() ? (@test_skip false) : (@test !held(list))
+            if unreadable && !Sys.isapple()
+                @test (try ShipTools._comm_bin_text(lib, "lib.sh"); false catch; true end)
+                @test !held(joinpath(lib, "lib.sh"))
+            else
+                @test_skip false
+            end
+        finally
+            GC.enable(true)
+            chmod(part, 0o644)
+        end
+    end
 end
 
 @testset "install_comm makes a new comm folder its user's alone" begin
+    # The process mask: set it and get the old one back. Windows has no umask, so its branch is never lowered there.
+    @static if Sys.iswindows()
+        set_process_umask(mask) = nothing
+    else
+        set_process_umask(mask) = ccall(:umask, Base.Cmode_t, (Base.Cmode_t,), mask)
+    end
     mktempdir() do home
         chmod(home, 0o755)
         # ADR 0049, User isolation: a new folder is 0700 whatever the caller's mask. The mask is process-wide,
-        # so it is set around the install only. No HOME: install_comm(clis = Symbol[]) reads only SOT_COMM_HOME.
+        # so it is set around the install only. install_comm(clis = Symbol[]) reads only the comm home.
         old = set_process_umask(0o022)
         try
-            withenv("SOT_COMM_HOME" => joinpath(home, ".sot-comm"), "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing) do
+            in_home(home) do
                 ShipTools.install_comm(clis = Symbol[])
             end
         finally
@@ -347,7 +368,9 @@ end
         end
         comm = joinpath(home, ".sot-comm")
         @test isfile(joinpath(comm, "VERSION"))
-        if !Sys.iswindows()
+        if Sys.iswindows()
+            @test_skip false
+        else
             @test filemode(comm) & 0o777 == 0o700
             @test filemode(joinpath(comm, "bin", "comm-poll.sh")) & 0o777 == 0o755
         end

@@ -33,6 +33,8 @@
                 @test read(joinpath(root, "zzz-skill", "SKILL.md"), String) == "NEW-zzz-skill"
                 # The orphan warned and stayed; it did not throw.
                 @test isfile(joinpath(locked, "held.md"))
+            else
+                @test_skip false
             end
         finally
             chmod(locked, 0o755)
@@ -116,8 +118,7 @@ end
         write(joinpath(bindir, "ccbe"), "#!/bin/sh\necho stale\n")
         write(joinpath(bindir, "my-launcher"), "#!/bin/sh\necho keepme\n")
 
-        withenv("HOME" => home, "CLAUDE_CONFIG_DIR" => nothing, "CODEX_HOME" => nothing,
-                "SOT_COMM_HOME" => joinpath(home, ".sot-comm")) do
+        in_home(home) do
             ShipTools.update_comm(clis = [:claude, :codex])
         end
 
@@ -160,12 +161,9 @@ end
         write(joinpath(launchers, "ccdemo"), "#!/bin/sh\n")
         write(joinpath(launchers, "CLAUDE.md"), "page")
         dst = joinpath(home, "dst", "skills")
-        # On Windows Julia's `homedir()` reads USERPROFILE, so the home is set there as well.
-        withenv("HOME" => home, "USERPROFILE" => home, "HOMEDRIVE" => splitdrive(home)[1],
-                "HOMEPATH" => splitdrive(home)[2]) do
+        in_home(home) do
             ShipTools._install_skills(skills, dst)
             ShipTools._install_launchers(launchers)
-            @test homedir() == home
         end
         @test isfile(joinpath(dst, "demo", "SKILL.md"))
         @test isfile(joinpath(dst, "demo", "sub", "ref.md"))
