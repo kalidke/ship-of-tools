@@ -7,8 +7,9 @@ use sot_protocol::op;
 use sot_protocol::CommFileReq;
 use sot_protocol::CommFileRes;
 use sot_protocol::Frame;
+use std::sync::Arc;
 use crate::rows::workspace::Phase;
-use crate::rows::Workspaces;
+use crate::rows::{Workspace, Workspaces};
 use crate::comm::registry::registry::{comm_handle_for_workspace, iso8601_utc_from_secs, read_registry_fresh, unix_now_secs};
 use crate::paths::valid_name;
 use crate::server::reply::HandlerOutput;
@@ -51,12 +52,7 @@ pub(crate) async fn file_comm(
     tokio::task::spawn_blocking(move || {
         // Arm 1 of liveness: a running row holds the handle, by THE
         // row-binding rule and the two phases counted as running.
-        let row_holds = || {
-            rows.iter().any(|ws| {
-                matches!(ws.phase(), Phase::Starting | Phase::Ready)
-                    && comm_handle_for_workspace(ws) == req.to
-            })
-        };
+        let row_holds = || running_row_holds(&rows, &req.to);
         let home = crate::comm::sot_comm_home();
         let self_host = comm_self_host();
         let topology = sot_protocol::topology::load();
@@ -209,6 +205,15 @@ fn comm_file_verdict(
     let ts = iso8601_utc_from_secs(now_secs);
     crate::comm::mail::inbox::file_frame(&home.join("inbox"), &req.from, to, req.broadcast, &req.text, &ts, wait, own)
         .map_err(|e| ("file_failed".into(), e))
+}
+
+/// Arm 1 of `comm.file`'s liveness: some row in a running phase (`Starting`
+/// or `Ready`) holds `to` by THE row-binding rule, which given `rows`
+/// ignores a self-file or stored name that another row declares.
+fn running_row_holds(rows: &[Arc<Workspace>], to: &str) -> bool {
+    rows.iter().any(|ws| {
+        matches!(ws.phase(), Phase::Starting | Phase::Ready) && comm_handle_for_workspace(ws, rows) == to
+    })
 }
 
 /// Arm 2 of `comm.file`'s liveness: `last_seen` within `stale_secs` of now.
@@ -544,6 +549,75 @@ mod comm_file_tests {
         again.forwarded = true;
         let (code, error) = file_as(Some(d.path()), &guest, &again, true).unwrap_err();
         assert!(code == "file_failed" && error.contains("not its folder's hub (guest-b)"), "{error}");
+    }
+
+    // ADR 0049: a running row whose self-file names a handle another row
+    // declares does not hold it; with no declaring row the fallback binds.
+    #[test]
+    fn a_running_row_reaching_a_declared_handle_by_its_self_file_does_not_hold_it() {
+        use crate::rows::workspace::{Observation, SupervisorIdentity};
+        // Restores both vars when dropped, so a failed assertion leaks nothing.
+        struct EnvGuard {
+            _serial: std::sync::MutexGuard<'static, ()>,
+            saved: [(&'static str, Option<std::ffi::OsString>); 2],
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                for (k, v) in &self.saved {
+                    match v {
+                        Some(v) => std::env::set_var(k, v),
+                        None => std::env::remove_var(k),
+                    }
+                }
+            }
+        }
+        let _guard = EnvGuard {
+            saved: [("SOT_COMM_HOME", std::env::var_os("SOT_COMM_HOME")), ("SOT_SELF_HOST", std::env::var_os("SOT_SELF_HOST"))],
+            _serial: crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "sot-filer-running-row-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("self")).unwrap();
+        std::env::set_var("SOT_COMM_HOME", &dir);
+        std::env::set_var("SOT_SELF_HOST", "host-4");
+
+        let row = |label: &str, declared: &str, ready: bool| {
+            let mut w = Workspace::from_label(
+                label,
+                std::env::temp_dir(),
+                false,
+                "none".into(),
+                String::new(),
+                String::new(),
+            );
+            w.runtime = "capsule".to_string();
+            w.agent_handle = std::sync::Mutex::new(declared.to_string());
+            if ready {
+                assert!(w.apply_phase_observation(Observation::Phase {
+                    phase: Phase::Ready,
+                    supervisor: SupervisorIdentity { pid: 1, created: 1 },
+                    voyage: Some(uuid::Uuid::from_u128(1)),
+                }));
+            }
+            Arc::new(w)
+        };
+        let older = row("m5-older", "", true);
+        std::fs::write(
+            dir.join("self").join(format!("host-4__{}.txt", older.workspace_id)),
+            "m5-shared\nrepo=m5\nroot=/p/x\n",
+        )
+        .unwrap();
+        let newer = row("m5-newer", "m5-shared", false);
+        let both = [older.clone(), newer];
+        assert!(!running_row_holds(&both, "m5-shared"));
+        assert!(running_row_holds(&[older.clone()], "m5-shared"), "no declaring row: the fallback still binds");
+        let newer_ready = row("m5-newer-ready", "m5-shared", true);
+        assert!(running_row_holds(&[older, newer_ready], "m5-shared"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // T4 — the cutoff: one second inside is fresh, one outside and the edge

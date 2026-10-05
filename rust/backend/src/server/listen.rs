@@ -212,6 +212,7 @@ pub(super) async fn run_local(
     {
         listener_options = listener_options.security_descriptor(session_pipe_security_descriptor()?);
     }
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
     let listener = listener_options
         .create_tokio()
         .with_context(|| format!("bind {socket_path:?}"))?;
@@ -221,8 +222,10 @@ pub(super) async fn run_local(
     // accepting by dropping the listener and unlinking the socket, on the
     // same wake as the deciding departure, before any row is touched.
     let decided = loop {
+        #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
+        let accept = listener.accept();
         let stream: LocalStream = tokio::select! {
-            accepted = listener.accept() => accepted.context("accept on sot socket")?,
+            accepted = accept => accepted.context("accept on sot socket")?,
             () = leases.gone() => break tokio::time::Instant::now(),
         };
         let peer_identity = crate::server::listen::accepted_peer(&stream);

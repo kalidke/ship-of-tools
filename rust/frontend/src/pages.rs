@@ -18,7 +18,7 @@
 //! honest without blocking the render thread: the GPU thread binds a
 //! `std::net::TcpListener` SYNCHRONOUSLY (a bind is sub-millisecond, no
 //! `block_on`, so the port is already listening the instant
-//! `open_url_in_browser` runs) and hands the bound listener — tagged with the
+//! `browser_open::open_page` runs) and hands the bound listener — tagged with the
 //! ssh recipe and token it resolved for that page's host — to the transport
 //! runtime here, which owns the async accept loop + the per-connection pipe.
 //!
@@ -101,54 +101,42 @@ pub fn spawn_proxy_manager(
                 }
             };
             tracing::info!(port, %recipe, "proxy: accepting browser connections for backend port");
-            tokio::spawn(serve_listener(listener, port, arm, move |browser| {
+            let dial = move |browser| {
                 let (r, g, t) = (recipe.clone(), gate.clone(), token.clone());
                 async move { pipe_one(browser, &r, &g, port, t.as_deref()).await }
+            };
+            tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+                let arm = std::sync::Arc::clone(&arm);
+                let done = dial(browser);
+                async move { serve_browser(port, &arm, done).await }
             }));
         }
         tracing::debug!("proxy: listener channel closed; manager exiting");
     });
 }
 
-/// One listener's accept loop. Each browser connection runs `dial` unless the port is parked (`Arm`), in which case
-/// it is dropped here: no ssh login, no log line. The listener never closes, so the port stays this frontend's for
-/// its whole life, as it always has.
-async fn serve_listener<D, Fut>(listener: tokio::net::TcpListener, port: u16, arm: std::sync::Arc<Arm>, dial: D)
+/// One browser connection `serve_own` has admitted, as `done`, the future of its `dial`. A port the daemon refused
+/// (`Arm`) is parked: the connection is dropped here, with no ssh login and no log line. Otherwise `dial` runs and its
+/// answer is logged. The listener never closes, so the port stays this frontend's for its whole life.
+async fn serve_browser<Fut>(port: u16, arm: &Arm, done: Fut)
 where
-    D: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = anyhow::Result<Answer>> + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<Answer>>,
 {
-    loop {
-        match listener.accept().await {
-            Ok((browser, _peer)) => {
-                let Some(armed) = arm.dial() else {
-                    continue; // parked: `browser` drops here, closing the connection at once
-                };
-                let done = dial(browser);
-                let arm = std::sync::Arc::clone(&arm);
-                tokio::spawn(async move {
-                    match done.await {
-                        Ok(Answer::Piped | Answer::LinkDown) => {}
-                        Ok(Answer::NotServed) => {
-                            if arm.refused(armed) {
-                                tracing::warn!(port, "proxy: the daemon does not serve this port (bad_port); parked: browser connections to it close here until the page is opened again");
-                            }
-                        }
-                        // A dead child here is a blank page with no
-                        // other carrier — `debug!` → `warn!` (C3 as
-                        // amended §6): a reason at `debug` is
-                        // invisible in a normal run.
-                        Err(e) => tracing::warn!(port, error = %e, "proxy: connection ended"),
-                    }
-                });
-            }
-            Err(e) => {
-                // A transient accept error shouldn't kill the
-                // listener; back off a beat and keep serving.
-                tracing::warn!(port, error = %e, "proxy: accept error");
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let Some(armed) = arm.dial() else {
+        return; // parked: `done` drops unpolled, closing the connection at once
+    };
+    match done.await {
+        Ok(Answer::Piped | Answer::LinkDown) => {}
+        Ok(Answer::NotServed) => {
+            if arm.refused(armed) {
+                tracing::warn!(port, "proxy: the daemon does not serve this port (bad_port); parked: browser connections to it close here until the page is opened again");
             }
         }
+        // A dead child here is a blank page with no
+        // other carrier — `debug!` → `warn!` (C3 as
+        // amended §6): a reason at `debug` is
+        // invisible in a normal run.
+        Err(e) => tracing::warn!(port, error = %e, "proxy: connection ended"),
     }
 }
 
@@ -250,55 +238,53 @@ where
     Ok(Answer::Piped)
 }
 
-/// Hand `url` (any browser-openable address — `http://…`, `file:///…`, or
-/// a local filesystem path) off to the OS default handler. Fire-and-
-/// forget — we don't wait for the browser to exit.
-pub(crate) fn open_url_in_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        // Avoid `cmd /c start`: shell metacharacters in URLs, especially
-        // `&secret=...` on Pluto links, are otherwise parsed by cmd.exe.
-        std::process::Command::new("rundll32")
-            .args(["url.dll,FileProtocolHandler", url])
-            .spawn()
-            .map(|_| ())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())?;
-    }
-    tracing::info!(%url, "opened in browser");
-    Ok(())
-}
-
 /// Write `html_bytes` to a unique temp file and hand it off to the OS
-/// default browser via `open_url_in_browser`. We don't delete the temp
+/// default browser via `crate::browser_open::spawn_opener`. We don't delete the temp
 /// file (the OS cleans temp on its own schedule; a fresh path per call
 /// also prevents the browser from showing a stale cached version).
 pub(crate) fn open_html_in_browser(html_bytes: &[u8]) -> std::io::Result<()> {
+    let path = write_preview_html(&std::env::temp_dir(), html_bytes)?;
+    crate::browser_open::spawn_opener(&path.to_string_lossy())
+}
+
+/// A new file for a rendered preview in `dir`: created, never overwritten, and readable by this account only on Unix,
+/// where `/tmp` is shared by every account on the box (ADR 0049, User isolation).
+fn write_preview_html(dir: &std::path::Path, html_bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut path = std::env::temp_dir();
-    path.push(format!("sot-preview-{now}.html"));
-    std::fs::write(&path, html_bytes)?;
-    let path_str = path.to_string_lossy().to_string();
-    open_url_in_browser(&path_str)
+    let path = dir.join(format!("sot-preview-{now}.html"));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(&path)?.write_all(html_bytes)?;
+    Ok(path)
 }
 
 #[cfg(test)]
 mod tests {
+    /// A proxy listener as production runs it: `serve_own` with the real owner check, each admitted connection handed to
+    /// `serve_browser` with the future of its `dial` (ADR 0049, User isolation).
+    fn serve<D, Fut>(
+        listener: tokio::net::TcpListener,
+        port: u16,
+        arm: std::sync::Arc<super::Arm>,
+        dial: D,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        D: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = anyhow::Result<super::Answer>> + Send + 'static,
+    {
+        tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "page-proxy", move |browser| {
+            let arm = std::sync::Arc::clone(&arm);
+            let done = dial(browser);
+            async move { super::serve_browser(port, &arm, done).await }
+        }))
+    }
+
     /// ADR 0045 decision 4: with the host's link down a browser connection
     /// closes at once with `Answer::LinkDown` and no ssh child is spawned.
     #[tokio::test]
@@ -353,7 +339,7 @@ mod tests {
                 }
             }
         };
-        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), dial));
+        let task = serve(listener, port, arm.clone(), dial);
         for _ in 0..6 {
             let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             let mut buf = [0u8; 1];
@@ -421,7 +407,7 @@ mod tests {
                 }
             }
         };
-        let task = tokio::spawn(super::serve_listener(listener, port, arm.clone(), dial));
+        let task = serve(listener, port, arm.clone(), dial);
         let browse = || async move {
             let mut client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
             let mut buf = [0u8; 1];
@@ -470,5 +456,26 @@ mod tests {
         assert!(arm.dial().is_none());
         arm.reopen();
         assert!(arm.dial().is_some(), "opening the page again un-parks");
+    }
+
+    /// ADR 0049, User isolation: a rendered preview in the shared temp folder is this account's alone, and a second
+    /// preview is a new file, never an overwrite.
+    #[test]
+    fn a_preview_file_is_private_and_never_overwritten() {
+        let dir = std::env::temp_dir().join(format!("sot-preview-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = super::write_preview_html(&dir, b"<p>one</p>").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let b = super::write_preview_html(&dir, b"<p>two</p>").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&a).unwrap(), b"<p>one</p>");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&a, &b] {
+                assert_eq!(std::fs::metadata(f).unwrap().permissions().mode() & 0o777, 0o600, "{f:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

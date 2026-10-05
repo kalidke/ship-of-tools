@@ -1,15 +1,14 @@
-# ADR 0049, User isolation: a Rust process reaches a local socket or pipe by name only through
-# sot_log::identity::connect_own, so every connector the list below names is disallowed outside the sanctioned sites.
-# A sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")]. rust.yml's "Local endpoint dials" step
-# runs the lint over every library and binary. Paths that do not exist on a platform draw a warning there, never an
-# error. A new connector method joins this list. Not expressible here: std::fs::OpenOptions::open on a pipe path;
-# rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and topology/dial.rs contain the rule's names, not
-# their order and not any other file's opener.
-#
-# Kernel file locks: a lock is held only in a guard whose Drop unlocks it (sot_log::host's WriterLock, the
-# backend's comm::mail::inbox InboxLock), because a forked child that has not yet exec'd shares the lock's open
-# file description. So std::fs::File's lock methods and libc::flock are disallowed too, outside those guards.
+# The methods below are disallowed in every library and binary. rust.yml's "Disallowed methods" step runs `cargo clippy
+# --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods` on all three
+# platforms, and a lane's merge gate runs the same line on the merged tree (.github/CLAUDE.md). One array in labelled
+# groups, each opening with its rule; a new rule is a new group. A sanctioned site carries
+# #[allow(clippy::disallowed_methods, reason = "...")] on the one statement that calls the method. A path that does not
+# exist on a platform draws a warning there, never an error.
 disallowed-methods = [
+  # Local endpoint dials (ADR 0049, User isolation): a Rust process reaches a local socket or pipe by name only through
+  # sot_log::identity::connect_own. A new connector method joins this group. Not expressible here:
+  # std::fs::OpenOptions::open on a pipe path; rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and
+  # topology/dial.rs contain the rule's names, not their order and not any other file's opener.
   { path = "std::os::unix::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "std::os::unix::net::UnixStream::connect_addr", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "tokio::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
@@ -40,6 +39,46 @@ disallowed-methods = [
   { path = "sot_log::lane::socket_unix::client::connect_unix_socket_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_pipe_path_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "sot_log::lane::pipe_win::client::connect_named_pipe_unchallenged", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  # Accepts (ADR 0049, User isolation): every listener a Rust process serves is listed. Each accept primitive and each
+  # named-pipe or local-socket listener constructor this group names is disallowed; each production call carries one
+  # allow whose reason begins "listener: <name>:", and rust/log/tests/isolation_guards.rs (every_rust_listener_is_listed)
+  # pins those names. The one TCP accept is sot_log::identity::peer_owner's `serve` (serve_own).
+  { path = "std::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "std::net::TcpListener::incoming", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpListener::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpListener::poll_accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "libc::accept", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "libc::accept4", reason = "accept only through sot_log::identity::peer_owner::serve_own (ADR 0049, User isolation)" },
+  { path = "std::os::unix::net::UnixListener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "std::os::unix::net::UnixListener::incoming", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::UnixListener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::UnixListener::poll_accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::Listener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::ListenerExt::incoming", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::tokio::Listener::accept", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::NamedPipeServer::connect", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "windows_sys::Win32::System::Pipes::ConnectNamedPipe", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "windows_sys::Win32::System::Pipes::CreateNamedPipeW", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "windows_sys::Win32::System::Pipes::CreateNamedPipeA", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::ServerOptions::create", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::ServerOptions::create_with_security_attributes_raw", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::ListenerOptions::create_sync", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::ListenerOptions::create_sync_as", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::ListenerOptions::create_tokio", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::ListenerOptions::create_tokio_as", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::Listener::from_options", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::local_socket::traits::tokio::Listener::from_options", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_duplex", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_recv_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_send_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_duplex", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_recv_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "interprocess::os::windows::named_pipe::PipeListenerOptions::create_tokio_send_only", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  # File locks: a lock is held only in a guard whose Drop unlocks it (sot_log::host's WriterLock, the backend's
+  # comm::mail::inbox InboxLock), because a forked child that has not yet exec'd shares the lock's open file
+  # description. So std::fs::File's lock methods and libc::flock are disallowed too, outside those guards.
   { path = "std::fs::File::lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "std::fs::File::try_lock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "std::fs::File::lock_shared", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },

@@ -81,6 +81,7 @@ mod tests {
             ("rust/backend/tests/topology_set.rs", "let mode = std::fs::metadata(&path).expect(\"the hub's comm path\").permissions().mode() & 0o7777;"),
             ("rust/backend/tests/window_start.rs", "let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));"),
             ("rust/frontend/src/lease_grant_tests.rs", "std::fs::DirBuilder::new().mode(0o700).create(&dir).expect(\"private folder\");"),
+            ("rust/frontend/src/pages.rs", "assert_eq!(std::fs::metadata(f).unwrap().permissions().mode() & 0o777, 0o600, \"{f:?}\");"),
             ("rust/frontend/src/net/transport/tests.rs", "std::fs::DirBuilder::new().mode(0o700).create(&dir).expect(\"private folder\");"),
             ("rust/log/src/host/durable.rs", "std::fs::set_permissions(&b, std::fs::Permissions::from_mode(0o111)).unwrap();"),
             ("rust/log/src/host/state_dir.rs", "std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();"),

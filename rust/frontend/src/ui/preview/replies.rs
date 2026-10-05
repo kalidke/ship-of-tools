@@ -484,12 +484,13 @@ impl State {
         match result {
             Ok(url) => {
                 if self.ensure_proxy_for_url(&event_host, &url) {
-                    if let Err(e) = open_url_in_browser(&url) {
-                        tracing::warn!(error = %e, %url,
-                                "pluto: open_url_in_browser failed");
+                    let origin = crate::browser_open::origin_of(&url);
+                    if let Err(e) = crate::browser_open::open_page(&url) {
+                        tracing::warn!(error = %e, page = %origin,
+                                "pluto: browser open failed");
                         self.status = format!("pluto.open browser-launch failed · {e}");
                     } else {
-                        self.status = format!("pluto · opened {url}");
+                        self.status = format!("pluto · opened {origin}");
                     }
                 }
                 self.window.request_redraw();
@@ -506,12 +507,13 @@ impl State {
         match result {
             Ok(url) => {
                 if self.ensure_proxy_for_url(&event_host, &url) {
-                    if let Err(e) = open_url_in_browser(&url) {
-                        tracing::warn!(error = %e, %url,
-                                "docs: open_url_in_browser failed");
+                    let origin = crate::browser_open::origin_of(&url);
+                    if let Err(e) = crate::browser_open::open_page(&url) {
+                        tracing::warn!(error = %e, page = %origin,
+                                "docs: browser open failed");
                         self.status = format!("docs.open browser-launch failed · {e}");
                     } else {
-                        self.status = format!("docs · opened {url}");
+                        self.status = format!("docs · opened {origin}");
                     }
                 }
                 self.window.request_redraw();
@@ -528,9 +530,10 @@ impl State {
         match result {
             Ok(url) => {
                 if self.ensure_proxy_for_url(&event_host, &url) {
-                    if let Err(e) = open_url_in_browser(&url) {
-                        tracing::warn!(error = %e, %url,
-                                "video: open_url_in_browser failed");
+                    let origin = crate::browser_open::origin_of(&url);
+                    if let Err(e) = crate::browser_open::open_page(&url) {
+                        tracing::warn!(error = %e, page = %origin,
+                                "video: browser open failed");
                         self.status = format!("video.open browser-launch failed · {e}");
                     } else {
                         self.status = "video · opened in browser".to_string();

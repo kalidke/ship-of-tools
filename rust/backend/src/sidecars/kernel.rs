@@ -520,7 +520,7 @@ fn route_response(line: &str, pending: &mut HashMap<u64, oneshot::Sender<Result<
     let resp = match parsed {
         Ok(r) => r,
         Err(e) => {
-            tracing::warn!(error = %e, line, "kernel response parse failed");
+            tracing::warn!(error = %sot_protocol::codec::unparsed(&e, line.len()), "kernel response parse failed");
             return;
         }
     };
@@ -661,5 +661,16 @@ mod tests {
         assert!(!status.is_closed(), "keepalive receiver should hold it open");
         drop(kernel);
         assert!(status.is_closed(), "dropping the last Kernel handle should close status");
+    }
+
+    /// ADR 0049, User isolation: a kernel line that does not parse is logged by position and length, never its bytes.
+    #[test]
+    fn a_kernel_line_that_does_not_parse_is_logged_without_its_bytes() {
+        let logged = crate::sidecars::logged_by(|| {
+            let mut pending = HashMap::new();
+            route_response(r#"{"v":1,"id":2,"url":"http://127.0.0.1:41234/0123456789ab"#, &mut pending);
+        });
+        assert_eq!(logged.lines().filter(|l| l.contains("WARN")).count(), 1, "{logged}");
+        assert!(!logged.contains("0123") && !logged.contains("41234"), "{logged}");
     }
 }

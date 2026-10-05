@@ -3,7 +3,7 @@
 # JUST HIT `r`. Self-contained: its own env (Project.toml: WGLMakie + Bonito), so
 # the `r` keybind's project-discovery activates the right project. `wglshow`
 # (from ShipToolsRepl, on the REPL's load path) serves the figure over Bonito on
-# SOT_WGL_PORT (default 1241, launcher-forwarded) and returns a BrowserView — so
+# an OS-assigned port under a secret path and returns a BrowserView — so
 # the REPL emits a `browser` frame and the FE AUTO-OPENS it in the browser. No
 # manual URL typing.
 #

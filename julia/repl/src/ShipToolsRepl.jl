@@ -17,7 +17,7 @@ CairoMakie-pinned `Parsers 3.0.0` that no `JSON3` release supports, and the
 shim failed to precompile for every user with that combination in their
 project (2026-09-18). The fix is the invariant, not a version pin — a stacked
 shim must share NO registered package with any user project, ever — so
-`ShipToolsRepl` depends only on stdlib (`Base64`, `Pkg`, `Sockets`), and its
+`ShipToolsRepl` depends only on stdlib (`Base64`, `Pkg`, `Random`), and its
 own JSON codec lives in `json.jl` rather than pulling one in. The guard test
 in `test/runtests.jl` enforces this by walking `Project.toml`'s `[deps]`.
 """
@@ -25,7 +25,7 @@ module ShipToolsRepl
 
 using Base64
 using Pkg
-using Sockets
+using Random
 
 export serve, browserview, BrowserView, wglshow
 

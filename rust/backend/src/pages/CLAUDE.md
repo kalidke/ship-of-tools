@@ -21,6 +21,8 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
   never the preferred one.
 - Nothing is served that an op did not grant: video by token (`register_video`), a prefix site by nonce (`set_root`),
   a pool site by its per-open secret and then an HttpOnly cookie (`assign_pool_port`).
+- The video, site and pool listeners are bound non-inheritable (`bind_page_listener`), so no child process holds one,
+  and accept through `serve_own`: only this OS account's connections are served.
 - Minting fails closed: `random_token` returns `None` rather than a weak token.
 - `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound, and logs a refused
   port once per streak.
@@ -46,7 +48,7 @@ Elsewhere: rust/frontend/src/pages.rs (the window's page proxy).
 ## Files
 
 - `http.rs`: the response code both loopback servers share: content types, single ranges, file bodies, plain replies.
-- `mod.rs`: declares the folder's modules and `start_page_servers`, which binds the listeners at boot.
+- `mod.rs`: declares the folder's modules, `start_page_servers`, which binds the listeners at boot, and `bind_page_listener`, the one bind of a page listener.
   It also holds `random_token`, the one minter of video tokens, site nonces and pool secrets.
 - `ops.rs`: video.open, docs.open (and its site-root walk), quarto.open.
 - `proxy.rs`: `proxy.connect`, the loopback allowlist, browser-port records.

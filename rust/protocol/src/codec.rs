@@ -67,6 +67,14 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// What may be said of a line that does not parse as JSON: serde's error category and position and the line's
+/// length, never its bytes. A line can carry a page's secret (a `pluto.open` reply cut off by a dying link, a REPL
+/// announcement cut off after a `wglshow` URL), and these descriptions reach logs and the frontend's status line
+/// (ADR 0049, User isolation). serde's own message can quote input, so only its category and position are kept.
+pub fn unparsed(e: &serde_json::Error, len: usize) -> String {
+    format!("{:?} error at line {} column {} | len={len}", e.classify(), e.line(), e.column())
+}
+
 pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
     let mut line = Vec::with_capacity(256);
     let n = r
@@ -88,19 +96,7 @@ pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Op
     }
     let frame: Frame = match serde_json::from_slice(&line) {
         Ok(f) => f,
-        Err(e) => {
-            // Diagnostic: include the head of the bytes we choked on so
-            // codec desyncs (the classic "blob shadowed envelope" failure)
-            // are debuggable from the log instead of by guessing. Cap the
-            // preview so a 1 MiB envelope doesn't blow up tracing.
-            let preview_len = line.len().min(160);
-            let preview = String::from_utf8_lossy(&line[..preview_len]);
-            return Err(anyhow!(
-                "frame parse failed: {e} | len={} head={:?}",
-                line.len(),
-                preview
-            ));
-        }
+        Err(e) => return Err(anyhow!("frame parse failed: {}", unparsed(&e, line.len()))),
     };
 
     // Codec inspects the payload for a blob descriptor so callers don't need
@@ -203,15 +199,7 @@ pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
     }
     let frame: Frame = match serde_json::from_slice(&line) {
         Ok(f) => f,
-        Err(e) => {
-            let preview_len = line.len().min(160);
-            let preview = String::from_utf8_lossy(&line[..preview_len]);
-            return Err(anyhow!(
-                "frame parse failed: {e} | len={} head={:?}",
-                line.len(),
-                preview
-            ));
-        }
+        Err(e) => return Err(anyhow!("frame parse failed: {}", unparsed(&e, line.len()))),
     };
     Ok(frame)
 }
@@ -368,5 +356,24 @@ mod tests {
         let mut r = tokio::io::BufReader::new(std::io::Cursor::new(wire));
         let (parsed, _) = read_frame(&mut r).await.unwrap();
         assert_eq!(parsed.rev, Some(42));
+    }
+
+    /// ADR 0049, User isolation: a frame cut off mid-envelope (an ssh link dying during a `pluto.open` or `video.open`
+    /// reply) must not put any of the page's secret into the parse error, which reaches the frontend's log and
+    /// status line; this holds at every cut, a token's first characters included.
+    #[tokio::test]
+    async fn a_truncated_frame_error_carries_no_frame_bytes() {
+        let whole: &[u8] = br#"{"v":2,"id":1,"kind":"res","op":"video.open","rev":1,"payload":{"url":"http://127.0.0.1:41234/0123456789abcdef0123456789abcdef"}}"#;
+        let token_at = whole.windows(4).position(|w| w == b"0123").unwrap();
+        for cut in [token_at + 5, token_at + 12, token_at + 31] {
+            let mut cut = whole[..cut].to_vec();
+            cut.push(b'\n'); // a relay that cuts an envelope short and ends the line there
+            let mut r = tokio::io::BufReader::new(std::io::Cursor::new(cut.clone()));
+            let e = read_frame(&mut r).await.unwrap_err().to_string();
+            assert!(!e.contains("0123") && !e.contains("video.open") && !e.contains("head="), "{e}");
+            let e = super::read_frame_blocking(&mut std::io::Cursor::new(cut)).unwrap_err().to_string();
+            assert!(!e.contains("0123") && !e.contains("video.open") && !e.contains("head="), "{e}");
+            assert!(e.contains("len="), "{e}");
+        }
     }
 }

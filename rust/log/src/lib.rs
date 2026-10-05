@@ -13,6 +13,7 @@ pub mod claude;
 pub mod host;
 pub mod identity;
 pub mod lane;
+pub mod secret;
 pub mod store;
 pub mod supervisor;
 #[cfg(feature = "test-support")]

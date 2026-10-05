@@ -104,19 +104,26 @@ mod tests {
             "with_default",
             "with_subscriber",
         ];
-        // Each production line of a `main`, and how often it appears there.
-        const BACKEND_MAIN: [(&str, usize); 4] = [
+        // Each production line of a `main` and each test that builds the subscriber under test (the log writers'
+        // redaction), by exact line and count. Those tests reach a callsite no other test reaches.
+        const USE_INIT: &str = "use tracing_subscriber::util::SubscriberInitExt;";
+        const WITH_DEFAULT: &str = "tracing::subscriber::with_default(subscriber, || {";
+        const BACKEND_MAIN: [(&str, usize); 6] = [
             ("/// Writer for `tracing_subscriber::fmt`: mirrors every log line to BOTH", 1),
             ("tracing_subscriber::fmt()", 1),
             ("tracing_subscriber::EnvFilter::try_from_default_env()", 1),
             (".unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(\"info\")),", 1),
+            (USE_INIT, 1),
+            (WITH_DEFAULT, 1),
         ];
+        const SECRET: [(&str, usize); 2] = [("let subscriber = tracing_subscriber::fmt()", 1), (WITH_DEFAULT, 1)];
         let mut found = Vec::new();
         for (rel, text) in crate::test_scan::rust_sources() {
             let allowed: &[(&str, usize)] = match rel.as_str() {
                 "rust/log/src/test_log.rs" => continue,
                 "rust/backend/src/main.rs" => &BACKEND_MAIN,
                 "rust/frontend/src/main.rs" => &BACKEND_MAIN[1..],
+                "rust/log/src/secret.rs" => &SECRET,
                 _ => &[],
             };
             let mut used = std::collections::HashMap::new();

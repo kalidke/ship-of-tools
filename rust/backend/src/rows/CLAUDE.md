@@ -23,8 +23,14 @@ Part of the daemon's rows subsystem, under `rust/backend/src`.
 
 ## Promises
 - Re-inserting a slug keeps its workspace id and takes every other field from the new row (`Workspaces::insert`).
+- The default row's declared handle is carried through the boot re-seed (`seed_default_row` copies it, `insert`
+  keeps it); the one-row-per-handle promise below still applies to it.
 - Handle, account and agent change in place on the shared `Arc`, never through a replacing `insert`, so a destroyed row
   is not brought back (`set_agent_handle`, `set_account`, `reset_agent_to_none`).
+- No two rows hold one declared handle. At run time `set_agent_handle` clears it from every other row under the
+  registry's write lock and returns their ids for the caller to save; at boot `store::scan_disk` keeps a handle that
+  several tomls declare only on the row the comm registry names as its last joiner, if it is one of them
+  (`clear_shared_handles`).
 - `capsule_guard` returns a guard only for a registered row and creates it under the registry's write lock, so two
   first callers never mint two guards; `remove_by_id` drops it with the row, cancels and aborts the row's observer,
   and clears the default id if it was the removed row.
@@ -47,6 +53,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `set_repl_frame_tx`, `set_watch_bus`, `set_monitor_hub`. Uses: `lane.connect`, `handle_connection`,
 `handle_lane_connect`, `pipe_bidirectional`, `reject`, `dispatch`, `write_frame_within`, `write_frame_to`,
 `agent_argv`, `agent_exec_argv`, `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`,
+`comm_handle_for_workspace`, `clear_comm_unread`, `read_comm_agents`, `host_matches`, `last_joiner`,
 `capsule_supervisor_env`, `sot-capsule supervise`, `supervisor_client`, `FeAttachClient`,
 `rust/backend/src/rows/run/headless.rs`, `rust/frontend/src/ui/agent_pane/attach.rs`, `drawer.voyage`, `writer.lock`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `durable::write`, `durable::remove`,

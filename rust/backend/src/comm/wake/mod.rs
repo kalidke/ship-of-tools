@@ -73,7 +73,7 @@
 //! "Last woken" lives in the tick task's memory, never on disk, so a daemon
 //! restart wakes every row with unread mail once, at its first free prompt.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -168,31 +168,15 @@ fn decide(s: &Scan, woken: Option<&Woken>, now: Instant) -> Decision {
 pub async fn run(comm_home: PathBuf, state_root: PathBuf, workspaces: Workspaces, period: Duration) {
     let mut woken: HashMap<String, Woken> = HashMap::new();
     let mut streaks: HashMap<String, Streak> = HashMap::new();
-    let mut warned: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tick.tick().await;
         let rows = workspaces.list();
-        let mut declared: HashMap<String, usize> = HashMap::new();
-        for ws in &rows {
-            let h = ws.agent_handle();
-            if !h.is_empty() {
-                *declared.entry(h).or_default() += 1;
-            }
-        }
         let mut checks = Vec::new();
         for ws in rows {
             let handle = ws.agent_handle();
             if handle.is_empty() || ws.runtime != "capsule" {
-                continue;
-            }
-            // Two rows declaring one handle: a wake aimed by a guess types
-            // into someone else's session, so both are skipped.
-            if declared.get(&handle).copied().unwrap_or(0) > 1 {
-                if warned.insert(handle.clone()) {
-                    tracing::warn!(handle = %handle, "comm wake: two rows declare this handle; waking neither");
-                }
                 continue;
             }
             let agent = ws.agent();

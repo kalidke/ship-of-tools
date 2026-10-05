@@ -57,6 +57,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `tests/`: integration and whole-process tests.
 - `src/lib.rs`: the module tree, the crate's facades (`lock_writer`, `owner_protected_pipe_descriptor`) and `Error`/`Result`.
 - `src/claude.rs`: the dormant Claude SDK producer.
+- `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
 - `src/test_exec.rs`: `write_executable`, how a test writes a program it will run (feature `test-support`), and its source scan.
 - `src/test_log.rs`: `capture()`, the test-only reader of tracing output (feature `test-support`), and its source scan.
 - `src/test_scan.rs`: `rust_sources()`, every workspace member's Rust source for the source scans (feature `test-support`), and the scan that no test changes the process `PATH` or `SHELL`.
