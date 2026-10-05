@@ -19,7 +19,7 @@ Per workspace row (built in `rows/workspace.rs`):
   refuses a path outside the root.
 - `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
 - Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`); `gio` runs through
-  `Signal::spawn_std` and counts as system trash only after it exited 0.
+  `Signal::spawn_std` with null standard handles and counts as system trash only after it exited 0.
 - A concept target never holds `..`, an absolute path or an empty segment, and `.md` is appended, never substituted
   (`ConceptStore::target_to_path`).
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never

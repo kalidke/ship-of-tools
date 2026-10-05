@@ -125,6 +125,9 @@ pub fn spawn_opener(arg: &str) -> std::io::Result<()> {
         #[allow(clippy::disallowed_methods, reason = "the window hands the address to the OS browser, which outlives the window by design")]
         std::process::Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", arg])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map(|_| ())?;
     }
@@ -133,6 +136,9 @@ pub fn spawn_opener(arg: &str) -> std::io::Result<()> {
         #[allow(clippy::disallowed_methods, reason = "the window hands the address to the OS browser, which outlives the window by design")]
         std::process::Command::new("xdg-open")
             .arg(arg)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map(|_| ())?;
     }
@@ -141,6 +147,9 @@ pub fn spawn_opener(arg: &str) -> std::io::Result<()> {
         #[allow(clippy::disallowed_methods, reason = "the window hands the address to the OS browser, which outlives the window by design")]
         std::process::Command::new("open")
             .arg(arg)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map(|_| ())?;
     }
@@ -176,6 +185,30 @@ mod tests {
     use std::time::Instant;
 
     const PAGE: &str = "http://127.0.0.1:9/0123456789abcdef0123456789abcdef?secret=s3cr3t&id=1";
+
+    /// Std passes an inherited standard handle to a Windows child as an inheritable copy, whatever `harden_own_stdio`
+    /// did to the window's own: the opener's child must be handed null ones, or it holds the window's log files open
+    /// for as long as the browser runs. Read as text through the production view, from the signature through the
+    /// function's closing brace.
+    #[test]
+    fn the_opener_hands_its_child_no_inherited_stdio() {
+        let source = sot_log::test_scan::without_test_modules(include_str!("browser_open.rs"));
+        let mut lines = source.lines().skip_while(|l| !l.starts_with("pub fn spawn_opener("));
+        let mut body = String::new();
+        for line in lines.by_ref() {
+            body.push_str(line);
+            body.push('\n');
+            if line == "}" {
+                break;
+            }
+        }
+        assert!(!body.is_empty(), "spawn_opener was not found");
+        assert_eq!(body.matches(".spawn()").count(), 3, "spawn_opener no longer has its three starts");
+        for handle in ["stdin", "stdout", "stderr"] {
+            let setting = format!(".{handle}(std::process::Stdio::null())");
+            assert_eq!(body.matches(&setting).count(), 3, "an opener's {handle} is not null");
+        }
+    }
 
     /// Open `PAGE`; return the address the opener was handed.
     fn handed(ttl: Duration) -> String {
