@@ -453,7 +453,7 @@ try {
             [System.IO.File]::WriteAllText($in8d, (@($hello8d, $lease8d) -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
             $argv8d = '-NoProfile -ExecutionPolicy Bypass -File "' + $transport8d + '" -PipeName ' + $Pipe + ' -Mode Oneshot -Op fe.lease -TimeoutSec 10'
             $proc8d = Start-Process -FilePath 'powershell.exe' -ArgumentList $argv8d -RedirectStandardInput $in8d -RedirectStandardOutput $outf8d -RedirectStandardError $errf8d -WindowStyle Hidden -PassThru
-            $script:hung8d = -not $proc8d.WaitForExit(40000)
+            $script:hung8d = -not $proc8d.WaitForExit(20000)
             if ($script:hung8d) { Stop-Process -Id $proc8d.Id -Force -ErrorAction SilentlyContinue }
             $script:out8d = @(Get-Content -LiteralPath $outf8d -ErrorAction SilentlyContinue | Where-Object { $_ -ne '' })
             $script:err8d = (@(Get-Content -LiteralPath $errf8d -ErrorAction SilentlyContinue) -join ' ')
@@ -462,12 +462,31 @@ try {
         foreach ($code8d in @('protocol_mismatch', 'os_user_conflict')) {
             Clear-FakeEnv
             $env:FAKE_SOTD_HELLO_REFUSAL = $code8d
+            $fakeLog8d = Join-Path $root "fake8d-$code8d.log"
+            $env:FAKE_SOTD_LOG = $fakeLog8d
             $pipe8d = New-TestPipeName
             $fake8d = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe8d)) -WindowStyle Hidden -PassThru
             try {
                 Check "8d ($code8d): the fake pipe is up" (Wait-Pipe $pipe8d) 'pipe never answered'
+                # A plain client first (the shape the launcher's lease uses): shows the fake answers, whatever the transport does.
+                $plain8d = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe8d, [System.IO.Pipes.PipeDirection]::InOut)
+                $plainLines8d = @()
+                try {
+                    $plain8d.Connect(3000)
+                    $plainBytes8d = (New-Object System.Text.UTF8Encoding($false)).GetBytes($hello8d + "`n" + $lease8d + "`n")
+                    $plain8d.Write($plainBytes8d, 0, $plainBytes8d.Length)
+                    $plain8d.Flush()
+                    $plainReader8d = New-Object System.IO.StreamReader($plain8d, (New-Object System.Text.UTF8Encoding($false)), $false, 1024, $true)
+                    for ($i8d = 0; $i8d -lt 2; $i8d++) {
+                        $t8d = $plainReader8d.ReadLineAsync()
+                        if (-not $t8d.Wait(3000)) { break }
+                        $plainLines8d += $t8d.Result
+                    }
+                } catch { $plainLines8d += "error: $($_.Exception.Message)" } finally { $plain8d.Dispose() }
+                Check "8d ($code8d): the fake answers a plain client with the hello's reply and the lease's" ($plainLines8d.Count -eq 2) "got: $($plainLines8d -join ' | ')"
                 Invoke-Transport8d $pipe8d
-                Check "8d ($code8d): the transport ends on its own" (-not $script:hung8d) "still running after 40 s; stdout: $($script:out8d -join ' | ') stderr: $($script:err8d)"
+                $fakeSaw8d = (@(Get-Content -LiteralPath $fakeLog8d -ErrorAction SilentlyContinue) -join ' | ')
+                Check "8d ($code8d): the transport ends on its own" (-not $script:hung8d) "still running after 20 s; stdout: $($script:out8d -join ' | ') stderr: $($script:err8d) fake saw: $fakeSaw8d"
                 $first8d = $null
                 if ($script:out8d.Count -ge 1) { $first8d = $script:out8d[0] | ConvertFrom-Json }
                 Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($script:out8d -join ' | ')"
