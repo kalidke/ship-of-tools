@@ -1,4 +1,4 @@
-//! Test-only capture of tracing output (feature `test-support`): a test reads a log line only through `capture()`.
+//! Test-only (feature `test-support`): every subscriber a test installs goes through here: `capture()` reads a thread's tracing output, and `install()` puts a production log writer's own subscriber under test.
 //! A global router, installed once, keeps tracing's process-wide callsite cache from caching `never` for a callsite
 //! whose first reach is a thread with no subscriber.
 
@@ -35,7 +35,7 @@ impl Subscriber for Router {
 
 static ROUTER: Once = Once::new();
 
-/// The INFO-and-above events of the thread that called [`capture`], while the value lives.
+/// Every event of the thread that called [`capture`], at every level, while the value lives.
 pub struct Capture {
     _guard: DefaultGuard,
     out: Arc<Mutex<Vec<u8>>>,
@@ -60,16 +60,26 @@ impl Write for Sink {
     }
 }
 
-/// Starts capturing this thread's events. The first call in a process installs the router as the global dispatcher;
-/// it panics if a global dispatcher was set before.
-pub fn capture() -> Capture {
+/// Installs `subscriber` as this thread's default until the guard drops, after the router (see `capture`). For a test of
+/// a production log writer, which must see that writer's own output.
+pub fn install(subscriber: impl Subscriber + Send + Sync + 'static) -> DefaultGuard {
     ROUTER.call_once(|| {
         tracing::subscriber::set_global_default(Router).expect("a global tracing dispatcher was set before test_log's router");
     });
+    tracing::subscriber::set_default(subscriber)
+}
+
+/// Starts capturing this thread's events at every level. The first `capture` or `install` in a process installs the
+/// router as the global dispatcher; it panics if a global dispatcher was set before.
+pub fn capture() -> Capture {
     let out = Arc::new(Mutex::new(Vec::new()));
     let sink = out.clone();
-    let subscriber = tracing_subscriber::fmt().with_writer(move || Sink(sink.clone())).with_ansi(false).finish();
-    Capture { _guard: tracing::subscriber::set_default(subscriber), out }
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || Sink(sink.clone()))
+        .with_ansi(false)
+        .with_max_level(LevelFilter::TRACE)
+        .finish();
+    Capture { _guard: install(subscriber), out }
 }
 
 #[cfg(test)]
@@ -89,7 +99,9 @@ mod tests {
         assert_eq!(log.text().matches("test_log probe").count(), 1, "{}", log.text());
     }
 
-    /// The whole record of where a subscriber is made: this module, and each binary's `main`, by exact line and count.
+    /// The whole record of where a subscriber is made or installed: this module; each binary's `main` by its production
+    /// lines; and the subscriber the log-writer test in secret.rs builds, by exact line and count. Every installation goes
+    /// through `install` or `capture`.
     #[test]
     fn only_test_log_makes_a_subscriber() {
         const WORDS: [&str; 10] = [
@@ -104,25 +116,25 @@ mod tests {
             "with_default",
             "with_subscriber",
         ];
-        // Each production line of a `main` and each test that builds the subscriber under test (the log writers'
-        // redaction), by exact line and count. Those tests reach a callsite no other test reaches.
+        // Each production line of a `main` that holds a scan word, and the one line of the log-writer test in secret.rs
+        // that builds its subscriber, by exact line and count.
         const USE_INIT: &str = "use tracing_subscriber::util::SubscriberInitExt;";
-        const WITH_DEFAULT: &str = "tracing::subscriber::with_default(subscriber, || {";
-        const BACKEND_MAIN: [(&str, usize); 6] = [
-            ("/// Writer for `tracing_subscriber::fmt`: mirrors every log line to BOTH", 1),
-            ("tracing_subscriber::fmt()", 1),
-            ("tracing_subscriber::EnvFilter::try_from_default_env()", 1),
-            (".unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(\"info\")),", 1),
+        const USE_FILTER: &str = "use tracing_subscriber::EnvFilter;";
+        const FMT: &str = "tracing_subscriber::fmt()";
+        const BACKEND_MAIN: [(&str, usize); 4] = [
             (USE_INIT, 1),
-            (WITH_DEFAULT, 1),
+            (USE_FILTER, 1),
+            ("/// Writer for `tracing_subscriber::fmt`: mirrors every log line to BOTH", 1),
+            (FMT, 1),
         ];
-        const SECRET: [(&str, usize); 2] = [("let subscriber = tracing_subscriber::fmt()", 1), (WITH_DEFAULT, 1)];
+        const FRONTEND_MAIN: [(&str, usize); 3] = [(USE_INIT, 1), (USE_FILTER, 1), (FMT, 1)];
+        const SECRET: [(&str, usize); 1] = [("let subscriber = tracing_subscriber::fmt()", 1)];
         let mut found = Vec::new();
         for (rel, text) in crate::test_scan::rust_sources() {
             let allowed: &[(&str, usize)] = match rel.as_str() {
                 "rust/log/src/test_log.rs" => continue,
                 "rust/backend/src/main.rs" => &BACKEND_MAIN,
-                "rust/frontend/src/main.rs" => &BACKEND_MAIN[1..],
+                "rust/frontend/src/main.rs" => &FRONTEND_MAIN,
                 "rust/log/src/secret.rs" => &SECRET,
                 _ => &[],
             };

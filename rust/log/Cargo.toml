@@ -13,7 +13,7 @@ license.workspace = true
 # this same package needs, since those compile the library WITHOUT
 # `cfg(test)` on it. Never enabled by a normal consumer (the frontend, or
 # a future `sot-capsule` caller) unless it explicitly opts in. It also brings
-# `test_log`, `test_exec` and `test_scan`: the one way a test reads tracing output, the one way a test writes a program it runs, and the walker the source scans share.
+# `test_log`, `test_exec` and `test_scan`: the way a test installs a subscriber, the one way a test writes a program it runs, and the walker the source scans share.
 test-support = ["dep:tracing-subscriber"]
 
 [dependencies]
@@ -85,7 +85,6 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tracing-subscriber = { workspace = true }
 # Self-referential dev-dependency (a standard Cargo idiom): enables
 # `test-support` for every target `cargo test -p sot-log` builds --
 # this crate's own `tests/*.rs` integration binaries included — without

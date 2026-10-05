@@ -59,7 +59,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 # `topology/dial.rs`'s Windows test reads the impersonation level a pipe server gets (`identity::impersonation_probe`).
-# `test_log::capture()`, `test_exec::write_executable` and `test_scan::rust_sources()` (dev-only: resolver 2 keeps the feature out of builds).
+# `test_log`, `test_exec::write_executable` and `test_scan::rust_sources()` (dev-only: resolver 2 keeps the feature out of builds).
 sot-log = { path = "../log", features = ["test-support"] }
 # `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
