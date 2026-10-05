@@ -43,8 +43,9 @@ scripts/CLAUDE.md.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
   library, binary and build script on all three legs. `rust/clippy.toml` holds one array in labelled groups, each
   opening with its rule (local endpoint dials and accepts, ADR 0049, User isolation; file locks: `File`'s lock methods,
-  `libc::flock`, `LockFileEx` and `LockFile`, held only in a guard whose Drop unlocks; and process spawns: every way a
-  Rust process starts another, the daemon starting one only through `lifecycle::child_signal`, ADR 0050, Shutdown). A
+  `libc::flock`, `LockFileEx` and `LockFile`, held only in a guard whose Drop unlocks; process spawns: every way a
+  Rust process starts another, the daemon starting one only through `lifecycle::child_signal`, ADR 0050, Shutdown; and
+  inheritable handles: the socket and pipe constructors that leave a handle inheritable on Windows). A
   sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one statement that calls the
   method; a new method joins its group, and a new rule is a new group in the same array. Like the other clippy steps it
   runs on main and on demand, not on every branch push, so a lane merge gate runs the same line (`cargo clippy

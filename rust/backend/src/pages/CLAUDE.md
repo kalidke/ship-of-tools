@@ -26,6 +26,8 @@ actually bound, not the preferred one. Part of the daemon (rust/backend).
 - Minting fails closed: `random_token` returns `None` rather than a weak token.
 - `proxy.connect` dials only 127.0.0.1 ports in `allowed_proxy_ports`, with a 5 s connect bound, and logs a refused
   port once per streak.
+- `proxy.connect` dials with tokio's `TcpSocket`, whose socket is not inheritable, so no child holds the connection
+  (`dial_upstream`, `a_proxy_dial_is_not_inheritable`).
 - A connection's sites go when it disconnects (`remove_root`).
 - A quarto render starts through `Signal::spawn` and is always given the daemon's julia as `QUARTO_JULIA`, an
   inherited one overridden, and a refusal by the resolver fails the render (`run_quarto`), `--no-execute` or not,

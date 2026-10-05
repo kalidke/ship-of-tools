@@ -47,6 +47,13 @@ computer's sessions end (ADR 0050).
   `Signal::output`, or at a start whose `#[allow(clippy::disallowed_methods)]` gives its reason: rust.yml's
   "Disallowed methods" step fails on any other (`rust/clippy.toml`, the process-spawns group). The rule cannot see a
   dependency's own function that starts a process.
+- A child holds only the handles its owner hands it, as far as the workspace makes them: std creates its sockets, files
+  and pipes non-inheritable; no socket or pipe is made a way that leaves it inheritable (`rust/clippy.toml`, the
+  inheritable-handles group); every accepted socket is cleared at accept (`serve_own`); and the daemon and the window
+  clear their own inherited standard handles first (`harden_own_stdio`). Not reached: a handle a process inherited from
+  its starter beyond its three standard handles, a handle a dependency makes (the window's graphics, clipboard and
+  dialog libraries), and a socket accepted in the moment before `serve_own` clears it, if a child starts on another
+  thread in that moment. Only a handle list at spawn would close those, and stable std has none.
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections

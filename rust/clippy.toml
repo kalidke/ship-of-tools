@@ -26,6 +26,7 @@ disallowed-methods = [
   { path = "interprocess::os::windows::named_pipe::tokio::PipeStream::connect_by_path", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "interprocess::os::windows::named_pipe::tokio::PipeStream::connect_by_path_with_wait_mode", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "tokio::net::windows::named_pipe::ClientOptions::open", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::ClientOptions::open_with_security_attributes_raw", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation); on Windows its security attributes must set bInheritHandle to 0 (Inheritable handles)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFileW", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFileA", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFile2", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
@@ -61,7 +62,7 @@ disallowed-methods = [
   { path = "windows_sys::Win32::System::Pipes::CreateNamedPipeW", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::System::Pipes::CreateNamedPipeA", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "tokio::net::windows::named_pipe::ServerOptions::create", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
-  { path = "tokio::net::windows::named_pipe::ServerOptions::create_with_security_attributes_raw", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::ServerOptions::create_with_security_attributes_raw", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation); on Windows its security attributes must set bInheritHandle to 0 (Inheritable handles)" },
   { path = "interprocess::local_socket::ListenerOptions::create_sync", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::local_socket::ListenerOptions::create_sync_as", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::local_socket::ListenerOptions::create_tokio", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
@@ -117,4 +118,14 @@ disallowed-methods = [
   { path = "libc::execve", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
   { path = "libc::execvp", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
   { path = "libc::system", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  # Inheritable handles: on Windows a child started while a handle is open and inheritable holds it until the
+  # child ends. tokio's TcpListener::bind, TcpStream::connect and UdpSocket::bind make their socket through mio,
+  # which leaves it inheritable; tokio's TcpSocket and std do not. Accepted sockets are cleared at accept
+  # (serve_own, the accepts group). Two named-pipe constructors of this class are listed once, in the group of their
+  # first rule, with a reason naming both: tokio's ServerOptions::create_with_security_attributes_raw under Accepts
+  # and ClientOptions::open_with_security_attributes_raw under Local endpoint dials.
+  { path = "tokio::net::TcpListener::bind", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
+  { path = "tokio::net::TcpStream::connect", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
+  { path = "tokio::net::UdpSocket::bind", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
+  { path = "interprocess::unnamed_pipe::pipe", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
 ]

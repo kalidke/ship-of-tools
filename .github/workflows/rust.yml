@@ -77,6 +77,8 @@ jobs:
       # The same lint holds kernel file locks to their two guards (rust/clippy.toml, File locks), and every process
       # start to lifecycle::child_signal's Signal::spawn, Signal::spawn_std or Signal::output, or to a start whose allow
       # says why it stands (rust/clippy.toml, Process spawns; ADR 0050, Shutdown).
+      # It also refuses the socket and pipe constructors that leave a handle inheritable on Windows (rust/clippy.toml,
+      # Inheritable handles).
       - name: Disallowed methods
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Function length allowances can only fall
