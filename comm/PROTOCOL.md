@@ -69,7 +69,9 @@ deployment, one `~/.sot-comm` serves every host sharing that home.
 session stamps it (join, send, poll, status, and each turn's heartbeat), and the daemon that
 runs a Starting or Ready row stamps that row's handle every minute (`liveness.rs`), so an
 idle row stays live while it runs, through a daemon restart, and until ten minutes after its
-last stamp. An age is read against the reader's clock, so skew between two boxes moves the
+last stamp. A daemon that cannot take the registry lock, or read or write the registry, stamps nothing. Its warning says so
+each minute, and ten minutes after a row's last stamp a send to that row fails as `no live session holds @h`; the
+lock rules are below, and `comm-registry-lock-clear.sh` clears a lock by hand. An age is read against the reader's clock, so skew between two boxes moves the
 ten minutes by the skew. `host` + `workspace_id` are the address a same-host daemon resolves.
 
 **Work-state** (`state` + `summary`, stamped by `status_at`) powers the ADE

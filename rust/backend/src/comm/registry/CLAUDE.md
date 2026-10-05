@@ -29,8 +29,9 @@ prints parent first, one `<pid>\t<exe>\t<command line>` line each; past `MAX_LIN
   daemon's only work-state write.
 - `stamp_last_seen` writes only `last_seen`, only on entries that exist, for the handles `held` names
   (`comm_handle_for_workspace` of each Starting or Ready row); a pass that would change nothing writes nothing. `run`
-  stamps when that set changes and every `STAMP_EVERY` (60 s); a failed pass is logged and retried at the next. It
-  is the daemon's only liveness write.
+  stamps when that set changes and every `STAMP_EVERY` (60 s). `held` resolves a handle only for a Starting
+  or Ready row, inside the pass's `spawn_blocking`. A failed pass is one warning naming the rows whose sends fail
+  once their last stamp is ten minutes old, and is retried at the next. It is the daemon's only liveness write.
 - `comm_handle_for_workspace` is the one row-binding rule: the declared handle, else the pinned self-file, else the
   stored agent name.
 - `handle_agent_join` stores the declared handle under the row's guard, overwriting a previous one without a check
