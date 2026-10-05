@@ -555,10 +555,24 @@ _sot_oneshot_sender() {
     exec sleep "$3"
 }
 
+# _sot_hello_refusal FILE — the daemon's message when the hello's reply in FILE (the first line whose op is hello)
+# carries an error: the daemon refused this client (an older protocol, a second OS account on the host) and closed the
+# connection (ADR 0049 `## User isolation`). Nothing when the hello was accepted or has not been answered yet.
+_sot_hello_refusal() {
+    local reply
+    reply="$(grep -m1 '"op":"hello"' "$1" 2>/dev/null || true)"
+    [ -n "$reply" ] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$reply" | jq -r 'if (.payload.error? // null) != null then (.payload.error | tostring) else empty end' 2>/dev/null
+    else
+        case "$reply" in *'"error"'*) printf 'refused\n' ;; esac
+    fi
+}
+
 sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
-    local tmp ncpid line="" deadline hello
+    local tmp ncpid line="" deadline hello refused=""
     hello="$(sot_hello_frame)" || return 1
     tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
     case "$ENDPOINT" in
@@ -637,10 +651,14 @@ sot_oneshot_request() {
             break
         fi
         line=""
+        # A refused hello ends the connection: no reply is coming, so say why at once.
+        refused="$(_sot_hello_refusal "$tmp")"
+        [ -n "$refused" ] && break
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
             line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
             _sot_line_ok "$line" || line=""
+            [ -n "$line" ] || refused="$(_sot_hello_refusal "$tmp")"
             break; }
         sleep 0.1
     done
@@ -653,6 +671,10 @@ sot_oneshot_request() {
         printf 'sot_oneshot_request: %s: %s\n' "${target:-ssh bridge}" "$(tr '\n' ' ' < "$tmp.err")" >&2
     fi
     rm -f "${tmp:?}" "${tmp:?}.snd" "${tmp:?}.err"
+    if [ -n "$refused" ]; then
+        printf 'sot_oneshot_request: hello refused: %s\n' "$refused" >&2
+        return 1
+    fi
     [ -n "$line" ] && printf '%s\n' "$line"
 }
 

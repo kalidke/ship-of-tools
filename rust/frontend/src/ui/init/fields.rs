@@ -284,7 +284,7 @@ impl State {
             help_start_pending: cli.start_help,
             help_peek_start_pending: cli.start_help_peek,
             help_back_quad: None,
-            protocol_mismatch: HashMap::new(),
+            hello_refused: HashMap::new(),
             preview_fatal: None,
             math_cache: std::collections::HashMap::new(),
             math_pending: std::collections::HashSet::new(),

@@ -119,6 +119,37 @@ async fn a_protocol_mismatch_reply_leaves_the_gate_up() {
     assert!(gate.is_up(), "a refusal is a reply: the link is up");
 }
 
+/// ADR 0049 `## User isolation`: a daemon's refusal reaches the person whatever its code. The blocking screen shows
+/// the daemon's own message, and a version skew its built "update needed" body.
+#[tokio::test]
+async fn a_refused_hello_is_shown_whatever_its_code() {
+    let _env = crate::net::state::test_env::set_test_env();
+    for (code, error) in [
+        ("os_user_conflict", "host h has said hello to this daemon as more than one OS account"),
+        ("identity_missing", "a hello must name its host and the OS account it runs as"),
+        ("unauthenticated", "send a hello first"),
+        ("protocol_mismatch", "protocol mismatch: update the older side"),
+    ] {
+        let gate = sot_protocol::topology::ssh_bridge::LinkGate::default();
+        let reply = serde_json::json!({ "error": error, "code": code });
+        let (session, _daemon, evt_rx, _hold) = run_against_fake_daemon("hello-refused", reply, false, gate).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), session).await.unwrap().unwrap();
+        assert!(result.unwrap_err().is::<HelloRefused>(), "{code}");
+        let mut shown = None;
+        while let Ok((_, evt)) = evt_rx.try_recv() {
+            if let IncomingEvt::HelloRefused { message } = evt {
+                shown = Some(message);
+            }
+        }
+        let shown = shown.unwrap_or_else(|| panic!("{code}: the refusal never reached the chrome"));
+        if code == "protocol_mismatch" {
+            assert!(shown.contains("out of date"), "{shown}");
+        } else {
+            assert_eq!(shown, error, "{code}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_tree_root_error_reply_does_not_end_the_session() {
     let _env = crate::net::state::test_env::set_test_env();

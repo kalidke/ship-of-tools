@@ -72,6 +72,30 @@ case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one() {
     return 0
 }
 
+# A daemon that refuses the hello (a second OS account on the host, an older protocol) ends the connection:
+# `sot_oneshot_request` says why on stderr, prints no reply and returns 1, never the next op's silence (ADR 0049
+# `## User isolation`).
+case_a_refused_hello_is_named_by_the_oneshot_request() {
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
+    { printf '#!/bin/sh\n'; cat <<'STUB'
+IFS= read -r line
+case "$line" in
+    *'"op":"hello"'*) printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"host-a has said hello as more than one OS account","code":"os_user_conflict"}}\n' ;;
+esac
+STUB
+    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    local out rc=0 err
+    out="$(cd "$WORK" && PATH="$HUB:$PATH" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=5 bash -c '
+        . "$1/comm-lib.sh"; ENDPOINT="unix:$2/hub.sock"
+        sot_oneshot_request "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"version.query\",\"payload\":{}}" version.query' _ "$SCRIPTS_DIR" "$WORK" 2>"$WORK/err.txt")" || rc=$?
+    err="$(cat "$WORK/err.txt" 2>/dev/null)"
+    [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 (out: $out err: $err)"; return 1; }
+    [ -z "$out" ] || { echo "  a refused hello printed a reply: $out"; return 1; }
+    [ "$err" = "sot_oneshot_request: hello refused: host-a has said hello as more than one OS account" ] \
+        || { echo "  err: $err"; return 1; }
+    return 0
+}
+
 # S4 — a directed wire send with no daemon found is that send's FAILED line.
 case_a_wire_send_with_no_daemon_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }

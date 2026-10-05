@@ -87,7 +87,7 @@ pub(crate) fn lane_dial(
 /// drain's Connected and Disconnected arms and the transport spawn write it.
 pub(crate) struct HostTable {
     /// Per-host connection status, derived from each connection's own
-    /// `Connected`/`Disconnected`/`ProtocolMismatch` events (ADR 0042 L2a —
+    /// `Connected`/`Disconnected`/`HelloRefused` events (ADR 0042 L2a —
     /// no new wire signal). Absent or `false` = unreachable (never
     /// connected, or currently reconnecting); `true` = connected. The
     /// Sessions tree's host nodes read this to badge status and grey an

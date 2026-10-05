@@ -19,7 +19,7 @@ pub(super) async fn read_hello_reply<R: tokio::io::AsyncBufRead + Unpin>(
         .map_err(|_| anyhow::anyhow!("hello reply timed out after {timeout:?}"))?
 }
 
-/// The daemon answered the hello with a refusal (bad token, protocol skew):
+/// The daemon answered the hello with a refusal (protocol skew, no account named, a second account):
 /// a reply, so the link itself is fine and the gate stays up.
 #[derive(Debug)]
 pub(super) struct HelloRefused(pub(super) String);
@@ -122,35 +122,31 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
         session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);
     }
     // Inspect the frame for an error envelope first — the backend rejects
-    // bad auth (and any other hello-time refusal) with `{error, code}`,
-    // which does not deserialize as HelloRes. Surfacing it as a clear
-    // auth-failed message beats a `serde_json` "hello res" error.
+    // a hello it does not admit with `{error, code}` (ADR 0049 `## User
+    // isolation`: another protocol, no host or OS account named, a second
+    // account on the host), which does not deserialize as HelloRes. Every
+    // refusal is the person's to read: push it as a HelloRefused evt so the
+    // chrome shows a persistent blocking screen, the daemon's own message
+    // for an account refusal and, for a version skew (ADR 0030 §2, not a
+    // transient drop), a readable multi-line body built from the backend's
+    // structured fields (falling back to its already-formatted `error`
+    // string) with the dev fix hint. We still bail afterward so the
+    // reconnect loop keeps the socket warm — a re-hello re-affirms the same
+    // overlay, idempotently, until the cause is resolved.
     if let Some(err_msg) = frame.payload.get("error").and_then(|v| v.as_str()) {
         let code = frame
             .payload
             .get("code")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if code == "token_mismatch" {
-            tracing::error!(code, "hello rejected: authentication failed ({err_msg})");
-            return Err(HelloRefused(format!("authentication failed: {err_msg}")).into());
-        }
-        if code == "protocol_mismatch" {
-            // ADR 0030 §2: a version skew, not a transient drop. Build a
-            // readable multi-line body from the backend's structured fields
-            // (falling back to its already-formatted `error` string) and add
-            // the dev fix hint, then push it as a ProtocolMismatch evt so the
-            // chrome shows a persistent blocking "update needed" screen. We
-            // still bail afterward so the reconnect loop keeps the socket warm
-            // — a re-hello re-affirms the same overlay, idempotently, until one
-            // side is updated.
-            let message = protocol_mismatch_message(&frame.payload, err_msg);
-            tracing::error!(code, "hello rejected: {err_msg}");
-            emit(IncomingEvt::ProtocolMismatch { message });
-            window.request_redraw();
-            return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
-        }
         tracing::error!(code, "hello rejected: {err_msg}");
+        let message = if code == "protocol_mismatch" {
+            protocol_mismatch_message(&frame.payload, err_msg)
+        } else {
+            err_msg.to_string()
+        };
+        emit(IncomingEvt::HelloRefused { message });
+        window.request_redraw();
         return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
     }
     Ok(frame)

@@ -257,7 +257,13 @@ pub(crate) fn dial_and_call_tracked(
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))
         .map_err(|e| fold(&guard, format!("{endpoint}: hello: {e}")))?;
-    codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
+    let reply = codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
+    // A refused hello closes the connection (ADR 0049 `## User isolation`); say why instead of failing the next op on
+    // the closed link.
+    if let Some(error) = reply.payload.get("error") {
+        let error = error.as_str().map_or_else(|| error.to_string(), str::to_string);
+        return Err(fold(&guard, format!("{endpoint}: hello refused: {error}")));
+    }
 
     const REQ_ID: u64 = 1;
     codec::write_frame_blocking(&mut w, &Frame::req(REQ_ID, req_op, payload))
@@ -472,6 +478,30 @@ pub(crate) mod tests {
         assert_eq!(sig.live(), 0, "the reaped child is still counted");
         assert!(track.child.lock().unwrap().is_none(), "the guard left its child published after reaping it");
         track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
+    }
+
+    /// A daemon that refuses the hello closes the connection; the error is the refusal, not the next op's end of
+    /// file, and it carries the endpoint.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_hello_is_named() {
+        use std::io::{BufRead, Write};
+        let dir = tempfile::Builder::new().prefix("sot-refuse-").tempdir_in("/tmp").expect("tempdir");
+        let path = dir.path().join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let daemon = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            let mut hello = String::new();
+            std::io::BufReader::new(&conn).read_line(&mut hello).expect("read the hello");
+            let refusal = Frame::res(0, sot_protocol::op::HELLO, serde_json::json!({ "error": "no thanks", "code": "os_user_conflict" }));
+            let mut line = serde_json::to_vec(&refusal).unwrap();
+            line.push(b'\n');
+            conn.write_all(&line).expect("write the refusal");
+        });
+        let endpoint = format!("unix:{}", path.display());
+        let err = dial_and_call(&endpoint, "host-a", "topology.set", serde_json::json!({})).expect_err("a refused hello is an error");
+        daemon.join().unwrap();
+        assert_eq!(err, format!("{endpoint}: hello refused: no thanks"));
     }
 
     #[test]

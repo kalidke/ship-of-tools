@@ -416,12 +416,12 @@ impl State {
         }
     }
 
-    /// Rebuild the ADR 0030 protocol-mismatch overlay buffer from
-    /// `protocol_mismatch` as a plain monospace
+    /// Rebuild the refused-hello overlay buffer (ADR 0030 protocol mismatch, ADR 0049 account refusals) from
+    /// `hello_refused` as a plain monospace
     /// buffer shaped to the preview width — so it reuses the same overlay paint
-    /// path. No-op (clears the buffer) when no mismatch is set.
+    /// path. No-op (clears the buffer) when no refusal is set.
     pub(in crate::ui) fn rebuild_fatal_overlay(&mut self) {
-        let Some(body) = self.protocol_mismatch.get(&self.active_host).cloned() else {
+        let Some(body) = self.hello_refused.get(&self.active_host).cloned() else {
             self.preview_fatal = None;
             return;
         };
