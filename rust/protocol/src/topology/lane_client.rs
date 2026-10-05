@@ -527,8 +527,8 @@ fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Inst
     });
     // A refused hello and every reply's own classification are the daemon's answer and are returned as it gave them
     // (BLOCKER 2 of round 1: a stderr line used to replace them). The ssh child's last stderr line is added once: by
-    // `diagnose` to the client's own write or read error, by `read_reply` to a read that ended before a frame, and here
-    // to the bound.
+    // `diagnose` to the client's own write or read error, by `read_reply` to a reply that ended early, ran over the cap
+    // or did not parse, and here to the bound.
     match outcome {
         Some(Ok(frame)) => classify_reply(frame),
         Some(Err(e)) => Err(e),
