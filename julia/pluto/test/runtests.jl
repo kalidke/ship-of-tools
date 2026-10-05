@@ -52,6 +52,21 @@ function stranger_is_dropped(port::Integer, bytes::Vector{UInt8}; wait = 10.0)
     end
 end
 
+# Linux: the (port, loopback) of every TCP socket this user is listening on, from the kernel's tables.
+function listeners()
+    found = Set{Tuple{Int,Bool}}()
+    uid = Int(ccall(:geteuid, Cint, ()))
+    for (file, loopback) in (("/proc/net/tcp", "0100007F"), ("/proc/net/tcp6", "00000000000000000000000001000000"))
+        for line in Iterators.drop(eachline(file), 1)
+            f = split(line)
+            length(f) >= 8 && f[4] == "0A" && parse(Int, f[8]) == uid || continue
+            address, port = split(f[2], ':')
+            push!(found, (parse(Int, port; base = 16), address == loopback))
+        end
+    end
+    return found
+end
+
 @testset "the cluster cookie is drawn per session from the OS's generator" begin
     cookies = String[]
     for _ in 1:2
@@ -70,6 +85,7 @@ end
 
     notebook_path = joinpath(dir, "owner.jl")
     Pluto.save_notebook(Pluto.Notebook([Pluto.Cell("x = 20 + 1")], notebook_path))
+    listening_before = Sys.islinux() ? listeners() : nothing
     notebook = Pluto.SessionActions.open(session, notebook_path; run_async = false)
     try
         workspace = Pluto.WorkspaceManager.get_workspace((session, notebook))
@@ -84,6 +100,13 @@ end
         catch
             0
         end
+        if listening_before !== nothing
+            @testset "opening a notebook starts exactly one listener: the worker's, on loopback" begin
+                opened = setdiff(listeners(), listening_before)
+                @test opened == Set([(port, true)])
+            end
+        end
+
         @testset "the worker holds the cookie configure_session! set" begin
             @test Malt.remote_eval_fetch(workspace.worker, :(getfield(Base.loaded_modules[$DISTRIBUTED], :LPROC).cookie)) == cookie
         end

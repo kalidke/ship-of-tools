@@ -7,7 +7,7 @@ charter: rust/backend/src/sidecars/CLAUDE.md.
 - `Project.toml`: the server's environment.
 - `start.jl`: binds the port, configures Pluto, then serves the stdio protocol.
 - `session_options.jl`: `configure_session!`, the daemon's Pluto options (loopback, the access secret, Distributed workers).
-- `test/runtests.jl`: that a stranger's call to a notebook worker runs nothing and the notebook still evaluates for its owner (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
+- `test/runtests.jl`: that a stranger's call to a notebook worker runs nothing, the notebook still evaluates for its owner, and (Linux) opening it starts no listener but the worker's (run directly: `julia --project=julia/pluto julia/pluto/test/runtests.jl`).
 
 ## Start here
 `start.jl` for the protocol; `session_options.jl` for the security options.
