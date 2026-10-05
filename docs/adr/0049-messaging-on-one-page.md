@@ -89,11 +89,12 @@ a control-plane TCP connect returns. The daemon's one listener
 is its session socket, whose directory must be private, or on Windows a named pipe
 with an owner-only descriptor, and a hub's per-host relay sockets are owner-only Unix
 sockets. Every hello names its host and the OS account it runs as (wire protocol 3),
-and nothing reads the account yet. Not built: the daemon serves its ops and events, mail
-included, to a connection that has sent no hello, and the peer read at accept refuses
-another account only for a lease, so a hub cannot tell two OS users on one hub account
-apart. Lane M1 builds the hello admission, the accept-time refusal for every connection
-and that hub refusal. On Windows the frontend,
+and nothing reads the account yet. The peer read at accept refuses another account for
+every connection (Linux and macOS compare the peer's effective uid with the daemon's; on
+Windows the pipe's owner-only descriptor decides). Not built: the daemon serves its ops
+and events, mail included, to a connection that has sent no hello, so a hub cannot tell
+two OS users on one hub account apart. Lane M1 builds the hello admission and that
+refusal. On Windows the frontend,
 its lease, `sotd stdio-bridge` and the lane client connect to whatever answers their
 pipe name, a name in the machine-wide pipe namespace, without checking which account
 serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept

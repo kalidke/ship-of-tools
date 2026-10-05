@@ -26,6 +26,9 @@ this folder serve the same idea.
 - One daemon per state root: `lock_daemon` fails at once when a daemon answers on the socket, and waits up to
   `daemon_lock_wait` for a predecessor that is still shutting down.
 - A socket a live daemon answers on is never unlinked: `refuse_live_socket`, called from `run_local`.
+- A connection whose process is not this account's, or cannot be read, is dropped at accept before a byte is read
+  (`admit_peer`, called from `run_local`; Linux and macOS compare the peer's euid with `same_account`, Windows has the
+  pipe's owner-only descriptor).
 - A connection has one writer. Off-loop jobs hand their reply back over `OutTx` and the loop writes it with
   `write_reply`.
 - A handler `Err` is one `handler_error` frame and the connection stays (`finish_dispatch`); an over-cap envelope
@@ -43,7 +46,7 @@ this folder serve the same idea.
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
-`fe.lease`, `lease::hold`, `accepted_peer`, `dispatch`, `hello`, `sotd stdio-bridge`, `write_frame_within`,
+`fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `sotd stdio-bridge`, `write_frame_within`,
 `write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
@@ -59,7 +62,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster
 - `hello.rs`: the hello handshake (protocol gate, hello reply and its replay) and the roster entry (`admit_hello`)
-- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
+- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time admission (`admit_peer`, `same_account`)
 - `conn.rs`: one connection: the read-deadline reaper, the first-frame peek (`handle_connection`), the control loop (`serve_control`) and its select (`select_once`)
 - `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply
 - `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection holds as `Option` (always `Some` in a served connection, `None` only in tests)
