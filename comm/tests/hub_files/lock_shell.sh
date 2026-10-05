@@ -36,7 +36,7 @@ case_a_frozen_holder_makes_the_send_wait_then_fail() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
     start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; kill -STOP $$; printf "%s\n" "\"msg\":\"resumed\"}" >&8' \
         || { echo "  holder never took the lock"; return 1; }
-    frozen "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
+    await stopped "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
     local t0=$SECONDS
     SOT_INBOX_LOCK_WAIT_SECS=1 run_send "@$PEER" "while frozen"
     [ "$SEND_RC" -eq 1 ] || { echo "  rc $SEND_RC, want 1 (out: $SEND_OUT)"; return 1; }

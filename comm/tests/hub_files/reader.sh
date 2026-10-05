@@ -23,7 +23,7 @@ case_a_dead_writers_partial_line_is_never_counted_and_is_cut() {
     contains "$POLL_OUT" "first" || { echo "  first not shown: $POLL_OUT"; return 1; }
     local cur; cur="$(peer_cursor)"
     start_holder 'printf "%s" "{\"from\":\"holder\"," >&8; kill -STOP $$' || { echo "  holder never took the lock"; return 1; }
-    frozen "$HOLDER" || { echo "  the holder never wrote its partial and stopped"; kill -9 "$HOLDER"; return 1; }
+    await stopped "$HOLDER" || { echo "  the holder never wrote its partial and stopped"; kill -9 "$HOLDER"; return 1; }
     kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null
     poll_peer
     contains "$POLL_OUT" "No new messages." || { echo "  poll showed the partial: $POLL_OUT"; return 1; }
@@ -51,7 +51,7 @@ case_a_frozen_writer_makes_a_reader_try_again_never_skip_or_hang() {
     local cur; cur="$(peer_cursor)"
     start_holder 'printf "%s\n" "{\"from\":\"holder\",\"to\":\"t-peer\",\"repo\":\"r\",\"msg\":\"two\",\"ts\":\"t\"}" >&8; kill -STOP $$; :' \
         || { echo "  holder never took the lock"; return 1; }
-    frozen "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
+    await stopped "$HOLDER" || { echo "  the holder never stopped"; kill -9 "$HOLDER"; return 1; }
     SOT_INBOX_READ_WAIT_SECS=1 poll_peer_env
     [ "$POLL_RC" -eq 75 ] && contains "$POLL_OUT" "the inbox for @$PEER is being written — nothing was read; run comm-poll.sh again" \
         || { echo "  rc $POLL_RC: $POLL_OUT"; kill -CONT "$HOLDER"; return 1; }
@@ -94,9 +94,10 @@ idle_hook_over() {
 # PERL5OPT, production code has no hook) makes IO::Handle::sync start a reader,
 # wait until $STUB_GO exists and fail, so the perl program cuts the in-flight line
 # back. The reader gives the go itself, where the case needs it: unlocked, after it
-# has read and counted the in-flight line; locked, at its first shared-lock try (it
-# is then waiting on the writer's lock). The case waits for the reader's `rc=` line,
-# so no fixed wait stands in for either.
+# has read and counted the in-flight line; locked, from a flock wrapper just before its
+# first shared-lock try (the writer keeps its lock until it sees the go, so the reader
+# then waits on it). The case awaits the reader's `rc=` line, so no fixed wait stands
+# in for either. The reader's own wait is 60 s, longer than the stub's 30 s hang guard.
 # $1 = locked: the reader is comm-poll.sh as-is (it waits on the shared lock);
 # $1 = unlocked: the reader alone sees an empty mount (FAKE_MNT=""), so its lock
 # identity is none@<machine-id>, not the record's: the lock is not ours, it takes
@@ -122,7 +123,7 @@ PM
 # The stub is the append's alone: the poll's own registry write fsyncs through
 # perl too, and must not start a second reader over this one's output.
 unset PERL5LIB PERL5OPT STUB_READER STUB_OUT
-cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_INBOX_READ_WAIT_SECS=5 \
+cd "$WORK" && SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_INBOX_READ_WAIT_SECS=60 \
     PATH="\${READER_PATH:-\$PATH}" "$BIN/comm-poll.sh"
 echo "rc=\$?"
 [ -z "\${READER_UNLOCKED:-}" ] || : > "$WORK/stub-go"
@@ -141,8 +142,7 @@ RD
           PERL5LIB="$WORK/perlstub" PERL5OPT="-MStubSync" \
           bash -c 'source "$1/comm-lib.sh"; sot_inbox_append "$2"' _ "$BIN" "$PEER" >"$WORK/stubappend.out" 2>&1
     STUB_RC=$?
-    local i
-    for i in $(seq 600); do grep -q '^rc=' "$WORK/reader.out" 2>/dev/null && return 0; sleep 0.05; done
+    await grep -q '^rc=' "$WORK/reader.out" 2>/dev/null && return 0
     echo "  the detached reader never finished: $(cat "$WORK/reader.out" 2>/dev/null)"
     return 1
 }
@@ -290,9 +290,8 @@ case_a_slow_display_does_not_hold_off_a_writer() {
     ( cd "$WORK" && exec env SOT_COMM_SELF_FILE="$WORK/self-peer.txt" SOT_COMM_TEST_HOST="$HOST_PIN" PATH="$WORK/slowjq:$PATH" \
         "$BIN/comm-poll.sh" >/dev/null 2>&1 ) &
     pid=$!
-    i=0
-    while [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -lt 8 ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-    [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -ge 8 ] || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; echo "  the poll never reached its display"; return 1; }
+    display_started() { [ "$( { wc -l < "$WORK/jq.calls"; } 2>/dev/null || echo 0)" -ge 8 ]; }
+    await display_started || { kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; echo "  the poll never reached its display"; return 1; }
     append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"late","ts":"t"}' >/dev/null
     local rc=$?
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
@@ -302,8 +301,8 @@ case_a_slow_display_does_not_hold_off_a_writer() {
 
 # The wait is chosen by lock kind: under `nfs4 …` the append POLLS (`flock -n`,
 # every 15-25 ms); under `local …` or `none@…` it BLOCKS (`flock -w`), as before.
-# A wrapper logs each flock call; a waiter that missed the release would run out
-# its 10 s wait and the append would be refused.
+# A wrapper logs each flock call; the case reads the form each kind uses, with no
+# holder (contention under the polling kind is the two-writers case's).
 case_the_lock_wait_is_chosen_by_lock_kind() {
     local mid=0123456789abcdef0123456789abcdef kind mnt rec want real
     real="$(command -v flock)"
@@ -319,7 +318,6 @@ case_the_lock_wait_is_chosen_by_lock_kind() {
         setup_rows || return 1
         printf '%s\n' "$rec" > "$SOT_COMM_HOME/inbox-lock-manager"
         rm -f "${WORK:?}/flock.log"
-        start_holder 'exec sleep 0.3' || { echo "  no holder"; return 1; }
         if ! FAKE_MNT="$mnt" PATH="$WORK/fbin:$PATH" append_one "$PEER" '{"from":"a","to":"'"$PEER"'","repo":"r","msg":"w","ts":"t"}' >/dev/null; then
             echo "  $kind: append refused"
             printf '%s\n' "$RECORD" > "$SOT_COMM_HOME/inbox-lock-manager"

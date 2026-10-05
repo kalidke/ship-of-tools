@@ -47,6 +47,7 @@
 # Exit: 0 if every case PASSes, 1 if any FAILs.
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib-home-guard.sh" || exit 2   # never the live comm home
+. "$(dirname "${BASH_SOURCE[0]}")/lib-wait.sh"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -130,7 +131,7 @@ whole_lines() {
 # stops itself). `exec` so the recorded pid IS the lock holder — a child that
 # inherited fd 9 would keep the lock past the kill. `ready` means the lock is held; a
 # case that needs the body's own writes first has the body stop itself (`kill -STOP $$`)
-# and waits for that with `frozen`.
+# and awaits `stopped`.
 start_holder() {
     local body="$1"
     rm -f "${WORK:?}/ready"
@@ -138,20 +139,7 @@ start_holder() {
         _ "$INBOX" "$PEER" "$WORK/ready" &
     HOLDER=$!
     HOLDERS+=("$HOLDER")
-    local i=0
-    while [ ! -e "$WORK/ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-    [ -e "$WORK/ready" ]
-}
-
-# frozen PID — wait until the holder PID has stopped itself (`kill -STOP $$` in its body), so everything its body did
-# before that is done. Polls the process state every 50 ms, at most 600 times.
-frozen() {
-    local i
-    for i in $(seq 600); do
-        case "$(ps -o stat= -p "$1" 2>/dev/null)" in *T*) return 0 ;; esac
-        sleep 0.05
-    done
-    return 1
+    await test -e "$WORK/ready"
 }
 
 . "$(dirname "${BASH_SOURCE[0]}")/hub_files/lock_shell.sh"
@@ -162,7 +150,7 @@ frozen() {
 
 check "the home guard refuses a live comm home, and only that" case_the_home_guard_refuses_a_live_comm_home
 check "two writers through the lock give 400 whole lines" case_two_writers_give_400_whole_lines
-check "a holder killed with -9 frees the lock at once and the send files" case_a_killed_holder_frees_the_lock_at_once
+check "a holder killed with -9 frees the lock and the send files" case_a_killed_holder_frees_the_lock_at_once
 check "a frozen holder makes the send wait its bound and report FAILED, never filed" case_a_frozen_holder_makes_the_send_wait_then_fail
 check "an append that fails under the lock is FAILED with its error" case_a_failed_write_is_failed_not_filed
 check "a script whose lock identity equals the record appends locally" case_a_shared_nfs4_lock_manager_appends_locally
@@ -194,7 +182,7 @@ check "B-2: the cursor hashes the line the reader held; a line filed after a cut
 check "S-1: a hashed cursor one past the end steps back one; further past, or a bare count, gives 0" case_a_cursor_one_past_the_end_steps_back_one_and_further_gives_zero
 check "S-2: a slow display does not hold off a writer" case_a_slow_display_does_not_hold_off_a_writer
 
-check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block, both follow a release" case_the_lock_wait_is_chosen_by_lock_kind
+check "the lock wait is chosen by lock kind: nfs4 polls, local and none@ block" case_the_lock_wait_is_chosen_by_lock_kind
 
 check "S-A: a shared lock failing 71 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_71_is_named_and_the_inbox_read_unlocked
 check "S-A: a shared lock failing 65 is named on the poll's stdout, read unlocked, every line once; the hook blocks once" case_a_lock_error_65_is_named_and_the_inbox_read_unlocked
