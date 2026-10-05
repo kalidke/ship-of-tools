@@ -12,7 +12,8 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 ## Owns
 - `<state>/daemon.lock`: taken by `take_daemon_lock` (which calls `lock_daemon`) at the top of `run`, held for the process's life.
 - The session socket or pipe: `run_local` secures its private directory, refuses a socket a live daemon answers on
-  (`refuse_live_socket`), builds the owner-only pipe descriptor on Windows, accepts, and unlinks at shutdown.
+  (`refuse_live_socket`), binds it (`bind_session`: on Windows the owner-only pipe descriptor and an inbound buffer that
+  holds a client's hello and its request, each at most the envelope cap), accepts, and unlinks at shutdown.
 - The eight buses `run` creates: repl frames, preview changes, workspace events, topology writes, agent messages, agent
   receipts, frontend commands and the monitor tick. Their payloads belong to their owners.
 - Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host and
@@ -48,6 +49,10 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
   download's read error once its chunks are on the wire (`stream_file_download`).
 - A peer that cannot drain a frame within 10 s plus 1 s per MiB of blob is dropped (`write_frame_to`,
   `write_deadline`, ADR 0027).
+- On Windows a client may write its hello and its request, each one envelope at most the cap, before it reads: the
+  session pipe's inbound buffer holds both (`bind_session`, `PIPE_INBOUND_BYTES`), so a refusal, which the pipe holds
+  open until the client has read it, never waits on a client still blocked in its own write. The cost: a client of this
+  account may leave up to 2 MiB of nonpaged pool waiting per connection until the daemon reads it or closes the pipe.
 - A pinged `fe` or `bridge` connection silent for 90 s is reaped (the reaper arm in `select_once`,
   `ping_read_deadline`).
 - At most 4 off-loop jobs run per connection, and one queued 10 s is answered with a timeout and never runs
@@ -74,7 +79,7 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster
 - `hello.rs`: the hello: the admission (`parse_first_frame`, `admit_hello`, and `Admitted`, the only proof of it), the reply with its replay (`handle_hello`) and the roster entry (`register_hello`)
-- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time admission (`admit_peer`, `same_account`)
+- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the listener (`bind_session`, with the pipe descriptor and its inbound buffer), the accept loop (`run_local`) and the accept-time admission (`admit_peer`, `same_account`)
 - `conn.rs`: one connection: the read-deadline reaper, its admission at the first frame (`handle_connection`), the handoff to a pipe or a lease (`hand_off`), the control loop (`serve_control`) and its select (`select_once`)
 - `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply
 - `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection holds as `Option` (always `Some` in a served connection, `None` only in tests)

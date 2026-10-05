@@ -4,20 +4,15 @@ use super::*;
 use super::conn::handle_connection;
 use sot_log::identity::challenge::PeerAuthenticated;
 
-use interprocess::local_socket::{
-    tokio::{prelude::*, Stream as LocalStream},
-    GenericFilePath, ListenerOptions,
-};
-// Session-pipe hardening fix: on Windows the local-socket name above is a
-// named pipe, and `interprocess` leaves an unset security descriptor at its
-// platform default (`Everyone`/`ANONYMOUS LOGON` read) unless one is
-// supplied through this extension trait — see `run_local`'s
-// `session_pipe_security_descriptor`.
+use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
+#[cfg(unix)]
+use interprocess::local_socket::{GenericFilePath, ListenerOptions};
+// Session-pipe hardening fix: on Windows `interprocess` leaves an unset
+// security descriptor at its platform default (`Everyone`/`ANONYMOUS LOGON`
+// read), so `bind_session` gives the pipe `session_pipe_security_descriptor`,
+// built with these.
 #[cfg(windows)]
-use interprocess::os::windows::{
-    local_socket::ListenerOptionsExt,
-    security_descriptor::{AsSecurityDescriptorExt, BorrowedSecurityDescriptor},
-};
+use interprocess::os::windows::security_descriptor::{AsSecurityDescriptorExt, BorrowedSecurityDescriptor};
 
 /// `SOT_TEST_DAEMON_LOCK_WAIT_MS` overrides [`sot_protocol::ops::lease::DAEMON_LOCK_WAIT`]
 /// for tests — the same `OnceLock` convention as [`ping_read_deadline`].
@@ -137,9 +132,9 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
 /// access, no `OI`/`CI` inheritance — built from `sot_log::
 /// owner_protected_pipe_descriptor` (the SAME SDDL `lane/pipe_win/` already
 /// uses for the voyage/supervisor pipes) rather than a second copy of that
-/// string. `interprocess`'s own `ListenerOptions` has no ACL-building of
-/// its own to reuse; `ListenerOptionsExt::security_descriptor` only takes
-/// its crate's own `SecurityDescriptor` type, so this borrows the raw
+/// string. `interprocess` has no ACL-building of its own to reuse, and
+/// `PipeListenerOptions::security_descriptor` takes only its crate's own
+/// `SecurityDescriptor` type, so this borrows the raw
 /// descriptor `sot_log` built and clones it in (`to_owned_sd`) rather than
 /// hand-rolling a second SDDL string here.
 #[cfg(windows)]
@@ -156,6 +151,41 @@ fn session_pipe_security_descriptor(
         .to_owned_sd()
         .context("clone session pipe security descriptor")?;
     Ok(owned)
+}
+
+/// The session pipe's inbound buffer on Windows: a client's hello and its request, two envelopes of at most the cap
+/// (`codec::MAX_ENVELOPE_BYTES`) each, so a client that writes both before it reads never blocks in its write
+/// (`bind_session`). Its cost: a client of this account may leave up to this much nonpaged pool waiting per connection
+/// until the daemon reads it or closes the pipe.
+#[cfg(windows)]
+const PIPE_INBOUND_BYTES: u32 = 2 * sot_protocol::codec::MAX_ENVELOPE_BYTES as u32;
+
+/// The daemon's one listener, at `path` (ADR 0049 `## User isolation`). On Unix who may connect is decided by the
+/// socket folder's mode, which `run_local` has made private. On Windows it is the pipe's owner-only descriptor, and the
+/// pipe's inbound buffer holds a client's hello and its request, each one envelope at most the cap. After refusing a
+/// hello the daemon reads no more, and interprocess holds the dropped pipe open until the client has read the refusal
+/// (its limbo: `FlushFileBuffers` before the close), so a client that writes its hello and its request before it reads
+/// (comm-pipe-request.ps1) must be able to finish writing without the daemon reading; with the default 512-byte buffer
+/// a request longer than the daemon's read-ahead hung there until the client's own timeout. The local-socket builder
+/// passes no buffer size, so the pipe is built with `PipeListenerOptions`, which it otherwise matches.
+fn bind_session(path: &str) -> Result<interprocess::local_socket::tokio::Listener> {
+    #[cfg(unix)]
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
+    let listener = ListenerOptions::new()
+        .name(path.to_fs_name::<GenericFilePath>().with_context(|| format!("interpret {path:?} as local-socket name"))?)
+        .create_tokio()
+        .with_context(|| format!("bind {path:?}"))?;
+    #[cfg(windows)]
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
+    let listener = interprocess::os::windows::named_pipe::PipeListenerOptions::new()
+        .path(path)
+        .security_descriptor(Some(session_pipe_security_descriptor()?))
+        .input_buffer_size_hint(PIPE_INBOUND_BYTES)
+        .create_tokio_duplex::<interprocess::os::windows::named_pipe::pipe_mode::Bytes>()
+        .map(interprocess::os::windows::named_pipe::local_socket::tokio::Listener::from)
+        .map(interprocess::local_socket::tokio::Listener::from)
+        .with_context(|| format!("bind {path:?}"))?;
+    Ok(listener)
 }
 
 pub(super) async fn run_local(
@@ -197,25 +227,7 @@ pub(super) async fn run_local(
     let path_str = socket_path
         .to_str()
         .context("socket path must be valid UTF-8")?;
-    let name = path_str
-        .to_fs_name::<GenericFilePath>()
-        .with_context(|| format!("interpret {path_str:?} as local-socket name"))?;
-    #[allow(unused_mut)]
-    let mut listener_options = ListenerOptions::new().name(name);
-    // Windows only: every legitimate client (frontend, CLI, capsule agents,
-    // the comm bridge) runs as this same OS user, so owner-only full access
-    // is sufficient — same posture `lane/pipe_win/` already gives the
-    // voyage/supervisor pipes, applied here to the session pipe too. Unix
-    // is unaffected: its socket security is the containing directory's mode
-    // (`paths::secure_socket_dir` above), not this builder.
-    #[cfg(windows)]
-    {
-        listener_options = listener_options.security_descriptor(session_pipe_security_descriptor()?);
-    }
-    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
-    let listener = listener_options
-        .create_tokio()
-        .with_context(|| format!("bind {socket_path:?}"))?;
+    let listener = bind_session(path_str)?;
     tracing::info!(socket = ?socket_path, "listening (local)");
 
     // The accept loop ends when a shutdown begins: shutdown step 1 stops
@@ -324,6 +336,8 @@ pub(crate) fn admit_peer(stream: &interprocess::local_socket::tokio::Stream) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 
     /// ADR 0049 `## User isolation`: a connection is admitted only when the OS says its process runs as this
     /// account; another account's, and a peer the OS did not name, are out.
@@ -372,20 +386,17 @@ mod tests {
     /// `pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags`
     /// (`rust/log/tests/pipe_win/`) — same technique (`GetSecurityInfo` on
     /// a LIVE handle, round-tripped to SDDL) — but against THIS crate's
-    /// session pipe rather than a voyage/supervisor pipe: proves `run_local`
-    /// actually wires `session_pipe_security_descriptor()` into the
-    /// `interprocess` listener, not merely that the descriptor builds
-    /// correct bytes in isolation. Before this fix the session pipe carried
-    /// the Windows default (`Everyone`/`ANONYMOUS LOGON` read).
+    /// session pipe rather than a voyage/supervisor pipe: proves
+    /// `bind_session`, the listener `run_local` binds, wires
+    /// `session_pipe_security_descriptor()` into the pipe, not merely that
+    /// the descriptor builds correct bytes in isolation. Before this fix the
+    /// session pipe carried the Windows default (`Everyone`/`ANONYMOUS LOGON`
+    /// read).
     #[cfg(windows)]
     #[tokio::test]
     #[allow(clippy::too_many_lines, reason = "one test scenario: the session pipe's security descriptor, checked flag by flag")]
     async fn session_pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
-        use super::session_pipe_security_descriptor;
         use sot_log::host::wide_null;
-        use interprocess::local_socket::tokio::prelude::*;
-        use interprocess::local_socket::{GenericFilePath, ListenerOptions};
-        use interprocess::os::windows::local_socket::ListenerOptionsExt;
         use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::Security::Authorization::{
             ConvertSecurityDescriptorToStringSecurityDescriptorW,
@@ -498,12 +509,7 @@ mod tests {
         }
 
         let name = format!(r"\\.\pipe\sot-test-session-acl-{}", std::process::id());
-        let fs_name = name.as_str().to_fs_name::<GenericFilePath>().unwrap();
-        let listener = ListenerOptions::new()
-            .name(fs_name)
-            .security_descriptor(session_pipe_security_descriptor().unwrap())
-            .create_tokio()
-            .unwrap();
+        let listener = super::bind_session(&name).unwrap();
 
         let wide_name = wide_null(&name);
         let handle = unsafe {

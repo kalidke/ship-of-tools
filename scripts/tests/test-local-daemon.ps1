@@ -240,7 +240,7 @@ try {
 
         } catch { Check '5b: section ran' $false $_.Exception.Message }
         try {
-        Write-Host "`n=== 5c. the pipe transport of every sot-comm client against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request (ADR 0049) ===" -ForegroundColor Cyan
+        Write-Host "`n=== 5c. the pipe transport of every sot-comm client against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request, and a request up to the envelope cap is answered, not stalled (ADR 0049) ===" -ForegroundColor Cyan
         # agents\comm-pipe-request.ps1 matches a reply by its op. A refused hello is a reply to the hello, so the transport
         # must hand it over (and fail) rather than wait out its bound and report a silent daemon: the caller names the
         # refusal. (ii) is the same request with an accepted hello, so the transport's own answer path is exercised too.
@@ -271,12 +271,94 @@ try {
         $servedExit5c = $r5c.Exit
         Check '5c: an accepted hello gets the request answered' ((-not $r5c.Hung) -and ($served5c.Count -eq 1) -and (($served5c[0] | ConvertFrom-Json).op -eq 'version.query')) "hung: $($r5c.Hung) stdout: $($served5c -join ' | ') stderr: $($r5c.Err)"
         Check '5c: an accepted hello exits 0' ($servedExit5c -eq 0) "got $servedExit5c"
+        # (iii)-(v): requests longer than the pipe's default 512-byte buffer and the daemon's 4 KB read-ahead, the
+        # last at the envelope cap (1 MiB, newline included); the transport writes the hello and the request before it
+        # reads. After an accepted hello the daemon reads on, so (iii) and (v) are answered with any buffer. After a
+        # refusal it reads no more and holds the pipe open until the refusal is read, so (iv) needs an inbound buffer
+        # that holds the request: with less, the transport hangs in its write.
+        $head5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{"pad":"'
+        $tail5c = '"}}'
+        foreach ($case5c in @(@(16384, $new5c, 'iii'), @(16384, $old5c, 'iv'), @(1048576, $new5c, 'v'))) {
+            $len5c = $case5c[0]
+            $big5c = $head5c + ('x' * ($len5c - 1 - $head5c.Length - $tail5c.Length)) + $tail5c
+            $r5c = Invoke-PipeTransport $pipe5c version.query @($case5c[1], $big5c)
+            $first5c = $null
+            if ($r5c.Out.Count -eq 1) { $first5c = $r5c.Out[0] | ConvertFrom-Json }
+            if ($case5c[2] -eq 'iv') {
+                $ok5c = (-not $r5c.Hung) -and ($r5c.Exit -eq 1) -and ($null -ne $first5c) -and ($first5c.op -eq 'hello') -and ($first5c.payload.code -eq 'protocol_mismatch')
+                $what5c = "5c ($($case5c[2])): a refused hello behind a $len5c-byte request line is printed, exit 1"
+            } else {
+                $ok5c = (-not $r5c.Hung) -and ($r5c.Exit -eq 0) -and ($null -ne $first5c) -and ($first5c.op -eq 'version.query')
+                $what5c = "5c ($($case5c[2])): a $len5c-byte request line is answered, exit 0"
+            }
+            Check $what5c $ok5c "hung: $($r5c.Hung) exit: $($r5c.Exit) stdout: $($r5c.Out -join ' | ') stderr: $($r5c.Err)"
+        }
+        # (vi): a regression check of `bind_session` (section 5d is P18's test): eight connections held open after their
+        # hellos grow the daemon's nonpaged pool by less than one buffer (2 MiB).
+        $daemon5c = Get-Process -Id (@(Get-DaemonProcs (Get-PipePath $pipe5c))[0].ProcessId)
+        $before5c = $daemon5c.NonpagedSystemMemorySize64
+        $held5c = @()
+        $answered5c = 0
+        try {
+            $helloBytes5c = (New-Object System.Text.UTF8Encoding($false)).GetBytes($new5c + "`n")
+            for ($i5c = 0; $i5c -lt 8; $i5c++) {
+                $c5c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe5c, [System.IO.Pipes.PipeDirection]::InOut)
+                $held5c += $c5c
+                $c5c.Connect(3000)
+                $c5c.Write($helloBytes5c, 0, $helloBytes5c.Length)
+                $reader5c = New-Object System.IO.StreamReader($c5c, (New-Object System.Text.UTF8Encoding($false)), $false, 1024, $true)
+                if ($reader5c.ReadLineAsync().Wait(3000)) { $answered5c++ }
+            }
+            $daemon5c.Refresh()
+            $grew5c = $daemon5c.NonpagedSystemMemorySize64 - $before5c
+            Check '5c (vi): eight connections are admitted and answered' ($answered5c -eq 8) "answered: $answered5c"
+            Check '5c (vi): eight open connections set no inbound buffer aside' ($grew5c -lt 2097152) "the daemon's nonpaged pool grew $grew5c bytes"
+        } finally {
+            foreach ($c in $held5c) { try { $c.Dispose() } catch { } }
+        }
         } finally {
             $stop5c = & $script -Stop -Prefix $p3 -PipeName $pipe5c 6>&1 2>&1
             Get-DaemonProcs (Get-PipePath $pipe5c) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         }
 
         } catch { Check '5c: section ran' $false $_.Exception.Message }
+        try {
+        Write-Host "`n=== 5d. a named pipe's inbound buffer is a limit charged while data waits in it, never memory set aside per instance (P18) ===" -ForegroundColor Cyan
+        # Both ends live in this process, so whichever end Windows charges shows in this process's nonpaged pool. The
+        # control first: 1 MiB written into a 2 MiB inbound buffer that nobody reads must complete and must show in the
+        # counter, or the counter cannot see pipe buffers and the section fails instead of passing. Then sixteen more
+        # connected, idle instances must grow it by less than one buffer: a reservation would add 32 MiB.
+        $name5d = New-TestPipeName
+        $self5d = Get-Process -Id $PID
+        $ends5d = @()
+        $held5d = 0
+        try {
+            $self5d.Refresh()
+            $base5d = $self5d.NonpagedSystemMemorySize64
+            for ($i5d = 0; $i5d -lt 17; $i5d++) {
+                $server5d = New-Object System.IO.Pipes.NamedPipeServerStream($name5d, [System.IO.Pipes.PipeDirection]::InOut, 17, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 2097152, 512)
+                $ends5d += $server5d
+                $accept5d = $server5d.WaitForConnectionAsync()
+                $client5d = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name5d, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
+                $ends5d += $client5d
+                $client5d.Connect(3000)
+                $null = $accept5d.Wait(3000)
+                if ($i5d -eq 0) {
+                    $mib5d = New-Object byte[] 1048576
+                    $wrote5d = $client5d.WriteAsync($mib5d, 0, $mib5d.Length).Wait(5000)
+                    $self5d.Refresh()
+                    $held5d = $self5d.NonpagedSystemMemorySize64 - $base5d
+                    Check '5d: 1 MiB written into a 2 MiB inbound buffer that nobody reads completes' $wrote5d 'the write blocked: the buffer does not hold it'
+                    Check '5d: the waiting 1 MiB shows in this process''s nonpaged pool' ($held5d -ge 524288) "it grew $held5d bytes: this counter cannot see pipe buffers"
+                }
+            }
+            $self5d.Refresh()
+            $idle5d = $self5d.NonpagedSystemMemorySize64 - $base5d - $held5d
+            Check '5d: sixteen more idle instances set no buffer aside' ($idle5d -lt 1048576) "they grew it $idle5d bytes"
+        } finally {
+            foreach ($e in $ends5d) { try { $e.Dispose() } catch { } }
+        }
+        } catch { Check '5d: section ran' $false $_.Exception.Message }
         try {
         Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
         # ADR 0042 L2b design C: no -PipeName override here -- the script

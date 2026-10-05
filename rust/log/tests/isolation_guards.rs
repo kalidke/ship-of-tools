@@ -76,12 +76,13 @@ fn no_secret_is_passed_as_a_command_line_argument() {
 
 /// The Rust listeners' allowed statements, one entry per `#[allow(clippy::disallowed_methods, reason = "listener:
 /// <name>: <guard>")]` on a statement that accepts or constructs a listener, as (repo-relative file, name): the one TCP
-/// accept (`serve_own`), the daemon's session socket or pipe (its constructor and its accept), and the capsule's lane
-/// socket and lane pipe (the pipe's accept and its constructor). Another account can reach none of the last three (a
+/// accept (`serve_own`), the daemon's session socket or pipe (its two constructors, a Unix socket's and a Windows
+/// pipe's, and its accept), and the capsule's lane socket and lane pipe (the pipe's accept and its constructor). Another account can reach none of the last three (a
 /// private folder or an owner-only pipe), and `serve_own` checks the owner of every connection before a byte is
 /// read. One entry per statement, so a second allowed accept in a listed file under a listed name fails too.
-const RUST_LISTENERS: [(&str, &str); 6] = [
+const RUST_LISTENERS: [(&str, &str); 7] = [
     ("rust/log/src/identity/peer_owner/mod.rs", "page (TCP)"),
+    ("rust/backend/src/server/listen.rs", "session socket or pipe"),
     ("rust/backend/src/server/listen.rs", "session socket or pipe"),
     ("rust/backend/src/server/listen.rs", "session socket or pipe"),
     ("rust/log/src/lane/socket_unix/accept.rs", "capsule lane socket"),

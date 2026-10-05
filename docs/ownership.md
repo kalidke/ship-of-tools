@@ -41,7 +41,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |
-| the bound session socket/pipe, DACL, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `refuse_live_socket`, `session_pipe_security_descriptor` |
+| the bound session socket/pipe, its DACL and inbound buffer, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `bind_session`, `refuse_live_socket`, `session_pipe_security_descriptor` |
 | `<state>/held.json` | disk | lifecycle | `rust/backend/src/lifecycle/lease.rs` `HeldRecord`, `persist`; name `rust/protocol/src/ops/lease.rs` `HELD_RECORD_FILE` |
 | `<state>/relaunch.request` | disk | distribution | `rust/frontend/src/relaunch.rs` `relaunch_sentinel_path`, `spawn_watcher`; writer `scripts/relaunch-sot.ps1` |
 | `<state>/fe-commands/` | disk | fe-ui | `rust/frontend/src/ui/control/file_channel.rs`; `rust/frontend/src/ui/control/command.rs` |

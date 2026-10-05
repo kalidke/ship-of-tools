@@ -101,9 +101,11 @@ public static class FakeSotd
         if (bindDelay > 0) { Thread.Sleep(bindDelay); }
         while (true)
         {
-            // Buffered, as the real daemon's pipe is: with the default zero-size buffers a write completes only when the
-            // other end reads, so a client that writes its hello and then its request (the sot-comm pipe transport) and
-            // only then reads deadlocks against a server that answers the hello first.
+            // 64 KB each way: with the default zero-size buffers a write completes only when the other end reads, so a
+            // client that writes its hello and its request before it reads (the sot-comm pipe transport) deadlocks
+            // against this fake, which answers the hello before it reads the request. It models a daemon's answers,
+            // not its pipe: the real daemon's pipe is pinned against the real daemon in test-local-daemon.ps1 section
+            // 5c.
             NamedPipeServerStream srv = new NamedPipeServerStream(
                 name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
                 PipeOptions.None, 65536, 65536);
