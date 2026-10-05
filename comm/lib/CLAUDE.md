@@ -33,8 +33,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   case arm, after an assignment or a command word, split over lines or in process substitution, a path built from a
   variable and a part run by another command are not seen). A part sources nothing, and uses no `BASH_SOURCE`, no
   `LINENO` and no top-level `return`, so inlined it defines the same functions and globals.
-- Every script that sources the library writes under umask 077; `ensure_home` removes group and other permissions from
-  everything under the comm folder but `bin/` and `VERSION`, and `comm-join.sh` runs it at every join.
+- Every script that sources the library writes under umask 077, except `comm-worktree-new.sh`, which sets the caller's
+  mask back for the worktree. `ensure_home` removes group and other permissions from everything under the comm folder
+  but `bin/`, `VERSION` and symlinks, and only while the folder itself is open to group or other; it warns only when a
+  re-check of the end state still finds a path open, naming it. `comm-join.sh` runs it at every join.
 - One registry write (`registry_replace` under `with_lock`) and one read (`sot_registry_read`: 0 present, 1 absent, 2
   unreadable).
 - One inbox append (`sot_inbox_append`) and one `comm.file` request (`sot_comm_file`).

@@ -5,13 +5,16 @@ ensure_home() {
     mkdir -p "$COMM_HOME" "$INBOX_DIR" "$SELF_DIR" "$READ_DIR"
     # A folder or file an older release left open to group and other is closed (ADR 0049, User
     # isolation), bin/ and VERSION (the installer's) and every symlink excepted; not on Windows,
-    # where the profile's access list is the mechanism. A failure warns and the caller goes on.
+    # where the profile's access list is the mechanism. The walk runs only while the folder itself
+    # is open: once it is 0700 nothing new is reached through it. The warning comes from a re-check
+    # of the end state, so a file that vanished under the walk is no failure; the caller goes on.
     if ! _sot_is_windows; then
-        local priv_err
-        priv_err="$( cd "$COMM_HOME" && find . \( -path ./bin -o -path ./VERSION \) -prune -o ! -type l \
-            \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) \
-            -exec chmod go-rwx {} + 2>&1 >/dev/null )" \
-            || echo "WARNING: the comm folder $COMM_HOME could not be made private: ${priv_err##*$'\n'}" >&2
+        local open=( \( -perm -040 -o -perm -020 -o -perm -010 -o -perm -004 -o -perm -002 -o -perm -001 \) ) left
+        if [ -n "$(find -H "$COMM_HOME" -prune "${open[@]}" -print 2>/dev/null)" ]; then
+            ( cd "$COMM_HOME" && find . \( -path ./bin -o -path ./VERSION \) -prune -o ! -type l "${open[@]}" -exec chmod go-rwx {} + ) >/dev/null 2>&1
+            left="$( cd "$COMM_HOME" 2>/dev/null && find . \( -path ./bin -o -path ./VERSION \) -prune -o ! -type l "${open[@]}" -print 2>/dev/null | head -n 1 )" || left=""
+            [ -z "$left" ] || echo "WARNING: the comm folder $COMM_HOME could not be made private: $left is still $(ls -ld -- "$COMM_HOME/$left" 2>/dev/null | cut -c1-10)" >&2
+        fi
     fi
     # Create only, never truncate: `test -f` is false on any stat error (an
     # ESTALE during another host's rename), and a plain `>` then wiped a live

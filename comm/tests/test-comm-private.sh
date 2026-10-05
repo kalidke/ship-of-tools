@@ -11,6 +11,8 @@
 #      bin/, VERSION and a symlink's target keep their modes.
 #   3. Where a comm script starts a writer of the user's own files, that writer keeps the caller's
 #      umask: (a) the auditor's `claude -p`, (b) the worktree `comm-worktree-new.sh` makes.
+#   4. The tightening says what is true: a file that vanishes under it is no failure, a path it leaves open is
+#      named in the warning, and a comm folder whose root is already private is not walked.
 #
 # Windows has no umask: a folder under the profile inherits the profile's access list, so this suite
 # prints one SKIP there. The locked local append and the hooks' mail read are Linux's, so other systems skip too.
@@ -179,6 +181,43 @@ else
     bad "comm-worktree-new.sh makes the worktree under the caller's umask"
     echo "    file.txt $(mode "$WTD/file.txt" 2>/dev/null || echo missing), worktrees/ $(mode "$WORK/worktrees" 2>/dev/null || echo missing); script said: $(tail -n 2 "$WORK/last.out" | tr '\n' ' ')"
 fi
+
+# ---- 4-6: the tightening says what is true: churn is not a failure, a path left open is named, a private root is not walked ----
+REAL_CHMOD="$(command -v chmod)"
+# lay_old DIR: a small folder as an older release left it (folders 755, files 644), with the paths the cases below use.
+lay_old() {
+    mkdir -p "$1/inbox" "$1/read" "$1/self" "$1/state"
+    printf '{"protocol_version": 1, "agents": {}}\n' > "$1/registry.json"
+    : > "$1/inbox/s2-a.jsonl"; : > "$1/read/s2-a.cursor"; : > "$1/state/gone"; : > "$1/state/x.tick"
+    printf 's2-a\nrepo=fixture\nroot=%s\n' "$FIX" > "$1/self/testhost__nopane.txt"
+}
+# A chmod that first removes one file find listed for it, as a writer's temp file does between find's listing and the chmod.
+mkdir -p "$WORK/churn-bin"
+printf '#!/bin/sh\nrm -f "$S2_GONE"\nexec "%s" "$@"\n' "$REAL_CHMOD" > "$WORK/churn-bin/chmod"
+# A chmod that leaves one file alone and succeeds, as a mount that ignores modes does.
+mkdir -p "$WORK/noop-bin"
+cat > "$WORK/noop-bin/chmod" <<STUB
+#!/bin/sh
+n=\$#
+while [ \$n -gt 0 ]; do a=\$1; shift; n=\$((n - 1)); [ "\$a" = ./state/x.tick ] || set -- "\$@" "\$a"; done
+exec "$REAL_CHMOD" "\$@"
+STUB
+chmod +x "$WORK/churn-bin/chmod" "$WORK/noop-bin/chmod"
+N="$WORK/churn-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"
+S2 env SOT_COMM_HOME="$N" S2_GONE="$N/state/gone" PATH="$WORK/churn-bin:$PATH" "$BIN/comm-join.sh" --name s2-a
+fails="$(loose_paths "$N")"
+grep -q WARNING "$WORK/last.out" && fails+=$'\n'"    a path that vanished during the tightening printed: $(grep WARNING "$WORK/last.out")"
+if [ -z "$fails" ]; then ok "a file that vanishes during the tightening is no failure: no warning, the rest is private"
+else bad "a file that vanishes during the tightening is no failure: no warning, the rest is private"; printf '%s\n' "${fails#$'\n'}"; fi
+N="$WORK/noop-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"
+S2 env SOT_COMM_HOME="$N" PATH="$WORK/noop-bin:$PATH" "$BIN/comm-join.sh" --name s2-a
+if grep -q "WARNING: the comm folder .* could not be made private: .*state/x.tick" "$WORK/last.out"; then
+    ok "a path the tightening leaves open is named in the warning"
+else bad "a path the tightening leaves open is named in the warning"; echo "    join said: $(tr '\n' ' ' < "$WORK/last.out")"; fi
+N="$WORK/private-home/.sot-comm"; guard_refuse_live_home "$N"; lay_old "$N"; "$REAL_CHMOD" 700 "$N"
+S2 env SOT_COMM_HOME="$N" "$BIN/comm-join.sh" --name s2-a
+[ "$(mode "$N/state/x.tick")" = 644 ] && ok "a comm folder that is already private is not walked" \
+    || { bad "a comm folder that is already private is not walked"; echo "    state/x.tick is $(mode "$N/state/x.tick"), the walk ran"; }
 
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
