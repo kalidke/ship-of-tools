@@ -264,6 +264,16 @@ sot_comm_file() {  # HANDLE LINE
         return 0
     fi
     diag="${diag% }"
+    # `sot_oneshot_request` names on stderr a hello it could not build and a hello the daemon refused when nothing
+    # else answered: say that, not that the daemon was silent.
+    case "$diag" in
+        *"sot_oneshot_request: no hello: "*)
+            printf '%s\n' "${diag##*sot_oneshot_request: no hello: }"
+            return 1 ;;
+        *"sot_oneshot_request: hello refused: "*)
+            printf 'hello refused: %s\n' "${diag##*sot_oneshot_request: hello refused: }"
+            return 1 ;;
+    esac
     printf 'the daemon did not answer at %s%s\n' "$ENDPOINT" "${diag:+: $diag}"
     return 1
 }

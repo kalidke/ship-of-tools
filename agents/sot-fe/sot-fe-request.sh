@@ -15,7 +15,7 @@ resolve_endpoint() {
 # Hello: the daemon reads each connection's first frame for the protocol
 # version and ignores its token field — `sot_oneshot_request` prepends
 # `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1) to every connection.
-# The hello reply is ignored — sot_send greps by op.
+# sot_send takes the reply by its op; `sot_oneshot_request` names a refused hello when no reply came.
 sot_send() {
     # Delegates to comm-lib's hardened one-shot (poll-file read, writer
     # linger) — the old inline `writer | nc | grep -m1` raced the response

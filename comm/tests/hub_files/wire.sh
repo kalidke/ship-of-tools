@@ -96,6 +96,54 @@ STUB
     return 0
 }
 
+# A refusal that is not about the protocol comes from a daemon of this release, which closes: the one-shot stops at it at
+# once, though its transport (here a stub that holds the connection) stays open. The sender's window is never waited out.
+case_a_hello_refusal_stops_the_oneshot_request_at_once() {
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
+    { printf '#!/bin/sh\n'; cat <<'STUB'
+IFS= read -r line
+printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"host-a has said hello as more than one OS account","code":"os_user_conflict"}}\n'
+exec sleep 8
+STUB
+    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    local out rc=0 err t0 t1
+    t0="$(date +%s)"
+    out="$(cd "$WORK" && PATH="$HUB:$PATH" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=10 bash -c '
+        . "$1/comm-lib.sh"; ENDPOINT="unix:$2/hub.sock"
+        sot_oneshot_request "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"version.query\",\"payload\":{}}" version.query' _ "$SCRIPTS_DIR" "$WORK" 2>"$WORK/err.txt")" || rc=$?
+    t1="$(date +%s)"
+    err="$(cat "$WORK/err.txt" 2>/dev/null)"
+    [ "$rc" -eq 1 ] || { echo "  rc $rc, want 1 (out: $out err: $err)"; return 1; }
+    [ $((t1 - t0)) -le 2 ] || { echo "  took $((t1 - t0)) s, want at most 2"; return 1; }
+    [ "$err" = "sot_oneshot_request: hello refused: host-a has said hello as more than one OS account" ] \
+        || { echo "  err: $err"; return 1; }
+    return 0
+}
+
+# An older daemon refuses only the protocol and then answers the request (a second later here, so a client that stops at the
+# refusal is caught): the one-shot returns that answer and says nothing.
+case_a_protocol_refusal_does_not_decide_the_oneshot_request() {
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
+    { printf '#!/bin/sh\n'; cat <<'STUB'
+while IFS= read -r line; do
+    case "$line" in
+        *'"op":"hello"'*) printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"protocol mismatch","code":"protocol_mismatch"}}\n' ;;
+        *'"op":"version.query"'*) sleep 1; printf '{"v":1,"id":1,"kind":"res","op":"version.query","payload":{"ok":true}}\n'; exit 0 ;;
+    esac
+done
+STUB
+    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    local out rc=0 err
+    out="$(cd "$WORK" && PATH="$HUB:$PATH" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=5 bash -c '
+        . "$1/comm-lib.sh"; ENDPOINT="unix:$2/hub.sock"
+        sot_oneshot_request "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"version.query\",\"payload\":{}}" version.query' _ "$SCRIPTS_DIR" "$WORK" 2>"$WORK/err.txt")" || rc=$?
+    err="$(cat "$WORK/err.txt" 2>/dev/null)"
+    [ "$rc" -eq 0 ] || { echo "  rc $rc, want 0 (out: $out err: $err)"; return 1; }
+    printf '%s' "$out" | jq -e '.op == "version.query" and .payload.ok == true' >/dev/null 2>&1 || { echo "  reply: $out"; return 1; }
+    [ -z "$err" ] || { echo "  stderr: $err"; return 1; }
+    return 0
+}
+
 # S4 — a directed wire send with no daemon found is that send's FAILED line.
 case_a_wire_send_with_no_daemon_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }

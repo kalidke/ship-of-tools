@@ -403,7 +403,12 @@ own append in route 1 does not check it yet.
   sentence whenever there is one: `no box knows that handle: <h>`,
   `no live session holds @h`, `not a handle: …`, a failed append; the inbox
   lock held for 10 seconds (`the inbox lock for @h was held for 10s — nothing
-  was appended`); a daemon older than the op (`unknown op: comm.file`); or no
+  was appended`); a daemon older than the op (`unknown op: comm.file`); a daemon that refused
+  this client's hello and answered nothing else (`hello refused: <the
+  daemon's own words>`: this host has said hello as two OS accounts, or the
+  two sides speak different protocols; a daemon older than this release
+  refuses only for the protocol and still answers the request, and that
+  answer decides); or no
   answer at all (`the daemon did not answer at <endpoint>`, followed by the
   transport's own stderr when it wrote any). A refusal means nothing was
   added; with no answer nothing is known to have been. Retrying or reporting
@@ -422,11 +427,13 @@ and no receipt within 5 seconds gives `FAILED -> @h: nobody filed it within 5s: 
 anyone with no receipt within 5 seconds gives `NOT CONFIRMED: sent for @h;
 nobody claimed it within 5s. Attached: …`, the roster a diagnostic and never
 a verdict — so a handle no box knows gives `NOT CONFIRMED` whenever anything
-is attached; any other ack, or none, gives `FAILED -> @h: <reason>` when the
+is attached; a refused hello with no ack and no receipt gives `FAILED -> @h:
+hello refused: <the daemon's own words>`; any other ack, or none, gives `FAILED -> @h: <reason>` when the
 transport failed with one to give, else `FAILED -> @h: the daemon did not
 answer at <endpoint>`. Every one of those but the receipt exits 1. A broadcast
 (`send --all`) still goes this way and prints `relayed -> <all> (<n>
-receiver(s)) via <endpoint>`. With no daemon found at all a wire send prints
+receiver(s)) via <endpoint>`, or `FAILED -> <all>: hello refused: <the daemon's own
+words>`. With no daemon found at all a wire send prints
 `FAILED -> @h: no sotd daemon found; …` and exits 1.
 
 Nothing is queued anywhere, and a failed send is not retried by another

@@ -22,6 +22,10 @@
 #     -Op (the daemon also broadcasts `kind:"evt"` frames on the same
 #     connection -- those are skipped, never matched), or -TimeoutSec
 #     elapses. Prints exactly that one matching line to stdout and exits 0;
+#     a `kind:"res"` reply to the hello that carries an `error` is printed the
+#     same way; the script then exits 1 at once unless the code is
+#     `protocol_mismatch`, which an older daemon follows with its answer to
+#     the request, so it reads on for that answer (exit 0) or the end (exit 1);
 #     any failure -- a connect timeout, no matching reply, the pipe closing
 #     early -- prints ONE line to stderr and exits nonzero. This mirrors
 #     sot_oneshot_request's own unix:/tcp: arms, which match a reply by its
@@ -181,12 +185,17 @@ try {
             } catch {
                 continue   # a garbled/partial line -- keep waiting, never match on it
             }
+            if ($obj.kind -eq 'res' -and $obj.op -eq 'hello' -and $obj.payload.error) {
+                Write-Output $line
+                if ($obj.payload.code -ne 'protocol_mismatch') { exit 1 }
+                continue
+            }
             if ($obj.kind -eq 'res' -and $obj.op -eq $Op) {
                 Write-Output $line
                 exit 0
             }
             # kind:"evt" (or a res for some other op, e.g. hello's own
-            # reply) -- not what we asked for; keep reading.
+            # accepted reply) -- not what we asked for; keep reading.
         }
     } else {
         # Hold: relay every line verbatim for up to $TimeoutSec seconds.

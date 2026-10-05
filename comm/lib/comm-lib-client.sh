@@ -555,17 +555,26 @@ _sot_oneshot_sender() {
     exec sleep "$3"
 }
 
-# _sot_hello_refusal FILE — the daemon's message when the hello's reply in FILE (the first line whose op is hello)
-# carries an error: the daemon refused this client (an older protocol, a second OS account on the host) and closed the
-# connection (ADR 0049 `## User isolation`). Nothing when the hello was accepted or has not been answered yet.
+# _sot_hello_refusal FILE [any] — the daemon's message when the hello's reply in FILE (the first line whose op is hello)
+# carries an error: the daemon refused this client (an older protocol, a second OS account on the host) (ADR 0049
+# `## User isolation`). Nothing when the hello was accepted or has not been answered yet. With no second argument,
+# nothing for a `protocol_mismatch` either: a daemon of this release closes after any refusal, but an older one refuses
+# only the protocol and goes on to answer the request, so that refusal decides nothing until the connection ends with
+# no reply (`any`).
 _sot_hello_refusal() {
-    local reply
+    local reply got
     reply="$(grep -m1 '"op":"hello"' "$1" 2>/dev/null || true)"
     [ -n "$reply" ] || return 0
     if command -v jq >/dev/null 2>&1; then
-        printf '%s' "$reply" | jq -r 'if (.payload.error? // null) != null then (.payload.error | tostring) else empty end' 2>/dev/null
+        got="$(printf '%s' "$reply" | jq -r 'if (.payload.error? // null) != null then ((.payload.code? // "") + "\t" + (.payload.error | tostring)) else empty end' 2>/dev/null)"
+        [ -n "$got" ] || return 0
+        [ -n "${2:-}" ] || [ "${got%%$'\t'*}" != protocol_mismatch ] || return 0
+        printf '%s\n' "${got#*$'\t'}"
     else
-        case "$reply" in *'"error"'*) printf 'refused\n' ;; esac
+        case "$reply" in
+            *'"protocol_mismatch"'*) [ -z "${2:-}" ] || printf 'refused\n' ;;
+            *'"error"'*) printf 'refused\n' ;;
+        esac
     fi
 }
 
@@ -573,8 +582,12 @@ sot_oneshot_request() {
     local frame="$1" op="$2"
     local timeout_s="${SOT_SEND_TIMEOUT:-${SEND_TIMEOUT:-10}}"
     local tmp ncpid line="" deadline hello refused=""
-    hello="$(sot_hello_frame)" || return 1
     tmp="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/sot-oneshot-XXXXXX")" || return 1
+    # A process that cannot name its host or OS account sends nothing; the builder says why, and the caller is told.
+    hello="$(sot_hello_frame 2>"$tmp.he")" || {
+        printf 'sot_oneshot_request: no hello: %s\n' "$(tr '\n' ' ' < "$tmp.he" | sed 's/ $//')" >&2
+        rm -f "${tmp:?}" "${tmp:?}.he"; return 1; }
+    rm -f "${tmp:?}.he"
     case "$ENDPOINT" in
         unix:*)
             command -v nc >/dev/null 2>&1 || {
@@ -651,18 +664,19 @@ sot_oneshot_request() {
             break
         fi
         line=""
-        # A refused hello ends the connection: no reply is coming, so say why at once.
+        # A hello refused for anything but the protocol ends the connection: no reply is coming, so say why at once.
         refused="$(_sot_hello_refusal "$tmp")"
         [ -n "$refused" ] && break
         kill -0 "$ncpid" 2>/dev/null || {
             # transport exited — one final scan for a reply that landed last
             line="$(grep -m1 "\"op\":\"$op\"" "$tmp" 2>/dev/null || true)"
             _sot_line_ok "$line" || line=""
-            [ -n "$line" ] || refused="$(_sot_hello_refusal "$tmp")"
             break; }
         sleep 0.1
     done
     kill "$ncpid" 2>/dev/null || true
+    # No reply by the end of the connection or the window: a hello refused for the protocol is named now.
+    [ -n "$line" ] || [ -n "$refused" ] || refused="$(_sot_hello_refusal "$tmp" any)"
     [ -r "$tmp.snd" ] && kill "$(cat "$tmp.snd" 2>/dev/null)" 2>/dev/null
     # A ssh: bridge that exited or timed out with no reply: its own stderr
     # (captured above instead of discarded) names the reason -- printed
