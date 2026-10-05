@@ -112,6 +112,18 @@ mod windows {
         assert!(text.contains("not connecting"), "{text}");
     }
 
+    /// ADR 0049, User isolation: the pipe is opened at identification level, so a server that impersonates the client
+    /// right after the first byte gets an identification token and cannot act as the account.
+    #[test]
+    fn the_pipe_is_opened_at_identification_level() {
+        use windows_sys::Win32::Security::SecurityIdentification;
+        let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
+            let client = connect_own(std::path::Path::new(name)).unwrap_or_else(|e| panic!("refused {name}: {e}"));
+            client.write_all(b"x").expect("write one byte");
+        });
+        assert_eq!(level, SecurityIdentification);
+    }
+
     /// ADR 0049, User isolation: a pipe this very process serves, so this account does, is connected to.
     #[test]
     fn a_pipe_this_account_serves_is_accepted() {

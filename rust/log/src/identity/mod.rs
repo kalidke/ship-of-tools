@@ -8,4 +8,5 @@ pub mod challenge_win;
 pub mod connect_own;
 pub mod deadline;
 pub mod exchange;
+pub mod impersonation_probe;
 pub(crate) mod exit_watch_macos;

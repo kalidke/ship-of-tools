@@ -12,6 +12,7 @@ platform; charter: rust/log/src/host/CLAUDE.md (written by a later unit, not yet
 - `exit_watch_macos.rs`: the macOS kqueue `NOTE_EXIT` death watch, shared with `supervisor/probe/macos.rs`.
 - `challenge_win.rs`: Windows steps 1-3: the pipe server's token SID and process handle.
 - `connect_own.rs`: the one rule for a local endpoint reached by name: `own_socket`, `own_pipe`, `connect_own`.
+- `impersonation_probe.rs`: test support (Windows, `test-support` feature): the impersonation level a pipe's server gets over a client's handle.
 - `exchange.rs`: the identity request and reply codec for the wire round trip (`feed`).
 - `deadline.rs`: the three-state deadline race that bounds a blocking call (`run_with_deadline`).
 

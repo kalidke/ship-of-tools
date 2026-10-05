@@ -58,6 +58,8 @@ name = "sotd"
 path = "src/main.rs"
 
 [dev-dependencies]
+# `topology/dial.rs`'s Windows test reads the impersonation level a pipe server gets (`identity::impersonation_probe`).
+sot-log = { path = "../log", features = ["test-support"] }
 # `start_paused` test runtime (pages::site's bind-fallback test collapses the
 # 10x300ms preferred-port retry loop instead of really sleeping through it).
 tokio = { workspace = true, features = ["test-util"] }

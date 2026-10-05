@@ -305,6 +305,19 @@ pub(crate) fn dial_and_call_tracked(
 pub(crate) mod tests {
     use super::*;
 
+    /// ADR 0049, User isolation: `connect`'s `pipe:` arm opens the pipe at identification level, so a server that
+    /// impersonates the client right after the first byte gets an identification token.
+    #[cfg(windows)]
+    #[test]
+    fn the_pipe_arm_opens_at_identification_level() {
+        use std::io::Write;
+        let level = sot_log::identity::impersonation_probe::level_seen_by_server(|name| {
+            let (mut writer, _reader, _guard) = connect(&format!("pipe:{name}")).expect("connect").split().expect("split");
+            writer.write_all(b"x").expect("write one byte");
+        });
+        assert_eq!(level, windows_sys::Win32::Security::SecurityIdentification);
+    }
+
     #[cfg(unix)]
     use crate::paths::EnvGuard;
 
