@@ -20,6 +20,8 @@ pub(super) struct EnvGuard {
     // tests assert on, and a leaked value would poison every other
     // `declared_host()`-reading test sharing this crate-wide lock.
     sot_self_host: Option<std::ffi::OsString>,
+    // Snapshotted/restored too: the boot-time handle dedupe reads the comm registry under it.
+    sot_comm_home: Option<std::ffi::OsString>,
 }
 
 impl Drop for EnvGuard {
@@ -31,6 +33,7 @@ impl Drop for EnvGuard {
             ("USERPROFILE", &self.userprofile),
             ("SystemDrive", &self.system_drive),
             ("SOT_SELF_HOST", &self.sot_self_host),
+            ("SOT_COMM_HOME", &self.sot_comm_home),
         ] {
             match val {
                 Some(v) => std::env::set_var(key, v),
@@ -51,6 +54,7 @@ pub(super) fn env_guarded() -> EnvGuard {
         userprofile: std::env::var_os("USERPROFILE"),
         system_drive: std::env::var_os("SystemDrive"),
         sot_self_host: std::env::var_os("SOT_SELF_HOST"),
+        sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
         _serial: serial,
     }
 }

@@ -26,6 +26,8 @@ mod session;
 mod sidecars;
 mod topology;
 mod update;
+#[cfg(test)]
+mod source_scan_tests;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
