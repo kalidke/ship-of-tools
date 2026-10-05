@@ -305,15 +305,26 @@ async fn connect_and_run(
     }
 }
 
-/// Connect to the local socket / named pipe at `path`.
+/// Connect to the local socket / named pipe at `path`, only when this OS account serves it (ADR 0049, User isolation):
+/// on Unix the socket's folder is checked before the connect, on Windows the pipe's serving process right after it,
+/// before the first byte.
 pub(crate) async fn connect_pipe(path: &std::path::Path) -> Result<LocalStream> {
     let path_str = path.to_str().context("socket path must be valid UTF-8")?;
     let name = path_str
         .to_fs_name::<GenericFilePath>()
         .with_context(|| format!("interpret {path_str:?} as local-socket name"))?;
-    LocalStream::connect(name)
+    #[cfg(unix)]
+    sot_log::identity::connect_own::own_socket(path).with_context(|| format!("connect {path:?}"))?;
+    let stream = LocalStream::connect(name)
         .await
-        .with_context(|| format!("connect {path:?}"))
+        .with_context(|| format!("connect {path:?}"))?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsHandle;
+        let LocalStream::NamedPipe(pipe) = &stream;
+        sot_log::identity::connect_own::own_pipe(pipe.as_handle(), path).with_context(|| format!("connect {path:?}"))?;
+    }
+    Ok(stream)
 }
 
 /// Read exactly one frame while *owning* the reader, handing it back with the

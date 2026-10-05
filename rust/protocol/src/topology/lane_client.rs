@@ -660,32 +660,23 @@ impl DaemonLaneEndpoint {
             }
             #[cfg(unix)]
             LaneDial::Local(path) => {
-                // Reuses `sot_log::lane::socket_unix`'s own bounded, non-
-                // blocking connector rather than a blocking
+                // `connect_own`: the folder rule (ADR 0049, User
+                // isolation), then `sot_log::lane::socket_unix`'s own
+                // bounded, non-blocking connector rather than a blocking
                 // `UnixStream::connect` under an external deadline: the
                 // latter would leak the blocked connect thread past the
                 // deadline on a full listen backlog instead of actually
                 // stopping — this connector never blocks past
                 // `CONNECT_BOUND` in the first place.
-                let client = sot_log::lane::socket_unix::connect_unix_socket_unchallenged(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                let client = sot_log::identity::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Unix(client)
             }
             #[cfg(windows)]
             LaneDial::Local(path) => {
-                let path_str = path.to_str().ok_or_else(|| {
-                    TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::InvalidInput, "lane pipe path is not valid Unicode"))
-                })?;
-                // A fresh, per-dial cancel flag: `connect_pipe_path_
-                // unchallenged`'s own bounded poll loop checks it between
-                // every already-bounded `WaitNamedPipeW` wait — the only
-                // mid-dial cancellation a synchronous `CreateFileW`/
-                // `WaitNamedPipeW` pair admits (neither has an OS-level
-                // cancellation handle the way an OVERLAPPED read/write on
-                // an already-open handle does). Nothing external sets it
-                // today (this dial has no caller that cancels one in
-                // flight yet) — the hook exists so one can.
-                let dial_cancel = AtomicBool::new(false);
-                let client = sot_log::lane::pipe_win::connect_pipe_path_unchallenged(path_str, &dial_cancel).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
+                // `connect_own`: `sot_log::lane::pipe_win`'s bounded pipe
+                // connector, then the check that this OS account serves the
+                // pipe (ADR 0049, User isolation), before the first byte.
+                let client = sot_log::identity::connect_own::connect_own(path).map_err(|te| TransportError::Unreachable(unwrap_connect_io(te)))?;
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {

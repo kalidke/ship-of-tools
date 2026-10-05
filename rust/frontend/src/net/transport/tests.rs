@@ -164,8 +164,16 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
     // through `GenericFilePath`, exactly the route `connect_pipe` takes.
     #[cfg(windows)]
     let sock_path = std::path::PathBuf::from(format!(r"\\.\pipe\{unique}"));
+    // `connect_pipe` refuses a socket outside a private folder (ADR 0049, User isolation), so the socket gets its own,
+    // at a short path (macOS's `sun_path` is 104 bytes).
     #[cfg(not(windows))]
-    let sock_path = std::env::temp_dir().join(format!("{unique}.sock"));
+    let sock_path = {
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = std::path::PathBuf::from(format!("/tmp/sot-t-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("s.sock")
+    };
     let _ = std::fs::remove_file(&sock_path);
     let name = sock_path
         .to_str()
@@ -250,6 +258,8 @@ async fn a_closed_local_connection_surfaces_as_an_error_not_a_silent_hang() {
     );
 
     let _ = std::fs::remove_file(&sock_path);
+    #[cfg(not(windows))]
+    let _ = std::fs::remove_dir(sock_path.parent().unwrap());
 }
 
 #[tokio::test]

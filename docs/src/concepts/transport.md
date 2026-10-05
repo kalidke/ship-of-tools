@@ -127,6 +127,10 @@ Known limits of the link gate:
   on a lost pen or when the 30 s checkpoint-in-flight wait runs out, are
   reported by their own status line, not the discard count.
 
+The window and the bridge speak only to an endpoint of their own OS account: a
+socket in a folder private to that account on Unix, a pipe served by that
+account's process on Windows.
+
 Later work in this same design (per-user isolation for the browser-facing
-ports, the pipe/socket owner checks, and the daemon-side account guard)
-lands in stages after this one and extends this page when it does.
+ports and the daemon-side account guard) lands in stages after this one and
+extends this page when it does.

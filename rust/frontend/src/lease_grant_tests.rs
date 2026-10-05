@@ -22,11 +22,15 @@ pub(super) fn bind(tag: &str) -> (interprocess::local_socket::tokio::Listener, P
         // macOS's temp_dir() is long enough to overflow sun_path
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let _ = &unique;
-        PathBuf::from(format!(
-            "/tmp/sl-{tag}-{}-{}.sock",
+        // `connect_pipe` refuses a socket outside a private folder (ADR 0049, User isolation).
+        use std::os::unix::fs::DirBuilderExt;
+        let dir = PathBuf::from(format!(
+            "/tmp/sl-{tag}-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
-        ))
+        ));
+        std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
+        dir.join("s.sock")
     };
     let _ = std::fs::remove_file(&path);
     let name = path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();

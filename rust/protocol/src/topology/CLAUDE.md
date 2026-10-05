@@ -25,6 +25,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - While a host's `LinkGate` is down, no gated spawn starts ssh.
 - A lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and can be cancelled; refusals come back typed;
   no ssh child outlives its client.
+- A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 
 ## Connections

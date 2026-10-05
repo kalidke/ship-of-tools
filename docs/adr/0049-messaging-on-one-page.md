@@ -92,10 +92,11 @@ sockets. Not built: the daemon serves its ops and events, mail included, to a
 connection that has sent no hello; the hello names no OS account; and the peer read at
 accept refuses another account only for a lease, so a hub cannot tell two OS users on
 one hub account apart. Lane M1 builds the hello admission and that refusal, and deletes
-`LaneDial::Tcp`, a TCP lane dial that only tests construct. On Windows the frontend,
-its lease, `sotd stdio-bridge` and the lane client connect to whatever answers their
-pipe name, a name in the machine-wide pipe namespace, without checking which account
-serves it; lane M1b builds that check. The video, site and site-pool servers and the frontend's page proxy accept
+`LaneDial::Tcp`, a TCP lane dial that only tests construct. Built by lane M1b: the
+frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` speak
+only to an endpoint their own OS account serves, a pipe whose serving process runs as
+this account on Windows and a socket in a folder private to this account on Unix
+(`rust/log/src/identity/connect_own.rs`). The video, site and site-pool servers and the frontend's page proxy accept
 a connection from any account and rely on the URL's secret alone; lane S1 builds their
 owner check. The comm folder and everything in it but the installed scripts and
 their version stamp are its user's alone: every writer creates them owner-only (0700

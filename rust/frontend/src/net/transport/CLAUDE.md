@@ -31,4 +31,5 @@ after). A new request or reply goes through `ops/`.
 - A request whose loss must be reported inserts its `PendingKind` before its write (`send_figure_get`).
 - The link gate goes up at any hello reply (`read_hello`) and down when the session ends, except after a hello refusal
   (`run_protocol`).
+- The local socket or pipe is dialled only through `connect_pipe`, which applies `sot_log::identity::connect_own`'s rule (`own_socket` before the connect on Unix, `own_pipe` after it on Windows, before any byte is written).
 - Every event is tagged with the dial `HostKey`; the daemon's declared host is display only.

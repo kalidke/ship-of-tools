@@ -174,6 +174,8 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("unix:") {
         #[cfg(unix)]
         {
+            // ADR 0049, User isolation: only a socket in this account's private folder.
+            sot_log::identity::connect_own::own_socket(std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
             return std::os::unix::net::UnixStream::connect(p)
                 .map(Conn::Unix)
                 .map_err(|e| format!("{endpoint}: {e}"));
@@ -190,7 +192,11 @@ fn connect(endpoint: &str) -> Result<Conn, String> {
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
-            return std::fs::OpenOptions::new().read(true).write(true).open(p).map(Conn::Pipe).map_err(|e| format!("{endpoint}: {e}"));
+            use std::os::windows::io::AsHandle;
+            let file = std::fs::OpenOptions::new().read(true).write(true).open(p).map_err(|e| format!("{endpoint}: {e}"))?;
+            // ADR 0049, User isolation: only a pipe this account serves, checked before a byte is written.
+            sot_log::identity::connect_own::own_pipe(file.as_handle(), std::path::Path::new(p)).map_err(|e| format!("{endpoint}: {e}"))?;
+            return Ok(Conn::Pipe(file));
         }
         #[cfg(not(windows))]
         {
