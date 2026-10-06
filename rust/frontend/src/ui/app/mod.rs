@@ -77,7 +77,7 @@ impl App {
 
     fn shutdown_transport(&mut self) {
         if let Some(runtime) = self.rt.take() {
-            runtime.shutdown_timeout(crate::lease::LEAVE_WRITE_WAIT);
+            drop(runtime);
         }
     }
 
