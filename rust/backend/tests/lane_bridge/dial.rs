@@ -367,11 +367,14 @@ fn stub_endpoint(path: PathBuf, guard: Arc<ParentSshEnvironment>) -> DaemonLaneE
     guard.observe("after preparing endpoint");
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
+        let mut changed = std::env::var_os("PATH").unwrap_or_default(); changed.push(":");
+        unsafe { std::env::set_var("PATH", changed) };
         guard.observe("at spawn");
         let spawned = std::process::Command::new(&path).args(command.get_args())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
             .spawn();
         guard.observe("child active");
+    match &guard.values[0] { Some(value) => unsafe { std::env::set_var("PATH", value) }, None => unsafe { std::env::remove_var("PATH") } }
         spawned
     }))
 }
