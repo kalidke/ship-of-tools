@@ -180,11 +180,13 @@ fn peer_token(fd: RawFd) -> io::Result<PeerToken> {
     })
 }
 
-/// The peer's pid and kernel pidversion (the macOS `created`), from the
-/// one `LOCAL_PEERTOKEN` read.
-pub fn peer_pid_created(fd: RawFd) -> io::Result<(u32, u64)> {
+/// The peer's euid, pid and kernel pidversion (the macOS `created`), from
+/// the one `LOCAL_PEERTOKEN` read: the daemon admits a connection by the
+/// first and keeps the other two for a lease. The token is the peer's whole
+/// audit token, so its pid and euid words are one process's.
+pub fn peer_euid_pid_created(fd: RawFd) -> io::Result<(u32, u32, u64)> {
     let t = peer_token(fd)?;
-    Ok((t.pid, u64::from(t.pidversion)))
+    Ok((t.euid, t.pid, u64::from(t.pidversion)))
 }
 
 /// `TASK_AUDIT_TOKEN` (`osfmk/mach/task_info.h`): the `task_info`

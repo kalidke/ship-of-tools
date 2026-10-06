@@ -9,7 +9,7 @@ messaging; charter: comm/CLAUDE.md.
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
 - `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
-- `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `sot_oneshot_request`, pty input and screen
+- `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account, on Windows the SID `_sot_windows_sid` reads), `sot_oneshot_request`, pty input and screen
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
 - `comm-lib-inbox.sh`: the inbox append and its lock, `sot_comm_file`, the read cursor, the line counts and `sot_unread` (the unread count)
@@ -66,3 +66,7 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 - The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.
+- A request sent behind its hello is decided by its own reply. `sot_oneshot_request` stops at a refused hello at once only
+  when the code is not `protocol_mismatch` (a daemon of this release closes after refusing, and only it sends the other
+  codes; an older daemon refuses only for the protocol and still answers the request), and names the refusal (`hello
+  refused: <words>`) only when no reply came (`_sot_hello_refusal`).

@@ -142,16 +142,9 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, name: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
     let hello = HelloReq {
-        client_id: client_id.to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some("test-host".to_string()),
-        role: "fe".to_string(),
         instance: Some("test-instance".to_string()),
         name: Some(name.to_string()),
+        ..HelloReq::this_process(client_id, "fe", Some("test-host".to_string())).expect("this process's account")
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await
@@ -358,16 +351,10 @@ async fn hello_from_the_previous_protocol_is_refused_naming_both_versions() {
     let mut conn = poll_until_connected(&env.socket_path).await;
     let old = sot_protocol::PROTOCOL_VERSION - 1;
     let hello = HelloReq {
-        client_id: "old-frontend".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
         protocol: old,
         app_version: "0.5.9".to_string(),
-        host: Some("test-host".to_string()),
-        role: "fe".to_string(),
-        instance: None,
         name: Some("fe@test-host".to_string()),
+        ..HelloReq::this_process("old-frontend", "fe", Some("test-host".to_string())).expect("this process's account")
     };
     let body = async {
         codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)

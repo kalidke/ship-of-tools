@@ -14,6 +14,8 @@ protocol) and restart — no kill, no foreign phase. Design pass
 decision it fixed.
 **Date:** 2026-09-11
 
+2026-10 amendment (0.6.6, ADR 0049 `## User isolation`): `lane.connect` is the next frame after a hello whose role is `handoff`, not a connection's first frame; wire protocol 3.
+
 Retires claims in three ADRs: ADR 0042 L3's shape ("proxy ops on the
 control connection", "the same challenge runs end to end"), ADR 0041's
 "Build boundary" and "Upgrade and version skew" (build-id equality as

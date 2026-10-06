@@ -4,6 +4,8 @@
 
 2026-10 amendment (0.6.6): the grant order has no token step and a bad token no longer counts as `Foreign`; the daemon's lease check reads no token.
 
+2026-10 amendment (0.6.6, ADR 0049 `## User isolation`): the lease connection says hello first, with role `handoff`, and its next frame is `fe.lease`; wire protocol 3. A refused hello is one reply and a close.
+
 **Date:** 2026-10-02
 
 ## Decision

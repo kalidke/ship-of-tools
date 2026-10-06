@@ -29,9 +29,11 @@
 //! test uses two REAL processes joined by a real `connect(2)` — a
 //! `socketpair` would prove nothing (no `connect` ever happens) and a
 //! server thread inside the test process would prove nothing (same pid).
-//! It ASSERTS the client's half and merely RECORDS the server's half,
-//! which costs one extra syscall and tells us whether the mechanism works
-//! at all in the case where the interesting direction does not.
+//! It ASSERTS both halves: the client's (the one `authenticate_server`
+//! needs) and the server's own read on its accepted fd, taken while the
+//! client is still connected (the one `server/listen.rs` `admit_peer`
+//! admits a connection by: the client's pid, a nonzero pidversion and
+//! its euid). It also records the server's `getpeereid`.
 //!
 //! # Fact 2 — does closing a pty master reap the child on the slave side?
 //!

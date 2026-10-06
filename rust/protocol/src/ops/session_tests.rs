@@ -106,6 +106,7 @@ mod hello_version_tests {
             role: String::new(),
             instance: None,
             name: None,
+            os_user: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         let back: HelloReq = serde_json::from_str(&json).unwrap();
@@ -142,6 +143,7 @@ mod hello_version_tests {
             role: String::new(),
             instance: None,
             name: Some("fe@host-a".into()),
+            os_user: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(!json.contains("fe_handle"));
@@ -163,6 +165,7 @@ mod hello_version_tests {
             role: "agent".into(),
             instance: Some("i1".into()),
             name: Some("test-host-agent".into()),
+            os_user: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"name\":\"test-host-agent\""));
@@ -171,6 +174,29 @@ mod hello_version_tests {
         assert_eq!(back.host.as_deref(), Some("test-host"));
         assert_eq!(back.role, "agent");
         assert_eq!(back.instance.as_deref(), Some("i1"));
+    }
+
+    #[test]
+    fn hello_os_user_is_absent_when_none_and_read_when_present() {
+        let mut req: HelloReq = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
+        assert_eq!(req.os_user, None);
+        assert!(!serde_json::to_string(&req).unwrap().contains("os_user"));
+        let with: HelloReq = serde_json::from_str(r#"{"client_id":"c","os_user":"uid:7"}"#).unwrap();
+        assert_eq!(with.os_user.as_deref(), Some("uid:7"));
+        req.os_user = Some("uid:7".into());
+        assert!(serde_json::to_string(&req).unwrap().contains(r#""os_user":"uid:7""#));
+    }
+
+    #[test]
+    fn this_process_declares_the_protocol_the_version_and_the_os_account() {
+        let hello = HelloReq::this_process("c6", super::HANDOFF_ROLE, Some("host-a".into())).expect("the OS account is readable");
+        assert_eq!(hello.client_id, "c6");
+        assert_eq!(hello.protocol, crate::PROTOCOL_VERSION);
+        assert_eq!(hello.app_version, crate::app_version());
+        assert_eq!(hello.role, "handoff");
+        assert_eq!(hello.host.as_deref(), Some("host-a"));
+        assert_eq!(hello.os_user, sot_log::identity::os_account::own_account_id());
+        assert!(hello.session_id.is_none() && hello.instance.is_none() && hello.name.is_none() && hello.token.is_none());
     }
 
     #[test]

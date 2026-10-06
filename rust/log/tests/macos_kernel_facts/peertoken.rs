@@ -156,6 +156,11 @@ fn peertoken_client(sock_path: &str) {
         .write_all(format!("{report}\n").as_bytes())
         .expect("client: write report");
     stream.flush().expect("client: flush report");
+    // Hold the connection until the server has read ITS view of us (it writes one byte after its read): a
+    // peer that has already exited has no token to read (`rc=-1 errno=57`), which proves nothing either way.
+    let mut release = [0u8; 1];
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    let _ = stream.read(&mut release);
 }
 
 #[test]
@@ -229,19 +234,21 @@ fn client_fd_reports_the_server_pid_via_local_peertoken() {
         Err(e) => format!("unsupported ({e})"),
     };
 
-    // The cheap half: what the SERVER sees for its client. Recorded, not
-    // asserted — the client's half is the one `authenticate_server` needs.
-    let server_view = read_peer_token(conn.as_raw_fd());
-
     let mut client_report = String::new();
     let read_result = read_line_bounded(&conn, &mut client_report, READ_TIMEOUT);
+    // The client is still connected, waiting for the byte below, so the server's read of its view of the client
+    // is made while the peer exists. Taken before the release, so no path out of this function skips it.
+    let server_view = read_peer_token(conn.as_raw_fd());
+    let server_peereid = read_peereid(conn.as_raw_fd());
+    let _ = (&conn).write_all(b"x");
     let child_status = reap_bounded(&mut child, CHILD_REAP_TIMEOUT);
     let client_report = client_report.trim().to_string();
 
     let summary = format!(
         "\n  server_pid={server_pid} client_pid={client_pid} child={child_status} so_rcvtimeo={rcvtimeo}\
          \n  CLIENT view (its own fd; the peer is the SERVER): {client_report}\
-         \n  SERVER view (its own fd; the peer is the CLIENT): {}",
+         \n  SERVER view (its own fd; the peer is the CLIENT): {}\
+         \n  SERVER getpeereid (rc, uid, gid): {server_peereid:?}",
         describe(&server_view)
     );
     fact(&format!("fact 1 observations:{summary}"));
@@ -292,9 +299,34 @@ fn client_fd_reports_the_server_pid_via_local_peertoken() {
          instead -- a decision for the owner.{summary}"
     );
 
+    // The server's half, the one that admits a connection at accept (`server/listen.rs` `admit_peer`): the token
+    // is the client's whole audit token, so the client's pid in it proves the euid word is the client's too.
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let own_euid = unsafe { libc::geteuid() };
+    assert_eq!(
+        (server_view.rc, server_view.errno), (0, 0),
+        "LOCAL_PEERTOKEN is NOT available to a SERVER on its accepted fd, with the client still connected: \
+         getsockopt returned rc={}, errno={}.{summary}",
+        server_view.rc, server_view.errno,
+    );
+    assert_eq!(
+        server_view.token.val[TOK_PID], client_pid,
+        "the server read its accepted fd and got another pid than its client's ({client_pid}).{summary}"
+    );
+    assert!(
+        server_view.token.val[TOK_PIDVERSION] > 0,
+        "the server's view of its client carries no pidversion.{summary}"
+    );
+    assert_eq!(
+        server_view.token.val[TOK_EUID], own_euid,
+        "the client's euid in the server's token is not ours ({own_euid}); the client is this process's child.{summary}"
+    );
+
     fact(&format!(
         "fact 1 CONFIRMED: a macOS client reading LOCAL_PEERTOKEN on its own fd sees the \
-         server's pid={seen_pid} with pidversion={seen_pidversion}"
+         server's pid={seen_pid} with pidversion={seen_pidversion}; the server reading its accepted fd sees \
+         the client's pid={client_pid} with pidversion={} and euid={own_euid}",
+        server_view.token.val[TOK_PIDVERSION]
     ));
 }
 

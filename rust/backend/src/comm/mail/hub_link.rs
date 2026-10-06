@@ -147,18 +147,11 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     R: tokio::io::AsyncBufRead + Unpin,
 {
+    // One-shot roles are never read-deadline reaped; the link ignores every event but one.
     let hello = HelloReq {
-        client_id: format!("sotd-hub-link-{}", std::process::id()),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some(self_host.to_string()),
-        // One-shot roles are never read-deadline reaped; the link ignores every event but one.
-        role: "cli".to_string(),
-        instance: None,
         name: Some(name.to_string()),
+        ..HelloReq::this_process(format!("sotd-hub-link-{}", std::process::id()), "cli", Some(self_host.to_string()))
+            .map_err(|err| err.to_string())?
     };
     let e = |what: &'static str| move |err: anyhow::Error| format!("{what}: {err}");
     let payload = serde_json::to_value(hello).map_err(|err| err.to_string())?;

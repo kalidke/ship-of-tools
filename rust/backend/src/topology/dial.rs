@@ -1,6 +1,6 @@
 // topology/dial.rs — the one-shot blocking client `sotd topology set` (and
 // `status`'s "cache diverged" line) use to reach a daemon over its
-// already-established endpoint spelling (`unix:`/`tcp:`/`pipe:`/`ssh:`, per
+// already-established endpoint spelling (`unix:`/`pipe:`/`ssh:`, per
 // `topology::endpoint::local_endpoint`/`relay_endpoint`). No new credential: per
 // `op::TOPOLOGY_SET`'s own doc, the dial itself IS the authorisation, so
 // this sends a plain unauthenticated `hello` (role `cli`) the same way any
@@ -16,7 +16,6 @@ use sot_protocol::{codec, Frame, HelloReq, Kind};
 enum Conn {
     #[cfg(unix)]
     Unix(std::os::unix::net::UnixStream),
-    Tcp(std::net::TcpStream),
     #[cfg(windows)]
     Pipe(std::fs::File),
     /// An `ssh:` endpoint's connection IS the spawned child (C2/C3,
@@ -125,10 +124,6 @@ impl Conn {
                 let r = s.try_clone()?;
                 Ok((Box::new(s), Box::new(r), None))
             }
-            Conn::Tcp(s) => {
-                let r = s.try_clone()?;
-                Ok((Box::new(s), Box::new(r), None))
-            }
             #[cfg(windows)]
             Conn::Pipe(f) => {
                 let r = f.try_clone()?;
@@ -182,9 +177,6 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
             return Err(format!("{endpoint}: unix endpoints are POSIX-only"));
         }
     }
-    if let Some(addr) = endpoint.strip_prefix("tcp:") {
-        return std::net::TcpStream::connect(addr).map(Conn::Tcp).map_err(|e| format!("{endpoint}: {e}"));
-    }
     if let Some(p) = endpoint.strip_prefix("pipe:") {
         #[cfg(windows)]
         {
@@ -222,7 +214,7 @@ fn connect(endpoint: &str, sig: &'static crate::lifecycle::child_signal::Signal)
         let child = sig.spawn_std(&mut cmd).map_err(|e| format!("{endpoint}: {e}"))?;
         return Ok(Conn::Bridged(child));
     }
-    Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/tcp:/pipe:/ssh:)"))
+    Err(format!("{endpoint}: unrecognised endpoint spelling (expected unix:/pipe:/ssh:)"))
 }
 
 /// Dial `endpoint`, send a `cli`-role hello declaring `self_host`, then one
@@ -256,7 +248,7 @@ pub(crate) fn dial_and_call_tracked(
     // error path below (round-2 item 3): a refused login otherwise
     // reaches the operator as the generic "no reply to topology.set
     // within 8 frames" -- the daemon looking mute when `ssh` was the
-    // thing that failed. A no-op for unix:/tcp:/pipe: (`guard` is `None`
+    // thing that failed. A no-op for unix:/pipe: (`guard` is `None`
     // there, nothing to fold) and safe to call after every kind of
     // failure: it reads a value the drain thread parked, so no error path
     // can block on a pipe whose other writers this process does not
@@ -270,21 +262,20 @@ pub(crate) fn dial_and_call_tracked(
     };
 
     let hello = HelloReq {
-        client_id: format!("sotd-topology-cli-{}", std::process::id()),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some(self_host.to_string()),
-        role: "cli".to_string(),
-        instance: None,
         name: Some(self_host.to_string()),
+        ..HelloReq::this_process(format!("sotd-topology-cli-{}", std::process::id()), "cli", Some(self_host.to_string()))
+            .map_err(|e| fold(&guard, format!("{endpoint}: {e}")))?
     };
     let hello_payload = serde_json::to_value(hello).map_err(|e| e.to_string())?;
     codec::write_frame_blocking(&mut w, &Frame::req(0, sot_protocol::op::HELLO, hello_payload))
         .map_err(|e| fold(&guard, format!("{endpoint}: hello: {e}")))?;
-    codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
+    let reply = codec::read_frame_blocking(&mut br).map_err(|e| fold(&guard, format!("{endpoint}: hello reply: {e}")))?;
+    // A refused hello closes the connection (ADR 0049 `## User isolation`); say why instead of failing the next op on
+    // the closed link.
+    if let Some(error) = reply.payload.get("error") {
+        let error = error.as_str().map_or_else(|| error.to_string(), str::to_string);
+        return Err(fold(&guard, format!("{endpoint}: hello refused: {error}")));
+    }
 
     const REQ_ID: u64 = 1;
     codec::write_frame_blocking(&mut w, &Frame::req(REQ_ID, req_op, payload))
@@ -524,9 +515,35 @@ pub(crate) mod tests {
         track.cancel(); // after the guard is gone a cancel reaches nothing and must not panic
     }
 
+    /// A daemon that refuses the hello closes the connection; the error is the refusal, not the next op's end of
+    /// file, and it carries the endpoint.
+    #[cfg(unix)]
     #[test]
-    fn unrecognised_scheme_names_all_four_dialable_spellings() {
+    fn a_refused_hello_is_named() {
+        use std::io::{BufRead, Write};
+        let dir = tempfile::Builder::new().prefix("sot-refuse-").permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700)).tempdir_in("/tmp").expect("tempdir");
+        let path = dir.path().join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        let daemon = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().expect("accept");
+            let mut hello = String::new();
+            std::io::BufReader::new(&conn).read_line(&mut hello).expect("read the hello");
+            let refusal = Frame::res(0, sot_protocol::op::HELLO, serde_json::json!({ "error": "no thanks", "code": "os_user_conflict" }));
+            let mut line = serde_json::to_vec(&refusal).unwrap();
+            line.push(b'\n');
+            conn.write_all(&line).expect("write the refusal");
+        });
+        let endpoint = format!("unix:{}", path.display());
+        let err = dial_and_call(&endpoint, "host-a", "topology.set", serde_json::json!({})).expect_err("a refused hello is an error");
+        daemon.join().unwrap();
+        assert_eq!(err, format!("{endpoint}: hello refused: no thanks"));
+    }
+
+    #[test]
+    fn unrecognised_scheme_names_the_dialable_spellings() {
         let err = connect("carrier-pigeon:whatever", crate::lifecycle::child_signal::process()).err().expect("must be an error");
-        assert!(err.contains("unix:/tcp:/pipe:/ssh:"), "error should name all four schemes, got: {err}");
+        assert!(err.contains("unix:/pipe:/ssh:"), "error should name all three schemes, got: {err}");
+        let tcp = connect("tcp:127.0.0.1:1", crate::lifecycle::child_signal::process()).err().expect("a tcp endpoint is not dialable");
+        assert!(tcp.contains("unrecognised endpoint spelling"), "{tcp}");
     }
 }

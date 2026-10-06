@@ -27,7 +27,7 @@
 use std::net::TcpListener as StdTcpListener;
 
 use sot_protocol::topology::ssh_bridge::{LinkGate, SpawnError, SshRecipe};
-use sot_protocol::{codec, op, Frame, ProxyConnectReq};
+use sot_protocol::{codec, op, Frame, HelloReq, ProxyConnectReq, HANDOFF_ROLE};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -142,9 +142,8 @@ where
 
 /// Pipe one browser connection through an ssh child spawned from `recipe`
 /// for `port` (C3 as amended §3): spawn, do the `proxy.connect` handshake
-/// as the child's first bytes — the daemon peeks that op on ANY accepted
-/// connection (`server/conn.rs`), so the frames are byte-identical to the old
-/// tcp-forwarded leg — then splice bytes both ways until either side closes
+/// behind a handoff hello as the child's first bytes (`server/conn.rs`
+/// `hand_off`), then splice bytes both ways until either side closes
 /// (carrying a WebSocket upgrade verbatim). While the host's link is down
 /// (`gate`) no child is spawned and the browser connection closes at once.
 async fn pipe_one(
@@ -155,11 +154,22 @@ async fn pipe_one(
     token: Option<&str>,
 ) -> anyhow::Result<Answer> {
     #[allow(clippy::disallowed_methods, reason = "the window's page-proxy ssh, owned by the window")]
-    let mut child = match gate.spawn_async(recipe) {
+    let child = match gate.spawn_async(recipe) {
         Ok(child) => child,
         Err(SpawnError::LinkDown) => return Ok(Answer::LinkDown),
         Err(e) => return Err(anyhow::Error::new(e).context(format!("spawn ssh {recipe}"))),
     };
+    pipe_child(child, browser, port, token).await
+}
+
+/// The rest of [`pipe_one`] over a spawned child (an ssh login, or in a test a stand-in): the handshake, the splice,
+/// and, when it fails, the child's last stderr line after the error's own words.
+async fn pipe_child(
+    mut child: tokio::process::Child,
+    browser: tokio::net::TcpStream,
+    port: u16,
+    token: Option<&str>,
+) -> anyhow::Result<Answer> {
     let d_wr = child.stdin.take().expect("spawned with a piped stdin");
     let d_rd = child.stdout.take().expect("spawned with a piped stdout");
     let stderr = child.stderr.take().expect("spawned with a piped stderr");
@@ -174,14 +184,15 @@ async fn pipe_one(
     let mut d_buf = BufReader::new(d_rd);
     let result = pipe_one_over(&mut d_wr, &mut d_buf, browser, port, token).await;
     // `child` drops here (`kill_on_drop`), ending this connection's ssh
-    // login. The child's last stderr line is the diagnosis when it died
-    // before or during the splice — beats a generic broken-pipe message.
-    if result.is_err() {
-        if let Some(line) = sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
-            return Err(anyhow::anyhow!(line));
-        }
+    // login. The child's last stderr line is added after the error's own words when it died
+    // before or during the splice: the daemon's answer (a refused hello) stays first.
+    match result {
+        Err(e) => match sot_protocol::topology::ssh_bridge::last_stderr_after_failure(&last_stderr).await {
+            Some(line) => Err(anyhow::anyhow!("{e:#}: {line}")),
+            None => Err(e),
+        },
+        ok => ok,
     }
-    result
 }
 
 async fn pipe_one_over<W, R>(
@@ -199,10 +210,20 @@ where
         port,
         token: token.map(|s| s.to_string()),
     };
-    let frame = Frame::req(1, op::PROXY_CONNECT, serde_json::to_value(&req)?);
-    codec::write_frame(d_wr, &frame, None).await?;
+    // The handoff hello (ADR 0049 `## User isolation`) and `proxy.connect` go out in one write, so the hello costs
+    // no round trip; the two replies come back through the one reader.
+    let hello = HelloReq::this_process("sot-fe-proxy", HANDOFF_ROLE, Some(crate::net::identity::frontend_identity().host.clone()))?;
+    let mut both = Vec::new();
+    codec::write_frame(&mut both, &Frame::req(1, op::HELLO, serde_json::to_value(&hello)?), None).await?;
+    codec::write_frame(&mut both, &Frame::req(2, op::PROXY_CONNECT, serde_json::to_value(&req)?), None).await?;
+    d_wr.write_all(&both).await?;
     d_wr.flush().await?;
 
+    let (hello_res, _blob) = codec::read_frame(d_buf).await?;
+    if hello_res.payload.get("error").is_some() {
+        let code = hello_res.payload.get("code").and_then(|v| v.as_str()).unwrap_or("error");
+        anyhow::bail!("daemon refused the hello for port {port}: {code}");
+    }
     let (res, _blob) = codec::read_frame(d_buf).await?;
     if res.payload.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         let code = res
@@ -391,6 +412,16 @@ mod tests {
                     let (d_rd, mut d_wr) = tokio::io::split(daemon);
                     tokio::spawn(async move {
                         let mut d_buf = tokio::io::BufReader::new(d_rd);
+                        // The daemon's admission (ADR 0049 `## User isolation`): a handoff hello first, else
+                        // `unauthenticated` and the end.
+                        let (hello, _) = codec::read_frame(&mut d_buf).await.unwrap();
+                        if hello.op != op::HELLO || hello.payload["role"] != "handoff" {
+                            let refusal = serde_json::json!({ "error": "send a hello first", "code": "unauthenticated" });
+                            codec::write_frame(&mut d_wr, &Frame::res(hello.id, &hello.op, refusal), None).await.unwrap();
+                            return;
+                        }
+                        let accepted = serde_json::json!({ "session_id": "s", "revision": 0, "snapshot_pending": false });
+                        codec::write_frame(&mut d_wr, &Frame::res(hello.id, op::HELLO, accepted), None).await.unwrap();
                         let (req, _) = codec::read_frame(&mut d_buf).await.unwrap();
                         assert_eq!(req.op, op::PROXY_CONNECT);
                         let payload = if serving.load(SeqCst) {
@@ -478,5 +509,29 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    /// A refused hello keeps the daemon's words first and takes the ssh login's last stderr line after them, never the
+    /// line alone (BLOCKER 2 of review round 1). The login is `sh`, which writes the line and refuses the hello.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_hello_keeps_its_words_before_the_ssh_line() {
+        use sot_protocol::{op, Frame};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let (browser, _) = listener.accept().await.unwrap();
+        let refusal = Frame::res(1, op::HELLO, serde_json::json!({ "error": "no thanks", "code": "os_user_conflict" }));
+        let child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("echo 'a line ssh wrote to stderr' >&2; read a; read b; printf '%s\\n' \"$REFUSAL\"")
+            .env("REFUSAL", serde_json::to_string(&refusal).unwrap())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let err = super::pipe_child(child, browser, port, None).await.map(|_| ()).unwrap_err();
+        assert_eq!(err.to_string(), format!("daemon refused the hello for port {port}: os_user_conflict: a line ssh wrote to stderr"));
     }
 }

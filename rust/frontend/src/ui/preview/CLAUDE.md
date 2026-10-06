@@ -13,7 +13,7 @@ PNG and SVG bitmaps as wgpu quads, and the in-pane editor's buffer. Part of fe-u
 - `image/`: image previews (PNG decode, SVG rasterization).
 - `markdown/`: markdown and source text shaped by cosmic-text, with tree-sitter highlighting.
 - `editor/`: in-pane editing.
-- `replies.rs`: preview, preview.changed, concept, browser-open and protocol-mismatch replies
+- `replies.rs`: preview, preview.changed, concept, browser-open and refused-hello replies
 - `layout.rs`: the pane's pixel layout for one frame (`State::preview_shows`, `layout_figure`, `layout_markdown`,
   `layout_concept`, `clamp_preview_scroll`).
 

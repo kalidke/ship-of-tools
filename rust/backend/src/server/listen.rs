@@ -2,22 +2,17 @@
 
 use super::*;
 use super::conn::handle_connection;
-use sot_log::identity::challenge::{PeerAuthOutcome, PeerAuthenticated};
+use sot_log::identity::challenge::PeerAuthenticated;
 
-use interprocess::local_socket::{
-    tokio::{prelude::*, Stream as LocalStream},
-    GenericFilePath, ListenerOptions,
-};
-// Session-pipe hardening fix: on Windows the local-socket name above is a
-// named pipe, and `interprocess` leaves an unset security descriptor at its
-// platform default (`Everyone`/`ANONYMOUS LOGON` read) unless one is
-// supplied through this extension trait — see `run_local`'s
-// `session_pipe_security_descriptor`.
+use interprocess::local_socket::tokio::{prelude::*, Stream as LocalStream};
+#[cfg(unix)]
+use interprocess::local_socket::{GenericFilePath, ListenerOptions};
+// Session-pipe hardening fix: on Windows `interprocess` leaves an unset
+// security descriptor at its platform default (`Everyone`/`ANONYMOUS LOGON`
+// read), so `bind_session` gives the pipe `session_pipe_security_descriptor`,
+// built with these.
 #[cfg(windows)]
-use interprocess::os::windows::{
-    local_socket::ListenerOptionsExt,
-    security_descriptor::{AsSecurityDescriptorExt, BorrowedSecurityDescriptor},
-};
+use interprocess::os::windows::security_descriptor::{AsSecurityDescriptorExt, BorrowedSecurityDescriptor};
 
 /// `SOT_TEST_DAEMON_LOCK_WAIT_MS` overrides [`sot_protocol::ops::lease::DAEMON_LOCK_WAIT`]
 /// for tests — the same `OnceLock` convention as [`ping_read_deadline`].
@@ -137,9 +132,9 @@ pub(crate) fn refuse_live_socket(path: &std::path::Path) -> Result<()> {
 /// access, no `OI`/`CI` inheritance — built from `sot_log::
 /// owner_protected_pipe_descriptor` (the SAME SDDL `lane/pipe_win/` already
 /// uses for the voyage/supervisor pipes) rather than a second copy of that
-/// string. `interprocess`'s own `ListenerOptions` has no ACL-building of
-/// its own to reuse; `ListenerOptionsExt::security_descriptor` only takes
-/// its crate's own `SecurityDescriptor` type, so this borrows the raw
+/// string. `interprocess` has no ACL-building of its own to reuse, and
+/// `PipeListenerOptions::security_descriptor` takes only its crate's own
+/// `SecurityDescriptor` type, so this borrows the raw
 /// descriptor `sot_log` built and clones it in (`to_owned_sd`) rather than
 /// hand-rolling a second SDDL string here.
 #[cfg(windows)]
@@ -156,6 +151,41 @@ fn session_pipe_security_descriptor(
         .to_owned_sd()
         .context("clone session pipe security descriptor")?;
     Ok(owned)
+}
+
+/// The session pipe's inbound buffer on Windows: a client's hello and its request, two envelopes of at most the cap
+/// (`codec::MAX_ENVELOPE_BYTES`) each, so a client that writes both before it reads never blocks in its write
+/// (`bind_session`). Its cost: a client of this account may leave up to this much nonpaged pool waiting per connection
+/// until the daemon reads it or closes the pipe.
+#[cfg(windows)]
+const PIPE_INBOUND_BYTES: u32 = 2 * sot_protocol::codec::MAX_ENVELOPE_BYTES as u32;
+
+/// The daemon's one listener, at `path` (ADR 0049 `## User isolation`). On Unix who may connect is decided by the
+/// socket folder's mode, which `run_local` has made private. On Windows it is the pipe's owner-only descriptor, and the
+/// pipe's inbound buffer holds a client's hello and its request, each one envelope at most the cap. After refusing a
+/// hello the daemon reads no more, and interprocess holds the dropped pipe open until the client has read the refusal
+/// (its limbo: `FlushFileBuffers` before the close), so a client that writes its hello and its request before it reads
+/// (comm-pipe-request.ps1) must be able to finish writing without the daemon reading; with the default 512-byte buffer
+/// a request longer than the daemon's read-ahead hung there until the client's own timeout. The local-socket builder
+/// passes no buffer size, so the pipe is built with `PipeListenerOptions`, which it otherwise matches.
+fn bind_session(path: &str) -> Result<interprocess::local_socket::tokio::Listener> {
+    #[cfg(unix)]
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
+    let listener = ListenerOptions::new()
+        .name(path.to_fs_name::<GenericFilePath>().with_context(|| format!("interpret {path:?} as local-socket name"))?)
+        .create_tokio()
+        .with_context(|| format!("bind {path:?}"))?;
+    #[cfg(windows)]
+    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
+    let listener = interprocess::os::windows::named_pipe::PipeListenerOptions::new()
+        .path(path)
+        .security_descriptor(Some(session_pipe_security_descriptor()?))
+        .input_buffer_size_hint(PIPE_INBOUND_BYTES)
+        .create_tokio_duplex::<interprocess::os::windows::named_pipe::pipe_mode::Bytes>()
+        .map(interprocess::os::windows::named_pipe::local_socket::tokio::Listener::from)
+        .map(interprocess::local_socket::tokio::Listener::from)
+        .with_context(|| format!("bind {path:?}"))?;
+    Ok(listener)
 }
 
 pub(super) async fn run_local(
@@ -197,25 +227,7 @@ pub(super) async fn run_local(
     let path_str = socket_path
         .to_str()
         .context("socket path must be valid UTF-8")?;
-    let name = path_str
-        .to_fs_name::<GenericFilePath>()
-        .with_context(|| format!("interpret {path_str:?} as local-socket name"))?;
-    #[allow(unused_mut)]
-    let mut listener_options = ListenerOptions::new().name(name);
-    // Windows only: every legitimate client (frontend, CLI, capsule agents,
-    // the comm bridge) runs as this same OS user, so owner-only full access
-    // is sufficient — same posture `lane/pipe_win/` already gives the
-    // voyage/supervisor pipes, applied here to the session pipe too. Unix
-    // is unaffected: its socket security is the containing directory's mode
-    // (`paths::secure_socket_dir` above), not this builder.
-    #[cfg(windows)]
-    {
-        listener_options = listener_options.security_descriptor(session_pipe_security_descriptor()?);
-    }
-    #[allow(clippy::disallowed_methods, reason = "listener: session socket or pipe: a private folder or an owner-only DACL")]
-    let listener = listener_options
-        .create_tokio()
-        .with_context(|| format!("bind {socket_path:?}"))?;
+    let listener = bind_session(path_str)?;
     tracing::info!(socket = ?socket_path, "listening (local)");
 
     // The accept loop ends when a shutdown begins: shutdown step 1 stops
@@ -228,7 +240,12 @@ pub(super) async fn run_local(
             accepted = accept => accepted.context("accept on sot socket")?,
             () = leases.gone() => break tokio::time::Instant::now(),
         };
-        let peer_identity = crate::server::listen::accepted_peer(&stream);
+        // Admission one: a connection of another account, or of a process the OS cannot name, is dropped before a
+        // byte is read.
+        let Some(peer) = admit_peer(&stream) else {
+            tracing::warn!("refused a connection: its process is not this account's, or could not be read");
+            continue;
+        };
         let le = leases.clone();
         let s = session.clone();
         let mj = mathjax.clone();
@@ -249,7 +266,7 @@ pub(super) async fn run_local(
             let (rx, tx) = stream.split();
             if let Err(e) = handle_connection(
                 rx, tx, s, mj, pl, fm, wa, lb, ws, wse, age, agr, fce, rfe,
-                cl, tps, tpe, peer_identity, le,
+                cl, tps, tpe, peer, le,
             )
             .await
             {
@@ -272,70 +289,114 @@ pub(super) async fn run_local(
     crate::lifecycle::shutdown::run(leases, workspaces, ws_events_tx, decided).await
 }
 
-/// The connecting process, read from the OS at accept, before the stream
-/// is split (1.2). Only Linux checks the uid, because it comes with the
-/// pid there; on macOS the socket directory and on Windows the pipe ACL
-/// already bind the peer to this user. Any OS-call failure is
-/// `Undetermined`.
-pub(crate) fn accepted_peer(stream: &interprocess::local_socket::tokio::Stream) -> PeerAuthOutcome {
+/// Whether the account behind a peer's effective uid is this process's own. A peer whose uid the OS did not give
+/// is not ours.
+#[cfg(unix)]
+fn same_account(peer_euid: Option<u32>, own: u32) -> bool {
+    peer_euid == Some(own)
+}
+
+/// The admission every connection passes first, at accept and before a byte is read (ADR 0049 `## User
+/// isolation`): the connecting process, read from the OS, or `None` when it is not ours or cannot be read. Linux
+/// admits a peer whose `SO_PEERCRED` euid is ours; macOS takes the euid from the same `LOCAL_PEERTOKEN` read that
+/// gives the pid and pidversion; on Windows the pipe's owner-only descriptor has already decided, and the pid is
+/// read here. The pid and creation time ride on for a lease.
+pub(crate) fn admit_peer(stream: &interprocess::local_socket::tokio::Stream) -> Option<PeerAuthenticated> {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
         let interprocess::local_socket::tokio::Stream::UdSocket(s) = stream;
-        match sot_log::identity::challenge_macos::peer_pid_created(s.inner().as_raw_fd()) {
-            Ok((pid, created)) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
-            Err(_) => PeerAuthOutcome::Undetermined,
-        }
+        let (euid, pid, created) = sot_log::identity::challenge_macos::peer_euid_pid_created(s.inner().as_raw_fd()).ok()?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        same_account(Some(euid), unsafe { libc::geteuid() }).then_some(PeerAuthenticated { pid, created })
     }
     #[cfg(any(target_os = "linux", windows))]
     {
         use interprocess::local_socket::traits::StreamCommon as _;
-        let Ok(creds) = stream.peer_creds() else {
-            return PeerAuthOutcome::Undetermined;
-        };
+        let creds = stream.peer_creds().ok()?;
         #[cfg(target_os = "linux")]
-        match creds.euid() {
+        {
             // SAFETY: geteuid has no preconditions and cannot fail.
-            Some(uid) if uid == unsafe { libc::geteuid() } => {}
-            Some(_) => return PeerAuthOutcome::Foreign,
-            None => return PeerAuthOutcome::Undetermined,
+            let own = unsafe { libc::geteuid() };
+            if !same_account(creds.euid(), own) {
+                return None;
+            }
         }
-        let Some(pid) = creds.pid().and_then(|pid| u32::try_from(pid).ok()) else {
-            return PeerAuthOutcome::Undetermined;
-        };
-        match sot_log::identity::challenge::process_created(pid) {
-            Ok(created) => PeerAuthOutcome::Authenticated(PeerAuthenticated { pid, created }),
-            Err(_) => PeerAuthOutcome::Undetermined,
-        }
+        let pid = u32::try_from(creds.pid()?).ok()?;
+        let created = sot_log::identity::challenge::process_created(pid).ok()?;
+        Some(PeerAuthenticated { pid, created })
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = stream;
-        PeerAuthOutcome::Undetermined
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    #[cfg(windows)]
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions};
+
+    /// ADR 0049 `## User isolation`: a connection is admitted only when the OS says its process runs as this
+    /// account; another account's, and a peer the OS did not name, are out.
+    #[cfg(unix)]
+    #[test]
+    fn same_account_table() {
+        for (peer, own, admitted) in [
+            (Some(1000), 1000, true),
+            (Some(0), 0, true),
+            (Some(1001), 1000, false),
+            (Some(0), 1000, false),
+            (Some(1000), 0, false),
+            (None, 1000, false),
+            (None, 0, false),
+        ] {
+            assert_eq!(same_account(peer, own), admitted, "peer {peer:?}, own {own}");
+        }
+    }
+
+    /// This process, dialling its own listener, is admitted with its own pid and creation time (the macOS
+    /// `pidversion`, from the `LOCAL_PEERTOKEN` read the admission is made by).
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[tokio::test]
+    async fn admit_peer_admits_this_process_with_its_pid_and_creation_time() {
+        #[cfg(unix)]
+        let (path, _dir) = {
+            let dir = tempfile::Builder::new().prefix("sot-admit-").tempdir_in("/tmp").expect("socket folder");
+            (dir.path().join("a.sock"), dir)
+        };
+        #[cfg(windows)]
+        let (path, _dir) = (std::path::PathBuf::from(format!(r"\\.\pipe\sot-admit-test-{}", std::process::id())), ());
+        let name = || path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
+        let listener = ListenerOptions::new().name(name()).create_tokio().expect("listen");
+        let (accepted, dialled) = tokio::join!(listener.accept(), LocalStream::connect(name()));
+        let (stream, _client) = (accepted.expect("accept"), dialled.expect("dial"));
+        let peer = admit_peer(&stream).expect("this process is admitted");
+        assert_eq!(peer.pid, std::process::id());
+        #[cfg(target_os = "macos")]
+        let created = u64::from(sot_log::identity::challenge_macos::self_pidversion().expect("own pidversion"));
+        #[cfg(not(target_os = "macos"))]
+        let created = sot_log::identity::challenge::process_created(std::process::id()).expect("own creation time");
+        assert_eq!(peer.created, created);
+    }
 
     /// Twin of `sot-log`'s own
     /// `pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags`
     /// (`rust/log/tests/pipe_win/`) — same technique (`GetSecurityInfo` on
     /// a LIVE handle, round-tripped to SDDL) — but against THIS crate's
-    /// session pipe rather than a voyage/supervisor pipe: proves `run_local`
-    /// actually wires `session_pipe_security_descriptor()` into the
-    /// `interprocess` listener, not merely that the descriptor builds
-    /// correct bytes in isolation. Before this fix the session pipe carried
-    /// the Windows default (`Everyone`/`ANONYMOUS LOGON` read).
+    /// session pipe rather than a voyage/supervisor pipe: proves
+    /// `bind_session`, the listener `run_local` binds, wires
+    /// `session_pipe_security_descriptor()` into the pipe, not merely that
+    /// the descriptor builds correct bytes in isolation. Before this fix the
+    /// session pipe carried the Windows default (`Everyone`/`ANONYMOUS LOGON`
+    /// read).
     #[cfg(windows)]
     #[tokio::test]
     #[allow(clippy::too_many_lines, reason = "one test scenario: the session pipe's security descriptor, checked flag by flag")]
     async fn session_pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
-        use super::session_pipe_security_descriptor;
         use sot_log::host::wide_null;
-        use interprocess::local_socket::tokio::prelude::*;
-        use interprocess::local_socket::{GenericFilePath, ListenerOptions};
-        use interprocess::os::windows::local_socket::ListenerOptionsExt;
         use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::Security::Authorization::{
             ConvertSecurityDescriptorToStringSecurityDescriptorW,
@@ -448,12 +509,7 @@ mod tests {
         }
 
         let name = format!(r"\\.\pipe\sot-test-session-acl-{}", std::process::id());
-        let fs_name = name.as_str().to_fs_name::<GenericFilePath>().unwrap();
-        let listener = ListenerOptions::new()
-            .name(fs_name)
-            .security_descriptor(session_pipe_security_descriptor().unwrap())
-            .create_tokio()
-            .unwrap();
+        let listener = super::bind_session(&name).unwrap();
 
         let wide_name = wide_null(&name);
         let handle = unsafe {

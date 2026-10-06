@@ -41,7 +41,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | umask 077, boot refusals | process rule | server | `rust/backend/src/main.rs` `apply_umask`, `parse_args` |
 | session socket/pipe path rule `<runtime>/sessions/<label>.sock`, `\\.\pipe\sot-<USER>-<label>` | disk rule | topology | `rust/protocol/src/topology/endpoint.rs` `session_socket_path` |
 | local daemon label (`sot`, `local`) | setting | topology | `rust/protocol/src/topology/endpoint.rs` `local_daemon_label`; spelled at several script sites (see two owners) |
-| the bound session socket/pipe, DACL, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `refuse_live_socket`, `session_pipe_security_descriptor` |
+| the bound session socket/pipe, its DACL and inbound buffer, live-socket refusal | disk, endpoint | server | `rust/backend/src/server/listen.rs` `run_local`, `bind_session`, `refuse_live_socket`, `session_pipe_security_descriptor` |
 | `<state>/held.json` | disk | lifecycle | `rust/backend/src/lifecycle/lease.rs` `HeldRecord`, `persist`; name `rust/protocol/src/ops/lease.rs` `HELD_RECORD_FILE` |
 | `<state>/relaunch.request` | disk | distribution | `rust/frontend/src/relaunch.rs` `relaunch_sentinel_path`, `spawn_watcher`; writer `scripts/relaunch-sot.ps1` |
 | `<state>/fe-commands/` | disk | fe-ui | `rust/frontend/src/ui/control/file_channel.rs`; `rust/frontend/src/ui/control/command.rs` |
@@ -158,10 +158,10 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
 | lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/pipe_win/accept.rs` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |
-| `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (shell literal `comm/lib/comm-lib-client.sh` `sot_hello_frame`) |
+| `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, pinned by `comm_lib_hello_speaks_this_protocol`) |
 | product version, `is_release_build` | wire | wire | `rust/protocol/src/version.rs` `app_version`, `is_release_build`; `rust/protocol/build.rs` |
 | IR `TreeNode`, `PreviewPayload`, `BlobDescriptor` | wire | wire | `rust/protocol/src/ir.rs` |
-| `hello` | op | server | `rust/backend/src/server/hello.rs` `handle_hello`, `protocol_gate`, `admit_hello` |
+| `hello` | op | server | `rust/backend/src/server/hello.rs` `handle_hello`, `protocol_gate`, `admit_hello`, `register_hello`; the host account record `rust/backend/src/clients.rs` `admit_account`; every Rust client builds it with `rust/protocol/src/ops/session.rs` `HelloReq::this_process` |
 | `ping` | op | server | `rust/backend/src/server/conn.rs` `handle_ping` |
 | `version.query` | op | server | `rust/backend/src/clients.rs` `handle_version_query` |
 | `fe.presence`; the active frontend | op, state | server | `rust/backend/src/clients.rs` `handle_fe_presence`, `ActiveFrontend`, `resolve_active` |
@@ -169,7 +169,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `FeCommand` meaning and its handling in the window | wire payload | fe-ui | `rust/frontend/src/ui/control/command.rs`; `rust/frontend/src/ui/control/dispatch.rs` |
 | `fe.sessions` | op | server | `rust/backend/src/clients.rs` `handle_fe_sessions`, `declare_sessions` (see two owners) |
 | client roster `by_conn`, `disconnected` | state | server | `rust/backend/src/clients.rs` `Clients`, `ClientGuard`, `disconnected_since` |
-| revision ring, `session_id`, replay at hello | state | server | `rust/backend/src/session.rs` `Session`, `bump`, `replay_after`; `rust/backend/src/server/hello.rs` `admit_hello` |
+| revision ring, `session_id`, replay at hello | state | server | `rust/backend/src/session.rs` `Session`, `bump`, `replay_after`; `rust/backend/src/server/hello.rs` `handle_hello` |
 | revision-ring event names `tree.invalidate`, `preview.served`, `preview.scale_set`, `image.cropped`, `concept.written`, `file.written`, `file.deleted`, `dir.created`, `workspace.created`, `workspace.destroyed`, and their `Session::bump` calls | wire event (replay only) | server | `rust/backend/src/session.rs` `bump`; bumps `rust/backend/src/files/tree_ops.rs`, `rust/backend/src/files/io_ops.rs`, `rust/backend/src/files/concept_ops.rs`, `rust/backend/src/files/preview/mod.rs`, `rust/backend/src/files/preview/scale.rs`, `rust/backend/src/files/preview/crop.rs`, `rust/backend/src/rows/ops/create.rs`, `rust/backend/src/rows/ops/destroy.rs` |
 | `fe.lease`, `fe.leaving`, `fe.notice_seen` | op | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `hold`, `depart`, `notice_seen`; `rust/frontend/src/lease.rs` `Leases`, `Leaving` |
 | lease timings `SHUTDOWN_BOUND`, `LAUNCH_WAIT`, `DAEMON_LOCK_WAIT`, ack waits | setting | lifecycle | `rust/protocol/src/ops/lease.rs` `SHUTDOWN_BOUND`, `LAUNCH_WAIT`, `DAEMON_LOCK_WAIT`, `CLOSE_ACK_WAIT` |
@@ -306,7 +306,6 @@ user or another process sees.
 | Liveness judged in shell and in Rust on one registry fact (`last_seen`, stamped by the session and by the daemon running its row); a third route with `NOT CONFIRMED` | messaging | `comm/lib/comm-lib-registry.sh` `sot_heartbeat_fresh`; `rust/backend/src/comm/mail/filer.rs` `heartbeat_fresh`; `comm/mail/comm-relay.sh` | One rule on one fact: the shell twin stays, pinned by `heartbeat_agrees_with_the_shell`; the not-mine leg goes with B2 | pure (a test) |
 | "Unread" decided twice | messaging | `rust/backend/src/comm/wake/unread.rs` `scan`; `comm/lib/comm-lib-inbox.sh` `sot_unread` | One rule in each language, the hook counts through `sot_unread`; pinned by `unread_agrees_with_the_shell` on every line a writer emits | pure (a test) |
 | Inbox lock and append, cursor, line hash, registry read and lock in shell and Rust | messaging | `comm/lib/comm-lib-inbox.sh` `sot_inbox_append`, `sot_cursor_offset`, `sot_line_hash`; `rust/backend/src/comm/mail/inbox.rs` `append_line`; `rust/backend/src/comm/wake/unread.rs` `line_hash`, `cursor_offset`; `comm/lib/comm-lib-registry-lock.sh` `with_lock`; `rust/backend/src/comm/registry/lock.rs` `acquire` | Kept twins while both languages write; one parity test per pair | pure (tests) |
-| Hello literal `"protocol"` in the shell client against `PROTOCOL_VERSION` | wire | `comm/lib/comm-lib-client.sh` `sot_hello_frame`; `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` | Pinned by a test | pure (a test) |
 | "This computer's daemon" ensured twice, with the labels `sot` and `local` spelled at several sites; topology owns `local_daemon_label` | distribution | `scripts/lib/sot-daemon.sh` `sot_daemon_ensure`; `scripts/sot-local-daemon.ps1`; `scripts/launch-sot.ps1`; `scripts/restart-backend.sh`; `deploy/sotd.service`; `rust/protocol/src/topology/endpoint.rs` `local_daemon_label` | `sotd` defaults to the label; the scripts stop spelling it | behaviour |
 | `install.json` written by two writers in two shapes | distribution | `scripts/install.sh`; `scripts/install-manifest.ps1`; `rust/updater/src/manifest.rs` `InstallManifest` | One writer, one schema | behaviour |
 | Apply transaction in two languages | distribution | `scripts/sot-apply.sh`; `scripts/sot-apply.ps1` | One apply in Rust, one crash-loop rule | behaviour |
@@ -319,7 +318,6 @@ user or another process sees.
 | Folder trust written two ways | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`; `agents/codex/bin/ccx` | `ccx`'s append is deleted where the bypass flag answers the prompt | behaviour |
 | Row creation and removal announced twice: ring entries and the live bus | rows | `rust/backend/src/rows/ops/create.rs`; `rust/backend/src/rows/ops/destroy.rs`; `rust/backend/src/rows/mod.rs` `WorkspaceChanged` | `workspace.changed` is the one announcement | behaviour |
 | Skill copies | agents | `.claude/skills/sot-setup/SKILL.md`; `agents/claude/sot-setup/SKILL.md`; `.claude/skills/sot-statusline-setup/statusline.sh`; `agents/claude/sot-statusline-setup/statusline.sh` | The `.claude` copies are deleted | pure |
-| cli-role hello written twice | topology | `rust/backend/src/comm/mail/hub_link.rs` `link_once`; `rust/backend/src/topology/dial.rs` `connect` | One builder in the protocol crate | pure |
 | Annotation header parsed twice | files | `rust/backend/src/files/concept.rs` `read_synced_against`; `rust/frontend/src/ui/preview/concept.rs` `split_frontmatter`, `strip_frontmatter` | One parser in the protocol crate | behaviour |
 | cgroup kill written twice | rows | `rust/log/src/claude.rs`; `rust/backend/src/rows/spawn/row_scope.rs` `end` | `claude.rs` goes with the SDK producer's fate | behaviour |
 | Video extensions written three times | sidecars | `rust/backend/src/pages/video.rs` `VIDEO_EXTS`; `rust/backend/src/files/preview/mod.rs`; `julia/plugins/video-file/src/ShipToolsVideoFile.jl` | One const now; plugin-declared bounds later | pure (Rust const) |

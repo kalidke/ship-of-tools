@@ -23,7 +23,7 @@ pub use ops::{
     FeCommandSendRes,
     FePresenceReq, FePresenceRes, FeSessionsReq, FeSessionsRes, FileChunk, FileDeleteReq, FileDeleteRes, FileDownloadReq,
     FileReadReq, FileReadRes,
-    FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HelloReq, HelloRes,
+    FileUploadAck, FileUploadReq, FileWriteReq, FileWriteRes, GpuSample, HANDOFF_ROLE, HelloReq, HelloRes,
     HostLatest, HostSeries, ImageCropReq, ImageCropRes, KernelRequestReq, LaneConnectReq,
     LaneConnectRes, MathRenderReq, MathRenderRes, MonitorHistoryReq, MonitorHistoryRes,
     MonitorSample, MonitorSubscribeReq,
@@ -48,7 +48,11 @@ pub use topology::endpoint::{current_uid, local_daemon_label, runtime_sot_dir, s
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+/// The wire protocol a hello must speak; the daemon's gate refuses any other with `protocol_mismatch`. 3 (ADR
+/// 0049 `## User isolation`): every hello declares the host and the OS account it runs as, and a connection
+/// that becomes a pipe or a lease says so in its hello. Every pre-0.6.6 client speaks 2 and so meets the gate.
+/// The shell client's hello carries the same number by hand; `comm_lib_hello_speaks_this_protocol` pins the two.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 mod version;
 pub use version::{app_version, is_release_build, version_line};
@@ -117,5 +121,76 @@ impl Frame {
     pub fn with_rev(mut self, r: u64) -> Self {
         self.rev = Some(r);
         self
+    }
+}
+
+#[cfg(test)]
+mod client_wire_tests {
+    use std::process::Command;
+
+    /// The bash a shell client runs under: Git Bash on Windows, `bash` elsewhere. `None` only where Git Bash is
+    /// missing and no CI is running; in CI a missing bash fails the test.
+    fn bash() -> Option<std::path::PathBuf> {
+        if !cfg!(windows) {
+            return Some("bash".into());
+        }
+        let found = std::env::var_os("ProgramFiles")
+            .map(|p| std::path::PathBuf::from(p).join("Git").join("bin").join("bash.exe"))
+            .filter(|p| p.exists());
+        assert!(found.is_some() || std::env::var_os("CI").is_none(), "CI has no Git Bash at %ProgramFiles%\\Git\\bin\\bash.exe");
+        found
+    }
+
+    /// The shell client builds its hello by hand, so its `"protocol":N` cannot follow `PROTOCOL_VERSION` on its
+    /// own; this pins the two together, and pins that the hello declares the host and the OS account.
+    #[test]
+    fn comm_lib_hello_speaks_this_protocol() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/lib/comm-lib-client.sh");
+        let lib = std::fs::read_to_string(path).expect("read comm-lib-client.sh");
+        let hellos: Vec<&str> =
+            lib.lines().filter(|l| l.contains("printf") && l.contains(r#""op":"hello""#)).collect();
+        assert_eq!(hellos.len(), 1, "comm-lib-client.sh builds exactly one hello: {hellos:?}");
+        let n: String = hellos[0]
+            .split(r#""protocol":"#)
+            .nth(1)
+            .expect("the hello carries a protocol field")
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        assert_eq!(n, super::PROTOCOL_VERSION.to_string(), "the shell client's hello: {}", hellos[0]);
+        for field in [r#""host":%s"#, r#""os_user":%s"#] {
+            assert!(hellos[0].contains(field), "the shell client's hello declares {field}: {}", hellos[0]);
+        }
+    }
+
+    /// ADR 0049 `## User isolation`: a hello names the OS account its process runs as, and two accounts on one
+    /// host are told apart by that string, so every client must write the same one. The Rust builders use
+    /// `own_account_id()`; the shell client reads `_sot_os_user`, the launcher's PowerShell the process token's
+    /// user SID. This runs the other two and holds each to the first, on whichever OS runs the test.
+    #[test]
+    fn every_client_declares_the_same_account() {
+        let own = sot_log::identity::os_account::own_account_id().expect("the OS issues this process's account");
+        if let Some(bash) = bash() {
+            let lib = format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
+            let scratch = std::env::temp_dir().join(format!("sot-protocol-os-user-{}", std::process::id()));
+            std::fs::create_dir_all(&scratch).expect("scratch home");
+            let out = Command::new(bash)
+                .args(["-c", &format!(". '{lib}' && _sot_os_user")])
+                .env("HOME", &scratch)
+                .env("SOT_COMM_HOME", scratch.join(".sot-comm"))
+                .output()
+                .expect("run bash");
+            let _ = std::fs::remove_dir_all(&scratch);
+            assert!(out.status.success(), "_sot_os_user failed: {}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), own, "the shell client's account");
+        }
+        #[cfg(windows)]
+        {
+            let out = Command::new("powershell")
+                .args(["-NoProfile", "-Command", "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"])
+                .output()
+                .expect("run powershell");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), own, "the launcher's account");
+        }
     }
 }

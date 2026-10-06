@@ -22,15 +22,14 @@
 //!
 //! # One bounded, cancellable dial+handshake, one stream adapter
 //!
-//! [`LaneStream`] is the ONE adapter every transport (`Tcp`/`Unix`/
-//! `Pipe`) goes through, implementing `sot_log::lane::client::Client`
+//! [`LaneStream`] is the ONE adapter every transport (`Unix`/`Pipe`/
+//! `Bridged`) goes through, implementing `sot_log::lane::client::Client`
 //! directly — [`DaemonLaneClient`] is just `{stream: LaneStream, peer}`,
 //! delegating every `Client` call straight to `stream`. `Unix` reuses
 //! `sot_log::lane::socket_unix::SocketClient` and `Pipe` reuses `sot_log::
 //! pipe_win::PipeClient` verbatim (both already bounded, cancellable
-//! connectors with real `cancel()`s); `Tcp` gets a small local
-//! [`TcpClient`] wrapper matching the same shape. [`DaemonLaneEndpoint::
-//! dial`] then runs in two ABSOLUTE-deadline phases sharing this one
+//! connectors with real `cancel()`s); `Bridged` is the ssh child.
+//! [`DaemonLaneEndpoint::dial`] then runs in two ABSOLUTE-deadline phases sharing this one
 //! adapter: connect (2 s, each transport's own bounded connector — never
 //! a blocking call an external deadline merely gives up ON without
 //! actually stopping), then [`run_handshake`] (a SEPARATE 2 s bound
@@ -56,10 +55,9 @@
 //! pipe. And [`DaemonLaneEndpoint`] itself holds no kernel handle on
 //! that process at all — see its own doc for the trust this implies.
 
-use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
 use sot_log::lane::client::{Client, Endpoint, PeerIdentity};
@@ -70,18 +68,12 @@ use crate::{op, Frame, Kind, LaneConnectReq, LaneConnectRes};
 
 /// How to reach a row's daemon — a local Unix socket / Windows named
 /// pipe (`Local`, matching the platform endpoints' own transport for
-/// this host's daemon), an ssh child (`Ssh`, C3 as amended — the
-/// transport for every OTHER host now that the daemon has no TCP
-/// listener), or the loopback tunnel (`Tcp`, **kept** only as the dial
-/// of `rust/backend/tests/lane_bridge.rs`'s hermetic harness — it opens
-/// no port, since nothing listens on TCP anywhere in the daemon, so a
-/// client-side address shape guards nothing; `lane_dial()`
-/// (`rust/frontend/src/net/hosts.rs`) stops producing it, and it is a 0.6.7
-/// deletion candidate once that harness is ported to `Local`). Carries
-/// no row: the row rides `Endpoint`'s own `lane` argument, named exactly
-/// once — never duplicated onto the dial value itself.
+/// this host's daemon), or an ssh child (`Ssh`, C3 as amended — the
+/// transport for every OTHER host, since the daemon has no TCP listener
+/// and the control plane dials no TCP port, ADR 0049 `## User isolation`).
+/// Carries no row: the row rides `Endpoint`'s own `lane` argument, named
+/// exactly once — never duplicated onto the dial value itself.
 pub enum LaneDial {
-    Tcp(SocketAddr),
     Local(PathBuf),
     /// The recipe and its host's link gate: a down gate makes the dial
     /// fail with `TransportError::LinkDown` and start no ssh.
@@ -126,122 +118,20 @@ impl PeerIdentity for BridgedPeer {
     }
 }
 
-/// The `Tcp` twin of `sot_log::lane::socket_unix::SocketClient`/`pipe_win::
-/// PipeClient`: neither of those exists for a loopback TCP tunnel, so
-/// this is the small adapter that gives `Tcp` the SAME shape — a
-/// `cancelled` flag checked before AND interpreted after every I/O call
-/// (a `shutdown` racing a blocked read/write can otherwise surface as a
-/// generic `ConnectionAborted` instead of `Cancelled`), `cancel()` doing
-/// `shutdown(Both)`.
-///
-/// `shutdown(Both)` alone is not the whole mechanism: on Winsock it does
-/// NOT unblock a `recv` a peer thread already has parked (only closing
-/// the socket does, and closing here would race that thread's own
-/// borrowed `&TcpStream`) — Unix delivers the ordered EOF at once, but a
-/// Windows reader would otherwise hang until the peer itself closes.
-/// [`TcpClient::read`] is bounded instead: the same poll-a-cancel-flag-
-/// between-bounded-waits shape `connect_pipe_path_unchallenged` already
-/// uses for cancelling a dial in flight (B4a), applied here to the
-/// blocking read every platform shares — one mechanism, not a per-OS
-/// branch, and a no-op cost on Unix, where `shutdown` still wins the
-/// race well inside one poll tick.
-struct TcpClient {
-    stream: TcpStream,
-    cancelled: AtomicBool,
-}
-
-/// [`TcpClient::read`]'s poll granularity: small enough that `cancel()`'s
-/// worst-case latency stays far inside every deadline a caller bounds a
-/// read with (the lane handshake's own 2 s `CONNECT_BOUND`; this test
-/// suite's `< 2s` assertion), large enough not to busy-spin the reader
-/// thread while idle.
-const READ_POLL_INTERVAL: Duration = Duration::from_millis(200);
-
-impl TcpClient {
-    /// Sets the read timeout once, at construction, rather than on every
-    /// `read()` call — the poll-and-recheck loop is `read`'s concern, not
-    /// a repeated syscall per byte.
-    fn new(stream: TcpStream) -> Result<Self, TransportError> {
-        stream
-            .set_nodelay(true)
-            .map_err(|source| TransportError::Io { op: "lane nodelay", source })?;
-        stream
-            .set_read_timeout(Some(READ_POLL_INTERVAL))
-            .map_err(|source| TransportError::Io { op: "lane read", source })?;
-        Ok(Self { stream, cancelled: AtomicBool::new(false) })
-    }
-}
-
-impl Client for TcpClient {
-    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(TransportError::Cancelled);
-        }
-        use std::io::Write;
-        (&self.stream).write_all(bytes).map_err(|source| {
-            if self.cancelled.load(Ordering::SeqCst) {
-                TransportError::Cancelled
-            } else {
-                TransportError::Io { op: "lane write", source }
-            }
-        })
-    }
-
-    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        use std::io::Read;
-        loop {
-            if self.cancelled.load(Ordering::SeqCst) {
-                return Err(TransportError::Cancelled);
-            }
-            match (&self.stream).read(buf) {
-                Ok(n) => return Ok(n),
-                // The poll tick expiring with nothing to read — not a
-                // real failure, just another lap to re-check `cancelled`
-                // (`WouldBlock`/`TimedOut`: which one a platform's own
-                // `set_read_timeout` actually surfaces is not portably
-                // specified, so both are treated identically here).
-                Err(source) if matches!(source.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => continue,
-                Err(source) => {
-                    return Err(if self.cancelled.load(Ordering::SeqCst) {
-                        TransportError::Cancelled
-                    } else {
-                        TransportError::Io { op: "lane read", source }
-                    });
-                }
-            }
-        }
-    }
-
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-        // Unblocks a Unix reader at once (ordered EOF); on Windows the
-        // bounded poll loop in `read` above is what actually completes
-        // the cancel — this call still matters there too, since it is
-        // what the poll loop's own `cancelled` check observes.
-        let _ = self.stream.shutdown(std::net::Shutdown::Both);
-    }
-}
-
-/// The `Ssh` twin of `TcpClient`: a spawned `ssh … sotd stdio-bridge`
+/// The `Ssh` dial's client: a spawned `ssh … sotd stdio-bridge`
 /// child whose stdin/stdout carry the lane bridge's own frames.
 /// `ChildStdout`/`ChildStdin` are converted to `File` through `OwnedFd`
 /// (unix) / `OwnedHandle` (windows) at construction, so `read`/
-/// `write_all` go through `&self` exactly as `(&self.stream)` does for
-/// `TcpClient` above.
+/// `write_all` go through `&self`.
 ///
-/// One named difference from `TcpClient`: a pipe has no
-/// `set_read_timeout`, so `READ_POLL_INTERVAL` has no analogue here.
-/// `cancel()` sets the flag and **kills the child**; the kill closes the
-/// child's stdout, which EOFs a parked read on both platforms — the
-/// Winsock objection in `TcpClient`'s own doc ("closing here would race
-/// that thread's own borrowed `&TcpStream`") does not apply, because the
-/// handle closed is the CHILD's, not the stream the reader borrows.
-/// `Drop` kills and waits, so no ssh child outlives its client.
+/// A pipe has no `set_read_timeout`, so `cancel()` sets the flag and
+/// **kills the child**; the kill closes the child's stdout, which EOFs a
+/// parked read on both platforms. `Drop` kills and waits, so no ssh child
+/// outlives its client.
 ///
 /// No new trust claim: `DaemonLaneEndpoint`'s own doc already states
 /// that it holds no kernel handle on the peer and that every identity
-/// claim traces to the daemon's own observation. An ssh child is neither
-/// better nor worse placed than a tcp socket on that point.
+/// claim traces to the daemon's own observation.
 struct BridgedClient {
     child: std::sync::Mutex<std::process::Child>,
     out: std::fs::File,
@@ -325,13 +215,11 @@ impl BridgedClient {
         }
     }
 
-    /// Wraps a raw io error with the child's last stderr line when one
-    /// was captured — that line IS the diagnosis (a dead child's own
-    /// "Permission denied" beats the generic "broken pipe" its closed
-    /// pipe leaves behind).
+    /// The io error, with the child's last stderr line after it when one was captured: a dead child's own "Permission
+    /// denied" explains the generic "broken pipe" its closed pipe leaves behind, and the error keeps its own words.
     fn diagnose(&self, source: std::io::Error) -> std::io::Error {
         match self.poll_last_stderr() {
-            Some(line) => std::io::Error::other(line),
+            Some(line) => std::io::Error::new(source.kind(), format!("{source}: {line}")),
             None => source,
         }
     }
@@ -386,13 +274,11 @@ impl Drop for BridgedClient {
 /// The ONE stream adapter every transport this endpoint dials goes
 /// through — `Unix`/`Pipe` reuse `sot-log`'s own hardened clients
 /// verbatim (real bounded connectors, real `cancel()`s) rather than
-/// reimplementing either; `Tcp`/`Bridged` each needed a wrapper of their
-/// own (`sot-log` has no loopback-TCP client, and no ssh-child client at
-/// all). `DaemonLaneClient` below is nothing more than
+/// reimplementing either; `Bridged` needed a wrapper of its own (`sot-log`
+/// has no ssh-child client). `DaemonLaneClient` below is nothing more than
 /// `{stream: LaneStream, peer}` — every `Client` call delegates straight
 /// through.
 enum LaneStream {
-    Tcp(TcpClient),
     #[cfg(unix)]
     Unix(sot_log::lane::socket_unix::SocketClient),
     #[cfg(windows)]
@@ -403,7 +289,6 @@ enum LaneStream {
 impl Client for LaneStream {
     fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
         match self {
-            LaneStream::Tcp(c) => c.write_all(bytes),
             #[cfg(unix)]
             LaneStream::Unix(c) => c.write_all(bytes),
             #[cfg(windows)]
@@ -413,7 +298,6 @@ impl Client for LaneStream {
     }
     fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
         match self {
-            LaneStream::Tcp(c) => c.read(buf),
             #[cfg(unix)]
             LaneStream::Unix(c) => c.read(buf),
             #[cfg(windows)]
@@ -423,7 +307,6 @@ impl Client for LaneStream {
     }
     fn cancel(&self) {
         match self {
-            LaneStream::Tcp(c) => c.cancel(),
             #[cfg(unix)]
             LaneStream::Unix(c) => c.cancel(),
             #[cfg(windows)]
@@ -533,16 +416,6 @@ fn absent_kind_from_wire(s: Option<&str>) -> std::io::ErrorKind {
     }
 }
 
-/// `true` iff a wire `unauthenticated` refusal is an OLD daemon's ordinary
-/// control-loop auth gate (its "... send a token-valid hello first" text)
-/// answering a `lane.connect` it never recognized as a first-frame op. No
-/// daemon in this tree sends `unauthenticated`. There is no wire `code`
-/// for "predates the bridge", so the daemon's own message text is the only
-/// thing that marks the old gate.
-fn unauthenticated_is_actually_no_bridge(detail: &str) -> bool {
-    detail.contains("token-valid hello")
-}
-
 /// Classify one `lane.connect` reply frame into the daemon's own
 /// `(pid, created)` report, or a typed refusal/uncertainty. Matched
 /// BEFORE any `io::Error` conversion exists to unwrap these into.
@@ -582,16 +455,12 @@ fn classify_reply(frame: Frame) -> Result<(u32, u64), TransportError> {
         // the absence window.
         Some("dial_failed") => Err(TransportError::Unreachable(std::io::Error::other(werr.error))),
         Some("undetermined") => Err(TransportError::Undetermined { via: "bridge", detail: werr.error }),
-        Some("unauthenticated") if unauthenticated_is_actually_no_bridge(&werr.error) => Err(TransportError::Refused {
-            code: "no_bridge".to_string(),
-            detail: format!("a daemon that predates the lane bridge (ADR 0045) refused with its ordinary control-loop gate: {}", werr.error),
-        }),
         Some(code) => Err(TransportError::Refused { code: code.to_string(), detail: werr.error }),
         None => Err(TransportError::Refused { code: "no_bridge".to_string(), detail: werr.error }),
     }
 }
 
-/// `PipeClient`/`SocketClient`/`TcpClient`'s `write_all`/`read` are
+/// `PipeClient`/`SocketClient`/`BridgedClient`'s `write_all`/`read` are
 /// `&self` methods returning `Result<_, TransportError>`
 /// (`sot_log::lane::client::Client`'s own shape), not `std::io::{Read,
 /// Write}` — this is the ONE adapter that lets `write_frame_blocking`/
@@ -614,28 +483,94 @@ impl<'a> std::io::Write for ClientIo<'a> {
     }
 }
 
-/// The ONE deadline helper the handshake shares across all three
-/// transports: write the request, read ONE reply, as a SINGLE operation
-/// bounded by one absolute deadline — not a per-read socket timeout a
-/// trickle of bytes could extend indefinitely, and the write is bounded
-/// by the SAME deadline too (a slow/stalled write is no less a hang than
-/// a slow read). `on_timeout` is `stream.cancel()` — `shutdown(Both)` for
-/// `Tcp`/`Unix`, `PipeClient`'s own OVERLAPPED cancel for `Pipe` — the
-/// SAME mechanism `exchange_identity`'s own wire round trip already uses
-/// for the POST-handshake attach hello, so the handshake and the hello
-/// that immediately follows it are bounded identically.
-fn run_handshake(stream: &LaneStream, req: &Frame, deadline: Instant) -> Result<(u32, u64), TransportError> {
+/// The hello's reply, or why it is none: an `{error, code}` payload is the daemon refusing this client (an older
+/// protocol, an unnamed host or account, a second account on the host), typed `Refused` with the daemon's own code
+/// and message; anything that is not the hello's reply is a daemon that predates the lane bridge.
+fn classify_hello_reply(frame: Frame) -> Result<(), TransportError> {
+    if frame.kind != Kind::Res || frame.op != op::HELLO {
+        return Err(TransportError::Refused {
+            code: "no_bridge".to_string(),
+            detail: format!(
+                "unexpected reply to the hello (op={:?} kind={:?}) — a daemon that predates the lane bridge (ADR 0045), or a foreign wire protocol",
+                frame.op, frame.kind
+            ),
+        });
+    }
+    match serde_json::from_value::<WireError>(frame.payload) {
+        Ok(WireError { error, code, .. }) => Err(TransportError::Refused { code: code.unwrap_or_else(|| "hello_refused".to_string()), detail: error }),
+        Err(_) => Ok(()),
+    }
+}
+
+/// The ONE deadline helper the handshake shares across all
+/// transports: write the hello and the `lane.connect` request in ONE write
+/// (the handoff pipelines, so the hello costs no round trip), read the
+/// hello's reply and then the request's through ONE reader, as a SINGLE
+/// operation bounded by one absolute deadline — not a per-read socket
+/// timeout a trickle of bytes could extend indefinitely, and the write is
+/// bounded by the SAME deadline too (a slow/stalled write is no less a
+/// hang than a slow read). `on_timeout` is `stream.cancel()` —
+/// `shutdown(Both)` for `Unix`, `PipeClient`'s own OVERLAPPED cancel for
+/// `Pipe` — the SAME mechanism `exchange_identity`'s own wire round trip
+/// already uses for the POST-handshake attach hello, so the handshake and
+/// the hello that immediately follows it are bounded identically.
+fn run_handshake(stream: &LaneStream, hello: &Frame, req: &Frame, deadline: Instant) -> Result<(u32, u64), TransportError> {
     let outcome = sot_log::identity::deadline::run_with_deadline(deadline, || stream.cancel(), || -> Result<Frame, TransportError> {
-        let mut io = ClientIo(stream);
-        crate::codec::write_frame_blocking(&mut io, req).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
+        use std::io::Write as _;
+        let unreachable = |e: &dyn std::fmt::Display| TransportError::Unreachable(std::io::Error::other(e.to_string()));
+        let mut both = Vec::new();
+        crate::codec::write_frame_blocking(&mut both, hello).map_err(|e| unreachable(&e))?;
+        crate::codec::write_frame_blocking(&mut both, req).map_err(|e| unreachable(&e))?;
+        ClientIo(stream).write_all(&both).map_err(TransportError::Unreachable)?;
         let mut r = std::io::BufReader::new(ClientIo(stream));
-        crate::codec::read_frame_blocking(&mut r).map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))
+        let hello_reply = read_reply(stream, &mut r)?;
+        classify_hello_reply(hello_reply)?;
+        read_reply(stream, &mut r)
     });
+    // A refused hello and every reply's own classification are the daemon's answer and are returned as it gave them
+    // (BLOCKER 2 of round 1: a stderr line used to replace them). The ssh child's last stderr line is added once: by
+    // `diagnose` to the client's own write or read error, by `read_reply` to a reply that ended early, ran over the cap
+    // or did not parse, and here to the bound.
     match outcome {
         Some(Ok(frame)) => classify_reply(frame),
         Some(Err(e)) => Err(e),
-        None => Err(TransportError::Unreachable(std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"))),
+        None => Err(TransportError::Unreachable(with_ssh_line(
+            stream,
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "lane.connect: handshake timed out"),
+        ))),
     }
+}
+
+/// One reply of the handshake. A read the client failed is its own io error, whose text names the ssh child's line
+/// already (`diagnose`); a read that ended before a whole frame (the child's stdout closed, an over-long or unparsable
+/// line) went through no client error, so the line is added here. The error's whole chain is kept (`{:#}`).
+fn read_reply(stream: &LaneStream, r: &mut std::io::BufReader<ClientIo<'_>>) -> Result<Frame, TransportError> {
+    crate::codec::read_frame_blocking(r).map_err(|e| {
+        let text = std::io::Error::other(format!("{e:#}"));
+        if e.downcast_ref::<std::io::Error>().is_some() {
+            TransportError::Unreachable(text)
+        } else {
+            TransportError::Unreachable(with_ssh_line(stream, text))
+        }
+    })
+}
+
+/// `e`, with the ssh child's last stderr line after it when `stream` is one: a dying child's stdout closes as a clean
+/// `Ok(0)` EOF that the codec turns into its own generic text, so the child's own complaint is the diagnosis to add.
+fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
+    if let LaneStream::Bridged(bridged) = stream {
+        if let Some(line) = bridged.poll_last_stderr() {
+            return std::io::Error::new(e.kind(), format!("{e}: {line}"));
+        }
+    }
+    e
+}
+
+/// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
+/// client that holds the stream and the peer the daemon reported.
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame) -> Result<DaemonLaneClient, TransportError> {
+    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + CONNECT_BOUND)?;
+    Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
 }
 
 impl DaemonLaneEndpoint {
@@ -653,13 +588,12 @@ impl DaemonLaneEndpoint {
             voyage_id,
             token: self.token.clone(),
         };
-        let frame = Frame::req(1, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
+        let hello = crate::HelloReq::this_process("sot-lane-dial", crate::HANDOFF_ROLE, sot_log::host::state_dir::host_name().ok())
+            .map_err(|e| TransportError::Unreachable(std::io::Error::other(e.to_string())))?;
+        let hello = Frame::req(1, op::HELLO, serde_json::to_value(&hello).expect("HelloReq always serializes"));
+        let frame = Frame::req(2, op::LANE_CONNECT, serde_json::to_value(&req).expect("LaneConnectReq always serializes"));
 
         let stream = match &self.dial {
-            LaneDial::Tcp(addr) => {
-                let stream = TcpStream::connect_timeout(addr, CONNECT_BOUND).map_err(TransportError::Unreachable)?;
-                LaneStream::Tcp(TcpClient::new(stream)?)
-            }
             #[cfg(unix)]
             LaneDial::Local(path) => {
                 // `connect_own`: the folder rule (ADR 0049, User
@@ -687,27 +621,7 @@ impl DaemonLaneEndpoint {
             }
         };
 
-        let handshake_deadline = Instant::now() + CONNECT_BOUND;
-        let outcome = run_handshake(&stream, &frame, handshake_deadline);
-        // A dying ssh child's stdout closes as a clean `Ok(0)` EOF, not
-        // an `io::Error` `BridgedClient::read` has anything to wrap — the
-        // codec layer above it turns that EOF into its own generic
-        // parse-failure text before `Client::read`'s error path (the
-        // `diagnose` this same struct otherwise gives `write_all`/`read`)
-        // ever gets a look. This is the one place both paths funnel
-        // through, so it is where the substitution has to happen for the
-        // EOF case: on ANY handshake failure over a `Bridged` stream,
-        // prefer the child's last stderr line over whatever codec text
-        // resulted, matching `write_all`/`read`'s existing rule.
-        if outcome.is_err() {
-            if let LaneStream::Bridged(bridged) = &stream {
-                if let Some(line) = bridged.poll_last_stderr() {
-                    return Err(TransportError::Unreachable(std::io::Error::other(line)));
-                }
-            }
-        }
-        let (pid, created) = outcome?;
-        Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
+        handshake(stream, &hello, &frame)
     }
 }
 

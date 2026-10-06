@@ -4,6 +4,9 @@
 // `payload.blob` field is present, the next `len` bytes — returned together
 // so callers never have to reason about the binary tail separately.
 //
+// `read_envelope` reads the envelope alone, for a reader that must not read a
+// blob it has not admitted.
+//
 // `write_frame` does the inverse: serialize the envelope, append `\n`,
 // optionally append the blob bytes, flush.
 //
@@ -28,9 +31,9 @@ pub const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
 /// failure has no such guarantee and must stay fatal.
 ///
 /// Only the write path produces this. An over-cap *inbound* envelope stays
-/// fatal: `read_frame` has already consumed the line but cannot know whether a
-/// blob it failed to parse a descriptor for is still queued behind it, so the
-/// read stream's position is not trustworthy.
+/// fatal: `read_frame` stops one byte past the cap, partway through the line
+/// and before any blob behind it, so the read stream's position is not
+/// trustworthy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnvelopeTooLarge {
     pub len: usize,
@@ -75,50 +78,46 @@ pub fn unparsed(e: &serde_json::Error, len: usize) -> String {
     format!("{:?} error at line {} column {} | len={len}", e.classify(), e.line(), e.column())
 }
 
-pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
+/// One envelope, read with the cap checked while it is read, then parsed; no blob tail is read. The daemon reads a
+/// connection's first frame this way (a hello carries no blob); every other reader uses `read_frame`.
+pub async fn read_envelope<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<Frame> {
+    // At most the cap and one byte more are read, room for the newline: the cap counts an envelope without its
+    // newline, as the writers do, and a peer that sends no newline is refused there, never read to its end.
     let mut line = Vec::with_capacity(256);
-    let n = r
+    let n = AsyncReadExt::take(&mut *r, MAX_ENVELOPE_BYTES as u64 + 1)
         .read_until(b'\n', &mut line)
         .await
         .context("read envelope")?;
     if n == 0 {
         return Err(anyhow!("eof"));
     }
-    if line.len() > MAX_ENVELOPE_BYTES {
-        return Err(anyhow!(
-            "envelope is {} bytes; cap is {}",
-            line.len(),
-            MAX_ENVELOPE_BYTES
-        ));
-    }
     if line.ends_with(b"\n") {
         line.pop();
     }
-    let frame: Frame = match serde_json::from_slice(&line) {
-        Ok(f) => f,
-        Err(e) => return Err(anyhow!("frame parse failed: {}", unparsed(&e, line.len()))),
+    if line.len() > MAX_ENVELOPE_BYTES {
+        return Err(anyhow!("envelope exceeds {} bytes", MAX_ENVELOPE_BYTES));
+    }
+    serde_json::from_slice(&line).map_err(|e| anyhow!("frame parse failed: {}", unparsed(&e, line.len())))
+}
+
+/// The blob a frame's payload declares (`payload.blob.len`): that many raw bytes follow its envelope on the wire.
+pub fn declared_blob_len(frame: &Frame) -> Option<u64> {
+    frame.payload.as_object().and_then(|m| m.get("blob")).and_then(|b| b.get("len")).and_then(serde_json::Value::as_u64)
+}
+
+pub async fn read_frame<R: AsyncBufRead + Unpin>(r: &mut R) -> Result<(Frame, Option<Vec<u8>>)> {
+    let frame = read_envelope(r).await?;
+    let Some(len) = declared_blob_len(&frame) else {
+        return Ok((frame, None));
     };
-
-    // Codec inspects the payload for a blob descriptor so callers don't need
-    // to special-case ops that carry blobs.
-    let blob_len = frame
-        .payload
-        .as_object()
-        .and_then(|m| m.get("blob"))
-        .and_then(|b| b.get("len"))
-        .and_then(|l| l.as_u64());
-
-    let blob = if let Some(len) = blob_len {
-        let mut buf = vec![0u8; len as usize];
-        AsyncReadExt::read_exact(r, &mut buf)
-            .await
-            .context("read blob")?;
-        Some(buf)
-    } else {
-        None
-    };
-
-    Ok((frame, blob))
+    // The buffer grows only with bytes that arrived, from at most one envelope's size: a declared length is never
+    // memory reserved on the peer's word.
+    let mut blob = Vec::with_capacity(len.min(MAX_ENVELOPE_BYTES as u64) as usize);
+    AsyncReadExt::take(&mut *r, len).read_to_end(&mut blob).await.context("read blob")?;
+    if (blob.len() as u64) < len {
+        return Err(anyhow!("blob ended after {} of {} bytes", blob.len(), len));
+    }
+    Ok((frame, Some(blob)))
 }
 
 /// Convenience: feed an `AsyncRead` (e.g. one half of a tokio Unix socket
@@ -187,15 +186,16 @@ pub fn read_frame_blocking<R: std::io::BufRead>(r: &mut R) -> Result<Frame> {
             ));
         }
     }
+    if line.ends_with(b"\n") {
+        line.pop();
+    }
+    // The cap counts an envelope without its newline, as the writers do.
     if line.len() > MAX_ENVELOPE_BYTES {
         return Err(anyhow!(
             "envelope is {} bytes; cap is {}",
             line.len(),
             MAX_ENVELOPE_BYTES
         ));
-    }
-    if line.ends_with(b"\n") {
-        line.pop();
     }
     let frame: Frame = match serde_json::from_slice(&line) {
         Ok(f) => f,
@@ -375,5 +375,63 @@ mod tests {
             assert!(!e.contains("0123") && !e.contains("video.open") && !e.contains("head="), "{e}");
             assert!(e.contains("len="), "{e}");
         }
+    }
+
+    /// A peer that sends no newline is refused one byte past the cap, never read to its end: the daemon reads a
+    /// connection's first frame before it admits anything (ADR 0049 `## User isolation`), and `read_until` used to take
+    /// the whole line before the check (review round 2, OLD).
+    #[tokio::test]
+    async fn an_envelope_with_no_newline_is_refused_at_the_cap() {
+        struct Counted(std::io::Cursor<Vec<u8>>, std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl tokio::io::AsyncRead for Counted {
+            fn poll_read(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+                buf: &mut tokio::io::ReadBuf<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                let before = buf.filled().len();
+                let polled = tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.0), cx, buf);
+                self.1.fetch_add(buf.filled().len() - before, std::sync::atomic::Ordering::SeqCst);
+                polled
+            }
+        }
+        let taken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let source = Counted(std::io::Cursor::new(vec![b'x'; 3 * MAX_ENVELOPE_BYTES]), taken.clone());
+        let mut r = tokio::io::BufReader::with_capacity(8192, source);
+        let err = read_frame(&mut r).await.expect_err("an envelope with no newline is refused");
+        let taken = taken.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(taken <= MAX_ENVELOPE_BYTES + 1 + 8192, "read {taken} bytes of an envelope with no newline: {err:#}");
+    }
+
+    /// A blob's length is what the peer declares, not what it sends: the buffer grows only with bytes that arrived, so
+    /// a frame that declares a pebibyte and sends ten bytes is refused at its end instead of reserving the pebibyte
+    /// (review round 2, OLD: `vec![0u8; len]` aborted the process on an allocation no machine has).
+    #[tokio::test]
+    async fn a_declared_blob_length_reserves_nothing() {
+        let frame = Frame::req(1, "x", serde_json::json!({ "blob": { "len": 1u64 << 50 } }));
+        let mut wire = serde_json::to_vec(&frame).unwrap();
+        wire.push(b'\n');
+        wire.extend_from_slice(b"ten bytes!");
+        let mut r = tokio::io::BufReader::new(std::io::Cursor::new(wire));
+        let err = read_frame(&mut r).await.expect_err("a blob that ends early is refused");
+        assert!(format!("{err:#}").contains("blob ended after 10 of 1125899906842624 bytes"), "{err:#}");
+    }
+
+    /// The cap counts an envelope without its newline, in the writers and the readers alike: an envelope whose JSON is
+    /// exactly the cap is written and read by both pairs (review round 2, NOTE D: the readers counted the newline and
+    /// refused what the writers had written).
+    #[tokio::test]
+    async fn an_envelope_at_the_cap_is_written_and_read_by_both_pairs() {
+        let mut frame = Frame::req(1, "x", serde_json::json!({ "pad": "" }));
+        let base = serde_json::to_vec(&frame).unwrap().len();
+        frame.payload = serde_json::json!({ "pad": "x".repeat(MAX_ENVELOPE_BYTES - base) });
+        assert_eq!(serde_json::to_vec(&frame).unwrap().len(), MAX_ENVELOPE_BYTES);
+        let mut wire = Vec::new();
+        write_frame(&mut wire, &frame, None).await.expect("the writer takes an envelope at the cap");
+        let mut r = tokio::io::BufReader::new(std::io::Cursor::new(wire));
+        read_frame(&mut r).await.expect("read_frame reads what write_frame wrote");
+        let mut blocking = Vec::new();
+        super::write_frame_blocking(&mut blocking, &frame).expect("the blocking writer takes it too");
+        super::read_frame_blocking(&mut std::io::Cursor::new(blocking)).expect("read_frame_blocking reads it");
     }
 }

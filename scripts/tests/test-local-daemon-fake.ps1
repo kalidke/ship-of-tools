@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_LOG')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -23,6 +23,7 @@ public static class FakeSotd
     static string logPath;
     static object logLock = new object();
     static string outcome = "granted";
+    static string helloRefusal = "";
 
     static void Log(string s)
     {
@@ -50,10 +51,20 @@ public static class FakeSotd
             {
                 sent = true;
                 Log(line);
+                if (line.Contains("\"op\":\"hello\""))
+                {
+                    // The daemon's admission (ADR 0049): a hello is answered accepted, or refused with FAKE_SOTD_HELLO_REFUSAL as its code.
+                    string reply = helloRefusal.Length == 0
+                        ? "{\"session_id\":\"s\",\"revision\":0,\"snapshot_pending\":false}"
+                        : "{\"error\":\"refused\",\"code\":\"" + helloRefusal + "\"}";
+                    byte[] h = new UTF8Encoding(false).GetBytes("{\"v\":3,\"id\":0,\"kind\":\"res\",\"op\":\"hello\",\"payload\":" + reply + "}\n");
+                    srv.Write(h, 0, h.Length);
+                    srv.Flush();
+                }
                 if (line.Contains("\"op\":\"fe.lease\""))
                 {
                     byte[] b = new UTF8Encoding(false).GetBytes(
-                        "{\"v\":2,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
+                        "{\"v\":3,\"id\":1,\"kind\":\"res\",\"op\":\"fe.lease\",\"payload\":{\"outcome\":\"" + outcome + "\"}}\n");
                     srv.Write(b, 0, b.Length);
                     srv.Flush();
                 }
@@ -77,6 +88,8 @@ public static class FakeSotd
         logPath = Environment.GetEnvironmentVariable("FAKE_SOTD_LOG");
         string oc = Environment.GetEnvironmentVariable("FAKE_SOTD_LEASE_OUTCOME");
         if (!string.IsNullOrEmpty(oc)) { outcome = oc; }
+        string hr = Environment.GetEnvironmentVariable("FAKE_SOTD_HELLO_REFUSAL");
+        if (!string.IsNullOrEmpty(hr)) { helloRefusal = hr; }
         int exitAfter = EnvInt("FAKE_SOTD_EXIT_AFTER_MS", -1);
         int bindDelay = EnvInt("FAKE_SOTD_BIND_DELAY_MS", 0);
         if (exitAfter >= 0)
@@ -88,8 +101,14 @@ public static class FakeSotd
         if (bindDelay > 0) { Thread.Sleep(bindDelay); }
         while (true)
         {
+            // 64 KB each way: with the default zero-size buffers a write completes only when the other end reads, so a
+            // client that writes its hello and its request before it reads (the sot-comm pipe transport) deadlocks
+            // against this fake, which answers the hello before it reads the request. It models a daemon's answers,
+            // not its pipe: the real daemon's pipe is pinned against the real daemon in test-local-daemon.ps1 section
+            // 5c.
             NamedPipeServerStream srv = new NamedPipeServerStream(
-                name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte);
+                name, PipeDirection.InOut, NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
+                PipeOptions.None, 65536, 65536);
             srv.WaitForConnection();
             Thread w = new Thread(Serve);
             w.IsBackground = true;
@@ -109,7 +128,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_LOG')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }

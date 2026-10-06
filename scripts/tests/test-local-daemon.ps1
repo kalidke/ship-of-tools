@@ -28,6 +28,7 @@
 # without a build. Section 6 additionally only runs ON CI even when a real
 # sotd.exe IS present -- see its own comment for why.
 # Sections 9-11 and 16 live in test-launcher-leases.ps1.
+# Section 5c's cases (iii)-(viii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
 # LOCALAPPDATA/XDG_STATE_HOME/XDG_CONFIG_HOME at directories under the test
@@ -62,6 +63,8 @@ try {
             (Join-Path $repo 'scripts\sot-freshness.ps1'),
             (Join-Path $repo 'scripts\sot-lease.ps1'),
             (Join-Path $repo 'scripts\shutdown-sot.ps1'),
+            (Join-Path $repo 'agents\comm-pipe-request.ps1'),
+            (Join-Path $repo 'scripts\tests\test-local-daemon-pipe.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon.ps1')
         )) {
         $errs = $null
@@ -217,6 +220,104 @@ try {
 
         } catch { Check '5: section ran' $false $_.Exception.Message }
         try {
+        Write-Host "`n=== 5b. the launcher's lease against a real daemon of its own: its handoff hello is admitted, the lease granted, and its end shuts the daemon down (ADR 0049) ===" -ForegroundColor Cyan
+        # Open-SotLease (scripts/sot-lease.ps1) writes the hello the daemon admits every connection by and the lease
+        # line in one write. This is the launcher's lease against the real admission, which no fake can vouch for. The
+        # daemon is a fresh one on its own pipe (a handover would keep it for its 60 s bound), and the lease's plain end
+        # departs as a Close, which shuts it down.
+        . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
+        $LeaseReplyWaitMs = 5000
+        $HandoverBoundSeconds = 60
+        $global:SotLeases = @()
+        $script:supLines5b = @()
+        function Write-SupLog { param([string]$Message) $script:supLines5b += $Message }
+        $pipe5b = New-TestPipeName
+        $out5b = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5b -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+        Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
+        $streams5b = @(Open-SotLease (Get-PipePath $pipe5b))
+        Check '5b: the real daemon grants the launcher a lease' ($streams5b.Count -eq 1) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
+        foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
+        Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+        Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+        } catch { Check '5b: section ran' $false $_.Exception.Message }
+        try {
+        Write-Host "`n=== 5c. the pipe transport of every sot-comm client against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request, and a request up to the envelope cap is answered, not stalled (ADR 0049) ===" -ForegroundColor Cyan
+        # agents\comm-pipe-request.ps1 matches a reply by its op. A refused hello is a reply to the hello, so the transport
+        # must hand it over (and fail) rather than wait out its bound and report a silent daemon: the caller names the
+        # refusal. (ii) is the same request with an accepted hello, so the transport's own answer path is exercised too.
+        # This daemon closes after refusing, so the transport reads on past a protocol refusal to the end of the
+        # connection, says so on stderr and exits 1; the stderr line is the transport's, not a failure of this section.
+        . (Join-Path $PSScriptRoot '..\sot-lease.ps1')
+        $pipe5c = New-TestPipeName
+        try {
+        $out5c = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5c -ProjectRoot $spacedProjectRoot 6>&1 2>&1
+        Check '5c: the daemon starts' (Wait-Pipe $pipe5c) "pipe never opened; log: $out5c"
+        $sid5c = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $host5c = ConvertTo-SotJsonString (Get-SotHelloHost)
+        $request5c = '{"v":3,"id":1,"kind":"req","op":"version.query","payload":{}}'
+        $old5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":2,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
+        $new5c = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":' + $host5c + ',"os_user":"' + $sid5c + '","role":"cli"}}'
+        $r5c = Invoke-PipeTransport $pipe5c version.query @($old5c, $request5c)
+        Check '5c: the transport ends on its own after a refused hello' (-not $r5c.Hung) "still running after 20 s; stdout: $($r5c.Out -join ' | ') stderr: $($r5c.Err)"
+        $refused5c = $r5c.Out
+        $refusedExit5c = $r5c.Exit
+        Check '5c: a refused hello prints exactly its own reply' ($refused5c.Count -eq 1) "got $($refused5c.Count) lines: $($refused5c -join ' | ')"
+        if ($refused5c.Count -eq 1) {
+            $reply5c = $refused5c[0] | ConvertFrom-Json
+            Check '5c: the reply is the hello refusal, with the daemon''s code' (($reply5c.op -eq 'hello') -and ($reply5c.payload.code -eq 'protocol_mismatch')) "reply was: $($refused5c[0])"
+        }
+        Check '5c: a refused hello exits 1' ($refusedExit5c -eq 1) "got $refusedExit5c"
+        $r5c = Invoke-PipeTransport $pipe5c version.query @($new5c, $request5c)
+        $served5c = $r5c.Out
+        $servedExit5c = $r5c.Exit
+        Check '5c: an accepted hello gets the request answered' ((-not $r5c.Hung) -and ($served5c.Count -eq 1) -and (($served5c[0] | ConvertFrom-Json).op -eq 'version.query')) "hung: $($r5c.Hung) stdout: $($served5c -join ' | ') stderr: $($r5c.Err)"
+        Check '5c: an accepted hello exits 0' ($servedExit5c -eq 0) "got $servedExit5c"
+        . (Join-Path $PSScriptRoot 'test-local-daemon-pipe.ps1')
+        } finally {
+            $stop5c = & $script -Stop -Prefix $p3 -PipeName $pipe5c 6>&1 2>&1
+            Get-DaemonProcs (Get-PipePath $pipe5c) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+
+        } catch { Check '5c: section ran' $false $_.Exception.Message }
+        try {
+        Write-Host "`n=== 5d. a named pipe's inbound buffer is a limit charged while data waits in it, never memory set aside per instance (P18) ===" -ForegroundColor Cyan
+        # Both ends live in this process, so whichever end Windows charges shows in this process's nonpaged pool. The
+        # control first: 1 MiB written into a 2 MiB inbound buffer that nobody reads must complete and must show in the
+        # counter, or the counter cannot see pipe buffers and the section fails instead of passing. Then sixteen more
+        # connected, idle instances must grow it by less than one buffer: a reservation would add 32 MiB.
+        $name5d = New-TestPipeName
+        $self5d = Get-Process -Id $PID
+        $ends5d = @()
+        $held5d = 0
+        try {
+            $self5d.Refresh()
+            $base5d = $self5d.NonpagedSystemMemorySize64
+            for ($i5d = 0; $i5d -lt 17; $i5d++) {
+                $server5d = New-Object System.IO.Pipes.NamedPipeServerStream($name5d, [System.IO.Pipes.PipeDirection]::InOut, 17, [System.IO.Pipes.PipeTransmissionMode]::Byte, [System.IO.Pipes.PipeOptions]::Asynchronous, 2097152, 512)
+                $ends5d += $server5d
+                $accept5d = $server5d.WaitForConnectionAsync()
+                $client5d = New-Object System.IO.Pipes.NamedPipeClientStream('.', $name5d, [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous)
+                $ends5d += $client5d
+                $client5d.Connect(3000)
+                $null = $accept5d.Wait(3000)
+                if ($i5d -eq 0) {
+                    $mib5d = New-Object byte[] 1048576
+                    $wrote5d = $client5d.WriteAsync($mib5d, 0, $mib5d.Length).Wait(5000)
+                    $self5d.Refresh()
+                    $held5d = $self5d.NonpagedSystemMemorySize64 - $base5d
+                    Check '5d: 1 MiB written into a 2 MiB inbound buffer that nobody reads completes' $wrote5d 'the write blocked: the buffer does not hold it'
+                    Check '5d: the waiting 1 MiB shows in this process''s nonpaged pool' ($held5d -ge 524288) "it grew $held5d bytes: this counter cannot see pipe buffers"
+                }
+            }
+            $self5d.Refresh()
+            $idle5d = $self5d.NonpagedSystemMemorySize64 - $base5d - $held5d
+            Check '5d: sixteen more idle instances set no buffer aside' ($idle5d -lt 1048576) "they grew it $idle5d bytes"
+        } finally {
+            foreach ($e in $ends5d) { try { $e.Dispose() } catch { } }
+        }
+        } catch { Check '5d: section ran' $false $_.Exception.Message }
+        try {
         Write-Host "`n=== 6. pipe name comes from 'sotd session-socket-path local', not a hardcoded guess ===" -ForegroundColor Cyan
         # ADR 0042 L2b design C: no -PipeName override here -- the script
         # must resolve $daemonExe itself and query IT for the pipe path,
@@ -370,6 +471,43 @@ try {
         }
         } catch { Check '8c: section ran' $false $_.Exception.Message }
         } catch { Check '8: section ran' $false $_.Exception.Message }
+        try {
+        Write-Host "`n=== 8d. the pipe transport against a daemon that refuses the hello and goes on serving, as an older one does: the protocol refusal is read past, any other ends it (ADR 0049) ===" -ForegroundColor Cyan
+        # The fake answers the hello with FAKE_SOTD_HELLO_REFUSAL as its code and then still answers fe.lease. A refusal
+        # for the protocol is followed by the request's own reply, which decides (exit 0); any other code ends the script
+        # at once (exit 1), the lease reply that would follow never read.
+        $hello8d = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"t-cli","protocol":3,"app_version":"t","host":"t-host","os_user":"t-account","role":"cli"}}'
+        $lease8d = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{}}'
+        foreach ($code8d in @('protocol_mismatch', 'os_user_conflict')) {
+            Clear-FakeEnv
+            $env:FAKE_SOTD_HELLO_REFUSAL = $code8d
+            $fakeLog8d = Join-Path $root "fake8d-$code8d.log"
+            $env:FAKE_SOTD_LOG = $fakeLog8d
+            $pipe8d = New-TestPipeName
+            $fake8d = Start-Process -FilePath $fakeExe -ArgumentList @('--socket', (Get-PipePath $pipe8d)) -WindowStyle Hidden -PassThru
+            try {
+                Check "8d ($code8d): the fake pipe is up" (Wait-Pipe $pipe8d) 'pipe never answered'
+                $r8d = Invoke-PipeTransport $pipe8d fe.lease @($hello8d, $lease8d)
+                $fakeSaw8d = (@(Get-Content -LiteralPath $fakeLog8d -ErrorAction SilentlyContinue) -join ' | ')
+                Check "8d ($code8d): the transport ends on its own" (-not $r8d.Hung) "still running after 20 s; stdout: $($r8d.Out -join ' | ') stderr: $($r8d.Err) fake saw: $fakeSaw8d"
+                $first8d = $null
+                if ($r8d.Out.Count -ge 1) { $first8d = $r8d.Out[0] | ConvertFrom-Json }
+                Check "8d ($code8d): the refused hello's reply is printed first" (($null -ne $first8d) -and ($first8d.op -eq 'hello') -and ($first8d.payload.code -eq $code8d)) "stdout: $($r8d.Out -join ' | ')"
+                if ($code8d -eq 'protocol_mismatch') {
+                    $second8d = $null
+                    if ($r8d.Out.Count -eq 2) { $second8d = $r8d.Out[1] | ConvertFrom-Json }
+                    Check "8d ($code8d): the request's own reply follows, and decides" (($null -ne $second8d) -and ($second8d.op -eq 'fe.lease')) "stdout: $($r8d.Out -join ' | ')"
+                    Check "8d ($code8d): exit 0" ($r8d.Exit -eq 0) "got $($r8d.Exit)"
+                } else {
+                    Check "8d ($code8d): nothing else is printed" ($r8d.Out.Count -eq 1) "stdout: $($r8d.Out -join ' | ')"
+                    Check "8d ($code8d): exit 1" ($r8d.Exit -eq 1) "got $($r8d.Exit)"
+                }
+            } finally {
+                if ($fake8d -and -not $fake8d.HasExited) { Stop-Process -Id $fake8d.Id -Force -ErrorAction SilentlyContinue }
+                Clear-FakeEnv
+            }
+        }
+        } catch { Check '8d: section ran' $false $_.Exception.Message }
     }
 
 try {

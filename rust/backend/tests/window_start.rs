@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sot_protocol::ops::{FeLeaseReq, FeLeaseRes, LeaseOutcome};
-use sot_protocol::op;
+use sot_protocol::{codec, op, Frame};
 use support::{
-    call, connect_and_hello, find_row, poll_for_phase, poll_until, try_connect, try_query_status, Conn, Env, BOUND,
-    TEST_STATE_HOST,
+    call, connect_and_hello, find_row, handoff, poll_for_phase, poll_until, try_connect, try_query_status, Conn, Env,
+    BOUND, TEST_STATE_HOST,
 };
 
 /// `Env::new` sets this process's `SOT_RUNTIME_DIR`, which the test's own
@@ -219,11 +219,13 @@ fn wait_exit(env: &Env, within: Duration) -> Option<std::process::ExitStatus> {
 
 /// A lease held by this test process, as a window holds one.
 async fn lease(env: &Env) -> (Conn, FeLeaseRes) {
-    let stream = poll_until(|| try_connect(&env.socket_path), BOUND, "the daemon's socket").await;
-    let mut conn = tokio::io::BufReader::new(stream);
     let me = sot_log::identity::challenge::self_identity().expect("self identity");
     let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
-    let res = call(&mut conn, 1, op::FE_LEASE, serde_json::to_value(&req).unwrap()).await;
+    let mut conn = handoff(&env.socket_path, &Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap())).await;
+    let (res, _blob) = tokio::time::timeout(BOUND, codec::read_frame(&mut conn))
+        .await
+        .expect("the lease reply did not arrive")
+        .expect("read the lease reply");
     let res: FeLeaseRes = serde_json::from_value(res.payload.clone())
         .unwrap_or_else(|e| panic!("fe.lease reply is not a lease reply ({e}): {:?}", res.payload));
     (conn, res)

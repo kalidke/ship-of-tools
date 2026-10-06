@@ -81,7 +81,7 @@ pub struct QuartoOpenRes {
     pub blob: BlobDescriptor,
 }
 
-/// `proxy.connect` request (ADR 0035) — the FIRST frame on a dedicated
+/// `proxy.connect` request (ADR 0035) — the frame behind a `handoff` hello on a dedicated
 /// proxy connection. `port` is the loopback target on the backend host; the
 /// frame carries no host on purpose (the daemon dials `127.0.0.1` only).
 /// `token` mirrors `HelloReq::token`: ignored by the daemon, kept so older

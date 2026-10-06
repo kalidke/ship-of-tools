@@ -1,20 +1,23 @@
 # rust/backend/src/server: the daemon's one listener (charter)
 
 ## Idea
-One listener per daemon. A connection is admitted once, by the OS peer read at accept, and then by its first frame:
-`proxy.connect` (`handle_proxy_connect`), `lane.connect` (`handle_lane_connect`) and `fe.lease` (the lease code's
-`hold`) leave the control loop for a byte pipe or a lease; anything else is a control session, and its only writer is
-its own loop (`serve_control`). Part of the daemon's server subsystem; the sotd entry point and the roster beside
-this folder serve the same idea.
+One listener per daemon. A connection is admitted twice, each in one place: by the OS peer read at accept
+(`admit_peer`), and by its first frame, which must be a hello the daemon accepts (`admit_hello`: the protocol, the
+declared host and OS account, the host's account record). Until then nothing is served. The hello's role says what the
+connection becomes: `handoff` leaves for a byte pipe or a lease after its reply (`hand_off`: `proxy.connect`
+(`handle_proxy_connect`), `lane.connect` (`handle_lane_connect`) or `fe.lease` (the lease code's `hold`)); every other
+role is a control session at once, and its only writer is its own loop (`serve_control`). Part of the daemon's server
+subsystem; the sotd entry point and the roster beside this folder serve the same idea.
 
 ## Owns
 - `<state>/daemon.lock`: taken by `take_daemon_lock` (which calls `lock_daemon`) at the top of `run`, held for the process's life.
 - The session socket or pipe: `run_local` secures its private directory, refuses a socket a live daemon answers on
-  (`refuse_live_socket`), builds the owner-only pipe descriptor on Windows, accepts, and unlinks at shutdown.
+  (`refuse_live_socket`), binds it (`bind_session`: on Windows the owner-only pipe descriptor and an inbound buffer that
+  holds a client's hello and its request, each at most the envelope cap), accepts, and unlinks at shutdown.
 - The eight buses `run` creates: repl frames, preview changes, workspace events, topology writes, agent messages, agent
   receipts, frontend commands and the monitor tick. Their payloads belong to their owners.
-- Each connection's task and state, in `serve_control`: roster guard, declared host and name, active workspace,
-  monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
+- Each control session's task and state, in `serve_control`: roster guard (control sessions only), declared host and
+  name, active workspace, monitor flag, read deadline, and the off-loop `JoinSet` and semaphore.
 - The op table: the `match` in `dispatch`, which hands each op to its owner's handler (four through the off-loop
   pool) and keeps inline only the arms that touch connection state or must keep request order (`preview.set_scale`),
   and the unknown-op reply.
@@ -26,13 +29,34 @@ this folder serve the same idea.
 - One daemon per state root: `lock_daemon` fails at once when a daemon answers on the socket, and waits up to
   `daemon_lock_wait` for a predecessor that is still shutting down.
 - A socket a live daemon answers on is never unlinked: `refuse_live_socket`, called from `run_local`.
+- A connection whose process is not this account's, or cannot be read, is dropped at accept before a byte is read
+  (`admit_peer`, called from `run_local`; Linux and macOS compare the peer's euid with `same_account`, Windows has the
+  pipe's owner-only descriptor).
+- A connection whose first frame is not a hello that parses and passes `admit_hello` gets one reply (`unauthenticated`,
+  `protocol_mismatch`, `identity_missing` or `os_user_conflict`) and is closed; nothing else is served or sent to it
+  (`handle_connection`). A first frame that declares a blob is refused `unauthenticated` before a byte of its blob is
+  read (`read_envelope`, `parse_first_frame`). A host that has said hello as two OS accounts is refused for either
+  until the daemon restarts (`Clients::admit_account`); connections already open are left alone.
+- Only `admit_hello` makes an `Admitted`, and `serve_control`, `hand_off` and `register_hello` take one, so no path from accept serves a connection whose hello was not admitted.
+- A second hello on a control connection closes it unanswered; a `handoff` connection's next frame is
+  `proxy.connect`, `lane.connect` or `fe.lease`, else `bad_request` and a close (`hand_off`).
+- A connection whose first frame has not arrived within 10 s, or a `handoff` connection whose next frame has not, is closed
+  with nothing sent (`ADMISSION_READ_BOUND`, `handle_connection`, `hand_off`).
 - A connection has one writer. Off-loop jobs hand their reply back over `OutTx` and the loop writes it with
   `write_reply`.
 - A handler `Err` is one `handler_error` frame and the connection stays (`finish_dispatch`); an over-cap envelope
   degrades to an error frame for that request (`write_reply`); only a write failure ends the connection, or a file
   download's read error once its chunks are on the wire (`stream_file_download`).
 - A peer that cannot drain a frame within 10 s plus 1 s per MiB of blob is dropped (`write_frame_to`,
-  `write_deadline`, ADR 0027).
+  `write_deadline`, ADR 0027). No end of a control session
+  owes its peer bytes, nor does a lease whose reply or notice could not be written, nor a `handoff` connection whose
+  next frame failed or did not come: each is closed without waiting for its peer to read (`Abandon`), so on Windows
+  no such peer holds the closes behind it in interprocess's one linger thread. A refusal, a `bad_request`, a lease's
+  last answer and a byte pipe's tail still wait until their peer has read them.
+- On Windows a client may write its hello and its request, each one envelope at most the cap, before it reads: the
+  session pipe's inbound buffer holds both (`bind_session`, `PIPE_INBOUND_BYTES`), so a refusal, which the pipe holds
+  open until the client has read it, never waits on a client still blocked in its own write. The cost: a client of this
+  account may leave up to 2 MiB of nonpaged pool waiting per connection until the daemon reads it or closes the pipe.
 - A pinged `fe` or `bridge` connection silent for 90 s is reaped (the reaper arm in `select_once`,
   `ping_read_deadline`).
 - At most 4 off-loop jobs run per connection, and one queued 10 s is answered with a timeout and never runs
@@ -43,8 +67,8 @@ this folder serve the same idea.
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `proxy.connect`,
 `handle_connection`, `handle_proxy_connect`, `pipe_bidirectional`, `reject`, `lane.connect`, `handle_lane_connect`,
-`fe.lease`, `lease::hold`, `accepted_peer`, `dispatch`, `hello`, `sotd stdio-bridge`, `write_frame_within`,
-`write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::write_frame`, `hello`,
+`fe.lease`, `lease::hold`, `admit_peer`, `dispatch`, `hello`, `admit_hello`, `sotd stdio-bridge`, `write_frame_within`,
+`write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
 `shutdown::run`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,
@@ -58,9 +82,9 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 
 ## Files
 - `mod.rs`: the entry: `run` boots the buses and the roster
-- `hello.rs`: the hello handshake (protocol gate, hello reply and its replay) and the roster entry (`admit_hello`)
-- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the pipe descriptor and the accept loop (`run_local`) and the accept-time peer read (`accepted_peer`)
-- `conn.rs`: one connection: the read-deadline reaper, the first-frame peek (`handle_connection`), the control loop (`serve_control`) and its select (`select_once`)
+- `hello.rs`: the hello: the admission (`parse_first_frame`, `admit_hello`, and `Admitted`, the only proof of it), the reply with its replay (`handle_hello`) and the roster entry (`register_hello`)
+- `listen.rs`: the daemon lock (`take_daemon_lock`, `lock_daemon`), the live-socket refusal, the listener (`bind_session`, with the pipe descriptor and its inbound buffer), the accept loop (`run_local`) and the accept-time admission (`admit_peer`, `same_account`)
+- `conn.rs`: one connection: the read-deadline reaper, its admission at the first frame (`handle_connection`), the handoff to a pipe or a lease (`hand_off`), the control loop (`serve_control`) and its select (`select_once`)
 - `dispatch.rs`: the op table: `dispatch` routes one request to its owner and writes the reply
 - `events.rs`: one `write_*` per bus turning a broadcast item into its evt frame, and `recv_or_pending` for the two buses a connection holds as `Option` (always `Some` in a served connection, `None` only in tests)
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool

@@ -98,9 +98,8 @@ async fn lane_connection_close_does_not_shut_down() {
     // redial come and go.
     let (conn, _) = connect_and_hello(&env.socket_path).await;
     drop(conn);
-    let mut lane = tokio::io::BufReader::new(try_connect(&env.socket_path).await.expect("connect"));
     let f = Frame::req(1, op::LANE_CONNECT, serde_json::json!({ "target": "no-such-row", "lane": "supervisor" }));
-    codec::write_frame(&mut lane, &f, None).await.expect("write lane.connect");
+    let mut lane = handoff(&env.socket_path, &f).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), codec::read_frame(&mut lane)).await;
     drop(lane);
     drop(try_connect(&env.socket_path).await.expect("redial"));
@@ -354,10 +353,9 @@ async fn non_lease_fe_never_decides() {
     let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
 
     async fn refused(env: &Env, me: &sot_log::identity::challenge::ProcessIdentity) {
-        let mut c = tokio::io::BufReader::new(try_connect(&env.socket_path).await.expect("connect"));
         let req = FeLeaseReq { boot: me.boot.clone(), pid: me.pid + 1, created: me.created, token: None };
         let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
-        codec::write_frame(&mut c, &f, None).await.expect("write fe.lease");
+        let mut c = handoff(&env.socket_path, &f).await;
         let (reply, _) = tokio::time::timeout(BOUND, codec::read_frame(&mut c))
             .await
             .expect("the refusal did not arrive")
@@ -398,7 +396,7 @@ async fn fast_reopen_never_reaches_dying_daemon() {
     let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let req = FeLeaseReq { boot: me.boot, pid: me.pid, created: me.created, token: None };
     let f = Frame::req(1, op::FE_LEASE, serde_json::to_value(&req).unwrap());
-    codec::write_frame(&mut c, &f, None).await.expect("write fe.lease");
+    handoff_on(&mut c, &f, &[]).await;
     let reply = tokio::time::timeout(BOUND, codec::read_frame(&mut c))
         .await
         .expect("no answer to the late lease")

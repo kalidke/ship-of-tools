@@ -331,16 +331,8 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     }
 
     let hello = sot_protocol::HelloReq {
-        client_id: "bridge-it".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some(TEST_STATE_HOST.to_string()),
-        role: "fe".to_string(),
-        instance: None,
         name: Some("bridge-it".to_string()),
+        ..sot_protocol::HelloReq::this_process("bridge-it", "fe", Some(TEST_STATE_HOST.to_string())).expect("this process's account")
     };
     // The wire's own framing, written by hand: one JSON envelope and one
     // `\n` (`codec::write_frame`), so nothing async is needed to prove a
@@ -424,7 +416,14 @@ fn lease_through_stdio_bridge_refused() {
     let who = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let req = sot_protocol::ops::FeLeaseReq { boot: who.boot, pid: who.pid, created: who.created, token: None };
     let frame = sot_protocol::Frame::req(1, sot_protocol::op::FE_LEASE, serde_json::to_value(&req).expect("fe.lease serializes"));
-    let mut line = serde_json::to_vec(&frame).expect("frame serializes");
+    // A handoff hello and the lease in one write, as the window writes them through the bridge; the hello's
+    // reply comes first.
+    let hello = sot_protocol::HelloReq::this_process("bridge-it-lease", sot_protocol::HANDOFF_ROLE, Some(TEST_STATE_HOST.to_string()))
+        .expect("this process's account");
+    let hello = sot_protocol::Frame::req(0, sot_protocol::op::HELLO, serde_json::to_value(&hello).expect("hello serializes"));
+    let mut line = serde_json::to_vec(&hello).expect("frame serializes");
+    line.push(b'\n');
+    line.extend_from_slice(&serde_json::to_vec(&frame).expect("frame serializes"));
     line.push(b'\n');
 
     let mut child = spawn_bridge(&[]);
@@ -432,11 +431,14 @@ fn lease_through_stdio_bridge_refused() {
     let mut stdout = std::io::BufReader::new(child.stdout.take().expect("bridge stdout"));
     let (tx, rx) = channel();
     std::thread::spawn(move || {
+        // The hello's reply, then the lease's.
+        let mut hello_reply = Vec::new();
+        let _ = stdout.read_until(b'\n', &mut hello_reply);
         let mut reply = Vec::new();
         let _ = tx.send(stdout.read_until(b'\n', &mut reply).map(|_| reply));
     });
-    stdin.write_all(&line).expect("write fe.lease");
-    stdin.flush().expect("flush fe.lease");
+    stdin.write_all(&line).expect("write the hello and fe.lease");
+    stdin.flush().expect("flush the hello and fe.lease");
     let reply = next(&rx, "the daemon's lease answer");
     let parsed: sot_protocol::Frame = serde_json::from_slice(reply.strip_suffix(b"\n").unwrap_or(&reply)).expect("a frame");
     assert_eq!(parsed.payload["outcome"], "foreign", "a bridged lease must be foreign: {:?}", parsed.payload);

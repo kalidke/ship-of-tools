@@ -15,8 +15,8 @@ fn req(who: &ProcessIdentity) -> FeLeaseReq {
     FeLeaseReq { boot: who.boot.clone(), pid: who.pid, created: who.created, token: None }
 }
 
-fn peer(who: &ProcessIdentity) -> PeerAuthOutcome {
-    PeerAuthOutcome::Authenticated(PeerAuthenticated { pid: who.pid, created: who.created })
+fn peer(who: &ProcessIdentity) -> PeerAuthenticated {
+    PeerAuthenticated { pid: who.pid, created: who.created }
 }
 
 fn empty() -> HeldRecord {
@@ -160,13 +160,11 @@ fn lease_claim_table() {
         edit(&mut r);
         r
     };
-    let cases: Vec<(&str, FeLeaseReq, PeerAuthOutcome, LeaseOutcome, Option<&str>)> = vec![
+    let cases: Vec<(&str, FeLeaseReq, PeerAuthenticated, LeaseOutcome, Option<&str>)> = vec![
         ("equal identity", req(&me), peer(&me), Granted, None),
         ("different pid", edited(|r| r.pid += 1), peer(&me), Foreign, Some("pid mismatch")),
         ("different created", edited(|r| r.created += 1), peer(&me), Foreign, Some("created mismatch")),
         ("different boot, same pid and created", edited(|r| r.boot = "boot-b".into()), peer(&me), Foreign, Some("boot mismatch")),
-        ("foreign peer", req(&me), PeerAuthOutcome::Foreign, Foreign, Some("peer foreign")),
-        ("undetermined peer", req(&me), PeerAuthOutcome::Undetermined, Undetermined, Some("peer undetermined")),
     ];
     let f = fixture(Some(BOOT));
     for (name, r, p, want, why) in &cases {
@@ -181,17 +179,13 @@ fn lease_claim_table() {
     assert_eq!(f.on_disk().unwrap().holders, vec![me.clone()]);
 
     let f = fixture(None);
-    for p in [peer(&me), PeerAuthOutcome::Foreign] {
-        assert_eq!(f.leases.grant(&req(&me), &p).0, Undetermined, "missing daemon boot, {p:?}");
-        assert_eq!(claim(None, &req(&me), &p).err(), Some((Undetermined, "own boot unknown")), "{p:?}");
-    }
+    assert_eq!(f.leases.grant(&req(&me), &peer(&me)).0, Undetermined, "missing daemon boot");
+    assert_eq!(claim(None, &req(&me), &peer(&me)).err(), Some((Undetermined, "own boot unknown")));
     assert_eq!(f.on_disk(), None, "a refusal records nothing");
 
     let f = fixture(Some(BOOT));
     f.leases.begin_close();
-    for p in [peer(&me), PeerAuthOutcome::Undetermined] {
-        assert_eq!(f.leases.grant(&req(&me), &p), (Closing, None), "closing, {p:?}");
-    }
+    assert_eq!(f.leases.grant(&req(&me), &peer(&me)), (Closing, None), "closing");
 }
 
 #[cfg(unix)]

@@ -101,6 +101,7 @@ mod tests {
             ("rust/log/tests/connect_own.rs", "let (dir, path, listener) = listener_in_folder(0o755);", 1),
             ("rust/log/tests/socket_unix/connect.rs", "meta.permissions().mode() & 0o777,", 1),
             ("rust/log/tests/socket_unix/connect.rs", "parent_meta.permissions().mode() & 0o777,", 1),
+            ("rust/protocol/src/topology/lane_client_tests.rs", "std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();", 1),
         ];
         let mut found = Vec::new();
         for (rel, text) in crate::test_scan::rust_sources() {

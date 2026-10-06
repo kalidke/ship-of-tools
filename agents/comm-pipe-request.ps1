@@ -7,34 +7,29 @@
 # script is the whole bridge).
 #
 # Invoked from bash (comm-lib.sh's sot_oneshot_request, comm-relay.sh's
-# nc_send/nc_hold) exactly the way those callers already invoke `nc`: the
-# lines they would have written to a socket are piped to THIS script's
-# stdin instead, never passed on argv (a hello/request line can carry a
-# token or arbitrary message text -- shell-quoting that across a
-# `powershell.exe -Command` boundary is exactly the hazard this file
-# avoids by reading it as data, not code). Only short, identifier-shaped
-# values (a pipe name, an op name, a timeout) are real parameters.
+# nc_send) exactly the way those callers invoke `nc`: the lines they would
+# have written to a socket are piped to THIS script's stdin instead, never
+# passed on argv (a hello/request line can carry a token or arbitrary
+# message text -- shell-quoting that across a `powershell.exe -Command`
+# boundary is exactly the hazard this file avoids by reading it as data,
+# not code). Only short, identifier-shaped values (a pipe name, an op name,
+# a timeout) are real parameters.
 #
-# Two modes:
-#   -Mode Oneshot (default) -- reads exactly two lines from stdin (a hello
-#     frame, then one request frame), writes both into the pipe, then reads
-#     reply lines until one is a `kind:"res"` frame whose `op` equals
-#     -Op (the daemon also broadcasts `kind:"evt"` frames on the same
-#     connection -- those are skipped, never matched), or -TimeoutSec
-#     elapses. Prints exactly that one matching line to stdout and exits 0;
-#     any failure -- a connect timeout, no matching reply, the pipe closing
-#     early -- prints ONE line to stderr and exits nonzero. This mirrors
-#     sot_oneshot_request's own unix:/tcp: arms, which match a reply by its
-#     `op` (not `id`): a request's id and the hello's id can legitimately
-#     collide (both commonly id:1), so op is the only unambiguous
-#     correlation available without changing the wire protocol.
-#   -Mode Hold -- reads exactly one line from stdin (a hello frame), writes
-#     it, then relays EVERY line the pipe sends to stdout verbatim for up
-#     to -TimeoutSec seconds (no op filtering -- the bash side's own
-#     filter_inbound does that, exactly as it does for nc_hold's unix/tcp
-#     arms). There is no unbounded/forever form here on purpose: a
-#     persistent reader would pin this process open and block
-#     update_comm's replace-in-place.
+# It reads exactly two lines from stdin (a hello frame, then one request
+# frame), writes both into the pipe, then reads reply lines until one is a
+# `kind:"res"` frame whose `op` equals -Op (the daemon also broadcasts
+# `kind:"evt"` frames on the same connection -- those are skipped, never
+# matched), or -TimeoutSec elapses. Prints exactly that one matching line
+# to stdout and exits 0; a `kind:"res"` reply to the hello that carries an
+# `error` is printed the same way; the script then exits 1 at once unless
+# the code is `protocol_mismatch`, which an older daemon follows with its
+# answer to the request, so it reads on for that answer (exit 0) or the end
+# (exit 1); any failure -- a connect timeout, no matching reply, the pipe
+# closing early -- prints ONE line to stderr and exits nonzero. This
+# mirrors sot_oneshot_request's own unix: and ssh: arms, which match a reply
+# by its `op` (not `id`): a request's id and the hello's id can
+# legitimately collide (both commonly id:1), so op is the only unambiguous
+# correlation available without changing the wire protocol.
 #
 # Connects with NamedPipeClientStream(".", <name>, InOut) -- the same call
 # scripts/sot-local-daemon.ps1's Test-SotPipeOpen already uses to probe
@@ -57,10 +52,12 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PipeName,
 
-    [ValidateSet('Oneshot', 'Hold')]
+    # Mode: accepted, Oneshot only, for the previous release's comm-relay.sh, which passes it and is published after
+    # this file (comm/bin-folders.txt); nothing in this release passes it. The next release deletes it.
+    [ValidateSet('Oneshot')]
     [string]$Mode = 'Oneshot',
 
-    # Required for Oneshot (the reply-matching key); ignored for Hold.
+    # The reply-matching key; required.
     [string]$Op,
 
     [int]$TimeoutSec = 10,
@@ -70,8 +67,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($Mode -eq 'Oneshot' -and -not $Op) {
-    [Console]::Error.WriteLine("comm-pipe-request: -Op is required in -Mode Oneshot")
+if (-not $Op) {
+    [Console]::Error.WriteLine("comm-pipe-request: -Op is required")
     exit 1
 }
 
@@ -151,57 +148,46 @@ try {
     }
     $writer.WriteLine($helloLine)
 
-    if ($Mode -eq 'Oneshot') {
-        $frameLine = $stdin.ReadLine()
-        if ([string]::IsNullOrEmpty($frameLine)) {
-            [Console]::Error.WriteLine("comm-pipe-request: no request frame on stdin")
+    $frameLine = $stdin.ReadLine()
+    if ([string]::IsNullOrEmpty($frameLine)) {
+        [Console]::Error.WriteLine("comm-pipe-request: no request frame on stdin")
+        exit 1
+    }
+    $writer.WriteLine($frameLine)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ($true) {
+        $remainingMs = [int](($deadline - (Get-Date)).TotalMilliseconds)
+        if ($remainingMs -le 0) {
+            [Console]::Error.WriteLine(
+                "comm-pipe-request: no reply for op '$Op' on pipe '$PipeName' within ${TimeoutSec}s")
             exit 1
         }
-        $writer.WriteLine($frameLine)
-
-        $deadline = (Get-Date).AddSeconds($TimeoutSec)
-        while ($true) {
-            $remainingMs = [int](($deadline - (Get-Date)).TotalMilliseconds)
-            if ($remainingMs -le 0) {
-                [Console]::Error.WriteLine(
-                    "comm-pipe-request: no reply for op '$Op' on pipe '$PipeName' within ${TimeoutSec}s")
-                exit 1
-            }
-            $result = Read-SotPipeLine -Reader $reader -TimeoutMs $remainingMs
-            if ($result.TimedOut) { continue }
-            if ($null -eq $result.Line) {
-                [Console]::Error.WriteLine(
-                    "comm-pipe-request: pipe '$PipeName' closed before a matching reply for op '$Op' arrived")
-                exit 1
-            }
-            $line = $result.Line
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            try {
-                $obj = $line | ConvertFrom-Json
-            } catch {
-                continue   # a garbled/partial line -- keep waiting, never match on it
-            }
-            if ($obj.kind -eq 'res' -and $obj.op -eq $Op) {
-                Write-Output $line
-                exit 0
-            }
-            # kind:"evt" (or a res for some other op, e.g. hello's own
-            # reply) -- not what we asked for; keep reading.
+        $result = Read-SotPipeLine -Reader $reader -TimeoutMs $remainingMs
+        if ($result.TimedOut) { continue }
+        if ($null -eq $result.Line) {
+            [Console]::Error.WriteLine(
+                "comm-pipe-request: pipe '$PipeName' closed before a matching reply for op '$Op' arrived")
+            exit 1
         }
-    } else {
-        # Hold: relay every line verbatim for up to $TimeoutSec seconds.
-        # No request frame is sent -- being connected (post-hello) is
-        # itself the "subscription"; the daemon broadcasts agent.message
-        # frames to every connected, authenticated client.
-        $deadline = (Get-Date).AddSeconds($TimeoutSec)
-        while ($true) {
-            $remainingMs = [int](($deadline - (Get-Date)).TotalMilliseconds)
-            if ($remainingMs -le 0) { exit 0 }
-            $result = Read-SotPipeLine -Reader $reader -TimeoutMs $remainingMs
-            if ($result.TimedOut) { continue }
-            if ($null -eq $result.Line) { exit 0 }   # pipe closed -- done holding
-            Write-Output $result.Line
+        $line = $result.Line
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try {
+            $obj = $line | ConvertFrom-Json
+        } catch {
+            continue   # a garbled/partial line -- keep waiting, never match on it
         }
+        if ($obj.kind -eq 'res' -and $obj.op -eq 'hello' -and $obj.payload.error) {
+            Write-Output $line
+            if ($obj.payload.code -ne 'protocol_mismatch') { exit 1 }
+            continue
+        }
+        if ($obj.kind -eq 'res' -and $obj.op -eq $Op) {
+            Write-Output $line
+            exit 0
+        }
+        # kind:"evt" (or a res for some other op, e.g. hello's own
+        # accepted reply) -- not what we asked for; keep reading.
     }
 } finally {
     if ($client) { $client.Dispose() }

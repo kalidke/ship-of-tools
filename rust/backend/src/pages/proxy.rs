@@ -8,7 +8,7 @@
 //! failure class.
 //!
 //! A proxy connection is DEDICATED: the client opens a fresh daemon-socket
-//! connection and sends `proxy.connect { port }` as its FIRST frame. If the
+//! connection and sends a `handoff` hello and then `proxy.connect { port }`. If the
 //! port is allowed and dials, the daemon answers `{ok:true}` and then pipes
 //! every subsequent byte verbatim in both directions (`copy_bidirectional`)
 //! until either side closes — which is exactly what carries the WebSocket
@@ -149,11 +149,14 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
 /// where `TcpStream::connect` makes one that is: a child process the daemon starts while the connection is open must
 /// not hold it.
 async fn dial_upstream(port: u16) -> std::io::Result<TcpStream> {
-    tokio::net::TcpSocket::new_v4()?.connect(std::net::SocketAddr::from(([127, 0, 0, 1], port))).await
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    #[allow(clippy::disallowed_methods, reason = "the page plane: the daemon's proxy dials a page port it serves on loopback (ADR 0049, User isolation)")]
+    let stream = socket.connect(std::net::SocketAddr::from(([127, 0, 0, 1], port))).await;
+    stream
 }
 
-/// Handle a connection whose first frame was `proxy.connect` (ADR 0035).
-/// `rx` is the buffered reader that already consumed that first frame (any
+/// Handle a connection whose frame behind its `handoff` hello was `proxy.connect` (ADR 0035).
+/// `rx` is the buffered reader that already consumed that frame (any
 /// bytes it buffered past the envelope are preserved — `copy` drains the
 /// BufReader before touching the socket); `tx` is the write half; `frame` is
 /// the parsed handshake frame. Returns when the pipe closes; errors are logged by the

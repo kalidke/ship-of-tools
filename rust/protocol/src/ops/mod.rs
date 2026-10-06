@@ -381,7 +381,7 @@ pub mod op {
     /// flip and brings up the new version. `will_restart` is true only under
     /// a service manager; otherwise the user's next launch completes it.
     pub const UPDATE_APPLY: &str = "update.apply";
-    /// TCP proxy handshake (ADR 0035). Sent as the FIRST frame on a
+    /// TCP proxy handshake (ADR 0035). Sent behind a `handoff` hello on a
     /// DEDICATED daemon-socket connection (never on the multiplexed control
     /// connection): `ProxyConnectReq { port, token? }`. The daemon validates
     /// the port against its served-port allowlist, dials
@@ -393,8 +393,8 @@ pub mod op {
     /// connection closes.
     pub const PROXY_CONNECT: &str = "proxy.connect";
     /// A capsule row's supervisor or voyage lane, piped through the row's
-    /// OWN daemon (ADR 0045 decision 2). Sent as the FIRST frame on a
-    /// DEDICATED connection — the `proxy.connect` peek, never inside the
+    /// OWN daemon (ADR 0045 decision 2). Sent behind a `handoff` hello on a
+    /// DEDICATED connection, like `proxy.connect`, never inside the
     /// connection's request loop: `LaneConnectReq { target, lane,
     /// voyage_id?, token? }`. The daemon resolves `target` (the row's
     /// `session_name`, as `pty.open` addresses it) to a capsule
@@ -482,7 +482,7 @@ pub mod op {
     /// carry.
     pub const TOPOLOGY_CHANGED: &str = "topology.changed";
 
-    /// First frame of a dedicated lease connection: the window claims this
+    /// The frame behind a `handoff` hello on a dedicated lease connection: the window claims this
     /// daemon. Payload [`crate::ops::FeLeaseReq`]; reply [`crate::ops::FeLeaseRes`].
     pub const FE_LEASE: &str = "fe.lease";
     /// Only on a granted lease connection: the window says how it is

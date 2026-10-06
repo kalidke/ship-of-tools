@@ -123,9 +123,16 @@ disallowed-methods = [
   # which leaves it inheritable; tokio's TcpSocket and std do not. Accepted sockets are cleared at accept
   # (serve_own, the accepts group). Two named-pipe constructors of this class are listed once, in the group of their
   # first rule, with a reason naming both: tokio's ServerOptions::create_with_security_attributes_raw under Accepts
-  # and ClientOptions::open_with_security_attributes_raw under Local endpoint dials.
+  # and ClientOptions::open_with_security_attributes_raw under Local endpoint dials. tokio::net::TcpStream::connect is
+  # listed once, in the TCP dials group.
   { path = "tokio::net::TcpListener::bind", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
-  { path = "tokio::net::TcpStream::connect", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
   { path = "tokio::net::UdpSocket::bind", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
   { path = "interprocess::unnamed_pipe::pipe", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
+  # TCP dials (ADR 0049, User isolation): the control plane dials no TCP port; a Rust process reaches a daemon through
+  # its socket or pipe, or an ssh login. The one sanctioned TCP dial is the page plane's: the daemon's proxy reaching a
+  # page port it serves on loopback (`dial_upstream`, rust/backend/src/pages/proxy.rs).
+  { path = "std::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  { path = "std::net::TcpStream::connect_timeout", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation); on Windows mio makes this socket inheritable: dial with tokio's TcpSocket" },
+  { path = "tokio::net::TcpSocket::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
 ]
