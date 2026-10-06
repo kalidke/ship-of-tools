@@ -40,12 +40,12 @@ fn input_continuation<S, P>(
     resolve: impl FnOnce(&mut S) -> (Option<Action>, P), next: impl FnOnce(&mut S, InputRoute<P>),
 ) {
     if synthetic || !pressed { return; }
+    if matches!(logical, Key::Named(NamedKey::Control | NamedKey::Shift |
+        NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) { return; }
     if let Some(keep) = keep {
         next(state, InputRoute::Prompt(quit_prompt_step(keep, logical, repeat)));
         return;
     }
-    if matches!(logical, Key::Named(NamedKey::Control | NamedKey::Shift |
-        NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) { return; }
     let (action, prepared) = resolve(state);
     next(state, InputRoute::Next(action, prepared));
 }
