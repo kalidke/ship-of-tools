@@ -252,49 +252,94 @@ pub(crate) mod unix {
         );
     }
 
-    #[test]
-    fn a_post_create_unwind_cleans_the_partial_std_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        let leader = dir.path().join("leader");
-        let ready = dir.path().join("ready");
-        let program = dir.path().join("unwind-tree");
-        sot_log::test_exec::write_executable(
-            &program,
-            "#!/bin/sh\necho $$ > \"$1\"\n/bin/sh -c 'echo $$ > \"$1\"; exec sleep 600' sh \"$2\" &\nwait\n",
-        );
-        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let hook_ready = ready.clone();
-        *signal.after_create.lock().unwrap() = Some(Box::new(move |_| {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    struct UnwindFixture {
+        dir: tempfile::TempDir,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl UnwindFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            sot_log::test_exec::write_executable(
+                &dir.path().join("unwind-tree"),
+                "#!/bin/sh\n/bin/sh -c 'echo $$ > \"$1\"; while [ ! -e \"$2\" ]; do /bin/sleep 0.02; done' sh \"$1\" \"$2\" &\nwait\n",
+            );
+            Self { dir }
+        }
+
+        fn command(&self) -> std::process::Command {
+            let mut command = std::process::Command::new(self.dir.path().join("unwind-tree"));
+            command.arg(self.dir.path().join("ready")).arg(self.dir.path().join("cleanup"));
+            command
+        }
+
+        fn descendant(pid: u32, ready: &std::path::Path) -> Watched {
             let began = std::time::Instant::now();
-            while std::fs::read_to_string(&hook_ready).map_or(true, |text| text.trim().is_empty()) {
+            let descendant = loop {
+                if let Ok(text) = std::fs::read_to_string(ready) {
+                    if let Ok(pid) = text.trim().parse::<u32>() {
+                        break pid;
+                    }
+                }
                 assert!(began.elapsed() < Duration::from_secs(10), "the partial descendant was not ready");
                 std::thread::sleep(Duration::from_millis(10));
-            }
+            };
+            // SAFETY: query the ready fixture while its unreaped direct leader still owns the group identity.
+            assert_eq!(unsafe { libc::getpgid(descendant as i32) }, pid as i32, "partial descendant escaped its group");
+            Watched::open(descendant)
+        }
+
+        fn cleanup(&self) {
+            std::fs::write(self.dir.path().join("cleanup"), b"done").unwrap();
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    impl Drop for UnwindFixture {
+        fn drop(&mut self) {
+            self.cleanup();
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_post_create_unwind_cleans_the_partial_std_tree() {
+        let fixture = UnwindFixture::new();
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let ready = fixture.dir.path().join("ready");
+        let (sent, watched) = mpsc::channel();
+        *signal.after_create.lock().unwrap() = Some(Box::new(move |pid| {
+            let descendant = UnwindFixture::descendant(pid, &ready);
+            sent.send((pid, descendant)).unwrap();
             panic!("injected post-create unwind");
         }));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut command = std::process::Command::new(program);
-            command.arg(&leader).arg(&ready);
-            signal.spawn_std(&mut command)
-        }));
-        assert!(outcome.is_err(), "the hook did not unwind");
-        let pid: libc::pid_t = std::fs::read_to_string(leader).unwrap().trim().parse().unwrap();
-        // SAFETY: this is our unreaped direct child; WNOWAIT retains its group identity until cleanup finishes.
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| signal.spawn_std(&mut fixture.command())));
+        let (pid, descendant) = watched.recv_timeout(Duration::from_secs(1)).unwrap();
+        let descendant_dead = descendant.dead();
+        // SAFETY: WNOWAIT retains this direct child's group identity if production cleanup did not reap it.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
         let result = unsafe {
             libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
         };
         let reaped = result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD);
         if result == 0 {
-            // SAFETY: waitid confirmed that this direct child has not been reaped; its group identity remains ours.
+            // SAFETY: waitid confirmed our direct child is unreaped, so its group identity is still retained.
             unsafe {
-                libc::killpg(pid, libc::SIGKILL);
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, std::ptr::null_mut(), 0);
+                libc::killpg(pid as i32, libc::SIGKILL);
+                libc::kill(pid as i32, libc::SIGKILL);
+                libc::waitpid(pid as i32, std::ptr::null_mut(), 0);
             }
         }
+        fixture.cleanup();
+        if !descendant_dead {
+            assert!(descendant.dead(), "the retained descendant fixture cleanup failed");
+        }
         fire_result(signal).unwrap();
+        assert!(outcome.is_err(), "the hook did not unwind");
         assert!(reaped, "the post-create unwind left an unregistered partial tree unreaped");
+        assert!(descendant_dead, "the post-create unwind left a partial std descendant alive");
     }
 
     #[test]
@@ -324,29 +369,37 @@ pub(crate) mod unix {
     #[cfg(target_os = "linux")]
     #[test]
     fn a_post_create_unwind_cleans_the_partial_async_tree() {
+        let fixture = UnwindFixture::new();
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let ready = fixture.dir.path().join("ready");
         let (sent, watched) = mpsc::channel();
         *signal.after_create.lock().unwrap() = Some(Box::new(move |pid| {
-            sent.send(Watched::open(pid)).unwrap();
+            let descendant = UnwindFixture::descendant(pid, &ready);
+            sent.send((Watched::open(pid), descendant)).unwrap();
             panic!("injected post-create unwind");
         }));
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             runtime.block_on(async {
-                let mut command = tokio::process::Command::new("sleep");
-                command.arg("600");
+                let mut command = tokio::process::Command::from(fixture.command());
                 signal.spawn(&mut command)
             })
         }));
-        let watched = watched.recv_timeout(Duration::from_secs(1)).unwrap();
-        let dead = watched.dead();
-        if !dead {
-            watched.cleanup();
-            assert!(watched.dead(), "the retained fixture cleanup failed");
+        let (leader, descendant) = watched.recv_timeout(Duration::from_secs(1)).unwrap();
+        let leader_dead = leader.dead();
+        let descendant_dead = descendant.dead();
+        if !leader_dead {
+            leader.cleanup();
+            assert!(leader.dead(), "the retained leader fixture cleanup failed");
+        }
+        fixture.cleanup();
+        if !descendant_dead {
+            assert!(descendant.dead(), "the retained descendant fixture cleanup failed");
         }
         fire_result(signal).unwrap();
         assert!(outcome.is_err(), "the hook did not unwind");
-        assert!(dead, "the post-create unwind left a partial async child alive");
+        assert!(leader_dead, "the post-create unwind left a partial async child alive");
+        assert!(descendant_dead, "the post-create unwind left a partial async descendant alive");
     }
 }
 
@@ -450,6 +503,7 @@ pub(crate) mod windows {
         } else {
             *signal.after_create.lock().unwrap() = Some(hook);
         }
+        let (cleanup, after_requests) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let mut command = std::process::Command::new("powershell");
             command.args(["-NoProfile", "-File"]).arg(program).arg(ready);
@@ -457,18 +511,23 @@ pub(crate) mod windows {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                 runtime.block_on(async {
                     if let Ok(mut child) = signal.spawn(&mut command.into()) {
+                        after_requests.recv_timeout(Duration::from_secs(10)).unwrap();
                         child.kill().await.unwrap();
                     }
                 });
             } else if let Ok(mut child) = signal.spawn_std(&mut command) {
+                after_requests.recv_timeout(Duration::from_secs(10)).unwrap();
                 child.kill().unwrap();
             }
         });
         let (leader, descendant) = arrived.recv_timeout(Duration::from_secs(40)).expect("the start hook never ran");
         let (sent, received) = mpsc::channel();
         let firing = std::thread::spawn(move || {
+            super::super::contain::REQUEST_EVENTS.with(|events| events.borrow_mut().clear());
             fire_result(signal).unwrap();
-            sent.send(()).unwrap();
+            let requests = super::super::contain::REQUEST_EVENTS.with(|events| events.borrow().clone());
+            sent.send(requests).unwrap();
+            let _ = cleanup.send(());
         });
         let began = Instant::now();
         let bypassed = received.recv_timeout(Duration::from_millis(3200)).is_ok();
@@ -476,8 +535,10 @@ pub(crate) mod windows {
         released.wait();
         worker.join().unwrap();
         firing.join().unwrap();
+        let requests = received.recv_timeout(Duration::from_secs(1)).unwrap_or_default();
         let dead = leader.dead() && descendant.as_ref().is_none_or(Watched::dead);
         assert!(!bypassed, "terminal callback ran before the stalled start registered");
+        assert_eq!(requests, ["job"], "fire skipped the checked job request");
         assert!(dead, "the fixture survived the later OS death observation");
         assert!(signal.spawn_std(&mut std::process::Command::new("powershell")).is_err());
     }

@@ -1,7 +1,9 @@
-//! All updater commands use caller policy; raw process starts cannot enter this crate.
+//! Updater command-routing behavior and lexical pins with explicitly documented coverage limits.
 
+/// Pins .output(, .spawn(, .status(, spawn_command(, fork(, execvp(, CreateProcess and posix_spawn( substrings.
+/// It misses starts on lines containing spawner.output(, UFCS starts, libc::system, aliases and other unlisted or differently spaced spellings.
 #[test]
-fn updater_has_no_process_start_primitive() {
+fn updater_process_start_spellings_are_pinned() {
     let mut found = Vec::new();
     for (path, source) in sot_log::test_scan::production_sources() {
         if !path.starts_with("rust/updater/src/") {
@@ -33,8 +35,10 @@ fn updater_has_no_process_start_primitive() {
     );
 }
 
+/// Pins check_release, stage, prepare and prepare.rs matches async signatures to &dyn Spawner, plus the trait text.
+/// It does not discover newly added public spawn-bearing entries or resolve equivalent signature spellings.
 #[test]
-fn every_public_updater_process_entry_requires_spawner() {
+fn four_named_updater_entries_require_spawner() {
     let sources = sot_log::test_scan::production_sources();
     let mut entries = Vec::new();
     for (path, source) in &sources {

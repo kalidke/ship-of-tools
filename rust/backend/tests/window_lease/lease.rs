@@ -2,6 +2,11 @@
 
 use super::*;
 
+// Used only by explicit-close variants that keep the production shutdown bound.
+const PRODUCTION_CLOSE_REPLY_WITHIN: Duration = sot_protocol::ops::lease::CLOSE_ACK_WAIT;
+const PRODUCTION_CLOSE_EXIT_WITHIN: Duration =
+    Duration::from_secs(sot_protocol::ops::lease::SHUTDOWN_BOUND.as_secs() + 10);
+
 #[tokio::test]
 async fn last_one_out_two_windows() {
     const RUNNING_ROW_EXIT_WITHIN: Duration = Duration::from_secs(130);
@@ -45,7 +50,7 @@ async fn lease_end_any_way_departs() {
         assert_eq!(lease["outcome"], "granted", "{how}: {lease:?}");
         match how {
             "close" => {
-                let ack = w.ask("close", EXIT_WITHIN).await;
+                let ack = w.ask("close", PRODUCTION_CLOSE_REPLY_WITHIN).await;
                 assert_eq!(ack["not_ended"], 0, "{how}: {ack:?}");
             }
             "half" => {
@@ -55,7 +60,7 @@ async fn lease_end_any_way_departs() {
             _ => w.child.kill().await.expect("SIGKILL the window"),
         }
         assert_eq!(
-            daemon.exit_within(EXIT_WITHIN).await,
+            daemon.exit_within(if how == "close" { PRODUCTION_CLOSE_EXIT_WITHIN } else { EXIT_WITHIN }).await,
             Some(0),
             "{how}: the lease's end did not shut down: {}",
             daemon.said()
@@ -248,9 +253,9 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
     assert_eq!(cgroup_rel(escapee), scope, "the escapee is not in the row's scope");
     drop(conn);
 
-    let ack = w.ask("close", EXIT_WITHIN).await;
+    let ack = w.ask("close", PRODUCTION_CLOSE_REPLY_WITHIN).await;
     assert_eq!(ack["not_ended"], 0, "{ack:?}");
-    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    assert_eq!(daemon.exit_within(PRODUCTION_CLOSE_EXIT_WITHIN).await, Some(0), "{}", daemon.said());
     assert_scope_empties(&scope, Duration::from_secs(5)).await;
 }
 
@@ -373,9 +378,9 @@ async fn close_after_keep_on_one_lease_shuts_down() {
     let (mut w, _) = Window::open(&env.socket_path).await;
     let ack = w.ask("keep", BOUND).await;
     assert_eq!(ack["not_ended"], 0, "{ack:?}");
-    let ack = w.ask("close", EXIT_WITHIN).await;
+    let ack = w.ask("close", PRODUCTION_CLOSE_REPLY_WITHIN).await;
     assert_eq!(
-        daemon.exit_within(Duration::from_secs(30)).await,
+        daemon.exit_within(PRODUCTION_CLOSE_EXIT_WITHIN).await,
         Some(0),
         "a close after a keep on the same lease did not shut down: {}",
         daemon.said()

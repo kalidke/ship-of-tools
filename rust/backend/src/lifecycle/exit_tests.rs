@@ -1,4 +1,4 @@
-//! Checked request ordering at the terminal boundary, main completion, and the backend exit inventory.
+//! Checked request ordering at the terminal boundary, main completion, and the documented terminal lexical pin.
 
 use super::child_signal::{ContainedStd, Signal};
 use super::{contain, shutdown};
@@ -396,8 +396,10 @@ fn raw_terminals(path: &str, source: &str) -> (usize, Vec<String>) {
     (raw, forbidden)
 }
 
+/// Pins terminal-name tokens (except fn exit, .abort and shutdown::exit), two namespace globs, one raw exit and main-boundary text.
+/// It misses namespace aliases named shutdown, renamed primitives whose imports lack those tokens, and other termination mechanisms.
 #[test]
-fn only_the_terminal_function_can_terminate_the_backend() {
+fn terminal_spellings_and_main_boundary_are_pinned() {
     let mut raw = 0;
     let mut forbidden = Vec::new();
     for (path, source) in sot_log::test_scan::production_sources() {
@@ -424,8 +426,10 @@ fn only_the_terminal_function_can_terminate_the_backend() {
     );
 }
 
+/// Checks the listed qualified, unqualified and primitive-import examples against the terminal lexical pin.
+/// It does not resolve namespace aliases, including std::process imported as shutdown, or discover other termination mechanisms.
 #[test]
-fn inventory_rejects_qualified_unqualified_and_aliased_primitives() {
+fn terminal_pin_rejects_the_listed_primitive_spellings() {
     for source in [
         "std::process::exit(1);",
         "use std::process::*;",

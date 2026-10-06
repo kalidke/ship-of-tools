@@ -15,7 +15,7 @@ the crate folder and `src/`, and each folder under `src/` has its own page.
 - `src/paths.rs`: the platform helpers: state and socket paths, `resource_dir`, the private-directory checks
 - `src/durable.rs`: the one fsynced write and delete for the records a later start acts on
 - `src/update.rs`: the daemon's updater policy, `UpdaterSpawner` over its child `Signal`, `update.check`, `update.apply`, and the lease-guarded restart through `lifecycle::shutdown::exit`.
-- `src/update_children_tests.rs`: updater command routing, output capture, cancellation and contained-tree lifetime through the real daemon adapter.
+- `src/update_children_tests.rs`: updater command routing, output capture, cancellation and contained-tree lifetime through the real daemon adapter; one lexical pin checks .output(, .spawn(, .status(, spawn_command(, fork(, execvp(, CreateProcess and posix_spawn( substrings, and another checks &dyn Spawner in the four named async entries (check_release, stage, prepare and prepare.rs matches) plus the Spawner trait text. The pins miss starts on lines containing spawner.output(, UFCS starts, libc::system, aliases, other unlisted or differently spaced spellings, and newly added public spawn-bearing entries.
 - `src/agents/`: accounts, folder trust, the awareness env and the launch recipe (agents)
 - `src/comm/`: the daemon's half of messaging: delivery, the registry and the wake (messaging)
 - `src/files/`: workspace file reads, writes, previews, confinement and the watcher (files)

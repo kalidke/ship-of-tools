@@ -1,5 +1,5 @@
 //! The permanent child signal and synchronized creation/registration of contained trees.
-//! Owners request termination before reaping. Explicit cleanup errors propagate; Drop logs them.
+//! Unix requests precede reap; Windows wait can obtain child status first while retaining the job. Cleanup errors propagate; Drop logs them.
 //! Fire checks requests without waiting for tree death.
 
 use std::collections::HashMap;
@@ -163,11 +163,11 @@ impl Signal {
     }
 
     /// `Command::output` for a contained one-shot: stdin is null, and stdout
-    /// and stderr are each read to their end on a thread of their own. The
-    /// leader's exit is seen unreaped; then termination is requested for the tree before
-    /// the direct child is reaped (all of that is
-    /// [`ContainedStd::wait`]), and then both readers are joined. No bound is
-    /// added, as `output` has none.
+    /// and stderr are each read to their end on a thread of their own.
+    /// `ContainedStd::wait` observes exit and requests tree termination before
+    /// joining both readers. Unix observes the leader unreaped; Windows observation
+    /// uses child.wait() before the job request, retaining the job handle.
+    /// No bound is added, as `output` has none.
     pub(crate) fn output(&'static self, cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
         use std::process::Stdio;
         cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -289,7 +289,7 @@ impl PartialChild for tokio::process::Child {
     }
 }
 
-/// One registered tree. Release requests termination under the registry mutex before its owner reaps the leader.
+/// One registered tree. Release requests termination under the registry mutex; Unix requires an unreaped leader, Windows a retained job.
 struct Held {
     sig: &'static Signal,
     id: u64,
@@ -333,10 +333,10 @@ impl Drop for Held {
     }
 }
 
-/// One contained child with its pipes. It owns the `Child`: only
-/// [`wait`](Self::wait) and [`kill`](Self::kill) request tree termination before reaping. Drop logs request
-/// failures and transfers the async child to Tokio's orphan queue; it does not synchronously reap.
-/// `held` drops before `child`, retaining the leader identity during the request.
+/// One contained child with its pipes. It owns the `Child`. Unix wait requests termination before reap;
+/// Windows wait obtains the child status first, retaining the job for its subsequent termination request.
+/// Kill requests termination before waiting. Drop logs failures and transfers the child to Tokio's orphan queue.
+/// `held` drops before `child`; Drop does not synchronously reap.
 pub(crate) struct Contained {
     pub(crate) stdin: Option<tokio::process::ChildStdin>,
     pub(crate) stdout: Option<tokio::process::ChildStdout>,
@@ -348,8 +348,8 @@ pub(crate) struct Contained {
 }
 
 impl Contained {
-    /// Observe the leader's exit, request tree termination, then reap. Request failures remain errors;
-    /// successful requests do not establish descendant death.
+    /// Unix observes exit unreaped, requests tree termination, then reaps; Windows waits for child status first, then requests job termination.
+    /// Request failures remain errors; successful requests do not establish descendant death.
     pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         #[cfg(unix)]
         {
@@ -377,10 +377,10 @@ impl Contained {
     }
 }
 
-/// One contained child for a blocking caller, with its pipes. Like
-/// [`Contained`] it owns the `Child`: only [`wait`](Self::wait),
-/// [`kill`](Self::kill) and dropping request termination before reaping, and
-/// no caller is handed the child to reap first. `held` comes before `child`.
+/// One contained child for a blocking caller, owning its `Child` and pipes.
+/// Unix wait observes exit unreaped before requesting termination; Windows exit observation uses wait/try_wait first.
+/// Windows retains the job handle for the subsequent request. Kill and Drop request termination before waiting.
+/// No caller is handed the child to reap. `held` comes before `child`.
 pub(crate) struct ContainedStd {
     pub(crate) stdin: Option<std::process::ChildStdin>,
     pub(crate) stdout: Option<std::process::ChildStdout>,
@@ -393,8 +393,8 @@ pub(crate) struct ContainedStd {
 }
 
 impl ContainedStd {
-    /// Whether the leader has exited, seen unreaped (without freeing its pid
-    /// on Unix); with `block` this waits for the exit.
+    /// Whether the leader has exited; with `block` this waits. Unix observes without reaping;
+    /// Windows uses wait/try_wait while the containment's job handle remains retained.
     pub(crate) fn exited(&mut self, block: bool) -> std::io::Result<bool> {
         if self.reaped.is_some() {
             return Ok(true);
@@ -402,9 +402,9 @@ impl ContainedStd {
         crate::lifecycle::contain::exited(&mut self.child, block)
     }
 
-    /// Observe the leader's exit, request tree termination, then reap. Request failures remain errors;
-    /// successful requests do not establish descendant death.
-    /// A probe failure is returned with any cleanup failure; failed requests return before blocking reap.
+    /// Observe exit, request tree termination and return child status. Unix observation leaves the leader unreaped;
+    /// Windows observation uses child.wait() first, retaining the job for the request. Successful requests do not prove descendant death.
+    /// Probe and cleanup failures remain errors; a failed request prevents the subsequent reap call.
     pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         if let Some(status) = self.reaped {
             return Ok(status);

@@ -1,17 +1,16 @@
-//! Platform containment, checked termination requests, and exit observations without reaping.
+//! Platform containment, checked termination requests, and exit observations (unreaped on Unix).
 //! Successful requests do not prove tree death; escapes remain ADR 0050 residual 7.
 //!
 //! Unix: each child runs in its own process group, killed with `killpg`, and its leader by pid as well.
 //! Windows: each child runs in its own anonymous job (no breakaway),
 //! created suspended, assigned, and only then resumed, so no instruction
 //! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows).
-//! A group's number is its leader's pid, and a pid (a zombie's too) is not
-//! reused before its reap, so termination is requested only while its leader is
-//! unreaped: the owners of [`crate::lifecycle::child_signal::Contained`] and
-//! [`crate::lifecycle::child_signal::ContainedStd`] reap the leader
-//! after successful requests, never before, and requests run under the
-//! registry lock. [`crate::lifecycle::child_signal::Signal::spawn`] owns the registry; this
-//! module holds nothing but the platform calls.
+//! On Unix a group's number is its leader's pid, retained until reap, so requests
+//! run before the owner reaps that leader. On Windows wait/try_wait can obtain
+//! direct-child status before the job request; the retained job handle preserves
+//! containment identity across that wait. Explicit kill requests termination first.
+//! Requests run under the registry lock. [`crate::lifecycle::child_signal::Signal::spawn`]
+//! owns the registry; this module holds nothing but the platform calls.
 
 /// One child's containment. Explicit termination checks requests; Drop logs failures.
 pub(crate) struct Tree {
@@ -205,8 +204,8 @@ pub(super) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
     }
 }
 
-/// Whether `child` has exited, without freeing its pid on Unix; with `block`
-/// this waits for the exit.
+/// Whether `child` has exited; with `block` this waits. Unix retains its unreaped identity;
+/// Windows uses wait/try_wait while the caller retains its job handle.
 pub(super) fn exited(child: &mut std::process::Child, block: bool) -> std::io::Result<bool> {
     #[cfg(all(test, windows))]
     if PROBE_FAILURE.with(|failure| failure.get()) {
