@@ -108,6 +108,15 @@ try {
         Check '3: a missing file gives an empty id' ((Get-SotLauncherCodeId -ScriptsDir (Join-Path $tagB 'scripts')) -ceq '') 'a partial scripts dir got an id'
     } catch { Check '3: section ran' $false $_.Exception.Message }
 
+    $homeDir = Join-Path $root 'race-scope'
+        # The race: the destination appears after the temp file is closed, before the move.
+        $cfgRace = Join-Path $root 'cfg-race'
+        $raceFile = Join-Path $cfgRace 'settings.toml'
+        $r = Set-SotFolderTrust -ConfigDir $cfgRace -HomeDir $homeDir -BeforePublish { [System.IO.File]::WriteAllText($raceFile, 'owner') }
+        Check '4: race: returns kept' ($r -ceq 'kept') "returned $r"
+        Check '4: race: the owner''s file is untouched' (([System.IO.File]::ReadAllText($raceFile)) -ceq 'owner') 'the winner''s file was replaced'
+        Check '4: race: no temp file left' (@(Get-ChildItem -LiteralPath $cfgRace -Filter '*.tmp').Count -eq 0) 'a .tmp file remains'
+
     Write-Host "`n=== 4. executed offline trust delegation ===" -ForegroundColor Cyan
     $trustKeys = @('HOME', 'USERPROFILE', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'CLAUDE_CONFIG_DIR')
     $savedTrustEnv = @{}

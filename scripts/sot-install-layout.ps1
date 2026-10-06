@@ -63,6 +63,62 @@ function Get-SotLauncherCodeId {
     }
 }
 
+# Folder trust, the Windows twin of install.sh's [trust] step. The daemon
+# pre-answers the agent's folder-trust dialog for every session root under ONE
+# declared absolute prefix read from settings.toml; nothing else on Windows
+# writes that declaration. One invariant: settings.toml is created only if no
+# file exists at the moment of publication, and an existing one is never
+# truncated, edited or replaced, in any encoding or shape. The block is written
+# to a unique temp file in the same folder, then published with the two-argument
+# File.Move, which refuses an existing destination, so a file that appears
+# meanwhile wins and no partial file is ever visible. Returns one of
+# 'declared' (published), 'kept' (a file has a line that is exactly [trust], or
+# it won the race) or 'no-header' (a file exists without such a line); the
+# caller logs. The prefix is the home folder with / as the separator, the
+# spelling Claude Code keys its own projects by. UTF-8 without BOM, creating
+# the folder. -BeforePublish is a test seam run between the temp file's close
+# and the move.
+function Set-SotFolderTrust {
+    param(
+        [Parameter(Mandatory)][string]$ConfigDir,
+        [Parameter(Mandatory)][string]$HomeDir,
+        [scriptblock]$BeforePublish
+    )
+    $file = Join-Path $ConfigDir 'settings.toml'
+    if (Test-Path -LiteralPath $file) {
+        foreach ($line in ([System.IO.File]::ReadAllText($file) -split "`n")) {
+            if ($line.Trim() -ceq '[trust]') { return 'kept' }
+        }
+        return 'no-header'
+    }
+    if (-not (Test-Path -LiteralPath $ConfigDir)) {
+        New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
+    }
+    $prefix = $HomeDir.Replace('\', '/')
+    $block = "`n[trust]`n" +
+        "# Every session root under this absolute prefix counts as already`n" +
+        "# trusted, so an agent the daemon spawns there never stops at its`n" +
+        "# folder-trust dialog. Narrow it to the parent your repos live under,`n" +
+        "# or comment it out to answer that dialog by hand. Roots outside it`n" +
+        "# are left untouched.`n" +
+        "root_prefix = `"$prefix`"`n"
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $tmp = Join-Path $ConfigDir ("settings.toml.$PID." + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.tmp')
+    try {
+        [System.IO.File]::WriteAllText($tmp, $block, $utf8)
+        if ($BeforePublish) { & $BeforePublish }
+        try {
+            [System.IO.File]::Move($tmp, $file)
+        } catch [System.IO.IOException] {
+            if (Test-Path -LiteralPath $file) { return 'kept' }
+            throw
+        }
+        return 'declared'
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 # ---------------------------------------------------------------------------
 # First-launch install layout (field report, a fresh hand-installed frontend
 # box on v0.6.0-rc.15). A hand install (docs/INSTALL-AGENT.md 2b) extracts the
@@ -133,36 +189,18 @@ function Set-SotJunction {
 # construction) -- see docs/adr/0030-versioning-release-and-auto-update.md's
 # 2026-09-17 amendment.
 function Initialize-InstallLayout {
-    $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'
-    # Both installer paths delegate folder-trust declaration to the agents-owned offline command;
-    # a failure is reported and never described as a successful declaration.
-    # Before the dev-box return: its daemon prepares rows too.
-    $trustBinary = $stagedSotd
-    if ($backendExe -and (Test-Path -LiteralPath $backendExe)) { $trustBinary = $backendExe }
-    $trustEAP = $ErrorActionPreference
+    # Before the dev-box return below: a dev box's daemon spawns rows too.
     try {
-        if (-not [System.IO.Path]::IsPathRooted($trustBinary) -or -not (Test-Path -LiteralPath $trustBinary)) {
-            Write-SupLog 'install layout: folder trust not declared - no absolute backend binary'
-        } else {
-            $ErrorActionPreference = 'Continue'
-            $trustOutput = & $trustBinary trust declare $env:USERPROFILE 2>&1
-            $trustExit = $LASTEXITCODE
-            if ($trustExit -ne 0) {
-                Write-SupLog "install layout: folder trust not declared (exit $trustExit)"
-                foreach ($line in @($trustOutput)) { if ("$line".Trim()) { Write-SupLog "install layout: trust -> $line" } }
-            } elseif (("$trustOutput").Trim() -ceq 'Declared') {
-                Write-SupLog 'install layout: folder trust declared'
-            } elseif (("$trustOutput").Trim() -ceq 'Kept') {
-                Write-SupLog 'install layout: folder trust kept'
-            } else {
-                Write-SupLog 'install layout: folder trust not declared - unexpected command outcome'
-            }
+        $trust = Set-SotFolderTrust -ConfigDir (Join-Path $prefixDir 'config') -HomeDir $env:USERPROFILE
+        if ($trust -ceq 'declared') {
+            Write-SupLog 'install layout: folder trust declared for the home folder (settings.toml [trust] root_prefix)'
+        } elseif ($trust -ceq 'no-header') {
+            Write-SupLog "install layout: settings.toml has no [trust] header line, so this launcher declared no folder trust; to let spawned sessions skip the folder-trust prompt, add [trust] with root_prefix = `"$($env:USERPROFILE.Replace('\', '/'))`""
         }
     } catch {
         Write-SupLog "install layout: folder trust not declared - $($_.Exception.Message)"
-    } finally {
-        $ErrorActionPreference = $trustEAP
     }
+    $stagedSotd = Join-Path $prefixDir 'bin\sotd.exe'
     if (-not (Test-Path -LiteralPath $stagedSotd)) {
         # A pure dev box: its daemon runs out of rust\target\release, where
         # resource_dir's compile-time fallback IS the correct answer, and its
