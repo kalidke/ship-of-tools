@@ -123,6 +123,41 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     server.join().expect("echo server");
 }
 
+/// `sot_bounded`, the one bound a timed comm command runs under, on this platform's bash: as the box has it (GNU
+/// `timeout` or `gtimeout` when present), and as the watchdog (an empty `_SOT_TIMEOUT_BIN` takes it). Either way the
+/// command keeps the shell's stdin and its own status, and one still running at the bound ends with 124 and is gone
+/// when the call returns. One that ignores TERM ends with 137 (not on Windows, whose Git Bash emulates signals).
+#[test]
+fn the_comm_bound_keeps_stdin_and_status_and_ends_a_late_command() {
+    let Some(_) = bash() else { return };
+    let home = tempfile::tempdir().expect("scratch home");
+    let (deaf, want) = if cfg!(windows) {
+        ("", "in\nstatus 7\nlate 124\nlate gone\n")
+    } else {
+        (
+            r#"sot_bounded 1 sh -c 'trap "" TERM; echo $$ > "$HOME/deaf.pid"; exec tail -f /dev/null'; echo "deaf $?"
+kill -0 "$(cat "$HOME/deaf.pid")" 2>/dev/null && echo "deaf alive" || echo "deaf gone"
+"#,
+            "in\nstatus 7\nlate 124\nlate gone\ndeaf 137\ndeaf gone\n",
+        )
+    };
+    for (path, prelude) in [("as this box has it", ""), ("the watchdog", "_SOT_TIMEOUT_BIN=")] {
+        let script = format!(
+            r#". "$1" && {prelude}
+printf 'in\n' | sot_bounded 5 cat
+sot_bounded 5 sh -c 'exit 7'; echo "status $?"
+sot_bounded 1 sh -c 'echo $$ > "$HOME/late.pid"; exec tail -f /dev/null'; echo "late $?"
+kill -0 "$(cat "$HOME/late.pid")" 2>/dev/null && echo "late alive" || echo "late gone"
+{deaf}"#
+        );
+        let mut child = shell(home.path(), &script, "").expect("bash");
+        drop(child.stdin.take());
+        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        assert!(status.success(), "the bound, {path}: bash failed: {stderr}");
+        assert_eq!(stdout, want, "the bound, {path}: {stderr}");
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {
