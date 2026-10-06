@@ -56,6 +56,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`, `install_comm`,
 `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
 
+`handle_agent_join` is provided to server dispatch; rows consume the registry binding/read/prune functions.
+
 ## Folders
 - `adapters/`: what is installed into Claude Code and Codex: hooks, the messaging skills, the Codex skills and plugin.
 - `lib/`: the shared shell library: the loader `comm-lib.sh`, which every script sources from its own folder, and its seven parts.
