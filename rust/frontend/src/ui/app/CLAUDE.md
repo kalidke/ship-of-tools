@@ -9,6 +9,7 @@ hand-over it serves.
 - `exit.rs`: the Ctrl+Q prompt's key table, `request_quit`, `leave` and `finish_exit`, and `redraw_exits`.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
+- `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings.
 
 ## Start here
 `redraw` in frame.rs for the order of one frame; `window_event` in handler.rs for which winit event goes where and for
@@ -24,3 +25,4 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.
+- Native progress evidence separates producer workload validity from UI queue progress; counters are taken at successful fan-in enqueue and actual State dequeue, and the fixture never drains the queue.

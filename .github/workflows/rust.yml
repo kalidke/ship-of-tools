@@ -43,6 +43,99 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  window-minimized-windows:
+    name: native minimized window (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Observe Windows startup preservation
+        run: cargo test -p sot-frontend --bin sot --locked tests::window_startup_hardens_handles_before_starting_children -- --exact --nocapture
+      - name: Observe the hardening-only sensitivity reversal
+        shell: bash
+        run: |
+          set -e
+          task_target="${CARGO_TARGET_DIR:-$GITHUB_WORKSPACE/rust/target}"
+          mkdir -p "$task_target/scratch/d-a-startup-reversal" "$task_target/logs"
+          ( cd "$GITHUB_WORKSPACE" && git archive HEAD ) > "$task_target/scratch/d-a-startup-reversal.tar"
+          python3 - "$task_target" <<'PY'
+          import pathlib, sys, tarfile
+          target = pathlib.Path(sys.argv[1])
+          root = target / 'scratch/d-a-startup-reversal'
+          with tarfile.open(target / 'scratch/d-a-startup-reversal.tar') as archive:
+              archive.extractall(root)
+          source = root / 'rust/frontend/src/main.rs'
+          text = source.read_text()
+          before = 'if let Err(e) = sot_log::host::winhandle::harden_own_stdio(true)'
+          after = 'if let Err(e) = Ok::<(), std::io::Error>(())'
+          if text.count(before) != 1:
+              raise RuntimeError('the hardening reversal could not be applied exactly once')
+          source.write_text(text.replace(before, after))
+          PY
+          set +e
+          cargo test --manifest-path "$task_target/scratch/d-a-startup-reversal/rust/Cargo.toml" -p sot-frontend --bin sot --locked tests::window_startup_hardens_handles_before_starting_children -- --exact --nocapture > "$task_target/logs/d-a-startup-reversal.log" 2>&1
+          result=$?
+          set -e
+          cat "$task_target/logs/d-a-startup-reversal.log"
+          echo "window-startup-reversal exit $result expected 101"
+          [ "$result" -eq 101 ]
+          grep -F 'window_entry left inherited standard handles before its startup continuation' "$task_target/logs/d-a-startup-reversal.log"
+      - name: Observe result-routing consumer proof
+        shell: bash
+        run: |
+          mkdir -p ../dev/output
+          set +e
+          cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked -- --row-lifetime-parent > ../dev/output/row-lifetime.log 2>&1
+          result=$?
+          set -e
+          cat ../dev/output/row-lifetime.log
+          echo "result-routing-parent exit $result expected 1"
+          [ "$result" -eq 1 ]
+          grep -F 'result-routing phase=completed ok=false entered_bodies=1 completed_bodies=1' ../dev/output/row-lifetime.log
+          grep -F 'result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view' ../dev/output/row-lifetime.log
+      - name: Prove native minimized workload and progress
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
+
+  window-minimized-macos:
+    name: native minimized window (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 18
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Observe result-routing consumer proof
+        shell: bash
+        run: |
+          mkdir -p ../dev/output
+          set +e
+          cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked -- --row-lifetime-parent > ../dev/output/row-lifetime.log 2>&1
+          result=$?
+          set -e
+          cat ../dev/output/row-lifetime.log
+          echo "result-routing-parent exit $result expected 1"
+          [ "$result" -eq 1 ]
+          grep -F 'result-routing phase=completed ok=false entered_bodies=1 completed_bodies=1' ../dev/output/row-lifetime.log
+          grep -F 'result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view' ../dev/output/row-lifetime.log
+      - name: Prove native minimized workload and progress
+        run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

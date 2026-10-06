@@ -346,6 +346,20 @@ impl State {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "test-window-progress")]
+    pub(in crate::ui) fn pending_result_dies_with_its_canonical_row(
+        state: &mut State,
+        _outgoing: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+    ) -> Result<()> {
+        println!("result-routing phase=body-entered entered_bodies=1");
+        let result = state.result_target_uses_host_and_listed_identity();
+        println!(
+            "result-routing phase=completed ok={} entered_bodies=1 completed_bodies=1",
+            result.is_ok()
+        );
+        result
+    }
+
     // ---- activity_order (bottom strip within-host ordering) ----
 
     fn ak(host: &str, slug: &str) -> WsKey {
@@ -720,3 +734,6 @@ mod tests {
         assert_eq!(fresh.default_workspace_slug.as_deref(), Some("sot"));
     }
 }
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(in crate::ui) use tests::pending_result_dies_with_its_canonical_row;
