@@ -44,6 +44,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage.
 
 ## Rules
+- Agent-layer input opens establish stderr redirection first; vanished process files preserve the existing chain/refusal result without a shell input-open diagnostic. The test table covers stat, cmdline and both winpid reads.
 - The Codex off-hook fixture must prove no input read and no status call, as well as exit 0; unset/on retains blocked then stop.
 - Each suite sources `lib-home-guard.sh` before any command but `set`; `test-rm-guard.sh` fails a suite that does not,
   and fails if it finds fewer than 29 suites under `comm/` and `agents/`.
