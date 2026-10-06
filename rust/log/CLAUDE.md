@@ -59,7 +59,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/claude.rs`: the dormant Claude SDK producer.
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
 - `src/test_exec.rs`: `write_executable`, how a test writes a program it will run (feature `test-support`), and its source scan.
-- `src/test_isolated.rs`: the shared exact-body isolation, command, output-drain and bounded child-wait owner (feature `test-support`); `wait_until` and `run_isolated_until` accept an existing absolute deadline and expose typed expiry/poll failures with owned-child termination confirmation.
+- `src/test_isolated.rs`: shared exact-body isolation, scoped direct-fixture supervision and bounded child/output waits (feature `test-support`); readiness errors retain termination/entry checks, and byte-captured output renders invalid UTF-8 with explicit byte escapes.
 - `src/test_log.rs`: `capture()` and `install()`, the test-only way to install a subscriber (feature `test-support`), and its source scan.
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
@@ -82,7 +82,7 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - No test takes the system folders out of the process `PATH` or changes `SHELL`; code under test takes them from its caller (`test_scan::tests::no_test_changes_the_process_path_or_shell`).
 - Every subscriber a test installs goes through `test_log` (`capture()` to read a thread's tracing output, `install()` for a test of a production log writer); besides it, only the two binaries' `main` set up a subscriber (`test_log::tests::only_test_log_makes_a_subscriber`).
 - A test writes a program it will run only through `test_exec::write_executable`, so no process holds it open for writing when it runs (`test_exec::tests::only_test_exec_makes_a_test_program_executable`).
-- A test re-runs a named test binary through `test_isolated`; its qualified body entry and owned-child completion are observed. Custom wrappers retain those same checks, and the shared duration/deadline variants delegate to one child-wait implementation.
+- Named test reruns use `test_isolated`; direct fixtures complete owned-child supervision and exact entry checks before raising readiness failures. Duration/deadline APIs share one wait implementation; both output streams retain arbitrary bytes with explicit invalid-UTF-8 escapes.
 - Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.
 - Another crate can reach the processes this crate starts (the capsule's agent, the supervisor's legs, the Claude

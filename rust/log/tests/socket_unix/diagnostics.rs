@@ -1,15 +1,7 @@
 //! Socket diagnostic proofs observe flushed output of exact-body ISO children.
 
 use super::*;
-use sot_log::test_isolated::{enter, test_command, ChildWaitKind, ISOLATION_TIMEOUT};
-use std::process::Stdio;
-
-struct Captured {
-    text: String,
-    pid: u32,
-    expired: bool,
-    begin_observed: bool,
-}
+use sot_log::test_isolated::{enter, ISOLATION_TIMEOUT};
 
 fn child_role(test: &str) -> bool {
     if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() == Ok(test) {
@@ -17,101 +9,6 @@ fn child_role(test: &str) -> bool {
         true
     } else {
         false
-    }
-}
-
-/// ISO owns the child wait and cleanup; the capture file introduces no drain deadline.
-fn capture(test: &str, bound: Duration, release_after_begin: Option<&str>) -> Captured {
-    let output = tempfile::NamedTempFile::new().expect("capture file");
-    let (mut command, entry) = test_command(test);
-    let file = output.reopen().unwrap();
-    let wait = WaitContext::new(
-        test,
-        "child.wait",
-        "fixture ends with confirmed cleanup",
-        None,
-        bound,
-    );
-    let mut child = command
-        .env("SOT_TEST_SOCKET_ROLE", test)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(file.try_clone().unwrap()))
-        .stderr(Stdio::from(file.try_clone().unwrap()))
-        .spawn()
-        .expect("spawn the fixture child");
-    let pid = child.id();
-    let mut begin_observed = false;
-    if let Some(step) = release_after_begin {
-        let observe = WaitContext::from_origin(
-            test,
-            "begin.observe",
-            "complete emitted begin before release",
-            None,
-            wait.started,
-            wait.deadline,
-        );
-        while Instant::now() < observe.deadline {
-            let text = std::fs::read_to_string(output.path()).unwrap();
-            begin_observed = text.lines().any(|line| {
-                line.contains(&format!("socket-test test={test} child={pid} "))
-                    && line.contains(&format!(" step={step} "))
-                    && line.ends_with("result=begin")
-            });
-            if begin_observed {
-                break;
-            }
-            observe.pause(Duration::from_millis(5));
-        }
-        observe.complete(if begin_observed { "ok" } else { "timeout" }, None, None);
-        if begin_observed {
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(b"r")
-                .expect("release child");
-            eprintln!("fixture-proof test={test} child={pid} begin={step} observed=before-release");
-        }
-    }
-    let result = wait.child(&mut child);
-    let confirmed = child
-        .try_wait()
-        .expect("confirm fixture termination")
-        .is_some();
-    entry.assert_once(pid);
-    let text = std::fs::read_to_string(output.path()).unwrap();
-    let expired = result
-        .as_ref()
-        .is_err_and(|error| matches!(error.kind, ChildWaitKind::Expired));
-    assert!(
-        confirmed
-            && result
-                .as_ref()
-                .err()
-                .is_none_or(|error| error.termination_confirmed),
-        "owned child termination unconfirmed: {result:?}"
-    );
-    eprintln!("{text}");
-    eprintln!(
-        "body-proof test={test} child={pid} bodies=1 completed={} cleanup=confirmed",
-        result.is_ok()
-    );
-    match result {
-        Ok(status) => assert!(status.success(), "fixture child failed: {status}: {text}"),
-        Err(error) if !expired => panic!("fixture supervision failed: {error}"),
-        Err(_) => {}
-    }
-    if release_after_begin.is_some() {
-        assert!(
-            begin_observed,
-            "child begin was not visible before release: {text}"
-        );
-    }
-    Captured {
-        text,
-        pid,
-        expired,
-        begin_observed,
     }
 }
 
@@ -167,14 +64,91 @@ fn record<'a>(capture: &'a Captured, test: &str, step: &str, outcome: &str) -> &
     line
 }
 
-fn history(capture: &Captured) {
+fn context_block<'a>(
+    capture: &'a Captured,
+    test: &str,
+    step: &str,
+    terminal: bool,
+) -> Vec<&'a str> {
+    let lines: Vec<_> = capture.text.lines().collect();
+    let record = record(
+        capture,
+        test,
+        step,
+        if terminal { "timeout" } else { "begin" },
+    );
+    let start = lines
+        .iter()
+        .position(|line| line.ends_with(record))
+        .unwrap()
+        + 1;
+    lines[start..]
+        .iter()
+        .copied()
+        .take_while(|line| !line.starts_with("socket-test "))
+        .collect()
+}
+
+fn snapshot_valid(lines: &[&str], conn: &str, unavailable: bool) -> bool {
+    let headers: Vec<_> = lines
+        .iter()
+        .filter(|line| line.starts_with("transport-progress snapshot "))
+        .collect();
+    if headers.len() != 1 {
+        return false;
+    }
+    let fields: Vec<_> = headers[0].split_whitespace().collect();
+    let number = |field: &str, key: &str| {
+        field
+            .strip_prefix(key)
+            .is_some_and(|n| n.parse::<u64>().is_ok())
+    };
+    if fields.get(2) == Some(&"unavailable") {
+        return unavailable
+            && fields.len() == 5
+            && number(fields[3], "skipped=")
+            && matches!(fields[4], "reason=busy" | "reason=poisoned");
+    }
+    fields.len() == 5
+        && number(fields[2], "records=")
+        && number(fields[3], "overwritten=")
+        && number(fields[4], "skipped=")
+        && lines.iter().any(|line| {
+            line.starts_with("transport-progress transport=socket ")
+                && line
+                    .split_whitespace()
+                    .any(|field| field == format!("conn={conn}"))
+        })
+}
+
+fn checked_history(capture: &Captured, test: &str) {
+    let begin = record(capture, test, "absent.closed", "begin");
+    let conn = begin
+        .split_whitespace()
+        .find_map(|s| s.strip_prefix("conn="))
+        .unwrap();
     assert!(
-        capture
-            .text
-            .contains("transport-progress snapshot records=")
-            && capture.text.contains("transport-progress transport=socket"),
-        "wait diagnostic missing emitted progress snapshot: {}",
-        capture.text
+        snapshot_valid(
+            &context_block(capture, test, "snapshot.prerequisite", false),
+            conn,
+            false
+        ),
+        "prerequisite history was not emitted"
+    );
+    record(capture, test, "snapshot.prerequisite", "ok");
+    let prerequisite = capture.text.find("step=snapshot.prerequisite ").unwrap();
+    let absent = capture.text.find("step=absent.closed ").unwrap();
+    assert!(
+        prerequisite < absent,
+        "prerequisite history was not emitted"
+    );
+    assert!(
+        snapshot_valid(
+            &context_block(capture, test, "absent.closed", true),
+            conn,
+            true
+        ),
+        "timeout snapshot missing explicit availability accounting"
     );
 }
 
@@ -191,7 +165,7 @@ fn server(test: &str) -> (RuntimeDirGuard, SocketServer, UnixStream, ConnId, Str
         Some(conn),
         TIMEOUT,
     )
-    .available_snapshot(&server);
+    .prerequisite_history(&server);
     eprintln!("fixture-proof test={test} conn={conn} accepted=true bodies=1");
     (root, server, client, conn, id)
 }
@@ -202,6 +176,19 @@ fn missing_event(test: &str, unrelated: bool) {
         WaitContext::new(test, "unrelated.write", "Bytes queued", Some(conn), TIMEOUT)
             .write_all(Some(&server), &mut client, b"unrelated")
             .unwrap();
+    }
+    let variant = std::env::var("SOT_TEST_SOCKET_HISTORY").unwrap_or_default();
+    let held = if variant == "busy" {
+        Some(server.hold_progress_for_test())
+    } else {
+        None
+    };
+    if variant == "poisoned" {
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = server.hold_progress_for_test();
+            panic!("deliberate recorder poison");
+        }));
+        assert!(poisoned.is_err());
     }
     let wait = WaitContext::new(
         test,
@@ -219,6 +206,7 @@ fn missing_event(test: &str, unrelated: bool) {
             matches!(event, LaneEvent::Closed(_, _))
         })
     }));
+    drop(held);
     assert!(failure.is_err(), "absent event must expire");
     assert!(
         !unrelated || observed,
@@ -234,32 +222,28 @@ fn missing_event(test: &str, unrelated: bool) {
     named!(test, "server.drop", None, drop(server));
 }
 
+fn check_missing_event(test: &str, unrelated: bool) {
+    if child_role(test) {
+        return missing_event(test, unrelated);
+    }
+    for variant in ["ordinary", "busy", "poisoned"] {
+        let captured = capture_variant(test, ISOLATION_TIMEOUT, None, variant);
+        assert!(
+            !unrelated || captured.text.contains("unrelated=observed"),
+            "unrelated-event fixture was not observed"
+        );
+        checked_history(&captured, test);
+    }
+}
+
 #[test]
 fn absent_event_reports_named_wait() {
-    let test = "diagnostics::absent_event_reports_named_wait";
-    if child_role(test) {
-        return missing_event(test, false);
-    }
-    let captured = capture(test, ISOLATION_TIMEOUT, None);
-    record(&captured, test, "absent.closed", "begin");
-    record(&captured, test, "absent.closed", "timeout");
-    history(&captured);
+    check_missing_event("diagnostics::absent_event_reports_named_wait", false);
 }
 
 #[test]
 fn unrelated_event_reports_named_wait() {
-    let test = "diagnostics::unrelated_event_reports_named_wait";
-    if child_role(test) {
-        return missing_event(test, true);
-    }
-    let captured = capture(test, ISOLATION_TIMEOUT, None);
-    record(&captured, test, "absent.closed", "begin");
-    record(&captured, test, "absent.closed", "timeout");
-    assert!(
-        captured.text.contains("unrelated=observed"),
-        "unrelated-event fixture was not observed"
-    );
-    history(&captured);
+    check_missing_event("diagnostics::unrelated_event_reports_named_wait", true);
 }
 
 #[test]
@@ -513,32 +497,28 @@ fn retention(test: &str) {
     named!(test, "server.drop", None, drop(server));
 }
 
-#[test]
-fn progress_survives_connection_removal() {
-    let test = "diagnostics::progress_survives_connection_removal";
+fn check_retention(test: &str) {
     if child_role(test) {
         return retention(test);
     }
     let captured = capture(test, ISOLATION_TIMEOUT, None);
-    assert!(captured.text.contains("admitted=true"));
+    let text = &captured.text;
+    assert!(text.contains("admitted=true"));
+    assert!(text.contains("snapshot unavailable") && text.contains("reason=busy"));
     record(&captured, test, "snapshot.available.after_close", "ok");
     record(&captured, test, "snapshot.available.after_churn", "ok");
-    history(&captured);
+    assert!(text.contains("transport-progress snapshot records="));
+    assert!(text.contains("transport-progress transport=socket"));
+}
+
+#[test]
+fn progress_survives_connection_removal() {
+    check_retention("diagnostics::progress_survives_connection_removal");
 }
 
 #[test]
 fn snapshot_poll_waits_for_available_history() {
-    let test = "diagnostics::snapshot_poll_waits_for_available_history";
-    if child_role(test) {
-        return retention(test);
-    }
-    let captured = capture(test, ISOLATION_TIMEOUT, None);
-    assert!(
-        captured.text.contains("snapshot unavailable") && captured.text.contains("reason=busy")
-    );
-    record(&captured, test, "snapshot.available.after_close", "ok");
-    record(&captured, test, "snapshot.available.after_churn", "ok");
-    history(&captured);
+    check_retention("diagnostics::snapshot_poll_waits_for_available_history");
 }
 
 #[test]
@@ -575,36 +555,39 @@ fn deadline_adapters_preserve_origin_and_outcome() {
     if child_role(test) {
         let (mut command, entry) = test_command("diagnostics::deadline_child_role");
         let output = tempfile::NamedTempFile::new().unwrap();
-        let mut child = command
+        let ready = WaitContext::new(test, "child.entry", "held child's entry", None, TIMEOUT);
+        let child = command
             .env("SOT_TEST_SOCKET_ROLE", "diagnostics::deadline_child_role")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::from(output.reopen().unwrap()))
             .spawn()
             .unwrap();
-        let pid = child.id();
-        let ready = WaitContext::new(test, "child.entry", "held child's entry", None, TIMEOUT);
-        while !std::fs::read_to_string(output.path())
-            .unwrap()
-            .contains("role=entered")
-        {
-            ready.check(None);
-            ready.pause(Duration::from_millis(5));
+        let mut work = None;
+        let outcome = supervise_fixture_until(child, entry, ready.deadline, |_, _, deadline| {
+            observe_marker(&ready, output.path(), "role=entered bodies=1\n")?;
+            ready.complete("ok", None, None);
+            let timer = WaitContext::new(
+                test,
+                "child.expiry",
+                "expiry at original deadline",
+                None,
+                Duration::from_millis(600),
+            );
+            *deadline = timer.deadline;
+            timer.pause(Duration::from_millis(400));
+            work = Some(timer);
+            Ok(())
+        });
+        outcome.report("diagnostics::deadline_child_role");
+        if let Some(work) = &work {
+            work.child_outcome(&outcome.wait);
         }
-        ready.complete("ok", None, None);
-        let work = WaitContext::new(
-            test,
-            "child.expiry",
-            "expiry at original deadline",
-            None,
-            Duration::from_millis(600),
-        );
-        work.pause(Duration::from_millis(400));
-        let error = work.child(&mut child).expect_err("held child must expire");
-        entry.assert_once(pid);
+        assert!(outcome.work.is_ok() && outcome.entry.is_ok() && outcome.termination.is_ok());
+        let error = outcome.wait.unwrap_err();
         assert!(matches!(error.kind, ChildWaitKind::Expired) && error.termination_confirmed);
         assert!(
-            work.started.elapsed() < Duration::from_millis(950),
+            work.unwrap().started.elapsed() < Duration::from_millis(950),
             "child deadline was recomputed"
         );
         let (entered, entry) = std::sync::mpsc::channel();
@@ -670,6 +653,134 @@ fn successful_iso_role() {
     .isolated()
     {
         return;
+    }
+}
+
+#[test]
+fn readiness_failure_finishes_owned_child_checks() {
+    for (failure, held, zero) in [
+        ("timeout", false, false),
+        ("error", false, false),
+        ("panic", false, false),
+        ("timeout", true, false),
+        ("timeout", false, true),
+    ] {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let role = "diagnostics::readiness_child_role";
+        let (mut command, entry) = test_command(role);
+        let ready = WaitContext::new(role, "readiness.start", "fixture started", None, TIMEOUT);
+        let child = command
+            .env("SOT_TEST_SOCKET_ROLE", role)
+            .env("SOT_TEST_SOCKET_ZERO_ENTRY", if zero { "1" } else { "0" })
+            .env("SOT_TEST_SOCKET_HELD", if held { "1" } else { "0" })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(output.reopen().unwrap()))
+            .spawn()
+            .unwrap();
+        let outcome: sot_log::test_isolated::FixtureOutcome<()> =
+            supervise_fixture_until(child, entry, ready.deadline, |_, _, deadline| {
+                observe_marker(&ready, output.path(), "fixture-start observed=true")?;
+                let wait = WaitContext::new(
+                    role,
+                    "readiness.missing",
+                    "withheld marker",
+                    None,
+                    Duration::from_millis(150),
+                );
+                *deadline = wait.started + Duration::from_millis(750);
+                match failure {
+                    "panic" => panic!("deliberate readiness panic"),
+                    "error" => {
+                        observe_marker(&wait, &output.path().with_extension("missing"), "ready")
+                    }
+                    _ => observe_marker(&wait, output.path(), "withheld-ready"),
+                }
+            });
+        outcome.report(role);
+        assert!(outcome.work.is_err(), "readiness failure not observed");
+        assert!(
+            outcome.termination.is_ok(),
+            "readiness failure bypassed owned-child finalization"
+        );
+        if zero {
+            assert!(outcome
+                .entry
+                .as_ref()
+                .unwrap_err()
+                .contains("isolated body did not enter"));
+        } else {
+            assert!(
+                outcome.entry.is_ok(),
+                "readiness failure bypassed owned-child finalization"
+            );
+        }
+        if held {
+            assert!(matches!(
+                outcome.wait.unwrap_err().kind,
+                ChildWaitKind::Expired
+            ));
+        } else {
+            assert!(outcome.wait.unwrap().success());
+        }
+    }
+}
+
+#[test]
+fn readiness_child_role() {
+    let role = "diagnostics::readiness_child_role";
+    if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() != Ok(role) {
+        return;
+    }
+    if std::env::var("SOT_TEST_SOCKET_ZERO_ENTRY").as_deref() != Ok("1") {
+        enter(role);
+    }
+    eprintln!("fixture-start observed=true");
+    std::io::stderr().flush().unwrap();
+    if std::env::var("SOT_TEST_SOCKET_HELD").as_deref() == Ok("1") {
+        loop {
+            std::thread::park();
+        }
+    }
+    std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+}
+
+#[test]
+fn history_blocks_reject_missing_or_malformed_output() {
+    let test = "diagnostics::history_blocks_reject_missing_or_malformed_output";
+    if child_role(test) {
+        return missing_event(test, false);
+    }
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    checked_history(&captured, test);
+    let begin = record(&captured, test, "snapshot.prerequisite", "begin");
+    let end = record(&captured, test, "snapshot.prerequisite", "ok");
+    let mut text = captured.text.clone();
+    let start = text.find(begin).unwrap() + begin.len();
+    let finish = text.find(end).unwrap();
+    text.replace_range(start..finish, "\n");
+    let missing = Captured {
+        text,
+        ..captured.clone()
+    };
+    let error = std::panic::catch_unwind(|| checked_history(&missing, test)).unwrap_err();
+    assert!(panic_message(error).contains("prerequisite history was not emitted"));
+    for malformed in [
+        "",
+        "transport-progress snapshot unavailable skipped=unknown reason=busy\n",
+        "transport-progress snapshot unavailable skipped=1 reason=no-server\n",
+        "transport-progress snapshot records=bad overwritten=0 skipped=0\n",
+    ] {
+        let terminal = record(&captured, test, "absent.closed", "timeout");
+        let offset = captured.text.find(terminal).unwrap() + terminal.len() + 1;
+        let tail = captured.text[offset..]
+            .find("socket-test ")
+            .map_or(captured.text.len(), |n| offset + n);
+        let mut damaged = captured.clone();
+        damaged.text.replace_range(offset..tail, malformed);
+        let error = std::panic::catch_unwind(|| checked_history(&damaged, test)).unwrap_err();
+        assert!(panic_message(error)
+            .contains("timeout snapshot missing explicit availability accounting"));
     }
 }
 

@@ -3,7 +3,8 @@
 //! cannot pass, and an entry record dropped unchecked fails too. Every wait here is bounded: a child that overruns is
 //! killed, and output that a descendant still holds open after the child's exit fails the caller at the bound. What
 //! this does not prove: that a killed child's descendants are gone; a kill whose exit is not seen within 5 s is
-//! reported as unconfirmed.
+//! reported as unconfirmed. Direct fixtures retain readiness failures until owned-child/entry checks finish.
+//! Both output streams are captured as bytes; invalid UTF-8 is rendered as explicit uppercase byte escapes.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -169,24 +170,144 @@ pub fn wait_within(child: &mut Child, bound: Duration) -> ExitStatus {
     wait_until(child, Instant::now() + bound).unwrap_or_else(|error| panic!("{error}"))
 }
 
+/// A direct fixture retains its primary failure until child and entry checks finish.
+#[derive(Debug)]
+pub enum FixtureFailure {
+    Timeout(String),
+    Error(String),
+    Panic(String),
+}
+
+impl FixtureFailure {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Timeout(_) => "timeout",
+            Self::Error(_) => "error",
+            Self::Panic(_) => "panic",
+        }
+    }
+}
+
+impl std::fmt::Display for FixtureFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Timeout(text) | Self::Error(text) | Self::Panic(text)) = self;
+        f.write_str(text)
+    }
+}
+
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else if let Some(text) = payload.downcast_ref::<&str>() {
+        text.to_string()
+    } else {
+        "fixture panicked with a non-text payload".into()
+    }
+}
+
+/// All mandatory observations, including secondary failures, survive a readiness/work failure.
+pub struct FixtureOutcome<T> {
+    pub child: u32,
+    pub work: Result<T, FixtureFailure>,
+    pub wait: Result<ExitStatus, ChildWaitError>,
+    pub termination: Result<(), String>,
+    pub entry: Result<(), String>,
+    pub output: Result<(String, String), String>,
+}
+
+impl<T> FixtureOutcome<T> {
+    /// Report actual outcomes; callers raise retained failures only after inspecting this result.
+    pub fn report(&self, test: &str) {
+        eprintln!(
+            "fixture-finalization test={test} child={} readiness={} wait={} cleanup={} entry={}",
+            self.child,
+            self.work.as_ref().err().map_or("ok", FixtureFailure::kind),
+            match &self.wait {
+                Ok(_) => "exited",
+                Err(e) if matches!(e.kind, ChildWaitKind::Expired) => "expired",
+                Err(_) => "error",
+            },
+            if self.termination.is_ok() {
+                "confirmed"
+            } else {
+                "unconfirmed"
+            },
+            if self.entry.is_ok() { "once" } else { "failed" }
+        );
+        if let Err(error) = &self.work {
+            eprintln!("fixture-readiness error={error}");
+        }
+        if let Err(error) = &self.wait {
+            eprintln!("fixture-wait error={error}");
+        }
+        for (phase, result) in [("termination", &self.termination), ("entry", &self.entry)] {
+            if let Err(error) = result {
+                eprintln!("fixture-{phase} error={error}");
+            }
+        }
+        if let Err(error) = &self.output {
+            eprintln!("fixture-output error={error}");
+        }
+    }
+}
+
+/// Own the child immediately after spawn. Catch work panics, close input on failure, then attempt waiting,
+/// independent termination confirmation, exact entry and both output checks before returning any failure.
+/// Work may establish a separately named work deadline after successful readiness; failure keeps the original
+/// absolute deadline. This confirms only the recorded child, not its descendants or held output's owner.
+pub fn supervise_fixture_until<T>(
+    child: Child,
+    entry: Entry,
+    mut deadline: Instant,
+    work: impl FnOnce(&mut Child, &Entry, &mut Instant) -> Result<T, FixtureFailure>,
+) -> FixtureOutcome<T> {
+    let mut draining = drain(child);
+    let pid = draining.child.id();
+    let work = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        work(&mut draining.child, &entry, &mut deadline)
+    }))
+    .unwrap_or_else(|panic| Err(FixtureFailure::Panic(panic_text(panic))));
+    if work.is_err() {
+        drop(draining.child.stdin.take());
+    }
+    let wait = wait_until(&mut draining.child, deadline);
+    let termination = match draining.child.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err("owned child termination unconfirmed".into()),
+        Err(error) => Err(format!("confirming owned child termination: {error}")),
+    };
+    let entry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(pid)))
+        .map_err(panic_text);
+    let output = draining.output_until(deadline);
+    FixtureOutcome {
+        child: pid,
+        work,
+        wait,
+        termination,
+        entry,
+        output,
+    }
+}
+
 /// A child whose piped stdout and stderr are read on threads of their own, so a child that writes more than a pipe
 /// holds is never stalled by its parent. Each reader sends what it read once its pipe ends.
 pub struct Draining {
     child: Child,
-    out: Option<Receiver<std::io::Result<String>>>,
-    err: Option<Receiver<std::io::Result<String>>>,
+    out: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
+    err: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
 }
 
 /// Starts reading `child`'s piped stdout and stderr (either may be absent) on threads of their own.
 pub fn drain(mut child: Child) -> Draining {
     fn reader(
         pipe: Option<impl Read + Send + 'static>,
-    ) -> Option<Receiver<std::io::Result<String>>> {
+    ) -> Option<Receiver<(Vec<u8>, std::io::Result<()>)>> {
         pipe.map(|mut pipe| {
             let (sent, read) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let mut text = String::new();
-                let _ = sent.send(pipe.read_to_string(&mut text).map(|_| text));
+                let mut bytes = Vec::new();
+                let result = pipe.read_to_end(&mut bytes).map(|_| ());
+                let _ = sent.send((bytes, result));
             });
             read
         })
@@ -197,6 +318,14 @@ pub fn drain(mut child: Child) -> Draining {
 }
 
 impl Draining {
+    fn output_until(&mut self, deadline: Instant) -> Result<(String, String), String> {
+        let out = read_output(self.out.take(), deadline, "stdout");
+        let err = read_output(self.err.take(), deadline, "stderr");
+        match (out, err) {
+            (Ok(out), Ok(err)) => Ok((out, err)),
+            (out, err) => Err(format!("stdout: {out:?}; stderr: {err:?}")),
+        }
+    }
     /// Waits for the child within `bound` ([`wait_within`]), then for its output to end within what remains of that
     /// bound (and at least 1 s, so a child that exits at the bound's edge is not failed for its readers' last step).
     /// It returns the child's status, stdout and stderr. A failed read fails the caller. So does output still open at
@@ -206,22 +335,61 @@ impl Draining {
         let deadline = Instant::now() + bound;
         let status =
             wait_until(&mut self.child, deadline).unwrap_or_else(|error| panic!("{error}"));
-        let text = |reader: Option<Receiver<std::io::Result<String>>>, what: &str| {
-            reader.map_or_else(String::new, |reader| {
-                let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1));
-                match reader.recv_timeout(left) {
-                    Ok(read) => read.unwrap_or_else(|e| panic!("reading the child's {what}: {e}")),
-                    Err(RecvTimeoutError::Timeout) => panic!(
-                        "the child exited but its {what} did not end within {bound:?} (a descendant may hold it)"
-                    ),
-                    Err(RecvTimeoutError::Disconnected) => panic!("the reader of the child's {what} ended without a result"),
-                }
-            })
-        };
-        let out = text(self.out.take(), "stdout");
-        let err = text(self.err.take(), "stderr");
+        let (out, err) = self
+            .output_until(deadline)
+            .unwrap_or_else(|error| panic!("{error}"));
         (status, out, err)
     }
+}
+
+fn read_output(
+    reader: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
+    deadline: Instant,
+    what: &str,
+) -> Result<String, String> {
+    let Some(reader) = reader else {
+        return Ok(String::new());
+    };
+    // Preserve the existing separately bounded terminal-output allowance.
+    let left = deadline
+        .saturating_duration_since(Instant::now())
+        .max(Duration::from_secs(1));
+    match reader.recv_timeout(left) {
+        Ok((bytes, result)) => {
+            let text = render_bytes(&bytes);
+            result.map(|()| text.clone()).map_err(|error| {
+                format!("reading the child's {what}: {error}; captured={text}")
+            })
+        }
+        Err(RecvTimeoutError::Timeout) => Err(format!(
+            "the child exited but its {what} did not end within the output deadline (a descendant may hold it)"
+        )),
+        Err(RecvTimeoutError::Disconnected) => Err(format!("the reader of the child's {what} ended without a result")),
+    }
+}
+
+/// Keep valid UTF-8 spans and escape every invalid byte, including an incomplete final sequence.
+fn render_bytes(mut bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut text = String::new();
+    while !bytes.is_empty() {
+        match std::str::from_utf8(bytes) {
+            Ok(valid) => {
+                text.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid = error.valid_up_to();
+                text.push_str(std::str::from_utf8(&bytes[..valid]).expect("validated span"));
+                let invalid = error.error_len().unwrap_or(bytes.len() - valid);
+                for byte in &bytes[valid..valid + invalid] {
+                    write!(text, "\\x{byte:02X}").expect("string write");
+                }
+                bytes = &bytes[valid + invalid..];
+            }
+        }
+    }
+    text
 }
 
 /// In the isolated child: records the body's entry and returns `true`, so the caller runs its body. In the parent:
@@ -312,7 +480,12 @@ mod tests {
         let Ok(role) = std::env::var(ROLE) else {
             return;
         };
-        enter("test_isolated::tests::a_role");
+        if role != "zero-release" {
+            enter("test_isolated::tests::a_role");
+        }
+        if let Some(path) = std::env::var_os("SOT_TEST_FIXTURE_STARTED") {
+            std::fs::write(path, b"started\n").unwrap();
+        }
         match role.as_str() {
             // More than any platform's pipe holds (64 KiB on Linux and macOS, about 4 KiB on Windows), then exit.
             "flood" => {
@@ -322,6 +495,28 @@ mod tests {
                 }
             }
             "stall" => std::thread::sleep(Duration::from_secs(120)),
+            "bytes" => {
+                let mut out = std::io::stdout().lock();
+                out.write_all(b"valid stdout control\n").unwrap();
+                out.flush().unwrap();
+                let mut err = std::io::stderr().lock();
+                err.write_all(b"intended child diagnostic \xFF\xFE\xC3(\n")
+                    .unwrap();
+                err.flush().unwrap();
+                panic!("intended child failure");
+            }
+            "byte-controls" => {
+                let mut out = std::io::stdout().lock();
+                for bytes in [b"\xE2".as_slice(), b"\x82\xAC\n", b"\x80\xC3(\xE2\x82"] {
+                    out.write_all(bytes).unwrap();
+                    out.flush().unwrap();
+                }
+            }
+            "release" | "zero-release" => {
+                eprintln!("fixture-start observed");
+                std::io::stderr().flush().unwrap();
+                std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
+            }
             // Leaves a descendant that holds this child's stdin and stdout, and exits at once.
             "leave" => {
                 Command::new(std::env::current_exe().expect("current_exe"))
@@ -375,48 +570,65 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn");
-        let pid = child.id();
-        let draining = drain(child);
-        // The bound is the stall's: a child scheduled late is not killed before it enters.
-        wait_for_entry(&entry);
-        let started = Instant::now();
-        assert_fails_with("did not complete within", move || {
-            draining.wait_within(Duration::from_secs(5));
-        });
-        assert!(
-            started.elapsed() < Duration::from_secs(15),
-            "the bound was not kept: {:?}",
-            started.elapsed()
+        let mut started = None;
+        let outcome = supervise_fixture_until(
+            child,
+            entry,
+            Instant::now() + ISOLATION_TIMEOUT,
+            |child, entry, deadline| {
+                observe_entry(entry, child.id(), *deadline)?;
+                let origin = Instant::now();
+                started = Some(origin);
+                *deadline = origin + Duration::from_secs(5);
+                Ok(())
+            },
         );
-        entry.assert_once(pid);
+        outcome.report("test_isolated::tests::a_role");
+        assert!(outcome.work.is_ok() && outcome.entry.is_ok() && outcome.termination.is_ok());
+        assert!(matches!(
+            outcome.wait.unwrap_err().kind,
+            ChildWaitKind::Expired
+        ));
+        assert!(
+            started.unwrap().elapsed() < Duration::from_secs(15),
+            "the bound was not kept"
+        );
     }
 
-    /// A child that exits but leaves a descendant holding its stdout fails at the bound, by name, instead of hanging.
+    /// A held output stream fails after the child has exited; entry/end checks still finish.
     #[test]
     fn output_a_descendant_holds_fails_at_the_bound() {
         let (mut command, entry) = test_command("test_isolated::tests::a_role");
-        let mut child = command
+        let child = command
             .env(ROLE, "leave")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .expect("spawn");
-        let pid = child.id();
-        // The descendant holds stdout until this input ends.
-        let input = child.stdin.take().expect("piped stdin");
-        let draining = drain(child);
-        wait_for_entry(&entry);
-        let started = Instant::now();
-        assert_fails_with("did not end within", move || {
-            draining.wait_within(Duration::from_secs(5));
-        });
-        assert!(
-            started.elapsed() < Duration::from_secs(15),
-            "the bound was not kept: {:?}",
-            started.elapsed()
+        let mut input = None;
+        let mut started = None;
+        let outcome = supervise_fixture_until(
+            child,
+            entry,
+            Instant::now() + ISOLATION_TIMEOUT,
+            |child, entry, deadline| {
+                observe_entry(entry, child.id(), *deadline)?;
+                input = child.stdin.take();
+                let origin = Instant::now();
+                started = Some(origin);
+                *deadline = origin + Duration::from_secs(5);
+                Ok(())
+            },
         );
         drop(input);
-        entry.assert_once(pid);
+        outcome.report("test_isolated::tests::a_role");
+        assert!(outcome.work.is_ok() && outcome.entry.is_ok() && outcome.termination.is_ok());
+        assert!(outcome.wait.unwrap().success());
+        assert!(outcome.output.unwrap_err().contains("did not end within"));
+        assert!(
+            started.unwrap().elapsed() < Duration::from_secs(15),
+            "the bound was not kept"
+        );
     }
 
     fn assert_fails_with(text: &str, check: impl FnOnce()) {
@@ -429,20 +641,165 @@ mod tests {
         assert!(message.contains(text), "{message}");
     }
 
-    /// Waits, within `ISOLATION_TIMEOUT`, until the child's body has entered, so the bound a test then times is its own.
-    fn wait_for_entry(entry: &Entry) {
-        let deadline = Instant::now() + ISOLATION_TIMEOUT;
-        while std::fs::read_to_string(&entry.path)
-            .unwrap_or_default()
-            .is_empty()
-        {
-            assert!(
-                Instant::now() < deadline,
-                "{} did not enter within {ISOLATION_TIMEOUT:?}",
-                entry.name
-            );
+    fn observe_entry(entry: &Entry, pid: u32, deadline: Instant) -> Result<(), FixtureFailure> {
+        loop {
+            let record = match std::fs::read_to_string(&entry.path) {
+                Ok(record) => record,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => return Err(FixtureFailure::Error(error.to_string())),
+            };
+            if record == format!("{} {pid}\n", entry.name) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(FixtureFailure::Timeout(
+                    "complete entry readiness record missing".into(),
+                ));
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// Start is observable independently of the withheld readiness marker.
+    fn observe_start(path: &std::path::Path, deadline: Instant) -> Result<(), FixtureFailure> {
+        loop {
+            let bytes = std::fs::read(path).map_err(|e| FixtureFailure::Error(e.to_string()))?;
+            if bytes == b"started\n" {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(FixtureFailure::Timeout("fixture start missing".into()));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn readiness_failure_finishes_owned_child_checks() {
+        for (failure, role) in [
+            ("timeout", "release"),
+            ("error", "release"),
+            ("panic", "release"),
+            ("timeout", "stall"),
+            ("timeout", "zero-release"),
+        ] {
+            let started = tempfile::NamedTempFile::new().unwrap();
+            let (mut command, entry) = test_command("test_isolated::tests::a_role");
+            let child = command
+                .env(ROLE, role)
+                .env("SOT_TEST_FIXTURE_STARTED", started.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let pid = child.id();
+            let deadline = Instant::now() + ISOLATION_TIMEOUT;
+            let outcome: FixtureOutcome<()> =
+                supervise_fixture_until(child, entry, deadline, |_, _, end| {
+                    observe_start(started.path(), *end)?;
+                    eprintln!("fixture-start child={pid} observed=true");
+                    let readiness_end = Instant::now() + Duration::from_millis(150);
+                    *end = readiness_end + Duration::from_millis(600);
+                    match failure {
+                        "panic" => panic!("deliberate readiness panic"),
+                        "error" => {
+                            let error = std::fs::read(started.path().with_extension("missing"))
+                                .unwrap_err();
+                            Err(FixtureFailure::Error(format!(
+                                "readiness read failed: {}",
+                                error.kind()
+                            )))
+                        }
+                        _ => {
+                            while Instant::now() < readiness_end {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(FixtureFailure::Timeout(
+                                "expected readiness marker missing".into(),
+                            ))
+                        }
+                    }
+                });
+            outcome.report("test_isolated::tests::a_role");
+            assert!(outcome.work.is_err(), "readiness failure not observed");
+            assert!(
+                outcome.termination.is_ok(),
+                "readiness failure bypassed owned-child finalization"
+            );
+            if role == "zero-release" {
+                assert!(outcome
+                    .entry
+                    .as_ref()
+                    .unwrap_err()
+                    .contains("isolated body did not enter"));
+            } else {
+                assert!(
+                    outcome.entry.is_ok(),
+                    "readiness failure bypassed owned-child finalization"
+                );
+            }
+            if role == "stall" {
+                assert!(matches!(
+                    outcome.wait.unwrap_err().kind,
+                    ChildWaitKind::Expired
+                ));
+            } else {
+                assert!(outcome.wait.unwrap().success());
+            }
+        }
+    }
+
+    #[test]
+    fn byte_output_controls_preserve_valid_spans_and_invalid_stdout() {
+        let (mut command, entry) = test_command("test_isolated::tests::a_role");
+        let child = command
+            .env(ROLE, "byte-controls")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let outcome = supervise_fixture_until(
+            child,
+            entry,
+            Instant::now() + ISOLATION_TIMEOUT,
+            |_, _, _| Ok(()),
+        );
+        outcome.report("test_isolated::tests::a_role");
+        assert!(outcome.termination.is_ok() && outcome.entry.is_ok());
+        assert!(outcome.wait.unwrap().success());
+        let (out, _) = outcome.output.unwrap();
+        assert!(out.contains("€\n\\x80\\xC3(\\xE2\\x82"), "{out}");
+    }
+
+    #[test]
+    fn invalid_utf8_stderr_preserves_the_child_diagnostic() {
+        let (mut command, entry) = test_command("test_isolated::tests::a_role");
+        let child = command
+            .env(ROLE, "bytes")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let captured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drain(child).wait_within(ISOLATION_TIMEOUT)
+        }));
+        entry.assert_once(pid);
+        eprintln!("entry-proof test=test_isolated::tests::a_role child={pid} entry=once");
+        assert!(
+            captured.is_ok(),
+            "child output lost escaped invalid UTF-8 diagnostic"
+        );
+        let (status, out, err) = captured.unwrap();
+        assert!(!status.success(), "intended child failure was not observed");
+        assert!(out.contains("valid stdout control"));
+        assert!(
+            err.contains("intended child diagnostic \\xFF\\xFE\\xC3("),
+            "child output lost escaped invalid UTF-8 diagnostic: {err}"
+        );
+        assert!(err.contains("intended child failure"));
+        eprintln!("{err}child-status={status} child={pid} bodies=1 cleanup=confirmed");
     }
 
     // Body entry and child cleanup are behavioral proofs; the rerun spelling catalog is retired.
@@ -450,26 +807,32 @@ mod tests {
     #[test]
     fn wait_until_retains_a_spent_deadline_and_confirms_expiry() {
         let (mut command, entry) = test_command("test_isolated::tests::a_role");
-        let mut child = command
+        let child = command
             .env(ROLE, "stall")
             .stdin(Stdio::null())
             .spawn()
             .unwrap();
-        let pid = child.id();
-        wait_for_entry(&entry);
-        let started = Instant::now();
-        let deadline = started + Duration::from_millis(600);
-        std::thread::sleep(Duration::from_millis(400));
-        let error = wait_until(&mut child, deadline).expect_err("stalled child must expire");
-        entry.assert_once(pid);
-        assert!(matches!(error.kind, ChildWaitKind::Expired));
-        assert!(
-            error.termination_confirmed,
-            "owned child cleanup unconfirmed"
+        let mut started = None;
+        let outcome = supervise_fixture_until(
+            child,
+            entry,
+            Instant::now() + ISOLATION_TIMEOUT,
+            |child, entry, deadline| {
+                observe_entry(entry, child.id(), *deadline)?;
+                let origin = Instant::now();
+                started = Some(origin);
+                *deadline = origin + Duration::from_millis(600);
+                std::thread::sleep(Duration::from_millis(400));
+                Ok(())
+            },
         );
-        eprintln!("body-proof test=test_isolated::tests::a_role child={pid} bodies=1 completed=false cleanup=confirmed");
+        outcome.report("test_isolated::tests::a_role");
+        assert!(outcome.work.is_ok() && outcome.entry.is_ok() && outcome.termination.is_ok());
+        let error = outcome.wait.unwrap_err();
+        assert!(matches!(error.kind, ChildWaitKind::Expired) && error.termination_confirmed);
+        eprintln!("body-proof test=test_isolated::tests::a_role child={} bodies=1 completed=false cleanup=confirmed", outcome.child);
         assert!(
-            started.elapsed() < Duration::from_millis(950),
+            started.unwrap().elapsed() < Duration::from_millis(950),
             "child deadline was recomputed"
         );
     }

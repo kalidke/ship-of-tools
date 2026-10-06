@@ -42,10 +42,14 @@ use sot_log::lane::transport::CONNECT_BOUND;
 use sot_log::lane::transport::{
     ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE,
 };
+use sot_log::test_isolated::{
+    supervise_fixture_until, test_command, ChildWaitKind, FixtureFailure,
+};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -464,6 +468,22 @@ impl WaitContext {
         self.available_snapshot_observing(server, || {})
     }
 
+    fn prerequisite_history(
+        &self,
+        server: &SocketServer,
+    ) -> sot_log::lane::test_progress::Snapshot {
+        loop {
+            self.check(Some(server));
+            let snapshot = server.progress_for_test();
+            if !snapshot.unavailable && snapshot.records.iter().any(|r| r.conn == self.conn) {
+                self.emit(&snapshot.to_string());
+                self.complete("ok", None, Some(server));
+                return snapshot;
+            }
+            self.pause(Duration::from_millis(5));
+        }
+    }
+
     fn available_snapshot_observing(
         &self,
         server: &SocketServer,
@@ -641,5 +661,140 @@ mod client;
 mod close;
 mod connect;
 mod teardown;
+
+#[derive(Clone)]
+struct Captured {
+    text: String,
+    pid: u32,
+    expired: bool,
+    begin_observed: bool,
+}
+
+/// ISO owns the child wait and cleanup; the capture file introduces no drain deadline.
+fn capture(test: &str, bound: Duration, release_after_begin: Option<&str>) -> Captured {
+    capture_variant(test, bound, release_after_begin, "ordinary")
+}
+
+fn capture_variant(test: &str, bound: Duration, release: Option<&str>, variant: &str) -> Captured {
+    let output = tempfile::NamedTempFile::new().expect("capture file");
+    let (mut command, entry) = test_command(test);
+    let file = output.reopen().unwrap();
+    let wait = WaitContext::new(
+        test,
+        "child.wait",
+        "fixture ends with confirmed cleanup",
+        None,
+        bound,
+    );
+    let child = command
+        .env("SOT_TEST_SOCKET_ROLE", test)
+        .env("SOT_TEST_SOCKET_HISTORY", variant)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(file.try_clone().unwrap()))
+        .stderr(Stdio::from(file.try_clone().unwrap()))
+        .spawn()
+        .expect("spawn the fixture child");
+    let pid = child.id();
+    let mut begin_observed = false;
+    let outcome = supervise_fixture_until(child, entry, wait.deadline, |child, _, deadline| {
+        if let Some(step) = release {
+            let observe = WaitContext::from_origin(
+                test,
+                "begin.observe",
+                "complete emitted begin before release",
+                None,
+                wait.started,
+                *deadline,
+            );
+            while Instant::now() < observe.deadline {
+                let text = std::fs::read_to_string(output.path())
+                    .map_err(|e| FixtureFailure::Error(e.to_string()))?;
+                begin_observed = text.split_inclusive('\n').any(|line| {
+                    line.contains(&format!("socket-test test={test} child={pid} "))
+                        && line.contains(&format!(" step={step} "))
+                        && line.ends_with("result=begin\n")
+                });
+                if begin_observed {
+                    break;
+                }
+                observe.pause(Duration::from_millis(5));
+            }
+            observe.complete(if begin_observed { "ok" } else { "timeout" }, None, None);
+            if !begin_observed {
+                return Err(FixtureFailure::Timeout(
+                    "child begin was not visible before release".into(),
+                ));
+            }
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"r")
+                .map_err(|e| FixtureFailure::Error(e.to_string()))?;
+            eprintln!("fixture-proof test={test} child={pid} begin={step} observed=before-release");
+        }
+        Ok(())
+    });
+    wait.child_outcome(&outcome.wait);
+    outcome.report(test);
+    // A final capture read can fail only after all mandatory child checks have been attempted.
+    let text = std::fs::read_to_string(output.path());
+    let expired = outcome
+        .wait
+        .as_ref()
+        .is_err_and(|e| matches!(e.kind, ChildWaitKind::Expired));
+    assert!(
+        outcome.termination.is_ok() && outcome.entry.is_ok() && outcome.output.is_ok(),
+        "fixture finalization failed; see retained errors above"
+    );
+    let text = text.expect("read finalized fixture capture");
+    eprintln!("{text}");
+    if let Err(error) = outcome.work {
+        panic!("{error}: {text}");
+    }
+    match outcome.wait {
+        Ok(status) => assert!(status.success(), "fixture child failed: {status}: {text}"),
+        Err(error) if !expired => panic!("fixture supervision failed: {error}"),
+        Err(_) => {}
+    }
+    eprintln!(
+        "body-proof test={test} child={pid} bodies=1 completed={} cleanup=confirmed",
+        !expired
+    );
+    Captured {
+        text,
+        pid,
+        expired,
+        begin_observed,
+    }
+}
+
+fn observe_marker(
+    wait: &WaitContext,
+    path: &std::path::Path,
+    marker: &str,
+) -> Result<(), FixtureFailure> {
+    while Instant::now() < wait.deadline {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| FixtureFailure::Error(e.to_string()))?;
+        if text
+            .split_inclusive('\n')
+            .any(|line| line.ends_with('\n') && line.trim_end().ends_with(marker.trim_end()))
+        {
+            return Ok(());
+        }
+        wait.pause(Duration::from_millis(5));
+    }
+    Err(FixtureFailure::Timeout(
+        "expected readiness marker missing".into(),
+    ))
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(text) => *text,
+        Err(payload) => payload.downcast_ref::<&str>().copied().unwrap_or("").into(),
+    }
+}
 
 mod diagnostics;

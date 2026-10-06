@@ -39,9 +39,9 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - The Claude adapter: `claude_rig`; `claude_e2e` only for the real helper.
 
 ## Rules
-- Socket tests use context-aware operation adapters with one absolute deadline and observed outcomes; diagnostics asserts flushed child output, including begin visibility and timeout snapshots, and polls within that deadline before retention checks.
+- Socket tests use named contexts and original deadlines; diagnostics captures available prerequisite history separately from each immediate timeout snapshot, whose busy/poisoned accounting is valid, and polls availability only for pre-expiry history/retention checks.
 - A test file over 800 lines becomes `<name>/main.rs` plus subject modules under the same binary name; each module opens with `use super::*;`, so a helper two or more modules share stays in `main.rs`.
-- A process-isolated test uses `sot_log::test_isolated` with its exact qualified libtest name; deadline-aware callers use `run_isolated_until`, and direct fixtures use `test_command`, `enter`, `Entry::assert_once` and `wait_until`. Body entry and owned-child completion are checked by behavior; no rerun spelling catalog is used.
+- Process-isolated tests use exact qualified libtest names through `test_isolated`; direct fixtures use its scoped supervision, retaining readiness/output errors until owned-child waiting, termination confirmation and exact entry checks finish. No source spelling catalog proves these outcomes.
 - `support/` files are shared with `#[path = "support/<f>.rs"] mod <f>;` (`../support/` from a binary folder); each binary includes only what it uses.
 - `fixtures/` holds committed bytes read by `include_bytes!` or through `CARGO_MANIFEST_DIR`; the four golden `.sotseg` files are also read by julia/sotlog/test/runtests.jl, so a fixture is never rewritten, only added.
 - CI runs the Windows binaries by name in the `conpty-windows-2022` job of rust.yml: `conpty`, `capsule`, `pipe_win`, `e2e_pipe`, `supervisor`, `fe_client`.
