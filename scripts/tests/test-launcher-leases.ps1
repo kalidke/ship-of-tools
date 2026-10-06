@@ -240,7 +240,6 @@ try {
             try {
                 # 11f is about the warning, not the bytes a bridge reads (7c is): its fixture fails on any input byte,
                 # so while it runs the console's input encoding has no preamble, whatever Start-SotBridge does.
-                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
                 $script:supLines = @()
                 $streams11f = @(Open-SotLease (Get-PipePath (New-TestPipeName)) $fakeExe)
                 Check '11f: no stream comes back' ($streams11f.Count -eq 0) "got $($streams11f.Count)"
