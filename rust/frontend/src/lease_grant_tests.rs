@@ -31,6 +31,10 @@ impl std::ops::Deref for Bound {
 }
 
 pub(crate) fn bind(tag: &str) -> (Bound, PathBuf) {
+    bind_with(tag, |_| {})
+}
+
+fn bind_with(tag: &str, before_bind: impl FnOnce(&std::path::Path)) -> (Bound, PathBuf) {
     let unique = format!(
         "sot-lease-test-{tag}-{}-{}",
         std::process::id(),
@@ -40,9 +44,9 @@ pub(crate) fn bind(tag: &str) -> (Bound, PathBuf) {
             .as_nanos()
     );
     #[cfg(windows)]
-    let path = PathBuf::from(format!(r"\\.\pipe\{unique}"));
+    let (path, folder) = (PathBuf::from(format!(r"\\.\pipe\{unique}")), Folder(None));
     #[cfg(not(windows))]
-    let path = {
+    let (path, folder) = {
         // macOS's temp_dir() is long enough to overflow sun_path
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let _ = &unique;
@@ -54,12 +58,13 @@ pub(crate) fn bind(tag: &str) -> (Bound, PathBuf) {
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
-        dir.join("s.sock")
+        let folder = Folder(Some(dir));
+        (folder.0.as_ref().unwrap().join("s.sock"), folder)
     };
     let _ = std::fs::remove_file(&path);
+    before_bind(&path);
     let name = path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_tokio().expect("bind");
-    let folder = Folder(if cfg!(windows) { None } else { path.parent().map(PathBuf::from) });
     (Bound { listener, _folder: folder }, path)
 }
 
@@ -459,6 +464,34 @@ async fn bind_removes_its_folder_when_dropped() {
     assert!(dir.is_dir());
     drop(listener);
     assert!(!dir.exists(), "{} was left behind", dir.display());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bind_failure_removes_its_folder() {
+    println!("T1 body entered: lease::grant_tests::bind_failure_removes_its_folder");
+    let mut cleanup = Folder(None);
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bind_with("bindfail", |path| {
+            let dir = path.parent().unwrap().to_path_buf();
+            assert!(dir.is_absolute() && dir.is_dir(), "actual private fixture directory");
+            cleanup.0 = Some(dir);
+            std::fs::create_dir(path).expect("occupy the real socket pathname");
+        })
+    }));
+    let panic = match failure {
+        Err(panic) => panic,
+        Ok(_) => panic!("occupied socket pathname unexpectedly bound"),
+    };
+    let message = panic.downcast_ref::<String>().map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied()).expect("bind failure diagnostic");
+    assert!(message.starts_with("bind: ") && message.contains("kind: AddrInUse"),
+        "expected the deliberately occupied-path bind failure, observed: {message}");
+    println!("forced occupied-path bind failure observed");
+    let dir = cleanup.0.as_ref().expect("binding continuation ran");
+    assert!(!dir.exists(), "private lease listener directory is removed after a bind failure");
+    println!("private lease listener directory is removed after a bind failure");
+    println!("T1 assertion passed: private lease listener directory is removed after a bind failure");
 }
 
 /// A hello the daemon refuses (an older protocol, a second OS account on the host) is not a failed connect: the data

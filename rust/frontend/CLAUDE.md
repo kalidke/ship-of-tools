@@ -16,7 +16,7 @@ them each belong to one other subsystem, named below. Part of fe-ui; charter: ru
 - `src/cli.rs`: argv parsing, `Cli::parse` and the usage text (fe-ui; charter rust/frontend/src/ui/CLAUDE.md).
 - `src/lease.rs`: the window's lease client, `Leases` and `Leaving` (lifecycle; charter
   rust/backend/src/lifecycle/CLAUDE.md).
-- `src/lease_grant_tests.rs`: lease grant tests and the shared test-only private listener/handoff fixture.
+- `src/lease_grant_tests.rs`: lease grant tests and the shared test-only private listener/handoff fixture; its directory guard is created immediately after directory creation, before any fallible setup or binding, and behavioral tests cover bind-failure and successful-listener-drop cleanup.
 - `src/lease_leave_tests.rs`: lease leave tests and the shared test-only recording leave peer and bounded log/finish helpers.
 - `src/pages.rs`: the window's page proxy, loopback listeners that pipe each browser connection to the owning
   daemon's `proxy.connect` (pages; charter rust/backend/src/pages/CLAUDE.md).
