@@ -1,0 +1,55 @@
+[
+  {
+    "label": "c3a-revert-bind_failure_removes_its_folder",
+    "tree": "revert",
+    "test": "lease::grant_tests::bind_failure_removes_its_folder",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "private lease listener directory is removed after a bind failure",
+    "observations": [
+      "forced occupied-path bind failure observed"
+    ],
+    "occupied_bind": true,
+    "isolated": false,
+    "not_runnable_here": true,
+    "platforms": [
+      "linux",
+      "macos"
+    ]
+  },
+  {
+    "label": "c3a-revert-bind_removes_its_folder_when_dropped",
+    "tree": "revert",
+    "test": "lease::grant_tests::bind_removes_its_folder_when_dropped",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "was left behind",
+    "observations": [
+      "T1 fixture observed: successful listener owns its private directory"
+    ],
+    "occupied_bind": false,
+    "isolated": false,
+    "not_runnable_here": true,
+    "platforms": [
+      "linux",
+      "macos"
+    ]
+  },
+  {
+    "label": "c3a-revert-harness_never_leases",
+    "tree": "revert",
+    "test": "lease::grant_tests::harness_never_leases",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "an exempt window must not connect",
+    "observations": [
+      "T1 fixture observed: private listener bound and exempt lease refused connection"
+    ],
+    "occupied_bind": false,
+    "isolated": false,
+    "not_runnable_here": true,
+    "platforms": [
+      "windows"
+    ]
+  }
+]

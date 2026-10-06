@@ -94,6 +94,7 @@ fn pipe_config(path: &Path) -> TransportConfig {
 
 #[test]
 fn harness_never_leases() {
+    println!("T1 body entered: lease::grant_tests::harness_never_leases");
     for bits in 0..8u8 {
         let (e, c, n) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
         assert_eq!(lease_exempt(e, c, n), bits != 0, "row {bits}");
@@ -113,6 +114,8 @@ fn harness_never_leases() {
         assert_eq!(leases.before_data_connection(&host, &path, None).await.unwrap(), 0);
         let accepted = tokio::time::timeout(Duration::from_millis(300), listener.accept()).await;
         assert!(accepted.is_err(), "an exempt window must not connect");
+        println!("T1 fixture observed: private listener bound and exempt lease refused connection");
+        println!("T1 assertion passed: an exempt window must not connect");
         assert_eq!(leases.notice(), None);
     });
 }
@@ -459,11 +462,14 @@ fn no_lease_status_line() {
 #[cfg(unix)]
 #[tokio::test]
 async fn bind_removes_its_folder_when_dropped() {
+    println!("T1 body entered: lease::grant_tests::bind_removes_its_folder_when_dropped");
     let (listener, path) = bind("folder");
     let dir = path.parent().unwrap().to_path_buf();
     assert!(dir.is_dir());
+    println!("T1 fixture observed: successful listener owns its private directory");
     drop(listener);
     assert!(!dir.exists(), "{} was left behind", dir.display());
+    println!("T1 assertion passed: was left behind");
 }
 
 #[cfg(unix)]
