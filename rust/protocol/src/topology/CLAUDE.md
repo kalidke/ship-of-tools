@@ -34,7 +34,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 - An ssh endpoint's first supervisor dial starts at most one parked voyage login; the first voyage dial consumes it once, and a spent endpoint starts no further spare (`start_spare`, `take_spare`).
 
-- `DaemonLaneEndpoint::new` fixes the endpoint's route and initializes its private spare state. Callers cannot replace the route or construct an endpoint literal; a shared `LinkGate` changes liveness only. Tests exercise dial sequences and owned-child lifetimes.
+- `DaemonLaneEndpoint::new` initializes the private spare state; callers outside the lane-client module cannot construct an endpoint literal. Tests exercise dial sequences and owned-child lifetimes, not a source inventory.
 
 - A failed supervisor handshake drops its parked spare before returning; `Endpoint::drop_spare` also drops it after an unproven supervisor hello or failed Status. Dropping the endpoint reaps any remaining parked child.
 

@@ -114,7 +114,7 @@ pub enum LaneDial {
 /// }
 /// ```
 pub struct DaemonLaneEndpoint {
-    dial: LaneDial,
+    pub dial: LaneDial,
     pub token: Option<String>,
     spare: std::sync::Mutex<VoyageSpare>,
     #[cfg(any(test, feature = "test-handshake-bound"))]
