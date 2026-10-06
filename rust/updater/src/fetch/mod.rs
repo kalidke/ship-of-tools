@@ -69,7 +69,7 @@ impl Fetcher {
     /// draft is dropped here since it has no public download URL at all;
     /// everything else, including prereleases, is left for the selection
     /// function to filter by channel).
-    pub async fn list_releases(&self, repo: &str) -> Result<Vec<(String, bool)>> {
+    pub(crate) async fn list_releases(&self, repo: &str) -> Result<Vec<(String, bool)>> {
         validate_repo(repo)?;
         match self {
             Fetcher::Curl => {
@@ -117,7 +117,7 @@ impl Fetcher {
     /// and fetch that release's `SHA256SUMS`. `Ok(None)` means the check
     /// succeeded but nothing in `current_version`'s channel is newer — a
     /// normal outcome, not an error.
-    pub async fn latest(
+    pub(crate) async fn latest(
         &self,
         repo: &str,
         current_version: &str,
@@ -147,7 +147,7 @@ impl Fetcher {
     /// Download one named release file for an explicit tag into `dest` (a file
     /// path). Callers validate the identity; this validates the raw strings
     /// again before building URLs/paths (defense in depth).
-    pub async fn download(&self, repo: &str, tag: &str, name: &str, dest: &Path) -> Result<()> {
+    pub(crate) async fn download(&self, repo: &str, tag: &str, name: &str, dest: &Path) -> Result<()> {
         validate_repo(repo)?;
         validate_tag(tag)?;
         if name.contains('/') || name.contains('\\') || name.contains("..") {

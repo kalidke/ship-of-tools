@@ -343,7 +343,7 @@ async fn ensure_base(spec: &PrepareSpec, base: &Path) -> Result<()> {
 
 /// Remove a version worktree properly (worktree remove + prune), falling back
 /// to a plain delete + prune for a dir git no longer recognizes.
-pub async fn remove_worktree(base: &Path, checkout: &Path) -> Result<()> {
+pub(crate) async fn remove_worktree(base: &Path, checkout: &Path) -> Result<()> {
     let res = git(
         base,
         &[

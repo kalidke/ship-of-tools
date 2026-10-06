@@ -44,7 +44,7 @@ pub struct StageLock {
 impl StageLock {
     /// Acquire the lock under `root`, waiting up to `wait` (polling). Breaks a
     /// stale lock (dead same-host pid, or mtime beyond the takeover age).
-    pub async fn acquire(root: &Path, wait: Duration) -> Result<Self> {
+    pub(crate) async fn acquire(root: &Path, wait: Duration) -> Result<Self> {
         tokio::fs::create_dir_all(root)
             .await
             .with_context(|| format!("creating updates root {}", root.display()))?;
@@ -212,8 +212,8 @@ fn this_host() -> String {
 // graveyard directory names a breaker renames a stale lock into (below) —
 // those are paths, where a collision is not merely a confusing log line.
 
-/// Liveness probe without a libc dependency: /proc on Linux, `kill -0` via sh
-/// elsewhere. Only ever called on unix for same-host pids.
+/// Whether `pid` is a live process on this host: /proc on Linux, `kill(pid, 0)` elsewhere, where a process this
+/// account may not signal (`EPERM`) is alive. Only ever called on unix for same-host pids.
 #[cfg(unix)]
 fn pid_alive(pid: i32) -> bool {
     #[cfg(target_os = "linux")]
@@ -222,13 +222,9 @@ fn pid_alive(pid: i32) -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        #[allow(clippy::disallowed_methods, reason = "an updater step; started inside the daemon it is ADR 0050 known limit (n)")]
-        let alive = std::process::Command::new("sh")
-            .args(["-c", &format!("kill -0 {pid} 2>/dev/null")])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        alive
+        // SAFETY: signal 0 delivers nothing; it only asks whether the pid exists.
+        let rc = unsafe { libc::kill(pid, 0) };
+        rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 }
 
@@ -238,6 +234,13 @@ mod tests {
 
     fn test_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("sot-updater-lock-{label}-{}", std::process::id()))
+    }
+
+    /// A process this account may not signal is still alive: the probe must not read it as dead.
+    #[cfg(unix)]
+    #[test]
+    fn a_pid_this_account_cannot_signal_is_alive() {
+        assert!(pid_alive(1), "pid 1 read as dead");
     }
 
     #[tokio::test]

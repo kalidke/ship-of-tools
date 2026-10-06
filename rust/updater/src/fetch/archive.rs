@@ -58,7 +58,7 @@ pub fn validate_entry_name(entry: &str, top: &str) -> Result<()> {
 
 /// List entry names for a `.tar.gz` (via `tar -tzf`) or `.zip` (via
 /// `zipinfo -1` / PowerShell on Windows).
-pub async fn list_entries(archive: &Path) -> Result<Vec<String>> {
+pub(crate) async fn list_entries(archive: &Path) -> Result<Vec<String>> {
     let name = archive
         .file_name()
         .and_then(|n| n.to_str())
@@ -110,7 +110,7 @@ pub async fn list_entries(archive: &Path) -> Result<Vec<String>> {
 /// Extract a verified archive into `dest`: entry names are validated against
 /// `top` first, extraction is bounded, and the resulting tree is re-validated
 /// (no symlinks, only allowlisted files under `dest/top/`).
-pub async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result<()> {
+pub(crate) async fn extract_validated(archive: &Path, dest: &Path, top: &str) -> Result<()> {
     let entries = list_entries(archive).await?;
     if entries.is_empty() {
         bail!("archive lists no entries");
