@@ -414,7 +414,7 @@ impl Leases {
     pub fn deliver_queued(&self, bound: Duration) {
         let deadline = Instant::now() + bound;
         let mut waits = loop {
-            match self.book.try_lock() {
+            match self.book.lock().map_err(std::sync::TryLockError::Poisoned) {
                 Ok(book) => break book.slots.iter().filter_map(|(host, slot)| {
                     let holder = slot.holder.as_ref()?;
                     let (tx, rx) = oneshot::channel();
