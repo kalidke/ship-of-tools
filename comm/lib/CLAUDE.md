@@ -57,6 +57,10 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   the wake's rule; a count that cannot be made returns 1, never 0).
 - One rule for a live `last_seen` (`sot_heartbeat_fresh`, `COMM_LIVE_SECS`), the twin of the filer's `heartbeat_fresh`.
 - Every endpoint leaves through `_sot_emit_endpoint`.
+- Every connection the library and its callers open goes through `sot_dial` or `sot_ssh_bridge`: a `unix:` or
+  `pipe:` endpoint through `sotd stdio-bridge --endpoint`, which connects only to an endpoint this OS account serves,
+  and an `ssh:` one through `sot_ssh_bridge`, whose far end is that box's own bridge (ADR 0049 `## User isolation`).
+  A caller keeps the bridge's input open until it has read what it waits for.
 - A value that may start with `/` goes through `sot_jq_rawfile`, never `jq --arg`.
 - A rule written in both shell and Rust changes in both in one commit (the lock record, the cursor, the lock identity, the unread count, the heartbeat).
 - The host part `comm-context.sh` gives an unpinned self file, and `comm-despawn.sh`'s match of it, come from `sot_raw_host`

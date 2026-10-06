@@ -21,6 +21,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `ping_reaper.rs`: server; the reaper of half-open long-lived client roles, over the wire
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
+- `shell_dial.rs`: topology; comm-lib's `sot_dial` and `sot_oneshot_request`, run by bash against the built `sotd`: a socket outside a private folder and another account's pipe are refused with nothing written, this account's are reached (ADR 0049 `## User isolation`)
 - `status_integration.rs`: topology; `sotd status` against a real daemon the test starts and stops
 - `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host | --endpoint]` with real pipes and real processes
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing

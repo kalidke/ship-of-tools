@@ -44,10 +44,11 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `agent_argv`, `agent_exec_argv`,
 `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env`,
-`comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
+`comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`, `sot_dial`,
 `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `sot_ssh_bridge`, `_sot_is_plain_host_name`, `sot_slug`,
-`comm/lib/comm-lib-identity.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `version.query`, `workspace.create`,
+`comm/lib/comm-lib-identity.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `sotd stdio-bridge`, `version.query`,
+`workspace.create`,
 `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`, `sot_host`,
 `comm/lib/comm-lib-base.sh`, `host_name`, `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`,
 `agents/spawn/comm-probe.sh`, `agents/spawn/comm-bootstrap.sh`, `fe.command.send`, `fe.command`,

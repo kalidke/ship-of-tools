@@ -52,7 +52,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `Contained`, `Signal`, `child_signal::fired`, `child_signal::process`, `Workspace::agent_handle`, `set_agent_handle`, `attach`,
 `send_text`, `send_enter`, `rust/backend/src/rows/run/headless.rs`, `Workspaces::resolve`, `row_or_reply`,
 `capsule_guard`, `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`,
-`sot_pty_input`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot_state_dir`,
+`sot_pty_input`, `sot_dial`, `capsule_supervisor_env`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot_state_dir`,
 `sot_config_dir`, `host_name`, `state_dir_hash`, `sot_host`, `comm/lib/comm-lib-base.sh`, `install_comm`,
 `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`.
 

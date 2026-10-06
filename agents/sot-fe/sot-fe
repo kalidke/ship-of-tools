@@ -219,11 +219,6 @@ source "$SCRIPT_DIR/comm-lib.sh"
 if ! command -v jq >/dev/null 2>&1; then
     echo "ERROR: jq not found — needed to build the request payload." >&2; exit 1
 fi
-# nc is preferred, but git-bash on Windows ships none — so for TCP endpoints we
-# fall back to bash's /dev/tcp (see sot_send). Only a unix-socket endpoint hard-
-# requires nc -U (/dev/tcp can't speak AF_UNIX). Mirrors comm-relay.sh's
-# fallback so sot-fe works on Windows without netcat.
-HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
 
 usage() {
     # Print the header usage/description block: comment lines from 10 down to

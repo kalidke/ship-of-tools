@@ -21,6 +21,8 @@ fi
 
 guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
+[ -x "$SOTD_BIN" ] || exit 2
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
 
 export SOT_COMM_TEST_HOST="test-host"
@@ -135,10 +137,8 @@ entry() {
     fi
 }
 
-# run_spawn NAME [ARGS...] — a dummy token + isolated config path: an
-# unset SOT_TOKEN falls back to the REAL ~/.config/sot/token
-# (comm-lib.sh sot_hello_frame); this session's ambient sot-comm env
-# would otherwise leak past the SOT_COMM_HOME override below.
+# run_spawn NAME [ARGS...] — an isolated config path: this session's ambient
+# sot-comm env would otherwise leak past the SOT_COMM_HOME override below.
 # It runs beneath a stand-in capsule (in_row), so comm-spawn's agent check
 # ends at that capsule and never depends on the runner's process tree, on
 # Linux: on a hosted runner the tree has no capsule, and an OS=Windows_NT case
@@ -152,7 +152,7 @@ run_spawn() {
     mkdir -p "$SPAWN_HOME"
     local errfile="$WORK/spawn-stderr-$SPAWNN.tmp"
     SPAWN_OUT="$(cd "$WORK" && in_row spawn-test env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
-        ${SPAWN_PATH:+PATH="$SPAWN_PATH"} SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
+        ${SPAWN_PATH:+PATH="$SPAWN_PATH"} GUARD_PIPE_SOCKET="$SOCK" XDG_CONFIG_HOME="$SPAWN_HOME/xdg-config" \
         SOT_COMM_HOME="$SPAWN_HOME" SOT_COMM_SELF_FILE="$SPAWN_HOME/self.txt" \
         timeout 30 "$SPAWN" ${name:+--name "$name"} "$REPO_PATH" --endpoint "${SPAWN_EP:-unix:$SOCK}" "$@" 2>"$errfile")"
     SPAWN_RC=$?
@@ -261,13 +261,12 @@ case_occupied_root_refused_derived_name() {
 }
 
 # stub_windows_tools map|fail — what a Windows box has on PATH for a pipe:
-# endpoint: powershell.exe (carries stdin to the stub daemon's socket and its
+# endpoint: the stand-in bridge (carries stdin to the stub daemon's socket and its
 # replies back), cmd (answers the hello's account lookup) and cygpath. `map` acts as cygpath -m for this test (/x ->
 # C:/mapped/x; a C:/ path comes back unchanged); `fail` exits 1. Call it AFTER
-# start_stub_daemon: powershell.exe bakes in the current $SOCK.
+# start_stub_daemon: GUARD_PIPE_SOCKET names the current $SOCK.
 stub_windows_tools() {
     mkdir -p "$WORK/bin"
-    printf '#!/usr/bin/env bash\nexec nc -U "%s"\n' "$SOCK" > "$WORK/bin/powershell.exe"
     case "$1" in
         map) cat > "$WORK/bin/cygpath" <<'EOF'
 #!/usr/bin/env bash
@@ -279,12 +278,12 @@ EOF
     esac
     # `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
     printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WORK/bin/cmd"
-    chmod +x "$WORK/bin/powershell.exe" "$WORK/bin/cygpath" "$WORK/bin/cmd"
+    chmod +x "$WORK/bin/cygpath" "$WORK/bin/cmd"
 }
 wire_root() { jq -r 'select(.op=="workspace.create") | .payload.project_root' "$REQLOG"; }
 
 # A Windows box's daemon listens only on a named pipe: the request goes
-# through powershell.exe (stubbed here by a script that carries stdin to
+# through the stand-in bridge (stubbed here by a script that carries stdin to
 # the stub daemon's socket and its replies back). OS stays unset: the pipe:
 # endpoint alone makes the request carry cygpath -m's spelling.
 case_capsule_ready_over_pipe_endpoint() {

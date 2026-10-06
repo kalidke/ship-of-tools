@@ -21,6 +21,8 @@ fi
 
 guard_fresh_home "$WORK"; guard_refuse_live_home "$HOME/.sot-comm"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
+export SOTD_BIN="$(guard_bridge_stub "$WORK/bridge")"
+[ -x "$SOTD_BIN" ] || exit 2
 
 export SOT_COMM_TEST_HOST="test-host"
 unset SOT_WORKSPACE_ID
@@ -131,7 +133,7 @@ reg_has() { jq -e --arg n "$1" '.agents | has($n)' "$CH/registry.json" >/dev/nul
 run_despawn() {
     local who="$1"
     DESPAWN_OUT="$(env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION \
-        ${DESPAWN_PATH:+PATH="$DESPAWN_PATH"} SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$CH/xdg" \
+        ${DESPAWN_PATH:+PATH="$DESPAWN_PATH"} XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
         timeout 30 "$SCRIPTS_DIR/comm-despawn.sh" "$who" --endpoint "${DESPAWN_EP:-unix:$SOCK}" 2>"$CH/stderr.tmp")"
     DESPAWN_RC=$?
@@ -237,7 +239,7 @@ case_confirmed_destroy_deregisters() {
 }
 
 # A Windows box's daemon listens only on a named pipe: the request goes
-# through powershell.exe (stubbed by a script that carries stdin to the stub
+# through the stand-in bridge (stubbed by a script that carries stdin to the stub
 # daemon's socket and its replies back).
 case_confirmed_destroy_over_pipe_endpoint() {
     new_home; seed_row h9 ws-9
@@ -245,9 +247,7 @@ case_confirmed_destroy_over_pipe_endpoint() {
     DESTROY_PAYLOAD='{"workspace_id":"ws-9"}'
     start_stub_daemon
     mkdir -p "$WORK/bin"
-    printf '#!/usr/bin/env bash\nexec nc -U "%s"\n' "$SOCK" > "$WORK/bin/powershell.exe"
-    chmod +x "$WORK/bin/powershell.exe"
-    DESPAWN_EP='pipe:\\.\pipe\sot-stub' DESPAWN_PATH="$WORK/bin:$PATH" run_despawn h9
+    GUARD_PIPE_SOCKET="$SOCK" DESPAWN_EP='pipe:\\.\pipe\sot-stub' DESPAWN_PATH="$WORK/bin:$PATH" run_despawn h9
     stop_stub_daemon
     [ "$DESPAWN_RC" -eq 0 ] || { echo "  exited $DESPAWN_RC: $DESPAWN_ERR"; return 1; }
     contains "$DESPAWN_OUT" "Destroyed workspace" || { echo "  stdout: $DESPAWN_OUT"; return 1; }
@@ -299,7 +299,7 @@ make_worktree() {
 run_clean() {  # [flag] — --force unless given ("" for none)
     local opt="${1---force}"
     CLEAN_OUT="$(cd "$WORK/wt/proj" && env -u SOT_WORKSPACE -u SOT_WORKSPACE_ROOT -u SOT_RELAY_ENDPOINT -u SOT_SESSION -u SOT_SPAWN_ENDPOINT \
-        SOT_SPAWN_ENDPOINT="unix:$SOCK" SOT_TOKEN="dummy-test-token" XDG_CONFIG_HOME="$CH/xdg" \
+        SOT_SPAWN_ENDPOINT="unix:$SOCK" XDG_CONFIG_HOME="$CH/xdg" \
         SOT_COMM_HOME="$CH" SOT_COMM_SELF_FILE="$CH/self.txt" \
         timeout 60 "$SCRIPTS_DIR/comm-worktree-clean.sh" x $opt 2>&1)"
     CLEAN_RC=$?
@@ -389,7 +389,7 @@ check "D5 destroy refused: exit 1, row kept" case_refused_destroy_keeps_the_row
 check "D6 confirmed destroy: row removed afterwards" case_confirmed_destroy_deregisters
 check "D7 despawn removes only its own self-file, by exact name" case_self_file_exact_name
 check "D8 despawn destroys the registry's recorded workspace first" case_recorded_workspace_first
-check "D9 pipe: endpoint (Windows local daemon): destroy succeeds through powershell.exe" case_confirmed_destroy_over_pipe_endpoint
+check "D9 pipe: endpoint (Windows local daemon): destroy succeeds through the stand-in bridge" case_confirmed_destroy_over_pipe_endpoint
 check "W1 worktree-clean despawns once, by handle" case_worktree_clean_despawns_once
 check "W2 worktree-clean falls back to the label with no registry row" case_worktree_clean_label_fallback
 check "W3 label fallback also deregisters the handle" case_worktree_clean_label_deregisters

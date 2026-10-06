@@ -194,12 +194,14 @@ case_a_hostless_row_terminates_instead_of_ping_ponging() {
 }
 
 # ---- 5. `filed` is for a live handle ----
-# A stub `nc` stands in for the daemon (comm.file only, logging each frame):
+# A stub bridge stands in for the daemon (comm.file only, logging each frame):
 # its answer is the payload in $HUB/answer.
 HUB="$WORK/hub"
 stub_daemon() {  # PAYLOAD
     rm -rf "${HUB:?}"; mkdir -p "$HUB"; printf '%s' "$1" > "$HUB/answer"
     { printf '#!/bin/sh\nd=%s\n' "$HUB"; cat <<'NCSTUB'
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+case "$3" in unix:*) ;; *) exit 97 ;; esac
 while IFS= read -r line; do
     case "$line" in
         *'"op":"comm.file"'*)
@@ -209,10 +211,10 @@ while IFS= read -r line; do
     esac
 done
 NCSTUB
-    } > "$HUB/nc"; chmod +x "$HUB/nc"
-    export SOT_SOCKET="$WORK/hub.sock"; PATH="$HUB:$PATH"
+    } > "$HUB/sotd"; chmod +x "$HUB/sotd"
+    export SOTD_BIN="$HUB/sotd" SOT_SOCKET="$WORK/hub.sock"; PATH="$HUB:$PATH"
 }
-end_stub_daemon() { unset SOT_SOCKET; PATH="${PATH#"$HUB":}"; }
+end_stub_daemon() { unset SOT_SOCKET SOTD_BIN; PATH="${PATH#"$HUB":}"; }
 # The peer's heartbeat one hour old: nothing says it is alive.
 make_stale() {  # HANDLE
     jq --arg t "$1" --arg ls "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" '.agents[$t].last_seen = $ls' \

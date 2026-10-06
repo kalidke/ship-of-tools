@@ -6,30 +6,26 @@
 # the daemon binary itself for its pipe path — the SAME query
 # scripts/sot-local-daemon.ps1 makes (`sotd.exe session-socket-path local`)
 # — so this can never derive a different name than the one the launcher's
-# own daemon binds. Then proves it live with a bounded connect-then-close
-# probe, mirroring that script's Test-SotPipeOpen exactly: a pipe NAME can
-# persist under \\.\pipe\ while a dead client still holds a handle to it,
-# so a resolvable name alone is not evidence anything is listening. Prints
-# the \\.\pipe\... path and returns 0 only when both checks pass; nothing
-# printed, nonzero return otherwise. Windows-only — callers gate with
-# _sot_is_windows first.
+# own daemon binds. Then proves it through `sot_dial` (`sotd stdio-bridge
+# --endpoint`) with empty input, the probe that script's Test-SotPipeOpen also makes: a pipe
+# NAME can persist under \\.\pipe\ while a dead client still holds a handle
+# to it, so a resolvable name alone is not evidence anything is listening,
+# and the bridge connects only to a pipe this OS account serves (ADR 0049,
+# User isolation). Prints the \\.\pipe\... path and returns 0 only when both
+# checks pass; nothing printed, nonzero return otherwise. Windows-only —
+# callers gate with _sot_is_windows first.
 # _sot_windows_sotd_exe — the sotd executable on a Windows box: SOTD_BIN when
-# set, else the RUNNING daemon's own path (an installed %LOCALAPPDATA%\sot\bin\
-# sotd.exe or a dev build under a checkout's target dir -- ask the OS, not a
-# fixed install path), else the install path. Prints it; 1 when none exists.
+# set, else the install path. Prints it; 1 when none exists. Never a running
+# process's binary: a process list names every account's sotd.exe.
 _sot_windows_sotd_exe() {
     local daemon_exe="${SOTD_BIN:-}"
     if [ -z "$daemon_exe" ] || [ ! -f "$daemon_exe" ]; then
-        daemon_exe="$(powershell.exe -NoProfile -NonInteractive -Command \
-            "(Get-Process -Name sotd -ErrorAction SilentlyContinue | Select-Object -First 1).Path" 2>/dev/null \
-            | tr -d '\r' | head -n1)"
-        [ -n "$daemon_exe" ] || daemon_exe="${LOCALAPPDATA:-}/sot/bin/sotd.exe"
+        daemon_exe="${LOCALAPPDATA:-}/sot/bin/sotd.exe"
     fi
     [ -f "$daemon_exe" ] || return 1
     printf '%s\n' "$daemon_exe"
 }
 _sot_windows_local_pipe() {
-    command -v powershell.exe >/dev/null 2>&1 || return 1
     local daemon_exe
     daemon_exe="$(_sot_windows_sotd_exe)" || return 1
     local raw
@@ -38,15 +34,7 @@ _sot_windows_local_pipe() {
         '\\'*'pipe'*) : ;;
         *) return 1 ;;
     esac
-    local name="${raw##*\\}"
-    [ -n "$name" ] || return 1
-    # The name is interpolated into a PowerShell single-quoted literal:
-    # refuse anything outside the daemon's own charset rather than escape it.
-    case "$name" in *[!A-Za-z0-9._-]*) return 1 ;; esac
-    powershell.exe -NoProfile -NonInteractive -Command "
-        \$c = New-Object System.IO.Pipes.NamedPipeClientStream('.', '$name', [System.IO.Pipes.PipeDirection]::InOut)
-        try { \$c.Connect(500); exit 0 } catch { exit 1 } finally { \$c.Dispose() }
-    " >/dev/null 2>&1 || return 1
+    sot_dial "pipe:$raw" </dev/null >/dev/null 2>&1 || return 1
     printf '%s\n' "$raw"
 }
 
@@ -109,12 +97,13 @@ _sot_emit_endpoint() {
     return 1
 }
 
-# _sot_live_sotd_exes — the binary of each process `pgrep -af sotd` lists whose
+# _sot_live_sotd_exes — the binary of each process of THIS account `pgrep -u <uid> -af sotd` lists whose
 # /proc/<pid>/exe is named `sotd` or `sotd.exe`, one per line, in pgrep's order;
 # nothing on Windows (no pgrep on a stock git-bash PATH) or where /proc cannot
 # be read. pgrep matches any command line that mentions sotd (`tail -f
 # .../sotd.log`, `gdb sotd`, `watch ...`), and both callers below would run or
 # return such a process's binary: only a binary named sotd is ever listed.
+# Another account's sotd is never this account's daemon (ADR 0049, User isolation).
 _sot_live_sotd_exes() {
     _sot_is_windows && return 0
     local line pid exe
@@ -124,7 +113,7 @@ _sot_live_sotd_exes() {
         exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
         [ -x "$exe" ] || continue
         case "${exe##*/}" in sotd|sotd.exe) printf '%s\n' "$exe" ;; esac
-    done < <(pgrep -af 'sotd' 2>/dev/null || true)
+    done < <(pgrep -u "$(id -u)" -af 'sotd' 2>/dev/null || true)
 }
 
 # _sot_sotd_bin — the one binary-finding ladder for a caller that only
@@ -247,6 +236,39 @@ sot_ssh_bridge() {
     else
         ssh "${opts[@]}" "$target" "$remote"
     fi
+}
+
+# sot_dial ENDPOINT [TIMEOUT_SECS] — stdin to the daemon at ENDPOINT, its replies to stdout (ADR 0049,
+# User isolation): every `unix:` or `pipe:` connection this library opens is `sot_dial`'s. A `unix:` or `pipe:` endpoint is opened by `sotd stdio-bridge
+# --endpoint`, whose connect is `connect_own`: a socket only in a folder private to this OS account, a pipe only when
+# this account serves it, else exit 1 and one stderr line saying why. A bare `pipe:<name>` is written
+# `pipe:\\.\pipe\<name>`. An `ssh:` endpoint is `sot_ssh_bridge`, whose far end is that box's own bridge. The bridge
+# closes the connection when its input ends, so a caller keeps stdin open until it has read what it waits for. The
+# bound is a parameter, as `sot_ssh_bridge`'s is: `timeout` cannot run a function.
+sot_dial() {
+    local ep="$1" secs="${2:-}" bin="" rest name
+    case "$ep" in
+        unix:*|pipe:*)
+            if _sot_is_windows; then bin="$(_sot_windows_sotd_exe)" || bin=""; else bin="$(_sot_sotd_bin)" || bin=""; fi
+            [ -n "$bin" ] || { echo "sot_dial: no sotd to open $ep with" >&2; return 1; }
+            case "$ep" in
+                pipe:*) name="${ep#pipe:}"; ep="pipe:\\\\.\\pipe\\${name##*\\}" ;;
+            esac
+            if [ -n "$secs" ]; then
+                MSYS2_ARG_CONV_EXCL='*' timeout "$secs" "$bin" stdio-bridge --endpoint "$ep"
+            else
+                MSYS2_ARG_CONV_EXCL='*' "$bin" stdio-bridge --endpoint "$ep"
+            fi
+            ;;
+        ssh:*)
+            rest="${ep#ssh:}"
+            case "$rest" in
+                */*) sot_ssh_bridge "${rest%%/*}" "${rest#*/}" "$secs" ;;
+                *) sot_ssh_bridge "$rest" "" "$secs" ;;
+            esac
+            ;;
+        *) echo "sot_dial: not an endpoint this version dials: $ep" >&2; return 1 ;;
+    esac
 }
 
 # sot_relay_endpoint [EXPLICIT] — the endpoint for comm RELAY traffic (send):
@@ -457,13 +479,12 @@ _sot_os_user() {
 sot_hello_frame() {
     local role
     if [ -n "${SOT_WORKSPACE:-}" ]; then role="agent"; else role="cli"; fi
-    local tok host os_user
-    tok="${SOT_TOKEN:-$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/sot/token" 2>/dev/null || true)}"
+    local host os_user
     host="$(sot_host)" || return 1
     _sot_os_user >/dev/null || return 1
     os_user="$_SOT_OS_USER"
     # JSON-escape every interpolated string (S19, Codex finding S19): an
-    # unescaped quote or backslash in a declared host/name/token would
+    # unescaped quote or backslash in a declared host/name would
     # otherwise produce invalid JSON the daemon's own parser rejects.
     #
     # The `"protocol":3` literal below is sotd's WIRE protocol
@@ -472,8 +493,8 @@ sot_hello_frame() {
     # unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
     # change; sot-protocol's `comm_lib_hello_speaks_this_protocol` test
     # fails until the two match.
-    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":3,"app_version":"comm","token":%s,"host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
-        "$(sot_json_escape "$tok")" "$(sot_json_escape "$host")" "$(sot_json_escape "$os_user")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
+    printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":3,"app_version":"comm","host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
+        "$(sot_json_escape "$host")" "$(sot_json_escape "$os_user")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
 }
 
 # sot_oneshot_request FRAME OP — one-shot request/response on a fresh daemon
@@ -481,9 +502,9 @@ sot_hello_frame() {
 # whose op matches OP. Hardened after a live intermittent failure
 # (2026-08-22, a peer session's targeted fe.command) and a codex review of
 # the first hardening round:
-#   - the WRITER lingers for the whole read window (some nc variants quit on
-#     stdin EOF, racing the reply — the original bug);
-#   - nc drains into a TEMP FILE we poll for the matching op line (fresh
+#   - the WRITER lingers for the whole read window (the bridge closes the connection when its
+#     input ends; some nc variants did too, racing the reply — the original bug);
+#   - the transport drains into a TEMP FILE we poll for the matching op line (fresh
 #     connections receive ALL broadcast evt traffic — multi-MB repl frames
 #     queued ahead of the res just stream past);
 #   - a match is accepted only when jq parses the line (an op match can be
@@ -496,10 +517,8 @@ sot_hello_frame() {
 #     nothing, holds nothing.
 # Read window: SOT_SEND_TIMEOUT, else the caller's SEND_TIMEOUT (sot-fe's
 # repl paths set --timeout up to minutes — the window MUST honor it), else
-# 10s. Uses ENDPOINT (unix:/path, ssh:target[/host] via sot_ssh_bridge, or
-# pipe:name — the last one a Windows-only named-pipe transport, see the
-# pipe: arm below) from the
-# caller's scope.
+# 10s. Uses ENDPOINT (unix:/path, pipe:name or ssh:target[/host]) from the caller's scope,
+# through sot_dial.
 # _sot_oneshot_sender HELLO FRAME TIMEOUT_S PIDFILE — the write side of a
 # one-shot request: hello, the frame, then `exec sleep` so the subshell's pid
 # (written to PIDFILE first) is the sleep itself and one kill ends it. The
@@ -547,66 +566,23 @@ sot_oneshot_request() {
         printf 'sot_oneshot_request: no hello: %s\n' "$(tr '\n' ' ' < "$tmp.he" | sed 's/ $//')" >&2
         rm -f "${tmp:?}" "${tmp:?}.he"; return 1; }
     rm -f "${tmp:?}.he"
-    case "$ENDPOINT" in
-        unix:*)
-            command -v nc >/dev/null 2>&1 || {
-                echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2
-                rm -f "${tmp:?}"; return 1; }
-            # The sender holds the write side open with a sleep (a half-close
-            # via `nc -q` made stub listeners hang up early). It is `exec`'d so
-            # the recorded pid IS the sleep, killed the moment the reply
-            # matches, and its stderr is detached: a sender that outlived the
-            # reply used to hold the CALLER's stderr for the whole timeout, so
-            # any pipe or harness reading the caller waited that long
-            # (2026-09-17, two boxes).
-            _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
-                | timeout "$timeout_s" nc -U "${ENDPOINT#unix:}" > "$tmp" 2>/dev/null &
-            ncpid=$!
-            ;;
-        ssh:*)
-            local rest="${ENDPOINT#ssh:}" target sshhost
-            case "$rest" in
-                */*) target="${rest%%/*}"; sshhost="${rest#*/}" ;;
-                *) target="$rest"; sshhost="" ;;
-            esac
-            # Own scratch file, not /dev/null (BLOCKER 1's loud-failure
-            # requirement): a dying ssh child's own stderr used to vanish
-            # here, so a failure and a cold-but-reachable daemon looked
-            # identical. Read back below, once the wait loop ends with no
-            # reply, and folded into a diagnostic on THIS function's own
-            # stderr -- never into $line, which stays the reply or nothing.
-            _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
-                | sot_ssh_bridge "$target" "$sshhost" "$timeout_s" > "$tmp" 2>"$tmp.err" &
-            ncpid=$!
-            ;;
-        pipe:*)
-            # ADR 0042 amendment (2026-09-07): a Windows box's LOCAL daemon
-            # only listens on a named pipe, which git-bash cannot open
-            # itself — comm-pipe-request.ps1 is the transport, invoked
-            # exactly the way nc is above (hello + frame piped to its
-            # stdin, never argv). Accepts either the full \\.\pipe\<name>
-            # form sot_daemon_endpoint prints or a bare pipe:<name> — both
-            # reduce to the trailing NAME (NamedPipeClientStream never
-            # takes the \\.\pipe\ prefix itself).
-            local pipename="${ENDPOINT#pipe:}"
-            pipename="${pipename##*\\}"
-            command -v powershell.exe >/dev/null 2>&1 || {
-                echo "ERROR: powershell.exe not found and endpoint is a named pipe (pipe: needs PowerShell)" >&2
-                rm -f "${tmp:?}"; return 1; }
-            local ps1="${SCRIPT_DIR:-.}/comm-pipe-request.ps1"
-            [ -f "$ps1" ] || {
-                echo "ERROR: comm-pipe-request.ps1 not found next to the comm scripts (looked in ${SCRIPT_DIR:-.})" >&2
-                rm -f "${tmp:?}"; return 1; }
-            _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
-                | timeout "$timeout_s" powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-                    -File "$ps1" -PipeName "$pipename" -Op "$op" -TimeoutSec "$timeout_s" \
-                    > "$tmp" 2>/dev/null &
-            ncpid=$!
-            ;;
-        *) rm -f "${tmp:?}"; return 1 ;;
-    esac
+    # Every scheme goes through sot_dial (ADR 0049, User isolation). The sender
+    # holds the write side open with a sleep, because the bridge closes the
+    # connection when its input ends. It is `exec`'d so the recorded pid IS the
+    # sleep, killed the moment the reply matches, and its stderr is detached: a
+    # sender that outlived the reply used to hold the CALLER's stderr for the
+    # whole timeout, so any pipe or harness reading the caller waited that long
+    # (2026-09-17, two boxes). The transport's own stderr goes to its scratch
+    # file (BLOCKER 1's loud-failure requirement: a refusal or a dying ssh child
+    # used to vanish, so a failure and a cold-but-reachable daemon looked
+    # identical), read back below once the wait loop ends with no reply.
+    local target="$ENDPOINT"
+    case "$ENDPOINT" in ssh:*) target="${ENDPOINT#ssh:}"; target="${target%%/*}" ;; esac
+    _sot_oneshot_sender "$hello" "$frame" "$timeout_s" "$tmp.snd" 2>/dev/null \
+        | sot_dial "$ENDPOINT" "$timeout_s" > "$tmp" 2>"$tmp.err" &
+    ncpid=$!
     # Accept only a COMPLETE res line: op precedes payload on the wire, so a
-    # grep hit can be a line nc is still appending. jq gates acceptance when
+    # grep hit can be a line the transport is still appending. jq gates acceptance when
     # available; without jq (minimal envs) fall back to requiring that the
     # file's last byte is a newline OR more bytes follow the match.
     _sot_line_ok() {
@@ -637,11 +613,11 @@ sot_oneshot_request() {
     # No reply by the end of the connection or the window: a hello refused for the protocol is named now.
     [ -n "$line" ] || [ -n "$refused" ] || refused="$(_sot_hello_refusal "$tmp" any)"
     [ -r "$tmp.snd" ] && kill "$(cat "$tmp.snd" 2>/dev/null)" 2>/dev/null
-    # A ssh: bridge that exited or timed out with no reply: its own stderr
+    # A transport that exited or timed out with no reply: its own stderr
     # (captured above instead of discarded) names the reason -- printed
     # here, on THIS function's stderr, never folded into $line.
     if [ -z "$line" ] && [ -s "$tmp.err" ]; then
-        printf 'sot_oneshot_request: %s: %s\n' "${target:-ssh bridge}" "$(tr '\n' ' ' < "$tmp.err")" >&2
+        printf 'sot_oneshot_request: %s: %s\n' "$target" "$(tr '\n' ' ' < "$tmp.err")" >&2
     fi
     rm -f "${tmp:?}" "${tmp:?}.snd" "${tmp:?}.err"
     if [ -n "$refused" ]; then

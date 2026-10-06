@@ -1,5 +1,5 @@
 # Part of test-hub-files.sh, sourced by it: the hub stub, wire sends, the faked Windows pipe send, the read window, T6.
-# T5 — a stub `nc` stands in for the hub on a unix: endpoint: each connection
+# T5 — a stub bridge stands in for the hub on a unix: endpoint: each connection
 # is one run of it. Its `comm.file` answer is the payload in $HUB/answer
 # ("" = silence), given after $HUB/wait seconds; an `agent.send` is acked and
 # receipted by fe@far. Every frame it reads is logged by op.
@@ -8,6 +8,8 @@ write_hub_stub() {  # PAYLOAD [WAIT]
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
     printf '%s' "$1" > "$HUB/answer"; printf '%s' "${2:-0}" > "$HUB/wait"
     { printf '#!/bin/sh\nd=%s\n' "$HUB"; cat <<'STUB'
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+case "$3" in unix:*) ;; *) exit 97 ;; esac
 while IFS= read -r line; do
     case "$line" in
         *'"op":"comm.file"'*)
@@ -23,12 +25,12 @@ while IFS= read -r line; do
     esac
 done
 STUB
-    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    } > "$HUB/sotd"; chmod +x "$HUB/sotd"
 }
 # wire_send [VAR=VALUE...] — `comm-relay.sh send @t-far`, a handle this box's
 # registry does not name, so the send goes to the wire.
 wire_send() {
-    SEND_OUT="$(cd "$WORK" && PATH="$HUB:$PATH" SOT_COMM_SELF_FILE="$WORK/self-sender.txt" \
+    SEND_OUT="$(cd "$WORK" && PATH="$HUB:$PATH" SOTD_BIN="$HUB/sotd" SOT_COMM_SELF_FILE="$WORK/self-sender.txt" \
         SOT_COMM_TEST_HOST="$HOST_PIN" SOT_RELAY_ENDPOINT="unix:$WORK/hub.sock" \
         env "$@" "$BIN/comm-relay.sh" send @t-far "/to the far box" 2>"$WORK/err.txt")"
     SEND_RC=$?
@@ -72,12 +74,12 @@ case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one() {
     return 0
 }
 
-# oneshot_version_query -- `sot_oneshot_request` for `version.query` against the stub `nc` in $HUB, with $HUB/shim (the
+# oneshot_version_query -- `sot_oneshot_request` for `version.query` against the stub bridge in $HUB, with $HUB/shim (the
 # logging sleep, where a case made one) first on its PATH. Its window (60 s) is longer than every hang guard here
 # (await's 30 s), so no verdict below rests on how fast the host runs.
 oneshot_version_query() {
     ONESHOT_RC=0
-    ONESHOT_OUT="$(cd "$WORK" && PATH="$HUB/shim:$HUB:$PATH" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=60 bash -c '
+    ONESHOT_OUT="$(cd "$WORK" && PATH="$HUB/shim:$HUB:$PATH" SOTD_BIN="$HUB/sotd" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=60 bash -c '
         . "$1/comm-lib.sh"; ENDPOINT="unix:$2/hub.sock"
         sot_oneshot_request "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"version.query\",\"payload\":{}}" version.query' _ "$SCRIPTS_DIR" "$WORK" 2>"$WORK/err.txt")" || ONESHOT_RC=$?
     ONESHOT_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
@@ -89,12 +91,14 @@ oneshot_version_query() {
 case_a_refused_hello_is_named_by_the_oneshot_request() {
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
     { printf '#!/bin/sh\n'; cat <<'STUB'
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+case "$3" in unix:*) ;; *) exit 97 ;; esac
 IFS= read -r line
 case "$line" in
     *'"op":"hello"'*) printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"host-a has said hello as more than one OS account","code":"os_user_conflict"}}\n' ;;
 esac
 STUB
-    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    } > "$HUB/sotd"; chmod +x "$HUB/sotd"
     oneshot_version_query
     [ "$ONESHOT_RC" -eq 1 ] || { echo "  rc $ONESHOT_RC, want 1 (out: $ONESHOT_OUT err: $ONESHOT_ERR)"; return 1; }
     [ -z "$ONESHOT_OUT" ] || { echo "  a refused hello printed a reply: $ONESHOT_OUT"; return 1; }
@@ -103,7 +107,7 @@ STUB
     return 0
 }
 
-# write_refusing_stub CODE -- a stub `nc` that refuses the hello with CODE and then answers `version.query`, but only once
+# write_refusing_stub CODE -- a stub bridge that refuses the hello with CODE and then answers `version.query`, but only once
 # `sot_oneshot_request` has made two more of its 0.1 s polls after the refusal was written, counted through the logging
 # sleep (sleep_log, lib-wait.sh). A one-shot that stops at the refusal makes at most one more, so it never sees the
 # answer; one that reads on does. Nothing here is timed.
@@ -111,6 +115,8 @@ write_refusing_stub() {
     rm -rf "${HUB:?}"; mkdir -p "$HUB"
     sleep_log "$HUB/shim" "$HUB/sleeps.log" || return 1
     { printf "#!/usr/bin/env bash\nd='%s'\ncode='%s'\n. '%s/lib-wait.sh'\n" "$HUB" "$1" "$SCRIPT_DIR"; cat <<'STUB'
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+case "$3" in unix:*) ;; *) exit 97 ;; esac
 PATH="${PATH#"$d/shim:"}"   # the stub's own waits are not the one-shot's
 polls() { local n; n="$(grep -c -x '0\.1' "$d/sleeps.log" 2>/dev/null)"; printf '%s\n' "${n:-0}"; }
 IFS= read -r line
@@ -120,7 +126,7 @@ read_on() { [ "$(polls)" -ge "$want" ]; }
 await read_on || exit 1
 printf '{"v":1,"id":1,"kind":"res","op":"version.query","payload":{"ok":true}}\n'
 STUB
-    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    } > "$HUB/sotd"; chmod +x "$HUB/sotd"
 }
 
 # A refusal that is not about the protocol comes from a daemon of this release, which closes: the one-shot stops at it at
@@ -160,12 +166,13 @@ case_a_wire_send_with_no_daemon_is_failed() {
 }
 
 # T5 on a faked Windows box: `uname` says MINGW, this box's own daemon is a
-# fake `sotd.exe` under a fake LOCALAPPDATA, and a fake `powershell.exe` is
-# the pipe transport (fakes from test-join-disambiguation.sh's Windows
-# discovery case). It answers the connect probe, logs each oneshot's argv and
-# the frames on its stdin, and answers `comm.file` with $WINHUB/answer
-# ("" = silence). A copy of the scripts WITHOUT this file's endpoint stubs, so
-# the real Windows discovery runs.
+# fake `sotd.exe` under a fake LOCALAPPDATA, and the same fake is the pipe
+# transport, since the library opens a pipe through `sotd.exe stdio-bridge
+# --endpoint` (fakes from test-join-disambiguation.sh's Windows discovery
+# case). Its bridge arm answers the connect probe (empty input), logs each
+# oneshot's argv and the frames on its stdin, and answers `comm.file` with
+# $WINHUB/answer ("" = silence). A copy of the scripts WITHOUT this file's
+# endpoint stubs, so the real Windows discovery runs.
 WINBIN="$WORK/winbin"; WINFAKE="$WORK/winfake"; WINAPP="$WORK/winappdata"; WINHUB="$WORK/winhub"
 cp -r "$SCRIPTS_DIR" "$WINBIN"
 # Cygwin's /proc as the Windows walk reads it: each script that sources the library
@@ -178,31 +185,31 @@ printf '%s (bash) S 1\n' "\$\$" > "\$_SOT_PROC/\$\$/stat"; printf 'bash\0' > "\$
 WINPROC
 mkdir -p "$WINFAKE" "$WINAPP/sot/bin" "$WINHUB"
 printf '#!/bin/sh\necho "MINGW64_NT-10.0-19045"\n' > "$WINFAKE/uname"
-cat > "$WINAPP/sot/bin/sotd.exe" <<'FAKESOTD'
-#!/bin/sh
+{ printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKESOTD'
 if [ "$1" = session-socket-path ] && [ "$2" = local ]; then printf '%s\n' '\\.\pipe\sot-fakeuser-local'; exit 0; fi
 # `ancestors --from`: the one process above the comm script's shell, no agent among them.
 if [ "$1" = ancestors ] && [ "$2" = --from ]; then printf '1001\tbash.exe\tbash.exe\n'; exit 0; fi
+# `stdio-bridge --endpoint pipe:<path>`: the connect probe when its input is empty, else the transport.
+if [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ]; then
+    printf '%s\n' "$*" >> "$d/argv.log"
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >> "$d/stdin.log"
+        case "$line" in
+            *'"op":"hello"'*) ;;
+            *'"op":"comm.file"'*)
+                [ -s "$d/answer" ] && printf '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":%s}\n' "$(cat "$d/answer")"
+                exit 0 ;;
+            *) exit 0 ;;
+        esac
+    done
+    exit 0
+fi
 exit 1
 FAKESOTD
-{ printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKEPS'
-case " $* " in *" -File "*) ;; *) exit 0 ;; esac
-printf '%s\n' "$*" >> "$d/argv.log"
-while IFS= read -r line; do
-    printf '%s\n' "$line" >> "$d/stdin.log"
-    case "$line" in
-        *'"op":"hello"'*) ;;
-        *'"op":"comm.file"'*)
-            [ -s "$d/answer" ] && printf '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":%s}\n' "$(cat "$d/answer")"
-            exit 0 ;;
-        *) exit 0 ;;
-    esac
-done
-FAKEPS
-} > "$WINFAKE/powershell.exe"
+} > "$WINAPP/sot/bin/sotd.exe"
 # `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
 printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WINFAKE/cmd"
-chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
+chmod +x "$WINFAKE/uname" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
 win_send() {  # ANSWER
     rm -f "${WINHUB:?}"/*.log; printf '%s' "$1" > "$WINHUB/answer"
     SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \
