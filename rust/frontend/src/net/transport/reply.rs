@@ -180,6 +180,35 @@ impl Drop for PendingGuard<'_> {
     }
 }
 
+#[cfg(all(test, feature = "test-window-progress"))]
+static NATIVE_OBSERVER: std::sync::Mutex<
+    Option<std::sync::Arc<std::sync::Mutex<crate::ui::NativeProgressLedger>>>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) struct NativeFanInObservation(
+    Option<std::sync::Arc<std::sync::Mutex<crate::ui::NativeProgressLedger>>>,
+);
+
+#[cfg(all(test, feature = "test-window-progress"))]
+impl Drop for NativeFanInObservation {
+    fn drop(&mut self) {
+        *NATIVE_OBSERVER.lock().expect("native observer") = self.0.take();
+    }
+}
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) fn observe_native_fan_in(
+    ledger: std::sync::Arc<std::sync::Mutex<crate::ui::NativeProgressLedger>>,
+) -> NativeFanInObservation {
+    NativeFanInObservation(
+        NATIVE_OBSERVER
+            .lock()
+            .expect("native observer")
+            .replace(ledger),
+    )
+}
+
 /// Route a frame to the right `IncomingEvt`. Replies look up `id` in the
 /// pending map to decide how to deserialize; everything else falls through
 /// to the catch-all `Event` evt so the GPU thread can at least see it.
@@ -195,6 +224,18 @@ pub(super) fn handle_response_frame(
     // it needs its own copy rather than threading `run_protocol`'s closure
     // across a function boundary.
     let emit = |ev: IncomingEvt| {
+        #[cfg(all(test, feature = "test-window-progress"))]
+        {
+            let ledger = NATIVE_OBSERVER.lock().expect("native observer").clone();
+            if let Some(ledger) = ledger {
+                let mut ledger = ledger.lock().expect("native progress ledger");
+                let tag = ledger.tag(host, &ev);
+                if evt_tx.send((host.clone(), ev)).is_ok() {
+                    ledger.accepted(tag);
+                }
+                return;
+            }
+        }
         let _ = evt_tx.send((host.clone(), ev));
     };
     if let Some(kind) = pending.remove(&frame.id) {
