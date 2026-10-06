@@ -159,6 +159,10 @@ struct NativeVolume {
     image_native: String,
     #[cfg(windows)]
     mount_native: String,
+    #[cfg(windows)]
+    volume_identity: Option<String>,
+    #[cfg(windows)]
+    transaction: uuid::Uuid,
     attached: bool,
     cleanup_attempted: bool,
 }
@@ -183,6 +187,10 @@ impl NativeVolume {
             image_native: format!("{native}\\volume.vhd"),
             #[cfg(windows)]
             mount_native: format!("{native}\\volume\\"),
+            #[cfg(windows)]
+            volume_identity: None,
+            #[cfg(windows)]
+            transaction: uuid::Uuid::now_v7(),
             dir: Some(dir),
             mount,
             image,
@@ -221,8 +229,8 @@ impl NativeVolume {
                 "256m",
                 "-fs",
                 "APFS",
-                "-format",
-                "UDRW",
+                "-type",
+                "UDIF",
                 "-layout",
                 "GPTSPUD",
                 "-volname",
@@ -230,6 +238,11 @@ impl NativeVolume {
             ])
             .arg(&self.image);
         native_command(create);
+        let mut info = Command::new("hdiutil");
+        info.args(["imageinfo", "-format"]).arg(&self.image);
+        let format = native_command(info);
+        assert_eq!(format.trim(), "UDRW", "L3 HARNESS FAILURE: image format");
+        println!("L3 fixture macos image-type=UDIF format=UDRW declared-bytes=268435456");
         let mut attach = Command::new("hdiutil");
         attach
             .args(["attach", "-nobrowse", "-mountpoint"])
@@ -245,7 +258,18 @@ impl NativeVolume {
                 .dev(),
             "L3 HARNESS FAILURE: image not mounted"
         );
-        println!("L3 fixture macos attach=ok format=UDRW");
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(self.mount.as_os_str().as_bytes()).unwrap();
+        let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+        assert_eq!(unsafe { libc::statfs(path.as_ptr(), stat.as_mut_ptr()) }, 0);
+        let stat = unsafe { stat.assume_init() };
+        let filesystem = unsafe { std::ffi::CStr::from_ptr(stat.f_fstypename.as_ptr()) };
+        assert_eq!(
+            filesystem.to_bytes(),
+            b"apfs",
+            "L3 HARNESS FAILURE: mounted filesystem"
+        );
+        println!("L3 fixture macos attach=ok filesystem=apfs mount=validated");
     }
 
     #[cfg(target_os = "macos")]
@@ -276,56 +300,151 @@ impl NativeVolume {
         command
             .arg("/s")
             .arg(native_path(&script.canonicalize().unwrap()));
-        native_command(command);
+        let (code, output) = bounded(command, 120);
+        let text = format!("{commands}\n{output}")
+            .replace(&self.image_native, "<owned-image>")
+            .replace(&self.mount_native, "<owned-mount>");
+        let text = text
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("On computer:") {
+                    "On computer: <host>"
+                } else {
+                    line
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = scrub(&text);
+        let logs = scratch().parent().unwrap().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let log = logs.join(format!("l3-diskpart-{}-{name}.log", self.transaction));
+        let transcript = format!(
+            "L3 diskpart transaction={} script={name} exit={code}\n{text}\n",
+            self.transaction
+        );
+        std::fs::write(log, &transcript).expect("retain the sanitized DiskPart transcript");
+        print!("{transcript}");
+        assert_eq!(code, 0, "L3 HARNESS FAILURE: DiskPart transaction failed");
     }
 
     #[cfg(windows)]
     fn attach(&mut self) {
         let text = format!(
-            "create vdisk file=\"{}\" maximum=64 type=fixed\nselect vdisk file=\"{}\"\nattach vdisk\ncreate partition primary\nformat fs=ntfs quick\nassign mount=\"{}\"\nexit\n",
+            "create vdisk file=\"{}\" maximum=64 type=fixed\nselect vdisk file=\"{}\"\nattach vdisk\ncreate partition primary\nformat fs=ntfs quick\nassign mount=\"{}\"\ndetail vdisk\nexit\n",
             self.image_native, self.image_native, self.mount_native);
         self.attached = true;
         self.diskpart("attach.txt", &text);
-        assert!(
-            self.is_mountpoint(),
-            "L3 HARNESS FAILURE: VHD mountpoint was not attached"
-        );
+        let identity = self.mount_identity();
+        println!("L3 fixture windows transaction={} image=<owned-image> mount=<owned-mount> volume={identity}", self.transaction);
+        self.volume_identity = Some(identity);
         println!("L3 fixture windows native-path=validated space-directory=yes attach=ok");
     }
 
     #[cfg(windows)]
-    fn is_mountpoint(&self) -> bool {
+    fn mount_identity(&self) -> String {
         use windows_sys::Win32::Storage::FileSystem::GetVolumeNameForVolumeMountPointW;
         let mount: Vec<u16> = self.mount_native.encode_utf16().chain(Some(0)).collect();
         let mut volume = [0u16; 128];
-        unsafe {
+        let result = unsafe {
             GetVolumeNameForVolumeMountPointW(
                 mount.as_ptr(),
                 volume.as_mut_ptr(),
                 volume.len() as u32,
-            ) != 0
+            )
+        };
+        assert_ne!(
+            result,
+            0,
+            "L3 HARNESS FAILURE: mount identity: {}",
+            std::io::Error::last_os_error()
+        );
+        let length = volume
+            .iter()
+            .position(|&c| c == 0)
+            .expect("terminated volume identity");
+        String::from_utf16(&volume[..length]).expect("Unicode volume identity")
+    }
+
+    #[cfg(windows)]
+    fn mount_attributes(&self) -> u32 {
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
+        };
+        let mount: Vec<u16> = self
+            .mount_native
+            .trim_end_matches('\\')
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        let attributes = unsafe { GetFileAttributesW(mount.as_ptr()) };
+        assert_ne!(
+            attributes,
+            INVALID_FILE_ATTRIBUTES,
+            "L3 HARNESS FAILURE: inspect owned mount: {}",
+            std::io::Error::last_os_error()
+        );
+        attributes
+    }
+
+    #[cfg(windows)]
+    fn remove_owned_mount(&self) {
+        use windows_sys::Win32::Storage::FileSystem::{
+            DeleteVolumeMountPointW, FILE_ATTRIBUTE_REPARSE_POINT,
+        };
+        if self.mount_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            assert_eq!(
+                Some(self.mount_identity()).as_ref(),
+                self.volume_identity.as_ref(),
+                "L3 HARNESS FAILURE: owned mount identity changed"
+            );
+            let mount: Vec<u16> = self.mount_native.encode_utf16().chain(Some(0)).collect();
+            assert_ne!(
+                unsafe { DeleteVolumeMountPointW(mount.as_ptr()) },
+                0,
+                "L3 HARNESS FAILURE: remove owned mount: {}",
+                std::io::Error::last_os_error()
+            );
         }
+        assert_eq!(
+            self.mount_attributes() & FILE_ATTRIBUTE_REPARSE_POINT,
+            0,
+            "L3 HARNESS FAILURE: owned mount association remains"
+        );
+        println!(
+            "L3 fixture windows transaction={} mount-release=ok identity=checked",
+            self.transaction
+        );
     }
 
     #[cfg(windows)]
     fn detach(&mut self) {
         if self.attached {
             self.cleanup_attempted = true;
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            if self.mount_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                let identity = self.mount_identity();
+                if let Some(retained) = &self.volume_identity {
+                    assert_eq!(
+                        &identity, retained,
+                        "L3 HARNESS FAILURE: attached mount identity changed"
+                    );
+                } else {
+                    self.volume_identity = Some(identity);
+                }
+            }
             self.diskpart(
                 "detach.txt",
                 &format!(
-                    "select vdisk file=\"{}\"\ndetach vdisk\nexit\n",
+                    "select vdisk file=\"{}\"\ndetail vdisk\ndetach vdisk\ndetail vdisk\nexit\n",
                     self.image_native
                 ),
             );
-            assert!(
-                !self.is_mountpoint(),
-                "L3 HARNESS FAILURE: VHD is still mounted"
-            );
+            self.remove_owned_mount();
             std::fs::remove_file(&self.image)
                 .expect("L3 HARNESS FAILURE: detach must release the owned backing image");
             self.attached = false;
-            println!("L3 fixture windows detach=ok image-removal=ok");
+            println!("L3 fixture windows detach=ok mount-release=ok image-removal=ok");
         }
     }
 }
@@ -396,8 +515,8 @@ impl Drop for NativeVolume {
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
-fn native_command(command: Command) {
+#[cfg(target_os = "macos")]
+fn native_command(command: Command) -> String {
     let (code, text) = bounded(command, 120);
     assert_eq!(
         code,
@@ -405,6 +524,8 @@ fn native_command(command: Command) {
         "L3 HARNESS FAILURE: native fixture setup/cleanup failed:\n{}",
         scrub(&text)
     );
+    print!("{}", scrub(&text));
+    text
 }
 
 fn volume_limit() -> u64 {

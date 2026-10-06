@@ -10,7 +10,7 @@ scripts/CLAUDE.md.
 
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
-  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the Ubuntu-only "Test L3 native storage premises" step, the PowerShell 5.1 parse and the
+  itself) and dispatch. Jobs: `test` (full-history checkout for the pinned L3 premise base, build and test on ubuntu, windows and macos, the Ubuntu-only "Test L3 native storage premises" step, the PowerShell 5.1 parse and the
   `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, and on ubuntu the steps "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
