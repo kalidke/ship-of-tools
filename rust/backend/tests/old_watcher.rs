@@ -56,8 +56,7 @@ async fn an_old_watcher_hello_is_refused() {
     let hello = next_frame(&mut old, bound).await.unwrap_or_else(|e| panic!("no reply to the old hello: {e}"));
     assert!(
         hello.kind == Kind::Res && hello.id == 1 && hello.op == op::HELLO && hello.payload["code"] == "protocol_mismatch",
-        "the old watcher's hello was accepted: {:?}",
-        hello.payload
+        "the old watcher's hello was not refused for its protocol: {hello:?}"
     );
 
     // Nothing more comes back: the connection closes and the `pty.input` is not answered.
