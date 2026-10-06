@@ -674,13 +674,7 @@ impl DaemonLaneEndpoint {
         }
     }
 
-    /// The blocking dial: connect (2 s bound, each transport's own
-    /// hardened connector — see [`LaneStream`]'s own doc), write the
-    /// `lane.connect` request and read ONE reply under a SEPARATE 2 s
-    /// bound ([`run_handshake`]), then classify it.  `row` is the row's
-    /// `session_name` name (`LaneConnectReq::target`, required for both
-    /// lane kinds); `kind` is `"supervisor"` or `"voyage"`
-    /// (`LaneConnectReq::lane`).
+    // Complete the lane handshake according to `handshake`'s contract.
     fn dial(&self, row: &str, kind: &str, voyage_id: Option<String>) -> Result<DaemonLaneClient, TransportError> {
         let req = LaneConnectReq {
             target: row.to_string(),

@@ -350,9 +350,7 @@ fn stub_endpoint(path: PathBuf) -> DaemonLaneEndpoint {
     }))
 }
 
-/// The dying twin: exits nonzero before ever touching a socket, with one
-/// stderr line — the diagnosis `BridgedClient` surfaces in place of a
-/// generic broken-pipe message (this module's own doc; C3 as amended §6).
+/// Exits before connecting, with one stderr line; the lane status keeps the transport error and adds this diagnosis once.
 fn stub_ssh_dying_with(dir: &Path, stderr_line: &str) {
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
@@ -587,6 +585,8 @@ wait_for = 'start-1' if reverse and slot == 0 else ('start-0' if not reverse and
 while wait_for and not (root / wait_for).exists():
     assert time.monotonic() < deadline, 'fixture entry rendezvous timed out'
     time.sleep(0.005)
+with (root / 'entry-order').open('a') as entries:
+    entries.write(str(slot) + '\n')
 (root / ('start-' + str(slot))).write_text(str(os.getpid()))
 hello = json.loads(sys.stdin.readline())
 request = json.loads(sys.stdin.readline())
@@ -638,4 +638,18 @@ fn fixture_bounds_are_local_to_the_endpoint() {
     assert!(!ordinary.path().join("ordered").exists(), "the ordinary endpoint stopped before the three-second spare entry");
     let error = slow.connect_supervisor_unchallenged("row-configured").err().unwrap().to_string();
     assert!(error.contains("Permission denied"), "only the configured endpoint waits for its slow peer: {error}");
+}
+
+#[test]
+fn fixture_roles_follow_the_second_frame_in_both_start_orders() {
+    use sot_log::lane::client::Endpoint;
+    for reversed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = rendezvous_endpoint(dir.path(), 0, reversed);
+        let error = endpoint.connect_supervisor_unchallenged("row-role-order").err().unwrap().to_string();
+        assert!(error.contains("Permission denied"), "the second frame identifies the supervisor in either entry order: reversed={reversed}: {error}");
+        assert!(dir.path().join("ordered").exists(), "the supervisor must observe the spare before answering");
+        let entries = std::fs::read_to_string(dir.path().join("entry-order")).unwrap();
+        assert_eq!(entries, if reversed { "1\n0\n" } else { "0\n1\n" }, "the fixture must force both entry orders");
+    }
 }
