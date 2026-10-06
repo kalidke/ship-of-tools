@@ -29,7 +29,8 @@ scripts/CLAUDE.md.
 `workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
 
 ## Rules
-- This temporary T1 replay ref runs "Validate T1 replay observations" in the `test` matrix after Build workspace,
+- This temporary T1 replay ref runs "Validate T1 replay observations" in the `test` matrix after the existing
+  all-target Function length and Disallowed methods gates have populated test dependencies for the offline runner,
   before ordinary tests, then archives complete raw observations even on failure. Only the shared validator
   accepts declared reds; unrelated ordinary-suite failures retain their own status. These proof-only changes
   are not lane/release changes.
