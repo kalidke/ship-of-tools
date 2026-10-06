@@ -43,14 +43,7 @@ function Start-SotBridge([string]$SotdExe, [string]$PipePath) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
-    $callerInput = [Console]::InputEncoding
-    $swap = $callerInput.GetPreamble().Length -gt 0
-    if ($swap) { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) }
-    try {
-        return [System.Diagnostics.Process]::Start($psi)
-    } finally {
-        if ($swap) { [Console]::InputEncoding = $callerInput }
-    }
+    return [System.Diagnostics.Process]::Start($psi)
 }
 
 # Open a lease on the local daemon: emits the open stream when granted and NOTHING otherwise (callers collect with

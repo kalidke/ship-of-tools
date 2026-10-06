@@ -64,18 +64,21 @@ jobs:
         with:
           workspaces: rust
       - name: Build workspace
+        if: always()
         run: cargo build --workspace --locked
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length
+        if: always()
         run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
       # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
       # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
       # that does not exist on a leg draws a warning there.
       - name: Disallowed methods
+        if: always()
         run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Function length allowances can only fall
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         working-directory: .
         run: |
           n=$(git grep -c 'clippy::too_many_lines' -- rust ':!rust/vt100' | awk -F: '{ s += $2 } END { print s + 0 }')
@@ -86,6 +89,7 @@ jobs:
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
       - name: Test workspace
+        if: always()
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 
       # (The dedicated lane_bridge step was deleted 2026-09-18: "Test
@@ -107,7 +111,7 @@ jobs:
       # it is what must vet these files. (See the AUTHORING GOTCHA at the top
       # of launch-sot.ps1.)
       - name: Parse PowerShell scripts
-        if: matrix.os == 'windows-latest'
+        if: always() && matrix.os == 'windows-latest'
         shell: powershell
         working-directory: scripts
         run: |
@@ -128,7 +132,7 @@ jobs:
       # file loads; this proves it actually applies, verifies digests, rolls
       # back, and refuses a foreign-target pointer. Same 5.1 host as above.
       - name: Test sot-apply.ps1
-        if: matrix.os == 'windows-latest'
+        if: always() && matrix.os == 'windows-latest'
         shell: powershell
         run: .\scripts\tests\test-sot-apply.ps1
         working-directory: .
@@ -139,7 +143,7 @@ jobs:
       # rule that reads it. Real git state (a temp repo, a branch clone, a
       # detached worktree), no fake, same 5.1 host as the steps above.
       - name: Test install layout (pinned-checkout predicate)
-        if: matrix.os == 'windows-latest'
+        if: always() && matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-install-layout.ps1
@@ -153,14 +157,14 @@ jobs:
       # wait inside the test is itself bounded, but a real spawned sotd.exe
       # that never comes up (or never goes down) must not hang the job.
       - name: Test local daemon launcher
-        if: matrix.os == 'windows-latest'
+        if: always() && matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 10
         run: .\scripts\tests\test-local-daemon.ps1
         working-directory: .
 
       - name: Test launcher leases
-        if: matrix.os == 'windows-latest'
+        if: always() && matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 10
         run: .\scripts\tests\test-launcher-leases.ps1
@@ -170,14 +174,14 @@ jobs:
       # processing, no ssh, no network, so this needs neither a built sotd.exe nor CI's $env:CI-gated real-daemon
       # sections. Same 5.1 host as the steps above.
       - name: Test topology plan
-        if: matrix.os == 'windows-latest'
+        if: always() && matrix.os == 'windows-latest'
         shell: powershell
         timeout-minutes: 5
         run: .\scripts\tests\test-topology-plan.ps1
         working-directory: .
 
       - name: Parse shell scripts
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         working-directory: .
         run: |
           shopt -s globstar nullglob
@@ -190,19 +194,19 @@ jobs:
           exit "$rc"
 
       - name: Check the layout
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         working-directory: .
         run: bash scripts/tests/check-layout.sh --allow scripts/tests/check-layout.allow
 
       - name: Test the layout tools
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         working-directory: .
         run: bash scripts/tests/test-check-layout.sh && bash scripts/tests/test-moved-check.sh
 
       # The bash sibling of the PowerShell topology plan test above: scripts/lib/sot-hosts.sh's sot_topology_plan
       # against the same fake sotd, pure text processing, hermetic and fast.
       - name: Test topology plan (bash)
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/test-topology-plan.sh
         working-directory: .
@@ -210,13 +214,13 @@ jobs:
       # The installer's pure decisions and the sot-launch socket probe, run
       # from install.sh's own text; hermetic and fast.
       - name: Test installer state (bash)
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/installer-state.sh
         working-directory: .
 
       - name: Test installer apply (bash)
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         timeout-minutes: 5
         run: bash scripts/tests/installer-apply.sh
         working-directory: .
@@ -224,7 +228,7 @@ jobs:
       # PR #148 Codex review F10: hermetic + fast, so it rides along in this
       # existing ubuntu leg rather than a dedicated job.
       - name: Test sot-comm disambiguation (hermetic)
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         working-directory: comm/tests
         run: |
           bash test-join-disambiguation.sh
@@ -296,7 +300,7 @@ jobs:
           bash test-agent-layers.sh
 
       - name: Test agents CLIs (hermetic)
-        if: matrix.os == 'ubuntu-latest'
+        if: always() && matrix.os == 'ubuntu-latest'
         working-directory: agents/tests
         run: |
           # A spawn onto another box writes no row here, so a folder that lists
