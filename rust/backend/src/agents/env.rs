@@ -148,9 +148,6 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
     }
     // The comm shell in the session bridges with SOTD_BIN first, so it is this daemon's own binary, over any value the
     // daemon inherited (detach.rs applies these pairs with `Command::env`).
-    if let Some(sotd) = own_sotd_bin() {
-        env.push(("SOTD_BIN".to_string(), sotd.to_string()));
-    }
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on
     // any OS. Only this switch: telemetry and nonessential traffic stay
