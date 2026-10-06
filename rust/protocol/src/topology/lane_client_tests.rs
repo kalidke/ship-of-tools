@@ -484,4 +484,3 @@ fn diagnose_appends_the_ssh_line_to_the_error() {
     assert_eq!(got.to_string(), want);
     assert_eq!(got.kind(), std::io::ErrorKind::BrokenPipe, "the error keeps its kind");
 }
-
