@@ -185,9 +185,9 @@ fn blocked_pool_ok_cleans_yielding_child() {
 fn blocked_pool_error_cleans_yielding_child() {
     if run_isolated("ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child") {
         println!("T1 body entered: ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child");
-    runtime_case(true, false);
+        runtime_case(true, false);
         println!("T1 assertion passed: error return bypassed runtime finalization");
-     }
+    }
 }
 #[test]
 fn held_worker_exposes_delayed_child_destruction() {
