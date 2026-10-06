@@ -43,10 +43,114 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  d-l-premises:
+    name: D-L native premises (${{ matrix.os }})
+    if: github.ref == 'refs/heads/tmp/ci-d-l-premises-2'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: test
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Native fixture setup gate
+        id: native-setup
+        working-directory: .
+        run: |
+          python3 - <<'PYSETUP'
+          import os
+          import shutil
+          import subprocess
+          import sys
+
+          def run(label, command, cwd=None):
+              try:
+                  result = subprocess.run(
+                      subprocess.list2cmdline(command) if os.name == 'nt' else command,
+                      shell=os.name == 'nt', cwd=cwd, capture_output=True, timeout=180)
+              except subprocess.TimeoutExpired:
+                  print(f'D-L setup {label} FAIL timeout', flush=True)
+                  sys.exit(1)
+              except OSError:
+                  print(f'D-L setup {label} FAIL executable I/O', flush=True)
+                  sys.exit(1)
+              if result.returncode:
+                  print(f'D-L setup {label} FAIL exit {result.returncode}', flush=True)
+                  sys.exit(1)
+
+          tools = {}
+          for name in ('julia', 'node', 'npm'):
+              tools[name] = shutil.which(name)
+              if tools[name] is None:
+                  print(f'D-L setup {name} FAIL missing executable', flush=True)
+                  sys.exit(1)
+          run('Julia', [tools['julia'], '--startup-file=no', '--history-file=no',
+                        '-e', 'VERSION.major == 1 && VERSION.minor == 12 || exit(1)'])
+          print('D-L setup Julia 1.12 READY', flush=True)
+          for name in ('node', 'npm'):
+              run(name, [tools[name], '--version'])
+              print(f'D-L setup {name} READY', flush=True)
+          sidecar = 'rust/backend/sidecars/mathjax'
+          run('MathJax locked install', [tools['npm'], 'ci', '--no-audit', '--no-fund'], sidecar)
+          run('MathJax module', [tools['node'], '--input-type=module', '-e',
+                                "await import('mathjax-full/js/mathjax.js')"], sidecar)
+          print('D-L setup MathJax locked-module READY', flush=True)
+          PYSETUP
+      - name: Compile the named premise binary
+        id: premise-build
+        timeout-minutes: 20
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          umask 022
+          nice -n 10 timeout 20m cargo test -p sot-backend --bin sotd --no-run -j 8 --locked
+      - name: Julia private Signal premise
+        timeout-minutes: 3
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          umask 022
+          nice -n 10 timeout 3m cargo test -p sot-backend --bin sotd sidecars::contract_tests::julia_private_signal_premise -j 8 --locked -- --exact --nocapture
+      - name: MathJax private Signal premise
+        if: ${{ !cancelled() && steps.native-setup.outcome == 'success' && steps.premise-build.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          umask 022
+          nice -n 10 timeout 3m cargo test -p sot-backend --bin sotd sidecars::contract_tests::mathjax_private_signal_premise -j 8 --locked -- --exact --nocapture
+      - name: Offline package premise
+        if: ${{ !cancelled() && steps.native-setup.outcome == 'success' && steps.premise-build.outcome == 'success' }}
+        timeout-minutes: 3
+        env:
+          CARGO_NET_OFFLINE: 'true'
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          umask 022
+          nice -n 10 timeout 3m cargo test -p sot-backend --bin sotd sidecars::contract_tests::offline_stdlib_add_premise -j 8 --locked -- --exact --nocapture
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') && github.ref != 'refs/heads/tmp/ci-d-l-premises-2' }}"
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -354,7 +458,7 @@ jobs:
   conpty-windows-2022:
     name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor/fe-client tests (windows-2022)
     runs-on: windows-2022
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') && github.ref != 'refs/heads/tmp/ci-d-l-premises-2' }}"
     # See the per-step caps below for what each command budgets; this is
     # checkout+build (~15 min per the ADR) plus all six steps' worst case.
     timeout-minutes: 95
@@ -457,7 +561,7 @@ jobs:
   windows-ignored-containment:
     name: containment, ignored tests (windows-latest)
     runs-on: windows-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') && github.ref != 'refs/heads/tmp/ci-d-l-premises-2' }}"
     timeout-minutes: 60
     defaults:
       run:
@@ -477,7 +581,7 @@ jobs:
   p2-e2e:
     name: P2 e2e (real helper, offline)
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') && github.ref != 'refs/heads/tmp/ci-d-l-premises-2' }}"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -511,7 +615,7 @@ jobs:
   fresh-install-smoke:
     name: fresh install smoke (clean container)
     runs-on: ubuntu-latest
-    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') && github.ref != 'refs/heads/tmp/ci-d-l-premises-2' }}"
     container: ubuntu:22.04
     steps:
       - uses: actions/checkout@v7

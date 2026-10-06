@@ -1,11 +1,14 @@
 //! Native fixture premises on the unchanged release parent; these do not prove C1 constructor injection.
 
+use std::collections::VecDeque;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::lifecycle::child_signal::Signal;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 fn isolated_premise(name: &str) -> bool {
@@ -57,6 +60,10 @@ fn copy_folder(source: &Path, destination: &Path) {
     }
 }
 
+fn julia_load_path(entries: &[&str]) -> String {
+    entries.join(if cfg!(windows) { ";" } else { ":" })
+}
+
 fn isolated_julia(root: &Path, project: &Path) -> Command {
     let mut command = Command::new(executable("julia"));
     command
@@ -67,10 +74,82 @@ fn isolated_julia(root: &Path, project: &Path) -> Command {
         ])
         .arg(format!("--project={}", project.display()))
         .env("JULIA_DEPOT_PATH", root.join("depot"))
-        .env("JULIA_LOAD_PATH", "@:@stdlib")
+        .env("JULIA_LOAD_PATH", julia_load_path(&["@", "@stdlib"]))
         .env("JULIA_PKG_OFFLINE", "true")
         .env("JULIA_PKG_SERVER", "");
     command
+}
+
+fn diagnostic_redactions() -> Vec<String> {
+    [
+        "HOME",
+        "USERPROFILE",
+        "USER",
+        "USERNAME",
+        "HOSTNAME",
+        "COMPUTERNAME",
+    ]
+    .iter()
+    .filter_map(|name| std::env::var(name).ok())
+    .filter(|value| !value.is_empty())
+    .collect()
+}
+
+fn sanitize_diagnostic(line: &str, private: &[String]) -> String {
+    let mut text = line.to_owned();
+    for value in private {
+        text = text.replace(value, "<private>");
+    }
+    text.split_whitespace()
+        .map(|word| {
+            if word.contains('/') || word.contains('\\') {
+                "<path>".to_owned()
+            } else {
+                word.chars().filter(|ch| !ch.is_control()).collect()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+async fn stderr_tail(
+    stderr: tokio::process::ChildStderr,
+    tail: Arc<Mutex<VecDeque<String>>>,
+) -> Option<ErrorKind> {
+    let mut stderr = BufReader::new(stderr);
+    loop {
+        let mut line = Vec::new();
+        let read = stderr.read_until(b'\n', &mut line).await;
+        if !line.is_empty() {
+            let mut tail = tail.lock().expect("diagnostic tail lock");
+            if tail.len() == 8 {
+                tail.pop_front();
+            }
+            tail.push_back(String::from_utf8_lossy(&line).into_owned());
+        }
+        match read {
+            Ok(0) => return None,
+            Err(error) => return Some(error.kind()),
+            Ok(_) => {}
+        }
+    }
+}
+
+fn report_work(
+    work: &Result<Result<Option<usize>, std::io::Error>, tokio::time::error::Elapsed>,
+    label: &str,
+) -> bool {
+    let outcome = match work {
+        Ok(Ok(None)) => "matched".to_owned(),
+        Ok(Ok(Some(0))) => "ended-without-output".to_owned(),
+        Ok(Ok(Some(lines))) => format!("ended-with-unmatched-output lines={lines}"),
+        Ok(Err(error)) => format!("io-failure kind={:?}", error.kind()),
+        Err(_) => "timeout".to_owned(),
+    };
+    let completed = matches!(work, Ok(Ok(None)));
+    println!("D-L premise {label} work-outcome {outcome}");
+    println!("D-L premise {label} work-completed {completed}");
+    completed
 }
 
 async fn signal_exchange(
@@ -89,36 +168,51 @@ async fn signal_exchange(
         .expect("premise setup: native child did not spawn");
     let mut stdin = child.stdin.take().expect("owned stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("owned stdout")).lines();
-    let mut stderr = child.stderr.take().expect("owned stderr");
-    let diagnostics = tokio::spawn(async move {
-        let mut text = String::new();
-        stderr.read_to_string(&mut text).await.map(|_| text)
-    });
+    let private = diagnostic_redactions();
+    let tail = Arc::new(Mutex::new(VecDeque::new()));
+    let diagnostics = tokio::spawn(stderr_tail(
+        child.stderr.take().expect("owned stderr"),
+        Arc::clone(&tail),
+    ));
     let work = tokio::time::timeout(Duration::from_secs(60), async {
         stdin.write_all(request).await?;
         stdin.flush().await?;
+        let mut lines = 0;
         while let Some(line) = stdout.next_line().await? {
+            lines += 1;
             if accepts(&line) {
-                return Ok::<bool, std::io::Error>(true);
+                return Ok::<Option<usize>, std::io::Error>(None);
             }
         }
-        Ok(false)
+        Ok(Some(lines))
     })
     .await;
     signal.fire();
     drop(stdin);
     let reaped = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
     let diagnostic = tokio::time::timeout(Duration::from_secs(5), diagnostics).await;
-    let module_missing =
-        matches!(&diagnostic, Ok(Ok(Ok(text))) if text.contains("ERR_MODULE_NOT_FOUND"));
-    println!("D-L premise {label} module-missing {module_missing}");
-    println!(
-        "D-L premise {label} work-completed {}",
-        matches!(work, Ok(Ok(true)))
-    );
+    let completed = report_work(&work, label);
+    match diagnostic {
+        Ok(Ok(error)) => println!("D-L premise {label} stderr-read {error:?}"),
+        Ok(Err(_)) => println!("D-L premise {label} stderr-read task-failure"),
+        Err(_) => println!("D-L premise {label} stderr-read timeout"),
+    }
+    let tail = tail.lock().expect("read diagnostic tail").clone();
+    if tail.is_empty() {
+        println!("D-L premise {label} stderr-tail <empty>");
+    }
+    for line in tail {
+        println!(
+            "D-L premise {label} stderr-tail {}",
+            sanitize_diagnostic(&line, &private)
+        );
+    }
     match &reaped {
         Ok(Ok(_)) => println!("D-L premise {label} direct-reap PASS"),
-        Ok(Err(error)) => println!("D-L premise {label} direct-reap FAIL: {error}"),
+        Ok(Err(error)) => println!(
+            "D-L premise {label} direct-reap FAIL: kind={:?}",
+            error.kind()
+        ),
         Err(_) => println!("D-L premise {label} direct-reap FAIL: deadline exceeded"),
     }
     assert!(
@@ -129,7 +223,7 @@ async fn signal_exchange(
     assert_eq!(signal.live(), 0, "premise cleanup: owner still registered");
     println!("D-L premise {label} cleanup PASS");
     assert!(
-        matches!(work, Ok(Ok(true))),
+        completed,
         "premise setup: real native work did not complete"
     );
     println!("D-L premise {label} real-work PASS");
@@ -217,11 +311,10 @@ async fn offline_stdlib_add_premise() {
     std::fs::create_dir_all(&registry).expect("create owned minimal registry");
     std::fs::write(registry.join("Registry.toml"), "name = \"Fixture\"\nuuid = \"a58b057d-d7df-4e29-a186-405f45c2cafd\"\nrepo = \"\"\n[packages]\n").expect("write owned minimal registry");
     let mut command = isolated_julia(&root, &workspace);
-    let separator = if cfg!(windows) { ';' } else { ':' };
-    command.current_dir(&workspace).env(
-        "JULIA_LOAD_PATH",
-        format!("@{separator}{}{separator}", shim.display()),
-    );
+    let shim_path = shim.to_str().expect("fixture path is Unicode");
+    command
+        .current_dir(&workspace)
+        .env("JULIA_LOAD_PATH", julia_load_path(&["@", shim_path, ""]));
     command.args(["-e", "using ShipToolsRepl, Pkg; @assert dirname(Base.active_project()) == pwd(); Pkg.offline(true); Pkg.add(\"LinearAlgebra\"; io=devnull); @assert isfile(joinpath(pwd(), \"Project.toml\")); @assert isfile(joinpath(pwd(), \"Manifest.toml\")); println(\"D-L premise offline-stdlib-add PASS\"); flush(stdout); readline(stdin)"]);
     signal_exchange(
         command,
@@ -241,4 +334,24 @@ async fn offline_stdlib_add_premise() {
     );
     println!("D-L premise copied-shim-unchanged PASS");
     std::fs::remove_dir_all(&root).expect("remove package fixture only after confirmed reap");
+}
+
+#[test]
+fn diagnostics_hide_private_values_and_native_paths() {
+    let private = vec!["fixture-user".to_owned(), "fixture-host".to_owned()];
+    assert_eq!(
+        sanitize_diagnostic(
+            "ERROR fixture-user on fixture-host at /fixture/repl/file.jl:7",
+            &private
+        ),
+        "ERROR <private> on <private> at <path>"
+    );
+    assert_eq!(
+        sanitize_diagnostic(
+            r"ERROR at C:\fixture\repl\file.jl:7 ERR_MODULE_NOT_FOUND",
+            &private
+        ),
+        "ERROR at <path> ERR_MODULE_NOT_FOUND"
+    );
+    println!("D-L premise sanitized-diagnostics PASS");
 }
