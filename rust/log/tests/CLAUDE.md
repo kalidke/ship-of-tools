@@ -25,7 +25,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
 - `isolation_guards.rs`: the source guards of ADR 0049, User isolation, that a lint cannot make, over the production source (`sot_log::test_scan::production_sources()`): every accept of the Rust processes is a listed listener; the listeners the Julia children and Node helpers open in their source are listed; no browser opener outside `browser_open.rs`; no secret, token or address as a command-line argument; macOS's `LOCAL_PEERTOKEN` has one reader, and the source pin permits only pid/pidversion `.val` accesses in its private `AuditToken` module, pinning indices 5/7; the guard covers production source spellings, not arbitrary equivalent Rust, numeric socket-option calls or test-only token reads; every platform.
-- `socket_unix/`: `SocketServer` and `SocketClient` over real Unix sockets, process-isolated: connect, teardown, close, client modules; Unix.
+- `socket_unix/`: real Unix socket connect, teardown, close and client contracts, process-isolated with named waits and progress diagnostics (`diagnostics.rs`); Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
 - `winhandle_windows.rs`: `winhandle::harden_own_stdio` clears handle inheritance; Windows only, alone in its binary because it mutates the process's real std handles.
@@ -39,6 +39,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - The Claude adapter: `claude_rig`; `claude_e2e` only for the real helper.
 
 ## Rules
+- Socket tests pass a named `WaitContext` to shared wait helpers; real failure and child-cutoff cases in `diagnostics.rs` check emitted records and progress snapshots.
 - A test file over 800 lines becomes `<name>/main.rs` plus subject modules under the same binary name; each module opens with `use super::*;`, so a helper two or more modules share stays in `main.rs`.
 - A test that must run in a process of its own starts with `if !run_isolated("<name>") { return; }` (`sot_log::test_isolated`). `<name>` is its exact libtest name, with its module in a multi-module binary (`close::...` in `pipe_win/`); a name that runs no body fails. A test that re-runs its binary another way is listed in that module's pin with its own proof that the body ran.
 - `support/` files are shared with `#[path = "support/<f>.rs"] mod <f>;` (`../support/` from a binary folder); each binary includes only what it uses.
