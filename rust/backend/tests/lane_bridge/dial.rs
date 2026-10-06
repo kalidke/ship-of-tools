@@ -520,7 +520,35 @@ fn a_failed_supervisor_handshake_drops_the_spare() {
     drop(endpoint);
 }
 
-/// Observe the private daemon's admission close before the first voyage consumes its spare.
+// Status travels over the retained, challenged supervisor connection; the wire supplies the Ready voyage.
+fn ready_voyage(endpoint: &DaemonLaneEndpoint, supervisor: &sot_protocol::topology::lane_client::DaemonLaneClient) -> String {
+    use sot_log::identity::exchange::{IdentityExchange, ExchangeDecode, SupervisorLaneExchange, SUPERVISOR_LANE_BUILD_ID};
+    use sot_log::identity::challenge::ChallengeOutcome;
+    use sot_log::lane::{client::Endpoint, wire::{self, DecodedFrame, SupervisorRequest, SupervisorReply, SupervisorPhase}};
+    let mut hello = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID.to_string());
+    assert!(matches!(endpoint.challenge(supervisor, &mut hello, Instant::now() + Duration::from_secs(2)), ChallengeOutcome::Proven(_)), "private supervisor identity must be proven");
+    struct Ready { splitter: wire::FrameSplitter, voyage: Option<String> }
+    impl IdentityExchange for Ready {
+        fn encode_request(&self) -> Vec<u8> { wire::encode_supervisor_request(&SupervisorRequest::Status).unwrap() }
+        fn feed(&mut self, bytes: &[u8]) -> ExchangeDecode {
+            let (frames, error) = self.splitter.feed(bytes);
+            if error.is_some() || frames.len() > 1 { return ExchangeDecode::Foreign; }
+            let Some(frame) = frames.into_iter().next() else { return ExchangeDecode::Incomplete; };
+            if self.splitter.has_pending_bytes() { return ExchangeDecode::Foreign; }
+            match frame {
+                DecodedFrame::SupervisorReply(SupervisorReply::StatusOk { pid, created, voyage: Some(voyage), phase: SupervisorPhase::Ready, .. }) => {
+                    self.voyage = Some(voyage); ExchangeDecode::Identity { pid, created }
+                }
+                _ => ExchangeDecode::Foreign,
+            }
+        }
+    }
+    let mut ready = Ready { splitter: wire::FrameSplitter::new(), voyage: None };
+    assert!(matches!(endpoint.challenge(supervisor, &mut ready, Instant::now() + Duration::from_secs(5)), ChallengeOutcome::Proven(_)), "Ready Status must agree with the retained supervisor identity");
+    ready.voyage.expect("the private Ready supervisor supplies the voyage")
+}
+
+/// Observe private admission expiry, then require the first voyage call to reap the expired spare and succeed through one fresh login before any attach worker can retry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_expired_spare_uses_a_fresh_voyage_login() {
     use sot_log::lane::client::Endpoint;
@@ -544,6 +572,7 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
         Ok(child)
     }));
     let supervisor = endpoint.connect_supervisor_unchallenged(&target).unwrap();
+    let voyage = ready_voyage(&endpoint, &supervisor);
     assert_eq!(pids.lock().unwrap().len(), 2, "the initial pair started");
     let spare = pids.lock().unwrap()[1];
     let stat = format!("/proc/{spare}/stat");
@@ -554,19 +583,17 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
         assert!(Instant::now() < deadline, "the private daemon never closed the idle bridge at admission expiry");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    drop(supervisor);
-    let mut client = FeAttachClient::attach(endpoint, target, 80, 24, "expiry-fe".into(), "expiry-fe".into(), None, Box::new(|| {})).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !client.is_checkpointed() {
-        client.pump();
-        assert!(!client.is_dead(), "expired-spare fallback died: {}", client.status_line());
-        assert!(Instant::now() < deadline, "expired-spare fallback never received its checkpoint");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(pids.lock().unwrap().len(), 4, "retry supervisor plus one fresh voyage login");
-    assert!(!Path::new(&stat).exists(), "the expired owned child was reaped before fallback");
-    client.shutdown(Duration::from_secs(5));
+    // Exactly one first-voyage attempt settles before any recovery worker exists.
+    let first = endpoint.connect_voyage_unchallenged(&target, &voyage);
+    let authenticated = first.as_ref().ok().is_some_and(|client| matches!(endpoint.authenticate_server(client), sot_log::identity::challenge::PeerAuthOutcome::Authenticated(_)));
+    let started = pids.lock().unwrap().clone();
+    let reaped = !Path::new(&stat).exists();
+    drop(first); drop(supervisor); drop(endpoint);
     env.kill_daemon_bounded().await;
+    assert!(authenticated, "the single first voyage must succeed through fresh fallback before worker recovery");
+    assert!(reaped, "the expired owned child was reaped before first-voyage fallback");
+    assert_eq!(started.len(), 3, "two initial logins plus exactly one fresh first-voyage login");
+    assert_ne!(started[2], spare, "the first-voyage fallback child differs from the expired spare");
 }
 
 /// A fixed spare-entry delay and bounded rendezvous; entry order never establishes a lane role.
