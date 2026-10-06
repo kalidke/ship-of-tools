@@ -51,6 +51,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 
 ## Files
 - `mod.rs`: declares the seven modules and `WireRequest`.
+- `contract_tests.rs`: native Julia/MathJax fixture premises: real work, private-Signal cleanup and refusal after fire; constructor injection remains to be tested in C1.
 - `julia.rs`: which julia binary runs (`resolve_bin`).
 - `kernel.rs`: the per-row kernel and its supervisor.
 - `repl/`: the per-row Julia REPL child.
