@@ -577,3 +577,60 @@ jobs:
           out="$(PATH="$RUNNER_TEMP/fakebin:$PATH" SOT_INSTALL_TAG="$tag" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" --prefix "$HOME/.local/share/sot2" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           [ -x "$HOME/.local/share/sot2/bin/sotd" ] || { echo "second prefix missing sotd"; exit 1; }
+
+  w1-native-proof:
+    name: W1 C4 head proof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    env:
+      CARGO_NET_OFFLINE: "true"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build offline declaration owner
+        run: |
+          umask 022
+          nice -n 10 timeout 15m cargo build -p sot-backend --bin sotd -j 8 --locked
+      - name: macOS caller behavior receipt
+        if: matrix.os == 'macos-latest'
+        run: |
+          umask 022
+          set +e
+          nice -n 10 timeout 15m cargo test -p sot-backend --test trust_premises unix_installer_preserves_table_forms_and_reports_owner_failures -j 8 --locked -- --exact --nocapture > unix.log 2>&1
+          result=$?
+          cat unix.log
+          echo "C4 head Unix exit $result expected 0"
+          test "$result" -eq 0 || exit 1
+          grep -F 'W1 C4 Unix matrix PASS:' unix.log || exit 1
+      - name: Native creation owner receipt
+        if: "${{ 'head' == 'head' }}"
+        run: |
+          umask 022
+          nice -n 10 timeout 15m cargo test -p sot-backend --bin sotd appearing_destination_wins_exclusive_creation -j 8 --locked -- --nocapture > creation.log 2>&1
+          result=$?
+          cat creation.log
+          echo "C4 head creation exit $result expected 0"
+          test "$result" -eq 0 || exit 1
+          grep -F 'W1 P6 owner PASS:' creation.log || exit 1
+      - name: Windows caller behavior receipt
+        if: matrix.os == 'windows-latest'
+        run: |
+          set +e
+          powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/tests/test-install-layout.ps1 -SotdPath "$(pwd)/target/debug/sotd.exe" > windows.log 2>&1
+          result=$?
+          cat windows.log
+          echo "C4 head Windows exit $result expected 0"
+          test "$result" -eq 0 || exit 1
+          grep -F 'W1 C4 Windows delegation PASS:' windows.log || exit 1
