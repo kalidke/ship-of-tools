@@ -539,7 +539,7 @@ impl DaemonLaneEndpoint {
             std::mem::replace(&mut *state, VoyageSpare::Spent)
         };
         match previous {
-            VoyageSpare::Parked(client) if !client.exited() => Some(client),
+            VoyageSpare::Parked(client) => Some(client),
             _ => None,
         }
     }
