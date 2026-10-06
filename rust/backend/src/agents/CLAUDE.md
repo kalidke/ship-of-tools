@@ -11,10 +11,11 @@ agents/CLAUDE.md at the repo root (lands with the repo-root agents/ folder).
 - `argv.rs`: the launch argv per agent kind (`agent_argv`, `agent_exec_argv`, `claude_resume_argv`) and the Unix path resolution of `claude` and `ccx`.
 - `env.rs`: the spawn env (`capsule_supervisor_env`, `account_spawn_env` for the account preparation, `agent_env`) and the list of nesting variables scrubbed from every spawn.
 - `folder_trust.rs`: the declared trusted-root prefix and the write of claude's per-folder trust record.
+- `folder_trust_tests.rs`: W1 premise controls through actual account preparation: preserved records, separate child keys and OS path comparisons; escape assertions are red at H.
 - `awareness.rs`: the `SOT_*` awareness env stamped on every capsule producer, and the daemon's own endpoint path.
 - `memory.rs`: the auto-memory settings flag claude gets, and the proof that one shared store exists.
 - `ops.rs`: accounts.list, and `sotd agent-exec`, the one owner of the launch recipe that `ccb` execs through
-- `support_tests.rs`: `touch_dir`, `touch_file`, `platform_spelling` and the env guard, shared by the tests of the other files.
+- `support_tests.rs`: `touch_dir`, `touch_file`, `platform_spelling` and the env guard with config-directory restoration, shared by the tests of the other files.
 
 ## Start here
 `account_env` in `accounts.rs` for what a spawn sets for an account; `ensure_folder_trusted` in `folder_trust.rs` for the
@@ -22,6 +23,7 @@ trust record; `agent_argv` in `argv.rs` for a spawn's argv, and `agent_exec_argv
 execs.
 
 ## Rules
+- W1 premise controls run in temporary homes and fresh git fixtures, without launching Claude. Actual child-config consumption and child-observed spelling are not checked by these controls; headless success would prove no interactive recognition, parent coverage or dialog suppression.
 - A named account never shares the login: only the names in `SHARED_ENTRIES` are linked, by `ensure_account_links`.
 - Folder trust is written only for a root under the declared prefix, and an entry already accepted is never rewritten
   (`ensure_folder_trusted`).

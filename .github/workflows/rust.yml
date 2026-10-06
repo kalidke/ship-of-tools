@@ -85,6 +85,60 @@ jobs:
       # hit counts on stderr — captured output would hide them from CI logs,
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
+      - name: Folder trust premises (Windows and macOS)
+        if: matrix.os == 'windows-latest' || matrix.os == 'macos-latest'
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          umask 022
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          prefix = 'agents::env::trust_premises::'
+          cases = [
+              ('config_environment_is_restored', 0, 'W1 isolation PASS:'),
+              ('p2_existing_records_survive_actual_preparation', 0,
+               'W1 P2 preparation PASS:'),
+              ('p3_parent_record_keeps_a_separate_child_key', 0,
+               'W1 P3 preparation PASS:'),
+              ('p4_os_resolves_', 0, 'W1 P4 OS comparison PASS:'),
+              ('p4_parent_component_escape_records_nothing', 101,
+               'W1 P4 scope violation: parent-component escape wrote a trust file'),
+          ]
+          if sys.platform != 'win32':
+              cases.append(('p4_symlink_escape_records_nothing', 101,
+                            'W1 P4 scope violation: symlink escape wrote a trust file'))
+          child_env = os.environ.copy()
+          child_env.update(CARGO_NET_OFFLINE='true', CARGO_PROFILE_DEV_DEBUG='line-tables-only')
+          for name, expected, witness in cases:
+              argv = ['nice', '-n', '10', 'cargo', 'test', '-p', 'sot-backend', '--bin', 'sotd',
+                      '--locked', '-j', '8', prefix + name, '--', '--nocapture']
+              child = subprocess.Popen(argv, env=child_env, stdout=subprocess.PIPE,
+                                       stderr=subprocess.STDOUT, text=True)
+              try:
+                  output, _ = child.communicate(timeout=150)
+              except subprocess.TimeoutExpired:
+                  child.kill()
+                  try:
+                      child.communicate(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      print('W1 owned cargo child did not release its output within the cleanup bound')
+                  raise SystemExit('W1 premise timed out; this is not behavior evidence')
+              # Print assertion receipts, never a configuration or environment dump.
+              for line in output.splitlines():
+                  if 'W1 ' in line:
+                      print(line[line.index('W1 '):])
+              print(f'{name} exit {child.returncode} expected {expected}')
+              if child.returncode != expected or witness not in output:
+                  raise SystemExit('W1 premise selection or assertion differed from the H control')
+          print('W1 P0 NOT CHECKED: provisioned credential fixture, test ref and consumption witness absent')
+          print('W1 P1 NOT CHECKED: prepared bytes do not establish the child-observed project spelling')
+          print('W1 P5 NOT CHECKED: real-child config semantics have not been observed')
+          print('W1 P6 NOT CHECKED: Rust declaration owner and delegated caller are not present at H')
+          raise SystemExit('W1 HOLD before C1: required hosted preparation witnesses remain unproven')
+          PY
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 

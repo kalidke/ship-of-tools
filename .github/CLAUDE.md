@@ -29,6 +29,7 @@ scripts/CLAUDE.md.
 `workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
 
 ## Rules
+- The test-only `tmp/ci-w1-premises` step "Folder trust premises (Windows and macOS)" runs actual preparation controls and expected scope reds at H, then reports HOLD for missing real-Claude and creation witnesses. It never launches Claude or treats the partial controls as the complete W1 gate; no credential or privilege recipe is supplied.
 - CI is the tag gate: `scripts/release.sh` refuses a cut unless the latest non-skipped `rust.yml` and `CI.yml` runs on
   the branch being cut are green and in HEAD's history; a `fixes/*` or `rc/*` branch has runs only if they are
   dispatched there (`gh workflow run <workflow> --ref <branch>`).

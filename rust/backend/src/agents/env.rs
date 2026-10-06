@@ -3,6 +3,10 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "folder_trust_tests.rs"]
+mod trust_premises;
+
 /// Environment variables scrubbed from the spawned supervisor's (and
 /// hence its capsule leg's) environment before launch — the exact list
 /// `agents/claude/bin/ccb` unsets, for the identical reason: a
