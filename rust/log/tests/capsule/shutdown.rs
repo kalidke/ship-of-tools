@@ -335,7 +335,7 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace1", argv, 80, 25);
     let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -352,8 +352,6 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    tx.send(Command::Kill).unwrap();
-
     // The management request can start teardown before Kill; the floor does not identify grace.
     loop {
         assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
@@ -389,7 +387,7 @@ fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace2", argv, 80, 25);
     let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -405,8 +403,6 @@ fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    tx.send(Command::Kill).unwrap();
-
     // The management request can start teardown before Kill; the floor does not identify grace.
     let floor = started + Duration::from_millis(1500);
     while Instant::now() < floor {
@@ -435,7 +431,7 @@ fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
     let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace3", argv, 80, 25);
     let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -451,8 +447,6 @@ fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    tx.send(Command::Kill).unwrap();
-
     loop {
         assert!(!handle.is_finished(), "the ack grace must still be holding at this point");
         if Instant::now() >= floor {

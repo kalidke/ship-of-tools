@@ -315,8 +315,10 @@ pub enum ExitKind {
     /// The producer exited on its own; this run's own program ending is
     /// what closed it — never treated as a request.
     ProducerExited,
-    /// `Command::Kill` was received, or the mgmt lane's `shutdown` drove
-    /// `Action::Shutdown` (EndRun) after its ack was physically written.
+    /// `Command::Kill` was received, or a mgmt `shutdown` committed
+    /// the durable EndRun latch. The latch starts teardown without waiting
+    /// for physical ack completion; the ack grace bounds the wait for a
+    /// pending shutdown acknowledgement (ADR 0041 EndRun).
     Requested,
     /// `P::spawn` failed, or the initial geometry was outside the
     /// budget — nothing ever ran. `producer_dead {spawn_failed:true}` was
