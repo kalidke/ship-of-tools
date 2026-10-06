@@ -196,17 +196,6 @@ pub(super) mod macos {
     }
 
     pub(in crate::lifecycle) fn checked_no_live_group(leader: i32) -> io::Result<()> {
-        leader_exited(leader)?;
-        let members = members(leader, false)?;
-        let identities = members.iter().map(|&pid| zombie(pid, leader, false)).collect::<io::Result<Vec<_>>>()?;
-        if members != self::members(leader, true)? {
-            return Err(rejected());
-        }
-        for (&pid, identity) in members.iter().zip(identities) {
-            if zombie(pid, leader, true)? != identity {
-                return Err(rejected());
-            }
-        }
         leader_exited(leader)
     }
 
