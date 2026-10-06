@@ -78,7 +78,7 @@ def run(argv, p, extra=None):
     try:
         return subprocess.run(argv, cwd=p, env=actual, text=True, encoding='utf-8', errors='strict',
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
-    except UnicodeError as error:
+    except UnicodeDecodeError as error:
         raise AssertionError(f'child output is not UTF-8 ({argv[0]}): {type(error).__name__}: {error}')
 
 def shell(body, p, extra=None):
