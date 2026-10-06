@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c2-revert-lock",
+  "original": {
+    "sha": "6cc99b9c20f92b50d3263c39e9401e096ac20965",
+    "branch": "tmp/ci-t1-c2-revert-lock"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "05d7cb36bb02b0ec46cfa064b9b529443d38e7d2",
+  "tree": "revert-lock",
+  "overlays": [
+    {
+      "tree": "revert-lock",
+      "file": "rust/frontend/src/lease.rs",
+      "base_sha256": "2588c15693f65a5549b6e00162bfd815f2e7aa7a75d1f0c08cbe06e51ea2b407",
+      "overlay_sha256": "26ce5cacfdbb804929dd2d1aa8ed7f9ffeab656b56f834cb7eb7a6aad0973550",
+      "patch": "overlays/revert-lock-lease.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/lease.rs",
+      "accepted_overlay_sha256": "26ce5cacfdbb804929dd2d1aa8ed7f9ffeab656b56f834cb7eb7a6aad0973550",
+      "replay_sha256": "91b343252a2f60779ada655df5431e45d6aa8e350c83f5757b5539035aad5f38",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}

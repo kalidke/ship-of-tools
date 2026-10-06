@@ -1,0 +1,15 @@
+[
+  {
+    "label": "c2-revert-lock-held_book_does_not_extend_forced_delivery",
+    "tree": "revert-lock",
+    "test": "lease::delivery_tests::held_book_does_not_extend_forced_delivery",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "Book acquisition exceeded total deadline:",
+    "observations": [
+      "T1 fixture observed: Book owner announced held lock"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  }
+]
