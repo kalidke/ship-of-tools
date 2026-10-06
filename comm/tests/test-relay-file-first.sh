@@ -704,6 +704,25 @@ check "an ack that carries an error decides the not-mine leg, a directed send an
 check "an unreadable OS account is named by a directed send" case_an_unreadable_account_is_named_by_a_directed_send
 check "an unreadable OS account is named by a broadcast" case_an_unreadable_account_is_named_by_a_broadcast
 
+# ADR 0049, User isolation: a local bridge's refusal survives the broadcast failure path.
+case_a_broadcast_names_the_local_bridges_refusal() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir why
+    dir="$(mktemp -d "$WORK/refusing-bridge-XXXXXX")"
+    why='sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account'
+    cat > "$dir/sotd" <<'FAKEBRIDGE'
+#!/bin/sh
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+printf 'sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account\n' >&2
+exit 1
+FAKEBRIDGE
+    chmod +x "$dir/sotd"
+    SOTD_BIN="$dir/sotd" relay_send 'unix:/x/s.sock' send --all 'refused'
+    [ "$RELAY_RC" -eq 1 ] && [ -z "$RELAY_OUT" ] || { echo "  rc $RELAY_RC, out: $RELAY_OUT"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: $why" || { echo "  the bridge's refusal was lost: $RELAY_ERR"; return 1; }
+}
+check "a broadcast whose local bridge refuses names the bridge's line (ADR 0049)" case_a_broadcast_names_the_local_bridges_refusal
+
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [ "$FAIL" -eq 0 ]

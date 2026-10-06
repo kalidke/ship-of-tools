@@ -160,12 +160,13 @@ case_a_wire_send_with_no_daemon_is_failed() {
 }
 
 # T5 on a faked Windows box: `uname` says MINGW, this box's own daemon is a
-# fake `sotd.exe` under a fake LOCALAPPDATA, and a fake `powershell.exe` is
-# the pipe transport (fakes from test-join-disambiguation.sh's Windows
-# discovery case). It answers the connect probe, logs each oneshot's argv and
-# the frames on its stdin, and answers `comm.file` with $WINHUB/answer
-# ("" = silence). A copy of the scripts WITHOUT this file's endpoint stubs, so
-# the real Windows discovery runs.
+# fake `sotd.exe` under a fake LOCALAPPDATA, and the same fake is the pipe
+# transport, since the library opens a pipe through `sotd.exe stdio-bridge
+# --endpoint` (fakes from test-join-disambiguation.sh's Windows discovery
+# case). Its bridge arm answers the connect probe (empty input), logs each
+# oneshot's argv and the frames on its stdin, and answers `comm.file` with
+# $WINHUB/answer ("" = silence). A copy of the scripts WITHOUT this file's
+# endpoint stubs, so the real Windows discovery runs.
 WINBIN="$WORK/winbin"; WINFAKE="$WORK/winfake"; WINAPP="$WORK/winappdata"; WINHUB="$WORK/winhub"
 cp -r "$SCRIPTS_DIR" "$WINBIN"
 # Cygwin's /proc as the Windows walk reads it: each script that sources the library
@@ -178,31 +179,31 @@ printf '%s (bash) S 1\n' "\$\$" > "\$_SOT_PROC/\$\$/stat"; printf 'bash\0' > "\$
 WINPROC
 mkdir -p "$WINFAKE" "$WINAPP/sot/bin" "$WINHUB"
 printf '#!/bin/sh\necho "MINGW64_NT-10.0-19045"\n' > "$WINFAKE/uname"
-cat > "$WINAPP/sot/bin/sotd.exe" <<'FAKESOTD'
-#!/bin/sh
+{ printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKESOTD'
 if [ "$1" = session-socket-path ] && [ "$2" = local ]; then printf '%s\n' '\\.\pipe\sot-fakeuser-local'; exit 0; fi
 # `ancestors --from`: the one process above the comm script's shell, no agent among them.
 if [ "$1" = ancestors ] && [ "$2" = --from ]; then printf '1001\tbash.exe\tbash.exe\n'; exit 0; fi
+# `stdio-bridge --endpoint pipe:<path>`: the connect probe when its input is empty, else the transport.
+if [ "$1" = stdio-bridge ] && [ "$2" = --endpoint ]; then
+    printf '%s\n' "$*" >> "$d/argv.log"
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >> "$d/stdin.log"
+        case "$line" in
+            *'"op":"hello"'*) ;;
+            *'"op":"comm.file"'*)
+                [ -s "$d/answer" ] && printf '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":%s}\n' "$(cat "$d/answer")"
+                exit 0 ;;
+            *) exit 0 ;;
+        esac
+    done
+    exit 0
+fi
 exit 1
 FAKESOTD
-{ printf '#!/bin/sh\nd=%s\n' "$WINHUB"; cat <<'FAKEPS'
-case " $* " in *" -File "*) ;; *) exit 0 ;; esac
-printf '%s\n' "$*" >> "$d/argv.log"
-while IFS= read -r line; do
-    printf '%s\n' "$line" >> "$d/stdin.log"
-    case "$line" in
-        *'"op":"hello"'*) ;;
-        *'"op":"comm.file"'*)
-            [ -s "$d/answer" ] && printf '{"v":1,"id":1,"kind":"res","op":"comm.file","payload":%s}\n' "$(cat "$d/answer")"
-            exit 0 ;;
-        *) exit 0 ;;
-    esac
-done
-FAKEPS
-} > "$WINFAKE/powershell.exe"
+} > "$WINAPP/sot/bin/sotd.exe"
 # `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
 printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WINFAKE/cmd"
-chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
+chmod +x "$WINFAKE/uname" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
 win_send() {  # ANSWER
     rm -f "${WINHUB:?}"/*.log; printf '%s' "$1" > "$WINHUB/answer"
     SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \

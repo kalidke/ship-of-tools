@@ -56,12 +56,10 @@ export SOT_COMM_HOME="$WORK/home"
 guard_fresh_home "$WORK"; guard_refuse_live_home "$SOT_COMM_HOME"
 SCRIPTS_DIR="$(guard_stage_bin "$WORK")" || exit 2
 # Re-point SCRIPT_DIR at the real scripts dir (it starts out as THIS test
-# file's own dir, comm/tests) — LU6e's pipe: cases below call
-# sot_oneshot_request directly, and that function looks up
-# comm-pipe-request.ps1 next to it via ${SCRIPT_DIR:-.}, exactly like every
-# real caller (sot-fe, comm-relay.sh) does after their own
-# `SCRIPT_DIR="$(cd "$(dirname ...)" && pwd)"`. Not read again after this
-# point for anything else in this file.
+# file's own dir, comm/tests): LU6e's pipe: cases below call
+# sot_oneshot_request directly, with SCRIPT_DIR set as every real caller
+# (sot-fe, comm-relay.sh) sets it. Not read again after this point for
+# anything else in this file.
 SCRIPT_DIR="$SCRIPTS_DIR"
 JOIN="$SCRIPTS_DIR/comm-join.sh"
 SPAWN="$SCRIPTS_DIR/comm-spawn.sh"
@@ -366,11 +364,13 @@ check "comm-self-audit.sh flags a slot naming another project and no suffixed/ke
 check "the audit slugs a repo name with the daemon's own rule, not a second copy" case_self_audit_uses_the_daemons_own_slug_rule
 check "the audit does not excuse a repo that suffixes the label (the other direction)" case_self_audit_does_not_excuse_a_repo_suffixing_the_label
 check "a slot claimed during the join is refused by the writer with exit 3, not 1" case_slot_guard_refusal_in_the_write_gap_exits_three
-check "sot_oneshot_request over a pipe: endpoint dispatches to the stub powershell.exe and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
-check "sot_oneshot_request over a pipe: endpoint fails cleanly with no powershell.exe on PATH (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell
-check "sot_oneshot_request over a pipe: endpoint fails cleanly with comm-pipe-request.ps1 missing (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1
+check "sot_oneshot_request over a pipe: endpoint hands the bridge pipe:\\\\.\\pipe\\<name> and returns its matching reply (LU6e)" case_pipe_endpoint_oneshot_request_matches_reply
+check "sot_oneshot_request over a pipe: endpoint fails cleanly with no sotd to open it (LU6e)" case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_sotd
+check "sot_oneshot_request over a pipe: endpoint names the bridge's own refusal (ADR 0049)" case_pipe_endpoint_oneshot_request_names_the_bridges_refusal
 check "sot_daemon_endpoint on a simulated Windows host returns pipe: first and never calls pgrep (LU6e)" case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep
 check "sot_relay_endpoint on a simulated Windows host returns the binary's own answer, never the pipe the shell itself probed (C10)" case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed
+
+check "on Windows the sotd binary is SOTD_BIN or the install path, never a listed process's (ADR 0049)" case_windows_sotd_exe_is_never_a_listed_process
 
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"

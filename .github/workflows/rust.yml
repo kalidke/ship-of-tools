@@ -311,6 +311,19 @@ jobs:
           # GitHub rejects. Hermetic, under a second.
           bash test-crlf-gh-auth.sh
 
+      - name: M1c C2 Windows red
+        if: ${{ always() && matrix.os == 'windows-latest' }}
+        shell: bash
+        working-directory: rust
+        run: |
+          set +e
+          cargo test -p sot-backend --test shell_dial the_shell_dial_reaches_only_a_pipe_this_account_serves --locked -- --nocapture > m1c-c2-red.log 2>&1
+          rc=$?
+          cat m1c-c2-red.log
+          [ "$rc" -eq 101 ] || exit 1
+          grep -F 'sot_dial: command not found' m1c-c2-red.log
+          grep -E 'test the_shell_dial_reaches_only_a_pipe_this_account_serves .*FAILED' m1c-c2-red.log
+
   # ADR 0041 step-4 spec gate, "CI reality": `windows-latest` (26100+) has a
   # `ClosePseudoConsole` that returns immediately — it cannot exercise the
   # pre-24H2 blocking close the ConPTY drain ordering (`Pseudoconsole::close_pty`

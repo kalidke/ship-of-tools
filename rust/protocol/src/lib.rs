@@ -161,6 +161,7 @@ mod client_wire_tests {
         for field in [r#""host":%s"#, r#""os_user":%s"#] {
             assert!(hellos[0].contains(field), "the shell client's hello declares {field}: {}", hellos[0]);
         }
+        assert!(!hellos[0].contains(r#""token""#), "the shell client's hello sends no token: {}", hellos[0]);
     }
 
     /// ADR 0049 `## User isolation`: a hello names the OS account its process runs as, and two accounts on one

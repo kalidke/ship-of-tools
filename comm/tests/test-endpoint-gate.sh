@@ -538,6 +538,24 @@ case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd() {
 }
 check "a process is asked for a socket only when its binary is named sotd" case_a_process_is_asked_for_a_socket_only_when_its_binary_is_named_sotd
 
+
+# ADR 0049, User isolation: a process list used for a daemon binary is this account's only.
+case_live_sotd_exes_lists_only_this_accounts_processes() {
+    local dir log out want
+    dir="$(fake_bin_dir)"; log="$dir/argv"
+    cat > "$dir/pgrep" <<'FAKEPGREP'
+#!/bin/sh
+printf '%s\n' "$*" > "$PGREP_ARGV"
+exit 1
+FAKEPGREP
+    chmod +x "$dir/pgrep"
+    out="$(PGREP_ARGV="$log" PATH="$dir:$PATH" _sot_live_sotd_exes)"
+    want="-u $(id -u) -af sotd"
+    [ "$(cat "$log")" = "$want" ] || { echo "  pgrep did not select this account: $(cat "$log")"; return 1; }
+    [ -z "$out" ] || { echo "  no process was listed, got: $out"; return 1; }
+}
+check "_sot_live_sotd_exes lists only this account's processes (ADR 0049)" case_live_sotd_exes_lists_only_this_accounts_processes
+
 echo ""
 echo "$PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
