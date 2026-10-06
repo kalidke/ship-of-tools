@@ -21,8 +21,10 @@
     {
       "file": "rust/frontend/src/ui/app/exit_process_tests.rs",
       "accepted_overlay_sha256": "705e8a9f9b36d6a31e420ba9c0e2a19067988c083f9895c51a0de8cbd0df11fa",
-      "replay_sha256": "2e1449af03c67f98a3512250979ce289c523fcbadaa032b3a378bf0ad9f01e57",
-      "change": "new observation statement whitespace only; inherited lines untouched"
+      "replay_sha256": "4d3536ff190df5933feb36170a09a34fba277975fa99421411362fdae8b3021c",
+      "change": "new observation statement whitespace only; inherited lines untouched",
+      "previous_replay_sha256": "2e1449af03c67f98a3512250979ce289c523fcbadaa032b3a378bf0ad9f01e57",
+      "final_added_line_formatting": "indentation only; no new formatter edit touches added lines"
     }
   ]
 }

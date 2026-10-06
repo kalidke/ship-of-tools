@@ -183,9 +183,9 @@ fn blocked_pool_ok_cleans_yielding_child() {
         println!(
             "T1 body entered: ui::app::exit_process_tests::blocked_pool_ok_cleans_yielding_child"
         );
-    runtime_case(false, false);
+        runtime_case(false, false);
         println!("T1 assertion passed: runtime finalization exceeded two seconds:");
-     }
+    }
 }
 #[test]
 fn blocked_pool_error_cleans_yielding_child() {
@@ -195,9 +195,9 @@ fn blocked_pool_error_cleans_yielding_child() {
 fn held_worker_exposes_delayed_child_destruction() {
     if run_isolated("ui::app::exit_process_tests::held_worker_exposes_delayed_child_destruction") {
         println!("T1 body entered: ui::app::exit_process_tests::held_worker_exposes_delayed_child_destruction");
-    runtime_case(false, true);
+        runtime_case(false, true);
         println!("T1 assertion passed: runtime finalization exceeded two seconds:");
-     }
+    }
 }
 #[test]
 fn absent_runtime_and_repeated_finalization_preserve_results() {
