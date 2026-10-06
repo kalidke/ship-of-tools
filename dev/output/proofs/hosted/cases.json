@@ -1,0 +1,32 @@
+[
+  {
+    "label": "c3-revert-drop-blocked_pool_ok_cleans_yielding_child",
+    "tree": "revert",
+    "test": "ui::app::exit_process_tests::blocked_pool_ok_cleans_yielding_child",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "runtime finalization exceeded two seconds:",
+    "observations": [
+      "T1 fixture observed: original child entered once and remained alive",
+      "T1 fixture observed: yielding task and blocked pool ready",
+      "T1 fixture observed: yielding ownership dropped and original child exited"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c3-revert-drop-held_worker_exposes_delayed_child_destruction",
+    "tree": "revert",
+    "test": "ui::app::exit_process_tests::held_worker_exposes_delayed_child_destruction",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "runtime finalization exceeded two seconds:",
+    "observations": [
+      "T1 fixture observed: original child entered once and remained alive",
+      "T1 fixture observed: yielding task and held worker ready",
+      "T1 fixture observed: yielding ownership dropped and original child exited"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  }
+]
