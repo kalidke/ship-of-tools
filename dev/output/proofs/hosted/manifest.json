@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c3a-parent",
+  "original": {
+    "sha": "bf007ac2398b637c2ce8aacdd9d9f360c6400942",
+    "branch": "tmp/ci-t1-c3a-parent"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "tree": "parent",
+  "overlays": [
+    {
+      "tree": "parent",
+      "file": "rust/frontend/src/lease_grant_tests.rs",
+      "base_sha256": "afcf478419f3cf93e8448ddef6fb16e9069a02c93a21e0d2c7b8e7d18e3b8d22",
+      "overlay_sha256": "e7facacfd7c3826e7ebc4410a15d2705906fca20f3138114ea3e530db8c8adcb",
+      "patch": "overlays/parent.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/lease_grant_tests.rs",
+      "accepted_overlay_sha256": "e7facacfd7c3826e7ebc4410a15d2705906fca20f3138114ea3e530db8c8adcb",
+      "replay_sha256": "e7facacfd7c3826e7ebc4410a15d2705906fca20f3138114ea3e530db8c8adcb",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
