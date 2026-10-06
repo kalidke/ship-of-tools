@@ -1,0 +1,41 @@
+[
+  {
+    "label": "c2-head-held_book_does_not_extend_forced_delivery",
+    "tree": "head",
+    "test": "lease::delivery_tests::held_book_does_not_extend_forced_delivery",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "Book acquisition exceeded total deadline:",
+    "observations": [
+      "T1 fixture observed: Book owner announced held lock"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c2-head-frozen_worker_and_multiple_holders_share_one_deadline",
+    "tree": "head",
+    "test": "lease::delivery_tests::frozen_worker_and_multiple_holders_share_one_deadline",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "transport worker extended forced delivery:",
+    "observations": [
+      "T1 fixture observed: frozen worker and responsive mixed holders"
+    ],
+    "isolated": true,
+    "not_runnable_here": true
+  },
+  {
+    "label": "c2-head-forced_exit_delivers_the_queued_close",
+    "tree": "head",
+    "test": "lease::leave_tests::forced_exit_delivers_the_queued_close",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "the queued close reaches the daemon before eof:",
+    "observations": [
+      "T1 fixture observed: accepted Keep and queued Close before EOF"
+    ],
+    "isolated": false,
+    "not_runnable_here": true
+  }
+]

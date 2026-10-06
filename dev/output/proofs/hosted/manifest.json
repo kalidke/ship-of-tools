@@ -1,0 +1,41 @@
+{
+  "branch": "tmp/ci-t1-r2-c2-head",
+  "original": {
+    "sha": "05d7cb36bb02b0ec46cfa064b9b529443d38e7d2",
+    "branch": "tmp/ci-t1-c2-head"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "05d7cb36bb02b0ec46cfa064b9b529443d38e7d2",
+  "tree": "head",
+  "overlays": [
+    {
+      "tree": "head",
+      "file": "rust/frontend/src/lease.rs",
+      "base_sha256": "f5bda53699f38b6e8f0b555f6df30c5408844dd2ede19919e745dc8beb6f6e2b",
+      "overlay_sha256": "fb9af1744d9228d0447df7040e084ec54fcad8d730bd044b03b879dc5c5fcca7",
+      "patch": "overlays/head-lease.rs.patch"
+    },
+    {
+      "tree": "head",
+      "file": "rust/frontend/src/lease_leave_tests.rs",
+      "base_sha256": "6c0e1573300dc66e5a2298354c0731eed850f73b1da1fb7c7087b3e1c75fe4d8",
+      "overlay_sha256": "cff4e32485be9edc9b413a9ca35f86cd4b77da77b6bf1b6dcd7ae88aeb8c1850",
+      "patch": "overlays/head-lease_leave_tests.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/lease.rs",
+      "accepted_overlay_sha256": "fb9af1744d9228d0447df7040e084ec54fcad8d730bd044b03b879dc5c5fcca7",
+      "replay_sha256": "95d8eac26a98f11bc7aeac9450e6b9cf75f0facf34e66f149ccc3b528d384f22",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    },
+    {
+      "file": "rust/frontend/src/lease_leave_tests.rs",
+      "accepted_overlay_sha256": "cff4e32485be9edc9b413a9ca35f86cd4b77da77b6bf1b6dcd7ae88aeb8c1850",
+      "replay_sha256": "cff4e32485be9edc9b413a9ca35f86cd4b77da77b6bf1b6dcd7ae88aeb8c1850",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
