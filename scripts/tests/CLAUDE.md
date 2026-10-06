@@ -5,7 +5,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 
 ## Files
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
+  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies, and executed trust declaration delegation (`--trust-only`). Runs in the `rust.yml`
   step "Test installer state (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
@@ -23,7 +23,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `rc-gate.sh`: the local candidate gate: the Rust workspace tests, doc tests, windows-gnu and darwin cross checks,
   every Julia suite and the shell suites, as concurrent jobs under one cap. Linux only, run by hand.
 - `test-install-layout.ps1`: `Test-SotPinnedCheckout`, `Get-SotLauncherTarget`, `Get-SotLauncherCodeId` and
-  `Set-SotFolderTrust` (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
+  `Initialize-InstallLayout`'s trust delegation (scripts/sot-install-layout.ps1). Runs in the `rust.yml` step "Test install layout
   (pinned-checkout predicate)".
 - `test-local-daemon.ps1`: scripts/sot-local-daemon.ps1 start, stop and wait behaviour (sections 0-8 and 12-15: the
   refusal, the pipe name, a late bind, `-Stop`, log retention, `Get-StopWaitMs`). Runs in the `rust.yml` step "Test
@@ -160,3 +160,6 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.
+
+- Trust tests execute the real declaration owner and installer entry; emitted-byte assertions and native exit-status
+  observations establish behavior, never source membership or statement offsets.

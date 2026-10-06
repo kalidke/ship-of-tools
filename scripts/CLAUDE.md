@@ -31,6 +31,9 @@ and the launch path fails open: no update step can stop a window from starting.
 - The comm installer publishes by copy then rename, prunes only names it recorded and writes `VERSION` last
   (`install_comm` in `src/comm.jl`).
 
+- Both installer paths delegate folder-trust declaration to the agents-owned offline command; a failure is reported
+  and never described as a successful declaration.
+
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `--socket`, `--dial`,
 `--relaunched`, `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, `deploy/sotd.service`,
@@ -42,7 +45,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::while_open`, `julia::resolve_bin`, `check_remote_fs`,
-`scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`.
+`scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`,
+`sotd trust declare <absolute-prefix>`.
 
 ## Folders
 - `scripts/lib/`: the shared Unix launch library.
@@ -73,7 +77,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `launch-splash.ps1`: the launch progress window.
 - `sot-local-daemon.ps1`: starts and stops this computer's `sotd`, and names the `sotd.exe` it runs (`-Resolve`).
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`.
-- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id and the first-launch install layout.
+- `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id, the first-launch install layout and offline trust declaration delegation.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
 - `sot-lease.ps1`: opens a lease on this computer's daemon, hands every lease over to the window, and starts the bridge (`Start-SotBridge`) for the lease and `sot-local-daemon.ps1`'s probe.
 - `relaunch-sot.ps1`: builds the window and drops the relaunch sentinel.
@@ -102,8 +106,10 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `ExecStartPre=-` tolerates a missing script, and `launch-sot.sh` runs without `set -e`; `installer-apply.sh`'s
   `failed_apply_keeps_old_record_and_pending` and `test-sot-apply.ps1` pin the contract.
 - Files are published whole: written beside the destination under a name of their own, then renamed
-  (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`; `Set-SotFolderTrust` on Windows). The
-  `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-apply.sh` pin it.
+  (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`). The `one_copy_helper` and
+  `partial_wrapper_write_restores` cases of `installer-apply.sh` pin those distribution publishers. Folder-trust
+  declaration publication belongs to agents; the agents → distribution connection defines exclusive creation,
+  existing-file upgrades and the external-writer concurrency limit.
 - Socket and pipe paths come from `sotd session-socket-path`; no script builds one.
 - A launch script reaches a daemon's socket or pipe only through `sotd stdio-bridge --endpoint` (`sot_socket_open`,
   which `restart-backend.sh` also runs, `Test-SotPipeOpen`, `Open-SotLease`, whose lease names its bridge child), which
