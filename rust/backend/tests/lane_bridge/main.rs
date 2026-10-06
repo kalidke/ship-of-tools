@@ -255,7 +255,7 @@ impl Drop for Relay {
 }
 
 fn daemon_lane_endpoint(relay: &Relay) -> DaemonLaneEndpoint {
-    DaemonLaneEndpoint { dial: LaneDial::Local(relay.path.clone()), token: None }
+    DaemonLaneEndpoint::new(LaneDial::Local(relay.path.clone()), None)
 }
 
 mod dial;

@@ -102,6 +102,8 @@ migration mechanism, not two.
    on or terminate. Invariant: an endpoint value names one thing (a
    dial); a row is named in exactly one place.
 
+   **2026-10 amendment (0.6.6, T2):** An ssh endpoint's first supervisor dial also starts one parked voyage login. The first voyage dial consumes that login once, replacing it with a fresh login if it has expired; subsequent dials start no spare. The wire hello still precedes `lane.connect`, in the same write, and the production handshake remains `CONNECT_BOUND`.
+
 4. **Refusals and uncertainty are typed, on every path.** `TransportError`
    gains three bridge-only variants: `Refused{code, detail}`
    (`unknown_workspace`, `not_capsule`, `unauthenticated`, `foreign`,

@@ -96,7 +96,19 @@ pub enum LaneDial {
 pub struct DaemonLaneEndpoint {
     pub dial: LaneDial,
     pub token: Option<String>,
+    spare: std::sync::Mutex<VoyageSpare>,
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    test_ssh_spawner: Option<TestSshSpawner>,
 }
+
+enum VoyageSpare {
+    Unused,
+    Parked(BridgedClient),
+    Spent,
+}
+
+#[cfg(any(test, feature = "test-handshake-bound"))]
+type TestSshSpawner = std::sync::Arc<dyn Fn(&crate::topology::ssh_bridge::SshRecipe, &crate::topology::ssh_bridge::LinkGate) -> Result<std::process::Child, crate::topology::ssh_bridge::SpawnError> + Send + Sync>;
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
 /// it — deliberately the same two fields as `sot_log::identity::challenge::
@@ -194,6 +206,13 @@ impl BridgedClient {
         };
 
         Ok(Self { child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
+    }
+
+    fn exited(&self) -> bool {
+        match self.child.lock() {
+            Ok(mut child) => !matches!(child.try_wait(), Ok(None)),
+            Err(_) => true,
+        }
     }
 
     /// A short bounded poll for the child's last stderr line (this is the
@@ -574,6 +593,70 @@ fn handshake(stream: LaneStream, hello: &Frame, req: &Frame) -> Result<DaemonLan
 }
 
 impl DaemonLaneEndpoint {
+    pub fn new(dial: LaneDial, token: Option<String>) -> Self {
+        Self {
+            dial,
+            token,
+            spare: std::sync::Mutex::new(VoyageSpare::Unused),
+            #[cfg(any(test, feature = "test-handshake-bound"))]
+            test_ssh_spawner: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    pub fn with_test_ssh_spawner(mut self, spawner: TestSshSpawner) -> Self {
+        self.test_ssh_spawner = Some(spawner);
+        self
+    }
+
+    fn spawn_ssh(&self, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+        if !gate.is_up() {
+            return Err(TransportError::LinkDown);
+        }
+        #[cfg(any(test, feature = "test-handshake-bound"))]
+        if let Some(spawn) = &self.test_ssh_spawner {
+            return match spawn(recipe, gate) {
+                Ok(child) => BridgedClient::wrap(child).map_err(TransportError::Unreachable),
+                Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
+                Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
+            };
+        }
+        BridgedClient::spawn(recipe, gate)
+    }
+
+    fn ssh_client(&self, kind: &str, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
+        if kind == "voyage" {
+            if let Some(spare) = self.take_spare() {
+                if gate.is_up() {
+                    return Ok(spare);
+                }
+            }
+            return self.spawn_ssh(recipe, gate);
+        }
+        let client = self.spawn_ssh(recipe, gate)?;
+        if kind == "supervisor" {
+            self.start_spare(|| self.spawn_ssh(recipe, gate));
+        }
+        Ok(client)
+    }
+
+    fn start_spare(&self, spawn: impl FnOnce() -> Result<BridgedClient, TransportError>) {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*state, VoyageSpare::Unused) {
+            if let Ok(client) = spawn() {
+                *state = VoyageSpare::Parked(client);
+            }
+        }
+    }
+
+    fn take_spare(&self) -> Option<BridgedClient> {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        match std::mem::replace(&mut *state, VoyageSpare::Spent) {
+            VoyageSpare::Parked(client) if !client.exited() => Some(client),
+            _ => None,
+        }
+    }
+
     /// The blocking dial: connect (2 s bound, each transport's own
     /// hardened connector — see [`LaneStream`]'s own doc), write the
     /// `lane.connect` request and read ONE reply under a SEPARATE 2 s
@@ -616,7 +699,7 @@ impl DaemonLaneEndpoint {
                 LaneStream::Pipe(client)
             }
             LaneDial::Ssh(recipe, gate) => {
-                let client = BridgedClient::spawn(recipe, gate)?;
+                let client = self.ssh_client(kind, recipe, gate)?;
                 LaneStream::Bridged(client)
             }
         };

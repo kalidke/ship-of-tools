@@ -71,10 +71,10 @@ second, independent guess at how to reach it. Each of these connections
 starts with a `hello` whose role is `handoff` and carries its
 `lane.connect` or `proxy.connect` in the same write, so the hello costs no
 extra round trip.
-The cost is one ssh login per attached pane and one per proxied browser
-connection — an accepted cost, not a bug, so a page with several
-subresources served by the same remote daemon pays once per resource, not
-once per page. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
+The cost is two ssh logins per attached pane (its supervisor lane and its voyage lane) and one per proxied browser
+connection. A pane's cold attach starts both logins together, so one login can overlap the other; every later dial
+is one login. An expired spare is replaced by a fresh voyage login. A page with several subresources served by the
+same remote daemon pays once per resource, not once per page. A port the daemon answers as not served (`bad_port`) is parked: its listener stays bound but closes each browser
 connection at once, with no login and no log line, until a page on that port is opened again from the frontend. A
 tab left open on a dead page therefore stops costing a login per retry after the daemon's first refusal. The daemon
 logs a refused port once, until that port is served again. While the host's link is down, a browser connection

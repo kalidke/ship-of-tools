@@ -32,6 +32,9 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
   no ssh child outlives its client.
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
+- An ssh endpoint's first supervisor dial starts at most one parked voyage login; the first voyage dial consumes it once, and a spent endpoint starts no further spare (`start_spare`, `take_spare`).
+
+- `DaemonLaneEndpoint::new` initializes the private spare state; callers outside the lane-client module cannot construct an endpoint literal. Tests exercise dial sequences and owned-child lifetimes, not a source inventory.
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `SshRecipe::new`,
@@ -51,8 +54,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the hosts.toml parser, search rule, derivations, edits and status table.
 - `endpoint.rs`: this box's own daemon endpoint, the label, the slug and the host-name grammar.
 - `ssh_bridge.rs`: the ssh recipe, its argv and `LinkGate`.
-- `lane_client.rs`: `DaemonLaneEndpoint`, the lane dial over ssh or a socket.
-- `lane_client_tests.rs`: the lane dial's tests against a stub daemon.
+- `lane_client.rs`: `DaemonLaneEndpoint`, the lane dial over ssh or a socket, and its first-voyage login spare
+- `lane_client_tests.rs`: the lane dial and spare ownership, spawn-count, consumption and child-cleanup behavior against test-owned peers
 - `relay_units.rs`: the unit text `sotd topology apply` writes for each relayed host.
 - `tests.rs`: the parser, search rule, edit and status-table tests.
 

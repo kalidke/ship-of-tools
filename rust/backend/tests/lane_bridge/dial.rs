@@ -113,7 +113,7 @@ async fn attach_to_a_daemon_that_answers(reply: Frame) -> (String, usize) {
 
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
-        DaemonLaneEndpoint { dial: LaneDial::Local(path), token: None },
+        DaemonLaneEndpoint::new(LaneDial::Local(path), None),
         "row-old-daemon".to_string(),
         80,
         24,
@@ -314,26 +314,40 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
     env.kill_daemon_bounded().await;
 }
 
-// -----------------------------------------------------------------------
-// C3 as amended (isolation-plan.md §3, dev/output/c3-second-connection-
-// amendment.md §7): `LaneDial::Ssh` reaches the SAME daemon-in-the-middle
-// as `LaneDial::Local` above, through a spawned child instead of an
-// already-open socket. A stub `ssh` first on `PATH` stands in for the
-// real binary — it ignores every option/command argv `ssh_bridge::argv`
-// builds and instead relays its stdin/stdout to the harness's own
-// `Relay`, which is the "far end" both real ssh and a real daemon would
-// otherwise be.
-// -----------------------------------------------------------------------
+// An explicitly spawned SSH stand-in carries the endpoint's piped bytes to the private Relay; no test changes PATH or SHELL.
 
-/// Writes an executable `ssh` (no extension: this is the Linux-only half
-/// of this file, `#![cfg(target_os = "linux")]` at the top) into a fresh
-/// temp dir that relays stdin/stdout to the Unix socket at `socket` via `nc -U`
-/// (`comm-relay.sh`'s own `nc -U` path is the shell twin). The caller
-/// prepends the returned dir to `$PATH`.
+/// Writes the executable that the caller explicitly spawns to relay its pipes to the test-owned socket.
 fn stub_ssh_relaying_to(dir: &Path, socket: &Path) {
-    let script = format!("#!/bin/sh\nexec nc -U {}\n", socket.display());
-    let path = dir.join("ssh");
-    sot_log::test_exec::write_executable(&path, script);
+    let script = format!(r#"#!/usr/bin/env python3
+import os, socket, sys, threading
+peer = socket.socket(socket.AF_UNIX)
+peer.connect({socket:?})
+def upload():
+    while True:
+        data = os.read(0, 65536)
+        if not data:
+            peer.shutdown(socket.SHUT_WR)
+            return
+        peer.sendall(data)
+threading.Thread(target=upload, daemon=True).start()
+while True:
+    data = peer.recv(65536)
+    if not data:
+        break
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+"#, socket = socket.to_string_lossy());
+    sot_log::test_exec::write_executable(&dir.join("ssh"), script);
+}
+
+fn stub_endpoint(path: PathBuf) -> DaemonLaneEndpoint {
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |recipe, gate| {
+        let command = gate.command(recipe)?;
+        std::process::Command::new(&path).args(command.get_args())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)
+    }))
 }
 
 /// The dying twin: exits nonzero before ever touching a socket, with one
@@ -343,25 +357,6 @@ fn stub_ssh_dying_with(dir: &Path, stderr_line: &str) {
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
     sot_log::test_exec::write_executable(&path, script);
-}
-
-/// Prepends `dir` to this PROCESS's `$PATH` — global, like the `SERIAL`
-/// mutex above already accounts for (`SOT_RUNTIME_DIR`) — and returns a
-/// guard that restores the exact original value on drop, so a later test
-/// in this same binary never inherits a stub.
-struct PathGuard(String);
-impl PathGuard {
-    fn prepend(dir: &Path) -> Self {
-        let original = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", dir.display(), original);
-        std::env::set_var("PATH", new_path);
-        PathGuard(original)
-    }
-}
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        std::env::set_var("PATH", &self.0);
-    }
 }
 
 #[tokio::test]
@@ -377,10 +372,8 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
     let relay = Relay::start(env.socket_path.clone()).await;
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-").tempdir().expect("tempdir");
     stub_ssh_relaying_to(stub_dir.path(), &relay.path);
-    let _path_guard = PathGuard::prepend(stub_dir.path());
 
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
+    let endpoint = stub_endpoint(stub_dir.path().join("ssh"));
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         endpoint,
@@ -434,10 +427,8 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     let _serial = SERIAL.lock().await;
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-dying-").tempdir().expect("tempdir");
     stub_ssh_dying_with(stub_dir.path(), "Permission denied (publickey).");
-    let _path_guard = PathGuard::prepend(stub_dir.path());
 
-    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    let endpoint = DaemonLaneEndpoint { dial: LaneDial::Ssh(recipe, Default::default()), token: None };
+    let endpoint = stub_endpoint(stub_dir.path().join("ssh"));
     let (_woke, wake) = wake_flag_for_test();
     // `attach()`'s only `Err` is a failed OS thread spawn (`attach_inner`,
     // `sot-log/src/attach_client/client.rs`) — the dial itself runs on the worker
@@ -471,4 +462,41 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Both children record their start; the hello is read first and the lane.connect request determines the role. The supervisor observes the spare before answering, regardless of which child started first.
+fn ordering_fixture(dir: &Path) -> PathBuf {
+    let path = dir.join("ordering-ssh");
+    let script = format!(r#"#!/usr/bin/env python3
+import json, os, pathlib, sys, time
+root = pathlib.Path({root:?})
+(root / ('start-' + str(os.getpid()))).write_text('started\n')
+hello = json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+assert hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
+assert request['op'] == 'lane.connect'
+if request['payload']['lane'] == 'supervisor':
+    deadline = time.monotonic() + 1.5
+    while len(list(root.glob('start-*'))) < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    if len(list(root.glob('start-*'))) >= 2:
+        (root / 'ordered').write_text('spare before supervisor answer\n')
+    for frame, payload in [(hello, {{'ok': True}}), (request, {{'error': 'ordering fixture refused', 'code': 'unknown_workspace'}})]:
+        print(json.dumps({{'v': frame['v'], 'id': frame['id'], 'kind': 'res', 'op': frame['op'], 'payload': payload}}), flush=True)
+else:
+    sys.stdin.buffer.read()
+"#, root = dir.to_string_lossy());
+    sot_log::test_exec::write_executable(&path, script);
+    path
+}
+
+#[test]
+fn the_spare_login_starts_before_the_supervisor_handshake_completes() {
+    use sot_log::lane::client::Endpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let endpoint = stub_endpoint(ordering_fixture(dir.path()));
+    let result = endpoint.connect_supervisor_unchallenged("row-ordering");
+    assert!(dir.path().join("ordered").is_file(), "the spare login must start before the supervisor handshake completes");
+    assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })), "ordering fixture returned {:?}", result.err());
+    drop(endpoint);
 }
