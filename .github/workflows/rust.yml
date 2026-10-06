@@ -354,6 +354,24 @@ jobs:
   # client against a real supervisor + real capsule the identical way —
   # belongs here for the same reason, budgeted separately (20 min) since
   # its reconnect case spawns a SECOND real supervisor process.
+      - name: MAC-SOCK-A1c macos proof
+        if: always() && matrix.os == 'macos-latest'
+        shell: bash
+        working-directory: .
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/rust/target
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          umask 022
+          python3 dev/output/a1c-proof-kit/prepare.py 7c36f4d0974f653b4843ff88024f2ba395b0f1ab "$CARGO_TARGET_DIR/scratch/a1c-proof-trees"
+          bash dev/output/a1c-proof-kit/proofs.sh macos "$CARGO_TARGET_DIR/scratch/a1c-proof-trees" 7c36f4d0974f653b4843ff88024f2ba395b0f1ab
+      - name: Retain MAC-SOCK-A1c macos logs
+        if: always() && matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macsock-a1c-macos-logs
+          path: rust/target/logs/a1c/*.log
+
   conpty-windows-2022:
     name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor/fe-client tests (windows-2022)
     runs-on: windows-2022

@@ -1,0 +1,60 @@
+diff --git a/rust/log/src/test_isolated.rs b/rust/log/src/test_isolated.rs
+index 9c61923bf..9ae646820 100644
+--- a/rust/log/src/test_isolated.rs
++++ b/rust/log/src/test_isolated.rs
+@@ -322,6 +322,27 @@ mod tests {
+                 }
+             }
+             "stall" => std::thread::sleep(Duration::from_secs(120)),
++            "bytes" => {
++                let mut out = std::io::stdout().lock();
++                out.write_all(b"valid stdout control\n").unwrap();
++                out.flush().unwrap();
++                let mut err = std::io::stderr().lock();
++                err.write_all(b"intended child diagnostic \xFF\xFE\xC3(\n").unwrap();
++                err.flush().unwrap();
++                panic!("intended child failure");
++            }
++            "byte-controls" => {
++                let mut out = std::io::stdout().lock();
++                for bytes in [b"\xE2".as_slice(), b"\x82\xAC\n", b"\x80\xC3(\xE2\x82"] {
++                    out.write_all(bytes).unwrap();
++                    out.flush().unwrap();
++                }
++            }
++            "release" => {
++                eprintln!("fixture-start observed");
++                std::io::stderr().flush().unwrap();
++                std::io::stdin().read_to_end(&mut Vec::new()).unwrap();
++            }
+             // Leaves a descendant that holds this child's stdin and stdout, and exits at once.
+             "leave" => {
+                 Command::new(std::env::current_exe().expect("current_exe"))
+@@ -445,6 +466,27 @@ mod tests {
+         }
+     }
+
++    #[test]
++    fn invalid_utf8_stderr_preserves_the_child_diagnostic() {
++        let (mut command, entry) = test_command("test_isolated::tests::a_role");
++        let child = command.env(ROLE, "bytes").stdout(Stdio::piped())
++            .stderr(Stdio::piped()).spawn().unwrap();
++        let pid = child.id();
++        let captured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            drain(child).wait_within(ISOLATION_TIMEOUT)
++        }));
++        entry.assert_once(pid);
++        eprintln!("entry-proof test=test_isolated::tests::a_role child={pid} entry=once");
++        assert!(captured.is_ok(), "child output lost escaped invalid UTF-8 diagnostic");
++        let (status, out, err) = captured.unwrap();
++        assert!(!status.success(), "intended child failure was not observed");
++        assert!(out.contains("valid stdout control"));
++        assert!(err.contains("intended child diagnostic \\xFF\\xFE\\xC3("),
++            "child output lost escaped invalid UTF-8 diagnostic: {err}");
++        assert!(err.contains("intended child failure"));
++        eprintln!("{err}child-status={status} child={pid} bodies=1 cleanup=confirmed");
++    }
++
+     // Body entry and child cleanup are behavioral proofs; the rerun spelling catalog is retired.
+
+     #[test]
