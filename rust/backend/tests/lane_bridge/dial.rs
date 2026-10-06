@@ -520,6 +520,8 @@ else:
     sys.stdin.buffer.read()
 "#, root = dir.to_string_lossy());
     sot_log::test_exec::write_executable(&path, script);
+    let mut changed = std::env::var_os("PATH").unwrap_or_default(); changed.push(":");
+    unsafe { std::env::set_var("PATH", changed) };
     guard.observe("after preparing ordering fixture");
     path
 }
@@ -536,6 +538,7 @@ fn the_spare_login_starts_before_the_supervisor_handshake_completes() {
     assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })), "ordering fixture returned {:?}", result.err());
     guard.observe("after result");
     drop(endpoint);
+    match &guard.values[0] { Some(value) => unsafe { std::env::set_var("PATH", value) }, None => unsafe { std::env::remove_var("PATH") } }
     guard.finish();
 }
 
