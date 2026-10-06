@@ -6,11 +6,13 @@ env a spawn carries. Part of the backend's agents subsystem; charter:
 agents/CLAUDE.md at the repo root (lands with the repo-root agents/ folder).
 
 ## Files
-- `mod.rs`: declares the seven modules and the test support module.
+- `mod.rs`: declares the agent modules and test support module.
 - `accounts.rs`: account discovery, the account name rules, `account_env`, and the shared links a named account gets.
 - `argv.rs`: the launch argv per agent kind (`agent_argv`, `agent_exec_argv`, `claude_resume_argv`) and the Unix path resolution of `claude` and `ccx`.
 - `env.rs`: the spawn env (`capsule_supervisor_env`, `account_spawn_env` for the account preparation, `agent_env`) and the list of nesting variables scrubbed from every spawn.
-- `folder_trust.rs`: the declared trusted-root prefix and the write of claude's per-folder trust record.
+- `folder_trust.rs`: project-key trust records using the shared declaration reader.
+- `trust_declaration.rs`: the typed user-level trust declaration and the offline declaration command.
+- `trust_declaration_tests.rs`: parsed declaration, preservation and argument behavior.
 - `awareness.rs`: the `SOT_*` awareness env stamped on every capsule producer, and the daemon's own endpoint path.
 - `memory.rs`: the auto-memory settings flag claude gets, and the proof that one shared store exists.
 - `ops.rs`: accounts.list, and `sotd agent-exec`, the one owner of the launch recipe that `ccb` execs through
@@ -25,8 +27,13 @@ execs.
 - A named account never shares the login: only the names in `SHARED_ENTRIES` are linked, by `ensure_account_links`.
 - Folder trust is written only for a root under the declared prefix, and an entry already accepted is never rewritten
   (`ensure_folder_trusted`).
-- The prefix comes only from the user-level settings file (`trusted_root_prefix`); no environment variable or project
-  file declares it.
+- The prefix is parsed as TOML from the user-level settings file at each spawn; no environment variable or project file
+  declares it. Invalid input is diagnostic and declares no trust.
+- Trust preparation has no conditional replacement guarantee for concurrent external edits of existing settings or state files;
+  W1 keeps the existing update writers. This is W3's classified 0.6.7 hardening limit. Missing-file creation uses the existing
+  platform no-replace publication; an appearing destination is kept.
+- P0/P1/P5 are proof limits: real-Claude config consumption, child-observed spelling and unusual config semantics are not checked.
+  Interactive recognition, parent coverage and no-dialog behavior require the person-run release done test.
 - Every claude launch passes `--permission-mode auto`, never `--dangerously-skip-permissions` (`claude_recipe`).
 - On Unix `claude` and `ccx` resolve to absolute paths, because a daemon-spawned process lacks `~/.local/bin`
   (`resolve_claude`, `agent_env`).

@@ -14,6 +14,7 @@ vt100-ctt = "0.17"
 tokio = { workspace = true, features = ["signal"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = "1.1.2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 notify = { workspace = true }

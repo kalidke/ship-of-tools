@@ -29,6 +29,8 @@ scripts/CLAUDE.md.
 `workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
 
 ## Rules
+- W1 trust preparation runs on hosted Windows and macOS against temporary files. P0/P1/P5 are proof limits closed by the human
+  release done test; no Claude credential is provisioned in CI. Missing facilities or witnesses are not passes.
 - CI is the tag gate: `scripts/release.sh` refuses a cut unless the latest non-skipped `rust.yml` and `CI.yml` runs on
   the branch being cut are green and in HEAD's history; a `fixes/*` or `rc/*` branch has runs only if they are
   dispatched there (`gh workflow run <workflow> --ref <branch>`).

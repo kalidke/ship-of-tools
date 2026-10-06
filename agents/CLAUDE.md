@@ -8,6 +8,7 @@ using the tools and skills installed from the repository. This folder is the she
 and the GitHub sign-in live here; the rest of the shell client is still under `comm/` and moves in later units of the organize pass.
 
 ## Owns
+- The offline trust declaration command and its typed schema.
 - The CLIs that start, end, probe and bootstrap rows: `spawn/`.
 - The /worktree scripts, one parallel session per git worktree: `worktree/`.
 - The CLI that drives the frontend and its REPL, and the nav broadcast: `sot-fe/`.
@@ -41,7 +42,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
   `BASH_SOURCE`, not `$0`. No test enforces the rule.
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `agent_argv`, `agent_exec_argv`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `sotd trust declare <absolute-prefix>`, `agent_argv`, `agent_exec_argv`,
 `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env`,
 `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
 `sot_dial`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:

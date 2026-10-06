@@ -85,6 +85,12 @@ jobs:
       # hit counts on stderr — captured output would hide them from CI logs,
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
+      - name: Folder trust premises (Windows and macOS)
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          cargo test -p sot-backend --bin sotd trust_declaration --locked -- --nocapture
+          cargo test -p sot-backend --bin sotd agents::folder_trust --locked -- --nocapture
+          cargo test -p sot-backend --test trust_declare --test trust_premises --locked -- --nocapture
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
 

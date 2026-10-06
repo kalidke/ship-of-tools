@@ -5,6 +5,9 @@ wire, or runs a `sotd` subcommand as a subprocess. Isolation comes from support'
 own home, config, state, runtime and comm folders. The suites span subsystems, so this page names no charter.
 
 ## Files
+- `trust_declare.rs`: agents; the offline declaration CLI against temporary settings, with no daemon startup.
+- `trust_premises.rs`: agents; declaration spelling and selected-file preparation controls. Real-Claude consumption and child-observed
+  spelling are proof limits closed by the human release done test; no credentials or Claude process run in CI.
 - `active_frontend.rs`: server; which frontend is active, over the wire against a real `sotd`
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
@@ -39,6 +42,9 @@ Read `support/mod.rs`, then `support/env.rs`, before writing a real-process suit
 shows the shape.
 
 ## Rules
+- P0/P1/P5 remain proof limits closed by the human release done test; CI provisions no Claude credential. Preparation tests observe
+  filesystem effects and diagnostics. Headless task success proves no interactive recognition, parent coverage or dialog suppression.
+  Interactive no-dialog remains a person-run release done-test; existing-file external-writer concurrency is a scoped limit.
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
   (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
 - Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, which drops every inherited `SOT_` variable;
