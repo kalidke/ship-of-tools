@@ -19,9 +19,9 @@
 # guard_fresh_home runs, TMPDIR) point at fresh directories, LOCALAPPDATA is
 # under the guard's own directory, and a directory of refusing `sotd`,
 # `sotd.exe`, `pgrep`, `powershell.exe`, `pwsh` and `pwsh.exe` stubs (exit 97)
-# leads PATH: on Windows the library asks PowerShell for the RUNNING sotd's path and
-# connect-probes its pipe, so those stubs and LOCALAPPDATA leave discovery no
-# executable to find. `nc` and `ssh` are not stubbed: they only dial an endpoint
+# leads PATH: on Windows the library takes SOTD_BIN or LOCALAPPDATA's sotd.exe and
+# probes its pipe through that binary, so those stubs and LOCALAPPDATA leave discovery
+# no executable to find. `ssh` is not stubbed: it only dials an endpoint
 # discovery produced, and suites run them against sockets and hosts of their own.
 # A self-test sources the tree's comm-lib.sh and calls sot_daemon_endpoint,
 # sot_relay_endpoint and _sot_windows_local_pipe (on every host); if any
@@ -63,6 +63,50 @@ for _guard_v in $(compgen -e); do
     case "$_guard_v" in *_ENDPOINT) unset "$_guard_v" ;; esac
 done
 unset _guard_v
+
+# guard_bridge_stub DIR — writes DIR/sotd and DIR/sotd.exe, a suite's stand-in for `sotd stdio-bridge --endpoint` (the
+# library opens every local endpoint through that bridge, ADR 0049 User isolation), and prints DIR/sotd. With
+# `stdio-bridge --endpoint unix:<path>` it carries stdin to the socket the suite serves at <path> and its replies back,
+# and with `pipe:<name>`, on a suite's faked Windows box, it does the same to the socket in GUARD_PIPE_SOCKET. Like the
+# real bridge it exits at the end of its input, and it exits 1 with one stderr line when it cannot connect. It checks
+# no account: rust/backend/tests/shell_dial.rs pins the real bridge's check. Anything else exits 97, as the guard's
+# refusing stubs do.
+guard_bridge_stub() {
+    mkdir -p "$1" || return 1
+    cat > "$1/sotd" <<'STUB' || return 1
+#!/usr/bin/env bash
+[ "${1:-}" = stdio-bridge ] && [ "${2:-}" = --endpoint ] || exit 97
+case "${3:-}" in
+    unix:*) sock="${3#unix:}" ;;
+    pipe:*) sock="${GUARD_PIPE_SOCKET:-}" ;;
+    *) exit 97 ;;
+esac
+exec python3 -c '
+import os, socket, sys, threading
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect(sys.argv[1])
+except OSError as e:
+    sys.stderr.write("sotd stdio-bridge: %s: %s\n" % (sys.argv[1], e))
+    sys.exit(1)
+def replies():
+    while True:
+        b = s.recv(65536)
+        if not b:
+            os._exit(0)
+        sys.stdout.buffer.write(b)
+        sys.stdout.buffer.flush()
+threading.Thread(target=replies, daemon=True).start()
+while True:
+    b = sys.stdin.buffer.read1(65536)
+    if not b:
+        os._exit(0)
+    s.sendall(b)
+' "$sock"
+STUB
+    chmod +x "$1/sotd" && cp "$1/sotd" "$1/sotd.exe" || return 1
+    printf '%s\n' "$1/sotd"
+}
 
 _guard_fatal() { echo "lib-home-guard: FATAL $*" >&2; [ -z "${_GUARD_BOOT:-}" ] || rm -rf "${_GUARD_BOOT:?}"; exit 1; }
 

@@ -5,8 +5,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 
 ## Files
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
-  `rc-gate.sh`.
+  and `restart-backend.sh`'s choice of the daemon it judges, and the pinned bounds and copies. Runs in the `rust.yml`
+  step "Test installer state (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
 - `installer-support.sh`: the setup both installer suites source: install.sh and lib/sot-daemon.sh, `check`,
@@ -30,12 +30,21 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
   local daemon launcher".
 - `test-launcher-leases.ps1`: launch-sot.ps1's ensure and lease order in the supervisor loop and the converge lease
   (sections 9-11 and 16 of the old suite), read as syntax trees and run against the fake `sotd.exe`. Runs in the
-  `rust.yml` step "Test launcher leases".
+  `rust.yml` step "Test launcher leases", and a bridge that ends before the lease is written (11f).
 - `test-local-daemon-fake.ps1`: dot-sourced by both local-daemon suites: compiles the fake `sotd.exe` and defines
   `Clear-FakeEnv`, `New-FakePrefix` and `Stop-FakeOn`.
+- `test-local-daemon-own.ps1`: dot-sourced by test-local-daemon.ps1 after section 5b, in its scope: the bridge's
+  own-account pipe probe (4b), the daemon finder's account filter and its process controls (4c), and the real
+  daemon's bridge-held lease handover (5b2).
 - `test-local-daemon-pipe.ps1`: dot-sourced by test-local-daemon.ps1 inside section 5c, in its scope: the session pipe
   under load (cases (iii)-(viii): large requests behind an accepted and a refused hello, the inbound buffer's memory, a
   peer the daemon gives up on, a session that ends on a frame the daemon will not read).
+- `test-local-daemon-binary.ps1`: dot-sourced by test-local-daemon.ps1 right after the fake daemon is compiled, in its
+  scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), the
+  `SOTD_BIN` the daemon hands its sessions (7b), and the bytes the lease's and the probe's bridges read in a hidden
+  console, which are only their callers' (7c).
+- `pipe-request.ps1`: the local-daemon suites' raw pipe client (5c, 5d): a hello and one request into a named pipe,
+  the reply whose op matches printed. Test code; it checks no account.
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the
   test root and `Complete-LocalDaemonTest`, their cleanup.
 - `test-sot-apply.ps1`: scripts/sot-apply.ps1 against a synthetic staged update: apply, damaged stage, rollback,
@@ -143,7 +152,11 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
   suites; `installer-state.sh` reads `rust/protocol/src/ops/lease.rs` for the pinned bounds (`launcher_bounds_match_ops`), so a
   rename there breaks it.
-- The suites stub `sotd` (and `systemctl`, `nc` in `installer-support.sh`); none needs a network. `test-local-daemon.ps1`
-  sections 3 to 6 need a real `sotd.exe`: a failure on CI when absent, a skip elsewhere.
+- The suites stub `sotd`, its `stdio-bridge` arm included (and `systemctl` in `installer-support.sh`); none needs a
+  network. `test-local-daemon.ps1` sections 3 to 6 need a real `sotd.exe`: a failure on CI when absent, a skip elsewhere.
+- A fixture never shares a process object with the code under test: a suite that ends a child keeps a `Process` of its
+  own for it, its handle taken while the child runs (`GetProcessById`), since production disposes its own. A timed fake
+  starts its timer at the test's own origin, the arm file the test writes as it starts measuring
+  (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.

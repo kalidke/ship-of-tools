@@ -4,10 +4,10 @@ SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes 
 
 # sot-daemon.sh -- the one place the sotd unit, the all-in-one sot-launch
 # wrapper and the backend ensure are written down. Sourced by install.sh,
-# sot-apply.sh, launch-sot.sh and, through the text render_sot_launch writes,
-# by the rendered wrapper itself. sot-apply.sh runs under /bin/sh (dash) and
-# macOS ships bash 3.2, so this file is POSIX shell plus `local`: no arrays,
-# `[[`, `declare`, `$'...'`, `function`, or `==` in `[`.
+# sot-apply.sh, launch-sot.sh, restart-backend.sh and, through the text
+# render_sot_launch writes, by the rendered wrapper itself. sot-apply.sh runs
+# under /bin/sh (dash) and macOS ships bash 3.2, so this file is POSIX shell
+# plus `local`: no arrays, `[[`, `declare`, `$'...'`, `function`, or `==` in `[`.
 
 # ExecStart's binary path from a unit's text (stdin -> stdout); the same
 # two shapes as install.sh's installer_unit_owner_path, which stays there
@@ -123,35 +123,13 @@ EOF
     chmod +x "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" || { rm -f "${dest:?}.new.$$"; return 1; }
 }
 
-# True when SOCKET accepts a connection (or, with an nc that cannot probe a
-# UNIX socket, when the socket file exists; it is never removed on that
-# evidence).
-sot_socket_open() {  # <socket>
-    local socket="$1" pid
-    [ -S "$socket" ] || return 1
-    # A case, not a pipeline: under a pipefail caller an nc whose -h exits
-    # non-zero would fail `nc -h | grep` and read a stale socket as up.
-    if command -v nc >/dev/null 2>&1; then
-        case "$(nc -h 2>&1)" in
-            *-U*)
-                nc -U "$socket" </dev/null >/dev/null 2>&1 &
-                pid=$!
-                sleep 1
-                if kill -0 "$pid" 2>/dev/null; then
-                    kill "$pid" 2>/dev/null || true
-                    wait "$pid" 2>/dev/null || true
-                    return 0
-                fi
-                wait "$pid"
-                return $?
-                ;;
-        esac
-    fi
-    # No nc, or an nc without -U (netcat-traditional), cannot probe: the
-    # socket file is the best available evidence, and it is never removed on
-    # that evidence; the frontend still fails loud if the connect cannot
-    # complete.
-    return 0
+# True when SOCKET accepts a connection from this OS account: sotd's own bridge
+# connects only to a socket in a folder private to this account (ADR 0049, User
+# isolation) and, its input empty, closes again at once. A socket it cannot
+# reach is not open, and is never removed on that evidence.
+sot_socket_open() {  # <sotd-bin> <socket>
+    [ -S "$2" ] || return 1
+    "$1" stdio-bridge --endpoint "unix:$2" </dev/null >/dev/null 2>&1
 }
 
 # True when this install owns a systemd user unit for the backend: systemctl
@@ -220,7 +198,7 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
     # A logs folder that exists is owner-only whichever way the daemon starts: an install that ran nohup before and is
     # systemd-owned now still holds its old logs (unmasked secrets) there.
     [ ! -d "$logdir" ] || chmod 700 "$logdir" 2>/dev/null || echo "WARNING: cannot secure $logdir" >&2
-    sot_socket_open "$socket" && return 0
+    sot_socket_open "$sotd_bin" "$socket" && return 0
     if sot_service_owned "$prefix"; then
         mode=systemd
     else
@@ -249,12 +227,12 @@ sot_daemon_ensure() {  # <prefix> <sotd-bin> <socket>
         now="$(date +%s)"
         [ "$now" -lt $((start + SOT_LAUNCH_WAIT_S)) ] || break
         [ "$mode" != systemd ] || systemctl --user start sotd.service >/dev/null 2>&1
-        sot_socket_open "$socket" && return 0
+        sot_socket_open "$sotd_bin" "$socket" && return 0
         if [ "$mode" = nohup ] && ! kill -0 "$pid" 2>/dev/null; then
             wait "$pid" 2>/dev/null
             code=$?
             # Another daemon may have won the lock.
-            sot_socket_open "$socket" && return 0
+            sot_socket_open "$sotd_bin" "$socket" && return 0
             echo "ERROR: the backend exited ($code) before opening $socket; see $logfile" >&2
             return 1
         fi

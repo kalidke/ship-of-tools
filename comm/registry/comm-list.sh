@@ -73,7 +73,7 @@ if [ "$any" = false ]; then echo "  (none)"; fi
 # below keeps each header AND the space-indented lines immediately under
 # it, stopping at the next line that isn't indented.
 echo ""
-fe_out="$(timeout 5 "$SCRIPT_DIR/sot-fe" version 2>/dev/null || true)"
+fe_out="$(sot_bounded 5 "$SCRIPT_DIR/sot-fe" version 2>/dev/null || true)"
 # Session-listing brief: the header names how far back THIS daemon's
 # memory of a disconnected box reaches, so a restart's forgetting is
 # visible rather than read as "no sessions" -- pulled out of the daemon

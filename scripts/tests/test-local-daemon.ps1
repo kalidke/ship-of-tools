@@ -28,7 +28,9 @@
 # without a build. Section 6 additionally only runs ON CI even when a real
 # sotd.exe IS present -- see its own comment for why.
 # Sections 9-11 and 16 live in test-launcher-leases.ps1.
+# Sections 4b, 4c and 5b2 live in test-local-daemon-own.ps1, dot-sourced after 5b in this scope.
 # Section 5c's cases (iii)-(viii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
+# Sections 2c and 7b, the local daemon's one binary, live in test-local-daemon-binary.ps1, dot-sourced after the fake.
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
 # LOCALAPPDATA/XDG_STATE_HOME/XDG_CONFIG_HOME at directories under the test
@@ -63,8 +65,10 @@ try {
             (Join-Path $repo 'scripts\sot-freshness.ps1'),
             (Join-Path $repo 'scripts\sot-lease.ps1'),
             (Join-Path $repo 'scripts\shutdown-sot.ps1'),
-            (Join-Path $repo 'agents\comm-pipe-request.ps1'),
+            (Join-Path $repo 'scripts\tests\pipe-request.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon-pipe.ps1'),
+            (Join-Path $repo 'scripts\tests\test-local-daemon-own.ps1'),
+            (Join-Path $repo 'scripts\tests\test-local-daemon-binary.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon.ps1')
         )) {
         $errs = $null
@@ -234,16 +238,20 @@ try {
         $pipe5b = New-TestPipeName
         $out5b = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5b -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
-        $streams5b = @(Open-SotLease (Get-PipePath $pipe5b))
+        $streams5b = @(Open-SotLease (Get-PipePath $pipe5b) $realSotd)
         Check '5b: the real daemon grants the launcher a lease' ($streams5b.Count -eq 1) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
-        foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
-        Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+        # Only a granted lease has an end that shuts the daemon down.
+        if ($streams5b.Count -eq 1) {
+            foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
+            Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+        }
         Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
         } catch { Check '5b: section ran' $false $_.Exception.Message }
+        . (Join-Path $PSScriptRoot 'test-local-daemon-own.ps1')
         try {
-        Write-Host "`n=== 5c. the pipe transport of every sot-comm client against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request, and a request up to the envelope cap is answered, not stalled (ADR 0049) ===" -ForegroundColor Cyan
-        # agents\comm-pipe-request.ps1 matches a reply by its op. A refused hello is a reply to the hello, so the transport
+        Write-Host "`n=== 5c. a raw pipe client (scripts\tests\pipe-request.ps1) against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request, and a request up to the envelope cap is answered, not stalled (ADR 0049) ===" -ForegroundColor Cyan
+        # A raw pipe client (scripts\tests\pipe-request.ps1) matches a reply by its op. A refused hello is a reply to the hello, so the transport
         # must hand it over (and fail) rather than wait out its bound and report a silent daemon: the caller names the
         # refusal. (ii) is the same request with an accepted hello, so the transport's own answer path is exercised too.
         # This daemon closes after refusing, so the transport reads on past a protocol refusal to the end of the
@@ -377,6 +385,7 @@ try {
     }
 
     . (Join-Path $PSScriptRoot 'test-local-daemon-fake.ps1')
+    . (Join-Path $PSScriptRoot 'test-local-daemon-binary.ps1')
 
     if ($compiled) {
         try {
@@ -406,16 +415,21 @@ try {
         $heldPath = Join-Path $fakeLocalAppData 'sot\held.json'
         Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
 
-        # (a) -FrontendKilled, and the fake exits by itself after 6 s.
+        # (a) -FrontendKilled, and the fake exits by itself 6 s after the test starts measuring. Its bind comes 4 s
+        # late: setup time that, with a timer started at the fake's own start, shortened the measured wait.
         try {
         Clear-FakeEnv
-        $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
+        $arm8a = Join-Path $root 'exit-arm-8a'
+        $env:FAKE_SOTD_EXIT_ARM_FILE = $arm8a
+        $env:FAKE_SOTD_BIND_DELAY_MS = '4000'
         $p8a = New-FakePrefix 'p8a'
         $pipe8a = New-TestPipeName
         try {
             $null = & $script -Prefix $p8a -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8a -ProjectRoot $root 6>&1 2>&1
             Check '8a: the fake started' (@(Get-DaemonProcs (Get-PipePath $pipe8a)).Count -eq 1) 'the fake daemon did not start'
+            # The origin: the stopwatch starts first, then the fake's exit timer, once this file appears.
             $sw8a = [System.Diagnostics.Stopwatch]::StartNew()
+            Set-Content -LiteralPath $arm8a -Value '6000' -Encoding ASCII
             $out8a = & $script -Stop -FrontendKilled -Prefix $p8a -PipeName $pipe8a 6>&1 2>&1
             $exit8a = $LASTEXITCODE
             $sec8a = $sw8a.Elapsed.TotalSeconds
@@ -432,13 +446,15 @@ try {
         # (b) no switch, but held.json says the daemon is closing.
         try {
         Clear-FakeEnv
-        $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
+        $arm8b = Join-Path $root 'exit-arm-8b'
+        $env:FAKE_SOTD_EXIT_ARM_FILE = $arm8b
         Set-Content -LiteralPath $heldPath -Value '{"v":1,"holders":[],"handover_until_ms":null,"closing":true,"not_ended":0,"forget":[]}' -Encoding ASCII
         $p8b = New-FakePrefix 'p8b'
         $pipe8b = New-TestPipeName
         try {
             $null = & $script -Prefix $p8b -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8b -ProjectRoot $root 6>&1 2>&1
             $sw8b = [System.Diagnostics.Stopwatch]::StartNew()
+            Set-Content -LiteralPath $arm8b -Value '6000' -Encoding ASCII
             $out8b = & $script -Stop -Prefix $p8b -PipeName $pipe8b 6>&1 2>&1
             $exit8b = $LASTEXITCODE
             $sec8b = $sw8b.Elapsed.TotalSeconds

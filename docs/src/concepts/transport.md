@@ -18,7 +18,9 @@ same box to reach.
 Every endpoint this version can dial has one of three schemes:
 
 - `unix:<path>` / `pipe:<name>` — a local socket or named pipe, reached
-  directly.
+  only when this OS account serves it: a Rust client through
+  `connect_own`, a shell or PowerShell script through `sotd stdio-bridge
+  --endpoint`.
 - `ssh:<target>` — that box's own daemon, reached by spawning
   `ssh <target> sotd stdio-bridge` and speaking the protocol over its
   stdin/stdout. `<target>` is a plain host name (`hosts.toml`'s own
@@ -33,6 +35,9 @@ Every endpoint this version can dial has one of three schemes:
 resolves this box's own daemon, at the label this box resolves for
 itself — never one a caller names, which is exactly the mistake that let
 a Windows box dial a pipe nothing listens on.
+
+`--endpoint <unix:path|pipe:path>` is for a script on this same box that
+already holds a local endpoint; the ssh forms above never carry one.
 
 ## What `sotd topology plan` gives out
 

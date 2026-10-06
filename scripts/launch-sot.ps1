@@ -781,7 +781,7 @@ function Invoke-LocalDaemonEnsure {
         return $false
     }
     Set-LaunchStatus 'Starting local daemon...'
-    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
+    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) -Prefix $prefixDir 6>&1 2>&1
     foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
     return ($LASTEXITCODE -eq 0)
 }
@@ -794,9 +794,20 @@ function Invoke-LocalDaemonEnsure {
 # (no more unconditional implicit local, item 1) -- queried the same way
 # sot-local-daemon.ps1 itself queries it (`sotd session-socket-path
 # local`), not re-derived here, so the two can never disagree.
+# The sotd.exe this computer's local daemon runs, as sot-local-daemon.ps1's one resolver chooses it (-Resolve, with
+# the arguments Invoke-LocalDaemonEnsure passes): the complete dev pair, else the complete install pair. The pipe-name
+# query below and the lease's bridge run it, so both are the daemon's own binary. $null when neither pair is complete.
+# Collected whole, not through Select-Object -First, which would stop the script before its exit.
+function Get-SotLocalSotdExe {
+    if (-not (Test-Path $sotLocalDaemon)) { return $null }
+    $exe = @(& $sotLocalDaemon -Resolve -DevBinDir (Split-Path $backendExe -Parent) -Prefix $prefixDir)
+    if ($exe.Count -eq 1) { return "$($exe[0])" }
+    return $null
+}
+
 function Get-SotLocalPipePath {
-    $exe = if (Test-Path $backendExe) { $backendExe } else { Join-Path $prefixDir 'bin\sotd.exe' }
-    if (-not (Test-Path -LiteralPath $exe)) { return $null }
+    $exe = Get-SotLocalSotdExe
+    if (-not $exe) { return $null }
     $queried = (& $exe session-socket-path local 2>$null | Select-Object -First 1)
     if ($queried) { return $queried.ToString().Trim() }
     return $null
@@ -951,7 +962,7 @@ try {
         if ($relaunchNext) {
             $localDaemonReady = Invoke-LocalDaemonEnsure
             $localSocket = if ($localDaemonReady) { Get-SotLocalPipePath } else { $null }
-            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket) }
+            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket (Get-SotLocalSotdExe)) }
         }
         # Stage the binary for this launch, priority order:
         #   1. dev source build (the classic path — takes precedence, and a
@@ -1135,7 +1146,7 @@ try {
         # matching what a first launch with that switch would do.
         if ($convergeRequested) {
             Write-SupLog 'converge (exit 76): re-running self-update prelude + freshness pass'
-            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket) }
+            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket (Get-SotLocalSotdExe)) }
             # Visible progress for the whole window-less stretch: the splash
             # renders each step below and exits itself on the DONE write after
             # the respawn, exactly as on the first launch.

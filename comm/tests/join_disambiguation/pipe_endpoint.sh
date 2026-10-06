@@ -1,108 +1,109 @@
 # test-join-disambiguation.sh part: the LU6e pipe: and simulated-Windows endpoint cases (sourced in order by the entry).
 
 # --- LU6e: the pipe: endpoint (ADR 0042 amendment, decision 5) ----------
-# This box has no real Windows/PowerShell to test against, so these cases
-# prove the BASH side only — dispatch on the pipe: prefix, the argv shape
-# handed to powershell.exe, capture into sot_oneshot_request's own $tmp
-# poll loop (unchanged for pipe:), and the clean-failure paths — via a
-# STUB powershell.exe on PATH standing in for a live named pipe. What the
-# real comm-pipe-request.ps1's own NamedPipeClientStream/JSON-filtering
-# logic does is NOT exercised here (no pwsh on this box); see the LU6e
-# implementation report for the static review of that file.
+# This box has no real Windows pipe, so these cases prove the BASH side only:
+# dispatch on the pipe: prefix through sot_dial, the endpoint handed to
+# `sotd stdio-bridge --endpoint` (the full and the bare name both become
+# pipe:\\.\pipe\<name>), capture into sot_oneshot_request's own $tmp poll
+# loop, and the clean-failure paths, via a STUB sotd standing in for the
+# bridge. What the real bridge does with a pipe (connect_own, the owner
+# check) is rust/backend/tests/shell_dial.rs's, not this file's.
 
 case_pipe_endpoint_oneshot_request_matches_reply() {
-    local fakebin argvlog frame out
-    fakebin="$WORK/fake-powershell-oneshot"
-    mkdir -p "$fakebin"
-    # Echoes a canned res line for whatever -Op/-PipeName it was invoked
-    # with, and logs its own argv so the test can assert the invocation
-    # shape sot_oneshot_request's pipe: arm produces.
-    argvlog="$WORK/fake-powershell-oneshot-argv.log"
+    local stub argvlog frame out
+    stub="$WORK/fake-bridge-oneshot/sotd"
+    mkdir -p "${stub%/*}"
+    # A stand-in for `sotd stdio-bridge --endpoint <pipe>`: logs the endpoint it
+    # was handed, and answers each request line but the hello with a canned res
+    # for its op, until its input ends, as the real bridge closes at input end.
+    argvlog="$WORK/fake-bridge-oneshot-argv.log"
     rm -f "${argvlog:?}"
-    cat > "$fakebin/powershell.exe" <<FAKEPS
+    cat > "$stub" <<'FAKEBRIDGE'
 #!/bin/sh
-op=""
-pipename=""
-while [ \$# -gt 0 ]; do
-    case "\$1" in
-        -Op) op="\$2"; shift 2 ;;
-        -PipeName) pipename="\$2"; shift 2 ;;
-        *) shift ;;
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+printf '%s\n' "$3" >> "$FAKE_BRIDGE_ARGV"
+while IFS= read -r line; do
+    case "$line" in
+        *'"op":"hello"'*) ;;
+        *'"op":"'*)
+            op="${line#*\"op\":\"}"; op="${op%%\"*}"
+            printf '{"v":1,"id":9,"kind":"res","op":"%s","payload":{"ok":true,"stub":true}}\n' "$op" ;;
     esac
 done
-printf '%s %s\n' "\$pipename" "\$op" >> "$argvlog"
-printf '{"v":1,"id":9,"kind":"res","op":"%s","payload":{"ok":true,"stub":true}}\n' "\$op"
-FAKEPS
-    chmod +x "$fakebin/powershell.exe"
+FAKEBRIDGE
+    chmod +x "$stub"
 
     frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
 
     # Full \\.\pipe\<name> form (what sot_daemon_endpoint actually prints).
-    out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$SCRIPTS_DIR" \
+    out="$(FAKE_BRIDGE_ARGV="$argvlog" SOTD_BIN="$stub" SCRIPT_DIR="$SCRIPTS_DIR" \
         ENDPOINT='pipe:\\.\pipe\sot-testuser-local' SOT_SEND_TIMEOUT=5 \
         sot_oneshot_request "$frame" workspace.list)"
     contains "$out" '"op":"workspace.list"' \
         || { echo "  full-path pipe: endpoint didn't return the stub's matching reply: got '$out'"; return 1; }
     contains "$out" '"stub":true' \
         || { echo "  reply missing the stub marker: $out"; return 1; }
-    contains "$(cat "$argvlog" 2>/dev/null)" "sot-testuser-local workspace.list" \
-        || { echo "  argv didn't carry the normalised bare pipe name + op: $(cat "$argvlog" 2>/dev/null)"; return 1; }
+    contains "$(cat "$argvlog" 2>/dev/null)" 'pipe:\\.\pipe\sot-testuser-local' \
+        || { echo "  the bridge was not handed the full pipe path: $(cat "$argvlog" 2>/dev/null)"; return 1; }
 
-    # Bare pipe:<name> form must normalise identically (a no-op strip).
+    # Bare pipe:<name> form must normalise identically.
     rm -f "${argvlog:?}"
-    out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$SCRIPTS_DIR" \
+    out="$(FAKE_BRIDGE_ARGV="$argvlog" SOTD_BIN="$stub" SCRIPT_DIR="$SCRIPTS_DIR" \
         ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
         sot_oneshot_request "$frame" workspace.list)"
     contains "$out" '"op":"workspace.list"' \
         || { echo "  bare pipe: endpoint didn't return the stub's matching reply: got '$out'"; return 1; }
-    contains "$(cat "$argvlog" 2>/dev/null)" "sot-testuser-local workspace.list" \
-        || { echo "  bare-name argv mismatch: $(cat "$argvlog" 2>/dev/null)"; return 1; }
+    contains "$(cat "$argvlog" 2>/dev/null)" 'pipe:\\.\pipe\sot-testuser-local' \
+        || { echo "  the bare name was not normalised for the bridge: $(cat "$argvlog" 2>/dev/null)"; return 1; }
     return 0
 }
 
-case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_powershell() {
-    # No powershell.exe anywhere on PATH -- must fail FAST (the check runs
-    # before anything is backgrounded) and CLEANLY: empty stdout, nonzero
-    # return, never a hang for the full SOT_SEND_TIMEOUT window.
-    local emptybin frame out rc
-    emptybin="$WORK/no-powershell-bin"
-    mkdir -p "$emptybin"
+case_pipe_endpoint_oneshot_request_fails_cleanly_with_no_sotd() {
+    # No sotd anywhere it is looked for: no SOTD_BIN, none on PATH or under
+    # HOME, and a pgrep that finds no live one. sot_dial says so, and the
+    # request fails CLEANLY: empty stdout, nonzero return, that line on stderr.
+    local emptybin frame out rc err
+    emptybin="$WORK/no-sotd-bin"
+    mkdir -p "$emptybin" "$WORK/no-sotd-home"
+    printf '#!/bin/sh\nexit 1\n' > "$emptybin/pgrep"
+    chmod +x "$emptybin/pgrep"
     frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
-    out="$(PATH="$emptybin:/usr/bin:/bin" SCRIPT_DIR="$SCRIPTS_DIR" \
+    out="$(unset SOTD_BIN; PATH="$emptybin:/usr/bin:/bin" HOME="$WORK/no-sotd-home" SCRIPT_DIR="$SCRIPTS_DIR" \
         ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
-        sot_oneshot_request "$frame" workspace.list)"
+        sot_oneshot_request "$frame" workspace.list 2>"$WORK/no-sotd.err")"
     rc=$?
-    [ -z "$out" ] || { echo "  expected no reply with no powershell.exe on PATH, got: $out"; return 1; }
-    [ "$rc" -ne 0 ] || { echo "  expected a nonzero return with no powershell.exe on PATH"; return 1; }
+    err="$(cat "$WORK/no-sotd.err" 2>/dev/null || true)"
+    [ -z "$out" ] || { echo "  expected no reply with no sotd, got: $out"; return 1; }
+    [ "$rc" -ne 0 ] || { echo "  expected a nonzero return with no sotd"; return 1; }
+    contains "$err" "sot_dial: no sotd to open pipe:" \
+        || { echo "  missing sot_dial's diagnostic: $err"; return 1; }
     return 0
 }
 
-case_pipe_endpoint_oneshot_request_fails_cleanly_with_missing_ps1() {
-    # comm-pipe-request.ps1 absent from SCRIPT_DIR (a broken/partial
-    # deploy) -- must fail before ever invoking powershell.exe, not with a
-    # cryptic failure from inside a backgrounded job.
-    local fakebin emptyscriptdir frame out rc err
-    fakebin="$WORK/fake-powershell-missing-ps1"
-    mkdir -p "$fakebin"
-    cat > "$fakebin/powershell.exe" <<'FAKEPS'
+case_pipe_endpoint_oneshot_request_names_the_bridges_refusal() {
+    # The bridge refuses the pipe (as `connect_own` refuses one another
+    # account serves): the request fails with no reply, and its stderr
+    # carries the bridge's own line rather than a bare timeout.
+    local stub frame out rc err
+    stub="$WORK/fake-bridge-refusing/sotd"
+    mkdir -p "${stub%/*}"
+    cat > "$stub" <<'FAKEBRIDGE'
 #!/bin/sh
-echo "should never run" >&2
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+printf 'sotd stdio-bridge: %s: not connecting: another OS account serves this pipe\n' "$3" >&2
 exit 1
-FAKEPS
-    chmod +x "$fakebin/powershell.exe"
-    emptyscriptdir="$WORK/empty-script-dir"
-    mkdir -p "$emptyscriptdir"
-
+FAKEBRIDGE
+    chmod +x "$stub"
     frame='{"v":1,"id":2,"kind":"req","op":"workspace.list","payload":{}}'
-    out="$(PATH="$fakebin:$PATH" SCRIPT_DIR="$emptyscriptdir" \
+    out="$(SOTD_BIN="$stub" SCRIPT_DIR="$SCRIPTS_DIR" \
         ENDPOINT='pipe:sot-testuser-local' SOT_SEND_TIMEOUT=5 \
-        sot_oneshot_request "$frame" workspace.list 2>"$WORK/missing-ps1.err")"
+        sot_oneshot_request "$frame" workspace.list 2>"$WORK/bridge-refusal.err")"
     rc=$?
-    err="$(cat "$WORK/missing-ps1.err" 2>/dev/null || true)"
-    [ -z "$out" ] || { echo "  expected no reply with comm-pipe-request.ps1 missing, got: $out"; return 1; }
-    [ "$rc" -ne 0 ] || { echo "  expected a nonzero return with comm-pipe-request.ps1 missing"; return 1; }
-    contains "$err" "comm-pipe-request.ps1" \
-        || { echo "  missing a diagnostic naming comm-pipe-request.ps1: $err"; return 1; }
+    err="$(cat "$WORK/bridge-refusal.err" 2>/dev/null || true)"
+    [ -z "$out" ] || { echo "  expected no reply from a refusing bridge, got: $out"; return 1; }
+    [ "$rc" -ne 0 ] || { echo "  expected a nonzero return from a refusing bridge"; return 1; }
+    contains "$err" "not connecting: another OS account serves this pipe" \
+        || { echo "  the bridge's refusal did not reach the caller: $err"; return 1; }
     return 0
 }
 
@@ -113,8 +114,8 @@ case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep() {
     # FIRST (the same query scripts/sot-local-daemon.ps1 makes), prove it
     # live with a bounded connect probe, and return pipe:<path> -- all
     # before ever reaching for pgrep, which is not on a stock git-bash
-    # PATH. A fake sotd.exe answers `session-socket-path local`; a fake
-    # powershell.exe simulates a live connect probe (exit 0); a fake pgrep
+    # PATH. A fake sotd.exe answers `session-socket-path local`; the
+    # fake sotd.exe's `stdio-bridge` arm answers the connect probe (exit 0); a fake pgrep
     # records whether it was ever invoked at all.
     local fakebin pgreplog appdata out
     fakebin="$WORK/win-discovery-bin"
@@ -123,10 +124,6 @@ case_windows_pipe_discovery_returns_pipe_endpoint_and_skips_pgrep() {
 #!/bin/sh
 echo "MINGW64_NT-10.0-19045"
 FAKEUNAME
-    cat > "$fakebin/powershell.exe" <<'FAKEPS3'
-#!/bin/sh
-exit 0
-FAKEPS3
     pgreplog="$WORK/win-discovery-pgrep.log"
     rm -f "${pgreplog:?}"
     cat > "$fakebin/pgrep" <<FAKEPGREP
@@ -134,7 +131,7 @@ FAKEPS3
 echo "pgrep called: \$*" >> "$pgreplog"
 exit 1
 FAKEPGREP
-    chmod +x "$fakebin/uname" "$fakebin/powershell.exe" "$fakebin/pgrep"
+    chmod +x "$fakebin/uname" "$fakebin/pgrep"
 
     appdata="$WORK/win-discovery-localappdata"
     mkdir -p "$appdata/sot/bin"
@@ -151,6 +148,11 @@ fi
 # own pipe.
 if [ "$1" = "topology" ] && [ "$2" = "relay-endpoint" ]; then
     printf '%s\n' 'pipe:\\.\pipe\sot-fakeuser-local'
+    exit 0
+fi
+# The connect probe the library now makes through the bridge, with empty input:
+# a live pipe that this account serves.
+if [ "$1" = "stdio-bridge" ] && [ "$2" = "--endpoint" ]; then
     exit 0
 fi
 exit 1
@@ -201,3 +203,18 @@ case_windows_relay_endpoint_is_never_the_pipe_the_shell_probed() {
     return 0
 }
 
+
+# ADR 0049, User isolation: the executable comes from the caller or install, never another process.
+case_windows_sotd_exe_is_never_a_listed_process() {
+    local dir app other out
+    dir="$WORK/win-exe-bin"; app="$WORK/win-exe-app"; other="$WORK/other-sotd.exe"
+    mkdir -p "$dir" "$app/sot/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$other"
+    printf '#!/bin/sh\nexit 0\n' > "$app/sot/bin/sotd.exe"
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$other" > "$dir/powershell.exe"
+    chmod +x "$other" "$app/sot/bin/sotd.exe" "$dir/powershell.exe"
+    out="$(unset SOTD_BIN; OS=Windows_NT PATH="$dir:$PATH" LOCALAPPDATA="$app" _sot_windows_sotd_exe)"
+    [ "$out" = "$app/sot/bin/sotd.exe" ] || { echo "  the executable came from a listed process: $out"; return 1; }
+    out="$(SOTD_BIN="$other" LOCALAPPDATA="$app" _sot_windows_sotd_exe)"
+    [ "$out" = "$other" ] || { echo "  SOTD_BIN was not used: $out"; return 1; }
+}

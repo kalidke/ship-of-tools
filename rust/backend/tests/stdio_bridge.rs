@@ -1,5 +1,6 @@
 #![cfg(unix)]
-//! `sotd stdio-bridge [--host <host>]` against real processes — the claims
+//! `sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]`
+//! against real processes — the claims
 //! its callers depend on, each proved by running the real binary with real
 //! pipes rather than by calling into `stdio_bridge::run`:
 //!
@@ -13,8 +14,8 @@
 //! 2. **`--host <host>` reaches the hub's relay socket for that host**, a
 //!    different derivation (`topology::relay_socket_path`) than the
 //!    no-argument form — proved by the same byte-transparency round trip.
-//! 3. **A third form is a usage error** — nonzero, one line on stderr
-//!    naming the usage, nothing on stdout.
+//! 3. **An unrecognised form is a usage error** — nonzero, one line on stderr
+//!    naming all supported forms, nothing on stdout.
 //! 4. **A missing endpoint is a prompt, named failure** — nonzero at once,
 //!    one line on stderr naming it, nothing at all on stdout. The value of
 //!    the code is deliberately not asserted: there is one failure code,
@@ -123,6 +124,15 @@ fn spawn_bridge(args: &[&str]) -> Child {
         .expect("spawn sotd stdio-bridge")
 }
 
+/// Runs the bridge with `args` and its input closed at once (as `wait_with_output` did), and waits for it within
+/// `BOUND`: `sot_log::test_isolated`'s drain reads its output as it comes, and a bridge that never exits, or output a
+/// descendant still holds, fails the test at the bound instead of hanging the suite.
+fn run_bridge(args: &[&str]) -> (std::process::ExitStatus, String, String) {
+    let mut child = spawn_bridge(args);
+    drop(child.stdin.take());
+    sot_log::test_isolated::drain(child).wait_within(BOUND)
+}
+
 /// Drains the bridge's stdout on its own thread and reports it in two
 /// parts: first exactly `head` bytes, sent the moment they arrive (so the
 /// caller can hold stdin open until it has the reply — closing stdin is
@@ -193,10 +203,8 @@ fn round_trip(socket: &Path, args: &[&str]) {
     let tail = next(&rx, "stdout after the payload");
     assert!(tail.is_empty(), "the bridge wrote {} byte(s) of its own to stdout: {tail:?}", tail.len());
 
-    let status = child.wait().expect("wait for the bridge");
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
     assert_eq!(status.code(), Some(0), "a caller hanging up is a clean exit, not a failure");
-    let mut stderr = String::new();
-    child.stderr.take().expect("bridge stderr").read_to_string(&mut stderr).expect("read stderr");
     assert!(stderr.is_empty(), "a clean run says nothing on stderr: {stderr:?}");
     echo.join().expect("echo listener");
 }
@@ -217,18 +225,57 @@ fn dash_dash_host_reaches_the_hubs_relay_socket_for_that_host() {
     round_trip(&socket, &["--host", "bridge-host"]);
 }
 
+/// ADR 0049, User isolation: a local endpoint in this account's private folder is reached byte-for-byte.
+#[test]
+fn dash_dash_endpoint_reaches_a_socket_in_a_private_folder() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = runtime_root().join("endpoint.sock");
+    let endpoint = format!("unix:{}", socket.display());
+    round_trip(&socket, &["--endpoint", &endpoint]);
+}
+
+/// ADR 0049, User isolation: a socket outside this account's private folder is never connected to.
+#[test]
+fn dash_dash_endpoint_refuses_a_socket_outside_a_private_folder() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = std::path::PathBuf::from(format!("/tmp/sotbr-open-{}.sock", std::process::id()));
+    let listener = UnixListener::bind(&socket).expect("bind the public-folder listener");
+    listener.set_nonblocking(true).expect("nonblocking listener");
+    let endpoint = format!("unix:{}", socket.display());
+    let (status, stdout, stderr) = run_bridge(&["--endpoint", &endpoint]);
+    std::fs::remove_file(&socket).expect("remove the test's socket");
+    assert!(!status.success(), "a socket outside a private folder is refused");
+    assert!(stderr.contains("is not a private folder of this OS account"), "{stderr:?}");
+    assert!(stdout.is_empty(), "a refusal writes nothing to stdout");
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "the bridge connected to a socket outside a private folder");
+}
+
+/// ADR 0049, User isolation: the endpoint form accepts only this platform's local scheme.
+#[test]
+fn dash_dash_endpoint_refuses_the_other_platforms_scheme() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (status, stdout, stderr) = run_bridge(&["--endpoint", "pipe:x"]);
+    assert!(!status.success(), "the other platform's scheme is refused");
+    assert_eq!(stderr.lines().count(), 1, "one line names the refused endpoint: {stderr:?}");
+    assert!(stderr.contains("pipe:x"), "{stderr:?}");
+    assert!(stdout.is_empty(), "a refusal writes nothing to stdout");
+}
+
 #[test]
 fn a_third_form_is_a_usage_error() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     runtime_root();
     // The dropped flag itself, kept as the usage-error case: it is exactly
     // the argument pattern this change removes.
-    let out = spawn_bridge(&["--label", "sot"]).wait_with_output().expect("wait for the bridge");
-    assert!(!out.status.success(), "an unrecognised form is a failure");
-    assert!(out.stdout.is_empty(), "nothing may reach stdout on the usage-error path: {:?}", out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let (status, stdout, stderr) = run_bridge(&["--label", "sot"]);
+    assert!(!status.success(), "an unrecognised form is a failure");
+    assert!(stdout.is_empty(), "nothing may reach stdout on the usage-error path: {stdout:?}");
     assert_eq!(stderr.lines().count(), 1, "one line names the usage: {stderr:?}");
-    assert!(stderr.contains("Usage: sotd stdio-bridge [--host <host>]"), "{stderr:?}");
+    assert!(
+        stderr.contains("Usage: sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]"),
+        "{stderr:?}"
+    );
 }
 
 #[test]
@@ -239,12 +286,11 @@ fn a_missing_endpoint_exits_promptly_with_one_stderr_line_and_no_stdout() {
     // `--host` with a name nothing binds: the relay-socket derivation puts
     // the name straight into the path, so the diagnosis names it without
     // this test needing a caller-supplied label the flag no longer has.
-    let out = spawn_bridge(&["--host", "nothing-listens-here"]).wait_with_output().expect("wait for the bridge");
+    let (status, stdout, stderr) = run_bridge(&["--host", "nothing-listens-here"]);
 
-    assert!(!out.status.success(), "an endpoint that is not there is a failure");
-    assert!(out.status.code().is_some(), "it exits, it is not killed by a signal: {:?}", out.status);
-    assert!(out.stdout.is_empty(), "nothing may reach stdout, not even on the failure path: {:?}", out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!status.success(), "an endpoint that is not there is a failure");
+    assert!(status.code().is_some(), "it exits, it is not killed by a signal: {status:?}");
+    assert!(stdout.is_empty(), "nothing may reach stdout, not even on the failure path: {stdout:?}");
     assert_eq!(stderr.lines().count(), 1, "one line names the cause: {stderr:?}");
     assert!(stderr.contains("nothing-listens-here"), "the line names the endpoint it could not reach: {stderr:?}");
     // The fatal first attempt names op `connect`; the bounded retry names
@@ -359,7 +405,7 @@ fn a_hello_frame_reaches_a_real_daemon_and_its_reply_comes_back() {
     assert!(parsed.payload.get("error").is_none(), "hello refused: {:?}", parsed.payload);
 
     drop(stdin);
-    let status = child.wait().expect("wait for the bridge");
+    let (status, _, _) = sot_log::test_isolated::drain(child).wait_within(BOUND);
     assert_eq!(status.code(), Some(0), "the bridge exits cleanly when its caller hangs up");
 }
 
@@ -444,7 +490,8 @@ fn lease_through_stdio_bridge_refused() {
     assert_eq!(parsed.payload["outcome"], "foreign", "a bridged lease must be foreign: {:?}", parsed.payload);
 
     drop(stdin);
-    assert_eq!(child.wait().expect("wait for the bridge").code(), Some(0));
+    let (status, _, _) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert_eq!(status.code(), Some(0));
     std::thread::sleep(Duration::from_secs(2));
     let exited = env.daemon.borrow_mut().as_mut().expect("the daemon is tracked").try_wait().expect("try_wait the daemon");
     assert!(exited.is_none(), "the bridged lease's end shut the daemon down: {exited:?}: {}", daemon_said(&daemon_stderr));

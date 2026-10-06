@@ -13,9 +13,10 @@
 #
 # ENDPOINT (SOT_RELAY_ENDPOINT, or auto-detected): unix:/path, ssh:target[/host],
 # or — Windows only, ADR 0042 amendment decision 5 — pipe:\\.\pipe\name /
-# pipe:name, reaching that box's OWN local daemon over its named pipe via
-# comm-pipe-request.ps1 (PowerShell; git-bash cannot open a named pipe
-# itself). `send` works over a pipe: endpoint.
+# pipe:name, reaching that box's OWN local daemon over its named pipe. A unix:
+# or pipe: endpoint is opened by `sotd stdio-bridge` (comm-lib's sot_dial),
+# which connects only to an endpoint this OS account serves (ADR 0049, User
+# isolation). `send` works over a pipe: endpoint.
 #
 # Usage:
 #   comm-relay.sh send @to "message"        # fire-and-forget, instant
@@ -52,10 +53,7 @@ ENDPOINT="${SOT_RELAY_ENDPOINT:-}"
 resolve_endpoint() {
     sot_relay_endpoint "${ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}"
 }
-# A unix: endpoint needs nc -U; an ssh: endpoint goes through sot_ssh_bridge,
-# and a pipe: endpoint through comm-pipe-request.ps1 (PowerShell), since
-# git-bash cannot open a named pipe itself (nc_send below).
-HAVE_NC=0; command -v nc >/dev/null 2>&1 && HAVE_NC=1
+# A unix: or pipe: endpoint goes through sot_dial, an ssh: one through sot_ssh_bridge (nc_send below).
 # SOFT for `send` (see the file-first rule below): a target this box's
 # registry names is handed to comm-send.sh, which files it by its own route
 # (its own append, this box's daemon, or the hub when this box has no daemon)
@@ -75,7 +73,7 @@ if [ -z "$ENDPOINT" ]; then
         *) _endpoint_missing; exit 1 ;;
     esac
 fi
-EP_SSH_TARGET=""; EP_SSH_HOST=""; EP_UNIX=""; EP_PIPE=""
+EP_SSH_TARGET=""; EP_SSH_HOST=""
 case "$ENDPOINT" in
     ssh:*)
         ep_rest="${ENDPOINT#ssh:}"
@@ -84,38 +82,22 @@ case "$ENDPOINT" in
             *)   EP_SSH_TARGET="$ep_rest" ;;
         esac
         ;;
-    unix:*) EP_UNIX="${ENDPOINT#unix:}" ;;
-    # ADR 0042 amendment (2026-09-07): a Windows box's LOCAL daemon only
-    # listens on a named pipe. Accepts either the full \\.\pipe\<name> form
-    # sot_daemon_endpoint prints or a bare pipe:<name> — both reduce to the
-    # trailing NAME (NamedPipeClientStream never takes the \\.\pipe\ prefix).
-    pipe:*) EP_PIPE="${ENDPOINT#pipe:}"; EP_PIPE="${EP_PIPE##*\\}" ;;
+    unix:*|pipe:*) ;;   # opened by sot_dial (nc_send below)
     "") ;;   # no daemon and a file-first send: nothing to parse
     *) echo "ERROR: bad endpoint '$ENDPOINT'" >&2; exit 1 ;;
 esac
 
 # Hello: the daemon admits a connection only by its first frame, a hello it
-# accepts, and ignores its token field, so every connection below sends one first.
-# Token source: $SOT_TOKEN, else the 0600 token file in the (700) home. The
-# hello's reply is one more line on the wire: an accepted one is skipped, and a
+# accepts, so every connection below sends one first.
+# The hello's reply is one more line on the wire: an accepted one is skipped, and a
 # refused one is read by the loop below (ADR 0049 `## User isolation`).
 # client_id "sot-comm" so the roster/logs show what it is. The
 # frame itself is `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1),
 # which declares the host and the OS account (ADR 0049 `## User isolation`).
 
-# nc_out: send the single frame on stdin, return immediately (capture any reply line)
+# nc_send: the hello, then the frame on stdin, to ENDPOINT; prints every reply line until the transport ends.
 nc_send() {
     # Writes the hello `send_frame` built (its `hello`, in the caller's scope) before the frame on stdin.
-    if [ -n "$EP_PIPE" ]; then
-        command -v powershell.exe >/dev/null 2>&1 || {
-            echo "ERROR: powershell.exe not found and endpoint is a named pipe" >&2; return 1; }
-        local ps1="$SCRIPT_DIR/comm-pipe-request.ps1"
-        [ -f "$ps1" ] || {
-            echo "ERROR: comm-pipe-request.ps1 not found next to comm-relay.sh ($SCRIPT_DIR)" >&2; return 1; }
-        { printf '%s\n' "$hello"; cat; } | timeout 5 powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-            -File "$ps1" -PipeName "$EP_PIPE" -Op agent.send -TimeoutSec 5
-        return
-    fi
     if [ -n "$EP_SSH_TARGET" ]; then
         # `_SOT_BRIDGE_FAIL_FILE`, when send_frame has set it, is where a
         # dying or timed-out bridge's own reason lands (BLOCKER 1's
@@ -154,11 +136,19 @@ nc_send() {
         [ -n "$raw_file" ] && rm -f "${raw_file:?}"
         return "$rc"
     fi
-    if [ "$HAVE_NC" = 1 ] && [ -n "$EP_UNIX" ]; then
-        { printf '%s\n' "$hello"; cat; } | timeout 5 nc -U "$EP_UNIX"
-    else
-        echo "ERROR: nc not found and endpoint is a unix socket (needs nc -U)" >&2; return 1
+    # A unix: or pipe: endpoint: sot_dial's `sotd stdio-bridge`, which connects only to an endpoint this OS account
+    # serves (ADR 0049, User isolation). The bridge closes the connection when its input ends, so the input stays open
+    # for the 5 s this read allows (a receipt comes after the ack). Its stderr, a refusal's one line, is the bridge's
+    # reason (precedence 3 below).
+    local rc=0 raw_file=""
+    [ -n "${_SOT_BRIDGE_FAIL_FILE:-}" ] && raw_file="${_SOT_BRIDGE_FAIL_FILE}.raw"
+    { printf '%s\n' "$hello"; cat; sleep 5; } | sot_dial "$ENDPOINT" 5 2>"${raw_file:-/dev/null}" || rc=${PIPESTATUS[1]}
+    if [ "$rc" -ne 0 ] && [ -n "$raw_file" ] && [ -s "$raw_file" ]; then
+        tr '\n' ' ' < "$raw_file" | sed 's/ $//' > "$_SOT_BRIDGE_FAIL_FILE"
+        printf '\n' >> "$_SOT_BRIDGE_FAIL_FILE"
     fi
+    [ -n "$raw_file" ] && rm -f "${raw_file:?}"
+    return "$rc"
 }
 
 send_frame() {  # $1 to, $2 text

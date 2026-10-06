@@ -27,7 +27,7 @@
 #
 # No bats dependency. HERMETIC: a
 # temp $SOT_COMM_HOME, a per-case $SOT_COMM_SELF_FILE, a pinned
-# $SOT_COMM_TEST_HOST, and where a daemon is needed a stub `nc`/`ssh` on PATH
+# $SOT_COMM_TEST_HOST, and where a daemon is needed a stub bridge/`ssh` on PATH
 # that answers each connection — never the real ~/.sot-comm and never the real
 # daemon.
 #
@@ -115,7 +115,7 @@ relay_send_with_path() {
     # any invocation -- ours -- drains the frame there instead of at the
     # real bridge call. A real ssh's `-G` never touches stdin at all, so
     # this is a test-fixture concern only, never live behavior.
-    RELAY_OUT="$(cd "$WORK" && unset XDG_RUNTIME_DIR && PATH="$sshdir:$PATH" SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
+    RELAY_OUT="$(cd "$WORK" && unset XDG_RUNTIME_DIR && PATH="$sshdir:$PATH" SOTD_BIN="$sshdir/sotd" SOT_COMM_SELF_FILE="$SELF_SENDER" SOT_COMM_TEST_HOST="$SENDER_HOST" \
         SOT_RELAY_ENDPOINT="$ep" "$RELAY" "$@" 2>"$WORK/err.txt")"
     RELAY_RC=$?
     RELAY_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
@@ -370,7 +370,7 @@ _stderr_text() {  # KIND
 }
 
 # write_row_ssh_stub DIR COMMFILE RECEIPT ACK EXIT STDERR_KIND [RECEIVERS] [ID_MODE] [FILER]
-# -- a stub `ssh` (and the same script as `nc`, for a unix: endpoint) that says
+# -- a stub `ssh` (and the same job in a stub bridge, for a unix: endpoint) that says
 # exactly what one row asks for; each connection is one run of it. COMMFILE is
 # the hub's `comm.file` answer: ok, code, nocode, not_here, or none. ACK is the
 # `agent.send` answer: yes (ok, with the roster), error, or no. The row is
@@ -443,7 +443,13 @@ exit "$status"
 STUB
     } > "$dir/ssh"
     chmod +x "$dir/ssh"
-    cp "$dir/ssh" "$dir/nc"
+    { printf '#!/bin/sh\n'; cat <<'BRIDGE'
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+case "$3" in unix:*) ;; *) exit 97 ;; esac
+exec "$(dirname "$0")/ssh"
+BRIDGE
+    } > "$dir/sotd"
+    chmod +x "$dir/sotd"
 }
 
 # COMMFILE RECEIPT ACK EXIT STDERR EXPECT -- EXPECT is what the rule requires:
@@ -703,6 +709,25 @@ check "an older daemon's protocol refusal does not decide a broadcast: its answe
 check "an ack that carries an error decides the not-mine leg, a directed send and a broadcast, over a protocol refusal" case_an_ack_with_an_error_decides_the_not_mine_leg
 check "an unreadable OS account is named by a directed send" case_an_unreadable_account_is_named_by_a_directed_send
 check "an unreadable OS account is named by a broadcast" case_an_unreadable_account_is_named_by_a_broadcast
+
+# ADR 0049, User isolation: a local bridge's refusal survives the broadcast failure path.
+case_a_broadcast_names_the_local_bridges_refusal() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir why
+    dir="$(mktemp -d "$WORK/refusing-bridge-XXXXXX")"
+    why='sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account'
+    cat > "$dir/sotd" <<'FAKEBRIDGE'
+#!/bin/sh
+[ "$1" = stdio-bridge ] && [ "$2" = --endpoint ] || exit 97
+printf 'sotd stdio-bridge: /x/s.sock: not connecting: /x is not a private folder of this OS account\n' >&2
+exit 1
+FAKEBRIDGE
+    chmod +x "$dir/sotd"
+    SOTD_BIN="$dir/sotd" relay_send 'unix:/x/s.sock' send --all 'refused'
+    [ "$RELAY_RC" -eq 1 ] && [ -z "$RELAY_OUT" ] || { echo "  rc $RELAY_RC, out: $RELAY_OUT"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: $why" || { echo "  the bridge's refusal was lost: $RELAY_ERR"; return 1; }
+}
+check "a broadcast whose local bridge refuses names the bridge's line (ADR 0049)" case_a_broadcast_names_the_local_bridges_refusal
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

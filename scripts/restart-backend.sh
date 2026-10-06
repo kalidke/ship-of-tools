@@ -32,6 +32,9 @@ LOG="${SOT_BACKEND_LOG:-$REPO/dev/output/sotd-restart.$(uname -n).log}"
 LABEL="${SOT_BACKEND_LABEL:-sot}"
 SOCKET="${SOT_SOCKET:-}"
 
+# sot_socket_open: the launch scripts' one probe of this account's socket (ADR 0049, User isolation).
+. "$REPO/scripts/lib/sot-daemon.sh" || exit 2
+
 [ -x "$BIN" ] || { echo "ERROR: binary not built: $BIN" >&2
     echo "       build it: (cd '$REPO/rust' && cargo build --release -p sot-backend)" >&2; exit 2; }
 
@@ -39,32 +42,27 @@ if [ -z "$SOCKET" ]; then
     SOCKET="$("$BIN" session-socket-path "$LABEL")" || exit 2
 fi
 
+# This account's daemon only (ADR 0049, User isolation: another user's `sotd --label sot` is never judged, killed or
+# reported as this one). Among this account's processes named `sotd` (the kernel's `comm`, so a program that only
+# mentions sotd in its arguments is not one), the one started with `--socket` and exactly this socket, else the first
+# started with `--label` and exactly this label. Both are literal comparisons of whole arguments: the values reach awk
+# through its environment, never as a pattern or an escape, and a socket or label that only begins with this one is
+# another daemon's.
 find_pid() {
-    ps -eo pid=,args= | awk -v sock="$SOCKET" -v label="$LABEL" '
-        $0 ~ /[s]otd/ && ($0 ~ "--socket " sock || $0 ~ "--label " label) { print $1; exit }
+    ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$SOCKET" FIND_LABEL="$LABEL" awk '
+        BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
+        $2 != "sotd" { next }
+        { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
+        index(args, sock) { print $1; found = 1; exit }
+        index(args, label) && first == "" { first = $1 }
+        END { if (!found && first != "") print first }
     '
-}
-socket_open() {
-    [ -S "$SOCKET" ] || return 1
-    if command -v nc >/dev/null 2>&1; then
-        timeout 1 nc -U "$SOCKET" </dev/null >/dev/null 2>&1
-        rc=$?
-        # A reachable backend accepts the connection and then waits for a
-        # hello frame. With empty stdin, nc can sit until timeout; that timeout
-        # still proves the socket accepted a connection.
-        [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]
-        return $?
-    fi
-    # Minimal environments may not have nc. A socket file proves the daemon
-    # bound its endpoint; launchers will fail loud if the first real connect
-    # cannot complete.
-    return 0
 }
 
 OLD=$(find_pid)
 BIN_MTIME=$(stat -c %Y "$BIN")
 if [ -n "$OLD" ]; then
-    if ! socket_open; then
+    if ! sot_socket_open "$BIN" "$SOCKET"; then
         STALE=1
         echo "running daemon pid $OLD has no socket at $SOCKET"
     else
@@ -92,9 +90,9 @@ fi
 if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     echo "sotd is systemd-supervised (sotd.service) — restarting via systemctl --user"
     systemctl --user restart sotd.service
-    for _ in $(seq 1 30); do socket_open && break; sleep 0.5; done
+    for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
     NEW=$(find_pid)
-    if [ -n "$NEW" ] && socket_open; then
+    if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
         echo "backend restarted via systemd: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
         exit 0
     fi
@@ -117,9 +115,9 @@ mkdir -p "$(dirname "$LOG")"
 setsid nohup "$BIN" --project-root "$ROOT" --label "$LABEL" >>"$LOG" 2>&1 &
 disown 2>/dev/null || true
 
-for _ in $(seq 1 30); do socket_open && break; sleep 0.5; done
+for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
 NEW=$(find_pid)
-if [ -n "$NEW" ] && socket_open; then
+if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
     echo "backend restarted: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
 else
     echo "ERROR: backend did not bind $SOCKET after restart — see $LOG" >&2; exit 1

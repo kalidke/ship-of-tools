@@ -14,8 +14,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - The Claude launcher `ccb`, its PATH wrappers (`show-result`, `sot-fe`, `sot-gh-auth`) and the eleven skills that are
   not messaging's (`julia-repl`, `project-log`, `reauth`, `show-result`, `sitrep`, `sot-gh-auth`, `sot-install`,
   `sot-setup`, `sot-status`, `sot-statusline-setup`, `worktree`): `claude/`. The Codex launcher `ccx`: `codex/`.
-- `sot-gh-auth.sh`, the GitHub device-flow sign-in; and `comm-pipe-request.ps1`, the shell client's pipe transport
-  (the Windows request a `pipe:` endpoint makes, called by `comm-lib.sh` and `comm-relay.sh`).
+- `sot-gh-auth.sh`, the GitHub device-flow sign-in.
 - Their suites: `tests/`.
 - Still elsewhere, listed so a reader finds them:
   - the shell daemon client in `comm/lib/comm-lib-client.sh` (`sot_daemon_endpoint`, `sot_relay_endpoint`,
@@ -45,9 +44,10 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `agent_argv`, `agent_exec_argv`,
 `claude_recipe`, `account_env`, `account_spawn_env`, `ensure_folder_trusted`, `capsule_supervisor_env`,
 `comm/lib/comm-lib-client.sh`, `sot_daemon_endpoint`, `sot_relay_endpoint`, `sot_oneshot_request`, `sot_pty_input`,
-`SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
+`sot_dial`, `SOT_COMM_NAME`, `SOT_COMM_HOME`, `SOT_COMM_SELF_FILE`, `sot-fe preview`, `docs/tools/docs-media.sh`. Uses:
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `sot_ssh_bridge`, `_sot_is_plain_host_name`, `sot_slug`,
-`comm/lib/comm-lib-identity.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `version.query`, `workspace.create`,
+`comm/lib/comm-lib-identity.sh`, `SshRecipe`, `is_plain_host_name`, `slug`, `sotd stdio-bridge`, `version.query`,
+`workspace.create`,
 `workspace.destroy`, `workspace.list`, `workspace.reauth`, `pty.input`, `pty.screen`, `workspace.changed`, `sot_host`,
 `comm/lib/comm-lib-base.sh`, `host_name`, `comm-context.sh`, `comm-join.sh`, `comm-relay.sh`, `comm-poll.sh`,
 `agents/spawn/comm-probe.sh`, `agents/spawn/comm-bootstrap.sh`, `fe.command.send`, `fe.command`,
@@ -67,7 +67,6 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `claude/`: the Claude launcher `bin/ccb`, the wrappers `bin/show-result`, `bin/sot-fe`, `bin/sot-gh-auth`, and the skills.
 - `codex/`: the Codex launcher `bin/ccx`.
-- `comm-pipe-request.ps1`: the shell client's pipe transport, a PowerShell client for a `pipe:` endpoint.
 - `sot-gh-auth.sh`: GitHub CLI sign-in by the device flow, without a browser on the box.
 - `spawn/`: the CLIs that start, end, probe and bootstrap rows.
 - `worktree/`: the scripts that make, list, remind and remove a session's git worktree.

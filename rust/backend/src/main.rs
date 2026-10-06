@@ -219,6 +219,7 @@ mod help_tests {
             ("ancestors --from 1 --help", comm::registry::ancestors::USAGE),
             ("stdio-bridge --help", topology::stdio_bridge::USAGE),
             ("stdio-bridge --host a --help", topology::stdio_bridge::USAGE),
+            ("stdio-bridge --endpoint unix:/x --help", topology::stdio_bridge::USAGE),
             ("status --help", topology::status::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),

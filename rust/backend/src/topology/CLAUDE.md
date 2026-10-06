@@ -11,7 +11,7 @@ the CLI commands dial the daemon with. Part of topology.
 - `relay_units.rs`: `sotd topology apply` and `refresh`, the hub's systemd --user relay units and drop-ins, and the hub's relay-refresh thread (`spawn_refresh_at_start`).
 - `set.rs`: `handle_topology_set`, the daemon side of op `topology.set`.
 - `status.rs`: `sotd status`, declared plus live state fanned out to every reachable daemon.
-- `stdio_bridge.rs`: `sotd stdio-bridge`, the byte shuttle between stdin/stdout and this box's own daemon endpoint, reached through `connect_own`.
+- `stdio_bridge.rs`: `sotd stdio-bridge`, the byte shuttle between stdin/stdout and this box's own daemon endpoint, a hub relay socket, or a local endpoint its caller names (`--endpoint`), reached through `connect_own`.
 - `store.rs`: `TopologyStore`, the daemon's cached view of hosts.toml, and `write_atomic`.
 
 ## Start here
