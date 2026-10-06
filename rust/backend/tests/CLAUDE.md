@@ -52,3 +52,5 @@ shows the shape.
   tests by module path in `SLOW_FIRST`; a renamed test changes there in the same commit.
 - Two suites compile src files by `#[path]`: `support/mod.rs` (`row_scope_aim.rs`) and `comm_file.rs` (the inbox
   source). A move of either src file changes that line in the same commit.
+
+- SSH stand-ins and k3b/k5 observe parent PATH and SHELL preservation through fixture setup, child execution and teardown; equality failures identify the phase without printing environment values.

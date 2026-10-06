@@ -67,7 +67,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/lane/`: wire frames, transports and the attach protocol.
 - `src/attach_client/`: the attach client and its worker.
 - `src/identity/`: the peer challenge and identity exchange.
-- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`), and the scan that no test changes the process `PATH` or `SHELL`.
+- `src/test_scan.rs`: the source scans' one walker, `rust_sources()` (every workspace member's `src/` and `tests/`), and its production view `production_sources()` with `without_test_modules`, and `enclosing` and `is_ident` (the `fn` or `struct` a match lies in, and the identifier test at its edges) (feature `test-support`).
 - `src/host/`: per-machine facts and platform primitives.
 - `src/bin/`: `sot-capsule`, `sot-log` and the three test-fixture binaries.
 
@@ -79,7 +79,7 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - Modules are `pub` where integration tests or other crates reach them: those see only pub items.
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
-- No test takes the system folders out of the process `PATH` or changes `SHELL`; code under test takes them from its caller (`test_scan::tests::no_test_changes_the_process_path_or_shell`).
+- A fixture selects its executable on the child command. T2's actual SSH fixtures compare the parent PATH and SHELL before, during and after execution; no lexical allowlist proves environment preservation.
 - Every subscriber a test installs goes through `test_log` (`capture()` to read a thread's tracing output, `install()` for a test of a production log writer); besides it, only the two binaries' `main` set up a subscriber (`test_log::tests::only_test_log_makes_a_subscriber`).
 - A test writes a program it will run only through `test_exec::write_executable`, so no process holds it open for writing when it runs (`test_exec::tests::only_test_exec_makes_a_test_program_executable`).
 - A test re-runs a test binary by name through `test_isolated` (`run_isolated`, or `test_command` with `enter` and `Entry::assert_once`), or at a site its pin lists with that site's own proof that the body ran (`test_isolated::tests::no_test_reruns_a_binary_outside_this_module`).

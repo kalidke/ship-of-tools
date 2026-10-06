@@ -172,13 +172,37 @@ async fn k2_loopback_unix_tmpfs() {
     println!("k2_loopback_unix_tmpfs: no row can be created on tmpfs, so no keystroke samples");
 }
 
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+// Parent values are compared as Option<OsString>; diagnostics never format either value.
+struct ParentSshEnvironment {
+    values: [Option<std::ffi::OsString>; 2],
+    failures: std::sync::Mutex<Vec<String>>,
+}
+impl ParentSshEnvironment {
+    fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { values: [std::env::var_os("PATH"), std::env::var_os("SHELL")], failures: Default::default() })
+    }
+    fn observe(&self, phase: &str) {
+        for (key, before) in ["PATH", "SHELL"].into_iter().zip(&self.values) {
+            if std::env::var_os(key) != *before { self.failures.lock().unwrap().push(format!("{key} at {phase} in SSH fixture")); }
+        }
+    }
+    fn finish(&self) {
+        self.observe("after teardown");
+        let failures = self.failures.lock().unwrap();
+        assert!(failures.is_empty(), "ssh_fixtures_preserve_parent_path_and_shell: {}", failures.join("; "));
+    }
+}
+
 /// Local setup shared by k3b and k5: retain the first accepted hello, never send a duplicate.
-async fn first_hello_setup(env: &Env) -> (Conn, u64, Frame) {
+async fn first_hello_setup(env: &Env, guard: &ParentSshEnvironment) -> (Conn, u64, Frame) {
     let stream = poll_until(|| async { try_connect(&env.socket_path).await }, BOUND, "private daemon socket").await;
     let mut conn = tokio::io::BufReader::new(stream);
     let reply = call(&mut conn, 1, op::HELLO, hello_frame("latency-test").payload).await;
     assert!(reply.payload.get("error").is_none(), "private hello refused: {:?}", reply.payload);
     assert!(reply.payload["session_id"].is_string(), "private hello carries no session_id");
+    guard.observe("private hello active");
     (conn, 2, reply)
 }
 
@@ -188,7 +212,7 @@ fn hello_frame(client_id: &str) -> Frame {
 }
 
 /// The private runtime symlink and a fail-closed bridge command; its owner stays alive throughout the proof.
-fn private_bridge_remote(env: &Env) -> (tempfile::TempDir, String) {
+fn private_bridge_remote(env: &Env, guard: &ParentSshEnvironment) -> (tempfile::TempDir, String) {
     let rt = tempfile::Builder::new().prefix("sotk-").tempdir_in("/tmp").expect("runtime dir");
     let sessions = rt.path().join("sot").join("sessions");
     std::fs::create_dir_all(&sessions).expect("mkdir");
@@ -210,19 +234,23 @@ fn private_bridge_remote(env: &Env) -> (tempfile::TempDir, String) {
         sotd_program().display()
     );
 
+    guard.observe("after preparing private bridge");
     (rt, remote)
 }
 
 /// One login plus its private hello. Kill and bounded-reap the owned child on every result.
-fn bridge_hello_dial(mut cmd: Command, hello: &Frame) -> Option<(Duration, Frame)> {
+fn bridge_hello_dial(mut cmd: Command, hello: &Frame, guard: &ParentSshEnvironment) -> Option<(Duration, Frame)> {
     let t0 = Instant::now();
+    guard.observe("at private hello spawn");
     let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("spawn");
+    guard.observe("private hello child active");
     let mut stdin = child.stdin.take().unwrap();
     let ok = codec::write_frame_blocking(&mut stdin, hello).is_ok() && stdin.flush().is_ok();
     let mut out = BufReader::new(child.stdout.take().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || { let _ = tx.send(codec::read_frame_blocking(&mut out).ok()); });
     let reply = if ok { rx.recv_timeout(Duration::from_secs(10)).ok().flatten() } else { None };
+    guard.observe("after private hello result");
     let elapsed = t0.elapsed();
     drop(stdin);
     let _ = child.kill();
@@ -236,6 +264,7 @@ fn bridge_hello_dial(mut cmd: Command, hello: &Frame) -> Option<(Duration, Frame
         std::thread::sleep(Duration::from_millis(5));
     }
     reader.join().unwrap();
+    guard.observe("after private hello teardown");
     reply.filter(|f| f.payload.get("error").is_none()).map(|f| (elapsed, f))
 }
 
@@ -253,45 +282,54 @@ fn private_ssh_command(remote: &str) -> Command {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn k3b_ssh_cold_dial() {
+    let _serial = SERIAL.lock().await;
+    let guard = ParentSshEnvironment::new();
     let env = Env::new("k3b");
     env.spawn_sotd();
-    let (_conn, _next_id, first_hello) = first_hello_setup(&env).await;
+    let (_conn, _next_id, first_hello) = first_hello_setup(&env, &guard).await;
     let private_sid = &first_hello.payload["session_id"];
-    let (_runtime, remote) = private_bridge_remote(&env);
+    let (_runtime, remote) = private_bridge_remote(&env, &guard);
     let mut local = Command::new("sh");
     local.arg("-c").arg(&remote);
-    let (_, reply) = bridge_hello_dial(local, &hello_frame("k3b")).expect("local private bridge hello");
+    let (_, reply) = bridge_hello_dial(local, &hello_frame("k3b"), &guard).expect("local private bridge hello");
     assert_eq!(&reply.payload["session_id"], private_sid, "local bridge reached another daemon");
     println!("k3b local run of the remote command reaches the private daemon (session id matched): true");
     let mut times = Vec::new();
     for _ in 0..5 {
-        let (time, reply) = bridge_hello_dial(private_ssh_command(&remote), &hello_frame("k3b")).expect("k3b needs passwordless local ssh to its private daemon");
+        let (time, reply) = bridge_hello_dial(private_ssh_command(&remote), &hello_frame("k3b"), &guard).expect("k3b needs passwordless local ssh to its private daemon");
         assert_eq!(&reply.payload["session_id"], private_sid, "ssh bridge reached another daemon");
         times.push(time);
     }
     println!("k3b measured: ssh + bridge hello");
     percentiles("k3b dial", times);
     env.kill_daemon_bounded().await;
+    guard.finish();
 }
 
-fn private_ssh_endpoint(remote: &str, dir: &Path) -> DaemonLaneEndpoint {
+fn private_ssh_endpoint(remote: &str, dir: &Path, guard: std::sync::Arc<ParentSshEnvironment>) -> DaemonLaneEndpoint {
     let wrapper = dir.join("private-ssh");
     let script = format!("#!/usr/bin/env python3\nimport os, sys\nos.execvp('ssh', ['ssh'] + sys.argv[1:-1] + [{remote:?}])\n");
     sot_log::test_exec::write_executable(&wrapper, script);
+    guard.observe("after preparing private ssh endpoint");
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
     DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(std::sync::Arc::new(move |command| {
-        Command::new(&wrapper).args(command.get_args())
+        guard.observe("at endpoint spawn");
+        let spawned = Command::new(&wrapper).args(command.get_args())
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn()
+            .spawn();
+        guard.observe("endpoint child active");
+        spawned
     }))
 }
 
 /// Headless request-to-checkpoint interval; T3 owns the frontend request-to-pane interval.
-fn timed_attach(endpoint: DaemonLaneEndpoint, target: &str) -> Duration {
+fn timed_attach(endpoint: DaemonLaneEndpoint, target: &str, guard: &ParentSshEnvironment) -> Duration {
     let t0 = Instant::now();
     let mut client = FeAttachClient::attach(endpoint, target.to_string(), 80, 24, "latency-fe".to_string(), "latency-fe".to_string(), None, Box::new(|| {})).expect("attach");
     let elapsed = wait_for(&mut client, "checkpoint", |client| client.is_checkpointed()) - t0;
-    client.shutdown(Duration::from_secs(5));
+    guard.observe("after checkpoint result");
+    client.shutdown(Duration::from_secs(5)); drop(client);
+    guard.observe("after endpoint teardown");
     elapsed
 }
 
@@ -305,23 +343,25 @@ fn p50(times: &[Duration]) -> f64 {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn k5_cold_switch_over_ssh() {
+    let _serial = SERIAL.lock().await;
+    let guard = ParentSshEnvironment::new();
     let env = Env::new("k5");
     env.spawn_sotd();
-    let (mut conn, mut next_id, first_hello) = first_hello_setup(&env).await;
+    let (mut conn, mut next_id, first_hello) = first_hello_setup(&env, &guard).await;
     let private_sid = &first_hello.payload["session_id"];
     let target = create_row(&env, &mut conn, &mut next_id).await;
-    let (_runtime, remote) = private_bridge_remote(&env);
+    let (_runtime, remote) = private_bridge_remote(&env, &guard);
     let wrapper_dir = tempfile::tempdir().unwrap();
     let mut local = Command::new("sh");
     local.arg("-c").arg(&remote);
-    let (_, reply) = bridge_hello_dial(local, &hello_frame("k5")).expect("local private bridge hello");
+    let (_, reply) = bridge_hello_dial(local, &hello_frame("k5"), &guard).expect("local private bridge hello");
     assert_eq!(&reply.payload["session_id"], private_sid, "local bridge reached another daemon");
     let (mut logins, mut locals, mut ssh_times, mut excess) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for round in 0..5 {
-        let (login, reply) = bridge_hello_dial(private_ssh_command(&remote), &hello_frame("k5")).expect("k5 needs passwordless local ssh to its private daemon");
+        let (login, reply) = bridge_hello_dial(private_ssh_command(&remote), &hello_frame("k5"), &guard).expect("k5 needs passwordless local ssh to its private daemon");
         assert_eq!(&reply.payload["session_id"], private_sid, "ssh bridge reached another daemon");
-        let local = || timed_attach(DaemonLaneEndpoint::new(LaneDial::Local(env.socket_path.clone()), None), &target);
-        let ssh = || timed_attach(private_ssh_endpoint(&remote, wrapper_dir.path()), &target);
+        let local = || timed_attach(DaemonLaneEndpoint::new(LaneDial::Local(env.socket_path.clone()), None), &target, &guard);
+        let ssh = || timed_attach(private_ssh_endpoint(&remote, wrapper_dir.path(), guard.clone()), &target, &guard);
         let (local, ssh) = if round % 2 == 0 { let local = local(); (local, ssh()) } else { let ssh = ssh(); (local(), ssh) };
         println!("k5 round {round} L={:.1}ms local total={:.1}ms ssh total={:.1}ms", login.as_secs_f64() * 1000.0, local.as_secs_f64() * 1000.0, ssh.as_secs_f64() * 1000.0);
         logins.push(login); locals.push(local); ssh_times.push(ssh);
@@ -337,6 +377,7 @@ async fn k5_cold_switch_over_ssh() {
     let pass = excess_p50 <= 1.5 * login_p50;
     println!("k5 {}", if pass { "PASS" } else { "FAIL" });
     env.kill_daemon_bounded().await;
+    guard.finish();
     assert!(pass, "cold switch over ssh costs {excess_p50:.1}ms over a local dial, more than 1.5 x one login ({login_p50:.1}ms)");
     for total in locals.iter().chain(&ssh_times) {
         assert!(*total <= sot_log::lane::transport::CONNECT_BOUND, "headless request-to-checkpoint switch missed CONNECT_BOUND: {total:?}");
