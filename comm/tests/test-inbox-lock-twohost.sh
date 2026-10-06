@@ -185,7 +185,7 @@ overlap() {  # $1 = inbox file, $2 = its writers (default 2); prints "" or a rea
 PROOF_BAD=0
 proof_case() {  # $1 = description, $2 = inbox file, $3.. = check_inbox args (want, reports)
     local d="$1" f="$2" content ov; shift 2
-    content="${WRITER_FAILURE:-}$(check_inbox "$f" "$@")"
+    content="$(check_inbox "$f" "$@")"
     ov="$(overlap "$f")"
     verdict "$d: content ($(interleaved "$f"))" "$content"
     verdict "$d: overlap > 0 ($(jq -r .from "$f" 2>/dev/null | uniq | wc -l) writer runs)" "$ov"
@@ -328,7 +328,6 @@ fi
 # ---- (a1) Rust here, shell there, one inbox --------------------------------
 c="$(new_case a1)"; mkfifo "$LOCAL/go.a1"; t0=$SECONDS
 peer_sh "$c" "echo ready; read -r _; PACE=0.025; W=peer; $APPEND" < "$LOCAL/go.a1" > "$LOCAL/a1.peer" &
-wpid=$!
 exec 7> "$LOCAL/go.a1"
 rust_arm "$c" t11_rust_appends_200 > "$LOCAL/a1.rust" &
 rpid=$!
@@ -336,20 +335,18 @@ for _ in $(seq 1 1200); do
     grep -q ready "$LOCAL/a1.peer" 2>/dev/null && [ -e "$c/inbox/rust.ready" ] && break; sleep 0.1
 done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait_writers "$rpid" "$wpid"
+wait
 proof_case "(a) Rust here and shell on $PEER, 200 each, paced, one inbox ($((SECONDS - t0))s)" \
     "$c/inbox/t11.jsonl" 400 "$LOCAL/a1.peer" "$LOCAL/a1.rust"
 
 # ---- (a2) shell here, shell there, one inbox --------------------------------
 c="$(new_case a2)"; mkfifo "$LOCAL/go.a2"; t0=$SECONDS
 peer_sh "$c" "echo ready; read -r _; PACE=0.025; W=peer; $APPEND" < "$LOCAL/go.a2" > "$LOCAL/a2.peer" &
-wpid=$!
 exec 7> "$LOCAL/go.a2"
 local_sh "$c" "while [ ! -e \"\$SOT_COMM_HOME/inbox/go\" ]; do sleep 0.01; done; PACE=0.025; W=here; $APPEND" > "$LOCAL/a2.here" &
-lpid=$!
 for _ in $(seq 1 600); do grep -q ready "$LOCAL/a2.peer" 2>/dev/null && break; sleep 0.1; done
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait_writers "$lpid" "$wpid"
+wait
 proof_case "(a) shell here and shell on $PEER, 200 each, paced, one inbox ($((SECONDS - t0))s)" \
     "$c/inbox/t11.jsonl" 400 "$LOCAL/a2.peer" "$LOCAL/a2.here"
 
@@ -373,11 +370,11 @@ done
 reader_loop "$c" "$LOCAL/a3.done" &
 rdpid=$!
 echo go >&7; touch "$c/inbox/go"; exec 7>&-
-wait_writers "${wpids[@]}"
+wait "${wpids[@]}"
 touch "$LOCAL/a3.done"; wait "$rdpid"
 failed_of() { grep -c '^FAILED' "$1" 2>/dev/null; }
 nf_peer="$(failed_of "$LOCAL/a3.peer")"; nf_here="$(failed_of "$LOCAL/a3.here")"; nf_rust="$(failed_of "$LOCAL/a3.rust")"
-a3_content="$WRITER_FAILURE$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
+a3_content="$([ "$((nf_peer + nf_here + nf_rust))" -eq 0 ] || echo "sends were FAILED under ordinary load: $(grep -h '^FAILED' "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust" | head -2 | tr '\n' ' ')")$(check_inbox "$c/inbox/t11.jsonl" 600 "$LOCAL/a3.peer" "$LOCAL/a3.here" "$LOCAL/a3.rust")"
 a3_ov="$(overlap "$c/inbox/t11.jsonl" 3)"
 verdict "(a3) liveness, unpaced, 600 sends: FAILED peer $nf_peer, here $nf_here, Rust $nf_rust; content ($((SECONDS - t0))s)" "$a3_content"
 verdict "(a3) liveness: overlap > 0 ($(jq -r .from "$c/inbox/t11.jsonl" 2>/dev/null | uniq | wc -l) writer runs, 3 writers)" "$a3_ov"
