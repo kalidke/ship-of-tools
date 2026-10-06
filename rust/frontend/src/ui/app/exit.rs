@@ -18,7 +18,7 @@ pub(in crate::ui) fn quit_prompt_step(keep: bool, key: &Key, repeat: bool) -> Qu
         match key {
             Key::Named(NamedKey::Tab) => QuitPromptStep::Stay { keep: !keep },
             Key::Named(NamedKey::Enter) => QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }),
-            _ => QuitPromptStep::Cancel,
+            _ => QuitPromptStep::Ignore,
         }
     };
     tracing::info!(?step, "quit prompt: key");
