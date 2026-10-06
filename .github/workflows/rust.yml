@@ -98,8 +98,8 @@ jobs:
           result=$?
           set -e
           cat ../dev/output/row-lifetime.log
-          echo "row-lifetime-parent exit $result expected 101"
-          [ "$result" -eq 101 ]
+          echo "row-lifetime-parent exit $result expected 1"
+          [ "$result" -eq 1 ]
           grep -F 'row-lifetime phase=observed absent_pending=true successor_inherited=true preview_attempts=1 entered_bodies=1 completed_bodies=1' ../dev/output/row-lifetime.log
           grep -F 'pending_result_dies_with_its_canonical_row: removed canonical row retained its pending result or same-slug successor inherited it' ../dev/output/row-lifetime.log
       - name: Prove native minimized workload and progress
@@ -129,8 +129,8 @@ jobs:
           result=$?
           set -e
           cat ../dev/output/row-lifetime.log
-          echo "row-lifetime-parent exit $result expected 101"
-          [ "$result" -eq 101 ]
+          echo "row-lifetime-parent exit $result expected 1"
+          [ "$result" -eq 1 ]
           grep -F 'row-lifetime phase=observed absent_pending=true successor_inherited=true preview_attempts=1 entered_bodies=1 completed_bodies=1' ../dev/output/row-lifetime.log
           grep -F 'pending_result_dies_with_its_canonical_row: removed canonical row retained its pending result or same-slug successor inherited it' ../dev/output/row-lifetime.log
       - name: Prove native minimized workload and progress
