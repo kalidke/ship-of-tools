@@ -60,6 +60,8 @@ jobs:
         working-directory: rust
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -354,6 +356,24 @@ jobs:
   # client against a real supervisor + real capsule the identical way —
   # belongs here for the same reason, budgeted separately (20 min) since
   # its reconnect case spawns a SECOND real supervisor process.
+      - name: MAC-SOCK-A1d windows proof
+        if: always() && matrix.os == 'windows-latest'
+        shell: bash
+        working-directory: .
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/rust/target
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
+        run: |
+          umask 022
+          python3 dev/output/a1d-proof-kit/prepare.py 4406661c4bf758bead967dfead62dd0814fb690e "$CARGO_TARGET_DIR/scratch/a1d-proof-trees"
+          bash dev/output/a1d-proof-kit/proofs.sh windows "$CARGO_TARGET_DIR/scratch/a1d-proof-trees" 4406661c4bf758bead967dfead62dd0814fb690e
+      - name: Retain MAC-SOCK-A1d windows logs
+        if: always() && matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macsock-a1d-windows-logs
+          path: rust/target/logs/a1d/*.log
+
   conpty-windows-2022:
     name: conpty + capsule owned-ConPTY + pipe/challenge/supervisor/fe-client tests (windows-2022)
     runs-on: windows-2022
