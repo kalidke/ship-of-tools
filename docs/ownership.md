@@ -96,7 +96,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `<ws>/.sot/captures/` | disk | files | `rust/backend/src/files/preview/crop.rs` `handle_image_crop` |
 | `<ws>/.sot/runs/<run_id>/` | disk | sidecars | `rust/backend/src/sidecars/repl/execute.rs` |
 | `<home>/.claude-auth/<name>/` and its allowlisted links | disk | agents | `rust/backend/src/agents/accounts.rs` `ensure_account_links`, `SHARED_ENTRIES`, `CLAUDE_ACCOUNTS_DIR` |
-| `.claude.json` folder-trust entries | disk | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`, `publish_trust_file` |
+| `.claude.json` folder-trust entries | disk | agents | `rust/backend/src/agents/folder_trust.rs` `ensure_folder_trusted`, `publish_trust_file`; file selection at `rust/backend/src/agents/env.rs` `account_spawn_env` |
 | folder-trust entries `[projects."<root>"]` in `$CODEX_HOME/config.toml` | disk | agents | `agents/codex/bin/ccx` |
 | an agent's default home: Codex `$CODEX_HOME`, else `<home>/.codex`; Claude `<home>/.claude` | rule | agents | `rust/backend/src/agents/accounts.rs` `account_home`, `claude_config_dir`; twins `agents/codex/bin/ccx`, `src/homes.jl` `codex_home` (see two owners) |
 | `.sot/worktree.toml` | disk, setting | agents | `agents/worktree/comm-worktree-new.sh`; `agents/worktree/comm-worktree-clean.sh` |

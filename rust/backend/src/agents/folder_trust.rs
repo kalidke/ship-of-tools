@@ -2,8 +2,6 @@
 
 use std::path::{Path, PathBuf};
 
-use super::accounts::claude_config_dir;
-
 /// Claude Code's own per-folder trust record, a JSON object keyed by
 /// absolute project path under `projects`, each entry carrying
 /// `hasTrustDialogAccepted` (see [`ensure_folder_trusted`]).
@@ -32,22 +30,6 @@ fn parse_declared_root_prefix(text: &str) -> Option<PathBuf> {
     super::trust_declaration::read_trust_declaration(&path).unwrap()
 }
 
-/// Which `.claude.json` records trust for `account`. NOT
-/// `claude_config_dir(..).join(..)` for the default account: with
-/// `CLAUDE_CONFIG_DIR` unset claude keeps this file BESIDE its config
-/// folder, in the home itself (`<home>/.claude/.claude.json` exists too
-/// on a real box but carries no `projects` table, so writing there would
-/// write a file claude never reads). A NAMED account has
-/// `CLAUDE_CONFIG_DIR` set to its own folder ([`account_env`]) and the
-/// file is inside it.
-pub fn claude_trust_file(home: &Path, account: &str) -> PathBuf {
-    if account.is_empty() || account == "default" {
-        home.join(CLAUDE_TRUST_FILE)
-    } else {
-        claude_config_dir(home, account).join(CLAUDE_TRUST_FILE)
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum TrustOutcome {
     Recorded,
@@ -60,8 +42,7 @@ pub(crate) enum TrustOutcome {
 /// Existing accepted bytes and unrelated JSON keys are preserved.
 /// Concurrent external edits remain the existing writer's scoped limit.
 pub fn ensure_folder_trusted(
-    home: &Path,
-    account: &str,
+    path: &Path,
     root: &Path,
     prefix: Option<&Path>,
 ) -> Result<TrustOutcome, String> {
@@ -89,7 +70,6 @@ pub fn ensure_folder_trusted(
         return Ok(TrustOutcome::Outside);
     }
 
-    let path = claude_trust_file(home, account);
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let existing = match std::fs::read(&path) {
         Ok(bytes) => Some(bytes),
@@ -119,7 +99,7 @@ pub fn ensure_folder_trusted(
     entry.insert(TRUST_ACCEPTED_KEY.to_string(), serde_json::Value::Bool(true));
 
     let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| at(&e))?;
-    publish_trust_file(&path, &bytes).map_err(|e| at(&e))?;
+    publish_trust_file(path, &bytes).map_err(|e| at(&e))?;
     Ok(TrustOutcome::Recorded)
 }
 

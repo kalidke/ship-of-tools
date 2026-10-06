@@ -3,6 +3,22 @@ use super::super::accounts::CLAUDE_ACCOUNTS_DIR;
 use super::super::support_tests::touch_dir;
 use super::*;
 
+fn claude_trust_file(home: &Path, account: &str) -> PathBuf {
+    if account.is_empty() || account == "default" {
+        home.join(CLAUDE_TRUST_FILE)
+    } else {
+        super::super::accounts::claude_config_dir(home, account).join(CLAUDE_TRUST_FILE)
+    }
+}
+fn ensure_folder_trusted(
+    home: &Path,
+    account: &str,
+    root: &Path,
+    prefix: Option<&Path>,
+) -> Result<TrustOutcome, String> {
+    super::ensure_folder_trusted(&claude_trust_file(home, account), root, prefix)
+}
+
 #[test]
 fn claude_project_key_maps_backslashes_only_on_windows() {
     assert_eq!(
@@ -226,7 +242,7 @@ fn a_named_accounts_trust_file_is_the_one_inside_its_own_config_dir() {
     let parent = declared_parent(home);
     let root = parent.join("some-repo");
     touch_dir(&root);
-    let dir = claude_config_dir(home, "second");
+    let dir = super::super::accounts::claude_config_dir(home, "second");
     touch_dir(&dir);
 
     assert_eq!(

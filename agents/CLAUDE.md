@@ -29,7 +29,7 @@ and the GitHub sign-in live here; the rest of the shell client is still under `c
 - Every claude launcher passes `--permission-mode auto`, never `--dangerously-skip-permissions`: `claude_recipe` in the
   daemon's `argv.rs`; `ccb` execs `sotd agent-exec claude`, which carries the same recipe; the sot-setup skill's
   `resume_command` names the flag.
-- Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts.
+- Folder trust is recorded only when the OS-resolved root lies under the OS-resolved declared prefix. The key uses the child cwd's spelling; an already accepted entry is not rewritten. Outside, undeclared and failed preparation are observable and the agent still starts. The trust file follows the child's effective `CLAUDE_CONFIG_DIR`: account additions override inheritance; with no config override it is the home-level file. Automated evidence establishes preparation; actual child-config consumption remains a human done-test proof limit. Interactive trust recognition, parent coverage and no-dialog behavior remain outside the headless proof.
 - A launcher the daemon spawns full-paths its binaries: its environment lacks `~/.local/bin`. `ccb` resolves `sotd`
   from `SOTD_BIN`, `PATH`, then the install paths; the daemon resolves `claude` and `ccx` to absolute paths on Unix.
 - Every endpoint leaves the shell client through `_sot_emit_endpoint` (a whitelist of `unix:`, `pipe:` and `ssh:`);

@@ -31,6 +31,8 @@ pub(super) struct SelfFileEnvGuard {
     /// and the restore, leaving the variable set for every later test in
     /// the process.
     claude_config_dir: Option<std::ffi::OsString>,
+    xdg_config_home: Option<std::ffi::OsString>,
+    localappdata: Option<std::ffi::OsString>,
 }
 
 impl Drop for SelfFileEnvGuard {
@@ -41,6 +43,8 @@ impl Drop for SelfFileEnvGuard {
             ("SOT_COMM_HOME", &self.sot_comm_home),
             ("SOT_SELF_HOST", &self.sot_self_host),
             ("CLAUDE_CONFIG_DIR", &self.claude_config_dir),
+            ("XDG_CONFIG_HOME", &self.xdg_config_home),
+            ("LOCALAPPDATA", &self.localappdata),
         ] {
             match val {
                 Some(v) => std::env::set_var(key, v),
@@ -60,6 +64,8 @@ pub(super) fn self_file_env_guarded() -> SelfFileEnvGuard {
         sot_comm_home: std::env::var_os("SOT_COMM_HOME"),
         sot_self_host: std::env::var_os("SOT_SELF_HOST"),
         claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR"),
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
+        localappdata: std::env::var_os("LOCALAPPDATA"),
         _serial: serial,
     }
 }
