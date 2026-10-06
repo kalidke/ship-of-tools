@@ -10,7 +10,7 @@ scripts/CLAUDE.md.
 
 ## Workflows
 - `workflows/rust.yml` ("Rust"): push to `main` (paths `rust/**`, `scripts/**`, `docs/tools/**`, `comm/**`, `agents/**` and the file
-  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the PowerShell 5.1 parse and the
+  itself) and dispatch. Jobs: `test` (build and test on ubuntu, windows and macos, the Ubuntu-only "Test L3 native storage premises" step, the PowerShell 5.1 parse and the
   `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, and on ubuntu the steps "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
@@ -57,3 +57,5 @@ scripts/CLAUDE.md.
   trust root (`workflows/release.yml`).
 - `publish` needs `build`, the three smokes and `julia-check`; the Linux smoke boots the artifact in an ubuntu 20.04
   container to prove the old-glibc floor.
+
+- L3's Ubuntu native storage premises run serially on an explicitly selected size-limited ext4 loop image. The hosted fixture workflow step owns provisioning and cleanup; sudo is confined to that step. Each selected body enters once and releases its own subtree. Confirm unmount and loop release before removing the owned absolute temporary root. The broad workspace run excludes those bodies only because the named L3 step runs them; setup, entry, native-code, recovery/preflight and teardown failures keep the gate open.

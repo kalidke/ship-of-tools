@@ -15,6 +15,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `conpty.rs`: the owned ConPTY and job containment layer; Windows only.
 - `e2e_pipe.rs`: a real capsule run over a real `PipeServer`, with watcher, driver and mgmt clients on one capsule; Windows only.
 - `e2e_socket/`: the same end to end over a real `SocketServer` and `connect_voyage_socket` (`main.rs`), and the producer dying with its capsule through PDEATHSIG (`pdeathsig.rs`); Linux only.
+- `fault_storage/`: native bounded-volume premises and storage-error boundary tests on Linux, macOS and Windows.
 - `fault_kill.rs`: a randomized SIGKILL sweep of a real `sot-capsule` on a real PTY, then store recovery and chain continuation over many rounds on one voyage; Linux only.
 - `fault_terminate.rs`: the portable terminate sweep with `sot-fault-writer`, killed mid-write, then store recovery; Unix and Windows.
 - `fe_client/`: `FeAttachClient` against a real `sot-capsule supervise` and capsule: watcher attach, pen and resize order, `end_run`, reconnect (`pane.rs`), the headless client (`headless.rs`), the supervisor's word and the health window (`supervisor_word.rs`); Linux and Windows.

@@ -86,7 +86,73 @@ jobs:
       # making the sweeps' actual coverage invisible (review finding).
       # --no-fail-fast: one failing test binary must not hide the others.
       - name: Test workspace
-        run: cargo test --workspace --locked --no-fail-fast -- --nocapture
+        run: cargo test --workspace --locked --no-fail-fast -- --nocapture ${{ matrix.os == 'ubuntu-latest' && '--skip premises_p1_parent_prospective_reversal --skip premises_p2_native_volume' || '' }}
+
+      - name: Test L3 native storage premises
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          umask 022
+          case "$RUNNER_TEMP" in
+            /*) ;;
+            *) printf 'L3 HARNESS FAILURE: runner temporary root is not absolute\n'; exit 1 ;;
+          esac
+          fixture_root=$(mktemp -d "$RUNNER_TEMP/l3-ext4.XXXXXX")
+          image="$fixture_root/volume.img"
+          volume_mount="$fixture_root/volume"
+          loop_device=''
+          mounted=0
+          cleanup() {
+            local failed=0
+            if [ "$mounted" -eq 1 ]; then
+              if sudo umount "$volume_mount" && ! mountpoint -q "$volume_mount"; then
+                mounted=0
+                printf 'L3 hosted ext4 unmount=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: hosted unmount failed\n'
+                failed=1
+              fi
+            fi
+            if [ "$mounted" -eq 0 ] && [ -n "$loop_device" ]; then
+              if sudo losetup --detach "$loop_device" && remaining=$(sudo losetup --associated "$image") && [ -z "$remaining" ]; then
+                loop_device=''
+                printf 'L3 hosted ext4 loop-release=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: hosted loop release failed\n'
+                failed=1
+              fi
+            fi
+            if [ "$failed" -eq 0 ] && [ "$mounted" -eq 0 ] && [ -z "$loop_device" ]; then
+              if rm -rf -- "${fixture_root:?}"; then
+                printf 'L3 fixture linux detach=ok owned-root-removal=ok\n'
+              else
+                printf 'L3 HARNESS FAILURE: owned fixture root removal failed\n'
+                return 1
+              fi
+            else
+              printf 'L3 HARNESS FAILURE: owned fixture retained for cleanup\n'
+              return 1
+            fi
+          }
+          trap 'status=$?; trap - EXIT; cleanup || status=1; exit "$status"' EXIT
+          trap 'exit 130' INT TERM
+          mkdir "$volume_mount"
+          truncate -s 64M "$image"
+          loop_device=$(sudo losetup --find --show "$image")
+          sudo mkfs.ext4 -F "$loop_device" > "$fixture_root/format.log" 2>&1
+          mounted=1
+          sudo mount -t ext4 "$loop_device" "$volume_mount"
+          mountpoint -q "$volume_mount"
+          sudo chown "$(id -u):$(id -g)" "$volume_mount"
+          sudo chmod 0700 "$volume_mount"
+          capacity=$(df -B1 --output=size "$volume_mount" | tail -n 1 | tr -d ' ')
+          [ "$capacity" -gt 0 ] && [ "$capacity" -le 67108864 ]
+          printf 'L3 hosted ext4 setup=ok declared-bytes=67108864 capacity=%s mount=validated\n' "$capacity"
+          L3_HOSTED_VOLUME_ROOT="$volume_mount" L3_HOSTED_VOLUME_BYTES=67108864 \
+            CARGO_NET_OFFLINE=true CARGO_PROFILE_DEV_DEBUG=line-tables-only \
+            nice timeout 40m cargo test -p sot-log --test fault_storage -j 8 --locked -- --nocapture --test-threads=1
 
       # (The dedicated lane_bridge step was deleted 2026-09-18: "Test
       # workspace" above runs that suite byte-identically, so the step was
