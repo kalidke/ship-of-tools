@@ -668,6 +668,8 @@ jobs:
                   raise RuntimeError('OpenSSH client, server and key generator are required; no skip')
               env = {key: value for key, value in os.environ.items() if not key.startswith('SOT_')}
               env.pop('SSH_AUTH_SOCK', None)
+              env.setdefault('CARGO_HOME', str(pathlib.Path(env['HOME']) / '.cargo'))
+              env.setdefault('RUSTUP_HOME', str(pathlib.Path(env['HOME']) / '.rustup'))
               env.update(CARGO_TARGET_DIR=str(target), CARGO_NET_OFFLINE='true',
                          CARGO_PROFILE_DEV_DEBUG='line-tables-only')
               cargo('t2-k5-build-sotd', ['build', '-p', 'sot-backend', '--bin', 'sotd', '-j', '8', '--locked'], env)
