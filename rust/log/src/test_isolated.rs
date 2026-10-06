@@ -1,14 +1,15 @@
 //! Test-only (feature `test-support`): the one way a test re-runs its own binary for one named test, and waits on it
 //! within a bound. A child that did not enter the named test's body fails its parent, so a name that matches no test
-//! cannot pass, and an entry record dropped unchecked fails too. What this does not prove: that a killed child's
-//! descendants are gone, or that its pipes reached their end; a kill whose exit is not seen within 5 s is reported as
-//! unconfirmed.
+//! cannot pass, and an entry record dropped unchecked fails too. Every wait here is bounded: a child that overruns is
+//! killed, and output that a descendant still holds open after the child's exit fails the caller at the bound. What
+//! this does not prove: that a killed child's descendants are gone; a kill whose exit is not seen within 5 s is
+//! reported as unconfirmed.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 /// The parent's wall-clock bound on one isolated test.
@@ -102,21 +103,23 @@ pub fn wait_within(child: &mut Child, bound: Duration) -> ExitStatus {
 }
 
 /// A child whose piped stdout and stderr are read on threads of their own, so a child that writes more than a pipe
-/// holds is never stalled by its parent.
+/// holds is never stalled by its parent. Each reader sends what it read once its pipe ends.
 pub struct Draining {
     child: Child,
-    out: Option<JoinHandle<std::io::Result<String>>>,
-    err: Option<JoinHandle<std::io::Result<String>>>,
+    out: Option<Receiver<std::io::Result<String>>>,
+    err: Option<Receiver<std::io::Result<String>>>,
 }
 
 /// Starts reading `child`'s piped stdout and stderr (either may be absent) on threads of their own.
 pub fn drain(mut child: Child) -> Draining {
-    fn reader(pipe: Option<impl Read + Send + 'static>) -> Option<JoinHandle<std::io::Result<String>>> {
+    fn reader(pipe: Option<impl Read + Send + 'static>) -> Option<Receiver<std::io::Result<String>>> {
         pipe.map(|mut pipe| {
+            let (sent, read) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
                 let mut text = String::new();
-                pipe.read_to_string(&mut text).map(|_| text)
-            })
+                let _ = sent.send(pipe.read_to_string(&mut text).map(|_| text));
+            });
+            read
         })
     }
     let out = reader(child.stdout.take());
@@ -125,17 +128,24 @@ pub fn drain(mut child: Child) -> Draining {
 }
 
 impl Draining {
-    /// Waits for the child within `bound` ([`wait_within`]), then returns its status, stdout and stderr. A failed read
-    /// fails the caller. The readers end when the child's pipes close, which for a child that starts no process of its
-    /// own is its exit.
+    /// Waits for the child within `bound` ([`wait_within`]), then for its output to end within what remains of that
+    /// bound (and at least 1 s, so a child that exits at the bound's edge is not failed for its readers' last step).
+    /// It returns the child's status, stdout and stderr. A failed read fails the caller. So does output still open at
+    /// the deadline, which a descendant that inherited the pipe can hold after the child's exit; that reader is left to
+    /// end when the descendant does.
     pub fn wait_within(mut self, bound: Duration) -> (ExitStatus, String, String) {
+        let deadline = Instant::now() + bound;
         let status = wait_within(&mut self.child, bound);
-        let text = |reader: Option<JoinHandle<std::io::Result<String>>>, what: &str| {
+        let text = |reader: Option<Receiver<std::io::Result<String>>>, what: &str| {
             reader.map_or_else(String::new, |reader| {
-                reader
-                    .join()
-                    .expect("a pipe reader panicked")
-                    .unwrap_or_else(|e| panic!("reading the child's {what}: {e}"))
+                let left = deadline.saturating_duration_since(Instant::now()).max(Duration::from_secs(1));
+                match reader.recv_timeout(left) {
+                    Ok(read) => read.unwrap_or_else(|e| panic!("reading the child's {what}: {e}")),
+                    Err(RecvTimeoutError::Timeout) => panic!(
+                        "the child exited but its {what} did not end within {bound:?} (a descendant may hold it)"
+                    ),
+                    Err(RecvTimeoutError::Disconnected) => panic!("the reader of the child's {what} ended without a result"),
+                }
             })
         };
         let out = text(self.out.take(), "stdout");
@@ -222,6 +232,19 @@ mod tests {
                 }
             }
             "stall" => std::thread::sleep(Duration::from_secs(120)),
+            // Leaves a descendant that holds this child's stdin and stdout, and exits at once.
+            "leave" => {
+                Command::new(std::env::current_exe().expect("current_exe"))
+                    .args(["--exact", "test_isolated::tests::a_role", "--nocapture", "--test-threads=1"])
+                    .env(ROLE, "hold")
+                    .env_remove(ENTERED)
+                    .spawn()
+                    .expect("spawn the descendant");
+            }
+            // The descendant: holds its inherited stdout until its inherited stdin ends.
+            "hold" => {
+                let _ = std::io::stdin().read_to_end(&mut Vec::new());
+            }
             other => panic!("unknown role {other}"),
         }
     }
@@ -244,11 +267,34 @@ mod tests {
         let (mut command, entry) = test_command("test_isolated::tests::a_role");
         let child = command.env(ROLE, "stall").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("spawn");
         let pid = child.id();
+        let draining = drain(child);
+        // The bound is the stall's: a child scheduled late is not killed before it enters.
+        wait_for_entry(&entry);
         let started = Instant::now();
         assert_fails_with("did not complete within", move || {
-            drain(child).wait_within(Duration::from_secs(5));
+            draining.wait_within(Duration::from_secs(5));
         });
         assert!(started.elapsed() < Duration::from_secs(15), "the bound was not kept: {:?}", started.elapsed());
+        entry.assert_once(pid);
+    }
+
+    /// A child that exits but leaves a descendant holding its stdout fails at the bound, by name, instead of hanging.
+    #[test]
+    fn output_a_descendant_holds_fails_at_the_bound() {
+        let (mut command, entry) = test_command("test_isolated::tests::a_role");
+        let mut child =
+            command.env(ROLE, "leave").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("spawn");
+        let pid = child.id();
+        // The descendant holds stdout until this input ends.
+        let input = child.stdin.take().expect("piped stdin");
+        let draining = drain(child);
+        wait_for_entry(&entry);
+        let started = Instant::now();
+        assert_fails_with("did not end within", move || {
+            draining.wait_within(Duration::from_secs(5));
+        });
+        assert!(started.elapsed() < Duration::from_secs(15), "the bound was not kept: {:?}", started.elapsed());
+        drop(input);
         entry.assert_once(pid);
     }
 
@@ -257,6 +303,15 @@ mod tests {
             .expect_err("a check that must fail passed");
         let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or("");
         assert!(message.contains(text), "{message}");
+    }
+
+    /// Waits, within `ISOLATION_TIMEOUT`, until the child's body has entered, so the bound a test then times is its own.
+    fn wait_for_entry(entry: &Entry) {
+        let deadline = Instant::now() + ISOLATION_TIMEOUT;
+        while std::fs::read_to_string(&entry.path).unwrap_or_default().is_empty() {
+            assert!(Instant::now() < deadline, "{} did not enter within {ISOLATION_TIMEOUT:?}", entry.name);
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// The class pin: a test re-runs a test binary by name only through this module, or at a site listed here with
