@@ -670,7 +670,7 @@ fn render_nav_widgets(
             Paragraph::new(
                 nav_pinned
                     .iter()
-                    .map(|r| RtLine::from(Span::styled(r.clone(), if prompt_open { Style::default().fg(Color::Yellow).add_modifier(ratatui::style::Modifier::BOLD) } else { Style::default().fg(Color::LightGreen) })))
+                    .map(|r| RtLine::from(Span::styled(r.clone(), Style::default().fg(Color::LightGreen))))
                     .collect::<Vec<_>>(),
             ),
             ratatui::layout::Rect {
