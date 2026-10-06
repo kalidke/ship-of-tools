@@ -10,7 +10,7 @@ use super::*;
 /// exactly the margin that constant claims to have.
 #[test]
 fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
-    if !run_isolated("worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget") {
+    if !run_isolated("teardown::worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget") {
         return;
     }
     assert!(Duration::from_secs(5) < TEARDOWN_AGGREGATE_DEADLINE);
@@ -50,7 +50,7 @@ fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
 /// is stalled and several healthy ones are live alongside it.
 #[test]
 fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
-    if !run_isolated("stalled_worker_does_not_block_teardown_of_healthy_connections") {
+    if !run_isolated("teardown::stalled_worker_does_not_block_teardown_of_healthy_connections") {
         return;
     }
     let id = fresh_voyage_id();
@@ -155,7 +155,7 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
 /// specific `true`/`false` outcome — either is legitimate, a HANG is not.
 #[test]
 fn join_workers_deadline_is_enforced_against_real_threads_not_merely_computed() {
-    if !run_isolated("join_workers_deadline_is_enforced_against_real_threads_not_merely_computed") {
+    if !run_isolated("teardown::join_workers_deadline_is_enforced_against_real_threads_not_merely_computed") {
         return;
     }
     let id = fresh_voyage_id();
@@ -188,7 +188,7 @@ fn join_workers_deadline_is_enforced_against_real_threads_not_merely_computed() 
 /// event follows.
 #[test]
 fn flooded_never_reading_client_close_completes_within_bound() {
-    if !run_isolated("flooded_never_reading_client_close_completes_within_bound") {
+    if !run_isolated("teardown::flooded_never_reading_client_close_completes_within_bound") {
         return;
     }
     let id = fresh_voyage_id();
@@ -228,7 +228,7 @@ fn flooded_never_reading_client_close_completes_within_bound() {
 /// must return promptly.
 #[test]
 fn pending_accept_with_no_client_drops_promptly() {
-    if !run_isolated("pending_accept_with_no_client_drops_promptly") {
+    if !run_isolated("teardown::pending_accept_with_no_client_drops_promptly") {
         return;
     }
     let id = fresh_voyage_id();
@@ -245,7 +245,7 @@ fn pending_accept_with_no_client_drops_promptly() {
 /// creates).
 #[test]
 fn drop_returns_even_with_a_saturated_events_channel() {
-    if !run_isolated("drop_returns_even_with_a_saturated_events_channel") {
+    if !run_isolated("teardown::drop_returns_even_with_a_saturated_events_channel") {
         return;
     }
     let id = fresh_voyage_id();

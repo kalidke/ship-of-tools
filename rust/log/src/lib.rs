@@ -22,6 +22,8 @@ pub mod test_log;
 pub mod test_scan;
 #[cfg(feature = "test-support")]
 pub mod test_exec;
+#[cfg(feature = "test-support")]
+pub mod test_isolated;
 
 pub use host::lock_writer;
 #[cfg(windows)]

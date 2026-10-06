@@ -7,7 +7,7 @@ use super::*;
 /// physically completes.
 #[test]
 fn server_and_client_exchange_bytes_and_sent_carries_marker() {
-    if !run_isolated("server_and_client_exchange_bytes_and_sent_carries_marker") {
+    if !run_isolated("connect::server_and_client_exchange_bytes_and_sent_carries_marker") {
         return;
     }
     let id = fresh_voyage_id();
@@ -44,7 +44,7 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
 /// by distinct `ConnId`s.
 #[test]
 fn two_concurrent_clients_multiplexed_by_conn_id() {
-    if !run_isolated("two_concurrent_clients_multiplexed_by_conn_id") {
+    if !run_isolated("connect::two_concurrent_clients_multiplexed_by_conn_id") {
         return;
     }
     let id = fresh_voyage_id();
@@ -84,7 +84,7 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
 /// each teardown. Only after `PipeServer::drop` does the probe succeed.
 #[test]
 fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
-    if !run_isolated("rival_first_instance_create_fails_continuously_then_frees_on_drop") {
+    if !run_isolated("connect::rival_first_instance_create_fails_continuously_then_frees_on_drop") {
         return;
     }
     let id = fresh_voyage_id();
@@ -121,7 +121,7 @@ fn rival_first_instance_create_fails_continuously_then_frees_on_drop() {
 /// evidence the bound was never consumed, not a tight perf gate.
 #[test]
 fn connect_fails_fast_when_pipe_absent() {
-    if !run_isolated("connect_fails_fast_when_pipe_absent") {
+    if !run_isolated("connect::connect_fails_fast_when_pipe_absent") {
         return;
     }
     let id = fresh_voyage_id(); // nothing ever binds this id
@@ -158,7 +158,7 @@ fn connect_fails_fast_when_pipe_absent() {
 /// connect succeeds once the recycled instance is available again.
 #[test]
 fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
-    if !run_isolated("connect_retries_within_the_bound_when_busy_then_succeeds_once_freed") {
+    if !run_isolated("connect::connect_retries_within_the_bound_when_busy_then_succeeds_once_freed") {
         return;
     }
     let id = fresh_voyage_id();
@@ -259,7 +259,7 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
 /// section, so nothing can go stale in between.
 #[test]
 fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
-    if !run_isolated("disconnect_listener_frees_the_name_even_with_a_live_connection") {
+    if !run_isolated("connect::disconnect_listener_frees_the_name_even_with_a_live_connection") {
         return;
     }
     let id = fresh_voyage_id();
@@ -287,7 +287,7 @@ fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
 /// inheritance flags.
 #[test]
 fn pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
-    if !run_isolated("pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags") {
+    if !run_isolated("connect::pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags") {
         return;
     }
     let id = fresh_voyage_id();

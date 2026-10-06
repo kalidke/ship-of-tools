@@ -74,7 +74,7 @@ fn self_proven_challenge() -> ChallengeOutcome<sot_log::identity::challenge_win:
 
 #[test]
 fn challenge_proves_a_genuine_same_user_server() {
-    if !run_isolated("challenge_proves_a_genuine_same_user_server") {
+    if !run_isolated("challenge::challenge_proves_a_genuine_same_user_server") {
         return;
     }
     let (pid, created) = self_pid_and_created();
@@ -89,7 +89,7 @@ fn challenge_proves_a_genuine_same_user_server() {
 
 #[test]
 fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
-    if !run_isolated("challenged_process_reverify_and_wait_reflect_a_live_self_proof") {
+    if !run_isolated("challenge::challenged_process_reverify_and_wait_reflect_a_live_self_proof") {
         return;
     }
     let ChallengeOutcome::Proven(p) = self_proven_challenge() else {
@@ -102,7 +102,7 @@ fn challenged_process_reverify_and_wait_reflect_a_live_self_proof() {
 
 #[test]
 fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
-    if !run_isolated("challenge_rejects_a_pid_creation_mismatch_as_foreign") {
+    if !run_isolated("challenge::challenge_rejects_a_pid_creation_mismatch_as_foreign") {
         return;
     }
     let voyage_id = fresh_voyage_id();
@@ -141,7 +141,7 @@ fn challenge_rejects_a_pid_creation_mismatch_as_foreign() {
 /// `Undetermined` is via the cancellation path being exercised for real.
 #[test]
 fn challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires() {
-    if !run_isolated("challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires") {
+    if !run_isolated("challenge::challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires") {
         return;
     }
     let voyage_id = fresh_voyage_id();
@@ -174,7 +174,7 @@ fn challenge_cancels_a_genuinely_pending_read_when_the_deadline_expires() {
 
 #[test]
 fn challenge_classifies_connection_death_mid_challenge_as_undetermined() {
-    if !run_isolated("challenge_classifies_connection_death_mid_challenge_as_undetermined") {
+    if !run_isolated("challenge::challenge_classifies_connection_death_mid_challenge_as_undetermined") {
         return;
     }
     let voyage_id = fresh_voyage_id();
@@ -210,6 +210,7 @@ fn cross_process_challenge_server_role() {
     let Ok(voyage_id) = std::env::var("PIPE_WIN_XPROC_VOYAGE_ID") else {
         return;
     };
+    sot_log::test_isolated::enter("challenge::cross_process_challenge_server_role");
     let server = PipeServer::bind(&voyage_id, 1).expect("server role: bind");
     let conn_id = expect_accepted(&server, Duration::from_secs(30));
     await_status_request(&server, conn_id, Duration::from_secs(30));
@@ -245,18 +246,14 @@ fn cross_process_challenge_server_role() {
 /// crosses a real process boundary the way `challenge()` depends on.
 #[test]
 fn cross_process_challenge_proves_a_real_child_server() {
-    if !run_isolated("cross_process_challenge_proves_a_real_child_server") {
+    if !run_isolated("challenge::cross_process_challenge_proves_a_real_child_server") {
         return;
     }
     let voyage_id = fresh_voyage_id();
-    let exe = std::env::current_exe().expect("current_exe");
-    let child = std::process::Command::new(&exe)
-        .arg("--exact")
-        .arg("cross_process_challenge_server_role")
-        .arg("--nocapture")
-        .arg("--test-threads=1")
+    let (mut role, role_entry) =
+        sot_log::test_isolated::test_command("challenge::cross_process_challenge_server_role");
+    let child = role
         .env("PIPE_WIN_XPROC_VOYAGE_ID", &voyage_id)
-        .env_remove("PIPE_WIN_TEST_CHILD")
         .spawn()
         .expect("failed to spawn the cross-process server child");
     let child_pid = child.id();
@@ -287,6 +284,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
         }
         other => panic!("expected Proven against a real cross-process server, got {other:?}"),
     }
+    role_entry.assert_once(child_pid);
 
     // Close our end FIRST: the child waits for our `Closed` before it exits
     // (see `cross_process_challenge_server_role`), so reaping it while this
@@ -294,10 +292,10 @@ fn cross_process_challenge_proves_a_real_child_server() {
     // the guard's own kill (a no-op by then, kept only for the panic/
     // early-return paths above).
     drop(client);
-    if let Some(c) = guard.0.as_mut() {
-        let _ = c.wait();
-    }
+    // The role exits once it sees this client's close; its exit, within a bound, must be a success.
+    let status = sot_log::test_isolated::wait_within(guard.0.as_mut().expect("the server role"), Duration::from_secs(10));
     guard.0 = None;
+    assert!(status.success(), "the server role failed: {status}");
 }
 
 // ---------------------------------------------------------------------
@@ -327,7 +325,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
 /// proves the happy path stays usable end to end.
 #[test]
 fn connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server() {
-    if !run_isolated("connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server") {
+    if !run_isolated("challenge::connect_voyage_pipe_peer_authentication_enforced_pass_against_a_genuine_server") {
         return;
     }
     let voyage_id = fresh_voyage_id();

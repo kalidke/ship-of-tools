@@ -4,8 +4,9 @@
 //! authenticates (`connect_voyage_socket`, whose non-Linux stub this
 //! milestone replaced for macOS alone). The sibling Linux file
 //! (`tests/challenge_unix.rs`) is the shape this copies -- including its
-//! process-isolation and `SOT_RUNTIME_DIR`-per-test devices verbatim,
-//! for one source of truth rather than two silently diverging ones.
+//! `SOT_RUNTIME_DIR`-per-test device verbatim, for one source of truth rather
+//! than two silently diverging ones; both isolate a test through
+//! `sot_log::test_isolated::run_isolated`.
 //!
 //! Deliberately ABSENT, because macOS needs neither: the Linux file's
 //! `ensure_established_gap()` (its pin compares the peer's start time
@@ -21,6 +22,7 @@
 //! that cannot run they say so and pass, except on CI (`GITHUB_ACTIONS`), where
 //! that fails.
 
+use sot_log::test_isolated::{run_isolated, ISOLATION_TIMEOUT};
 use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome};
 use sot_log::identity::challenge_macos::{authenticate_server, challenge, self_pidversion};
 use sot_log::identity::challenge_macos::peer_euid_pid_created;
@@ -33,54 +35,9 @@ use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The parent's hard wall-clock bound on one isolated child test.
-const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Re-invoke THIS test binary, running only `test_name`, as a child
-/// process -- see `tests/challenge_unix.rs`'s identical helper, which
-/// this is copied from verbatim (renamed env var only). Needed for the
-/// same reason there: `isolated_runtime_dir` sets a PROCESS-global env
-/// var, which two tests sharing one binary would race over.
-fn run_isolated(test_name: &str) -> bool {
-    if std::env::var("CHALLENGE_MACOS_TEST_CHILD").as_deref() == Ok(test_name) {
-        return true;
-    }
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut child = std::process::Command::new(exe)
-        .arg("--exact")
-        .arg(test_name)
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env("CHALLENGE_MACOS_TEST_CHILD", test_name)
-        .spawn()
-        .expect("failed to spawn isolated test child");
-    let deadline = Instant::now() + ISOLATION_TIMEOUT;
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => {
-                assert!(
-                    status.success(),
-                    "isolated test {test_name} failed in its child process: {status}"
-                );
-                return false;
-            }
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "isolated test {test_name} did not complete within {ISOLATION_TIMEOUT:?} -- killed"
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    }
-}
 
 /// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
 fn fresh_voyage_id() -> String {

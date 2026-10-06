@@ -47,7 +47,7 @@ fn invalid_voyage_ids_and_instance_counts_are_rejected_loudly() {
 /// dropping a client gives the server a `Closed(Eof)`.
 #[test]
 fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
-    if !run_isolated("server_close_yields_client_eof_and_client_drop_yields_server_closed") {
+    if !run_isolated("close::server_close_yields_client_eof_and_client_drop_yields_server_closed") {
         return;
     }
     let id = fresh_voyage_id();
@@ -78,7 +78,7 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
 /// instant-close race itself is a separate smoke test below.
 #[test]
 fn eof_before_registration_is_handled_cleanly() {
-    if !run_isolated("eof_before_registration_is_handled_cleanly") {
+    if !run_isolated("close::eof_before_registration_is_handled_cleanly") {
         return;
     }
     let id = fresh_voyage_id();
@@ -110,7 +110,7 @@ fn eof_before_registration_is_handled_cleanly() {
 /// never poisons the pipe for the next client.
 #[test]
 fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
-    if !run_isolated("eof_before_registration_smoke_test_accepts_either_honest_outcome") {
+    if !run_isolated("close::eof_before_registration_smoke_test_accepts_either_honest_outcome") {
         return;
     }
     let id = fresh_voyage_id();
@@ -144,7 +144,7 @@ fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
 /// that confound.
 #[test]
 fn sequential_connect_close_churn_does_not_leak_handles() {
-    if !run_isolated("sequential_connect_close_churn_does_not_leak_handles") {
+    if !run_isolated("close::sequential_connect_close_churn_does_not_leak_handles") {
         return;
     }
     let id = fresh_voyage_id();
@@ -173,7 +173,7 @@ fn sequential_connect_close_churn_does_not_leak_handles() {
 /// `TransportError::Cancelled`.
 #[test]
 fn client_read_cancel_unblocks_from_another_thread() {
-    if !run_isolated("client_read_cancel_unblocks_from_another_thread") {
+    if !run_isolated("close::client_read_cancel_unblocks_from_another_thread") {
         return;
     }
     let id = fresh_voyage_id();
@@ -204,7 +204,7 @@ fn client_read_cancel_unblocks_from_another_thread() {
 /// it) is unblocked by `cancel()` called from another.
 #[test]
 fn client_write_cancel_unblocks_from_another_thread() {
-    if !run_isolated("client_write_cancel_unblocks_from_another_thread") {
+    if !run_isolated("close::client_write_cancel_unblocks_from_another_thread") {
         return;
     }
     let id = fresh_voyage_id();
@@ -245,7 +245,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
 /// appear in the backlog once drained — never a silent stream gap.
 #[test]
 fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
-    if !run_isolated("event_channel_saturation_abandons_bytes_and_guarantees_closed") {
+    if !run_isolated("close::event_channel_saturation_abandons_bytes_and_guarantees_closed") {
         return;
     }
     let id = fresh_voyage_id();
@@ -294,7 +294,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
 /// racing the first caller's `OVERLAPPED`.
 #[test]
 fn concurrent_same_direction_client_read_returns_distinct_error() {
-    if !run_isolated("concurrent_same_direction_client_read_returns_distinct_error") {
+    if !run_isolated("close::concurrent_same_direction_client_read_returns_distinct_error") {
         return;
     }
     let id = fresh_voyage_id();

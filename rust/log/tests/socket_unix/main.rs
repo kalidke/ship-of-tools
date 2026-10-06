@@ -16,9 +16,8 @@
 //!
 //! # Process-isolated hang bounding
 //!
-//! Same rationale as `tests/pipe_win/`'s own [`run_isolated`] (copied
-//! verbatim below, with `SOCKET_UNIX_TEST_CHILD` in place of
-//! `PIPE_WIN_TEST_CHILD`): a real PROCESS boundary bounds every hang path,
+//! Same rationale as `tests/pipe_win/`, through the one shared
+//! `sot_log::test_isolated::run_isolated`: a real PROCESS boundary bounds every hang path,
 //! including one inside a wedged `SocketServer::drop` running on the test
 //! thread itself after an earlier assertion panics. Every test below that
 //! touches `SocketServer`/a real `UnixStream` runs this way; the one
@@ -33,6 +32,7 @@
 //! (since each one that touches real I/O runs in its own isolated child
 //! process, per above) never race another test's own env var mutation.
 
+use sot_log::test_isolated::run_isolated;
 #[cfg(target_os = "linux")]
 use sot_log::lane::socket_unix::connect_voyage_socket;
 use sot_log::lane::attach_proto::ConnId;
@@ -48,56 +48,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The parent's hard wall-clock bound on one isolated child test.
-const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Re-invoke THIS test binary, running only `test_name`, as a child
-/// process — see the module doc, and `tests/pipe_win/`'s identical
-/// helper, which this is copied from verbatim (renamed env var only).
-/// Returns `true` when called FROM WITHIN that child (so the caller
-/// should run its real test body); returns `false` in the parent after
-/// the child has run to completion (having already asserted success), so
-/// the caller should just return.
-fn run_isolated(test_name: &str) -> bool {
-    if std::env::var("SOCKET_UNIX_TEST_CHILD").as_deref() == Ok(test_name) {
-        return true;
-    }
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut child = std::process::Command::new(exe)
-        .arg("--exact")
-        .arg(test_name)
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env("SOCKET_UNIX_TEST_CHILD", test_name)
-        .spawn()
-        .expect("failed to spawn isolated test child");
-    let deadline = Instant::now() + ISOLATION_TIMEOUT;
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => {
-                assert!(
-                    status.success(),
-                    "isolated test {test_name} failed in its child process: {status}"
-                );
-                return false;
-            }
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "isolated test {test_name} did not complete within {ISOLATION_TIMEOUT:?} -- killed"
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    }
-}
 
 /// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
 fn fresh_voyage_id() -> String {
