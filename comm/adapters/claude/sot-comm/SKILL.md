@@ -131,7 +131,7 @@ you. Full reference: `sot-fe --help`; rarer essays: `references/fe-verbs.md`.
 | Verb | Does |
 |------|------|
 | `preview <ws> <path> [--caption <t>]` | switch + render `<path>` in the preview pane |
-| `reveal <ws> <path>` | cursor `<path>` in the file tree, no preview |
+| `reveal <ws> <path>` | preview `<path>` and expand the file tree to it; the same badge and focus rules as `preview` |
 | `goto <ws> [--boot]` | switch the FE to a workspace |
 | `mode <mode>` | switch the FE's active mode |
 | `notify <text>` | one-line notice |
