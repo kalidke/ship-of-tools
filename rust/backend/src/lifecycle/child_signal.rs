@@ -20,7 +20,7 @@ pub(crate) struct Signal {
     #[cfg(test)]
     pub(super) after_create: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
     #[cfg(test)]
-    pub(super) after_adopt: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
+    pub(crate) after_adopt: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
 }
 
 impl Signal {
@@ -459,6 +459,11 @@ impl ContainedStd {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn confirmed_reaped(&self) -> bool {
+        self.reaped.is_some()
     }
 
     #[cfg(all(test, unix))]

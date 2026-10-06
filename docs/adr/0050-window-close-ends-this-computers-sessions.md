@@ -101,6 +101,8 @@ again, taken only while no shutdown is under way, so a shutdown's own exit alway
 
 The updater requires a caller spawner for discovery, staging, preparation and prepared-state probes. The daemon supplies its contained adapter for every such command; the window supplies its own policy. The updater has no production process-start primitive.
 
+`gio trash` uses the contained blocking wait with a 5 s wait budget; a successful timeout cleanup means termination requests succeeded and the direct child was reaped before recoverable workspace-trash fallback. Request/reap failures are diagnosed and take that fallback without claiming cleanup succeeded; descendant death before fallback is not promised. This budget does not impose a wall-clock ceiling on an OS termination/reap operation.
+
 ### The record, `held.json`
 
 A small file in the daemon's state root, written by tmp file, fsync and rename under the

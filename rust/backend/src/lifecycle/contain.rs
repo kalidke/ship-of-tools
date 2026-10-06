@@ -132,10 +132,10 @@ pub(super) fn partial(pid: u32) -> Tree {
 thread_local! {
     #[cfg(windows)]
     pub(super) static ADOPT_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(super) static REQUEST_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-    pub(super) static PROBE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(super) static REQUEST_EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
-    pub(super) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static REQUEST_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    pub(crate) static PROBE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static REQUEST_EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub(crate) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A group and its unreaped leader are checked independently; ESRCH alone means already absent.
@@ -208,6 +208,10 @@ pub(super) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
 /// Whether `child` has exited, without freeing its pid on Unix; with `block`
 /// this waits for the exit.
 pub(super) fn exited(child: &mut std::process::Child, block: bool) -> std::io::Result<bool> {
+    #[cfg(all(test, windows))]
+    if PROBE_FAILURE.with(|failure| failure.get()) {
+        return Err(std::io::Error::other("injected exit probe failure"));
+    }
     #[cfg(unix)]
     {
         exited_pid(child.id(), block)

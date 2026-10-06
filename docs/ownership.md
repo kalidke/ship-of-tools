@@ -117,7 +117,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | monitor sampler (`bash -s`, `ssh <alias> bash -s`) | process | sidecars | `rust/backend/src/sidecars/monitor.rs` `spawn_source`, `SAMPLER_SH` |
 | quarto render child | process | pages | `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `git` child of a site open | process | pages | `rust/backend/src/pages/site/links.rs` `run_git` |
-| `gio trash` | process | files | `rust/backend/src/files/io.rs` `trash_file` |
+| `gio trash` and its wait budget | process, deadline | files | `rust/backend/src/files/io.rs` `trash_file`, `TRASH_WAIT`; `rust/backend/src/lifecycle/child_signal.rs` `ContainedStd::wait_within` |
 | hub-link ssh | process | messaging | `rust/backend/src/comm/mail/hub_link.rs` `recipe_for`, `link_once` |
 | comm forward ssh (guest to hub) | process | messaging | `rust/backend/src/comm/mail/forward.rs` `forward_comm_file` |
 | `sotd stdio-bridge` | process | topology | `rust/backend/src/topology/stdio_bridge.rs` `run`, `connect` |
