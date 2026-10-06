@@ -4,8 +4,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 `sotd` under a temp folder and touches no live daemon. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Files
-- `lib-test-body.sh`: the shared completion verdict for one selected Rust test; missing, ignored, mismatched and failed bodies cannot pass.
-- `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners; accepts a compiled fixture executable by absolute path.
+- `lib-test-body.sh`: the shared completion verdict for one selected Rust test; ordered, unambiguous capture closure precedes the outer result; missing, ignored, mismatched and failed bodies cannot pass.
+- `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners, including combined captured-summary/truncation and scratch-path controls; accepts a compiled fixture executable by absolute path and validates its shell scratch root before cleanup.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
   `rc-gate.sh`.
@@ -135,6 +135,8 @@ Last line: `violations: n, allowed: m, exempt: e, unused-allow: u, folders check
 behaviour it pins. For a Windows script change, the `.ps1` suite named for it above.
 
 ## Rules
+- The checker accepts the outer result only after complete, unambiguous captured-output boundaries; a captured summary or truncated capture cannot supply that result.
+- The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
 - A shell owner that selects one Rust body consumes the completion verdict from lib-test-body.sh; a listed name, child exit zero or a zero-test summary alone is not execution proof.
 - The five `.ps1` suites run only on the windows-latest leg of `rust.yml`, under Windows PowerShell 5.1; `rc-gate.sh`
   and a Linux box never run them. The step "Parse PowerShell scripts" globs `scripts/*.ps1` without recursion, so each

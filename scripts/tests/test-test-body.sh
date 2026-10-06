@@ -2,11 +2,35 @@
 # Finite behavior proofs of the selected-test verdict and its shell callers, using an already-built
 # real libtest fixture and scratch-owned body witnesses. No comm tool, daemon, peer host or full
 # candidate gate is run.
+# The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
 set -u
 [ "$#" -eq 2 ] || { echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2; }
 case ${1:-} in --portable|--all) mode=${1#--} ;; *) echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2 ;; esac
 [ -f "$2" ] || { echo 'compiled fixture required' >&2; exit 2; }
-root=$(mktemp -d) || exit 2
+raw_root=$(mktemp -d) || { echo 'selected-body proof: scratch creation failed' >&2; exit 2; }
+if ! root=$(python3 - "$raw_root" <<'ROOT'
+import os
+from pathlib import Path
+import sys
+try:
+    raw = sys.argv[1]
+    if not raw:
+        raise ValueError('empty scratch path')
+    created = Path(raw)
+    absolute = created.resolve(strict=True)
+    if not absolute.is_dir() or not os.path.isabs(str(absolute)) or absolute.parent == absolute:
+        raise ValueError('scratch path must be a proper absolute directory')
+    if not created.samefile(absolute):
+        raise ValueError('scratch directory identity changed')
+    print(absolute.as_posix())
+except (OSError, ValueError):
+    print('selected-body proof: invalid scratch directory', file=sys.stderr)
+    sys.exit(2)
+ROOT
+); then
+    echo 'selected-body proof: scratch normalization failed' >&2
+    exit 2
+fi
 trap 'rm -rf -- "${root:?}"' EXIT
 python3 - "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root" <<'PY'
 import json
@@ -59,15 +83,66 @@ def case(name, body):
 
 def unexpected_arguments():
     p = fresh('unexpected arguments')
-    # Invoke the actual argument-validation leaf, stopping before fixture setup.
-    # This remains finite when the rejection is reversed in a disposable copy.
-    cli = (repo / 'scripts/tests/test-test-body.sh').read_text().split('root=$(mktemp -d)', 1)[0]
-    r = run(['bash', '-c', cli + 'echo unexpected-argument-accepted', '_',
-             '--portable', fixture, 'unexpected-extra-argument'], p)
+    r = bootstrap_run(p, 'absolute', arguments=['--portable', fixture, 'unexpected-extra-argument'])
     print(f'unexpected argument: exit {r.returncode}; output {r.stdout.strip()!r}', flush=True)
     check(r.returncode != 0 and len(r.stdout.splitlines()) == 1,
           'unexpected extra argument accepted or rejection was not one line')
+
+def bootstrap_run(p, setup, arguments=None):
+    # Load the actual bootstrap; replace only its driver and removal execution ports.
+    text = (repo / 'scripts/tests/test-test-body.sh').read_text()
+    bootstrap = text[:text.index('python3 - "$mode"')]
+    record = p / 'ports'; record.mkdir()
+    tmp = p / ('relative temp spaces' if setup == 'relative' else 'absolute temp spaces')
+    tmp.mkdir(); (p / 'sentinel').write_text('outside inner root')
+    ports = (f'proof_record={q(record)}\n'
+             'rm() { printf "%s\\n" "${@: -1}" > "$proof_record/cleanup"; }\n'
+             'proof_driver() { printf "%s\\n" "$4" > "$proof_record/driver"; }\n')
+    if setup in ('empty', 'invalid', 'volume-root'):
+        value = {'empty': '', 'invalid': str(p / 'not-created'),
+                 'volume-root': Path(p.anchor).as_posix()}[setup]
+        ports += f'mktemp() {{ printf "%s" {q(value)}; }}\n'
+    elif setup == 'mktemp-failure':
+        ports += 'mktemp() { return 17; }\n'
+    elif setup == 'normalization-failure':
+        ports += 'python3() { return 17; }\n'
+    script = p / 'bootstrap.sh'
+    script.write_text(ports + bootstrap +
+        'proof_driver "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root"\n')
+    r = run(['bash', str(script)] + (arguments or ['--portable', fixture]), p,
+            {'TMPDIR': tmp.name if setup == 'relative' else tmp.as_posix()})
+    (p / 'bootstrap.log').write_text(r.stdout)
+    return r
+
 case('unexpected_arguments_fail_loud', unexpected_arguments)
+
+def bootstrap_paths():
+    errors = []
+    for setup in ('relative', 'absolute'):
+        p = fresh('bootstrap ' + setup); r = bootstrap_run(p, setup)
+        observed = [(p / 'ports' / port).read_text().strip() for port in ('driver', 'cleanup')]
+        created = list((p / ('relative temp spaces' if setup == 'relative' else 'absolute temp spaces')).iterdir())
+        absolute = all(os.path.isabs(value) for value in observed)
+        same = len(created) == 1 and all((p / value).resolve() == created[0].resolve() for value in observed)
+        print(f'bootstrap {setup}: exit {r.returncode}; driver absolute {os.path.isabs(observed[0])}; '
+              f'cleanup absolute {os.path.isabs(observed[1])}; same created directory {same}; '
+              f'outside sentinel {(p / "sentinel").is_file()}', flush=True)
+        if r.returncode != 0 or not absolute or not same:
+            errors.append(setup + ': driver or cleanup received a relative or mismatched root')
+        check((p / 'sentinel').is_file(), 'outside sentinel removed')
+    check(not errors, '; '.join(errors))
+case('relative_tmpdir_has_absolute_driver_and_cleanup_root', bootstrap_paths)
+
+def bootstrap_failures():
+    errors = []
+    for setup in ('empty', 'invalid', 'volume-root', 'mktemp-failure', 'normalization-failure'):
+        p = fresh('bootstrap ' + setup); r = bootstrap_run(p, setup)
+        entered = (p / 'ports/driver').exists(); cleaned = (p / 'ports/cleanup').exists()
+        print(f'bootstrap {setup}: exit {r.returncode}; driver entered {entered}; cleanup called {cleaned}', flush=True)
+        if r.returncode != 2 or entered or cleaned or not r.stdout.strip():
+            errors.append(setup + ': setup failure did not stop before driver and cleanup')
+    check(not errors, '; '.join(errors))
+case('invalid_scratch_setup_stops_before_driver_and_cleanup', bootstrap_failures)
 
 def function(text, name):
     # Load the owner's definition for execution; no lexical property is asserted.
@@ -118,6 +193,42 @@ def checker_controls():
     check(shell(f'source {q(helper)}; test_body_check ordinary 17 {q(log)}',p).returncode==17,'raw nonzero lost')
     check(shell(f'source {q(helper)}; test_body_check ordinary 0 absent-file',p).returncode==2,'unreadable API')
 case('checker_controls',checker_controls)
+
+def captured_boundaries():
+    p = fresh('captured boundaries')
+    raw = run([fixture, 'misleading', '--exact'] + pretty, p)
+    observe('captured misleading raw', raw, p)
+    check(raw.returncode == 0 and (p / 'witness-misleading').is_file(), 'real misleading body did not complete')
+    lines = raw.stdout.splitlines(keepends=True)
+    opening = lines.index('---- misleading stdout ----\n')
+    fake = next(i for i in range(opening + 1, len(lines)) if lines[i].startswith('test result:'))
+    closing = next(i for i in range(fake + 1, len(lines)) if lines[i] == 'successes:\n')
+    result = next(i for i in range(closing + 1, len(lines)) if lines[i].startswith('test result:'))
+    selected = next(i for i in range(closing + 1, result) if lines[i].strip() == 'misleading')
+    controls = [('complete', raw.stdout, 0), ('complete-CRLF', raw.stdout.replace('\n', '\r\n'), 0),
+        ('truncated-captured-summary', ''.join(lines[:fake + 1]), 101),
+        ('missing-capture-closure', ''.join(lines[:closing]), 101),
+        ('missing-selected-list', ''.join(lines[:closing + 1]), 101),
+        ('missing-outer-result', ''.join(lines[:result]), 101),
+        ('duplicate-opening', ''.join(lines[:opening] + [lines[opening]] + lines[opening:]), 101),
+        ('duplicate-closure', ''.join(lines[:closing] + [lines[closing]] + lines[closing:]), 101),
+        ('duplicate-selected-list', ''.join(lines[:selected] + [lines[selected]] + lines[selected:]), 101),
+        ('missing-opening', ''.join(lines[:opening] + lines[opening + 1:]), 101),
+        ('contradictory-closure', ''.join(lines[:closing] + ['failures:\n'] + lines[closing + 1:]), 101),
+        ('duplicate-outer-result', raw.stdout + lines[result], 101),
+        ('extra-outer-run', raw.stdout + raw.stdout, 101),
+        ('trailing-progress', raw.stdout + lines[2], 101),
+        ('trailing-captured-data', raw.stdout + lines[opening + 1], 101)]
+    errors = []
+    for label, data, want in controls:
+        log = p / (label + '.log'); log.write_bytes(data.encode())
+        r = shell(f'source {q(helper)}; test_body_check misleading {raw.returncode} {q(log)}', p)
+        (p / (label + '.verdict')).write_text(str(r.returncode) + '\n' + r.stdout)
+        print(f'capture {label}: raw exit {raw.returncode}; owner exit {r.returncode} expected {want}', flush=True)
+        if r.returncode != want:
+            errors.append(label + ': incomplete or ambiguous captured log accepted' if want else label + ': complete output rejected')
+    check(not errors, '; '.join(errors))
+case('captured_fake_summary_cannot_replace_truncated_outer_result', captured_boundaries)
 
 def cargo_parity():
     records=Path(os.environ['ISO_SH_CARGO_PROOFS'])
