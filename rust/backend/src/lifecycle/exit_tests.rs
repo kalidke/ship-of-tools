@@ -37,7 +37,14 @@ fn contained_fixture() {
     } else {
         assert_eq!(role, "descendant", "unexpected fixture role");
         std::fs::write(&ready, std::process::id().to_string()).unwrap();
-        std::thread::sleep(Duration::from_secs(120));
+        if let Some(cleanup) = std::env::var_os("SOT_TEST_L2_FIXTURE_CLEANUP") {
+            let cleanup = PathBuf::from(cleanup);
+            while !cleanup.exists() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        } else {
+            std::thread::sleep(Duration::from_secs(120));
+        }
     }
 }
 
@@ -86,6 +93,14 @@ impl ReadyTree {
             child,
             _dir: dir,
         }
+    }
+
+    pub(crate) fn descendant_pid(&self) -> u32 {
+        std::fs::read_to_string(self._dir.path().join("ready"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
     }
 
     pub(crate) fn finish(mut self) {

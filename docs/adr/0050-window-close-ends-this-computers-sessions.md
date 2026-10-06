@@ -97,7 +97,7 @@ Exit codes: 0 is a requested shutdown and stays down; 75 is an update restart an
 again, taken only while no shutdown is under way, so a shutdown's own exit always stands;
 1 is a failure (lock timeout or refuse-live). The nominal bounds chain is `HANDOVER_BOUND (60) < SHUTDOWN_BOUND (120) < DAEMON_LOCK_WAIT (150) < LAUNCH_WAIT (160)`: a successor allows more time than the shutdown budget, and a launcher allows more time than the successor's lock budget. An OS creation or adoption stalled under the start/registry mutex can delay fire and actual process exit beyond these budgets.
 
-0.6.6 amendment: every controlled daemon termination uses `shutdown::exit`, which synchronously attempts and checks contained-tree termination through the permanent child signal before the sole raw process exit. Request errors are logged without changing the chosen exit code; this is not a wait for confirmed death, and contained children can outlive daemon exit. The main result and main-future unwind reach it before runtime teardown. Uncatchable signals, aborts and process/OS crashes cannot execute cleanup. Unix SIGINT and SIGTERM remain known limit (p) until their watcher is installed.
+0.6.6 amendment: every controlled daemon termination, including Unix SIGINT and SIGTERM, uses `shutdown::exit`, which synchronously attempts and checks contained-tree termination through the permanent child signal before the sole raw process exit. Request errors are logged without changing the chosen exit code; this is not a wait for confirmed death, and contained children can outlive daemon exit. The main result and main-future unwind reach it before runtime teardown. An independently scheduled Unix watcher registers both handlers and checks its unblocked SIGINT/SIGTERM mask before daemon child work, including when the main thread inherited both blocked; SIGINT exits 130 and SIGTERM exits 143. These signals request termination of daemon-owned contained trees; capsule rows remain independent. An OS creation/adoption stall can delay fire; uncatchable signals, aborts and process/OS crashes cannot execute cleanup.
 
 ### The record, `held.json`
 
@@ -230,6 +230,5 @@ connection is the only handle.
   update.rs under a `clippy::disallowed_methods` allow naming this limit: `check_release` (in `check`), `stage` and
   `prepare::prepare` (in `stage_prepare_arm_inner`), and `PreparedState::matches` (in `handle_update_check`). A shutdown
   or exit while one runs leaves it and what it started to end on their own; under the systemd unit its cgroup ends them.
-- (p) Unix SIGTERM and SIGINT still use default termination and therefore bypass the daemon's fire-before-exit function. Under the systemd unit its cgroup ends the children. Other controlled daemon exits already fire synchronously.
 
 - Window: see the release notes.

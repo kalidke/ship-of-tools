@@ -241,6 +241,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sot flags `--update-status`, `--relaunched` | CLI | distribution | `rust/frontend/src/selfupdate.rs` `print_status`; `rust/frontend/src/cli.rs` `Cli` |
 | sot flag `--token`, `SOT_TOKEN` | CLI | fe-net | `rust/frontend/src/cli.rs` `Cli` |
 | daemon controlled termination, `shutdown::exit` | rule, exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `exit`; `rust/backend/src/main.rs` `main` |
+| Unix termination watcher | thread | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install` |
+| sotd SIGINT/SIGTERM exits 130/143 | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install`; `rust/backend/src/lifecycle/shutdown.rs` `exit` |
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `exit`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
 | sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update`; `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |

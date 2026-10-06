@@ -275,6 +275,10 @@ mod help_tests {
 fn main() {
     #[cfg(unix)]
     lifecycle::child_signal::reset_child_signal();
+    if let Err(error) = lifecycle::signal_exit::install() {
+        eprintln!("sotd: signal watcher installation failed: {error}");
+        lifecycle::shutdown::exit(1);
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

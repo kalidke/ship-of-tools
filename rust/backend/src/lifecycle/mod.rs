@@ -12,3 +12,5 @@ mod start_tests;
 
 #[cfg(test)]
 pub(crate) mod exit_tests;
+
+pub(crate) mod signal_exit;

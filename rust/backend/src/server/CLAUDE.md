@@ -74,7 +74,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `write_frame_to`, `version.query`. Uses: `Frame`, `codec::read_frame`, `codec::read_envelope`, `codec::write_frame`, `hello`,
 `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`, `version_line`, `--version`,
 `TopologyStore`, `topology.set`, `topology.changed`, `startup::begin`, `lease::ticker`, `Leases::gone`,
-`shutdown::run`, `shutdown::exit`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,
+`shutdown::run`, `shutdown::exit`, `signal_exit::install`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,
 `set_watch_bus`, `set_monitor_hub`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor`,
 `harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`.

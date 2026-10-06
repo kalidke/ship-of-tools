@@ -4,6 +4,7 @@
 Every process the daemon starts, except those ADR 0050 names as outside, runs in its own containment. Owner release or the process-wide signal attempts termination of that contained tree and reports request failures; successful requests do not establish death before return or daemon exit. A start and the signal share the tree-registry mutex through creation and registration. Row shutdown has an OS-clock deadline; an OS creation or adoption that never returns can delay fire and process exit. The last window on a computer decides, through its lease, whether that computer's sessions end (ADR 0050).
 
 ## Owns
+- Unix SIGINT and SIGTERM delivery: `signal_exit::install`, with handlers registered and a checked unblocked watcher mask before daemon child work.
 - The daemon's terminal function: `shutdown::exit`, which fires before the sole raw process exit.
 - The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lifecycle::lease`, the file
   `lease.rs` here).
@@ -17,7 +18,8 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
 - The window's half, rust/frontend/src/lease.rs.
 
 ## Promises
-- Every controlled daemon termination uses `shutdown::exit`: requested close, backstop, update restart, explicit boot/command refusal, main result and main-future unwind. It synchronously attempts and checks every contained-tree termination request before process exit; errors are logged and the chosen exit code is preserved. It does not wait for confirmed tree death. Uncatchable signals, aborts and process/OS crashes cannot execute this cleanup; Unix SIGINT/SIGTERM remain ADR 0050 limit (p) until their watcher is installed.
+- Unix SIGINT and SIGTERM are observed by a watcher on an independent runtime thread and call `shutdown::exit(130)` and `shutdown::exit(143)` respectively. Installation registers both handlers and checks the watcher's unblocked mask before daemon child work, including inherited blocked masks. Installation, mask or read failure is a visible failure exit. No registry lock is taken inside a POSIX signal handler.
+- Every controlled daemon termination uses `shutdown::exit`: requested close, backstop, update restart, explicit boot/command refusal, main result and main-future unwind. It synchronously attempts and checks every contained-tree termination request before process exit; errors are logged and the chosen exit code is preserved. It does not wait for confirmed tree death. Uncatchable signals, aborts and process/OS crashes cannot execute this cleanup.
 - A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept
   (`lease::claim`, called by `Leases::grant`).
 - Deadlines are wall-clock unix milliseconds, so a persisted handover deadline survives a restart (`startup_plan`
@@ -87,7 +89,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `shutdown::exit`, `startup::begin`, `lease::ticker`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `signal_exit::install`, `shutdown::exit`, `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
 `Signal::output`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
@@ -106,7 +108,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `start_tests.rs`: suspended-start and ready-tree registration races, plus checked cleanup failures.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
-- `mod.rs`: declares the five modules.
+- `mod.rs`: declares the lifecycle modules.
+- `signal_exit.rs`: the Unix termination watcher, its independent runtime thread and startup registration/mask/error handoff.
 - `shutdown.rs`: the close, its backstop, the row ends and `exit`, the one fire-before-termination function.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 
