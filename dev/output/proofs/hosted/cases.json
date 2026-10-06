@@ -1,0 +1,17 @@
+[
+  {
+    "label": "c3-revert-error-blocked_pool_error_cleans_yielding_child",
+    "tree": "revert-error",
+    "test": "ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "error return bypassed runtime finalization",
+    "observations": [
+      "T1 fixture observed: original child entered once and remained alive",
+      "T1 fixture observed: yielding task and blocked pool ready",
+      "T1 fixture observed: yielding ownership dropped and original child exited"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  }
+]

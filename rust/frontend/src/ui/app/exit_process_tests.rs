@@ -109,6 +109,7 @@ fn child_fixture(runtime: &tokio::runtime::Runtime) -> (tokio::process::Child, O
     assert_eq!(std::fs::read_to_string(folder.0.join("ready")).unwrap(), pid.to_string(), "original child readiness");
     entry.assert_once(pid);
     assert!(!identity.exited(), "workload child already exited");
+    println!("T1 fixture observed: original child entered once and remained alive");
     (child, identity, folder)
 }
 
@@ -135,6 +136,14 @@ fn runtime_case(error: bool, held_worker: bool) {
     if held_worker { runtime.spawn(async move { block(); }); }
     else { runtime.spawn_blocking(block); }
     ready.recv_timeout(Duration::from_secs(5)).unwrap();
+    println!(
+        "T1 fixture observed: yielding task and {} ready",
+        if held_worker {
+            "held worker"
+        } else {
+            "blocked pool"
+        }
+    );
     let mut app = fixture_app(Some(runtime));
     assert!(app.state.is_none(), "headless fixture cannot resume a window");
     let start = Instant::now();
@@ -153,6 +162,7 @@ fn runtime_case(error: bool, held_worker: bool) {
     }
     assert!(dropped.load(Ordering::SeqCst), "yielding task did not drop its child ownership");
     assert!(identity.exited(), "original owned child survived runtime cleanup");
+    println!("T1 fixture observed: yielding ownership dropped and original child exited");
     assert_eq!(result.is_err(), error, "returned-loop result changed");
     if error { assert!(matches!(result, Err(winit::error::EventLoopError::ExitFailure(23))), "error identity changed"); }
     assert!(taken, "error return bypassed runtime finalization");
@@ -173,7 +183,11 @@ fn blocked_pool_ok_cleans_yielding_child() {
 }
 #[test]
 fn blocked_pool_error_cleans_yielding_child() {
-    if run_isolated("ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child") { runtime_case(true, false); }
+    if run_isolated("ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child") {
+        println!("T1 body entered: ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child");
+    runtime_case(true, false);
+        println!("T1 assertion passed: error return bypassed runtime finalization");
+     }
 }
 #[test]
 fn held_worker_exposes_delayed_child_destruction() {
