@@ -87,12 +87,8 @@ job_test() {
   local key=$1 exe=$2 pkg=$3 t=${4:-} log r
   log=$L/rust/$key.log
   echo "     Running ($exe) load $(cut -d' ' -f1 /proc/loadavg)" > "$log"
-  (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" \
-    ${t:+--exact "$t" --format pretty --color never --show-output --test-threads=1}) >> "$log" 2>&1
+  (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" ${t:+--exact "$t"}) >> "$log" 2>&1
   r=$?
-  if [ -n "$t" ]; then
-    if test_body_check "$t" "$r" "$log"; then r=0; else r=$?; fi
-  fi
   echo "$r" > "$L/rust/$key.rc"
 }
 
