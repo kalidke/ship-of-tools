@@ -158,17 +158,23 @@ mod tests {
 
     #[test]
     fn quit_other_keys_cancel_and_are_consumed() {
+        println!(
+            "T1 body entered: ui::input::keypress::tests::quit_other_keys_cancel_and_are_consumed"
+        );
         for keep in [false, true] {
             for key in [Key::Character("typed-fixture-text".into()), Key::Named(NamedKey::F12), Key::Named(NamedKey::Escape)] {
                 let (step, calls, bytes) = route(Some(keep), key, modifiers(), false, false, true, false);
+                        println!("T1 fixture observed: routed raw key and downstream recorder");
                 assert_eq!(step, Some(QuitPromptStep::Cancel), "other key must cancel");
                 assert_eq!((calls, bytes), (0, vec![]), "trigger reached downstream input");
             }
         }
+        println!("T1 assertion passed: other key must cancel");
     }
 
     #[test]
     fn quit_enter_and_tab_use_identity_with_modifiers_and_rebindings() {
+        println!("T1 body entered: ui::input::keypress::tests::quit_enter_and_tab_use_identity_with_modifiers_and_rebindings");
         for keep in [false, true] {
             for rebound in [false, true] {
                 for bits in 0..16 {
@@ -177,22 +183,27 @@ mod tests {
                     for (key, want) in [(NamedKey::Tab, QuitPromptStep::Stay { keep: !keep }),
                         (NamedKey::Enter, QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }))] {
                         let (step, calls, bytes) = route(Some(keep), Key::Named(key), m, false, false, true, rebound);
+                        println!("T1 fixture observed: routed raw key and downstream recorder");
                         assert_eq!(step, Some(want), "logical Tab/Enter must win");
                         assert_eq!((calls, bytes), (0, vec![]));
                     }
                 }
             }
         }
+        println!("T1 assertion passed: logical Tab/Enter must win");
     }
 
     #[test]
     fn quit_modifier_presses_cancel_before_the_filter() {
+        println!("T1 body entered: ui::input::keypress::tests::quit_modifier_presses_cancel_before_the_filter");
         for keep in [false, true] {
             for key in [NamedKey::Control, NamedKey::Shift, NamedKey::Alt, NamedKey::Super, NamedKey::Meta, NamedKey::AltGraph] {
                 let seen = route(Some(keep), Key::Named(key), modifiers(), false, false, true, false);
+                println!("T1 fixture observed: routed raw modifier and downstream recorder");
                 assert_eq!(seen, (Some(QuitPromptStep::Cancel), 0, vec![]), "modifier must cancel before suppression");
             }
         }
+        println!("T1 assertion passed: modifier must cancel before suppression");
     }
 
     #[test]

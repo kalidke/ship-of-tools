@@ -1,0 +1,80 @@
+[
+  {
+    "label": "c1-parent-quit_other_keys_cancel_and_are_consumed",
+    "tree": "parent",
+    "test": "ui::input::keypress::tests::quit_other_keys_cancel_and_are_consumed",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "other key must cancel",
+    "observations": [
+      "T1 fixture observed: routed raw key and downstream recorder"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c1-parent-quit_enter_and_tab_use_identity_with_modifiers_and_rebindings",
+    "tree": "parent",
+    "test": "ui::input::keypress::tests::quit_enter_and_tab_use_identity_with_modifiers_and_rebindings",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "logical Tab/Enter must win",
+    "observations": [
+      "T1 fixture observed: routed raw key and downstream recorder"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c1-parent-quit_modifier_presses_cancel_before_the_filter",
+    "tree": "parent",
+    "test": "ui::input::keypress::tests::quit_modifier_presses_cancel_before_the_filter",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "modifier must cancel before suppression",
+    "observations": [
+      "T1 fixture observed: routed raw modifier and downstream recorder"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c1-parent-prompt_pinned_cells_have_attention_style",
+    "tree": "parent",
+    "test": "ui::chrome::view::tests::prompt_pinned_cells_have_attention_style",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "prompt foreground",
+    "observations": [
+      "T1 fixture observed: rendered pinned prompt cells"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c1-parent-quit_transitions_log_only_finite_fields",
+    "tree": "parent",
+    "test": "ui::app::exit::tests::quit_transitions_log_only_finite_fields",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "missing transition event: quit prompt: open",
+    "observations": [
+      "T1 fixture observed: captured actual quit transitions"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c1-parent-leave_close_keep_and_handover_only_leave_leases",
+    "tree": "parent",
+    "test": "ui::app::exit::tests::leave_close_keep_and_handover_only_leave_leases",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "exit state is set before the UI effect",
+    "observations": [
+      "T1 fixture observed: actual lease frames and exit effects"
+    ],
+    "isolated": false,
+    "not_runnable_here": true
+  }
+]

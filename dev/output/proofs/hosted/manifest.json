@@ -1,0 +1,54 @@
+{
+  "branch": "tmp/ci-t1-r2-c1-parent",
+  "original": {
+    "sha": "c00120979ca62599d896eb05395a4a4aca2acbb0",
+    "branch": "tmp/ci-t1-c1-parent"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "4b487c8148afe18247bd242ec77043d36ff73618",
+  "tree": "parent",
+  "overlays": [
+    {
+      "tree": "parent",
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "base_sha256": "baa35a27c38f0eb5744d795bf38f26673651e2b84a6d0c45d862ddb7faaabba6",
+      "overlay_sha256": "1ffeb18f0a8ebf1d89427686faf080930bfd2a72e4d404173d35855d50279a39",
+      "patch": "overlays/parent-ui-input-keypress.rs.patch"
+    },
+    {
+      "tree": "parent",
+      "file": "rust/frontend/src/ui/chrome/view.rs",
+      "base_sha256": "d8e671f7b12c4b8b475909301fb9784b7102ebf94a15c471872431264765cd08",
+      "overlay_sha256": "f728ab370cf5f90770f2b031b8ced9bd10a321663dafe8da6d193c7dbe6aef52",
+      "patch": "overlays/parent-ui-chrome-view.rs.patch"
+    },
+    {
+      "tree": "parent",
+      "file": "rust/frontend/src/ui/app/exit.rs",
+      "base_sha256": "74a73b5c029fffe356f36584433e66c3088502b024e7edbc412107ba1233246d",
+      "overlay_sha256": "599106c422c65e7062d9e166db6bcee57644ba561a4fb990805c73c80d538927",
+      "patch": "overlays/parent-ui-app-exit.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "accepted_overlay_sha256": "1ffeb18f0a8ebf1d89427686faf080930bfd2a72e4d404173d35855d50279a39",
+      "replay_sha256": "f03e9f042b000c61f3689175473dc7b53618e31d0b46e2f37a30803c4a48aedf",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    },
+    {
+      "file": "rust/frontend/src/ui/chrome/view.rs",
+      "accepted_overlay_sha256": "f728ab370cf5f90770f2b031b8ced9bd10a321663dafe8da6d193c7dbe6aef52",
+      "replay_sha256": "b35b9d9fbb9fe627fc0accb90ef58746092837486731570ce543d3736078ff63",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    },
+    {
+      "file": "rust/frontend/src/ui/app/exit.rs",
+      "accepted_overlay_sha256": "599106c422c65e7062d9e166db6bcee57644ba561a4fb990805c73c80d538927",
+      "replay_sha256": "599106c422c65e7062d9e166db6bcee57644ba561a4fb990805c73c80d538927",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}

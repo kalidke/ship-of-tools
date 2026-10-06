@@ -18,7 +18,7 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 
 ## Rules
 - Every user quit goes through `request_quit`: `exit_intent` asks on Ctrl+Q and leaves at once on the close button.
-- `leave` never ends the drawer's session and sets `should_exit` before it polls (test `leave_never_ends_the_drawer`).
+- begin_leave can access only lease and exit-state slots and returns Redraw or Finish; leave_close_keep_and_handover_only_leave_leases drives that production transition and observes pending exit and actual lease frames. No agent or drawer input capability is passed to it.
 - A leaving window exits from `about_to_wait`'s poll once the acks are in (`redraw_exits`).
 - A harness instance (`ephemeral`) starts neither watcher thread: `resumed` skips `relaunch::spawn_watcher` and `spawn_command_watcher` for it.
 - Frames are capped at `FRAME_BUDGET` (`window_event`'s redraw arm and `about_to_wait`).
