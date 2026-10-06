@@ -407,9 +407,15 @@ PYRESULT
     fi
     rs="$(skew_of "$t")"
     awk -v s="$rs" '{print $1 - s}' "$pl" | sort -n > "$L/pings-norm-$t"
-    # Count only pings from the private one-shot wake control.
-    control_pings="$(awk -v ss="$sst" '$1 < ss { n++ } END { print n+0 }' "$L/pings-norm-$t")"
-    printf '  NOTE %s: private one-shot control: %s pings observed before strict start; shared-message wake coverage is not checked\n' "$h" "$control_pings"
+    # NOTE (concurrent phase): a line's first poll showing vs the first ping after its filing
+    grep -E ' m-[^ ]*$' "$L/pollout-$t.log" | awk -v s="$rs" '{id=$NF; v=$1-s; if(!(id in f)||v<f[id])f[id]=v}END{for(i in f)print f[i],i}' > "$L/firstshown-$t"
+    for sn in here peer; do
+        awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$2==h && $4=="filed"{print $1 - s, $3}' "$L/send-e2e-snd-$sn.log"
+    done > "$L/filedat-$t"
+    awk -v h="$h" -v ss="$sst" 'FILENAME==ARGV[1]{if($1<ss)p[++n]=$1;next} FILENAME==ARGV[2]{s[$2]=$1;next}
+        {cov=0; for(i=1;i<=n;i++) if(p[i]>$1){fp=p[i];cov=1;break}
+         if(cov && (!($2 in s) || s[$2]>=fp)) a++; else b++}
+        END{printf "  NOTE %s: concurrent phase, %d lines covered by a ping first, %d shown by a poll first or never pinged\n", h, a+0, b+0}' "$L/pings-norm-$t" "$L/firstshown-$t" "$L/filedat-$t"
     fin="$(cat "$L/final-$t")"
     late="$(awk -v f="$fin" '$1>f' "$pl" | wc -l)"
     printf 'NOTE: %s: %s late control pings observed after the final poll; sustained shared-inbox wake behavior is not checked.\n' "$h" "$late"
