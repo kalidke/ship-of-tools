@@ -141,13 +141,8 @@ impl BridgedClient {
     }
 
     fn teardown_inner(&self, deadline: std::time::Instant) -> std::io::Result<()> {
-        let mut child = self.lock_child(deadline)?;
-        self.request_termination(&mut child)?;
-        loop {
-            if self.observe_exit(&mut child).map_err(|error| self.failure("reap", error))?.is_some() { return Ok(()); }
-            if std::time::Instant::now() >= deadline { return Err(self.failure("deadline", "2 s teardown budget expired")); }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        drop(self.lock_child(deadline)?);
+        Ok(())
     }
 
     pub(super) fn teardown(&self) -> std::io::Result<()> {
