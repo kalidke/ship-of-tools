@@ -125,7 +125,9 @@ jobs:
               with (directory / 'cargo.log').open('w') as output:
                   subprocess.run(['cargo', 'test', '--config', 'target."cfg(all())".runner=' + json.dumps(['python3', str(runner), str(directory)]), '--manifest-path', str(manifest), '-p', 'sot-log', '--test', 'test_body_fixture', '--locked', name, '--'] + flags + ['--format', 'pretty', '--color', 'never', '--show-output', '--test-threads=1'], cwd=directory, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120, check=True)
           PYCARGO
-          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh --portable "$(cat ../dev/output/iso-sh-ci-path)"
+          proof_mode=--portable
+          if [ '${{ matrix.os }}' = ubuntu-latest ]; then proof_mode=--all; fi
+          ISO_SH_CARGO_PROOFS="$(python3 -c "import pathlib; print(pathlib.Path('../dev/output/iso-sh-ci-cargo').resolve())")" bash ../scripts/tests/test-test-body.sh "$proof_mode" "$(cat ../dev/output/iso-sh-ci-path)"
 
       - name: Test workspace
         run: cargo test --workspace --locked --no-fail-fast -- --nocapture
