@@ -456,6 +456,8 @@ ack's error>` or `FAILED -> <all>: hello refused: <the daemon's own words>`.
 With no daemon found at all a wire send prints
 `FAILED -> @h: no sotd daemon found; …` and exits 1.
 
+Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
+
 Nothing is queued anywhere, and a failed send is not retried by another
 route. To get an answer, send, end the turn, and be woken.
 

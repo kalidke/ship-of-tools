@@ -221,6 +221,9 @@ root; lanes edit only their own folder's page.
 - Send with `comm-send.sh @<handle> "text"`; its one result is `filed -> @<handle>` or `FAILED -> @<handle>: <why>`,
   except that a send relayed to a handle the hub's folder does not list can still end `NOT CONFIRMED: sent for @h; ...`
   or `filed -> @h (by <filer>, relay)` (`comm/mail/comm-relay.sh`).
+
+  Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
+
 - An idle row is woken by the line `[sot-comm] you have mail: run comm-poll.sh`; a turn cannot end with directed
   mail unread. Read with `comm-poll.sh`. To wait for a reply, end your turn.
 - Run `/sot-session-start` once when a session starts.

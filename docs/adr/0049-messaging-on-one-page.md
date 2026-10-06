@@ -8,6 +8,10 @@ fallback for a handle its folder does not list (`agent.send`, ending `NOT CONFIR
 B2. The rest lands in stages, and the per-session watcher, listener and bridge machinery it
 replaces stays in place until each stage does.
 
+2026-10-06: B2 premise amendment for 0.6.6.
+
+Known limit (B2): the hub's comm folder has not been shown to list every live row on every attached box. At the 2026-10-06 premise check, two attached boxes had no session; one of them had no frontend connected, so those two boxes were unobserved. A handle absent from that folder still uses the broadcast filer route and may end NOT CONFIRMED. Full B2 removal is blocked on the live-row registry premise; this checkout does not promise a binary verdict for that route.
+
 2026-10-04: User isolation added (release captain's ruling); decision 0031 holds the
 guarantees, this ADR the design.
 

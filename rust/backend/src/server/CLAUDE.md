@@ -76,7 +76,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `shutdown::run`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `seed_default_row`, `set_repl_frame_tx`,
 `set_watch_bus`, `set_monitor_hub`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `publish_noreplace`, `lock_writer`, `try_lock_daemon`, `preflight_volume`, `owner_protected_pipe_descriptor`,
-`harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`.
+`harden_own_stdio`, `boot_identity`, `process_created`, `IdentityExchange`, `start_page_servers`, `remove_root`,
+`handle_agent_join`.
 
 ## Folders
 The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clients.rs` (the roster) and `session.rs`
