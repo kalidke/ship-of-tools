@@ -46,6 +46,60 @@ fn capsule_comm_home_str() -> Option<String> {
     Some(crate::comm::sot_comm_home()?.to_string_lossy().replace('\\', "/"))
 }
 
+/// The `SOTD_BIN` value for a session: the path this daemon was started by, made absolute the way its start found it,
+/// without following a link. A path (absolute, relative, or drive-relative such as `C:sotd.exe`) is made absolute by
+/// `std::path::absolute`: against the working folder, and a drive-relative one against that drive's. A bare name is
+/// looked up as a start looks it up: on Windows in the working folder and then each `PATH` entry, with `.exe` added to
+/// a name that has no extension; elsewhere in each `PATH` entry. The first runnable file is the value. Forward slashes
+/// on Windows, where a git-bash/MSYS shell reads it, as with `SOT_COMM_HOME`. The start path, never the resolved one: a
+/// session outlives its daemon, and an update replaces the file at that path. `None` for an empty start path, or a bare
+/// name found nowhere; the session's shell then finds `sotd` by its own ladder.
+fn sotd_bin_value(start: &std::ffi::OsStr, path_var: Option<&std::ffi::OsStr>) -> Option<String> {
+    if start.is_empty() {
+        return None;
+    }
+    let start = Path::new(start);
+    let mut parts = start.components();
+    let found = if matches!(
+        (parts.next(), parts.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) {
+        let name = match start.extension() {
+            None if cfg!(windows) => start.with_extension("exe"),
+            _ => start.to_path_buf(),
+        };
+        cfg!(windows)
+            .then(PathBuf::new)
+            .into_iter()
+            .chain(path_var.into_iter().flat_map(std::env::split_paths))
+            .filter_map(|dir| std::path::absolute(dir.join(&name)).ok())
+            .find(|candidate| crate::rows::spawn::detach::runnable_file(candidate))?
+    } else {
+        std::path::absolute(start).ok()?
+    };
+    let text = found.to_string_lossy();
+    Some(if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.into_owned()
+    })
+}
+
+static OWN_SOTD_BIN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// This daemon's `SOTD_BIN` value ([`sotd_bin_value`] of its argv[0] and `PATH`), made once: `main` calls this at
+/// startup, before it serves anything.
+pub fn own_sotd_bin() -> Option<&'static str> {
+    OWN_SOTD_BIN
+        .get_or_init(|| {
+            sotd_bin_value(
+                &std::env::args_os().next()?,
+                std::env::var_os("PATH").as_deref(),
+            )
+        })
+        .as_deref()
+}
+
 /// The `SOT_*` awareness env a capsule supervisor spawn stamps on its
 /// producer — capsule-comm-identity fix: a capsule has no tmux pane, so
 /// `comm-context.sh`'s pane-keyed self-file slot never applies to it, and
@@ -79,6 +133,8 @@ fn capsule_comm_home_str() -> Option<String> {
 /// that same file (`comm::registry::registry::capsule_comm_handle`) stays as the
 /// FALLBACK for a row with no declaration yet (manager review, S5) —
 /// deleted only with family H once every row has cycled onto `agent.join`.
+/// `SOTD_BIN` is this daemon's own start path ([`own_sotd_bin`]), so the session's comm shell bridges with the daemon's
+/// own binary.
 pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_name: &str) -> Vec<(String, String)> {
     let mut env = crate::agents::awareness::awareness_env(Some(slug), Some(cwd), Some(workspace_id));
     if !agent_name.is_empty() {
@@ -89,6 +145,11 @@ pub fn capsule_supervisor_env(workspace_id: &str, slug: &str, cwd: &Path, agent_
         let self_file = format!("{}/self/{}__{}.txt", comm_home.trim_end_matches('/'), host, workspace_id);
         env.push(("SOT_COMM_HOME".to_string(), comm_home));
         env.push(("SOT_COMM_SELF_FILE".to_string(), self_file));
+    }
+    // The comm shell in the session bridges with SOTD_BIN first, so it is this daemon's own binary, over any value the
+    // daemon inherited (detach.rs applies these pairs with `Command::env`).
+    if let Some(sotd) = own_sotd_bin() {
+        env.push(("SOTD_BIN".to_string(), sotd.to_string()));
     }
     // Claude Code's feedback survey is a modal panel that holds a row's
     // session until someone answers it, so no row's agent shows it, on
@@ -317,6 +378,11 @@ mod tests {
             get("SOT_COMM_SELF_FILE"),
             Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
         );
+        assert_eq!(
+            get("SOTD_BIN"),
+            own_sotd_bin(),
+            "SOTD_BIN is this process's own start path, made once"
+        );
     }
 
     #[test]
@@ -389,5 +455,85 @@ mod tests {
         std::env::remove_var("HOME");
         std::env::remove_var("USERPROFILE");
         assert_eq!(capsule_comm_home_str(), None);
+    }
+
+    #[test]
+    fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
+        use std::ffi::OsStr;
+        let work = tempfile::tempdir().expect("a work folder");
+        let bin = work.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        // The program as the platform names it: on Windows a bare name gets `.exe` added, so the file has it.
+        let name = "sotd-start-probe";
+        let file = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        sot_log::test_exec::write_executable(&bin.join(&file), "#!/bin/sh\n");
+        let cwd = std::env::current_dir().expect("the working folder");
+        let shown = |p: &Path| {
+            let text = p.to_string_lossy().into_owned();
+            if cfg!(windows) {
+                text.replace('\\', "/")
+            } else {
+                text
+            }
+        };
+        let path_var =
+            std::env::join_paths([work.path().join("empty"), bin.clone()]).expect("a PATH");
+        // Absolute: itself.
+        assert_eq!(
+            sotd_bin_value(bin.join(&file).as_os_str(), None),
+            Some(shown(&bin.join(&file)))
+        );
+        // Relative: against the working folder, with no lookup.
+        let relative = Path::new("target").join("release").join(&file);
+        assert_eq!(
+            sotd_bin_value(relative.as_os_str(), None),
+            Some(shown(&cwd.join(&relative)))
+        );
+        // Bare: the first PATH entry holding it, by the name with `.exe` added on Windows, or as given.
+        assert_eq!(
+            sotd_bin_value(OsStr::new(name), Some(&path_var)),
+            Some(shown(&bin.join(&file)))
+        );
+        assert_eq!(
+            sotd_bin_value(OsStr::new(&file), Some(&path_var)),
+            Some(shown(&bin.join(&file)))
+        );
+        // Bare, found nowhere, or with no PATH; and an empty start path.
+        assert_eq!(
+            sotd_bin_value(OsStr::new("no-such-sotd"), Some(&path_var)),
+            None
+        );
+        assert_eq!(sotd_bin_value(OsStr::new(name), None), None);
+        assert_eq!(sotd_bin_value(OsStr::new(""), Some(&path_var)), None);
+        // Windows: a drive-relative start (`D:sotd.exe`) is against that drive's working folder, here this process's.
+        #[cfg(windows)]
+        {
+            let drive = cwd
+                .to_string_lossy()
+                .chars()
+                .next()
+                .filter(char::is_ascii_alphabetic);
+            let drive = drive.expect("a working folder on a lettered drive");
+            assert_eq!(
+                sotd_bin_value(OsStr::new(&format!("{drive}:{file}")), None),
+                Some(shown(&cwd.join(&file)))
+            );
+        }
+        // Unix: a link on PATH is the path given, never its target.
+        #[cfg(unix)]
+        {
+            let link = work.path().join("link");
+            std::fs::create_dir_all(&link).expect("mkdir link");
+            std::os::unix::fs::symlink(bin.join(name), link.join(name)).expect("link the probe");
+            let link_path = std::env::join_paths([link.clone()]).expect("a PATH");
+            assert_eq!(
+                sotd_bin_value(OsStr::new(name), Some(&link_path)),
+                Some(shown(&link.join(name)))
+            );
+        }
     }
 }

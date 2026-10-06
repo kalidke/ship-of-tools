@@ -13,7 +13,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `comm_send.rs`: messaging; the staged `comm-send.sh` against a real `sotd`: `filed` only for a live handle, nothing appended for a gone one, and an idle row's daemon keeps it live, so a send is filed while that daemon is down
 - `comm_wake.rs`: messaging; the comm wake tick on a real capsule row whose agent is a stub `claude`
 - `control_session.rs`: server; a control session's replies pinned over the wire: unknown op, `monitor.*`, `pty.open` refusals, the off-loop ops, the evt skip and the refused hellos
-- `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; a spawned daemon inherits no `SOT_` variable the test did not set, and `sotd_command` is the only spawn site
+- `daemon_boot.rs`: server; a first boot seeds the default row as the inert anchor, and the registry poll relays a state change; on Linux, observes that a spawned daemon inherits no `SOT_` variable the test did not set
 - `hub_link.rs`: messaging; a hub `sotd` and a guest `sotd` joined by a stub `ssh`, broadcast filed on the guest
 - `keystroke_latency.rs`: rows; keystroke timing against a private daemon, every test `#[ignore]`
 - `live_socket.rs`: server; a second daemon on a live daemon's socket refuses and the first keeps answering
@@ -27,11 +27,11 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
-- `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules)
+- `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules); `session_env.rs`: a session's `SOTD_BIN` is the daemon's own start path, over an inherited value and, on Linux, after an in-place update; each test's row ends through its own supervisor, and its folders are kept, with a report, when that end is not confirmed
 - `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a Unix-socket relay that can be cut, blackholed and throttled
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
 - `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
-- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
+- `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command` and `sotd_command_at`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
 ## Start here
@@ -41,10 +41,11 @@ shows the shape.
 ## Rules
 - A binary whose tests share one process takes its `SERIAL` before `Env::new`, which sets the process's `SOT_RUNTIME_DIR`
   (capsule_workspaces, comm_send, comm_wake, daemon_boot, lane_bridge, stdio_bridge, window_lease do; `Env::new` assumes it).
-- Every `sotd` a suite starts comes from `sotd_command()` in `support/sotd.rs`, which drops every inherited `SOT_` variable;
-  `sotd_exe` is private there (`daemon_boot.rs` checks that `CARGO_BIN_EXE_sotd` appears nowhere else).
+- Every `sotd` a suite starts comes from `support/sotd.rs`: `sotd_command()`, or `sotd_command_at(program)` for a copy
+  or link of the built binary. Both drop every inherited `SOT_` variable, which `daemon_boot.rs` shows on Linux (a
+  started daemon holds only the `SOT_` variables its test set); `sotd_exe`, the built binary's path, is private there.
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
-- Every wait is bounded: `support::poll_until` and `BOUND`; a suite waits on a child process with `sot_log::test_isolated`'s `wait_within` or `drain(..).wait_within(..)` (`stdio_bridge.rs`, `shell_dial.rs`).
+- Every wait is bounded: `support::poll_until` and `BOUND`; a suite waits on a child process with `sot_log::test_isolated`'s `wait_within` or `drain(..).wait_within(..)` (`stdio_bridge.rs`, `shell_dial.rs`); `session_env.rs`'s `OwnedRow` instead polls its daemon's exit with `try_wait` within `BOUND`, since it also runs while a test unwinds, where a second panic would abort.
 - A test that reads a stream it accepted makes it blocking (macOS keeps a non-blocking listener's `O_NONBLOCK` on an
   accepted socket; Linux does not) and bounds those reads by a deadline it owns, such as waiting for the reading
   thread's result, never by a read timeout on the accepted socket: Darwin refuses `SO_RCVTIMEO` there (EINVAL;

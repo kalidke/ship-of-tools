@@ -1,9 +1,8 @@
-# test-local-daemon-binary.ps1 -- sections 2c, 7b and 7c, the local daemon's one binary (ADR 0049, User isolation): the
-# resolver the daemon, -Stop and the launcher's query and lease share (2c), the SOTD_BIN the daemon hands the sessions
-# it spawns (7b), and the bytes the lease's and the probe's bridges read, which are only their callers' (7c).
-# Dot-sourced by test-local-daemon.ps1 right after test-local-daemon-fake.ps1, in its scope: $script, $repo, $root,
-# $compiled, $fakeExe, the support helpers and the fake's. 7b and 7c need the fake daemon and run only when it
-# compiled. ASCII only; Windows PowerShell 5.1.
+# test-local-daemon-binary.ps1 -- sections 2c and 7c, the local daemon's one binary (ADR 0049, User isolation): the
+# resolver the daemon, -Stop and the launcher's query and lease share (2c), and the bytes the lease's and the probe's
+# bridges read, which are only their callers' (7c). Dot-sourced by test-local-daemon.ps1 right after
+# test-local-daemon-fake.ps1, in its scope: $script, $repo, $root, $compiled, $fakeExe, the support helpers and the
+# fake's. 7c needs the fake daemon and runs only when it compiled. ASCII only; Windows PowerShell 5.1.
 
     try {
     Write-Host "`n=== 2c. OneResolver: a lone dev sotd.exe never outranks a complete install pair ===" -ForegroundColor Cyan
@@ -49,32 +48,6 @@
     } catch { Check '2c: section ran' $false $_.Exception.Message }
 
     if ($compiled) {
-        try {
-        Write-Host "`n=== 7b. DaemonCarriesItsBinary: the daemon's sessions get SOTD_BIN = the sotd.exe it runs, and the caller's own is restored ===" -ForegroundColor Cyan
-        # The comm shell in a session the daemon spawns bridges with SOTD_BIN when it names a file (comm-lib-client.sh
-        # _sot_windows_sotd_exe). A sentinel in this process's environment proves both halves: the daemon does not
-        # inherit it, and this process has it back after the call.
-        Clear-FakeEnv
-        $envLog7b = Join-Path $root 'fake-env-7b.log'
-        Remove-Item -LiteralPath $envLog7b -Force -ErrorAction SilentlyContinue
-        $env:FAKE_SOTD_ENV_LOG = $envLog7b
-        $sentinel7b = 'C:\sot-test-sentinel\sotd.exe'
-        $savedSotdBin7b = [Environment]::GetEnvironmentVariable('SOTD_BIN')
-        $env:SOTD_BIN = $sentinel7b
-        $p7b = New-FakePrefix 'p7b'
-        $pipe7b = New-TestPipeName
-        try {
-            $out7b = & $script -Prefix $p7b -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe7b -ProjectRoot $root 6>&1 2>&1
-            Check '7b: exit code 0' ($LASTEXITCODE -eq 0) "got $LASTEXITCODE; log: $out7b"
-            $seen7b = if (Test-Path -LiteralPath $envLog7b) { (Get-Content -LiteralPath $envLog7b -Raw).Trim() } else { '<no env log>' }
-            Check '7b: the daemon runs with SOTD_BIN = its own sotd.exe' ($seen7b -eq ('SOTD_BIN=' + (Join-Path $p7b 'bin\sotd.exe').Replace('\', '/'))) "got $seen7b"
-            Check '7b: the caller keeps its own SOTD_BIN' ($env:SOTD_BIN -eq $sentinel7b) "got '$env:SOTD_BIN'"
-        } finally {
-            Stop-FakeOn $pipe7b
-            Clear-FakeEnv
-            [Environment]::SetEnvironmentVariable('SOTD_BIN', $savedSotdBin7b)
-        }
-        } catch { Check '7b: section ran' $false $_.Exception.Message }
         try {
         Write-Host "`n=== 7c. BridgeReadsOnlyItsCaller: the lease's and the probe's bridges read only their callers' bytes, in a hidden console like the launcher's ===" -ForegroundColor Cyan
         # Windows PowerShell 5.1 opens a redirected input as a writer in [Console]::InputEncoding and flushes it at

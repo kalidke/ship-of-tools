@@ -424,6 +424,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Every session's SOTD_BIN is this start's own path, made absolute once, now (agents::env::own_sotd_bin).
+    let _ = agents::env::own_sotd_bin();
+
     tracing::info!(
         socket = ?opts.socket,
         project_root = ?opts.project_root,
