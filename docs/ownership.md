@@ -273,7 +273,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | process-start rule: each call of a function in `rust/clippy.toml`'s process-spawns group outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception; what the group does not hold is named in rust/backend/src/lifecycle/CLAUDE.md | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
-| quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |
+| quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_step`, `request_quit`; `rust/frontend/src/ui/input/keypress.rs` `keyboard_input`; `rust/frontend/src/ui/input/global_keys.rs` `confirm_quit_key` |
 | parent-death lease (fd-3 pipe; Windows `Local\sot-lease-*` mutex) | lock | capsule | `rust/log/src/supervisor/lease_win.rs`; `rust/log/src/supervisor/leg.rs` `SpawnLease`, `LegLease` |
 | REPL `OUT_LOCK` | lock | sidecars | `julia/repl/src/ShipToolsRepl.jl` |
 | the shell `with_lock` | lock | messaging | `comm/lib/comm-lib-registry-lock.sh` `with_lock` |

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 /// A bound listener and, on Unix, the private folder its socket sits in. It derefs to the listener; dropping it drops
 /// the listener first, then removes the folder.
-pub(super) struct Bound {
+pub(crate) struct Bound {
     listener: interprocess::local_socket::tokio::Listener,
     _folder: Folder,
 }
@@ -30,7 +30,7 @@ impl std::ops::Deref for Bound {
     }
 }
 
-pub(super) fn bind(tag: &str) -> (Bound, PathBuf) {
+pub(crate) fn bind(tag: &str) -> (Bound, PathBuf) {
     let unique = format!(
         "sot-lease-test-{tag}-{}-{}",
         std::process::id(),
@@ -66,7 +66,7 @@ pub(super) fn bind(tag: &str) -> (Bound, PathBuf) {
 /// The daemon's admission of a handoff (ADR 0049 `## User isolation`): the first frame must be a hello whose role is
 /// `handoff`, which is answered accepted, and the frame behind it (here the lease) is returned with the hello. Any
 /// other first frame is refused `unauthenticated` and the fake reads nothing more, as the daemon does.
-pub(super) async fn read_handoff<R, W>(rx: &mut R, tx: &mut W) -> Option<(Frame, Frame)>
+pub(crate) async fn read_handoff<R, W>(rx: &mut R, tx: &mut W) -> Option<(Frame, Frame)>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,

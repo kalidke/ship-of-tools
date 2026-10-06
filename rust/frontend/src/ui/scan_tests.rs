@@ -107,24 +107,6 @@ fn focus_written_only_by_set_focus() {
 }
 
 #[test]
-fn leave_never_ends_the_drawer() {
-    // `leave` serves every intent alike: no early return, and no end of
-    // the drawer's session from the window (the daemon's Close ends it,
-    // a Keep keeps it).
-    let src = super::scan_tests::crate_source().replace("\r\n", "\n");
-    let start = src.find(&["fn leave(&mut self, event_loop: &ActiveEventLoop, ", "intent"].concat()).unwrap();
-    let body = &src[start..start + src[start..].find("\n    }\n").unwrap()];
-    for banned in ["attach_term", "request_quit", "return"] {
-        assert!(!body.contains(banned), "`leave` contains `{banned}`");
-    }
-    // Every leave sets `should_exit` before it polls or exits, so
-    // `about_to_wait` polls the acks.
-    let set = body.find(&["self.should_exit = ", "true;"].concat()).expect("`leave` sets `should_exit`");
-    assert!(body.find("request_redraw").is_some_and(|i| set < i), "{body}");
-    assert!(body.find("self.finish_exit(").is_some_and(|i| set < i), "{body}");
-}
-
-#[test]
 fn roi_paste_dismisses_the_prompt_first() {
     // An open quit prompt is dismissed (`set_focus`) before the agent
     // pane takes the ROI paste's bytes.

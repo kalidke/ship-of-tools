@@ -26,3 +26,4 @@ prompt.rs `NavPrompt` for a new nav-pane prompt; transfer.rs `State::start_uploa
   `start_upload`).
 - A watcher refresh only re-lists a directory already shown expanded (`refresh_tree_dir_if_expanded`).
 - Directories are refused before the delete prompt opens (`is_directory_row`).
+- The quit prompt flips its choice with Tab, confirms with Enter by key identity, cancels on every other non-repeat key, and ignores repeats.
