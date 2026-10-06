@@ -2,6 +2,42 @@
 # check-layout.sh: folder/file layout gate for the organize pass. See README.md.
 # Usage: check-layout.sh [--repo <dir>] [--allow <file>] [--exempt <file>] [<folder> ...]
 #        check-layout.sh [--repo <dir>] --report [<folder> ...]
+check_map_imports() (
+    local repo=. pages expected actual path failed=0
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --repo) [ "$#" -ge 2 ] || return 0; repo="$2"; shift ;;
+            --allow|--exempt) [ "$#" -ge 2 ] || return 0; shift ;;
+            --report|-*) return 0 ;;  # reports and argument errors belong to the layout tool below
+        esac
+        shift
+    done
+    cd "$repo" || return 2
+    repo="$(git rev-parse --show-toplevel)" || return 2
+    cd "$repo" || return 2
+    pages="$(git ls-files '*CLAUDE.md')" || return 2
+    grep -qxF 'CLAUDE.md' <<<"$pages" || return 0  # no map to check in a fixture without a root page
+    expected="$(
+        { grep -vxF 'CLAUDE.md' <<<"$pages"; printf '%s\n' docs/ownership.md docs/integration.md; } |
+            LC_ALL=C sort -u
+    )"
+    actual="$(
+        while IFS= read -r path || [ -n "$path" ]; do
+            case "$path" in @*) printf '%s\n' "${path#@}" ;; esac
+        done < CLAUDE.md | LC_ALL=C sort -u
+    )"
+    while IFS= read -r path; do
+        printf 'VIOLATION map-import CLAUDE.md missing: %s\n' "$path"
+        failed=1
+    done < <(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(if [ -n "$actual" ]; then printf '%s\n' "$actual"; fi))
+    while IFS= read -r path; do
+        printf 'VIOLATION map-import CLAUDE.md extra: %s\n' "$path"
+        failed=1
+    done < <(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(if [ -n "$actual" ]; then printf '%s\n' "$actual"; fi))
+    return "$failed"
+)
+check_map_imports "$@" || exit "$?"
+
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" exec python3 - "$@" <<'PY'
 import os, re, subprocess, sys
 

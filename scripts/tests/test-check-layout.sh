@@ -185,10 +185,26 @@ violations: 0"; check "named-path fenced ignored" 0 d
 np 'an untracked top-level word `nothere/x.jl` and a folder `d`'
 WANT="named-path: 1 tokens checked
 violations: 0"; check "named-path unknown top-level skipped" 0 d
-np 'a page'; printf '%s\n' 'a missing `d/gone.jl`' > docs/integration.md; printf '%s\n' 'a missing `d/gone.jl`' > CLAUDE.md; commit
+np 'a page'; printf '%s\n' 'a missing `d/gone.jl`' > docs/integration.md
+printf '%s\n' 'a missing `d/gone.jl`' '@d/CLAUDE.md' '@docs/ownership.md' '@docs/integration.md' > CLAUDE.md; commit
 WANT="VIOLATION named-path docs/integration.md d/gone.jl
 VIOLATION named-path CLAUDE.md d/gone.jl
 named-path: 2 tokens checked in 3 files"; check "named-path lists the integration page and the root page" 1 d
+
+# map-import: the root imports every tracked folder page and exactly the two records pages.
+newrepo; mkdir d docs; echo 'x=1' > d/a.jl; mkpage d a.jl
+printf '# Ownership\n' > docs/ownership.md; printf '# Integration\n' > docs/integration.md
+printf '%s\n' '# Root' '@d/CLAUDE.md' '@docs/ownership.md' '@docs/integration.md' > CLAUDE.md; commit
+WANT="violations: 0"; check "map imports match" 0 d
+printf '%s\n' '# Root' '@docs/ownership.md' '@docs/integration.md' > CLAUDE.md
+WANT="VIOLATION map-import CLAUDE.md missing: d/CLAUDE.md"; check "missing map import" 1 d
+printf '%s\n' '# Root' '@d/CLAUDE.md' '@docs/ownership.md' '@docs/integration.md' '@docs/extra.md' > CLAUDE.md
+WANT="VIOLATION map-import CLAUDE.md extra: docs/extra.md"; check "extra map import" 1 d
+printf '# Root\n' > CLAUDE.md
+WANT="VIOLATION map-import CLAUDE.md missing: d/CLAUDE.md
+VIOLATION map-import CLAUDE.md missing: docs/integration.md
+VIOLATION map-import CLAUDE.md missing: docs/ownership.md"
+NOT="extra:"; check "empty map names every missing import" 1 d
 
 # report
 newrepo; mkdir d; { lines 5 'x='; } > d/small.rs; { lines 30 'x='; echo '#[cfg(test)]'; echo 'mod t {'; echo '}'; } > d/big.rs; commit
@@ -197,6 +213,9 @@ if [ "$(sed -n 2p <<<"$out")" = "  code    30  test     3  big.rs" ]; then pass=
 
 "$tool" --repo "$tmp/r" --bogus >/dev/null 2>&1; [ $? = 2 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: usage rc"; }
 "$tool" --repo "$tmp" >/dev/null 2>&1; [ $? = 2 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: not a repo rc"; }
+
+out="$("$tool" --repo "$here/../.." --allow "$here/check-layout.allow" 2>&1)"; rc=$?
+if [ "$rc" = 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: real tree"; echo "$out"; fi
 
 echo "test-check-layout: $pass passed, $fail failed"
 [ $fail = 0 ]
