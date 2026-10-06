@@ -240,8 +240,11 @@ try {
         Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
         $streams5b = @(Open-SotLease (Get-PipePath $pipe5b) $realSotd)
         Check '5b: the real daemon grants the launcher a lease' ($streams5b.Count -eq 1) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
-        foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
-        Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+        # Only a granted lease has an end that shuts the daemon down.
+        if ($streams5b.Count -eq 1) {
+            foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
+            Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
+        }
         Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
         } catch { Check '5b: section ran' $false $_.Exception.Message }
