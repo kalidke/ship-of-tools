@@ -8,7 +8,7 @@ The step `Validate T1 replay observations` invokes `python3 dev/output/proofs/ho
 The validator runs before ordinary whole-workspace tests. Intended named reds are successful replay observations,
 while the later ordinary suite retains its failures. Unrelated failures remain separately classified.
 Each exact run has a nine-minute Python deadline, uses nice, eight cargo jobs, locked offline dependencies and
-line-tables-only debug information. Hosted Build workspace first supplies the dependency cache.
+line-tables-only debug information. The preceding workspace build and all-target Clippy gates supply test dependencies.
 The runner archives complete raw logs, exit codes, recorded child PIDs, validator outcomes and controls in
 `dev/output/proofs/hosted/logs/`; the next always-run step uploads them per platform.
 `--local` excludes previously denied socket fixtures and cannot claim a hosted/platform verdict.
