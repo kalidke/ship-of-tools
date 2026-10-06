@@ -229,7 +229,115 @@ jobs:
         shell: bash
         timeout-minutes: 5
         working-directory: .
-        run: bash comm/tests/test-heartbeat-ctx-wait.sh
+        run: |
+          set +e
+          umask 022
+          nice -n 10 timeout 5m bash comm/tests/test-heartbeat-ctx-wait.sh
+          HB_RC=$?
+          printf 'head exit %s expected 0\n' "$HB_RC"
+          exit "$HB_RC"
+
+      - name: HB-WAIT parent deadline proofs
+        shell: bash
+        timeout-minutes: 5
+        working-directory: .
+        run: |
+          #!/usr/bin/env bash
+          # Hosted parent/reversal: exact P context block, current tests and shared owner.
+          set -uo pipefail
+          set +e
+          umask 022
+          HB_LABEL=parent
+          HB_CI_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hb-wait-proof-XXXXXX")" || exit 2
+          python3 -B - "$HB_CI_ROOT" <<'PY_RESTORE'
+          from pathlib import Path
+          import sys, subprocess, tarfile
+          root=Path(sys.argv[1])
+          archive=root/'copy.tar'
+          with archive.open('wb') as output:
+              subprocess.run(['git','archive','HEAD'],stdout=output,check=True)
+          with tarfile.open(archive) as source:
+              source.extractall(root)
+          archive.unlink()
+          old = '# TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,\n# and because this hook fires on EVERY PostToolUse a stalled child piles up\n# one wedged bash per tool call -- ~150 of them on one box, which starved Git\n# Bash startup past 120s and stalled the harness\'s own Bash tool. "A hook must\n# never wedge a turn" (header, above), so cap the child and carry on\n# contextless if it stalls: a missing NAME just exits 0 a few lines down,\n# which is the same no-op as not being a comm agent.\n# Bash-native watchdog, not an external `timeout`: in Git Bash a bare\n# `timeout` resolves to C:\\WINDOWS\\system32\\timeout.exe, which is NOT\n# coreutils and takes no command, and /usr/bin/timeout isn\'t guaranteed\n# either. Run comm-context.sh in the background, poll every 50 ms for up to\n# 10s (a context call that ends in 30 ms costs 50 ms, not a whole second;\n# SOT_HB_CTX_TIMEOUT_TICKS shortens the bound for tests), kill it\n# if it\'s still alive past that -- collect its output only when it finished\n# on its own (a non-zero exit from a fast, legitimate no-context run still\n# has its output used, matching the old unconditional `|| true`).\nif [ -x "$SELF_DIR/comm-context.sh" ]; then\n    _ctx_out="$COMM_HOME/state/.hb-ctx-$$"\n    "$SELF_DIR/comm-context.sh" >"$_ctx_out" 2>/dev/null &\n    _ctx_pid=$!\n    _ticks="${SOT_HB_CTX_TIMEOUT_TICKS:-200}"\n    case "$_ticks" in \'\'|*[!0-9]*) _ticks=200 ;; esac\n    _waited=0\n    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt "$_ticks" ]; do\n        sleep 0.05\n        _waited=$((_waited + 1))\n    done\n    if kill -0 "$_ctx_pid" 2>/dev/null; then\n        kill "$_ctx_pid" 2>/dev/null\n        _ctx=""\n    else\n        _ctx="$(cat "$_ctx_out" 2>/dev/null)"\n    fi\n    wait "$_ctx_pid" 2>/dev/null\n    rm -f "${_ctx_out:?}" 2>/dev/null\n    [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true\nfi\n'
+          p=Path(sys.argv[1])/'comm/work_state/hooks/comm-status-heartbeat.sh'
+          s=p.read_text()
+          a=s.index('# Context resolution runs under')
+          b=s.index('[ -n "${NAME:-}" ] || exit 0',a)
+          p.write_text(s[:a]+old+s[b:])
+          PY_RESTORE
+          nice -n 10 timeout 5m bash "$HB_CI_ROOT/comm/tests/test-heartbeat-ctx-wait.sh" >"$HB_CI_ROOT/result.log" 2>&1
+          HB_RC=$?
+          cat "$HB_CI_ROOT/result.log"
+          printf '%s exit %s expected 1
+          ' "$HB_LABEL" "$HB_RC"
+          [ "$HB_RC" -eq 1 ] || exit 1
+          for HB_FAILURE in     'FAIL R1: foreground child kept heartbeat waiting'     'FAIL R3: unfinished context group stamped the row'     'FAIL R4: context ran without its bound'     'FAIL diagnostics: completed context diagnostics were lost'     'FAIL B1-0: zero budget started context'     'FAIL B1-000: zero budget started context'     'FAIL B2-10: positive subsecond budget cancelled a releasable context'     'FAIL B2-0010: positive subsecond budget cancelled a releasable context'     'FAIL B3-21: fractional second budget cancelled a releasable context'     'FAIL B4: unusable numeric budget started context'; do
+              grep -Fqx "$HB_FAILURE" "$HB_CI_ROOT/result.log" || exit 1
+          done
+          case "$(uname -s)" in
+              MINGW*|MSYS*|CYGWIN*)
+                  grep -Fqx 'FAIL R2: foreground child kept heartbeat waiting' "$HB_CI_ROOT/result.log" || exit 1
+                  grep -Eq '^P5 .*entry=1.*cleanup=True$' "$HB_CI_ROOT/result.log" || exit 1
+                  grep -Eq '^FAIL P5: (hook exit and both EOFs were not observed|registry stamp preservation failed)$' "$HB_CI_ROOT/result.log" || exit 1 ;;
+              *) grep -Fqx 'FAIL R2: TERM-deaf context kept heartbeat waiting' "$HB_CI_ROOT/result.log" || exit 1 ;;
+          esac
+          for HB_BUDGET in B2-10 B2-0010 B3-21; do
+              grep -E "^$HB_BUDGET invocation-to-readiness=.*events=.*ready,cancelled,completed$" "$HB_CI_ROOT/result.log" || exit 1
+          done
+          grep -Fqx 'heartbeat: 27 passed, 13 failed; exit/both EOFs/cleanup observed separately' "$HB_CI_ROOT/result.log" || exit 1
+          rm -rf "${HB_CI_ROOT:?}"
+
+      - name: HB-WAIT revert deadline proofs
+        shell: bash
+        timeout-minutes: 5
+        working-directory: .
+        run: |
+          #!/usr/bin/env bash
+          # Hosted parent/reversal: exact P context block, current tests and shared owner.
+          set -uo pipefail
+          set +e
+          umask 022
+          HB_LABEL=revert
+          HB_CI_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/hb-wait-proof-XXXXXX")" || exit 2
+          python3 -B - "$HB_CI_ROOT" <<'PY_RESTORE'
+          from pathlib import Path
+          import sys, subprocess, tarfile
+          root=Path(sys.argv[1])
+          archive=root/'copy.tar'
+          with archive.open('wb') as output:
+              subprocess.run(['git','archive','HEAD'],stdout=output,check=True)
+          with tarfile.open(archive) as source:
+              source.extractall(root)
+          archive.unlink()
+          old = '# TIMEOUT GUARD (2026-09-17): comm-context.sh was observed hung on Windows,\n# and because this hook fires on EVERY PostToolUse a stalled child piles up\n# one wedged bash per tool call -- ~150 of them on one box, which starved Git\n# Bash startup past 120s and stalled the harness\'s own Bash tool. "A hook must\n# never wedge a turn" (header, above), so cap the child and carry on\n# contextless if it stalls: a missing NAME just exits 0 a few lines down,\n# which is the same no-op as not being a comm agent.\n# Bash-native watchdog, not an external `timeout`: in Git Bash a bare\n# `timeout` resolves to C:\\WINDOWS\\system32\\timeout.exe, which is NOT\n# coreutils and takes no command, and /usr/bin/timeout isn\'t guaranteed\n# either. Run comm-context.sh in the background, poll every 50 ms for up to\n# 10s (a context call that ends in 30 ms costs 50 ms, not a whole second;\n# SOT_HB_CTX_TIMEOUT_TICKS shortens the bound for tests), kill it\n# if it\'s still alive past that -- collect its output only when it finished\n# on its own (a non-zero exit from a fast, legitimate no-context run still\n# has its output used, matching the old unconditional `|| true`).\nif [ -x "$SELF_DIR/comm-context.sh" ]; then\n    _ctx_out="$COMM_HOME/state/.hb-ctx-$$"\n    "$SELF_DIR/comm-context.sh" >"$_ctx_out" 2>/dev/null &\n    _ctx_pid=$!\n    _ticks="${SOT_HB_CTX_TIMEOUT_TICKS:-200}"\n    case "$_ticks" in \'\'|*[!0-9]*) _ticks=200 ;; esac\n    _waited=0\n    while kill -0 "$_ctx_pid" 2>/dev/null && [ "$_waited" -lt "$_ticks" ]; do\n        sleep 0.05\n        _waited=$((_waited + 1))\n    done\n    if kill -0 "$_ctx_pid" 2>/dev/null; then\n        kill "$_ctx_pid" 2>/dev/null\n        _ctx=""\n    else\n        _ctx="$(cat "$_ctx_out" 2>/dev/null)"\n    fi\n    wait "$_ctx_pid" 2>/dev/null\n    rm -f "${_ctx_out:?}" 2>/dev/null\n    [ -n "${_ctx:-}" ] && eval "$_ctx" 2>/dev/null || true\nfi\n'
+          p=Path(sys.argv[1])/'comm/work_state/hooks/comm-status-heartbeat.sh'
+          s=p.read_text()
+          a=s.index('# Context resolution runs under')
+          b=s.index('[ -n "${NAME:-}" ] || exit 0',a)
+          p.write_text(s[:a]+old+s[b:])
+          PY_RESTORE
+          nice -n 10 timeout 5m bash "$HB_CI_ROOT/comm/tests/test-heartbeat-ctx-wait.sh" >"$HB_CI_ROOT/result.log" 2>&1
+          HB_RC=$?
+          cat "$HB_CI_ROOT/result.log"
+          printf '%s exit %s expected 1
+          ' "$HB_LABEL" "$HB_RC"
+          [ "$HB_RC" -eq 1 ] || exit 1
+          for HB_FAILURE in     'FAIL R1: foreground child kept heartbeat waiting'     'FAIL R3: unfinished context group stamped the row'     'FAIL R4: context ran without its bound'     'FAIL diagnostics: completed context diagnostics were lost'     'FAIL B1-0: zero budget started context'     'FAIL B1-000: zero budget started context'     'FAIL B2-10: positive subsecond budget cancelled a releasable context'     'FAIL B2-0010: positive subsecond budget cancelled a releasable context'     'FAIL B3-21: fractional second budget cancelled a releasable context'     'FAIL B4: unusable numeric budget started context'; do
+              grep -Fqx "$HB_FAILURE" "$HB_CI_ROOT/result.log" || exit 1
+          done
+          case "$(uname -s)" in
+              MINGW*|MSYS*|CYGWIN*)
+                  grep -Fqx 'FAIL R2: foreground child kept heartbeat waiting' "$HB_CI_ROOT/result.log" || exit 1
+                  grep -Eq '^P5 .*entry=1.*cleanup=True$' "$HB_CI_ROOT/result.log" || exit 1
+                  grep -Eq '^FAIL P5: (hook exit and both EOFs were not observed|registry stamp preservation failed)$' "$HB_CI_ROOT/result.log" || exit 1 ;;
+              *) grep -Fqx 'FAIL R2: TERM-deaf context kept heartbeat waiting' "$HB_CI_ROOT/result.log" || exit 1 ;;
+          esac
+          for HB_BUDGET in B2-10 B2-0010 B3-21; do
+              grep -E "^$HB_BUDGET invocation-to-readiness=.*events=.*ready,cancelled,completed$" "$HB_CI_ROOT/result.log" || exit 1
+          done
+          grep -Fqx 'heartbeat: 27 passed, 13 failed; exit/both EOFs/cleanup observed separately' "$HB_CI_ROOT/result.log" || exit 1
+          rm -rf "${HB_CI_ROOT:?}"
 
       - name: Test sot-comm disambiguation (hermetic)
         if: matrix.os == 'ubuntu-latest'
