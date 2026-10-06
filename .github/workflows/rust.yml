@@ -68,6 +68,53 @@ jobs:
           workspaces: rust
       - name: Build workspace
         run: cargo build --workspace --locked
+
+      - name: MAC-SOCK-a macOS checkpoint (300 invocations)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, signal, subprocess, sys
+          os.umask(0o22)
+          root = pathlib.Path.cwd()
+          target = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(root / "target")))
+          logs = target / "logs"
+          logs.mkdir(parents=True, exist_ok=True)
+          child_env = dict(os.environ)
+          child_env.update(CARGO_NET_OFFLINE="true", CARGO_PROFILE_DEV_DEBUG="line-tables-only", CARGO_TARGET_DIR=str(target))
+          def run(label, test, expected, needle="", prerequisite=""):
+              command = ["nice", "-n", "10", "cargo", "test", "-p", "sot-log", "--test", "socket_unix", "-j", "8", "--locked", "--"]
+              if test: command += [test, "--exact"]
+              command += ["--nocapture"]
+              log = logs / (label + ".log")
+              with log.open("w") as stream:
+                  child = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, env=child_env, start_new_session=True)
+                  try: status = child.wait(timeout=540)
+                  except subprocess.TimeoutExpired:
+                      os.killpg(child.pid, signal.SIGKILL)
+                      child.wait(timeout=5)
+                      status = 124
+              data = log.read_text()
+              data = data.replace(str(root.parent), "<repo>").replace(str(target), "<target>")
+              data = re.sub(r"/(?:home|Users)/[^/\s]+", "<home>", data)
+              log.write_text(data)
+              print("::group::" + label + ".log", flush=True)
+              print(data, flush=True)
+              print("::endgroup::", flush=True)
+              print(f"{label} exit {status} expected {expected}", flush=True)
+              if status != expected or not re.search(r"running [1-9][0-9]* tests?", data): sys.exit(1)
+              if needle and needle not in data: sys.exit(1)
+              if prerequisite and prerequisite not in data: sys.exit(1)
+              if expected and "stack backtrace:" not in data: sys.exit(1)
+              return data
+          print("MAC-SOCK-a A1=c9ae5ba7ff7e1877c1abf3e96770a0c78d3c71e7 variant=macos", flush=True)
+          run("ordinary-socket-suite", "", 0)
+          N = 300
+          for iteration in range(1, N + 1):
+              print(f"macsock-loop iteration={iteration} a1=c9ae5ba7ff7e1877c1abf3e96770a0c78d3c71e7", flush=True)
+              run(f"macsock-loop-{iteration:03d}", "close::server_close_yields_client_eof_and_client_drop_yields_server_closed", 0)
+          print("macsock-loop successful_invocations=300 cause=open", flush=True)
+          PY
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length
