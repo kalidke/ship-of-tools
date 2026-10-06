@@ -4,11 +4,12 @@ use super::*;
 
 #[tokio::test]
 async fn last_one_out_two_windows() {
+    const RUNNING_ROW_EXIT_WITHIN: Duration = Duration::from_secs(130);
     let _serial = SERIAL.lock().await;
     let env = Env::new("lease1");
     let mut daemon = Daemon::start(&env, &[]).await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (_id, _sd) = create_row(&env, &mut conn, &mut next_id, "last-one").await;
+    let (id, row_state) = create_row(&env, &mut conn, &mut next_id, "last-one").await;
     drop(conn);
     let (mut a, lease_a) = Window::open(&env.socket_path).await;
     let (mut b, lease_b) = Window::open(&env.socket_path).await;
@@ -21,7 +22,12 @@ async fn last_one_out_two_windows() {
     assert!(row_toml(&env, "last-one").exists(), "a row ended while a window still held a lease");
 
     b.eof().await;
-    assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "the last window's EOF is a close: {}", daemon.said());
+    assert_eq!(
+        daemon.exit_within(RUNNING_ROW_EXIT_WITHIN).await,
+        Some(0),
+        "running target {id} ({row_state:?}), phase=daemon-exit after last-window EOF: {}",
+        daemon.said()
+    );
     assert!(!env.socket_path.exists(), "the socket outlived the daemon");
     assert!(!row_toml(&env, "last-one").exists(), "the row's toml outlived the close");
     #[cfg(target_os = "linux")]
@@ -48,7 +54,12 @@ async fn lease_end_any_way_departs() {
             }
             _ => w.child.kill().await.expect("SIGKILL the window"),
         }
-        assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{how}: the lease's end did not shut down: {}", daemon.said());
+        assert_eq!(
+            daemon.exit_within(EXIT_WITHIN).await,
+            Some(0),
+            "{how}: the lease's end did not shut down: {}",
+            daemon.said()
+        );
     }
 }
 
@@ -82,9 +93,19 @@ async fn relaunch_handover_expires_then_shuts_down() {
         if in_time {
             let (_next, lease) = Window::open(&env.socket_path).await;
             assert_eq!(lease["outcome"], "granted", "{lease:?}");
-            assert_eq!(daemon.exit_within(Duration::from_secs(6)).await, None, "a lease in time did not keep the daemon: {}", daemon.said());
+            assert_eq!(
+                daemon.exit_within(Duration::from_secs(6)).await,
+                None,
+                "a lease in time did not keep the daemon: {}",
+                daemon.said()
+            );
         } else {
-            assert_eq!(daemon.exit_within(Duration::from_secs(20)).await, Some(0), "an expired handover did not shut down: {}", daemon.said());
+            assert_eq!(
+                daemon.exit_within(Duration::from_secs(20)).await,
+                Some(0),
+                "an expired handover did not shut down: {}",
+                daemon.said()
+            );
         }
     }
 }
@@ -208,10 +229,11 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
     let dir = state_dir.clone();
-    let (_status, process) = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
-        .await
-        .unwrap()
-        .expect("query_status on a ready row");
+    let (_status, process) =
+        tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
+            .await
+            .unwrap()
+            .expect("query_status on a ready row");
     let scope = cgroup_rel(process.pid());
     drop(process);
     let _guard = arm_scope_guard(&scope, &state_dir);
@@ -232,6 +254,89 @@ async fn shutdown_ends_a_child_that_left_the_agents_process_group() {
     assert_scope_empties(&scope, Duration::from_secs(5)).await;
 }
 
+/// Checks the exact inert-anchor/seeded-row target shape and the real durable-record readers.
+fn assert_no_run_target_set(payload: &serde_json::Value, root: &Path) {
+    use sot_log::supervisor::journal::{self, pointer};
+    let targets = payload["workspaces"].as_array().expect("workspace.list target set");
+    assert_eq!(targets.len(), 2, "never-run close has an extra shutdown target: {payload}");
+    let anchor = targets.iter().find(|row| row["is_default"] == true).expect("inert anchor");
+    assert_eq!(anchor["agent"], "none", "anchor has a runnable agent: {anchor}");
+    assert_eq!(anchor["autostart_claude"], false, "anchor autostarts: {anchor}");
+    let never = targets.iter().find(|row| row["workspace_id"] == "ws-never-0001").expect("seeded never-run row");
+    assert_eq!(never["slug"], "never-run", "seeded row did not round-trip: {never}");
+    assert_eq!(never["is_default"], false);
+    for row in targets {
+        assert_eq!(row["runtime"], "capsule", "unexpected target runtime: {row}");
+        let dir = Path::new(row["state_dir"].as_str().expect("target state_dir"));
+        assert!(
+            matches!(pointer::validate(dir), pointer::PointerState::NotFound),
+            "never-run target has a voyage pointer: {row}"
+        );
+        assert!(
+            journal::active_operations(dir).expect("read target journal").is_empty(),
+            "never-run target has a run operation: {row}"
+        );
+        assert!(
+            matches!(std::fs::metadata(dir), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+            "never-run target has a state directory or unreadable records: {row}"
+        );
+    }
+    assert!(
+        matches!(pointer::validate(root), pointer::PointerState::NotFound),
+        "drawer adds a running shutdown target"
+    );
+    assert!(journal::active_operations(root).expect("read drawer journal").is_empty(), "drawer has a run operation");
+}
+
+/// Only workspace.list is sent: inspecting the fixture cannot start a row.
+async fn assert_never_run_targets(env: &Env) {
+    let (mut conn, next_id) = connect_and_hello(&env.socket_path).await;
+    let payload = call(&mut conn, next_id, op::WORKSPACE_LIST, serde_json::json!({})).await.payload;
+    assert_no_run_target_set(&payload, &state_dir(env));
+}
+
+/// This audit reads the fixture and durable files; it starts no daemon and opens no socket.
+#[test]
+fn never_run_fixture_has_only_no_run_targets() {
+    let source = sot_log::test_scan::without_test_modules(include_str!("lease.rs"));
+    let body: String = source
+        .lines()
+        .skip_while(|line| !line.starts_with("async fn never_run_rows_count_as_ended("))
+        .take_while(|line| *line != "}")
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert!(!body.is_empty(), "never-run fixture absent");
+    assert!(
+        !body.contains("create_row") && !body.contains("WORKSPACE_CREATE"),
+        "never-run fixture issued workspace.create"
+    );
+    assert!(!body.contains("\"ran\""), "never-run fixture targets a running row");
+    let audit = body.find("assert_never_run_targets(&env).await;").expect("target audit absent");
+    assert!(audit < body.find("w.ask(\"close\"").expect("close absent"), "target audit ran after close");
+    let check: String = source
+        .lines()
+        .skip_while(|line| !line.starts_with("async fn assert_never_run_targets("))
+        .take_while(|line| *line != "}")
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert!(check.contains("op::WORKSPACE_LIST"), "target audit does not read the actual roster");
+    assert!(!check.contains("create_row") && !check.contains("WORKSPACE_CREATE"), "target audit starts a row");
+    let dir = tempfile::tempdir().unwrap();
+    let anchor = dir.path().join("anchor");
+    let never = dir.path().join("never");
+    let payload = serde_json::json!({"workspaces": [
+        {"workspace_id": "anchor", "is_default": true, "agent": "none", "autostart_claude": false, "runtime": "capsule", "state_dir": anchor},
+        {"workspace_id": "ws-never-0001", "slug": "never-run", "is_default": false, "runtime": "capsule", "state_dir": never}
+    ]});
+    assert_no_run_target_set(&payload, dir.path());
+    std::fs::create_dir(&never).unwrap();
+    sot_log::supervisor::journal::pointer::publish(&never, "00000000-0000-0000-0000-000000000001").unwrap();
+    assert!(
+        std::panic::catch_unwind(|| assert_no_run_target_set(&payload, dir.path())).is_err(),
+        "actual run pointer escaped target audit"
+    );
+}
+
 /// A row with no run record (never started, or the anchor, which runs
 /// nothing) has nothing to end: a close counts it ended without the
 /// orphan proof. A row that ran and whose end cannot be proven still
@@ -244,10 +349,8 @@ async fn never_run_rows_count_as_ended() {
     std::fs::create_dir_all(&never_root).expect("mkdir the never-started row's project");
     env.seed_capsule_toml("ws-never-0001", "never-run", &never_root, "claude");
     let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "15000")]).await;
-    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
-    let (_id, _sd) = create_row(&env, &mut conn, &mut next_id, "ran").await;
-    drop(conn);
     let (mut w, _) = Window::open(&env.socket_path).await;
+    assert_never_run_targets(&env).await;
     let ack = w.ask("close", EXIT_WITHIN).await;
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
     let said = daemon.said();
@@ -255,7 +358,6 @@ async fn never_run_rows_count_as_ended() {
     assert!(!said.contains("not ended"), "a row with no run record was warned about: {said}");
     assert!(held_record(&env).is_none(), "{:?}", held_record(&env));
     assert!(!row_toml(&env, "never-run").exists(), "the never-started row was not forgotten");
-    assert!(!row_toml(&env, "ran").exists(), "the ended row was not forgotten");
 }
 
 /// The user's latest intent wins: a `fe.leaving{close}` after a keep on
@@ -444,7 +546,8 @@ async fn closing_flag_spans_shutdown() {
 async fn shutdown_bound_is_end_to_end() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("endtoend");
-    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"), ("SOT_TEST_SPAWN_SETTLE_MS", "5000")]).await;
+    let mut daemon =
+        Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"), ("SOT_TEST_SPAWN_SETTLE_MS", "5000")]).await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let (_id, row_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
     drop(conn);

@@ -51,8 +51,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
   - other process starts in libc and windows-sys, among them libc's other exec, fork and spawn functions and `popen`,
     and windows-sys's `CreateProcessWithLogonW`, `CreateProcessWithTokenW`, `WinExec`, `ShellExecute*`,
     `SHCreateProcessAsUserW` and `SHOpenWithDialog`, called nowhere in the workspace today (libc:
-    `rust/backend/Cargo.toml:37`, `rust/log/Cargo.toml:54`, `rust/updater/Cargo.toml` (its unix dependencies, from
-    R9); windows-sys features: `rust/backend/Cargo.toml:55`,
+    `rust/backend/Cargo.toml:37`, `rust/log/Cargo.toml:54`, `rust/updater/Cargo.toml:19`; windows-sys features: `rust/backend/Cargo.toml:55`,
     `rust/frontend/Cargo.toml:107-114`, `rust/log/Cargo.toml:72-84`);
   - a start inside any other dependency (for example winresource's resource compile in `rust/frontend/build.rs`), or a
     raw `syscall`;
@@ -63,10 +62,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
   sockets, files and pipes non-inheritable; no socket or pipe is made through a constructor `rust/clippy.toml` lists for
   this rule (the inheritable-handles group, the two raw-security-attribute constructors it names under accepts and
   local endpoint dials, and `tokio::net::TcpStream::connect` under TCP dials) but at a statement whose allow says
-  why; every accepted socket is cleared at accept
-  (`serve_own`); the daemon and the window clear their own inherited standard handles first (`harden_own_stdio`); and
-  the browser opener and `gio trash` are handed null standard handles (`spawn_opener`, `trash_file`), because std
-  passes an inherited standard handle to a child as an inheritable copy.
+  why; every accepted socket is cleared at accept (`serve_own`); the daemon and the window clear their own inherited standard handles first (`harden_own_stdio`); and the browser opener and `gio trash` are handed null standard handles (`spawn_opener`, `trash_file`), because std passes an inherited standard handle to a child as an inheritable copy.
   - Not held for this rule, and non-inheritable at every call today:
     - windows-sys's `CreatePipe` (one call, null attributes, `rust/log/src/capsule/producer/conpty/mod.rs:171`);
     - the constructors that take security attributes (`CreateFileW`, `CreateNamedPipeW` and their kin, held by the

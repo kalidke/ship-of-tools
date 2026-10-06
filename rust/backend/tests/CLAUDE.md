@@ -29,7 +29,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `capsule_workspaces/`: rows; a real `sotd` and a real detached `sot-capsule` over a real local socket (`main.rs` plus modules)
 - `lane_bridge/`: rows; a frontend attach client reaching a capsule row through a daemon and a Unix-socket relay that can be cut, blackholed and throttled
 - `switch_latency/`: server; a slow request does not block a later cheap reply on one connection; its `dead_kernel` module is sidecars
-- `window_lease/`: lifecycle; the close lifecycle's daemon half, one daemon per state root
+- `window_lease/`: lifecycle; one daemon per state root; the never-run close fixture has no run record, and running-row shutdown is checked separately with the production shutdown budget.
 - `support/`: the shared fixture: `mod.rs` (helpers, `poll_until`, `BOUND`, the attach wake flag), `sotd.rs` (`sotd_command`, also loaded alone by suites that need nothing else), `registry.rs` (`write_registry`), `env.rs` (`Env`), `procs.rs` (process spawning, the supervisor kill, the process count)
 - `fixtures/`: data read by the backend's own unit tests (`comm/wake/screen_tests.rs`, `sidecars/monitor_tests.rs`) by path, not suites
 
