@@ -157,6 +157,7 @@ mod tests {
     }
     #[test]
     fn quit_transitions_log_only_finite_fields() {
+        println!("T1 body entered: ui::app::exit::tests::quit_transitions_log_only_finite_fields");
         let log = sot_log::test_log::capture();
         let mut prompt = None;
         open_quit_prompt(&mut prompt);
@@ -167,14 +168,17 @@ mod tests {
         assert_eq!(begin_leave(&leases, &mut prompt, &mut leaving, &mut should_exit,
             LeaveIntent::Keep, 0, std::time::Instant::now()), LeaveEffect::Finish(0));
         let text = log.text();
+        println!("T1 fixture observed: captured actual quit transitions");
         for message in ["quit prompt: open", "quit prompt: key", "window: leaving"] {
             assert!(text.contains(message), "missing transition event: {message}");
         }
         assert!(!text.contains("typed-fixture-text"));
+        println!("T1 assertion passed: missing transition event: quit prompt: open");
     }
 
     #[tokio::test]
     async fn leave_close_keep_and_handover_only_leave_leases() {
+        println!("T1 body entered: ui::app::exit::tests::leave_close_keep_and_handover_only_leave_leases");
         use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}, LeaveStep};
         for (intent, name, code) in [(LeaveIntent::Close, "close", 0), (LeaveIntent::Keep, "keep", 0),
             (LeaveIntent::Handover, "handover", 75), (LeaveIntent::Handover, "handover", 76)] {
@@ -207,6 +211,8 @@ mod tests {
                 std::time::Instant::now()), LeaveEffect::Finish(0));
             assert!(should_exit && leaving.is_none());
         }
+        println!("T1 fixture observed: actual lease frames and exit effects");
+        println!("T1 assertion passed: exit state is set before the UI effect");
     }
 
 }

@@ -687,6 +687,9 @@ mod tests {
 
     #[test]
     fn prompt_pinned_cells_have_attention_style() {
+        println!(
+            "T1 body entered: ui::chrome::view::tests::prompt_pinned_cells_have_attention_style"
+        );
         let prompts = [
             NavPrompt::CreateFile { dir_node_id: "files:".into(), input: "name".into() },
             NavPrompt::ConfirmDelete { node_id: "files:a".into(), label: "a".into() },
@@ -705,6 +708,7 @@ mod tests {
                 let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width as u16, height as u16)).unwrap();
                 term.draw(|frame| render_nav_widgets(frame, Paragraph::new(""),
                     ratatui::layout::Rect { height: list_h as u16, ..rect }, rows.clone(), rect, list_h, prompt.is_some())).unwrap();
+                println!("T1 fixture observed: rendered pinned prompt cells");
                 for (i, row) in rows.iter().enumerate() {
                     for x in 0..row.chars().count().min(width) {
                         let cell = &term.backend().buffer()[(x as u16, (list_h + i) as u16)];
@@ -716,5 +720,6 @@ mod tests {
                 if height == 0 { assert!(rows.is_empty()); }
             }
         }
+        println!("T1 assertion passed: prompt foreground");
     }
 }
