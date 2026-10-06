@@ -162,48 +162,14 @@ producer() {
   # list the four slow binaries; a split binary runs only per test
   if [ "$BUILD_RC" -eq 0 ]; then
     for n in "${SPLIT[@]}"; do
-      if ! row_for "$n"; then
-        echo "split-missing $n" >> "$L/summary.txt"; fin "split-$n" 101; continue
-      fi
-      EMITTED["bin:$exe"]=1
-      (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse) \
-        > "$L/$n.all.list" 2> "$L/$n.list.log"
+      if ! row_for "$n"; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
+      out=$(cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --format terse 2> "$L/$n.list.log")
       lrc=$?
-      (cd "$pkg" && "${TO[@]}" "${CE[@]}" CARGO_MANIFEST_DIR="$pkg" "$exe" --list --ignored --format terse) \
-        > "$L/$n.ignored.list" 2>> "$L/$n.list.log"
-      irc=$?
-      if [ "$lrc" -ne 0 ] || [ "$irc" -ne 0 ]; then
-        echo "split-missing $n: list exits $lrc/$irc" >> "$L/summary.txt"; fin "split-$n" 101; continue
-      fi
-      out=$(python3 - "$L/$n.all.list" "$L/$n.ignored.list" <<'PYLIST'
-import sys
-
-def names(path):
-    rows = [line[:-6] for line in open(path).read().splitlines() if line.endswith(': test')]
-    if len(rows) != len(set(rows)):
-        raise ValueError('duplicate listed test')
-    return rows
-
-try:
-    complete, ignored = (names(path) for path in sys.argv[1:])
-    if not complete or not set(ignored).issubset(complete):
-        raise ValueError('empty or inconsistent complete/ignored lists')
-    print('\n'.join(name for name in complete if name not in set(ignored)))
-except (OSError, ValueError) as error:
-    print('split listing: ' + str(error), file=sys.stderr)
-    sys.exit(101)
-PYLIST
-      )
-      prc=$?
-      if [ "$prc" -ne 0 ]; then
-        echo "split-missing $n: invalid listing" >> "$L/summary.txt"; fin "split-$n" 101; continue
-      fi
-      while IFS= read -r ignored; do
-        [[ $ignored = *': test' ]] || continue
-        echo "split-skipped $n/${ignored%: test}" >> "$L/summary.txt"
-      done < "$L/$n.ignored.list"
-      LISTED[$n]=$out
+      out=$(grep ': test$' <<< "$out")
+      if [ "$lrc" -ne 0 ] || [ -z "$out" ]; then echo "split-missing $n" >> "$L/summary.txt"; continue; fi
+      LISTED[$n]=${out//: test/}
       SPLIT_EXE[$n]=$exe SPLIT_PKG[$n]=$pkg
+      EMITTED["bin:$exe"]=1
     done
   fi
 
