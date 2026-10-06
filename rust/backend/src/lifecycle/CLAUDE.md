@@ -21,6 +21,7 @@ computer's sessions end (ADR 0050).
 - The window's half, rust/frontend/src/lease.rs.
 
 ## Promises
+- The window's forced deliver_queued wait covers writes already queued to all holders with one std::time::Instant deadline; it does not wait for daemon acknowledgements and its deadline does not depend on the transport worker.
 - A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept
   (`lease::claim`, called by `Leases::grant`).
 - Deadlines are wall-clock unix milliseconds, so a persisted handover deadline survives a restart (`startup_plan`

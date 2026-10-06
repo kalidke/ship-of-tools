@@ -25,3 +25,4 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - A frame runs in `redraw`'s fixed order: upkeep, the chrome draw, the pixel layout, the text prepare, one render pass,
   then the capture's staging, submit, present, the acks and the capture's write.
 - While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.
+- A second close resolves close_now's code and makes one bounded deliver_queued attempt before the window finishes; a write timeout is reported and is not a daemon acknowledgement.
