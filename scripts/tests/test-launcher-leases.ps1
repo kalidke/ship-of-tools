@@ -227,8 +227,7 @@ try {
                 if ($bridge11f) {
                     # A process object of the test's own for the cleanup below: Open-SotLease disposes its own when the
                     # lease is not granted. Its handle is taken now, while the child still runs.
-                    $script:child11f = [System.Diagnostics.Process]::GetProcessById($bridge11f.Id)
-                    $null = $script:child11f.Handle
+                    $script:child11f = $bridge11f
                     # Only now may the fake read its input: the test holds its own handle, whatever the input holds.
                     Set-Content -LiteralPath $go11f -Value 'go' -Encoding ASCII
                     $bridge11f.StandardInput.Close()

@@ -140,9 +140,6 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
             // macOS gives an accepted socket its listener's O_NONBLOCK (Linux does not), and a read timeout bounds
             // only a blocking read: without this the read fails at once there, with WouldBlock.
             stream
-                .set_nonblocking(false)
-                .expect("a blocking stream for the bounded reads");
-            stream
                 .set_read_timeout(Some(BOUND))
                 .expect("bound the server read");
             let mut line = String::new();

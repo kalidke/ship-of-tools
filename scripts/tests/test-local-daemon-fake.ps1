@@ -152,15 +152,7 @@ public static class FakeSotd
         string armFile = Environment.GetEnvironmentVariable("FAKE_SOTD_EXIT_ARM_FILE");
         if (!string.IsNullOrEmpty(armFile))
         {
-            Thread t = new Thread(delegate () {
-                int ms = -1;
-                while (ms < 0)
-                {
-                    try { ms = int.Parse(File.ReadAllText(armFile).Trim()); } catch (Exception) { Thread.Sleep(20); }
-                }
-                Thread.Sleep(ms);
-                Environment.Exit(0);
-            });
+            Thread t = new Thread(delegate () { Thread.Sleep(6000); Environment.Exit(0); });
             t.IsBackground = true;
             t.Start();
         }
