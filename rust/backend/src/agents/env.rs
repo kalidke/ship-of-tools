@@ -152,6 +152,7 @@ pub(crate) fn account_spawn_env(
             // before this existed, and a row that will not start is
             // worse. Claude rows only -- no other agent has this dialog.
             if agent_kind == "claude" {
+                use crate::agents::folder_trust::TrustOutcome;
                 let prepared =
                     crate::agents::folder_trust::trusted_root_prefix().and_then(|prefix| {
                         crate::agents::folder_trust::ensure_folder_trusted(
@@ -160,15 +161,24 @@ pub(crate) fn account_spawn_env(
                             cwd,
                             prefix.as_deref(),
                         )
+                        .map(|outcome| (outcome, prefix))
                     });
-                if let Err(msg) = prepared {
-                    tracing::warn!(
-                        workspace_id,
-                        cwd = ?cwd,
-                        error = %msg,
-                        "capsule spawn: folder trust not recorded; the agent starts anyway and \
-                         may stop at the folder-trust dialog"
-                    );
+                match prepared {
+                    Ok((TrustOutcome::Outside, prefix)) => tracing::warn!(
+                        workspace_id, cwd = ?cwd, prefix = ?prefix,
+                        outcome = ?TrustOutcome::Outside, "folder trust preparation skipped"
+                    ),
+                    Ok((TrustOutcome::NotDeclared, _)) => tracing::warn!(
+                        workspace_id, declaration = ?crate::agents::trust_declaration::declaration_file(),
+                        outcome = ?TrustOutcome::NotDeclared, "folder trust preparation skipped"
+                    ),
+                    Ok((outcome, _)) => {
+                        tracing::debug!(workspace_id, cwd = ?cwd, outcome = ?outcome, "folder trust preparation")
+                    }
+                    Err(msg) => tracing::warn!(
+                        workspace_id, cwd = ?cwd, error = %msg,
+                        "folder trust not recorded; the agent starts anyway"
+                    ),
                 }
             }
             Ok(extra)
@@ -466,5 +476,103 @@ mod trust_declaration_controls {
             "agents::env::trust_declaration_controls::invalid_declaration_is_diagnostic_and_writes_nothing") { return; }
         preparation_case(true);
         println!("W1 C1 invalid declaration diagnostic PASS");
+    }
+}
+
+#[cfg(test)]
+mod trust_scope_controls {
+    use super::*;
+    use crate::agents::support_tests::{platform_spelling, self_file_env_guarded};
+
+    fn scope_case(kind: &str) {
+        let _guard = self_file_env_guarded();
+        let temp = tempfile::tempdir().unwrap();
+        let home = platform_spelling(temp.path());
+        std::env::set_var("HOME", &home);
+        std::env::set_var("USERPROFILE", &home);
+        std::env::set_var("XDG_CONFIG_HOME", home.join("config"));
+        std::env::set_var("LOCALAPPDATA", home.join("local"));
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let prefix = home.join("projects");
+        let inside = prefix.join("repo");
+        let outside = home.join("outside");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let config = crate::rows::store::app_config_dir();
+        std::fs::create_dir_all(&config).unwrap();
+        if kind != "undeclared" {
+            let text = toml::to_string(
+                &serde_json::json!({"trust": {"root_prefix": prefix.to_str().unwrap()}}),
+            )
+            .unwrap();
+            std::fs::write(config.join("settings.toml"), text).unwrap();
+        }
+        let cwd = match kind {
+            "parent" => prefix.join("..").join("outside"),
+            #[cfg(unix)]
+            "symlink" => {
+                let link = prefix.join("escape");
+                std::os::unix::fs::symlink(&outside, &link).unwrap();
+                assert!(!platform_spelling(&link).starts_with(platform_spelling(&prefix)));
+                link
+            }
+            "outside" => outside,
+            _ => inside,
+        };
+        let capture = sot_log::test_log::capture();
+        let extra = account_spawn_env("claude", "default", &cwd, "fixture-row").unwrap();
+        assert!(extra.is_empty());
+        assert!(
+            !home.join(".claude.json").exists(),
+            "W1 scope violation: resolved escape wrote a trust file"
+        );
+        let log = capture.text();
+        if kind == "undeclared" {
+            assert!(
+                log.contains("outcome=NotDeclared")
+                    && log.contains("declaration=")
+                    && log.contains("settings.toml"),
+                "W1 undeclared outcome lacks declaration field"
+            );
+        } else {
+            assert!(
+                log.contains("outcome=Outside") && log.contains("cwd=") && log.contains("prefix="),
+                "W1 outside outcome lacks scope fields"
+            );
+        }
+    }
+
+    #[test]
+    fn parent_component_escape_records_nothing() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_scope_controls::parent_component_escape_records_nothing",
+        ) {
+            return;
+        }
+        scope_case("parent");
+        println!("W1 C2 parent-component PASS: no write; Outside with cwd and prefix");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlink_escape_records_nothing() {
+        if !sot_log::test_isolated::run_isolated(
+            "agents::env::trust_scope_controls::symlink_escape_records_nothing",
+        ) {
+            return;
+        }
+        scope_case("symlink");
+        println!("W1 C2 symlink PASS: no write; Outside with cwd and prefix");
+    }
+    #[test]
+    fn outside_is_observable_and_preserves_the_account_env() {
+        if !sot_log::test_isolated::run_isolated("agents::env::trust_scope_controls::outside_is_observable_and_preserves_the_account_env") { return; }
+        scope_case("outside");
+        println!("W1 C2 Outside PASS: cwd and prefix fields; account env unchanged");
+    }
+    #[test]
+    fn absent_declaration_is_observable_and_preserves_the_account_env() {
+        if !sot_log::test_isolated::run_isolated("agents::env::trust_scope_controls::absent_declaration_is_observable_and_preserves_the_account_env") { return; }
+        scope_case("undeclared");
+        println!("W1 C2 NotDeclared PASS: declaration file field; account env unchanged");
     }
 }
