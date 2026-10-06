@@ -1,9 +1,9 @@
 #![cfg(any(windows, target_os = "linux"))]
 //! A pre-0.6.6 wake watcher's request, in its library's exact form, gets one thing from this daemon: a
 //! `protocol_mismatch` refusal of its hello (literal `"protocol":2`), then the end of the connection with no other
-//! byte, so its `pty.input` is never answered. The gate reads `protocol` before any field a later protocol adds or
-//! requires. The test does not observe dispatch itself: a refused connection is read for one envelope only
-//! (server/conn.rs `handle_connection`).
+//! byte, so its `pty.input` is never answered. Its hello has no `os_user`, which protocol 3 requires, and it is still
+//! refused for its protocol, not for the missing field. The test does not observe dispatch itself: a refused
+//! connection is read for one envelope only (server/conn.rs `handle_connection`).
 
 #[allow(dead_code, reason = "the shared fixture serves more suites than this one uses")]
 mod support;
@@ -46,7 +46,10 @@ async fn an_old_watcher_hello_is_refused() {
         .await
         .expect("no reply to the old hello within BOUND")
         .expect("read the reply to the old hello");
-    let hello: Frame = serde_json::from_slice(line.strip_suffix(b"\n").unwrap_or(&line)).unwrap_or_else(|e| {
+    let Some(envelope) = line.strip_suffix(b"\n") else {
+        panic!("the reply to the old hello did not end with its newline: {:?}", String::from_utf8_lossy(&line));
+    };
+    let hello: Frame = serde_json::from_slice(envelope).unwrap_or_else(|e| {
         panic!("the reply to the old hello is no frame: {e}: {:?}", String::from_utf8_lossy(&line))
     });
     assert!(
