@@ -1,9 +1,9 @@
 # rust/frontend: the window binary `sot` (fe-ui)
 
-The crate `sot-frontend` builds one binary, `sot`, the native window. `main` reads the command line, builds the
-connection set and the one-worker transport runtime, then hands both to `ui::App` and the winit loop; the code around
-that is split by subsystem into `src/ui/` (the window) and `src/net/` (its connections), and the few files beside them
-each belong to one other subsystem, named below. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
+The crate `sot-frontend` builds one binary, `sot`, the native window.
+main builds the one-worker transport runtime and gives it to App; App::run owns the event loop and takes the runtime for shutdown_timeout(LEAVE_WRITE_WAIT) on both successful and error returns before the other App fields drop.
+The code is split by subsystem into `src/ui/` (the window) and `src/net/` (its connections), and the few files beside
+them each belong to one other subsystem, named below. Part of fe-ui; charter: rust/frontend/src/ui/CLAUDE.md.
 
 ## Files
 - `Cargo.toml`: the crate and its one `[[bin]]`, `sot`; Windows-only dependencies for the foreground and taskbar calls.

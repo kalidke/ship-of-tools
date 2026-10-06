@@ -5,6 +5,8 @@ use super::*;
 mod exit;
 mod frame;
 mod handler;
+#[cfg(test)]
+mod exit_process_tests;
 
 pub(in crate::ui) use exit::*;
 
@@ -61,6 +63,24 @@ impl App {
             modifiers: winit::keyboard::ModifiersState::empty(),
         }
     }
+
+    /// Own the returning event loop and finalize transport before any App field drops.
+    pub fn run(mut self, event_loop: winit::event_loop::EventLoop<()>) -> Result<(), winit::error::EventLoopError> {
+        self.run_with(|app| event_loop.run_app(app))
+    }
+
+    fn run_with(&mut self, run: impl FnOnce(&mut Self) -> Result<(), winit::error::EventLoopError>) -> Result<(), winit::error::EventLoopError> {
+        let result = run(self);
+        self.shutdown_transport();
+        result
+    }
+
+    fn shutdown_transport(&mut self) {
+        if let Some(runtime) = self.rt.take() {
+            runtime.shutdown_timeout(crate::lease::LEAVE_WRITE_WAIT);
+        }
+    }
+
 }
 
 /// Minimum time between frames in interactive mode (~120 fps). Picks the
