@@ -6,6 +6,9 @@ mod exit;
 mod frame;
 mod handler;
 
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(super) mod tests;
+
 pub(in crate::ui) use exit::*;
 
 pub struct App {

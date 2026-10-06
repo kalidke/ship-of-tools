@@ -55,6 +55,9 @@ mod preamble;
 mod reply;
 mod request;
 
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) use reply::observe_native_fan_in;
+
 use crate::net::state::{note_revision, SessionState, StateSaveGate};
 use hello::{accept_hello, read_hello, send_hello, HelloRefused};
 use ops::*;
@@ -505,6 +508,43 @@ where
     preamble_preview(&mut tx, &mut rx, prev_id, root_node_id, &host, &mut session, &emit, window).await?;
 
     steady_loop(rx, &mut tx, next_id, &mut pending, &mut session, host, evt_tx, out_rx, window).await
+}
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) async fn run_native_progress_transport<R, W>(
+    rx: tokio::io::BufReader<R>,
+    tx: W,
+    host: HostKey,
+    evt_tx: &StdSender<(HostKey, IncomingEvt)>,
+    out_rx: &mut UnboundedReceiver<OutgoingReq>,
+    window: &Arc<Window>,
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut pending = PendingGuard {
+        map: HashMap::new(),
+        evt_tx,
+        host: host.clone(),
+    };
+    let mut session = SessionState {
+        host: host.clone(),
+        memory: crate::net::state::SessionMemory::fresh(),
+        gate: StateSaveGate::new(),
+    };
+    steady_loop(
+        rx,
+        tx,
+        1,
+        &mut pending,
+        &mut session,
+        host,
+        evt_tx,
+        out_rx,
+        window,
+    )
+    .await
 }
 
 /// The steady-state loop: replies and pushed events, the ping, and the window's requests.

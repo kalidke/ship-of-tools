@@ -287,6 +287,8 @@ struct State {
     /// Drained at the top of every redraw; every host's transport task
     /// pushes here, tagged with its own `HostKey` (ADR 0042 L2a fan-in).
     evt_rx: std::sync::mpsc::Receiver<(crate::net::dial::HostKey, crate::net::transport::IncomingEvt)>,
+    #[cfg(all(test, feature = "test-window-progress"))]
+    native_progress: Option<Arc<std::sync::Mutex<NativeProgressLedger>>>,
     /// One-shot from `--auto-expand`; consumed after `pending_initial_selection`
     /// lands. Fires the same outgoing request the Enter/Right key would,
     /// so capture tests can verify expanded states.
@@ -1631,3 +1633,11 @@ use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,
 };
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) use app::tests::NativeProgressLedger;
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(crate) fn run_native_window_progress() -> Result<()> {
+    app::tests::minimized_window_drains_events_for_ten_minutes()
+}

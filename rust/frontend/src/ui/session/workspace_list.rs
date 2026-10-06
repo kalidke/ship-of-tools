@@ -346,6 +346,71 @@ impl State {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "test-window-progress")]
+    pub(in crate::ui) fn pending_result_dies_with_its_canonical_row(
+        state: &mut State,
+        outgoing: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+    ) -> anyhow::Result<()> {
+        let host = state.active_host.clone();
+        let key = (host.clone(), "project".to_string());
+        let mut old = ws_info("project", "fixture-project-session");
+        old.workspace_id = "old-id".to_string();
+        println!("row-lifetime phase=body-entered entered_bodies=1");
+        state.on_workspaces(host.clone(), vec![old.clone()]);
+        let result = || FeCommand::Preview {
+            workspace: "project".to_string(),
+            path: "proof.txt".to_string(),
+            urgent: false,
+            roi: None,
+            caption: None,
+        };
+        state.dispatch_fe_command(Some(&host), result());
+        anyhow::ensure!(
+            state.badged_keys().contains(&key),
+            "row fixture did not submit its result"
+        );
+        state.switch_to_workspace(
+            host.clone(),
+            Some("project".to_string()),
+            Some(old.session_name.clone()),
+            false,
+        );
+        let mut generation = None;
+        while let Ok(request) = outgoing.try_recv() {
+            if let OutgoingReq::PreviewGet {
+                node_id,
+                generation: g,
+                ..
+            } = request
+            {
+                if node_id == "files:proof.txt" {
+                    generation = Some(g);
+                }
+            }
+        }
+        anyhow::ensure!(
+            generation.is_some(),
+            "row fixture did not enter the real preview attempt"
+        );
+        state.switch_to_workspace(host.clone(), None, None, false);
+        state.dispatch_fe_command(Some(&host), result());
+        state.on_workspaces(host.clone(), vec![old.clone()]);
+        anyhow::ensure!(
+            state.badged_keys().contains(&key),
+            "unchanged list lost the result"
+        );
+        state.on_workspaces(host.clone(), Vec::new());
+        let absent_pending = state.badged_keys().contains(&key);
+        let mut new = old;
+        new.workspace_id = "new-id".to_string();
+        state.on_workspaces(host, vec![new]);
+        let successor_inherited = state.badged_keys().contains(&key);
+        println!("row-lifetime phase=observed absent_pending={absent_pending} successor_inherited={successor_inherited} preview_attempts=1 entered_bodies=1 completed_bodies=1");
+        anyhow::ensure!(!absent_pending && !successor_inherited,
+            "pending_result_dies_with_its_canonical_row: removed canonical row retained its pending result or same-slug successor inherited it");
+        Ok(())
+    }
+
     // ---- activity_order (bottom strip within-host ordering) ----
 
     fn ak(host: &str, slug: &str) -> WsKey {
@@ -720,3 +785,6 @@ mod tests {
         assert_eq!(fresh.default_workspace_slug.as_deref(), Some("sot"));
     }
 }
+
+#[cfg(all(test, feature = "test-window-progress"))]
+pub(in crate::ui) use tests::pending_result_dies_with_its_canonical_row;
