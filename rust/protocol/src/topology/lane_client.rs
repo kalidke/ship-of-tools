@@ -133,7 +133,7 @@ enum VoyageSpare {
 }
 
 #[cfg(any(test, feature = "test-handshake-bound"))]
-type TestSshSpawner = std::sync::Arc<dyn Fn(&crate::topology::ssh_bridge::SshRecipe, &crate::topology::ssh_bridge::LinkGate) -> Result<std::process::Child, crate::topology::ssh_bridge::SpawnError> + Send + Sync>;
+type TestSshSpawner = std::sync::Arc<dyn Fn(std::process::Command) -> std::io::Result<std::process::Child> + Send + Sync>;
 
 /// The lane peer's identity, exactly as the DAEMON'S OWN dial observed
 /// it — deliberately the same two fields as `sot_log::identity::challenge::
@@ -493,12 +493,13 @@ impl DaemonLaneEndpoint {
     }
 
     fn spawn_ssh(&self, recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<BridgedClient, TransportError> {
-        if !gate.is_up() {
-            return Err(TransportError::LinkDown);
-        }
         #[cfg(any(test, feature = "test-handshake-bound"))]
         if let Some(spawn) = &self.test_ssh_spawner {
-            return match spawn(recipe, gate) {
+            let command = gate.command(recipe).map_err(|error| match error {
+                crate::topology::ssh_bridge::SpawnError::LinkDown => TransportError::LinkDown,
+                crate::topology::ssh_bridge::SpawnError::Io(error) => TransportError::Unreachable(error),
+            })?;
+            return match gate.admit(command, |command| spawn(command)) {
                 Ok(child) => BridgedClient::wrap(child).map_err(TransportError::Unreachable),
                 Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
                 Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),

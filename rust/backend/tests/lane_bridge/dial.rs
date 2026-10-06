@@ -342,11 +342,10 @@ while True:
 
 fn stub_endpoint(path: PathBuf) -> DaemonLaneEndpoint {
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |recipe, gate| {
-        let command = gate.command(recipe)?;
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
         std::process::Command::new(&path).args(command.get_args())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)
+            .spawn()
     }))
 }
 
@@ -537,11 +536,10 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
     let observed = pids.clone();
     let path = dir.path().join("ssh");
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |recipe, gate| {
-        let command = gate.command(recipe)?;
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
         let child = std::process::Command::new(&path).args(command.get_args())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)?;
+            .spawn()?;
         observed.lock().unwrap().push(child.id());
         Ok(child)
     }));
@@ -605,11 +603,10 @@ sys.stdin.buffer.read()
     sot_log::test_exec::write_executable(&path, script);
     let slots = Arc::new(AtomicUsize::new(0));
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |recipe, gate| {
-        let command = gate.command(recipe)?;
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |command| {
         std::process::Command::new("python3").arg("-u").arg(&path).arg(slots.fetch_add(1, Ordering::SeqCst).to_string()).args(command.get_args())
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)
+            .spawn()
     }))
 }
 

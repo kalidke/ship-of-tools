@@ -24,7 +24,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 ## Promises
 - `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar.
-- While a host's `LinkGate` is down, no gated spawn or command starts ssh.
+- Gate clones share one spawn-admission decision with `set_up(false)`: a gated child starts before close completes or is refused; after close returns no unadmitted gated child starts until reopen. Command preparation alone admits no spawn; the transport reconnect probe is the ungated exception (`LinkGate`).
 - Every ssh started from `SSH_OPTS` turns sharing off (`ControlMaster=no`, `ControlPath=none`, `ControlPersist=no`):
   the bridges `SshRecipe` builds and the daemon's monitor sampler (`argv_has_no_shell_and_the_stated_option_set` pins
   the list).

@@ -114,9 +114,9 @@ fn command(recipe: &SshRecipe) -> std::process::Command {
 /// Spawn the child for a synchronous caller — the lane client, which
 /// implements `sot_log::lane::client::Client`'s blocking `&self` methods and so
 /// cannot hold a tokio `Child`.
-fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
+fn spawn_sync(mut command: std::process::Command) -> std::io::Result<std::process::Child> {
     #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
-    let child = command(recipe).spawn();
+    let child = command.spawn();
     child
 }
 
@@ -125,10 +125,24 @@ fn spawn_sync(recipe: &SshRecipe) -> std::io::Result<std::process::Child> {
 /// `Child` (the branch returning, the splice task ending) never leaves an
 /// orphaned `ssh` running past its client — the async twin of
 /// `BridgedClient`'s own explicit `Drop` on the sync side.
-fn spawn_async(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
+fn spawn_async(command: std::process::Command) -> std::io::Result<tokio::process::Child> {
     #[allow(clippy::disallowed_methods, reason = "the window's and the lane client's ssh; the daemon starts ssh only through LinkGate::command and lifecycle's containment")]
-    let child = tokio::process::Command::from(command(recipe)).kill_on_drop(true).spawn();
+    let child = tokio::process::Command::from(command).kill_on_drop(true).spawn();
     child
+}
+
+/// Both gated command APIs return a real owned child before admission ends.
+pub(crate) trait StartedChild {
+    #[cfg(test)]
+    fn child_id(&self) -> Option<u32>;
+}
+impl StartedChild for std::process::Child {
+    #[cfg(test)]
+    fn child_id(&self) -> Option<u32> { Some(self.id()) }
+}
+impl StartedChild for tokio::process::Child {
+    #[cfg(test)]
+    fn child_id(&self) -> Option<u32> { self.id() }
 }
 
 /// Why a gated spawn did not start a child.
@@ -160,6 +174,9 @@ impl std::error::Error for SpawnError {}
 #[derive(Debug, Clone, Default)]
 pub struct LinkGate {
     down: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    admission: std::sync::Arc<std::sync::Mutex<()>>,
+    #[cfg(test)]
+    rendezvous: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<tests::GateRendezvous>>>>,
 }
 
 impl LinkGate {
@@ -169,21 +186,29 @@ impl LinkGate {
 
     /// Transport only.
     pub fn set_up(&self, up: bool) {
+        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
         self.down.store(!up, std::sync::atomic::Ordering::Release);
     }
 
+    pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<C, SpawnError> {
+        let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.is_up() { return Err(SpawnError::LinkDown); }
+        #[cfg(test)]
+        let rendezvous = self.rendezvous.lock().unwrap().clone();
+        #[cfg(test)]
+        let command = if let Some(hook) = &rendezvous { hook.prepare(command) } else { command };
+        let child = spawn(command).map_err(SpawnError::Io)?;
+        #[cfg(test)]
+        if let Some(hook) = rendezvous { hook.created(child.child_id()); }
+        Ok(child)
+    }
+
     pub fn spawn_sync(&self, recipe: &SshRecipe) -> Result<std::process::Child, SpawnError> {
-        if !self.is_up() {
-            return Err(SpawnError::LinkDown);
-        }
-        spawn_sync(recipe).map_err(SpawnError::Io)
+        self.admit(command(recipe), spawn_sync)
     }
 
     pub fn spawn_async(&self, recipe: &SshRecipe) -> Result<tokio::process::Child, SpawnError> {
-        if !self.is_up() {
-            return Err(SpawnError::LinkDown);
-        }
-        spawn_async(recipe).map_err(SpawnError::Io)
+        self.admit(command(recipe), spawn_async)
     }
 
     /// The gated command, not yet started, for a caller that contains the
@@ -198,7 +223,7 @@ impl LinkGate {
     /// The one ungated spawn: the transport's own reconnect probe, which
     /// is what discovers that a link is back.
     pub fn probe(recipe: &SshRecipe) -> std::io::Result<tokio::process::Child> {
-        spawn_async(recipe)
+        spawn_async(command(recipe))
     }
 }
 
@@ -228,6 +253,138 @@ pub async fn last_stderr_after_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    pub(super) struct GateRendezvous {
+        program: std::path::PathBuf,
+        ready: std::sync::mpsc::Sender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pause: bool,
+    }
+
+    impl GateRendezvous {
+        pub(super) fn prepare(&self, prepared: std::process::Command) -> std::process::Command {
+            assert!(prepared.get_args().any(|arg| arg == "ControlMaster=no"), "one prepared argv authority");
+            if self.pause {
+                self.ready.send(()).unwrap();
+                self.release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(5)).expect("admission rendezvous watchdog");
+            }
+            let mut command = std::process::Command::new("python3");
+            command.arg("-u").arg(&self.program).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+        }
+
+        pub(super) fn created(&self, id: Option<u32>) {
+            self.events.lock().unwrap().push(format!("created {}", id.expect("a successful spawn owns a child id")));
+        }
+    }
+
+    fn cleanup_sync(child: &mut std::process::Child) {
+        if child.try_wait().unwrap().is_none() { child.kill().expect("terminate owned gate child"); }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "owned gate child reap watchdog");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn gate_start(mode: &str, gate: &LinkGate, voyage: bool) -> bool {
+        let recipe = SshRecipe::new("teststub", None).unwrap();
+        match mode {
+            "sync" => match gate.spawn_sync(&recipe) {
+                Ok(mut child) => { cleanup_sync(&mut child); false }
+                Err(SpawnError::LinkDown) => true,
+                Err(error) => panic!("gate fixture failed: {error}"),
+            },
+            "async" => {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+                let _entered = runtime.enter();
+                match gate.spawn_async(&recipe) {
+                    Ok(mut child) => {
+                        child.start_kill().expect("terminate owned async gate child");
+                        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while child.try_wait().unwrap().is_none() {
+                            assert!(std::time::Instant::now() < deadline, "owned async gate child reap watchdog");
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        false
+                    }
+                    Err(SpawnError::LinkDown) => true,
+                    Err(error) => panic!("gate fixture failed: {error}"),
+                }
+            }
+            "fixture" => {
+                use sot_log::lane::client::Endpoint;
+                use super::super::lane_client::{DaemonLaneEndpoint, LaneDial};
+                let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, gate.clone()), None)
+                    .with_test_ssh_spawner(std::sync::Arc::new(|mut command| command.spawn()));
+                let result = if voyage { endpoint.connect_voyage_unchallenged("fixture-row", "fixture-voyage") }
+                    else { endpoint.connect_supervisor_unchallenged("fixture-row") };
+                matches!(result, Err(sot_log::lane::transport::TransportError::LinkDown))
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn gate_race(mode: &'static str, program: &std::path::Path) {
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+        let gate = LinkGate::default();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (ready_tx, ready) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let hook = Arc::new(GateRendezvous { program: program.to_path_buf(), ready: ready_tx, release: Mutex::new(release_rx), events: events.clone(), pause: true });
+        *gate.rendezvous.lock().unwrap() = Some(hook.clone());
+        gate.set_up(false);
+        assert!(gate_start(mode, &gate, true), "close-first must return LinkDown");
+        assert!(events.lock().unwrap().is_empty(), "close-first creates no child");
+        gate.set_up(true);
+        let admitted = gate.clone();
+        let (spawn_done_tx, spawn_done) = mpsc::channel();
+        let starter = std::thread::spawn(move || { let result = gate_start(mode, &admitted, false); spawn_done_tx.send(result).unwrap(); });
+        ready.recv_timeout(Duration::from_secs(5)).expect("spawn reached its admission rendezvous");
+        let closing = gate.clone();
+        let closed_events = events.clone();
+        let (closing_tx, closing_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            closing_tx.send(()).unwrap();
+            closing.set_up(false);
+            closed_events.lock().unwrap().push("closed".into());
+            closed_tx.send(()).unwrap();
+        });
+        closing_rx.recv_timeout(Duration::from_secs(5)).expect("close invocation watchdog");
+        let closed_before_release = closed_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        release.send(()).unwrap();
+        if !closed_before_release { closed_rx.recv_timeout(Duration::from_secs(5)).expect("close completion watchdog"); }
+        spawn_done.recv_timeout(Duration::from_secs(5)).expect("owned child completion watchdog");
+        starter.join().unwrap(); closer.join().unwrap();
+        let observed = events.lock().unwrap().clone();
+        let valid_order = observed.len() == 2 && observed[0].starts_with("created ") && observed[1] == "closed";
+        // Every child has been reaped before either failing assertion can unwind.
+        assert!(valid_order && !closed_before_release, "a real child start must precede close completion: {mode}: {observed:?}");
+        let hook = Arc::new(GateRendezvous { program: program.to_path_buf(), ready: hook.ready.clone(), release: Mutex::new(mpsc::channel().1), events: events.clone(), pause: false });
+        *gate.rendezvous.lock().unwrap() = Some(hook);
+        gate.set_up(true);
+        let count = events.lock().unwrap().len();
+        gate_start(mode, &gate, true);
+        assert_eq!(events.lock().unwrap().len(), count + 1, "reopen admits one ordinary child start");
+    }
+
+    #[test]
+    fn spawn_admission_and_link_close_are_one_decision() {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!("sot-gate-fixture-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+        std::fs::create_dir(&path).unwrap();
+        let program = path.join("child.py");
+        sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
+        // Always remove the test-owned absolute folder, including on the parent-red assertion.
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove own gate fixture"); } }
+        let _fixture = Fixture(path);
+        for mode in ["sync", "async", "fixture"] { gate_race(mode, &program); }
+    }
 
     #[test]
     fn a_down_gate_spawns_no_child() {

@@ -364,7 +364,7 @@ fn a_wire_identity_that_differs_from_the_reported_peer_is_foreign() {
 fn a_local_dial_starts_no_ssh_child() {
     for kind in ["supervisor", "voyage"] {
         let daemon = FakeDaemon::new();
-        let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_, _| panic!("a local dial never starts ssh")));
+        let ep = daemon.endpoint().with_test_ssh_spawner(std::sync::Arc::new(|_| panic!("a local dial never starts ssh")));
         let peer = std::thread::spawn(move || { let mut conn = daemon.accept(); serve_hello(&mut conn); respond_with_ok_lane(&mut conn); });
         drop(ep.dial("row-local", kind, (kind == "voyage").then(|| "voyage".to_string())).unwrap());
         peer.join().unwrap();

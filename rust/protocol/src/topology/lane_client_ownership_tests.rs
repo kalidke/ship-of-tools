@@ -76,16 +76,15 @@ sys.stdin.buffer.read()
 "#);
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counted = calls.clone();
-    let ep = spare_endpoint().with_test_ssh_spawner(std::sync::Arc::new(move |recipe, gate| {
+    let ep = spare_endpoint().with_test_ssh_spawner(std::sync::Arc::new(move |command| {
         let n = counted.fetch_add(1, Ordering::SeqCst);
-        let command = gate.command(recipe)?;
         assert!(command.get_args().any(|arg| arg == "ControlMaster=no"), "the seam uses the gated argv authority");
         if failed_spawn == Some(n) {
-            return Err(crate::topology::ssh_bridge::SpawnError::Io(std::io::Error::other("optional spare spawn failed")));
+            return Err(std::io::Error::other("optional spare spawn failed"));
         }
         std::process::Command::new("python3").arg("-u").arg(script.0.join("peer.py"))
             .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn().map_err(crate::topology::ssh_bridge::SpawnError::Io)
+            .spawn()
     }));
     (ep, calls)
 }

@@ -279,11 +279,10 @@ fn private_ssh_endpoint(remote: &str, dir: &Path) -> DaemonLaneEndpoint {
     let script = format!("#!/usr/bin/env python3\nimport os, sys\nos.execvp('ssh', ['ssh'] + sys.argv[1:-1] + [{remote:?}])\n");
     sot_log::test_exec::write_executable(&wrapper, script);
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("localhost", None).unwrap();
-    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(std::sync::Arc::new(move |recipe, gate| {
-        let command = gate.command(recipe)?;
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(std::sync::Arc::new(move |command| {
         Command::new(&wrapper).args(command.get_args())
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)
+            .spawn()
     }))
 }
 
