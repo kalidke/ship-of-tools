@@ -1,0 +1,15 @@
+[
+  {
+    "label": "c1-revert-other-quit_other_keys_cancel_and_are_consumed",
+    "tree": "revert-other",
+    "test": "ui::input::keypress::tests::quit_other_keys_cancel_and_are_consumed",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "other key must cancel",
+    "observations": [
+      "T1 fixture observed: routed raw key and downstream recorder"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  }
+]

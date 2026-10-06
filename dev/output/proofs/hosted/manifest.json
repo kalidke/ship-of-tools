@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c1-revert-other",
+  "original": {
+    "sha": "df9fa93022555734894928716eba863a7e2e07e2",
+    "branch": "tmp/ci-t1-c1-revert-other"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "4b487c8148afe18247bd242ec77043d36ff73618",
+  "tree": "revert-other",
+  "overlays": [
+    {
+      "tree": "revert-other",
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "base_sha256": "7e5b8bd764199bdb48856974be75524c2e30550edd2c90c04e99516c59936e75",
+      "overlay_sha256": "5e1a51010497c1522060896aa7b623b696643b013f211e53b68cb8388171c054",
+      "patch": "overlays/revert-other-ui-input-keypress.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "accepted_overlay_sha256": "5e1a51010497c1522060896aa7b623b696643b013f211e53b68cb8388171c054",
+      "replay_sha256": "06279d4c91c56cbd8798687f69ed8d50d6a75830d7d2245823254dfa164079ef",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
