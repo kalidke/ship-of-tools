@@ -792,18 +792,18 @@ mod quarto_shutdown_tests {
             run_quarto(&program, &cwd, std::ffi::OsStr::new("doc.qmd"), "out.html", true, sig).await
         });
         let began = std::time::Instant::now();
-        while sig.live() == 0 || !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
+        while !pid_file.exists() || std::fs::read_to_string(&pid_file).unwrap().trim().is_empty() {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub render never started");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        sig.fire();
+        sig.fire().expect("fire");
         let done = tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the render outlived the shutdown")
             .expect("render task")
             .expect("run_quarto");
         assert!(done.is_none(), "a killed render has no output");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         assert!(engine.gone(), "the engine child survived the shutdown");
     }
 
@@ -829,7 +829,7 @@ mod quarto_shutdown_tests {
             .expect("render task")
             .expect("run_quarto");
         assert!(done.is_some_and(|out| out.status.success()), "the render did not finish on its own");
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
         assert!(engine.gone(), "the engine survived its launcher's exit");
     }
 
@@ -898,7 +898,7 @@ mod quarto_shutdown_tests {
             // SAFETY: signal 0 only probes the pid.
             assert_eq!(unsafe { libc::kill(group, 0) }, 0, "a held tree names a process-group number nothing holds");
         }
-        sig.fire();
+        sig.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the render outlived the shutdown")

@@ -17,8 +17,8 @@ use tokio::time::Instant;
 
 use sot_protocol::ops::lease as bounds;
 
-use crate::rows::run::end::CapsuleDestroyOutcome;
 use crate::lifecycle::lease::Leases;
+use crate::rows::run::end::CapsuleDestroyOutcome;
 use crate::rows::{Workspace, WorkspaceChanged, Workspaces};
 
 /// How often a refused end is tried again.
@@ -27,18 +27,12 @@ const RETRY_EVERY: Duration = Duration::from_secs(1);
 /// The end-run reason a window's close records.
 const REASON: &str = "window closed";
 
-/// How long step 4 waits for the daemon's own children.
-const CHILDREN_WAIT: Duration = Duration::from_secs(3);
-
 /// `SOT_TEST_SHUTDOWN_BOUND_MS` overrides [`bounds::SHUTDOWN_BOUND`] for
 /// tests, read once per process; unset in every real deployment.
 pub(crate) fn shutdown_bound() -> Duration {
     static OVERRIDE_MS: OnceLock<Option<u64>> = OnceLock::new();
-    let override_ms = *OVERRIDE_MS.get_or_init(|| {
-        std::env::var("SOT_TEST_SHUTDOWN_BOUND_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-    });
+    let override_ms =
+        *OVERRIDE_MS.get_or_init(|| std::env::var("SOT_TEST_SHUTDOWN_BOUND_MS").ok().and_then(|s| s.parse().ok()));
     override_ms.map(Duration::from_millis).unwrap_or(bounds::SHUTDOWN_BOUND)
 }
 
@@ -86,13 +80,8 @@ pub(crate) async fn run(
         }
     };
 
-    fire();
-    let children = Instant::now() + CHILDREN_WAIT;
-    while live_children() > 0 && Instant::now() < children {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if live_children() > 0 {
-        tracing::warn!(live = live_children(), "shutdown: the daemon's own children were still alive after {CHILDREN_WAIT:?}");
+    if let Err(error) = fire() {
+        tracing::error!(%error, "shutdown child fire failed");
     }
 
     if let Err(e) = leases.finish_shutdown(report.not_ended, report.forget.clone()) {
@@ -165,12 +154,15 @@ pub(crate) async fn end_rows(
     }
     if drawer {
         let (limit, state_root) = (limit.clone(), state_root.to_path_buf());
-        joins.push(("the drawer".to_string(), tokio::spawn(async move {
-            let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
-                return Ended::Not;
-            };
-            end_drawer(state_root, deadline).await
-        })));
+        joins.push((
+            "the drawer".to_string(),
+            tokio::spawn(async move {
+                let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
+                    return Ended::Not;
+                };
+                end_drawer(state_root, deadline).await
+            }),
+        ));
     }
     join_by(deadline, joins).await
 }
@@ -237,8 +229,15 @@ async fn end_row(
         }
     };
     if is_anchor {
-        let end =
-            crate::rows::anchor::end_default_row_run(workspaces, ws_events, &ws.workspace_id, &ws.slug, &agent_name, true, held);
+        let end = crate::rows::anchor::end_default_row_run(
+            workspaces,
+            ws_events,
+            &ws.workspace_id,
+            &ws.slug,
+            &agent_name,
+            true,
+            held,
+        );
         if tokio::time::timeout_at(deadline, end).await.is_err() {
             tracing::warn!(workspace_id = %ws.workspace_id, "window closed: the anchor's end_default_row_run was still running at the deadline; not ended");
             return Ended::Not;
@@ -257,7 +256,9 @@ async fn end_row(
         return Ended::Not;
     }
     let slug = ws.slug.clone();
-    let ended = forget_unless_removed(ws.workspace_id.clone(), deadline, || crate::rows::run::end::remove_row_files(&slug)).await;
+    let ended =
+        forget_unless_removed(ws.workspace_id.clone(), deadline, || crate::rows::run::end::remove_row_files(&slug))
+            .await;
     let _ = workspaces.remove_by_id(&ws.workspace_id);
     drop(held);
     let _ = ws_events.send(WorkspaceChanged {
@@ -355,7 +356,7 @@ where
     }
 }
 
-use super::child_signal::{fire, live_children};
+use super::child_signal::fire;
 
 #[cfg(test)]
 mod tests {
@@ -441,7 +442,8 @@ mod tests {
     async fn non_capsule_row_is_counted_not_ended() {
         let root = tempfile::tempdir().expect("tempdir");
         let reg = Workspaces::new();
-        let mut row = Workspace::from_label("tm", PathBuf::from("/p/tm"), false, "none".into(), String::new(), String::new());
+        let mut row =
+            Workspace::from_label("tm", PathBuf::from("/p/tm"), false, "none".into(), String::new(), String::new());
         row.runtime = "tmux".to_string();
         reg.insert(row);
         let (events, _rx) = broadcast::channel(4);
@@ -452,7 +454,8 @@ mod tests {
     #[tokio::test]
     async fn already_removed_row_is_not_kept() {
         let reg = Workspaces::new();
-        let mut row = Workspace::from_label("gone", PathBuf::from("/p/gone"), false, "none".into(), String::new(), String::new());
+        let mut row =
+            Workspace::from_label("gone", PathBuf::from("/p/gone"), false, "none".into(), String::new(), String::new());
         row.runtime = "capsule".to_string();
         let row = reg.insert(row);
         // Another end removed it first.

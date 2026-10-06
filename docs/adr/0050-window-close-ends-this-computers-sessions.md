@@ -88,11 +88,7 @@ any row is touched; the run gate closes and in-flight starts drain, until the ro
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
 deadline, and a row of any other runtime is left running and counted not ended; every
-process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit
-(n)), is killed with everything it started that did not leave it (residual 7): each runs in its own process group
-on Unix and its own job on Windows, its leader is reaped only after that kill, a start in flight when the signal fires
-is counted before it creates anything and killed if it registers within those 3 s, and their owners are given 3 s to
-let go; the final record is written; the
+process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit (n)), receives a checked termination attempt for its contained tree; descendants that leave it remain residual 7. Each runs in its own process group on Unix and its own job on Windows; successful requests precede the owner's direct-child reap. Creation through adoption and registration shares the registry mutex with the permanent child signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can delay fire. Exits that still bypass fire remain known limit (p); the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final

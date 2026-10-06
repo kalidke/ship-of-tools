@@ -1,61 +1,72 @@
-//! child_signal.rs — the one process-wide `fired` flag every child owner
-//! selects on, because no drop runs at `process::exit`.
-//! [`Signal::spawn`] and [`Signal::spawn_std`] start a child in its own
-//! containment, and [`Contained`] and [`ContainedStd`] own it: firing the
-//! signal, or killing, waiting for or dropping either, ends the child and
-//! everything it started, and the child is reaped only after.
+//! The permanent child signal and synchronized creation/registration of contained trees.
+//! Owners request termination before reaping. Explicit cleanup errors propagate; Drop logs them.
+//! Fire checks requests without waiting for tree death.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use tokio::sync::watch;
 
-/// One shutdown signal, the count of children still alive under it, and the
-/// trees it will kill when it fires. The process has one ([`fire`],
+/// One shutdown signal and the trees it requests termination for. The process has one ([`fire`],
 /// [`fired`], [`process`]).
 pub(crate) struct Signal {
     fired: watch::Sender<bool>,
-    live: AtomicUsize,
-    /// Every contained child's tree by id; `None` once fired, so a start after the fire is refused before it
-    /// creates anything ([`reserve`](Self::reserve)), and a child created before the fire is killed when it
-    /// registers ([`Held::fill`]).
+    /// Every contained tree, protected by the same mutex held during creation and registration. Failed
+    /// requests retain ownership for a later checked cleanup; the permanent flag still refuses new starts.
     trees: Mutex<Option<HashMap<u64, crate::lifecycle::contain::Tree>>>,
     next: AtomicU64,
     /// Test-only: called right after a child is created, to put the shutdown's fire in that window.
     #[cfg(test)]
-    after_create: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    pub(super) after_create: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
+    #[cfg(test)]
+    pub(super) after_adopt: Mutex<Option<Box<dyn FnMut(u32) + Send>>>,
 }
 
 impl Signal {
     pub(crate) fn new() -> Self {
         Signal {
             fired: watch::channel(false).0,
-            live: AtomicUsize::new(0),
             trees: Mutex::new(Some(HashMap::new())),
             next: AtomicU64::new(0),
             #[cfg(test)]
             after_create: Mutex::new(None),
+            #[cfg(test)]
+            after_adopt: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
-    fn after_create(&self) {
+    fn after_create(&self, pid: u32) {
         if let Some(hook) = self.after_create.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            hook();
+            hook(pid);
         }
     }
 
-    /// The flag goes first, so an owner that sees its child die already
-    /// reads [`is_fired`](Self::is_fired); then every tree is killed, by
-    /// dropping the registry under its lock, whatever each owner is
-    /// awaiting.
-    pub(crate) fn fire(&self) {
+    /// Publish fire, then attempt every registered tree under the start/registry mutex. Successful requests
+    /// do not establish death. A stalled OS creation/adoption can delay acquiring this mutex.
+    pub(crate) fn fire(&self) -> std::io::Result<()> {
         self.fired.send_replace(true);
         let mut trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
-        let taken = trees.take();
-        drop(taken);
-        drop(trees);
+        let mut failures = Vec::new();
+        if let Some(map) = trees.as_mut() {
+            map.retain(|id, tree| match tree.terminate() {
+                Ok(()) => false,
+                Err(error) => {
+                    tracing::error!(tree = id, %error, "child fire: termination request failed");
+                    failures.push(format!("tree {id}: {error}"));
+                    true
+                }
+            });
+            if map.is_empty() {
+                *trees = None;
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(failures.join("; ")))
+        }
     }
 
     pub(crate) fn is_fired(&self) -> bool {
@@ -67,11 +78,6 @@ impl Signal {
         let _ = rx.wait_for(|fired| *fired).await;
     }
 
-    /// Children counted from their reservation, before anything is created, until their [`Held`] drops.
-    pub(crate) fn live(&self) -> usize {
-        self.live.load(Ordering::SeqCst)
-    }
-
     /// The process-group number of every tree still held.
     #[cfg(all(test, unix))]
     pub(crate) fn held_groups(&self) -> Vec<i32> {
@@ -79,48 +85,42 @@ impl Signal {
         trees.as_ref().map(|map| map.values().map(|t| t.pgid()).collect()).unwrap_or_default()
     }
 
-    /// Count a child before anything is created. Refused once the signal has fired, so a start after the fire
-    /// creates nothing; counted under the registry lock, so a fire after this sees it in `live` and the shutdown
-    /// waits for it.
-    fn reserve(&'static self) -> std::io::Result<Held> {
+    /// Hold the registry mutex from before creation through adoption and registration. Once fire is published,
+    /// even a reservation waiting on this mutex is refused before creating anything.
+    fn reserve(
+        &'static self,
+    ) -> std::io::Result<MutexGuard<'static, Option<HashMap<u64, crate::lifecycle::contain::Tree>>>> {
         let trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
-        if trees.is_none() {
+        if self.is_fired() || trees.is_none() {
             return Err(std::io::Error::other("the daemon is shutting down"));
         }
-        let id = self.next.fetch_add(1, Ordering::SeqCst);
-        self.live.fetch_add(1, Ordering::SeqCst);
-        drop(trees);
-        Ok(Held { sig: self, id })
+        Ok(trees)
     }
 
-    /// Reserve a counted slot, then create `cmd`'s child in its own containment, adopt it and register its
-    /// tree ([`reserve`](Self::reserve), create, adopt, [`Held::fill`]). The owner keeps the returned
-    /// [`Contained`]: waiting for it, killing it, dropping it, or [`fire`](Self::fire) ends the child and
-    /// everything it started. Once the signal has fired the start is refused before anything is created; a
-    /// child created while it fires is killed when it registers.
+    /// Creation through registration shares fire's mutex. The provisional owner cleans up an error or unwind
+    /// without reacquiring it; the guard is released before returning or awaiting.
     pub(crate) fn spawn(&'static self, cmd: &mut tokio::process::Command) -> std::io::Result<Contained> {
-        let held = self.reserve()?;
-        // Made before the spawn, so no exit goes unseen by `Contained::wait`.
+        let mut trees = self.reserve()?;
         #[cfg(unix)]
         let sigchld = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
         crate::lifecycle::contain::prepare(cmd.as_std_mut());
-        #[allow(clippy::disallowed_methods, reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)")]
-        let mut child = cmd.spawn()?;
+        cmd.kill_on_drop(true);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)"
+        )]
+        let child = cmd.spawn()?;
+        let mut provisional = Provisional::new(child);
         #[cfg(test)]
-        self.after_create();
-        let tree = match crate::lifecycle::contain::adopt(
-            child.id(),
-            #[cfg(windows)]
-            child.raw_handle(),
-        ) {
-            Ok(tree) => tree,
-            Err(e) => {
-                let _ = child.start_kill();
-                return Err(e);
-            }
-        };
-        // The tree's drop killed the child if the signal fired since the reservation; tokio's orphan queue reaps it.
-        held.fill(tree)?;
+        self.after_create(provisional.child.as_ref().and_then(PartialChild::pid).expect("created identity"));
+        provisional.adopt()?;
+        #[cfg(test)]
+        if let Some(hook) = self.after_adopt.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            hook(provisional.child.as_ref().and_then(PartialChild::pid).expect("created identity"));
+        }
+        let held = Held::fill(self, &mut trees, provisional.tree.take().expect("adopted tree"));
+        let mut child = provisional.child.take().expect("created child");
+        drop(trees);
         Ok(Contained {
             stdin: child.stdin.take(),
             stdout: child.stdout.take(),
@@ -132,33 +132,26 @@ impl Signal {
         })
     }
 
-    /// [`spawn`](Self::spawn) for a blocking caller. The [`ContainedStd`] owns
-    /// the child: only its `wait`, `kill` and drop reap it, each after the
-    /// tree's kill.
+    /// Blocking creation uses the same mutex and provisional ownership, with no guard crossing an await.
     pub(crate) fn spawn_std(&'static self, cmd: &mut std::process::Command) -> std::io::Result<ContainedStd> {
-        let held = self.reserve()?;
+        let mut trees = self.reserve()?;
         crate::lifecycle::contain::prepare(cmd);
-        #[allow(clippy::disallowed_methods, reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)")]
-        let mut child = cmd.spawn()?;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)"
+        )]
+        let child = cmd.spawn()?;
+        let mut provisional = Provisional::new(child);
         #[cfg(test)]
-        self.after_create();
-        let tree = match crate::lifecycle::contain::adopt(
-            Some(child.id()),
-            #[cfg(windows)]
-            Some(std::os::windows::io::AsRawHandle::as_raw_handle(&child)),
-        ) {
-            Ok(tree) => tree,
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e);
-            }
-        };
-        // The tree's drop killed the leader if the signal fired since the reservation; it is only reaped here.
-        if let Err(e) = held.fill(tree) {
-            let _ = child.wait();
-            return Err(e);
+        self.after_create(provisional.child.as_ref().and_then(PartialChild::pid).expect("created identity"));
+        provisional.adopt()?;
+        #[cfg(test)]
+        if let Some(hook) = self.after_adopt.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            hook(provisional.child.as_ref().and_then(PartialChild::pid).expect("created identity"));
         }
+        let held = Held::fill(self, &mut trees, provisional.tree.take().expect("adopted tree"));
+        let mut child = provisional.child.take().expect("created child");
+        drop(trees);
         Ok(ContainedStd {
             stdin: child.stdin.take(),
             stdout: child.stdout.take(),
@@ -171,8 +164,8 @@ impl Signal {
 
     /// `Command::output` for a contained one-shot: stdin is null, and stdout
     /// and stderr are each read to their end on a thread of their own. The
-    /// leader's exit is seen unreaped; then the tree is killed, which closes
-    /// any pipe a descendant held; then the child is reaped (all of that is
+    /// leader's exit is seen unreaped; then termination is requested for the tree before
+    /// the direct child is reaped (all of that is
     /// [`ContainedStd::wait`]), and then both readers are joined. No bound is
     /// added, as `output` has none.
     pub(crate) fn output(&'static self, cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
@@ -204,52 +197,146 @@ fn joined(read: std::thread::Result<std::io::Result<Vec<u8>>>) -> std::io::Resul
     read.map_err(|_| std::io::Error::other("a pipe reader panicked"))?
 }
 
-/// A counted slot, reserved before its child is created ([`Signal::reserve`]), then filled with the child's tree
-/// ([`fill`](Self::fill)). One tree in a [`Signal`]'s registry, and a count of one live child.
-/// [`release`](Self::release), or dropping it, kills the tree under the
-/// registry lock if the shutdown has not already; the child's leader is
-/// reaped only after that, because its pid is the group's number.
+/// Immediately owns a created child before adoption, including unwind of the post-create hook.
+struct Provisional<C: PartialChild> {
+    tree: Option<crate::lifecycle::contain::Tree>,
+    child: Option<C>,
+}
+
+impl<C: PartialChild> Provisional<C> {
+    fn new(child: C) -> Self {
+        Self { child: Some(child), tree: None }
+    }
+
+    fn adopt(&mut self) -> std::io::Result<()> {
+        let child = self.child.as_ref().expect("created child");
+        match crate::lifecycle::contain::adopt(
+            child.pid(),
+            #[cfg(windows)]
+            child.handle(),
+        ) {
+            Ok(tree) => {
+                self.tree = Some(tree);
+                Ok(())
+            }
+            Err(error) => Err(crate::lifecycle::contain::combine(error, self.cleanup())),
+        }
+    }
+
+    fn cleanup(&mut self) -> std::io::Result<()> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        #[cfg(unix)]
+        if self.tree.is_none() {
+            self.tree = child.pid().map(crate::lifecycle::contain::partial);
+        }
+        let request = match self.tree.as_mut() {
+            Some(tree) => tree.terminate(),
+            None => child.terminate(),
+        };
+        request?;
+        child.reap()
+    }
+}
+
+impl<C: PartialChild> Drop for Provisional<C> {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            tracing::error!(%error, "partial child start cleanup failed");
+        }
+    }
+}
+
+trait PartialChild {
+    fn pid(&self) -> Option<u32>;
+    #[cfg(windows)]
+    fn handle(&self) -> Option<std::os::windows::io::RawHandle>;
+    fn terminate(&mut self) -> std::io::Result<()>;
+    fn reap(&mut self) -> std::io::Result<()>;
+}
+
+impl PartialChild for std::process::Child {
+    fn pid(&self) -> Option<u32> {
+        Some(self.id())
+    }
+    #[cfg(windows)]
+    fn handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        Some(std::os::windows::io::AsRawHandle::as_raw_handle(self))
+    }
+    fn terminate(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
+    fn reap(&mut self) -> std::io::Result<()> {
+        crate::lifecycle::contain::reap(self).map(|_| ())
+    }
+}
+
+impl PartialChild for tokio::process::Child {
+    fn pid(&self) -> Option<u32> {
+        self.id()
+    }
+    #[cfg(windows)]
+    fn handle(&self) -> Option<std::os::windows::io::RawHandle> {
+        self.raw_handle()
+    }
+    fn terminate(&mut self) -> std::io::Result<()> {
+        self.start_kill()
+    }
+    // Drop transfers the unreaped child to Tokio's orphan queue; no synchronous async reap is promised.
+    fn reap(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// One registered tree. Release requests termination under the registry mutex before its owner reaps the leader.
 struct Held {
     sig: &'static Signal,
     id: u64,
 }
 
 impl Held {
-    /// Register the reserved child's tree. If the signal fired since the reservation, the tree is dropped, which
-    /// kills it, and the start fails.
-    fn fill(&self, tree: crate::lifecycle::contain::Tree) -> std::io::Result<()> {
-        let mut trees = self.sig.trees.lock().unwrap_or_else(|e| e.into_inner());
-        match trees.as_mut() {
-            Some(map) => {
-                map.insert(self.id, tree);
-                Ok(())
-            }
-            None => {
-                drop(tree);
-                Err(std::io::Error::other("the daemon is shutting down"))
-            }
-        }
+    /// Fill the map the reservation already holds; no recursive mutex acquisition on start failure or unwind.
+    fn fill(
+        sig: &'static Signal,
+        trees: &mut Option<HashMap<u64, crate::lifecycle::contain::Tree>>,
+        tree: crate::lifecycle::contain::Tree,
+    ) -> Self {
+        let id = sig.next.fetch_add(1, Ordering::SeqCst);
+        trees.as_mut().expect("reservation holds an open registry").insert(id, tree);
+        Self { sig, id }
     }
 
-    fn release(&self) {
+    fn release(&self) -> std::io::Result<()> {
         let mut trees = self.sig.trees.lock().unwrap_or_else(|e| e.into_inner());
-        let tree = trees.as_mut().and_then(|map| map.remove(&self.id));
-        drop(tree);
-        drop(trees);
+        if let Some(map) = trees.as_mut() {
+            if let Some(tree) = map.get_mut(&self.id) {
+                tree.terminate()?;
+            }
+            map.remove(&self.id);
+        }
+        Ok(())
     }
 }
 
 impl Drop for Held {
     fn drop(&mut self) {
-        self.release();
-        self.sig.live.fetch_sub(1, Ordering::SeqCst);
+        if let Err(error) = self.release() {
+            tracing::error!(%error, "contained owner Drop: termination request failed");
+            // Final retries happen while this owner still holds the unreaped child. Never retain a failed tree
+            // after the async child can enter Tokio's reaper and free its Unix group identity.
+            let mut trees = self.sig.trees.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(map) = trees.as_mut() {
+                map.remove(&self.id);
+            }
+        }
     }
 }
 
 /// One contained child with its pipes. It owns the `Child`: only
-/// [`wait`](Self::wait), [`kill`](Self::kill) and dropping reap it, each
-/// after the tree's kill, so a kill never reaches a group number the leader's
-/// reap freed. `held` drops before `child`, so a drop kills the tree first.
+/// [`wait`](Self::wait) and [`kill`](Self::kill) request tree termination before reaping. Drop logs request
+/// failures and transfers the async child to Tokio's orphan queue; it does not synchronously reap.
+/// `held` drops before `child`, retaining the leader identity during the request.
 pub(crate) struct Contained {
     pub(crate) stdin: Option<tokio::process::ChildStdin>,
     pub(crate) stdout: Option<tokio::process::ChildStdout>,
@@ -261,8 +348,8 @@ pub(crate) struct Contained {
 }
 
 impl Contained {
-    /// Wait for the leader to exit, kill what it started, then reap it. A
-    /// descendant that holds the child's pipes open is killed too.
+    /// Observe the leader's exit, request tree termination, then reap. Request failures remain errors;
+    /// successful requests do not establish descendant death.
     pub(crate) async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         #[cfg(unix)]
         {
@@ -272,27 +359,27 @@ impl Contained {
                     self.sigchld.recv().await;
                 }
             }
-            self.held.release();
+            self.held.release()?;
             self.child.wait().await
         }
         #[cfg(windows)]
         {
             let status = self.child.wait().await?;
-            self.held.release();
+            self.held.release()?;
             Ok(status)
         }
     }
 
-    /// Kill the tree, then the child, and reap it.
+    /// Request tree termination before reaping. A failed request returns before a blocking reap.
     pub(crate) async fn kill(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.held.release();
+        self.held.release()?;
         self.child.wait().await
     }
 }
 
 /// One contained child for a blocking caller, with its pipes. Like
 /// [`Contained`] it owns the `Child`: only [`wait`](Self::wait),
-/// [`kill`](Self::kill) and dropping reap it, each after the tree's kill, and
+/// [`kill`](Self::kill) and dropping request termination before reaping, and
 /// no caller is handed the child to reap first. `held` comes before `child`.
 pub(crate) struct ContainedStd {
     pub(crate) stdin: Option<std::process::ChildStdin>,
@@ -315,49 +402,60 @@ impl ContainedStd {
         crate::lifecycle::contain::exited(&mut self.child, block)
     }
 
-    /// Wait for the leader to exit, kill what it started, then reap it. A
-    /// descendant that holds the child's pipes open is killed too. The tree
-    /// is killed and the child reaped even if seeing the exit failed.
+    /// Observe the leader's exit, request tree termination, then reap. Request failures remain errors;
+    /// successful requests do not establish descendant death.
+    /// A probe failure is returned with any cleanup failure; failed requests return before blocking reap.
     pub(crate) fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         if let Some(status) = self.reaped {
             return Ok(status);
         }
         let seen = self.exited(true);
-        self.held.release();
-        let status = self.child.wait();
+        if let Err(error) = self.held.release() {
+            return Err(match seen {
+                Err(probe) => crate::lifecycle::contain::combine(probe, Err(error)),
+                Ok(_) => error,
+            });
+        }
+        let status = crate::lifecycle::contain::reap(&mut self.child);
         self.reaped = status.as_ref().ok().copied();
-        seen?;
+        if let Err(error) = seen {
+            return Err(crate::lifecycle::contain::combine(error, status.map(|_| ())));
+        }
         status
     }
 
-    /// Kill the tree, then the child, and reap it. Idempotent: once the child
+    /// Request tree termination before reaping. A failed request returns before a blocking reap. Idempotent: once the child
     /// is reaped it touches neither the tree nor the child and returns the status.
     pub(crate) fn kill(&mut self) -> std::io::Result<std::process::ExitStatus> {
         if let Some(status) = self.reaped {
             return Ok(status);
         }
-        self.held.release();
-        let status = self.child.wait();
+        self.held.release()?;
+        let status = crate::lifecycle::contain::reap(&mut self.child);
         self.reaped = status.as_ref().ok().copied();
         status
     }
 
-    /// [`wait`](Self::wait), bounded: polls for the leader's exit every 10 ms. At the exit it returns the status; when
-    /// `bound` passes it kills the tree, reaps the child and returns `None`; on a probe error it does the same and
-    /// returns the error.
-    pub(crate) fn wait_within(&mut self, bound: std::time::Duration) -> std::io::Result<Option<std::process::ExitStatus>> {
+    /// Bound waiting for a live leader, polling every 10 ms. Timeout returns `Ok(None)` only after successful
+    /// tree requests and a confirmed direct-child reap. Probe/request/reap errors remain errors, preserving both
+    /// probe and cleanup reasons. OS termination/reap has no wall-clock ceiling; descendant death is not promised.
+    pub(crate) fn wait_within(
+        &mut self,
+        bound: std::time::Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let deadline = std::time::Instant::now() + bound;
         loop {
             match self.exited(false) {
                 Ok(true) => return self.wait().map(Some),
-                Ok(false) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Ok(false) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
                 Ok(false) => {
-                    let _ = self.kill();
+                    self.kill()?;
                     return Ok(None);
                 }
                 Err(e) => {
-                    let _ = self.kill();
-                    return Err(e);
+                    return Err(crate::lifecycle::contain::combine(e, self.kill().map(|_| ())));
                 }
             }
         }
@@ -371,7 +469,9 @@ impl ContainedStd {
 
 impl Drop for ContainedStd {
     fn drop(&mut self) {
-        let _ = self.kill();
+        if let Err(error) = self.kill() {
+            tracing::error!(%error, "blocking contained child Drop cleanup failed");
+        }
     }
 }
 
@@ -402,19 +502,14 @@ pub(crate) fn process() -> &'static Signal {
     SIGNAL.get_or_init(Signal::new)
 }
 
-/// Fire the shutdown: every contained child's tree is killed. It stays fired for the life of the process.
-pub(crate) fn fire() {
+/// Attempt and check every contained tree's termination. Permanent; this does not reap or wait for tree death.
+pub(crate) fn fire() -> std::io::Result<()> {
     process().fire()
 }
 
 /// Resolves once the shutdown has fired; at once if it already has.
 pub(crate) async fn fired() {
     process().fired().await
-}
-
-/// Children whose [`Held`] is alive.
-pub(crate) fn live_children() -> usize {
-    process().live()
 }
 
 #[cfg(test)]
@@ -452,7 +547,11 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn of_file(file: impl Into<std::path::PathBuf>) -> Self {
-            Leftover { pid: std::cell::Cell::new(None), file: Some(file.into()), seen_gone: std::cell::Cell::new(false) }
+            Leftover {
+                pid: std::cell::Cell::new(None),
+                file: Some(file.into()),
+                seen_gone: std::cell::Cell::new(false),
+            }
         }
 
         fn pid(&self) -> Option<i32> {
@@ -494,11 +593,14 @@ pub(crate) mod tests {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         let mut contained = signal.spawn(&mut cmd).expect("spawn");
-        assert_eq!(signal.live(), 1);
+        assert_eq!(signal.held_groups().len(), 1);
         let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(contained.stdout.take().unwrap()), &mut line)
-            .await
-            .unwrap();
+        tokio::io::AsyncBufReadExt::read_line(
+            &mut tokio::io::BufReader::new(contained.stdout.take().unwrap()),
+            &mut line,
+        )
+        .await
+        .unwrap();
         let grandchild = Leftover::of_pid(line.trim().parse().expect("grandchild pid"));
         let mut stdin = contained.stdin.take().unwrap();
         let owner = tokio::spawn(async move {
@@ -506,33 +608,13 @@ pub(crate) mod tests {
             let _ = contained.wait().await;
         });
         tokio::time::sleep(Duration::from_millis(300)).await;
-        signal.fire();
+        signal.fire().expect("fire");
         tokio::time::timeout(Duration::from_secs(3), owner)
             .await
             .expect("the blocked owner did not return")
             .expect("owner task");
         assert!(grandchild.gone(), "the grandchild survived the shutdown");
-        assert_eq!(signal.live(), 0);
-    }
-
-    /// A child created while the signal fires is already counted, so the shutdown's wait for its children covers it,
-    /// and it is killed when it registers. That the start returns at all shows the child died: its error path reaps
-    /// it, and `sleep 3115` exits only if killed.
-    #[cfg(unix)]
-    #[test]
-    fn a_child_created_while_the_signal_fires_is_counted_and_killed() {
-        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        let counted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
-        let seen = std::sync::Arc::clone(&counted);
-        *signal.after_create.lock().unwrap() = Some(Box::new(move || {
-            signal.fire();
-            seen.store(signal.live(), Ordering::SeqCst);
-        }));
-        let mut cmd = std::process::Command::new("sleep");
-        cmd.arg("3115").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        assert!(signal.spawn_std(&mut cmd).is_err(), "a child created while the signal fired was accepted");
-        assert_eq!(counted.load(Ordering::SeqCst), 1, "a child in flight was not counted when the signal fired");
-        assert_eq!(signal.live(), 0);
+        assert!(signal.held_groups().is_empty());
     }
 
     /// A start after the fire creates nothing.
@@ -540,15 +622,15 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_start_after_the_fire_creates_nothing() {
         let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
-        signal.fire();
+        signal.fire().expect("fire");
         let created = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = std::sync::Arc::clone(&created);
-        *signal.after_create.lock().unwrap() = Some(Box::new(move || flag.store(true, Ordering::SeqCst)));
+        *signal.after_create.lock().unwrap() = Some(Box::new(move |_| flag.store(true, Ordering::SeqCst)));
         let mut cmd = tokio::process::Command::new("sleep");
         cmd.arg("3105");
         assert!(signal.spawn(&mut cmd).is_err(), "a start after the fire was accepted");
         assert!(!created.load(Ordering::SeqCst), "a start after the fire created a process");
-        assert_eq!(signal.live(), 0);
+        assert!(signal.held_groups().is_empty());
     }
 
     /// The leader's exit takes everything it started with it, before the
@@ -561,15 +643,18 @@ pub(crate) mod tests {
         cmd.args(["-c", "sleep 3107 >/dev/null 2>&1 & echo $!"]).stdout(std::process::Stdio::piped());
         let mut contained = signal.spawn(&mut cmd).expect("spawn");
         let mut line = String::new();
-        tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(contained.stdout.take().unwrap()), &mut line)
-            .await
-            .unwrap();
+        tokio::io::AsyncBufReadExt::read_line(
+            &mut tokio::io::BufReader::new(contained.stdout.take().unwrap()),
+            &mut line,
+        )
+        .await
+        .unwrap();
         let descendant = Leftover::of_pid(line.trim().parse().expect("descendant pid"));
         contained.wait().await.expect("wait");
         assert!(descendant.gone(), "the leader's descendant survived its exit");
         assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
         drop(contained);
-        assert_eq!(signal.live(), 0);
+        assert!(signal.held_groups().is_empty());
     }
 
     /// A blocking caller sees the exit unreaped: the leader's number is still
@@ -609,7 +694,7 @@ pub(crate) mod tests {
         let descendant = Leftover::of_pid(String::from_utf8_lossy(&out.stdout).trim().parse().expect("descendant pid"));
         assert!(descendant.gone(), "the one-shot's descendant survived");
         assert!(signal.held_groups().is_empty(), "a reaped leader's tree is still held");
-        assert_eq!(signal.live(), 0);
+        assert!(signal.held_groups().is_empty());
     }
 
     #[cfg(unix)]
@@ -724,13 +809,24 @@ pub(crate) mod tests {
         // SAFETY: a plain read of this process's own group.
         let theirs = unsafe { libc::getpgrp() };
         let mut cmd = std::process::Command::new("sleep");
-        cmd.arg("3114").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        cmd.arg("3114")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
         // SAFETY: only setpgid, which is async-signal-safe.
         unsafe {
-            cmd.pre_exec(move || if libc::setpgid(0, theirs) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) });
+            cmd.pre_exec(
+                move || {
+                    if libc::setpgid(0, theirs) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                },
+            );
         }
         let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
-        signal.fire();
+        signal.fire().expect("fire");
         let began = std::time::Instant::now();
         let mut exited = false;
         while !exited && began.elapsed() < Duration::from_secs(3) {
@@ -761,7 +857,10 @@ pub(crate) mod tests {
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("3113");
         let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
-        assert!(c.wait_within(Duration::from_millis(200)).expect("wait_within").is_none(), "a child past its bound was waited for");
+        assert!(
+            c.wait_within(Duration::from_millis(200)).expect("wait_within").is_none(),
+            "a child past its bound was waited for"
+        );
         assert!(signal.held_groups().is_empty(), "the tree is still held");
         assert_eq!(
             std::os::unix::process::ExitStatusExt::signal(&c.wait().expect("the reaped status")),
@@ -769,7 +868,7 @@ pub(crate) mod tests {
             "the child past its bound was not killed"
         );
         drop(c);
-        assert_eq!(signal.live(), 0);
+        assert!(signal.held_groups().is_empty());
     }
 
     /// Every leftover built from a pid parses it from text, so a held child's own `.id()` is not one; a held child's
@@ -779,7 +878,8 @@ pub(crate) mod tests {
     #[test]
     fn each_file_checks_as_many_leftovers_as_it_builds_and_parses_their_pids() {
         // Built with `concat!`, so this file does not hold the texts it counts.
-        let (made, seen, of_pid) = (concat!("Leftover::", "of_"), concat!(".gone", "()"), concat!("Leftover::", "of_pid("));
+        let (made, seen, of_pid) =
+            (concat!("Leftover::", "of_"), concat!(".gone", "()"), concat!("Leftover::", "of_pid("));
         const ALIVE_AT_END: [(&str, usize); 1] = [("rust/backend/src/pages/ops.rs", 1)];
         let mut found = Vec::new();
         for (rel, text) in sot_log::test_scan::rust_sources() {
@@ -788,7 +888,11 @@ pub(crate) mod tests {
             let code = || text.lines().filter(|l| !l.trim_start().starts_with("//"));
             for (n, line) in text.lines().enumerate() {
                 if !line.trim_start().starts_with("//") && line.contains(of_pid) && !line.contains(".parse(") {
-                    found.push(format!("{rel}:{}: a Leftover whose pid is not parsed from what the process wrote: {}", n + 1, line.trim()));
+                    found.push(format!(
+                        "{rel}:{}: a Leftover whose pid is not parsed from what the process wrote: {}",
+                        n + 1,
+                        line.trim()
+                    ));
                 }
             }
             let built: usize = code().map(|l| l.matches(made).count()).sum();
@@ -798,9 +902,14 @@ pub(crate) mod tests {
             let checked: usize = code().map(|l| l.matches(seen).count()).sum();
             let alive = ALIVE_AT_END.iter().find(|(f, _)| *f == rel).map_or(0, |(_, c)| *c);
             if built != checked + alive {
-                found.push(format!("{rel}: {built} Leftovers, {checked} seen gone, {alive} alive at the end by design"));
+                found
+                    .push(format!("{rel}: {built} Leftovers, {checked} seen gone, {alive} alive at the end by design"));
             }
         }
-        assert!(found.is_empty(), "a Leftover not seen gone, or one whose pid is not read from the process:\n{}", found.join("\n"));
+        assert!(
+            found.is_empty(),
+            "a Leftover not seen gone, or one whose pid is not read from the process:\n{}",
+            found.join("\n")
+        );
     }
 }

@@ -306,30 +306,31 @@ mod port_parse_tests {
     }
 
     /// The shutdown signal kills a Pluto child that has not yet said READY,
-    /// and the child is counted from spawn.
+    /// and the test waits for its containment registration.
     #[cfg(unix)]
     #[tokio::test]
     async fn shutdown_kills_the_pluto_child_during_the_ready_wait() {
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("stub-julia");
-        sot_log::test_exec::write_executable(&stub, "#!/bin/sh\nexec sleep 30\n");
+        let ready = dir.path().join("started");
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\necho started > '{}'\nexec sleep 30\n", ready.display()));
         let script = dir.path().join("start.jl");
         std::fs::write(&script, "").unwrap();
         let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
         let (bin, project) = (stub.to_string_lossy().into_owned(), dir.path().to_path_buf());
         let task = tokio::spawn(async move { spawn_supervisor(&bin, &project, &script, sig).await.map(|_| ()) });
         let began = std::time::Instant::now();
-        while sig.live() == 0 {
+        while std::fs::read_to_string(&ready).map_or(true, |text| text.trim() != "started") {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub child never started");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        sig.fire();
+        sig.fire().expect("fire");
         let result = tokio::time::timeout(Duration::from_secs(3), task)
             .await
             .expect("the READY wait outlived the shutdown")
             .expect("spawn task");
         assert!(result.is_err());
-        assert_eq!(sig.live(), 0);
+        assert!(sig.held_groups().is_empty());
     }
 
     /// A process the sidecar started dies with it: the stub starts a
@@ -355,7 +356,7 @@ mod port_parse_tests {
             assert!(began.elapsed() < Duration::from_secs(5), "the stub never wrote its grandchild pid");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        sig.fire();
+        sig.fire().expect("fire");
         let gone = gc.gone();
         drop(tx);
         assert!(gone, "the Pluto grandchild survived the shutdown");

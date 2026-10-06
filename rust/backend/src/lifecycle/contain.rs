@@ -1,21 +1,21 @@
-//! contain.rs — the platform half of "every process the daemon starts dies with
-//! its tree": the process group or job, adopting a child, the kill, and seeing
-//! an exit without reaping it. What can leave a tree is ADR 0050 residual 7.
+//! Platform containment, checked termination requests, and exit observations without reaping.
+//! Successful requests do not prove tree death; escapes remain ADR 0050 residual 7.
 //!
 //! Unix: each child runs in its own process group, killed with `killpg`, and its leader by pid as well.
 //! Windows: each child runs in its own anonymous job (no breakaway),
 //! created suspended, assigned, and only then resumed, so no instruction
 //! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows).
 //! A group's number is its leader's pid, and a pid (a zombie's too) is not
-//! reused before its reap, so a group is killed only while its leader is
+//! reused before its reap, so termination is requested only while its leader is
 //! unreaped: the owners of [`crate::lifecycle::child_signal::Contained`] and
 //! [`crate::lifecycle::child_signal::ContainedStd`] reap the leader
-//! after the tree's kill, never before, and the kill runs under the
+//! after successful requests, never before, and requests run under the
 //! registry lock. [`crate::lifecycle::child_signal::Signal::spawn`] owns the registry; this
 //! module holds nothing but the platform calls.
 
-/// One child's containment. Dropping it kills everything inside.
+/// One child's containment. Explicit termination checks requests; Drop logs failures.
 pub(crate) struct Tree {
+    terminated: bool,
     #[cfg(unix)]
     pgid: i32,
     #[cfg(windows)]
@@ -44,10 +44,14 @@ pub(crate) fn adopt(
     pid: Option<u32>,
     #[cfg(windows)] process: Option<std::os::windows::io::RawHandle>,
 ) -> std::io::Result<Tree> {
+    #[cfg(all(test, windows))]
+    if ADOPT_FAILURE.with(|failure| failure.get()) {
+        return Err(std::io::Error::other("injected job assignment failure"));
+    }
     #[cfg(unix)]
     {
         let pid = pid.ok_or_else(|| std::io::Error::other("the child was reaped before it was contained"))?;
-        Ok(Tree { pgid: pid as i32 })
+        Ok(Tree { pgid: pid as i32, terminated: false })
     }
     #[cfg(windows)]
     {
@@ -58,25 +62,121 @@ pub(crate) fn adopt(
         if unsafe { windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(job.raw(), handle as _) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
-        resume_main_thread(pid)?;
-        Ok(Tree { job })
+        let mut tree = Tree { job, terminated: false };
+        if let Err(error) = resume_main_thread(pid) {
+            return Err(combine(error, tree.terminate()));
+        }
+        Ok(tree)
+    }
+}
+
+impl Tree {
+    /// Attempt every request while the leader identity is retained. Never retry after a successful release/reap.
+    pub(crate) fn terminate(&mut self) -> std::io::Result<()> {
+        if self.terminated {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        let result = {
+            let group = request(self.pgid, true);
+            let leader = request(self.pgid, false);
+            match (group, leader) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(group), Err(leader)) => Err(std::io::Error::other(format!("group: {group}; leader: {leader}"))),
+                (Err(error), _) | (_, Err(error)) => Err(error),
+            }
+        };
+        #[cfg(windows)]
+        let result = request_job(&self.job);
+        self.terminated = result.is_ok();
+        result
     }
 }
 
 impl Drop for Tree {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        // SAFETY: plain signals to the group this daemon created and to its leader. A tree is dropped only while its
-        // leader is unreaped (the registry releases a tree before its owner reaps), so the pid is still the leader's;
-        // the group kill misses a leader that moved to another group, the pid kill does not. The results are ignored:
-        // ESRCH means it is already gone.
-        unsafe {
-            libc::killpg(self.pgid, libc::SIGKILL);
-            libc::kill(self.pgid, libc::SIGKILL);
+        if let Err(error) = self.terminate() {
+            tracing::error!(%error, "contained tree Drop: termination request failed");
         }
-        #[cfg(windows)]
-        let _ = self.job.terminate();
     }
+}
+
+#[cfg(windows)]
+fn request_job(job: &sot_log::capsule::producer::conpty::AnonymousJob) -> std::io::Result<()> {
+    let result = job.terminate().map_err(std::io::Error::other);
+    #[cfg(test)]
+    {
+        REQUEST_EVENTS.with(|events| events.borrow_mut().push("job"));
+        if REQUEST_FAILURE.with(|failure| failure.get() & 4 != 0) {
+            return Err(std::io::Error::other("injected job request failure"));
+        }
+    }
+    result
+}
+
+/// Preserve the initial failure together with a failed cleanup, rather than replace either reason.
+pub(super) fn combine(error: std::io::Error, cleanup: std::io::Result<()>) -> std::io::Error {
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup) => std::io::Error::other(format!("{error}; cleanup: {cleanup}")),
+    }
+}
+
+/// Before Unix adoption, creation already assigned the leader's own process group.
+#[cfg(unix)]
+pub(super) fn partial(pid: u32) -> Tree {
+    Tree { pgid: pid as i32, terminated: false }
+}
+
+#[cfg(test)]
+thread_local! {
+    #[cfg(windows)]
+    pub(super) static ADOPT_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(super) static REQUEST_FAILURE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    pub(super) static PROBE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(super) static REQUEST_EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    pub(super) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A group and its unreaped leader are checked independently; ESRCH alone means already absent.
+#[cfg(unix)]
+fn request(pid: i32, group: bool) -> std::io::Result<()> {
+    // SAFETY: the caller retains the unreaped leader identity, and this only signals its own group or leader.
+    #[cfg(test)]
+    REQUEST_EVENTS.with(|events| events.borrow_mut().push(if group { "group" } else { "leader" }));
+    let rc = unsafe {
+        if group {
+            libc::killpg(pid, libc::SIGKILL)
+        } else {
+            libc::kill(pid, libc::SIGKILL)
+        }
+    };
+    #[cfg(test)]
+    if REQUEST_FAILURE.with(|failure| failure.get() & if group { 1 } else { 2 } != 0) {
+        return Err(std::io::Error::other(if group {
+            "injected group request failure"
+        } else {
+            "injected leader request failure"
+        }));
+    }
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+pub(super) fn reap(child: &mut std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+    let status = child.wait();
+    #[cfg(test)]
+    if REAP_FAILURE.with(|failure| failure.get()) {
+        return Err(std::io::Error::other("injected direct-child reap failure"));
+    }
+    status
 }
 
 /// Whether `pid` has exited, seen without reaping it (`WNOWAIT`), so its
@@ -84,6 +184,10 @@ impl Drop for Tree {
 /// for the exit.
 #[cfg(unix)]
 pub(super) fn exited_pid(pid: u32, block: bool) -> std::io::Result<bool> {
+    #[cfg(test)]
+    if PROBE_FAILURE.with(|failure| failure.get()) {
+        return Err(std::io::Error::other("injected exit probe failure"));
+    }
     let options = libc::WEXITED | libc::WNOWAIT | if block { 0 } else { libc::WNOHANG };
     loop {
         // SAFETY: a zeroed siginfo_t is a valid out-parameter; waitid only writes it.
@@ -213,7 +317,7 @@ mod tests {
         .await
         .expect("the grandchild's pid never arrived");
         let watched = Watched::open(pid);
-        sig.fire();
+        sig.fire().expect("fire");
         watched.exits_within(3000)
     }
 
