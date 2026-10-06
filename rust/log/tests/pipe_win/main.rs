@@ -14,10 +14,10 @@
 //! assertion earlier in the same test panics, unwinding drops `server`
 //! right there on the test thread — invoking a potentially wedged
 //! `PipeServer::drop` completely outside any watchdog. A real PROCESS
-//! boundary bounds both: [`run_isolated`] re-invokes THIS test binary as
-//! a child process running only the one named test (`--exact
-//! <name>`), and the parent kills that child if it outlives a hard
-//! deadline — regardless of WHERE inside the child a hang occurs. Every
+//! boundary bounds both: `sot_log::test_isolated::run_isolated` re-invokes THIS test binary
+//! as a child process running only the one named test (`--exact
+//! <module>::<name>`, the exact libtest name), requires that test's body to
+//! enter, and kills the child if it outlives a hard deadline — regardless of WHERE inside the child a hang occurs. Every
 //! test below that touches `PipeServer`/`PipeClient` I/O runs this way;
 //! the one exception (`invalid_voyage_ids_and_instance_counts_are_rejected_loudly`)
 //! is provably non-wedging — every call in it fails before any Win32 I/O
@@ -40,6 +40,7 @@
 //! the separate `sot_log::identity::challenge_win::PipeChallengeable` extension
 //! trait — see `InvalidHandleConn`'s own two `impl` blocks below.
 
+use sot_log::test_isolated::run_isolated;
 use sot_log::host::wide_null;
 use sot_log::identity::challenge::ChallengeOutcome;
 use sot_log::identity::challenge_win::challenge;
@@ -51,57 +52,9 @@ use sot_log::lane::wire::{self, MgmtReply, MgmtRequest, Survival};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The parent's hard wall-clock bound on one isolated child test.
-const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Re-invoke THIS test binary, running only `test_name`, as a child
-/// process (round-3 findings 7-8) — see the module doc. Returns `true`
-/// when called FROM WITHIN that child (so the caller should run its real
-/// test body); returns `false` in the parent after the child has run to
-/// completion (having already asserted success), so the caller should
-/// just return.
-///
-/// Controlled by the `PIPE_WIN_TEST_CHILD` env var, set to `test_name`
-/// only in the spawned child — the standard self-re-exec pattern for
-/// isolating one test in its own process without a second binary.
-fn run_isolated(test_name: &str) -> bool {
-    if std::env::var("PIPE_WIN_TEST_CHILD").as_deref() == Ok(test_name) {
-        return true;
-    }
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut child = std::process::Command::new(exe)
-        .arg("--exact")
-        .arg(test_name)
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env("PIPE_WIN_TEST_CHILD", test_name)
-        .spawn()
-        .expect("failed to spawn isolated test child");
-    let deadline = Instant::now() + ISOLATION_TIMEOUT;
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => {
-                assert!(
-                    status.success(),
-                    "isolated test {test_name} failed in its child process: {status}"
-                );
-                return false;
-            }
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!("isolated test {test_name} did not complete within {ISOLATION_TIMEOUT:?} -- killed");
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    }
-}
 
 /// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
 fn fresh_voyage_id() -> String {

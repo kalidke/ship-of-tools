@@ -183,16 +183,19 @@ fn a_write_cut_short_by_the_file_size_limit_leaves_the_file_byte_identical() {
     let before = format!("{{\"msg\":\"{}\"}}\n", "x".repeat(1000 - 11));
     assert_eq!(before.len(), 1000);
     std::fs::write(inbox.join("z.jsonl"), &before).unwrap();
-    let out = Command::new("bash")
+    let child = Command::new("bash")
         .arg("-c")
         .arg(r#"ulimit -f 1; trap '' XFSZ; exec "$@""#)
         .args(["_", std::env::current_exe().unwrap().to_str().unwrap()])
         .args(["--exact", "fsize_child_files_one", "--ignored", "--nocapture", "--test-threads=1"])
         .env("SOT_TEST_INBOX_DIR", &inbox)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("FAILED the append failed: "), "{stdout}");
+    // Drained while it runs and waited on within a bound; its stderr reaches this test's own output.
+    let (status, stdout, _) =
+        sot_log::test_isolated::drain(child).wait_within(sot_log::test_isolated::ISOLATION_TIMEOUT);
+    assert!(stdout.contains("FAILED the append failed: "), "{status}: {stdout}");
     assert_eq!(std::fs::read_to_string(inbox.join("z.jsonl")).unwrap(), before);
 }
 

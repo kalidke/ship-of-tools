@@ -3,14 +3,15 @@
 //! challenge (`src/identity/challenge_unix.rs`) and the `SocketClient` construction
 //! path it authenticates (`connect_voyage_socket`). Mirrors the
 //! analogous section of `tests/pipe_win/` almost line for line — see
-//! that file's own module doc for the process-isolation rationale this
-//! copies verbatim (`CHALLENGE_UNIX_TEST_CHILD` in place of
-//! `PIPE_WIN_TEST_CHILD`), and `tests/socket_unix/`'s own doc for the
+//! that file's own module doc for the process-isolation rationale
+//! (both use `sot_log::test_isolated::run_isolated`), and
+//! `tests/socket_unix/`'s own doc for the
 //! `SOT_RUNTIME_DIR`-per-test isolation this also copies (including its
 //! macOS `/tmp`-not-`$TMPDIR` fix — irrelevant here, since this whole
 //! file is Linux-only, but kept for one copy-paste source of truth with
 //! that file rather than a second, silently-diverging one).
 
+use sot_log::test_isolated::run_isolated;
 use sot_log::identity::challenge::{ChallengeOutcome, ChallengeableConnection, PeerAuthOutcome};
 use sot_log::identity::challenge_unix::{
     self, authenticate_server, challenge, self_start_ticks, ChallengedProcess, PeerCredentials,
@@ -29,52 +30,9 @@ use std::os::unix::ffi::OsStrExt;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// A per-event bound used throughout (well inside `ISOLATION_TIMEOUT`, so
+/// A per-event bound used throughout (well inside `sot_log::test_isolated::ISOLATION_TIMEOUT`, so
 /// a stalled event always trips before the parent's own kill fires).
 const TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The parent's hard wall-clock bound on one isolated child test.
-const ISOLATION_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Re-invoke THIS test binary, running only `test_name`, as a child
-/// process — see `tests/pipe_win/`'s identical helper, which this is
-/// copied from verbatim (renamed env var only).
-fn run_isolated(test_name: &str) -> bool {
-    if std::env::var("CHALLENGE_UNIX_TEST_CHILD").as_deref() == Ok(test_name) {
-        return true;
-    }
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut child = std::process::Command::new(exe)
-        .arg("--exact")
-        .arg(test_name)
-        .arg("--nocapture")
-        .arg("--test-threads=1")
-        .env("CHALLENGE_UNIX_TEST_CHILD", test_name)
-        .spawn()
-        .expect("failed to spawn isolated test child");
-    let deadline = Instant::now() + ISOLATION_TIMEOUT;
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => {
-                assert!(
-                    status.success(),
-                    "isolated test {test_name} failed in its child process: {status}"
-                );
-                return false;
-            }
-            None => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "isolated test {test_name} did not complete within {ISOLATION_TIMEOUT:?} -- killed"
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-    }
-}
 
 /// A fresh, canonical lowercase-hyphenated UUID for one test's voyage id.
 fn fresh_voyage_id() -> String {
@@ -345,6 +303,7 @@ fn cross_process_challenge_server_role() {
     let Ok(voyage_id) = std::env::var("CHALLENGE_UNIX_XPROC_VOYAGE_ID") else {
         return;
     };
+    sot_log::test_isolated::enter("cross_process_challenge_server_role");
     let pid = std::process::id();
     let created = self_start_ticks().expect("self_start_ticks");
     // Review round fix: don't bind (hence don't become connectable) until
@@ -407,14 +366,10 @@ fn cross_process_challenge_proves_a_real_child_server() {
     }
     let _rt = isolated_runtime_dir();
     let voyage_id = fresh_voyage_id();
-    let exe = std::env::current_exe().expect("current_exe");
-    let mut child = std::process::Command::new(&exe)
-        .arg("--exact")
-        .arg("cross_process_challenge_server_role")
-        .arg("--nocapture")
-        .arg("--test-threads=1")
+    let (mut role, role_entry) =
+        sot_log::test_isolated::test_command("cross_process_challenge_server_role");
+    let mut child = role
         .env("CHALLENGE_UNIX_XPROC_VOYAGE_ID", &voyage_id)
-        .env_remove("CHALLENGE_UNIX_TEST_CHILD")
         .stdout(Stdio::piped())
         .spawn()
         .expect("failed to spawn the cross-process server child");
@@ -476,6 +431,7 @@ fn cross_process_challenge_proves_a_real_child_server() {
         Ok(Err(msg)) => panic!("{msg}"),
         Err(_) => panic!("timed out after 10s waiting for the child's own \"ready\" line"),
     }
+    role_entry.assert_once(child_pid);
     reader_thread.join().expect("readiness reader thread panicked");
 
     let client = connect_voyage_socket(&voyage_id).expect("connect to the cross-process server");

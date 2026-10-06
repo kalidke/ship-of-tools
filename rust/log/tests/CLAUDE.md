@@ -40,6 +40,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 
 ## Rules
 - A test file over 800 lines becomes `<name>/main.rs` plus subject modules under the same binary name; each module opens with `use super::*;`, so a helper two or more modules share stays in `main.rs`.
+- A test that must run in a process of its own starts with `if !run_isolated("<name>") { return; }` (`sot_log::test_isolated`). `<name>` is its exact libtest name, with its module in a multi-module binary (`close::...` in `pipe_win/`); a name that runs no body fails. A test that re-runs its binary another way is listed in that module's pin with its own proof that the body ran.
 - `support/` files are shared with `#[path = "support/<f>.rs"] mod <f>;` (`../support/` from a binary folder); each binary includes only what it uses.
 - `fixtures/` holds committed bytes read by `include_bytes!` or through `CARGO_MANIFEST_DIR`; the four golden `.sotseg` files are also read by julia/sotlog/test/runtests.jl, so a fixture is never rewritten, only added.
 - CI runs the Windows binaries by name in the `conpty-windows-2022` job of rust.yml: `conpty`, `capsule`, `pipe_win`, `e2e_pipe`, `supervisor`, `fe_client`.

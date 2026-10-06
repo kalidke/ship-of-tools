@@ -248,15 +248,14 @@ mod tests {
         );
         std::fs::write(&go_file, b"go").unwrap();
 
-        let outputs: Vec<_> = children.drain(..).map(|c| c.wait_with_output().expect("wait on race child")).collect();
-
-        for (i, out) in outputs.iter().enumerate() {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let stderr = String::from_utf8_lossy(&out.stderr);
+        // Drain every child's output on threads before waiting on any: a long panic report then cannot fill a pipe (a
+        // Windows pipe holds about 4 KiB) and stall a racer the others wait for. Each wait is bounded.
+        let racers: Vec<_> = children.drain(..).map(crate::test_isolated::drain).collect();
+        for (i, racer) in racers.into_iter().enumerate() {
+            let (status, stdout, stderr) = racer.wait_within(crate::test_isolated::ISOLATION_TIMEOUT);
             assert!(
-                out.status.success(),
-                "child {i} failed: status={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                out.status
+                status.success(),
+                "child {i} failed: status={status:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
             );
             // Guards against the zero-tests-matched hazard: a stale
             // hard-coded test name would make `cargo test` report "0

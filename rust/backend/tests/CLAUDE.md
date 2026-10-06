@@ -44,6 +44,7 @@ shows the shape.
   `sotd_exe` is private there (`daemon_boot.rs` checks that `CARGO_BIN_EXE_sotd` appears nowhere else).
 - A suite writes a comm registry only through `support::write_registry`, which takes the registry lock as the daemon and the comm scripts do (`daemon_boot.rs` scans this folder for any other write).
 - Every wait is bounded: `support::poll_until` and `BOUND`.
+- A suite that re-runs a test binary is listed in `sot_log::test_isolated`'s pin with its own proof that the selected body ran (`comm_file.rs`, `window_lease/`). `comm_file.rs` drains and waits on its child with `sot_log::test_isolated::drain(..).wait_within(..)`.
 - A suite never reaches the live box: `Env` points its daemon at its own folders (`comm_isolation_dirs`).
 - A binary over 800 lines is `<name>/main.rs` plus modules, loading `#[path = "../support/mod.rs"] mod support;`.
 - window_lease's `lease_holder_child` stays at its binary's root: `Window::open` runs it by exact name.
