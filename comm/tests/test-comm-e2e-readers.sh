@@ -7,8 +7,7 @@
 #
 # One scratch comm home under $HOME (shared by every host), the hub's record
 # set to `nfs4`, and on each of three hosts the real readers for one handle:
-# the daemon's wake (B3's `comm_wake_e2e`, wake.sh below), comm-poll.sh in a
-# loop and the Stop hook every 2-3 s. Two senders, this host and the v4 peer, each
+# comm-poll.sh in a loop and the Stop hook every 2-3 s. Two senders, this host and the v4 peer, each
 # send to all three handles through the real comm-send.sh: 30 paced 200 ms,
 # then 30 unpaced. The v3 host only reads (its sends would leave by the wire,
 # and no daemon serves this scratch home): its identity differs from the
@@ -20,11 +19,11 @@
 # Stop-hook call returns within 5 s, blocks while mail
 # is unread, and is silent after the final poll; in a strict phase (poll loops
 # stopped, 60 sends 3 s apart, one at a time) the last poll shows exactly those
-# messages; nothing pings in the 60 s after the final polls (a reader that took the
-# `<count> <crc>-<len>` cursor for a whole number would see every row unread
-# forever); the wire stub saw 0 frames; every inbox is whole. In the concurrent
-# phase a wake rightly skips a line a poll already read, so that phase only
-# reports how many lines a ping covered first.
+# messages; the wire stub saw 0 frames; every inbox is whole.
+# Each host also runs the ignored comm_wake_e2e test as an exact one-shot wake control in that test's
+# own scratch row. Its checked completion and nonempty ping output are required. This control does
+# not watch the shared reader inboxes throughout the strict or quiet phase; their late-ping log is
+# an observation, not a no-wake-storm proof.
 #
 # Needs real boxes, so it runs in no workflow. Nothing here touches
 # ~/.sot-comm or a live daemon. The scratch home is removed only when the run
@@ -163,13 +162,19 @@ rm -f -- "${D:?}/wire.log"
 [ "$(jq -r '.agents["e2e-v3"].host' "$D/registry.json")" = e2e-reg ] || { echo "FATAL: the rows are not registered as expected" >&2; exit 1; }
 
 # ---- the helpers each host runs (copies from $E, visible on every host) ------
+cp "$SCRIPT_DIR/../../scripts/tests/lib-test-body.sh" "$E/lib-test-body.sh" || exit 2
 cat > "$E/wake.sh" <<'EOF'
 #!/usr/bin/env bash
-# The daemon's wake: B3's `comm_wake_e2e` runs the real tick against a free
-# stub row, and the stub appends `<ms> ping` to the log named here.
+# The private one-shot control publishes one checked terminal result.
 D="$1"; TAG="$3"
-SOT_E2E_PING_LOG="$D/log/ping-$TAG.log" exec cargo test --manifest-path "${SOT_E2E_MANIFEST:?set SOT_E2E_MANIFEST to rust/Cargo.toml}" \
-    -p sot-backend --test comm_wake -- --ignored comm_wake_e2e
+source "$D/e2e/lib-test-body.sh" || exit 2
+SOT_E2E_PING_LOG="$D/log/ping-$TAG.log" test_body_run comm_wake_e2e "$D/log/wake-body-$TAG.log" -- \
+    cargo test --manifest-path "${SOT_E2E_MANIFEST:?set SOT_E2E_MANIFEST to rust/Cargo.toml}" \
+    -p sot-backend --test comm_wake comm_wake_e2e -- --ignored --exact \
+    --format pretty --color never --show-output --test-threads=1
+status=$?
+printf '%s\n' "$status" > "$D/log/wake-result-$TAG" || exit 2
+exit "$status"
 EOF
 cat > "$E/reader.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -227,6 +232,8 @@ while [ ! -e "$E/stop-$TAG" ] && [ ! -e "$E/abort" ] && [ -d "$E" ]; do sleep 0.
 bail
 kill "$HOOKER" 2>/dev/null
 pkill -P "$WAKE" 2>/dev/null; kill "$WAKE" 2>/dev/null
+wait "$WAKE" 2>/dev/null; wake_status=$?
+printf '%s\n' "$wake_status" > "$L/wake-wait-$TAG"
 wait 2>/dev/null
 EOF
 cat > "$E/sender.sh" <<'EOF'
@@ -379,25 +386,33 @@ done
 
 skew_of() { case "$1" in here|e2e-snd-here) echo 0 ;; peer|e2e-snd-peer) echo "$skew_peer" ;; v3) echo "$skew_v3" ;; esac; }
 sst="$(cat "$L/strict-start")"
-echo "wake, per handle (times normalised to this host's clock):"
+echo "private one-shot wake controls, per handle (times normalised to this host's clock):"
 for h in "${HANDLES[@]}"; do
     t="$(tag_of "$h")"; pl="$L/ping-$t.log"
-    [ -e "$pl" ] || : > "$pl"
+    if [ -s "$pl" ] && python3 - "$L/wake-result-$t" "$L/wake-wait-$t" <<'PYRESULT'
+import sys
+try:
+    good = all(open(path).read() == '0\n' for path in sys.argv[1:])
+except OSError:
+    good = False
+sys.exit(0 if good else 1)
+PYRESULT
+    then
+        echo "PASS: $h: exact one-shot wake control completed with ping evidence"
+        PASS=$((PASS + 1))
+    else
+        echo "FAIL: $h: one-shot wake control lacks successful completion or ping evidence"
+        FAIL=$((FAIL + 1))
+        continue
+    fi
     rs="$(skew_of "$t")"
     awk -v s="$rs" '{print $1 - s}' "$pl" | sort -n > "$L/pings-norm-$t"
-    # NOTE (concurrent phase): a line's first poll showing vs the first ping after its filing
-    grep -E ' m-[^ ]*$' "$L/pollout-$t.log" | awk -v s="$rs" '{id=$NF; v=$1-s; if(!(id in f)||v<f[id])f[id]=v}END{for(i in f)print f[i],i}' > "$L/firstshown-$t"
-    for sn in here peer; do
-        awk -v h="$h" -v s="$(skew_of "e2e-snd-$sn")" '$2==h && $4=="filed"{print $1 - s, $3}' "$L/send-e2e-snd-$sn.log"
-    done > "$L/filedat-$t"
-    awk -v h="$h" -v ss="$sst" 'FILENAME==ARGV[1]{if($1<ss)p[++n]=$1;next} FILENAME==ARGV[2]{s[$2]=$1;next}
-        {cov=0; for(i=1;i<=n;i++) if(p[i]>$1){fp=p[i];cov=1;break}
-         if(cov && (!($2 in s) || s[$2]>=fp)) a++; else b++}
-        END{printf "  NOTE %s: concurrent phase, %d lines covered by a ping first, %d shown by a poll first or never pinged\n", h, a+0, b+0}' "$L/pings-norm-$t" "$L/firstshown-$t" "$L/filedat-$t"
+    # Count only pings from the private one-shot wake control.
+    control_pings="$(awk -v ss="$sst" '$1 < ss { n++ } END { print n+0 }' "$L/pings-norm-$t")"
+    printf '  NOTE %s: private one-shot control: %s pings observed before strict start; shared-message wake coverage is not checked\n' "$h" "$control_pings"
     fin="$(cat "$L/final-$t")"
     late="$(awk -v f="$fin" '$1>f' "$pl" | wc -l)"
-    verdict "5b. $h: no wake storm ($late pings in the ${QUIET} s after the final poll)" \
-        "$([ "$late" -eq 0 ] || echo "$late pings after the final poll")"
+    printf 'NOTE: %s: %s late control pings observed after the final poll; sustained shared-inbox wake behavior is not checked.\n' "$h" "$late"
 done
 
 nwire=0; [ ! -e "$D/wire.log" ] || nwire="$(wc -l < "$D/wire.log")"

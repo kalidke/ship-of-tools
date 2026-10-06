@@ -5,6 +5,7 @@ public surface: the store and its recovery, the capsule runtime, the lane transp
 client, several of them against a real `sot-capsule` process. Part of the capsule subsystem; charter: rust/log/CLAUDE.md.
 
 ## Files
+- `test_body_fixture.rs`: harmless real libtest bodies, including ignored and near-named controls, for the shell selected-test proofs.
 - `attach_worker.rs`: `AttachWorker` against a real `sot-capsule supervise` and capsule: bounded ingress and a real multi-chunk checkpoint transfer; Linux and Windows (the multi-chunk test Linux only).
 - `capsule/`: `capsule::run` driven with a test transport and fake or real producers (attach, group commit, early output end, shutdown paths; `unix_only.rs` and `windows_only.rs` hold the platform mechanism); Linux, macOS and Windows.
 - `challenge_macos.rs`: the macOS identity challenge and the `SocketClient` connect path it authenticates, and the two credential-transition tests that pin a peer's account to the credential the kernel cached (their helper runs as root through `sudo -n`); macOS only.

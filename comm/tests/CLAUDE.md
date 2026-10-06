@@ -44,6 +44,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage.
 
 ## Rules
+- The two-host inbox Rust arm and the reader suite's one-shot wake control use scripts/tests/lib-test-body.sh to require the exact selected body to complete successfully; every caller consumes its checked result, including background controls. Existing required content and route witnesses remain additional assertions.
 - Each suite sources `lib-home-guard.sh` before any command but `set`; `test-rm-guard.sh` fails a suite that does not,
   and fails if it finds fewer than 29 suites under `comm/` and `agents/`.
 - Scripts run from the copy `guard_stage_bin` makes in the suite's work directory (`stage-bin.sh` fails on a missing or

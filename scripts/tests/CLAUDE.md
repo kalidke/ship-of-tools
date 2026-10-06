@@ -4,6 +4,8 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 `sotd` under a temp folder and touches no live daemon. Part of distribution; charter: scripts/CLAUDE.md.
 
 ## Files
+- `lib-test-body.sh`: the shared completion verdict for one selected Rust test; missing, ignored, mismatched and failed bodies cannot pass.
+- `test-test-body.sh`: real-libtest and scratch-witness proofs of the verdict and its shell owners; accepts a compiled fixture executable by absolute path.
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
   and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
   `rc-gate.sh`.
