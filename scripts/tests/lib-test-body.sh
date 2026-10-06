@@ -23,53 +23,30 @@ except (OSError, UnicodeError) as error:
     print(f'selected test {name}: unreadable log: {error}', file=sys.stderr)
     sys.exit(2)
 
-def structural(line):
-    return line in ('successes:', 'failures:') or line.startswith('---- ')
-
-def parse_outer():
-    # Cargo may precede the harness with build diagnostics. Once the run starts, consume every
-    # outer record in order; count/progress/result strings inside stdout remain captured data.
-    start = next((i for i, line in enumerate(lines) if re.fullmatch(r'running \d+ tests?', line)), None)
-    if start is None or any(structural(line) or line.startswith('test ') for line in lines[:start]):
-        raise ValueError('missing or ambiguous outer harness')
+starts = [i for i, line in enumerate(lines) if re.fullmatch(r'running \d+ tests?', line)]
+reason = 'missing or ambiguous outer harness'
+if starts:
+    start = starts[0]
+    boundary = next((i for i in range(start + 1, len(lines))
+                     if lines[i] in ('successes:', 'failures:') or lines[i].startswith('test result:')), len(lines))
+    completed = [line for line in lines[start + 1:boundary] if line.startswith('test ')]
+    summaries = [(i, lines[i]) for i in range(boundary, len(lines)) if lines[i].startswith('test result:')]
+    # Captured stdout can contain arbitrary harness-like lines. Only the final outer record counts;
+    # no test output is printed between that record and Cargo's following diagnostic/footer.
+    result_at, result = summaries[-1] if summaries else (len(lines), '')
+    expected = re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; finished in [0-9.]+s', result)
     if lines[start] != 'running 1 test':
-        raise ValueError('outer harness did not run exactly one body')
-    position = start + 1
-
-    def take():
-        nonlocal position
-        while position < len(lines) and not lines[position].strip():
-            position += 1
-        if position == len(lines):
-            raise ValueError('incomplete captured/outer structure')
-        line = lines[position]
-        position += 1
-        return line
-
-    if take() != f'test {name} ... ok':
-        raise ValueError('exact successful body completion missing or mismatched')
-    record = take()
-    if record == 'successes:':
-        record = take()
-        if record == f'---- {name} stdout ----':
-            # The first structural boundary must close stdout. Another opening or closing
-            # delimiter is ambiguous, even if test output printed it deliberately.
-            while position < len(lines) and not structural(lines[position]):
-                position += 1
-            record = take()
-        if record != 'successes:' or take() != f'    {name}':
-            raise ValueError('missing or ambiguous capture closure/selected-name list')
-        record = take()
-    if not re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; \d+ filtered out; finished in [0-9.]+s', record):
-        raise ValueError('outer successful one-body result missing or mismatched')
-    if any(line.strip() for line in lines[position:]):
-        raise ValueError('ambiguous trailing harness output')
-
-try:
-    parse_outer()
-except ValueError as error:
-    print(f'selected test {name}: {error}', file=sys.stderr)
-    sys.exit(101)
+        reason = 'outer harness did not run exactly one body'
+    elif completed != [f'test {name} ... ok']:
+        reason = 'exact successful body completion missing or mismatched'
+    elif not expected:
+        reason = 'outer successful one-body result missing or mismatched'
+    elif any(line.startswith(('running ', 'test ', '---- ')) for line in lines[result_at + 1:]):
+        reason = 'ambiguous trailing harness output'
+    else:
+        sys.exit(0)
+print(f'selected test {name}: {reason}', file=sys.stderr)
+sys.exit(101)
 PY
 }
 
