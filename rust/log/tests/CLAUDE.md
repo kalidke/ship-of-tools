@@ -24,7 +24,7 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - `other_account.rs`: a client run as `sudo -n -u nobody` gets no byte from a `serve_own` listener, a client of this account does (ADR 0049, User isolation); Unix, skipped where passwordless sudo is not available.
 - `pipe_win/`: `PipeServer` and the same-connection challenge over real pipes, process-isolated: connect, teardown, close, challenge modules; Windows only.
 - `reconcile_matrix.rs`: every row of the startup reconciliation table (`reconcile`) entered by file surgery, then `verify_voyage`; Unix and Windows.
-- `isolation_guards.rs`: the source guards of ADR 0049, User isolation, that a lint cannot make, over the production source (`sot_log::test_scan::production_sources()`): every accept of the Rust processes is a listed listener; the listeners the Julia children and Node helpers open in their source are listed; no browser opener outside `browser_open.rs`; no secret, token or address as a command-line argument; macOS's `LOCAL_PEERTOKEN` has one reader, and the source pin permits only pid/pidversion `.val` accesses in its private `AuditToken` module, pinning indices 5/7; the guard covers production source spellings, not arbitrary equivalent Rust, numeric socket-option calls or test-only token reads; every platform.
+- `isolation_guards.rs`: remaining ADR 0049 source guards for Julia/Node listener spellings, browser/argument spellings and the macOS peer-token reader; Rust listener admission is proved at its native owners, not by an allowance catalog.
 - `socket_unix/`: real Unix socket connect, teardown, close and client contracts, process-isolated with named waits and progress diagnostics (`diagnostics.rs`); Unix.
 - `supervisor/`: the supervisor authority against a real `sot-capsule supervise` process: lifecycle, authority, spawn modules; Linux and Windows.
 - `support/`: helpers shared by several binaries: `capsule_guard.rs` (a spawned `sot-capsule` no test can leave behind) and `transports.rs` (`NoopTransport` and `TestTransport`).
@@ -39,9 +39,9 @@ client, several of them against a real `sot-capsule` process. Part of the capsul
 - The Claude adapter: `claude_rig`; `claude_e2e` only for the real helper.
 
 ## Rules
-- Socket tests pass a named `WaitContext` to shared wait helpers; real failure and child-cutoff cases in `diagnostics.rs` check emitted records and progress snapshots.
+- Socket tests use context-aware operation adapters with one absolute deadline and observed outcomes; diagnostics asserts flushed child output, including begin visibility and timeout snapshots, and polls within that deadline before retention checks.
 - A test file over 800 lines becomes `<name>/main.rs` plus subject modules under the same binary name; each module opens with `use super::*;`, so a helper two or more modules share stays in `main.rs`.
-- A test that must run in a process of its own starts with `if !run_isolated("<name>") { return; }` (`sot_log::test_isolated`). `<name>` is its exact libtest name, with its module in a multi-module binary (`close::...` in `pipe_win/`); a name that runs no body fails. A test that re-runs its binary another way is listed in that module's pin with its own proof that the body ran.
+- A process-isolated test uses `sot_log::test_isolated` with its exact qualified libtest name; deadline-aware callers use `run_isolated_until`, and direct fixtures use `test_command`, `enter`, `Entry::assert_once` and `wait_until`. Body entry and owned-child completion are checked by behavior; no rerun spelling catalog is used.
 - `support/` files are shared with `#[path = "support/<f>.rs"] mod <f>;` (`../support/` from a binary folder); each binary includes only what it uses.
 - `fixtures/` holds committed bytes read by `include_bytes!` or through `CARGO_MANIFEST_DIR`; the four golden `.sotseg` files are also read by julia/sotlog/test/runtests.jl, so a fixture is never rewritten, only added.
 - CI runs the Windows binaries by name in the `conpty-windows-2022` job of rust.yml: `conpty`, `capsule`, `pipe_win`, `e2e_pipe`, `supervisor`, `fe_client`.

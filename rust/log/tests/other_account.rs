@@ -23,14 +23,23 @@ async fn first_byte(port: u16, as_nobody: bool) -> Option<String> {
         c.args(["-c", script]);
         c
     };
-    let out = cmd.arg(port.to_string()).stdin(Stdio::null()).stderr(Stdio::null()).output().await.ok()?;
+    let out = cmd
+        .arg(port.to_string())
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// A test that cannot run here says so and passes, except on CI, where a silent skip is a failure to be seen.
 fn skip(reason: &str) {
     eprintln!("skipped: {reason}");
-    assert!(std::env::var_os("GITHUB_ACTIONS").is_none(), "a test skipped on CI: {reason}");
+    assert!(
+        std::env::var_os("GITHUB_ACTIONS").is_none(),
+        "a test skipped on CI: {reason}"
+    );
 }
 
 #[tokio::test]
@@ -48,16 +57,27 @@ async fn a_client_of_another_account_gets_no_byte() {
     }
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let server = tokio::spawn(sot_log::identity::peer_owner::serve_own(listener, "test", |mut s| async move {
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut s, b"served").await;
-    }));
+    let server = tokio::spawn(sot_log::identity::peer_owner::serve_own(
+        listener,
+        "test",
+        |mut s| async move {
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut s, b"served").await;
+        },
+    ));
     let mine = first_byte(port, false).await;
     if mine.as_deref() != Some("Ms") {
         server.abort();
-        return skip(&format!("a client of this account got {mine:?}, so bash's /dev/tcp client does not work here"));
+        return skip(&format!(
+            "a client of this account got {mine:?}, so bash's /dev/tcp client does not work here"
+        ));
     }
     let theirs = first_byte(port, true).await;
     server.abort();
     // `M` and nothing after it: the client connected (so the test reached the owner check) and no byte came back.
-    assert_eq!(theirs.as_deref(), Some("M"), "another account's client was served, or never connected: {theirs:?}");
+    assert_eq!(
+        theirs.as_deref(),
+        Some("M"),
+        "another account's client was served, or never connected: {theirs:?}"
+    );
+    eprintln!("admission-proof test=a_client_of_another_account_gets_no_byte endpoint=page boundary=owner-query fixture=native-account rejected=true dispatched=0 bodies=1");
 }

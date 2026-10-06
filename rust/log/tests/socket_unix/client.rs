@@ -22,8 +22,7 @@ fn client_read_cancel_unblocks_from_another_thread() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -72,8 +71,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -98,7 +96,7 @@ fn client_write_cancel_unblocks_from_another_thread() {
             WaitContext::new(test, "writer.flood", "terminal write error", None, TIMEOUT);
         loop {
             flood_wait.check(None);
-            match flood_wait.io(|| writer_client.write_all(&payload)) {
+            match flood_wait.attempt_io(|| writer_client.write_all(&payload)) {
                 Ok(()) => {}
                 Err(e) => {
                     flood_wait.record("ok");
@@ -136,8 +134,7 @@ fn concurrent_same_direction_client_read_returns_distinct_error() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -203,8 +200,7 @@ fn cancelled_client_rejects_later_submissions() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -261,8 +257,7 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -302,12 +297,14 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
     let closed_wait =
         WaitContext::new(test, "closed.after.bytes", "Closed", Some(conn_id), TIMEOUT);
     loop {
-        match closed_wait.event(&server) {
+        match closed_wait.next(&server) {
             LaneEvent::Closed(cid, _) if cid == conn_id => break,
             LaneEvent::Bytes(cid, _) if cid == conn_id => continue,
             other => panic!("expected Closed, got {other:?}"),
         }
     }
+
+    closed_wait.complete("ok", None, Some(&server));
 
     // Writing into a closed peer fails within a bounded number of chunks:
     // the kernel may absorb at most a socket buffer's worth before the
@@ -323,7 +320,7 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
     );
     for _ in 0..256 {
         retry.check(Some(&server));
-        result = retry.io(|| client.write_all(&chunk));
+        result = retry.attempt_io(|| client.write_all(&chunk));
         if result.is_err() {
             break;
         }
@@ -334,6 +331,7 @@ fn a_terminal_write_failure_latches_the_connection_closed() {
          (never Cancelled -- nobody called cancel()), got {result:?}"
     );
 
+    retry.io_outcome(&result, false, Some(&server));
     let mut buf = [0u8; 16];
     assert!(
         matches!(
@@ -371,8 +369,7 @@ fn connect_fails_fast_when_nothing_listens() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -418,8 +415,7 @@ fn connect_fails_fast_when_refused_by_a_stale_socket_file() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -528,8 +524,7 @@ fn connect_retries_within_the_bound_on_a_full_backlog() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -641,8 +636,7 @@ fn excess_connection_at_capacity_is_seen_as_early_eof() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }

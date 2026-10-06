@@ -13,8 +13,7 @@ fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -40,12 +39,15 @@ fn worst_case_worker_fan_out_completes_well_inside_the_aggregate_budget() {
         server.disconnect_listener()
     );
     let started = Instant::now();
-    let ok = named!(
+    let ok = WaitContext::from_origin(
         test,
         "workers.join",
+        "workers complete",
         None,
-        server.join_workers(started + Duration::from_secs(5))
-    );
+        started,
+        started + Duration::from_secs(5),
+    )
+    .workers(&mut server);
     assert!(
         ok,
         "real teardown of {max_connections} live connections did not finish within a 5s budget \
@@ -67,8 +69,7 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -91,7 +92,7 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
     let flood = WaitContext::new(test, "send.flood", "QueueFull", Some(stalled_conn), TIMEOUT);
     for _ in 0..128 {
         flood.check(Some(&server));
-        match flood.io(|| server.send(stalled_conn, payload.clone(), None)) {
+        match flood.attempt_io(|| server.send(stalled_conn, payload.clone(), None)) {
             Ok(()) => {}
             Err(TransportError::QueueFull(cid)) => {
                 assert_eq!(cid, stalled_conn);
@@ -124,12 +125,15 @@ fn stalled_worker_does_not_block_teardown_of_healthy_connections() {
         None,
         server.disconnect_listener()
     );
-    let ok = named!(
+    let ok = WaitContext::from_origin(
         test,
         "workers.join",
+        "workers complete",
         None,
-        server.join_workers(started + Duration::from_secs(5))
-    );
+        started,
+        started + Duration::from_secs(5),
+    )
+    .workers(&mut server);
     assert!(
         ok,
         "teardown with one stalled connection among several live ones did not finish within a \
@@ -156,8 +160,7 @@ fn join_workers_deadline_is_enforced_against_real_threads_not_merely_computed() 
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -182,12 +185,15 @@ fn join_workers_deadline_is_enforced_against_real_threads_not_merely_computed() 
         server.disconnect_listener()
     );
     let started = Instant::now();
-    let _ok = named!(
+    let _ok = WaitContext::from_origin(
         test,
         "workers.join",
+        "workers complete",
         None,
-        server.join_workers(started + Duration::from_millis(1))
-    );
+        started,
+        started + Duration::from_millis(1),
+    )
+    .workers(&mut server);
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(2),
@@ -210,8 +216,7 @@ fn flooded_never_reading_client_close_completes_within_bound() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -227,7 +232,7 @@ fn flooded_never_reading_client_close_completes_within_bound() {
     let flood = WaitContext::new(test, "send.flood", "QueueFull", Some(conn_id), TIMEOUT);
     for _ in 0..128 {
         flood.check(Some(&server));
-        match flood.io(|| server.send(conn_id, payload.clone(), None)) {
+        match flood.attempt_io(|| server.send(conn_id, payload.clone(), None)) {
             Ok(()) => {}
             Err(TransportError::QueueFull(cid)) => {
                 assert_eq!(cid, conn_id);
@@ -261,8 +266,7 @@ fn pending_accept_with_no_client_drops_promptly() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -287,8 +291,7 @@ fn drop_returns_even_with_a_saturated_events_channel() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }

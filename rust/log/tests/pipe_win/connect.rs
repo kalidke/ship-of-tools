@@ -158,7 +158,8 @@ fn connect_fails_fast_when_pipe_absent() {
 /// connect succeeds once the recycled instance is available again.
 #[test]
 fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
-    if !run_isolated("connect::connect_retries_within_the_bound_when_busy_then_succeeds_once_freed") {
+    if !run_isolated("connect::connect_retries_within_the_bound_when_busy_then_succeeds_once_freed")
+    {
         return;
     }
     let id = fresh_voyage_id();
@@ -174,7 +175,8 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
     let second = std::thread::spawn(move || {
         let started = Instant::now();
         let _ = started_tx.send(started);
-        let client = connect_voyage_pipe(&id_for_thread).expect("expected the busy retry to eventually succeed");
+        let client = connect_voyage_pipe(&id_for_thread)
+            .expect("expected the busy retry to eventually succeed");
         (client, started.elapsed())
     });
     let started = started_rx
@@ -182,14 +184,19 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
         .expect("expected the second connect thread to signal it has started");
 
     // The connector sends its pre-call origin; wait only until origin + 300 ms before freeing the instance.
-    std::thread::sleep((started + Duration::from_millis(300)).saturating_duration_since(Instant::now()));
+    std::thread::sleep(
+        (started + Duration::from_millis(300)).saturating_duration_since(Instant::now()),
+    );
     assert!(
         !second.is_finished(),
         "expected the second connect to still be retrying against a busy pipe 300ms after it started"
     );
 
     server.close(first_conn);
-    assert_eq!(expect_closed(&server, first_conn, TIMEOUT), ClosedReason::Closed);
+    assert_eq!(
+        expect_closed(&server, first_conn, TIMEOUT),
+        ClosedReason::Closed
+    );
     drop(first_client);
 
     let join_deadline = Instant::now() + CONNECT_BOUND + Duration::from_secs(5);
@@ -201,7 +208,9 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
         std::thread::sleep(Duration::from_millis(20));
     }
     let (_second_client, elapsed) = second.join().unwrap();
-    eprintln!("connect_retries_within_the_bound_when_busy_then_succeeds_once_freed: elapsed={elapsed:?}");
+    eprintln!(
+        "connect_retries_within_the_bound_when_busy_then_succeeds_once_freed: elapsed={elapsed:?}"
+    );
     assert!(
         elapsed < CONNECT_BOUND,
         "expected the busy retry to succeed comfortably inside {CONNECT_BOUND:?}, took {elapsed:?}"
@@ -282,7 +291,9 @@ fn disconnect_listener_frees_the_name_even_with_a_live_connection() {
 /// inheritance flags.
 #[test]
 fn pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
-    if !run_isolated("connect::pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags") {
+    if !run_isolated(
+        "connect::pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags",
+    ) {
         return;
     }
     let id = fresh_voyage_id();
@@ -301,4 +312,180 @@ fn pipe_descriptor_is_protected_owner_only_with_no_container_inherit_flags() {
     );
 
     drop(server);
+}
+
+/// Native access check on a synchronous test-owned client thread; impersonation never crosses an await.
+fn restricted_open_denied(path: String) -> std::io::Error {
+    std::thread::spawn(move || {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{
+            CreateRestrictedToken, CreateWellKnownSid, ImpersonateLoggedOnUser, RevertToSelf,
+            WinWorldSid, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_IMPERSONATE, TOKEN_QUERY,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        struct Token(HANDLE);
+        impl Drop for Token {
+            fn drop(&mut self) {
+                unsafe {
+                    CloseHandle(self.0);
+                }
+            }
+        }
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                assert_ne!(
+                    unsafe { RevertToSelf() },
+                    0,
+                    "restore test-owned client token"
+                );
+            }
+        }
+        let mut original = Token(std::ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY,
+                    &mut original.0,
+                )
+            },
+            0,
+            "open test-owned token"
+        );
+        let mut sid = [0u32; 17];
+        let mut bytes = std::mem::size_of_val(&sid) as u32;
+        assert_ne!(
+            unsafe {
+                CreateWellKnownSid(
+                    WinWorldSid,
+                    std::ptr::null_mut(),
+                    sid.as_mut_ptr().cast(),
+                    &mut bytes,
+                )
+            },
+            0,
+            "create restricted access SID"
+        );
+        let restriction = SID_AND_ATTRIBUTES {
+            Sid: sid.as_mut_ptr().cast(),
+            Attributes: 0,
+        };
+        let mut restricted = Token(std::ptr::null_mut());
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    original.0,
+                    0,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    1,
+                    &restriction,
+                    &mut restricted.0,
+                )
+            },
+            0,
+            "create restricted test token"
+        );
+        assert_ne!(
+            unsafe { ImpersonateLoggedOnUser(restricted.0) },
+            0,
+            "impersonate restricted test token"
+        );
+        let _restore = Restore;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+            {
+                Err(error)
+                    if error.raw_os_error() == Some(231)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                result => {
+                    break result.expect_err("pipe opened for a token without the owner grant")
+                }
+            }
+        }
+    })
+    .join()
+    .expect("test-owned access thread panicked")
+}
+
+#[test]
+fn pipe_denies_a_token_without_the_owner_grant() {
+    let test = "connect::pipe_denies_a_token_without_the_owner_grant";
+    if !run_isolated(test) {
+        return;
+    }
+    for endpoint in ["voyage", "supervisor"] {
+        let id = fresh_voyage_id();
+        let server = if endpoint == "voyage" {
+            PipeServer::bind(&id, 1)
+        } else {
+            PipeServer::bind_supervisor(&id, 1)
+        }
+        .unwrap();
+        let path = format!(r"\\.\pipe\sot-{endpoint}-{id}");
+        for _ in 0..2 {
+            let denied = restricted_open_denied(path.clone());
+            assert_eq!(
+                denied.kind(),
+                std::io::ErrorKind::PermissionDenied,
+                "restricted-token open was not access denied: {denied}"
+            );
+            assert!(
+                server
+                    .events()
+                    .recv_timeout(Duration::from_millis(100))
+                    .is_err(),
+                "denied token produced an Accepted event"
+            );
+            let deadline = Instant::now() + TIMEOUT;
+            let mut owner = loop {
+                match std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                {
+                    Ok(file) => break file,
+                    Err(error)
+                        if error.raw_os_error() == Some(231) && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("owner-token open failed: {error}"),
+                }
+            };
+            let conn = expect_accepted(&server, TIMEOUT);
+            use std::io::{Read, Write};
+            owner.write_all(b"a").unwrap();
+            assert!(
+                matches!(next_event(&server, TIMEOUT), LaneEvent::Bytes(_, ref bytes) if bytes == b"a")
+            );
+            server.send(conn, b"m".to_vec(), Some(9)).unwrap();
+            let mut marker = [0];
+            owner.read_exact(&mut marker).unwrap();
+            assert_eq!(marker, *b"m");
+            assert!(matches!(
+                next_event(&server, TIMEOUT),
+                LaneEvent::Sent(_, 9)
+            ));
+            let actual = security_descriptor_sddl(
+                std::os::windows::io::AsRawHandle::as_raw_handle(&owner).cast(),
+            );
+            let expected = canonical_sddl(&format!("D:P(A;;FA;;;{})", current_user_sid_string()));
+            assert_eq!(actual, expected, "live endpoint descriptor changed");
+            server.close(conn);
+            expect_closed(&server, conn, TIMEOUT);
+            drop(owner);
+            eprintln!("admission-proof test={test} endpoint={endpoint} boundary=pipe-access fixture=restricted-token rejected=true dispatched=0 bodies=1");
+        }
+    }
 }

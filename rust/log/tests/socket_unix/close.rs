@@ -64,8 +64,7 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -98,7 +97,7 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
         server.close(conn_a)
     );
     let mut buf = [0u8; 16];
-    let n = read_a_eof(test, Some(conn_a), &mut client_a, &mut buf).unwrap();
+    let n = read_a_eof(test, Some(&server), Some(conn_a), &mut client_a, &mut buf).unwrap();
     assert_eq!(n, 0, "expected ordered EOF after a server-initiated close");
     let a_closed = WaitContext::new(test, "a.closed", "Closed(Closed)", Some(conn_a), TIMEOUT);
     match a_closed.event(&server) {
@@ -140,19 +139,13 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
 #[track_caller]
 pub(super) fn read_a_eof(
     test: &str,
+    server: Option<&SocketServer>,
     conn: Option<ConnId>,
     client_a: &mut UnixStream,
     buf: &mut [u8],
 ) -> std::io::Result<usize> {
-    io_named!(
-        test,
-        "a.read_timeout",
-        "10s read bound",
-        conn,
-        client_a.set_read_timeout(Some(TIMEOUT))
-    )
-    .unwrap();
-    io_named!(test, "a.eof", "zero bytes", conn, client_a.read(buf))
+    let wait = WaitContext::new(test, "a.eof", "zero bytes", conn, TIMEOUT);
+    wait.read(server, client_a, buf)
 }
 
 /// PRIMARY, deterministic: the client connects, the test waits for
@@ -166,8 +159,7 @@ fn eof_before_registration_is_handled_cleanly() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -206,8 +198,7 @@ fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -259,8 +250,7 @@ fn sequential_connect_close_churn_does_not_leak_fds() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -307,8 +297,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -362,7 +351,7 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     );
     let deadline = drain_wait.deadline;
     while Instant::now() < deadline {
-        match drain_wait.receive(&server, Duration::from_secs(1)) {
+        match drain_wait.receive_attempt(server.events(), Duration::from_secs(1)) {
             Ok(evt) => last = Some(evt),
             Err(_) => break,
         }

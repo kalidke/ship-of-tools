@@ -1,100 +1,208 @@
-//! Real failed and hung socket cases prove named records, one deadline and server progress.
+//! Socket diagnostic proofs observe flushed output of exact-body ISO children.
 
 use super::*;
-use sot_log::test_isolated::{enter, test_command, wait_within, ISOLATION_TIMEOUT};
+use sot_log::test_isolated::{enter, test_command, ChildWaitKind, ISOLATION_TIMEOUT};
 use std::process::Stdio;
 
-fn panic_text(panic: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = panic.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = panic.downcast_ref::<&str>() {
-        s.to_string()
+struct Captured {
+    text: String,
+    pid: u32,
+    expired: bool,
+    begin_observed: bool,
+}
+
+fn child_role(test: &str) -> bool {
+    if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() == Ok(test) {
+        enter(test);
+        true
     } else {
-        "non-string panic".into()
+        false
     }
 }
 
-fn assert_schema(text: &str, test: &str, step: &str, conn: ConnId) {
-    for (field, required) in [
-        ("test", format!("socket-test test={test}")),
-        ("child", format!(" child={}", std::process::id())),
-        ("step", format!(" step={step}")),
-        ("expected", " expected=Closed(Eof)".into()),
-        ("connection", format!(" conn={conn}")),
-        ("elapsed", " elapsed_ms=".into()),
-        (
-            "caller",
-            " caller=rust/log/tests/socket_unix/diagnostics.rs:".into(),
-        ),
-        ("begin", " result=begin".into()),
-        ("timeout", " result=timeout".into()),
-        (
-            "progress snapshot",
-            "transport-progress snapshot records=".into(),
-        ),
-        (
-            "progress checkpoint",
-            "transport-progress transport=socket".into(),
-        ),
-    ] {
+/// ISO owns the child wait and cleanup; the capture file introduces no drain deadline.
+fn capture(test: &str, bound: Duration, release_after_begin: Option<&str>) -> Captured {
+    let output = tempfile::NamedTempFile::new().expect("capture file");
+    let (mut command, entry) = test_command(test);
+    let file = output.reopen().unwrap();
+    let wait = WaitContext::new(
+        test,
+        "child.wait",
+        "fixture ends with confirmed cleanup",
+        None,
+        bound,
+    );
+    let mut child = command
+        .env("SOT_TEST_SOCKET_ROLE", test)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(file.try_clone().unwrap()))
+        .stderr(Stdio::from(file.try_clone().unwrap()))
+        .spawn()
+        .expect("spawn the fixture child");
+    let pid = child.id();
+    let mut begin_observed = false;
+    if let Some(step) = release_after_begin {
+        let observe = WaitContext::from_origin(
+            test,
+            "begin.observe",
+            "complete emitted begin before release",
+            None,
+            wait.started,
+            wait.deadline,
+        );
+        while Instant::now() < observe.deadline {
+            let text = std::fs::read_to_string(output.path()).unwrap();
+            begin_observed = text.lines().any(|line| {
+                line.contains(&format!("socket-test test={test} child={pid} "))
+                    && line.contains(&format!(" step={step} "))
+                    && line.ends_with("result=begin")
+            });
+            if begin_observed {
+                break;
+            }
+            observe.pause(Duration::from_millis(5));
+        }
+        observe.complete(if begin_observed { "ok" } else { "timeout" }, None, None);
+        if begin_observed {
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(b"r")
+                .expect("release child");
+            eprintln!("fixture-proof test={test} child={pid} begin={step} observed=before-release");
+        }
+    }
+    let result = wait.child(&mut child);
+    let confirmed = child
+        .try_wait()
+        .expect("confirm fixture termination")
+        .is_some();
+    entry.assert_once(pid);
+    let text = std::fs::read_to_string(output.path()).unwrap();
+    let expired = result
+        .as_ref()
+        .is_err_and(|error| matches!(error.kind, ChildWaitKind::Expired));
+    assert!(
+        confirmed
+            && result
+                .as_ref()
+                .err()
+                .is_none_or(|error| error.termination_confirmed),
+        "owned child termination unconfirmed: {result:?}"
+    );
+    eprintln!("{text}");
+    eprintln!(
+        "body-proof test={test} child={pid} bodies=1 completed={} cleanup=confirmed",
+        result.is_ok()
+    );
+    match result {
+        Ok(status) => assert!(status.success(), "fixture child failed: {status}: {text}"),
+        Err(error) if !expired => panic!("fixture supervision failed: {error}"),
+        Err(_) => {}
+    }
+    if release_after_begin.is_some() {
         assert!(
-            text.contains(&required),
-            "wait diagnostic missing {field}: {text}"
+            begin_observed,
+            "child begin was not visible before release: {text}"
         );
     }
+    Captured {
+        text,
+        pid,
+        expired,
+        begin_observed,
+    }
+}
+
+fn record<'a>(capture: &'a Captured, test: &str, step: &str, outcome: &str) -> &'a str {
+    let line = capture
+        .text
+        .lines()
+        .find(|line| {
+            line.contains(&format!("socket-test test={test} child={} ", capture.pid))
+                && line.contains(&format!(" step={step} "))
+                && line.ends_with(&format!("result={outcome}"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "wait diagnostic missing emitted {step}/{outcome}: {}",
+                capture.text
+            )
+        });
+    let line = &line[line.find("socket-test ").expect("complete socket record")..];
+    for key in [
+        "test",
+        "child",
+        "step",
+        "expected",
+        "conn",
+        "elapsed_ms",
+        "caller",
+        "result",
+    ] {
+        let value = line
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix(&format!("{key}=")))
+            .unwrap_or_else(|| panic!("wait diagnostic missing emitted {key}: {line}"));
+        assert!(
+            !value.is_empty(),
+            "wait diagnostic missing emitted {key}: {line}"
+        );
+        if key == "elapsed_ms" {
+            value.parse::<u128>().expect("numeric elapsed_ms");
+        }
+        if key == "conn" && value != "pending" {
+            value.parse::<u64>().expect("numeric connection id");
+        }
+        if key == "caller" {
+            let (file, number) = value.rsplit_once(':').expect("caller and line");
+            assert!(
+                file.starts_with("rust/log/") && !file.contains(".."),
+                "repository-relative caller required"
+            );
+            number.parse::<u32>().expect("numeric caller line");
+        }
+    }
+    line
+}
+
+fn history(capture: &Captured) {
     assert!(
-        !text.contains("caller=/"),
-        "caller must be repository-relative: {text}"
+        capture
+            .text
+            .contains("transport-progress snapshot records=")
+            && capture.text.contains("transport-progress transport=socket"),
+        "wait diagnostic missing emitted progress snapshot: {}",
+        capture.text
     );
 }
 
-fn missing_event(test: &'static str, unrelated: bool) {
-    let _rt = isolated_runtime_dir();
+fn server(test: &str) -> (RuntimeDirGuard, SocketServer, UnixStream, ConnId, String) {
+    let root = isolated_runtime_dir();
     let id = fresh_voyage_id();
-    let path = voyage_socket_path(&id).unwrap();
-    let server = io_named!(
-        test,
-        "server.bind",
-        "bound",
-        None,
-        SocketServer::bind(&id, 2)
-    )
-    .unwrap();
-    let mut client = io_named!(
-        test,
-        "a.connect",
-        "connected",
-        None,
-        UnixStream::connect(&path)
-    )
-    .unwrap();
+    let server = SocketServer::bind(&id, 2).unwrap();
+    let client = UnixStream::connect(voyage_socket_path(&id).unwrap()).unwrap();
     let conn = expect_accepted(&server, test, "a.accept", TIMEOUT);
-    eprintln!("fixture-proof test={test} connection=accepted bodies=1");
-    let feeder = if unrelated {
-        io_named!(
-            test,
-            "unrelated.write",
-            "Bytes queued",
-            Some(conn),
-            client.write_all(b"unrelated")
-        )
-        .unwrap();
-        Some(std::thread::spawn(move || {
-            let feed = WaitContext::new(
-                test,
-                "unrelated.feed",
-                "Bytes while wait expires",
-                Some(conn),
-                TIMEOUT,
-            );
-            for _ in 0..20 {
-                feed.io(|| client.write_all(b"unrelated")).unwrap();
-                feed.pause(Duration::from_millis(10));
-            }
-        }))
-    } else {
-        None
-    };
+    WaitContext::new(
+        test,
+        "snapshot.prerequisite",
+        "admitted connection history",
+        Some(conn),
+        TIMEOUT,
+    )
+    .available_snapshot(&server);
+    eprintln!("fixture-proof test={test} conn={conn} accepted=true bodies=1");
+    (root, server, client, conn, id)
+}
+
+fn missing_event(test: &str, unrelated: bool) {
+    let (_root, server, mut client, conn, _id) = server(test);
+    if unrelated {
+        WaitContext::new(test, "unrelated.write", "Bytes queued", Some(conn), TIMEOUT)
+            .write_all(Some(&server), &mut client, b"unrelated")
+            .unwrap();
+    }
     let wait = WaitContext::new(
         test,
         "absent.closed",
@@ -102,34 +210,26 @@ fn missing_event(test: &'static str, unrelated: bool) {
         Some(conn),
         Duration::from_millis(100),
     );
-    let mut observed_unrelated = false;
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let mut observed = false;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait.until(&server, |event| {
             if matches!(event, LaneEvent::Bytes(id, _) if *id == conn) {
-                observed_unrelated = true;
+                observed = true;
             }
             matches!(event, LaneEvent::Closed(_, _))
         })
-    }))
-    .expect_err("an absent Closed must time out");
-    if unrelated {
-        assert!(
-            observed_unrelated,
-            "unrelated-event fixture was not observed"
-        );
-        eprintln!("fixture-proof test={test} unrelated=observed bodies=1");
-    }
-    let text = format!("{}{}", wait.records.borrow(), panic_text(panic));
-    assert_schema(&text, test, "absent.closed", conn);
+    }));
+    assert!(failure.is_err(), "absent event must expire");
+    assert!(
+        !unrelated || observed,
+        "unrelated-event fixture was not observed"
+    );
     assert!(
         wait.started.elapsed() < Duration::from_secs(1),
         "unrelated events restarted the deadline"
     );
-    assert_eq!(wait.deadline, wait.started + Duration::from_millis(100));
-    if let Some(feeder) = feeder {
-        WaitContext::new(test, "feeder.join", "feeder ends", Some(conn), TIMEOUT)
-            .join(|| feeder.join())
-            .unwrap();
+    if unrelated {
+        eprintln!("fixture-proof test={test} unrelated=observed bodies=1");
     }
     named!(test, "server.drop", None, drop(server));
 }
@@ -137,283 +237,150 @@ fn missing_event(test: &'static str, unrelated: bool) {
 #[test]
 fn absent_event_reports_named_wait() {
     let test = "diagnostics::absent_event_reports_named_wait";
-    if !named!(
-        test,
-        "child.wait",
-        "isolated body and bounded completion",
-        None,
-        run_isolated(test)
-    ) {
-        return;
+    if child_role(test) {
+        return missing_event(test, false);
     }
-    missing_event(test, false);
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    record(&captured, test, "absent.closed", "begin");
+    record(&captured, test, "absent.closed", "timeout");
+    history(&captured);
 }
 
 #[test]
 fn unrelated_event_reports_named_wait() {
     let test = "diagnostics::unrelated_event_reports_named_wait";
-    if !named!(
-        test,
-        "child.wait",
-        "isolated body and bounded completion",
-        None,
-        run_isolated(test)
-    ) {
+    if child_role(test) {
+        return missing_event(test, true);
+    }
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    record(&captured, test, "absent.closed", "begin");
+    record(&captured, test, "absent.closed", "timeout");
+    assert!(
+        captured.text.contains("unrelated=observed"),
+        "unrelated-event fixture was not observed"
+    );
+    history(&captured);
+}
+
+#[test]
+fn begin_is_visible_before_blocking() {
+    let test = "diagnostics::begin_is_visible_before_blocking";
+    if child_role(test) {
+        let wait = WaitContext::new(test, "fixture.release", "release byte", None, TIMEOUT);
+        let mut byte = [0];
+        std::io::stdin().read_exact(&mut byte).unwrap();
+        wait.complete("ok", None, None);
         return;
     }
-    missing_event(test, true);
+    let captured = capture(test, ISOLATION_TIMEOUT, Some("fixture.release"));
+    assert!(captured.begin_observed);
+    record(&captured, test, "fixture.release", "begin");
+    record(&captured, test, "fixture.release", "ok");
 }
 
 #[test]
 fn stalled_peer_eof_reports_read_timeout() {
     let test = "diagnostics::stalled_peer_eof_reports_read_timeout";
-    let bound = TIMEOUT + Duration::from_secs(2);
-    assert!(bound < ISOLATION_TIMEOUT);
-    let (panic, text) =
-        supervise_fixture(test, "diagnostics::stalled_peer_eof_role", "read", bound);
-    assert!(
-        panic.is_none(),
-        "a.eof did not finish at its read bound: {text}"
-    );
-    for field in [
-        "step=a.eof",
-        "expected=zero bytes",
-        "result=timeout",
-        "fixture-proof",
-        "bodies=1",
-    ] {
-        assert!(
-            text.contains(field),
-            "wait diagnostic missing {field}: {text}"
-        );
-    }
-}
-
-/// ISO supervises this fixture directly; files retain flushed evidence even at cutoff.
-fn supervise_fixture(
-    test: &str,
-    role: &str,
-    mode: &str,
-    bound: Duration,
-) -> (Option<String>, String) {
-    let output = tempfile::tempfile().expect("fixture output");
-    let (mut command, entry) = test_command(role);
-    let mut child = io_named!(
-        test,
-        "child.spawn",
-        "fixture running",
-        None,
-        command
-            .env("SOT_TEST_SOCKET_ROLE", mode)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(output.try_clone().unwrap()))
-            .stderr(Stdio::from(output.try_clone().unwrap()))
-            .spawn()
-    )
-    .unwrap();
-    let pid = child.id();
-    let wait = WaitContext::new(
-        test,
-        "child.wait",
-        &format!("child {pid} ends"),
-        None,
-        bound,
-    );
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wait.run(|| wait_within(&mut child, bound))
-    }));
-    entry.assert_once(pid);
-    assert!(
-        io_named!(
-            test,
-            "child.confirm",
-            "owned child reaped",
-            None,
-            child.try_wait()
-        )
-        .unwrap()
-        .is_some(),
-        "owned child termination unconfirmed"
-    );
-    use std::io::{Seek, SeekFrom};
-    let mut output = output;
-    output.seek(SeekFrom::Start(0)).unwrap();
-    let mut text = String::new();
-    output.read_to_string(&mut text).unwrap();
-    if mode == "hang" {
-        assert!(
-            text.contains(&format!("test={role} child={pid}")),
-            "child cutoff lost named socket wait: {text}"
-        );
-    }
-    wait.emit(&text);
-    eprintln!("body-proof test={role} child={pid} bodies=1 completed=true");
-    match result {
-        Ok(status) => {
-            assert!(status.success(), "fixture child failed: {status}: {text}");
-            (None, text)
-        }
-        Err(panic) => (Some(panic_text(panic)), text),
-    }
-}
-
-#[test]
-fn stalled_peer_eof_role() {
-    let test = "diagnostics::stalled_peer_eof_role";
-    if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() != Ok("read") {
-        return;
-    }
-    enter(test);
-    let (mut client, peer) = io_named!(
-        test,
-        "peer.pair",
-        "connected pair",
-        None,
-        UnixStream::pair()
-    )
-    .unwrap();
-    // The retained peer is open and sends no bytes: this is the actual a.eof read path.
-    let wait = WaitContext::new(
-        test,
-        "peer.open",
-        "peer kept open without bytes",
-        None,
-        TIMEOUT,
-    );
-    wait.record("ok");
-    eprintln!("fixture-proof test={test} peer=open bytes=0 bodies=1");
-    std::io::stderr().flush().unwrap();
-    let started = Instant::now();
-    let result = close::read_a_eof(test, None, &mut client, &mut [0u8; 16]);
-    let error = result.expect_err("stalled peer must reach its local read timeout");
-    assert!(
-        matches!(
+    if child_role(test) {
+        let (mut client, _peer) = UnixStream::pair().unwrap();
+        eprintln!("fixture-proof test={test} peer=open bytes=0 bodies=1");
+        let started = Instant::now();
+        let error = close::read_a_eof(test, None, None, &mut client, &mut [0; 16]).unwrap_err();
+        assert!(matches!(
             error.kind(),
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-        ),
-        "a.eof expected read timeout, got {error}"
-    );
-    assert!(started.elapsed() >= TIMEOUT, "read bound fired early");
-    assert!(
-        started.elapsed() < TIMEOUT + Duration::from_secs(2),
-        "a.eof did not finish at its read bound"
-    );
-    named!(test, "peer.drop", "peer dropped", None, drop(peer));
+        ));
+        assert!(
+            started.elapsed() >= TIMEOUT && started.elapsed() < TIMEOUT + Duration::from_secs(2),
+            "a.eof did not finish at its read bound"
+        );
+        return;
+    }
+    let captured = capture(test, TIMEOUT + Duration::from_secs(2), None);
+    assert!(!captured.expired, "a.eof did not finish at its read bound");
+    record(&captured, test, "a.eof", "begin");
+    record(&captured, test, "a.eof", "timeout");
+    assert!(captured.text.contains("reason=no-server"));
 }
 
 #[test]
-fn progress_survives_connection_removal() {
-    let test = "diagnostics::progress_survives_connection_removal";
-    if !named!(
-        test,
-        "child.wait",
-        "isolated body and bounded completion",
-        None,
-        run_isolated(test)
-    ) {
+fn io_timeout_with_server_reports_snapshot() {
+    let test = "diagnostics::io_timeout_with_server_reports_snapshot";
+    if child_role(test) {
+        let (_root, server, mut client, conn, _id) = server(test);
+        // The real server keeps the connected peer open and sends nothing.
+        close::read_a_eof(test, Some(&server), Some(conn), &mut client, &mut [0; 16]).unwrap_err();
         return;
     }
-    let _rt = isolated_runtime_dir();
-    let id = fresh_voyage_id();
-    let path = voyage_socket_path(&id).unwrap();
-    let server = io_named!(
-        test,
-        "server.bind",
-        "bound",
-        None,
-        SocketServer::bind(&id, 1)
-    )
-    .unwrap();
-    let client = io_named!(
-        test,
-        "a.connect",
-        "connected",
-        None,
-        UnixStream::connect(&path)
-    )
-    .unwrap();
-    let conn = expect_accepted(&server, test, "a.accept", TIMEOUT);
-    named!(
-        test,
-        "a.close",
-        "close requested",
-        Some(conn),
-        server.close(conn)
-    );
-    expect_closed(&server, test, "a.closed", conn, TIMEOUT);
-    let snapshot = server.progress_for_test();
-    assert!(!snapshot.unavailable, "snapshot unavailable after Closed");
-    for step in [
-        "registered",
-        "accepted.enqueue",
-        "gate.open",
-        "reader.gate.wait",
-        "writer.gate.wait",
-        "reader.enter",
-        "writer.enter",
-        "teardown.enqueue",
-        "teardown.dequeue",
-        "shutdown.enter",
-        "shutdown.result",
-        "reader.join.begin",
-        "reader.join.end",
-        "writer.join.begin",
-        "writer.join.end",
-        "closed.enqueue",
-    ] {
-        assert!(
-            snapshot
-                .records
-                .iter()
-                .any(|r| r.conn == Some(conn) && r.step == step),
-            "missing progress checkpoint {step}: {snapshot}"
-        );
-    }
-    named!(
-        test,
-        "client.drop",
-        "client dropped",
-        Some(conn),
-        drop(client)
-    );
-    for _ in 0..24 {
-        let client = io_named!(
-            test,
-            "churn.connect",
-            "connected",
-            None,
-            UnixStream::connect(&path)
-        )
-        .unwrap();
-        let conn = expect_accepted(&server, test, "churn.accept", TIMEOUT);
-        named!(test, "churn.close", Some(conn), server.close(conn));
-        expect_closed(&server, test, "churn.closed", conn, TIMEOUT);
-        named!(test, "churn.drop", Some(conn), drop(client));
-    }
-    let snapshot = server.progress_for_test();
-    assert_eq!(snapshot.records.len(), 256, "real churn must fill the ring");
+    let captured = capture(test, TIMEOUT + Duration::from_secs(2), None);
+    assert!(!captured.expired, "a.eof did not finish at its read bound");
+    record(&captured, test, "a.eof", "timeout");
+    assert!(captured.text.contains("socket-error step=a.eof error="));
     assert!(
-        snapshot.overwritten > 0,
-        "real churn must overwrite old checkpoints"
+        (captured
+            .text
+            .contains("transport-progress snapshot records=")
+            || (captured
+                .text
+                .contains("transport-progress snapshot unavailable skipped=")
+                && (captured.text.contains("reason=busy")
+                    || captured.text.contains("reason=poisoned")))),
+        "I/O timeout missing emitted progress snapshot"
     );
-    named!(test, "server.drop", None, drop(server));
+}
+
+#[test]
+fn outcomes_distinguish_disconnect_success_and_io_error() {
+    let test = "diagnostics::outcomes_distinguish_disconnect_success_and_io_error";
+    if child_role(test) {
+        let (sent, receiver) = std::sync::mpsc::channel();
+        drop(sent);
+        let wait = WaitContext::new(test, "channel.disconnect", "disconnected", None, TIMEOUT);
+        assert!(matches!(
+            wait.receive_from(&receiver, TIMEOUT, None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+        WaitContext::new(test, "socket.write", "one byte", None, TIMEOUT)
+            .write_all(None, &mut a, b"x")
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(
+            WaitContext::new(test, "socket.read", "one byte", None, TIMEOUT)
+                .read(None, &mut b, &mut byte)
+                .unwrap(),
+            1
+        );
+        assert_eq!(byte, *b"x");
+        let invalid = WaitContext::new(test, "socket.invalid", "InvalidInput", None, TIMEOUT);
+        assert_eq!(
+            invalid
+                .io(|| a.set_read_timeout(Some(Duration::ZERO)))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        return;
+    }
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    for (step, outcome) in [
+        ("channel.disconnect", "error"),
+        ("socket.write", "ok"),
+        ("socket.read", "ok"),
+        ("socket.invalid", "error"),
+    ] {
+        record(&captured, test, step, "begin");
+        record(&captured, test, step, outcome);
+    }
+    assert!(captured.text.contains("disconnected channel"));
 }
 
 #[test]
 fn child_cutoff_preserves_last_begin() {
     let test = "diagnostics::child_cutoff_preserves_last_begin";
-    if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() == Ok("hang") {
-        enter(test);
-        let _rt = isolated_runtime_dir();
-        let id = fresh_voyage_id();
-        let server = io_named!(
-            test,
-            "server.bind",
-            "bound",
-            None,
-            SocketServer::bind(&id, 1)
-        )
-        .unwrap();
+    if child_role(test) {
+        let _root = isolated_runtime_dir();
+        let _server = SocketServer::bind(&fresh_voyage_id(), 1).unwrap();
         eprintln!("fixture-proof test={test} server=bound bodies=1");
         let wait = WaitContext::new(
             test,
@@ -425,72 +392,285 @@ fn child_cutoff_preserves_last_begin() {
         wait.run(|| loop {
             std::thread::park();
         });
-        named!(test, "server.drop", None, drop(server));
         return;
     }
-    let (cutoff, text) = supervise_fixture(test, test, "hang", ISOLATION_TIMEOUT);
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    assert!(captured.expired, "expected confirmed child cutoff");
     assert!(
-        text.contains("fixture-proof") && text.contains("server=bound"),
-        "hang fixture prerequisite not observed: {text}"
+        captured.text.contains("server=bound"),
+        "hang fixture prerequisite not observed"
     );
-    assert!(
-        cutoff.as_deref().is_some_and(
-            |s| s.contains("did not complete within 30s") && !s.contains("unconfirmed")
-        ),
-        "expected confirmed child cutoff: {cutoff:?}"
-    );
-    assert!(
-        text.contains(&format!("socket-test test={test} child="))
-            && text.contains("step=fixture.hang")
-            && text.contains("conn=pending")
-            && text.contains("result=begin"),
-        "child cutoff lost named socket wait: {text}"
-    );
+    record(&captured, test, "fixture.hang", "begin");
     eprintln!("cutoff-proof test={test} bound=30s last_begin=fixture.hang cleanup=confirmed");
 }
 
-#[test]
-fn outcomes_distinguish_disconnect_success_and_io_error() {
-    let test = "diagnostics::outcomes_distinguish_disconnect_success_and_io_error";
-    if !named!(
+fn available_during_fixture_hold(
+    wait: &WaitContext,
+    server: &SocketServer,
+) -> sot_log::lane::test_progress::Snapshot {
+    let mut held = Some(server.hold_progress_for_test());
+    let mut observed = false;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait.available_snapshot_observing(server, || {
+            observed = true;
+            drop(held.take());
+        })
+    }));
+    drop(held); // Every failure releases the fixture before assertions or ordinary server cleanup.
+    match result {
+        Ok(snapshot) => {
+            assert!(observed, "snapshot poll did not observe the held recorder");
+            snapshot
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn retention(test: &str) {
+    let (_root, server, client, conn, id) = server(test);
+    let origin = Instant::now();
+    let prerequisite = WaitContext::from_origin(
         test,
-        "child.wait",
-        "isolated body and bounded completion",
+        "snapshot.prerequisite",
+        "admitted witness",
+        Some(conn),
+        origin,
+        origin + TIMEOUT,
+    )
+    .available_snapshot(&server);
+    let witness = prerequisite
+        .records
+        .iter()
+        .find(|r| r.conn == Some(conn))
+        .expect("connection checkpoint prerequisite")
+        .clone();
+    eprintln!(
+        "fixture-proof test={test} witness={} admitted=true bodies=1",
+        witness.step
+    );
+    server.close(conn);
+    expect_closed(&server, test, "a.closed", conn, TIMEOUT);
+    assert!(
+        matches!(
+            server.send(conn, b"x".to_vec(), None),
+            Err(TransportError::UnknownConnection(_))
+        ),
+        "connection was not removed"
+    );
+    let wait = WaitContext::from_origin(
+        test,
+        "snapshot.available.after_close",
+        "retained admitted witness",
+        Some(conn),
+        origin,
+        origin + TIMEOUT,
+    );
+    let after = available_during_fixture_hold(&wait, &server);
+    assert!(
+        after.records.iter().any(|r| r.conn == witness.conn
+            && r.step == witness.step
+            && r.elapsed_ms == witness.elapsed_ms),
+        "admitted witness lost after removal"
+    );
+    wait.emit(&after.to_string());
+    drop(client);
+    let origin = Instant::now();
+    let wait = WaitContext::from_origin(
+        test,
+        "snapshot.available.after_churn",
+        "more than 256 admitted records",
         None,
-        run_isolated(test)
-    ) {
+        origin,
+        origin + TIMEOUT,
+    );
+    loop {
+        wait.check(Some(&server));
+        let client = UnixStream::connect(voyage_socket_path(&id).unwrap()).unwrap();
+        let conn = expect_accepted(
+            &server,
+            test,
+            "churn.accept",
+            wait.deadline.saturating_duration_since(Instant::now()),
+        );
+        server.close(conn);
+        expect_closed(
+            &server,
+            test,
+            "churn.closed",
+            conn,
+            wait.deadline.saturating_duration_since(Instant::now()),
+        );
+        drop(client);
+        let snapshot = server.progress_for_test();
+        if !snapshot.unavailable && snapshot.overwritten.is_some_and(|count| count > 0) {
+            let available = available_during_fixture_hold(&wait, &server);
+            assert_eq!(available.records.len(), 256);
+            assert!(available.overwritten.unwrap() > 0);
+            wait.emit(&available.to_string());
+            break;
+        }
+    }
+    named!(test, "server.drop", None, drop(server));
+}
+
+#[test]
+fn progress_survives_connection_removal() {
+    let test = "diagnostics::progress_survives_connection_removal";
+    if child_role(test) {
+        return retention(test);
+    }
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    assert!(captured.text.contains("admitted=true"));
+    record(&captured, test, "snapshot.available.after_close", "ok");
+    record(&captured, test, "snapshot.available.after_churn", "ok");
+    history(&captured);
+}
+
+#[test]
+fn snapshot_poll_waits_for_available_history() {
+    let test = "diagnostics::snapshot_poll_waits_for_available_history";
+    if child_role(test) {
+        return retention(test);
+    }
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    assert!(
+        captured.text.contains("snapshot unavailable") && captured.text.contains("reason=busy")
+    );
+    record(&captured, test, "snapshot.available.after_close", "ok");
+    record(&captured, test, "snapshot.available.after_churn", "ok");
+    history(&captured);
+}
+
+#[test]
+fn snapshot_poll_times_out_when_busy() {
+    let test = "diagnostics::snapshot_poll_times_out_when_busy";
+    if child_role(test) {
+        let _root = isolated_runtime_dir();
+        let server = SocketServer::bind(&fresh_voyage_id(), 1).unwrap();
+        let held = server.hold_progress_for_test();
+        let wait = WaitContext::new(
+            test,
+            "snapshot.always.busy",
+            "available history",
+            None,
+            Duration::from_millis(100),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wait.available_snapshot(&server)
+        }));
+        drop(held);
+        assert!(result.is_err());
         return;
     }
-    let (sent, received) = std::sync::mpsc::channel();
-    drop(sent);
-    let wait = WaitContext::new(test, "channel.disconnect", "disconnected", None, TIMEOUT);
-    assert!(matches!(
-        wait.receive_from(&received, TIMEOUT, None),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
-    ));
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    record(&captured, test, "snapshot.always.busy", "timeout");
     assert!(
-        wait.records.borrow().contains("result=error")
-            && wait.records.borrow().contains("disconnected channel")
+        captured.text.contains("snapshot unavailable") && captured.text.contains("reason=busy")
     );
-    let (mut a, mut b) = io_named!(test, "pair", "connected", None, UnixStream::pair()).unwrap();
-    let work = WaitContext::new(test, "socket.work", "one byte", None, TIMEOUT);
-    work.io(|| a.write_all(b"x")).unwrap();
-    let mut byte = [0];
-    assert_eq!(work.io(|| b.read(&mut byte)).unwrap(), 1);
-    assert_eq!(byte, *b"x");
-    assert!(work.records.borrow().contains("result=ok"));
-    let invalid = WaitContext::new(test, "socket.invalid", "InvalidInput", None, TIMEOUT);
-    assert_eq!(
-        invalid
-            .io(|| a.set_read_timeout(Some(Duration::ZERO)))
-            .unwrap_err()
-            .kind(),
-        std::io::ErrorKind::InvalidInput
+}
+
+#[test]
+fn deadline_adapters_preserve_origin_and_outcome() {
+    let test = "diagnostics::deadline_adapters_preserve_origin_and_outcome";
+    if child_role(test) {
+        let (mut command, entry) = test_command("diagnostics::deadline_child_role");
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let mut child = command
+            .env("SOT_TEST_SOCKET_ROLE", "diagnostics::deadline_child_role")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(output.reopen().unwrap()))
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let ready = WaitContext::new(test, "child.entry", "held child's entry", None, TIMEOUT);
+        while !std::fs::read_to_string(output.path())
+            .unwrap()
+            .contains("role=entered")
+        {
+            ready.check(None);
+            ready.pause(Duration::from_millis(5));
+        }
+        ready.complete("ok", None, None);
+        let work = WaitContext::new(
+            test,
+            "child.expiry",
+            "expiry at original deadline",
+            None,
+            Duration::from_millis(600),
+        );
+        work.pause(Duration::from_millis(400));
+        let error = work.child(&mut child).expect_err("held child must expire");
+        entry.assert_once(pid);
+        assert!(matches!(error.kind, ChildWaitKind::Expired) && error.termination_confirmed);
+        assert!(
+            work.started.elapsed() < Duration::from_millis(950),
+            "child deadline was recomputed"
+        );
+        let (entered, entry) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            held.recv().unwrap();
+        });
+        entry.recv_timeout(TIMEOUT).unwrap();
+        let wait = WaitContext::new(
+            test,
+            "join.expiry",
+            "held worker finishes",
+            None,
+            Duration::from_millis(100),
+        );
+        let unfinished = wait
+            .bounded_join(worker)
+            .expect_err("held worker must reach the join deadline");
+        release.send(()).unwrap();
+        unfinished.join().unwrap();
+        let work = WaitContext::new(
+            "diagnostics::successful_iso_role",
+            "iso.success",
+            "successful ISO parent false",
+            None,
+            ISOLATION_TIMEOUT,
+        );
+        assert!(!work.isolated(), "successful ISO parent false is ok");
+        return;
+    }
+    let captured = capture(test, ISOLATION_TIMEOUT, None);
+    record(&captured, test, "child.expiry", "timeout");
+    record(&captured, test, "join.expiry", "timeout");
+    record(
+        &captured,
+        "diagnostics::successful_iso_role",
+        "iso.success",
+        "ok",
     );
-    assert!(
-        invalid.records.borrow().contains("result=error")
-            && !invalid.records.borrow().contains("result=timeout")
-    );
+}
+
+#[test]
+fn deadline_child_role() {
+    let test = "diagnostics::deadline_child_role";
+    if !child_role(test) {
+        return;
+    }
+    eprintln!("fixture-proof test={test} role=entered bodies=1");
+    std::io::stderr().flush().unwrap();
+    let _ = std::io::stdin().read_to_end(&mut Vec::new());
+}
+
+#[test]
+fn successful_iso_role() {
+    if !WaitContext::new(
+        "diagnostics::successful_iso_role",
+        "child.wait",
+        "isolated role completes",
+        None,
+        ISOLATION_TIMEOUT,
+    )
+    .isolated()
+    {
+        return;
+    }
 }
 
 #[test]

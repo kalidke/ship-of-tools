@@ -22,7 +22,7 @@ fn accumulate_bytes(
     let mut out = Vec::new();
     while out.len() < expected_len {
         wait.check(Some(server));
-        match wait.event(server) {
+        match wait.next(server) {
             LaneEvent::Bytes(cid, bytes) => {
                 assert_eq!(cid, conn_id, "Bytes for the wrong connection");
                 out.extend(bytes);
@@ -49,8 +49,7 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -62,7 +61,9 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     let conn_id = expect_accepted(&server, test, "accept", TIMEOUT);
 
     let outbound = b"hello from client";
-    io_named!(test, "write_all", Some(conn_id), client.write_all(outbound)).unwrap();
+    WaitContext::new(test, "write_all", "outbound bytes", Some(conn_id), TIMEOUT)
+        .write_all(Some(&server), &mut client, outbound)
+        .unwrap();
     let got = accumulate_bytes(&server, test, conn_id, outbound.len(), TIMEOUT);
     assert_eq!(got, outbound);
 
@@ -85,7 +86,9 @@ fn server_and_client_exchange_bytes_and_sent_carries_marker() {
     );
     while got < buf.len() {
         read_wait.check(Some(&server));
-        got += read_wait.io(|| client.read(&mut buf[got..])).unwrap();
+        got += read_wait
+            .read_attempt(Some(&server), &mut client, &mut buf[got..])
+            .unwrap();
     }
     read_wait.record("ok");
     assert_eq!(buf, inbound);
@@ -110,8 +113,7 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -126,8 +128,12 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
     let conn_b = expect_accepted(&server, test, "accept", TIMEOUT);
     assert_ne!(conn_a, conn_b);
 
-    io_named!(test, "write_all", None, client_a.write_all(b"from A")).unwrap();
-    io_named!(test, "write_all", None, client_b.write_all(b"from B")).unwrap();
+    WaitContext::new(test, "a.write", "outbound bytes", Some(conn_a), TIMEOUT)
+        .write_all(Some(&server), &mut client_a, b"from A")
+        .unwrap();
+    WaitContext::new(test, "b.write", "outbound bytes", Some(conn_b), TIMEOUT)
+        .write_all(Some(&server), &mut client_b, b"from B")
+        .unwrap();
 
     let mut a_got = Vec::new();
     let mut b_got = Vec::new();
@@ -135,7 +141,7 @@ fn two_concurrent_clients_multiplexed_by_conn_id() {
         WaitContext::new(test, "multiplex.bytes", "bytes for A and B", None, TIMEOUT);
     while a_got.len() < 6 || b_got.len() < 6 {
         multiplex_wait.check(Some(&server));
-        match multiplex_wait.event(&server) {
+        match multiplex_wait.next(&server) {
             LaneEvent::Bytes(cid, bytes) if cid == conn_a => a_got.extend(bytes),
             LaneEvent::Bytes(cid, bytes) if cid == conn_b => b_got.extend(bytes),
             other => panic!("unexpected event: {other:?}"),
@@ -158,8 +164,7 @@ fn socket_is_owner_only_in_a_private_dir() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -208,8 +213,7 @@ fn rival_bind_fails_while_held_and_succeeds_after_disconnect_listener() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -276,8 +280,7 @@ fn capacity_excess_connection_is_closed_immediately() {
         test,
         "child.wait",
         "isolated body and bounded completion",
-        None,
-        run_isolated(test)
+        None
     ) {
         return;
     }
@@ -290,15 +293,9 @@ fn capacity_excess_connection_is_closed_immediately() {
     let _first_conn = expect_accepted(&server, test, "accept", TIMEOUT);
 
     let mut second = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
-    io_named!(
-        test,
-        "read.timeout",
-        None,
-        second.set_read_timeout(Some(TIMEOUT))
-    )
-    .expect("set_read_timeout");
     let mut buf = [0u8; 16];
-    let n = io_named!(test, "read", None, second.read(&mut buf))
+    let n = WaitContext::new(test, "capacity.eof", "EOF", None, TIMEOUT)
+        .read(Some(&server), &mut second, &mut buf)
         .expect("read should observe an ordered EOF, not an error");
     assert_eq!(n, 0, "expected the excess connection to see EOF promptly");
 
@@ -320,4 +317,200 @@ fn capacity_excess_connection_is_closed_immediately() {
     named!(test, "first.drop", None, drop(first));
     named!(test, "second.drop", None, drop(second));
     named!(test, "server.drop", None, drop(server));
+}
+
+/// ADR 0049, User isolation: private endpoint construction is the capsule's account boundary.
+#[test]
+fn foreign_account_cannot_reach_the_lane() {
+    let test = "connect::foreign_account_cannot_reach_the_lane";
+    if foreign_client_role(test) {
+        return;
+    }
+    if !WaitContext::new(
+        test,
+        "child.wait",
+        "isolated body completes",
+        None,
+        sot_log::test_isolated::ISOLATION_TIMEOUT,
+    )
+    .isolated()
+    {
+        return;
+    }
+    let root = isolated_runtime_dir();
+    let foreign = if current_uid() == 65534 { 65533 } else { 65534 };
+    for endpoint in ["voyage", "supervisor"] {
+        let id = fresh_voyage_id();
+        let server = if endpoint == "voyage" {
+            SocketServer::bind(&id, 1)
+        } else {
+            SocketServer::bind_supervisor(&id, 1)
+        }
+        .unwrap();
+        let path = if endpoint == "voyage" {
+            voyage_socket_path(&id)
+        } else {
+            sot_log::lane::socket_unix::supervisor_socket_path(&id)
+        }
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        observe_foreign_denial(test, &path, foreign, &server);
+        let mut owner = UnixStream::connect(&path).unwrap();
+        let conn = expect_accepted(&server, test, "owner.accept", TIMEOUT);
+        server.send(conn, b"m".to_vec(), Some(1)).unwrap();
+        let mut marker = [0];
+        WaitContext::new(test, "owner.marker", "marker byte", Some(conn), TIMEOUT)
+            .read(Some(&server), &mut owner, &mut marker)
+            .unwrap();
+        assert_eq!(marker, *b"m");
+        assert!(matches!(
+            next_event(
+                &server,
+                test,
+                "owner.sent",
+                "Sent marker",
+                Some(conn),
+                TIMEOUT
+            ),
+            LaneEvent::Sent(_, 1)
+        ));
+        eprintln!("admission-proof test={test} endpoint={endpoint} boundary=private-socket fixture=native-account rejected=true dispatched=0 bodies=1");
+    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root._tmp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        SocketServer::bind(&fresh_voyage_id(), 1).is_err(),
+        "nonprivate runtime root was admitted"
+    );
+    assert!(
+        SocketServer::bind_supervisor(&fresh_voyage_id(), 1).is_err(),
+        "nonprivate supervisor root was admitted"
+    );
+}
+
+fn foreign_client_role(test: &str) -> bool {
+    if std::env::var_os("SOT_TEST_FOREIGN_SOCKET").is_some() {
+        sot_log::test_isolated::enter(test);
+        let path = std::env::var_os("SOT_TEST_FOREIGN_SOCKET").unwrap();
+        let foreign: u32 = std::env::var("SOT_TEST_FOREIGN_UID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::geteuid() },
+            0,
+            "native privilege prerequisite unavailable"
+        );
+        assert_eq!(unsafe { libc::setgroups(0, std::ptr::null()) }, 0);
+        assert_eq!(unsafe { libc::setgid(foreign) }, 0);
+        assert_eq!(unsafe { libc::setuid(foreign) }, 0);
+        assert_eq!(unsafe { libc::geteuid() }, foreign);
+        let error =
+            UnixStream::connect(path).expect_err("foreign account connected to private lane");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "native private-socket refusal was not observed"
+        );
+        println!(
+            "native-client child={} foreign=true denied=true bodies=1",
+            std::process::id()
+        );
+        return true;
+    }
+    false
+}
+
+fn observe_foreign_denial(test: &str, path: &std::path::Path, foreign: u32, server: &SocketServer) {
+    let (command, entry) = sot_log::test_isolated::test_command(test);
+    let mut elevated = std::process::Command::new("sudo");
+    elevated.args(["-n", "--", "env"]);
+    // sudo sanitizes its environment: pass only the test-owned ISO entry and role explicitly.
+    for (name, value) in command.get_envs() {
+        if let Some(value) = value {
+            // Create the ISO record as this account; the privileged child appends before dropping privilege.
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(value)
+                .unwrap();
+            let mut assignment = name.to_os_string();
+            assignment.push("=");
+            assignment.push(value);
+            elevated.arg(assignment);
+        }
+    }
+    for (name, value) in [
+        ("SOT_TEST_FOREIGN_SOCKET", path.as_os_str().to_os_string()),
+        ("SOT_TEST_FOREIGN_UID", foreign.to_string().into()),
+    ] {
+        let mut assignment = std::ffi::OsString::from(name);
+        assignment.push("=");
+        assignment.push(value);
+        elevated.arg(assignment);
+    }
+    elevated.arg(command.get_program()).args(command.get_args());
+    let entered = command
+        .get_envs()
+        .find_map(|(_, value)| value.map(std::path::PathBuf::from))
+        .unwrap();
+    let output_file = tempfile::NamedTempFile::new().unwrap();
+    let capture = output_file.reopen().unwrap();
+    let wait = WaitContext::new(
+        test,
+        "foreign.child.wait",
+        "native refusal and child completion",
+        None,
+        TIMEOUT,
+    );
+    let mut child = elevated
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::from(capture.try_clone().unwrap()))
+        .stderr(std::process::Stdio::from(capture))
+        .spawn()
+        .expect("native privilege prerequisite unavailable");
+    let status = wait.child(&mut child).unwrap();
+    let output = std::fs::read_to_string(output_file.path()).unwrap();
+    let pid: u32 = std::fs::read_to_string(entered)
+        .unwrap()
+        .split_whitespace()
+        .last()
+        .expect("native body pid missing")
+        .parse()
+        .unwrap();
+    entry.assert_once(pid);
+    eprintln!(
+        "body-proof test={test} child={pid} bodies=1 completed={} cleanup=confirmed",
+        status.success()
+    );
+    assert!(
+        status.success(),
+        "native foreign-account prerequisite/proof failed: {output}"
+    );
+    assert!(output.contains("foreign=true denied=true bodies=1"));
+    assert!(
+        WaitContext::new(
+            test,
+            "foreign.no.event",
+            "no lane event",
+            None,
+            Duration::from_millis(100)
+        )
+        .receive(server, Duration::from_millis(100))
+        .is_err(),
+        "foreign client supplied lane events"
+    );
 }

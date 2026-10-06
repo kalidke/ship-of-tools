@@ -49,22 +49,31 @@ static DROPPED: Mutex<BTreeSet<(&'static str, u16, String)>> = Mutex::new(BTreeS
 /// are debug, so a retrying stranger cannot flood the log and the operator still learns of it once. Bounded by
 /// accounts x listeners on one box ("unknown" is one key, whatever its reason).
 fn admit(listener: &'static str, local: SocketAddr, peer: SocketAddr) -> bool {
-    let owner = tcp_peer_owner(local, peer);
+    owner_decision(listener, local, tcp_peer_owner(local, peer))
+}
+
+fn owner_decision(listener: &'static str, local: SocketAddr, owner: PeerOwner) -> bool {
     let key = match &owner {
         PeerOwner::Mine => return true,
         PeerOwner::Other(id) => id.clone(),
         PeerOwner::Unknown(_) => "unknown".to_string(),
     };
-    let first = DROPPED
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert((listener, local.port(), key));
+    let first =
+        DROPPED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((listener, local.port(), key));
     let why = match owner {
         PeerOwner::Unknown(_) => "closed a connection whose owner could not be determined",
         _ => "closed a connection that is not this OS account's",
     };
     if first {
-        tracing::warn!(listener, port = local.port(), ?owner, "{why} (logged once per account and port)");
+        tracing::warn!(
+            listener,
+            port = local.port(),
+            ?owner,
+            "{why} (logged once per account and port)"
+        );
     } else {
         tracing::debug!(listener, port = local.port(), ?owner, "{why}");
     }
@@ -100,8 +109,12 @@ fn no_inherit(stream: &tokio::net::TcpStream) {
 fn no_inherit(_: &tokio::net::TcpStream) {}
 
 /// [`serve_own`] with the check as a parameter, so this module's tests can refuse a connection that is really ours.
-async fn serve<H, Fut>(listener: tokio::net::TcpListener, name: &'static str, admit: Admit, handle: H)
-where
+async fn serve<H, Fut>(
+    listener: tokio::net::TcpListener,
+    name: &'static str,
+    admit: Admit,
+    handle: H,
+) where
     H: Fn(tokio::net::TcpStream) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -111,16 +124,25 @@ where
     loop {
         // The turn comes before the accept, so a flood beyond the bound waits in the kernel's backlog and not as accepted
         // streams, each holding one of the process's descriptors.
-        let Ok(turn) = Arc::clone(&lookups).acquire_owned().await else { return };
-        #[allow(clippy::disallowed_methods, reason = "listener: page (TCP): every connection is checked for its owner before use (ADR 0049, User isolation)")]
+        let Ok(turn) = Arc::clone(&lookups).acquire_owned().await else {
+            return;
+        };
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "listener: page (TCP): every connection is checked for its owner before use (ADR 0049, User isolation)"
+        )]
         let accepted = listener.accept().await;
         match accepted {
             Ok((stream, peer)) => {
                 no_inherit(&stream);
                 let handle = Arc::clone(&handle);
                 tokio::spawn(async move {
-                    let Ok(local) = stream.local_addr() else { return };
-                    let admitted = tokio::task::spawn_blocking(move || admit(name, local, peer)).await.unwrap_or(false);
+                    let Ok(local) = stream.local_addr() else {
+                        return;
+                    };
+                    let admitted = tokio::task::spawn_blocking(move || admit(name, local, peer))
+                        .await
+                        .unwrap_or(false);
                     drop(turn);
                     if !admitted {
                         return; // `stream` drops here: closed with no byte read or written
@@ -155,7 +177,10 @@ fn parse_endpoint(s: &str) -> Option<SocketAddr> {
     let port = u16::from_str_radix(port, 16).ok()?;
     let word = |w: &str| u32::from_str_radix(w, 16).ok().map(u32::to_ne_bytes);
     match addr.len() {
-        8 => Some(SocketAddr::from((std::net::Ipv4Addr::from(word(addr)?), port))),
+        8 => Some(SocketAddr::from((
+            std::net::Ipv4Addr::from(word(addr)?),
+            port,
+        ))),
         32 => {
             let mut octets = [0u8; 16];
             for (i, chunk) in octets.chunks_exact_mut(4).enumerate() {
@@ -237,12 +262,33 @@ mod imp {
         for _ in 0..3 {
             let mut len: libc::size_t = 0;
             // SAFETY: a null buffer asks only for the size, which the kernel writes to `len`.
-            if unsafe { libc::sysctlbyname(name.as_ptr(), std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) } != 0 {
-                return Err(format!("net.inet.tcp.pcblist_n: {}", std::io::Error::last_os_error()));
+            if unsafe {
+                libc::sysctlbyname(
+                    name.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            } != 0
+            {
+                return Err(format!(
+                    "net.inet.tcp.pcblist_n: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
             let mut buf = vec![0u8; len];
             // SAFETY: `buf` has `len` writable bytes; the kernel writes at most that many and stores the count in `len`.
-            if unsafe { libc::sysctlbyname(name.as_ptr(), buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) } == 0 {
+            if unsafe {
+                libc::sysctlbyname(
+                    name.as_ptr(),
+                    buf.as_mut_ptr().cast(),
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            } == 0
+            {
                 buf.truncate(len);
                 return Ok(buf);
             }
@@ -269,10 +315,12 @@ mod imp {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, FILETIME};
     use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_MODULE, MIB_TCPROW_OWNER_MODULE, MIB_TCP_STATE_ESTAB,
-        TCP_TABLE_OWNER_MODULE_CONNECTIONS,
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_MODULE, MIB_TCPROW_OWNER_MODULE,
+        MIB_TCP_STATE_ESTAB, TCP_TABLE_OWNER_MODULE_CONNECTIONS,
     };
-    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
 
     /// The process that issued the context bind of a connection, and when (FILETIME ticks). The table names the
     /// binder and never updates it: a socket a process bound and handed to a child still names the parent, whose pid
@@ -290,7 +338,14 @@ mod imp {
         for _ in 0..4 {
             let mut buf = vec![0u64; (size as usize).div_ceil(8).max(1)];
             let rc = unsafe {
-                GetExtendedTcpTable(buf.as_mut_ptr().cast(), &mut size, 0, af, TCP_TABLE_OWNER_MODULE_CONNECTIONS, 0)
+                GetExtendedTcpTable(
+                    buf.as_mut_ptr().cast(),
+                    &mut size,
+                    0,
+                    af,
+                    TCP_TABLE_OWNER_MODULE_CONNECTIONS,
+                    0,
+                )
             };
             if rc == 0 {
                 return Ok(buf);
@@ -311,12 +366,17 @@ mod imp {
         let start = 4usize.next_multiple_of(std::mem::align_of::<R>());
         let count = stated.min(bytes.saturating_sub(start) / std::mem::size_of::<R>());
         (0..count)
-            .map(|i| unsafe { std::ptr::read_unaligned(base.add(start + i * std::mem::size_of::<R>()).cast::<R>()) })
+            .map(|i| unsafe {
+                std::ptr::read_unaligned(base.add(start + i * std::mem::size_of::<R>()).cast::<R>())
+            })
             .collect()
     }
 
     fn v4(addr: u32, port: u32) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())), u16::from_be(port as u16))
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::from(addr.to_ne_bytes())),
+            u16::from_be(port as u16),
+        )
     }
 
     fn v6(addr: [u8; 16], port: u32) -> SocketAddr {
@@ -342,7 +402,10 @@ mod imp {
                         && v4(r.dwRemoteAddr, r.dwRemotePort) == listener
                 });
             if let Some(r) = found {
-                return Ok(Some(Binder { pid: r.dwOwningPid, bound: r.liCreateTimestamp }));
+                return Ok(Some(Binder {
+                    pid: r.dwOwningPid,
+                    bound: r.liCreateTimestamp,
+                }));
             }
         }
         let (listener, peer) = (mapped(listener), mapped(peer));
@@ -353,12 +416,18 @@ mod imp {
                     && v6(r.ucLocalAddr, r.dwLocalPort) == peer
                     && v6(r.ucRemoteAddr, r.dwRemotePort) == listener
             });
-        Ok(found.map(|r| Binder { pid: r.dwOwningPid, bound: r.liCreateTimestamp }))
+        Ok(found.map(|r| Binder {
+            pid: r.dwOwningPid,
+            bound: r.liCreateTimestamp,
+        }))
     }
 
     /// The creation time of the process `h` holds, in FILETIME ticks.
     fn created(h: windows_sys::Win32::Foundation::HANDLE) -> io::Result<i64> {
-        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
         let (mut create, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
         if unsafe { GetProcessTimes(h, &mut create, &mut exit, &mut kernel, &mut user) } == 0 {
             return Err(io::Error::last_os_error());
@@ -383,15 +452,20 @@ mod imp {
         let pid = binder.pid;
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h.is_null() {
-            return PeerOwner::Unknown(format!("OpenProcess({pid}): {}", io::Error::last_os_error()));
+            return PeerOwner::Unknown(format!(
+                "OpenProcess({pid}): {}",
+                io::Error::last_os_error()
+            ));
         }
-        let verdict_for = || match still_binder() {
+        let verdict_for = || {
+            match still_binder() {
             Ok(Some(again)) if again == binder => match created(h) {
                 Ok(born) if born > binder.bound => Err("the process holding the binder's pid was created after the bind: a recycled id".to_string()),
                 Ok(_) => crate::host::sid_string_from_process(h).map_err(|e| format!("token of {pid}: {e}")),
                 Err(e) => Err(format!("GetProcessTimes({pid}): {e}")),
             },
             _ => Err("the peer's connection changed during the lookup".to_string()),
+        }
         };
         let sid = verdict_for();
         unsafe {
@@ -413,7 +487,9 @@ mod imp {
     pub(super) fn lookup(local: SocketAddr, peer: SocketAddr, own: &str) -> PeerOwner {
         match binder_of(local, peer) {
             Ok(Some(binder)) => owner_of(binder, own, || binder_of(local, peer)),
-            Ok(None) => PeerOwner::Unknown("no TCP table row for the peer (it may have closed)".into()),
+            Ok(None) => {
+                PeerOwner::Unknown("no TCP table row for the peer (it may have closed)".into())
+            }
             Err(e) => PeerOwner::Unknown(format!("GetExtendedTcpTable: {e}")),
         }
     }
@@ -452,11 +528,17 @@ mod tests {
         let (client, server) = (loopback(0x80EC), loopback(0xE387));
         assert_eq!(uid_of_row(CAPTURE, client, server), Some(1001));
         assert_eq!(uid_of_row(CAPTURE, server, client), Some(1001));
-        assert_eq!(uid_of_row(CAPTURE, loopback(0xA8B2), loopback(0x9931)), Some(1028));
+        assert_eq!(
+            uid_of_row(CAPTURE, loopback(0xA8B2), loopback(0x9931)),
+            Some(1028)
+        );
         assert_eq!(uid_of_row(CAPTURE, client, loopback(1)), None);
         assert_eq!(parse_endpoint("0100007F:1F90"), Some(loopback(8080)));
         assert_eq!(parse_endpoint("0100007F"), None);
-        assert_eq!(verdict("uid:0", "uid:1001"), PeerOwner::Other("uid:0".into()));
+        assert_eq!(
+            verdict("uid:0", "uid:1001"),
+            PeerOwner::Other("uid:0".into())
+        );
         assert_eq!(verdict("uid:1001", "uid:1001"), PeerOwner::Mine);
     }
 
@@ -464,9 +546,14 @@ mod tests {
     fn a_closing_or_ownerless_row_names_no_owner() {
         let (client, server) = (loopback(0x80EC), loopback(0xE387));
         let header = CAPTURE.lines().next().unwrap();
-        let row = CAPTURE.lines().find(|l| l.contains("0100007F:80EC 0100007F:E387")).unwrap();
+        let row = CAPTURE
+            .lines()
+            .find(|l| l.contains("0100007F:80EC 0100007F:E387"))
+            .unwrap();
         // A FIN_WAIT2/TIME_WAIT orphan: state 06, uid 0, inode 0.
-        let closing = row.replace(" 01 ", " 06 ").replace("1001        0 2335972813", "   0        0 0");
+        let closing = row
+            .replace(" 01 ", " 06 ")
+            .replace("1001        0 2335972813", "   0        0 0");
         // A live state with no inode: uid 0, inode 0.
         let ownerless = row.replace("1001        0 2335972813", "   0        0 0");
         assert_ne!(closing, row);
@@ -489,7 +576,10 @@ mod tests {
     #[test]
     fn a_connection_from_this_process_is_mine() {
         let (accepted, _client) = accepted_pair();
-        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        let (local, peer) = (
+            accepted.local_addr().unwrap(),
+            accepted.peer_addr().unwrap(),
+        );
         assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine);
         assert!(admit("test", local, peer));
     }
@@ -503,7 +593,10 @@ mod tests {
     /// running a test is a failure to be seen, not a pass.
     fn skip(reason: &str) {
         eprintln!("skipped: {reason}");
-        assert!(std::env::var_os("GITHUB_ACTIONS").is_none(), "a test skipped on CI: {reason}");
+        assert!(
+            std::env::var_os("GITHUB_ACTIONS").is_none(),
+            "a test skipped on CI: {reason}"
+        );
     }
 
     /// ADR 0049, User isolation: a client on a dual-stack socket (Java's default, among others) reaches a 127.0.0.1
@@ -514,12 +607,21 @@ mod tests {
     fn a_dual_stack_client_of_an_ipv4_listener_is_mine() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let Ok(_client) = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(), port)) else {
+        let Ok(_client) =
+            std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(), port))
+        else {
             return skip("no dual-stack connect on this host");
         };
         let (accepted, _) = listener.accept().unwrap();
-        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
-        assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine, "{local} <- {peer}");
+        let (local, peer) = (
+            accepted.local_addr().unwrap(),
+            accepted.peer_addr().unwrap(),
+        );
+        assert_eq!(
+            tcp_peer_owner(local, peer),
+            PeerOwner::Mine,
+            "{local} <- {peer}"
+        );
     }
 
     /// ADR 0049, User isolation: both ends on `[::1]`, so the row is in the IPv6 table on every platform (Linux `tcp6`,
@@ -531,9 +633,16 @@ mod tests {
         };
         let _client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (accepted, _) = listener.accept().unwrap();
-        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
+        let (local, peer) = (
+            accepted.local_addr().unwrap(),
+            accepted.peer_addr().unwrap(),
+        );
         assert!(local.is_ipv6() && peer.is_ipv6(), "{local} <- {peer}");
-        assert_eq!(tcp_peer_owner(local, peer), PeerOwner::Mine, "{local} <- {peer}");
+        assert_eq!(
+            tcp_peer_owner(local, peer),
+            PeerOwner::Mine,
+            "{local} <- {peer}"
+        );
     }
 
     #[test]
@@ -558,13 +667,24 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let ran = Arc::new(AtomicUsize::new(0));
         let ran_in = Arc::clone(&ran);
-        let task = tokio::spawn(serve(listener, "test", |_, _, _| false, move |mut s| {
-            let ran = Arc::clone(&ran_in);
-            async move {
-                ran.fetch_add(1, SeqCst);
-                let _ = s.write_all(b"served").await;
-            }
-        }));
+        let task = tokio::spawn(serve(
+            listener,
+            "test",
+            |name, local, _| {
+                owner_decision(
+                    name,
+                    local,
+                    PeerOwner::Unknown("controlled lookup failure".into()),
+                )
+            },
+            move |mut s| {
+                let ran = Arc::clone(&ran_in);
+                async move {
+                    ran.fetch_add(1, SeqCst);
+                    let _ = s.write_all(b"served").await;
+                }
+            },
+        ));
         let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
         let mut raw = Vec::new();
         // A reset counts as the end.
@@ -572,8 +692,83 @@ mod tests {
             .await
             .expect("the refused connection must close");
         assert!(raw.is_empty(), "got: {}", String::from_utf8_lossy(&raw));
-        assert_eq!(ran.load(SeqCst), 0, "a refused connection must never reach the handler");
+        assert_eq!(
+            ran.load(SeqCst),
+            0,
+            "a refused connection must never reach the handler"
+        );
         task.abort();
+    }
+
+    /// ADR 0049, User isolation: controlled ownership observations pass through the production decision.
+    #[tokio::test]
+    async fn foreign_or_unknown_owner_is_refused_before_handler() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+        fn foreign(name: &'static str, local: SocketAddr, _: SocketAddr) -> bool {
+            OBSERVED.fetch_add(1, SeqCst);
+            owner_decision(
+                name,
+                local,
+                PeerOwner::Other("controlled foreign owner".into()),
+            )
+        }
+        fn unknown(name: &'static str, local: SocketAddr, _: SocketAddr) -> bool {
+            OBSERVED.fetch_add(1, SeqCst);
+            owner_decision(
+                name,
+                local,
+                PeerOwner::Unknown("controlled missing owner".into()),
+            )
+        }
+        fn mine(name: &'static str, local: SocketAddr, _: SocketAddr) -> bool {
+            OBSERVED.fetch_add(1, SeqCst);
+            owner_decision(name, local, PeerOwner::Mine)
+        }
+        for (check, refused) in [
+            (foreign as Admit, true),
+            (unknown as Admit, true),
+            (mine as Admit, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let address = listener.local_addr().unwrap();
+            let ran = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&ran);
+            let before = OBSERVED.load(SeqCst);
+            let task = tokio::spawn(serve(listener, "controlled", check, move |mut stream| {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, SeqCst);
+                    stream.write_all(b"served").await.unwrap();
+                }
+            }));
+            let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+            let mut bytes = Vec::new();
+            let result =
+                tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut bytes)).await;
+            task.abort();
+            let _ = task.await;
+            assert!(
+                result.is_ok(),
+                "admission did not close or serve the connection"
+            );
+            assert_eq!(
+                OBSERVED.load(SeqCst),
+                before + 1,
+                "ownership observation was not reached"
+            );
+            if refused {
+                assert_eq!(ran.load(SeqCst), 0, "refused owner reached handler");
+                assert!(bytes.is_empty(), "refused owner received reply bytes");
+                eprintln!("admission-proof test=identity::peer_owner::tests::foreign_or_unknown_owner_is_refused_before_handler endpoint=page boundary=owner-query fixture=controlled-owner-result rejected=true dispatched=0 bodies=1");
+            } else {
+                assert_eq!(bytes, b"served");
+                assert_eq!(ran.load(SeqCst), 1);
+            }
+        }
     }
 
     /// ADR 0049, User isolation: a flood of connections to one page port runs at most `MAX_LOOKUPS` owner lookups at a
@@ -601,15 +796,25 @@ mod tests {
                 tokio::spawn(async move {
                     let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
                     let mut b = [0u8; 1];
-                    tokio::time::timeout(Duration::from_secs(10), c.read_exact(&mut b)).await.unwrap().unwrap();
+                    tokio::time::timeout(Duration::from_secs(10), c.read_exact(&mut b))
+                        .await
+                        .unwrap()
+                        .unwrap();
                 })
             })
             .collect();
         for c in clients {
             c.await.unwrap();
         }
-        assert!(MOST.load(SeqCst) <= MAX_LOOKUPS, "{} lookups ran at once", MOST.load(SeqCst));
-        assert!(MOST.load(SeqCst) > 1, "the lookups did not overlap, so the bound was not exercised");
+        assert!(
+            MOST.load(SeqCst) <= MAX_LOOKUPS,
+            "{} lookups ran at once",
+            MOST.load(SeqCst)
+        );
+        assert!(
+            MOST.load(SeqCst) > 1,
+            "the lookups did not overlap, so the bound was not exercised"
+        );
         task.abort();
     }
 
@@ -654,8 +859,14 @@ mod tests {
         let accepted = accepted_streams(addr.port());
         RELEASE.store(true, SeqCst);
         task.abort();
-        assert!(accepted > 0, "no accepted stream seen: the measurement did not see the server's rows");
-        assert!(accepted <= MAX_LOOKUPS, "{accepted} accepted streams for {FLOOD} clients and {MAX_LOOKUPS} lookups");
+        assert!(
+            accepted > 0,
+            "no accepted stream seen: the measurement did not see the server's rows"
+        );
+        assert!(
+            accepted <= MAX_LOOKUPS,
+            "{accepted} accepted streams for {FLOOD} clients and {MAX_LOOKUPS} lookups"
+        );
     }
 
     /// ADR 0049, User isolation: this account's connection is served through the real check.
@@ -681,7 +892,10 @@ mod tests {
     #[test]
     fn this_process_is_mine_and_the_system_process_is_not() {
         let own = crate::identity::os_account::own_account_id().unwrap();
-        assert_eq!(imp::pid_owner(std::process::id(), i64::MAX, &own), PeerOwner::Mine);
+        assert_eq!(
+            imp::pid_owner(std::process::id(), i64::MAX, &own),
+            PeerOwner::Mine
+        );
         // Pid 4 is the System process: its token is another account's, or it cannot be opened at all.
         assert_ne!(imp::pid_owner(4, i64::MAX, &own), PeerOwner::Mine);
     }
@@ -690,13 +904,28 @@ mod tests {
     #[test]
     fn a_connection_whose_owner_changed_is_refused() {
         let own = crate::identity::os_account::own_account_id().unwrap();
-        let binder = imp::Binder { pid: std::process::id(), bound: i64::MAX };
-        assert_eq!(imp::owner_of(binder, &own, || Ok(Some(binder))), PeerOwner::Mine);
+        let binder = imp::Binder {
+            pid: std::process::id(),
+            bound: i64::MAX,
+        };
+        assert_eq!(
+            imp::owner_of(binder, &own, || Ok(Some(binder))),
+            PeerOwner::Mine
+        );
         assert_ne!(imp::owner_of(binder, &own, || Ok(None)), PeerOwner::Mine);
         let other_pid = imp::Binder { pid: 4, ..binder };
-        assert_ne!(imp::owner_of(binder, &own, || Ok(Some(other_pid))), PeerOwner::Mine);
-        let other_bind = imp::Binder { bound: i64::MAX - 1, ..binder };
-        assert_ne!(imp::owner_of(binder, &own, || Ok(Some(other_bind))), PeerOwner::Mine);
+        assert_ne!(
+            imp::owner_of(binder, &own, || Ok(Some(other_pid))),
+            PeerOwner::Mine
+        );
+        let other_bind = imp::Binder {
+            bound: i64::MAX - 1,
+            ..binder
+        };
+        assert_ne!(
+            imp::owner_of(binder, &own, || Ok(Some(other_bind))),
+            PeerOwner::Mine
+        );
     }
 
     /// ADR 0049, User isolation: the table names the process that bound a socket, and Windows may give that pid to a
@@ -720,7 +949,9 @@ mod tests {
     #[test]
     fn child_client_helper() {
         use std::io::Read;
-        let Ok(addr) = std::env::var("SOT_PEER_OWNER_CHILD_ADDR") else { return };
+        let Ok(addr) = std::env::var("SOT_PEER_OWNER_CHILD_ADDR") else {
+            return;
+        };
         let _held = std::net::TcpStream::connect(addr.parse::<SocketAddr>().unwrap()).unwrap();
         println!("connected");
         let _ = std::io::stdin().read_to_end(&mut Vec::new());
@@ -749,28 +980,47 @@ mod tests {
         let _no_other_child_meanwhile = CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let task = tokio::spawn(serve(listener, "test", refuse_and_start_a_child, |_s| async {}));
+        let task = tokio::spawn(serve(
+            listener,
+            "test",
+            refuse_and_start_a_child,
+            |_s| async {},
+        ));
         let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
         let mut raw = Vec::new();
-        let closed = tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut raw)).await;
+        let closed =
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut raw)).await;
         task.abort();
         if let Some(mut child) = CHILD.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
-        assert!(closed.is_ok(), "a child started during the refusal held the connection open");
+        assert!(
+            closed.is_ok(),
+            "a child started during the refusal held the connection open"
+        );
         assert!(raw.is_empty());
     }
 
     /// This test binary run as a child that connects to `listener` and holds the connection: the child, the accepted
     /// stream and the stdin that ends it.
     #[cfg(windows)]
-    fn child_connecting_to(listener: &std::net::TcpListener) -> (std::process::Child, std::net::TcpStream) {
+    fn child_connecting_to(
+        listener: &std::net::TcpListener,
+    ) -> (std::process::Child, std::net::TcpStream) {
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "identity::peer_owner::tests::child_client_helper", "--nocapture", "--test-threads=1"])
-            .env("SOT_PEER_OWNER_CHILD_ADDR", listener.local_addr().unwrap().to_string())
+            .args([
+                "--exact",
+                "identity::peer_owner::tests::child_client_helper",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(
+                "SOT_PEER_OWNER_CHILD_ADDR",
+                listener.local_addr().unwrap().to_string(),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -782,7 +1032,10 @@ mod tests {
         let accepted = loop {
             match listener.accept() {
                 Ok((s, _)) => break s,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < end => {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < end =>
+                {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 Err(e) => {
@@ -820,7 +1073,10 @@ mod tests {
         }
         if heard.recv_timeout(Duration::from_secs(30)).is_err() {
             let _ = child.kill();
-            panic!("the child connected but never said so; it said:\n{}", seen.lock().unwrap());
+            panic!(
+                "the child connected but never said so; it said:\n{}",
+                seen.lock().unwrap()
+            );
         }
         (child, accepted)
     }
@@ -833,11 +1089,17 @@ mod tests {
     #[cfg(windows)]
     fn a_child_connection_names_the_child(bind: &str) {
         use std::process::{Command, Stdio};
-        let _no_refused_connection_meanwhile = CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
+        let _no_refused_connection_meanwhile =
+            CHILD_PROCESSES.lock().unwrap_or_else(|p| p.into_inner());
         let listener = std::net::TcpListener::bind(bind).unwrap();
         let (mut child, accepted) = child_connecting_to(&listener);
-        let (local, peer) = (accepted.local_addr().unwrap(), accepted.peer_addr().unwrap());
-        let binder = imp::binder_of(local, peer).unwrap().expect("the child's row");
+        let (local, peer) = (
+            accepted.local_addr().unwrap(),
+            accepted.peer_addr().unwrap(),
+        );
+        let binder = imp::binder_of(local, peer)
+            .unwrap()
+            .expect("the child's row");
         let verdict = tcp_peer_owner(local, peer);
         // A process that began after the bind, held open while it is judged (ping sleeps for a minute; it is killed below).
         let mut later = Command::new("ping")
@@ -848,7 +1110,10 @@ mod tests {
             .spawn()
             .unwrap();
         let own = crate::identity::os_account::own_account_id().unwrap();
-        let later_binder = imp::Binder { pid: later.id(), bound: binder.bound };
+        let later_binder = imp::Binder {
+            pid: later.id(),
+            bound: binder.bound,
+        };
         let later_verdict = imp::owner_of(later_binder, &own, || Ok(Some(later_binder)));
         let _ = later.kill();
         let _ = later.wait();
@@ -860,11 +1125,22 @@ mod tests {
         let _ = child.kill(); // after its stdin closed it exits by itself; a child that does not is ended here
         let _ = child.wait();
         let now = {
-            let since_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-            ((since_unix.as_secs() + 11_644_473_600) * 10_000_000 + u64::from(since_unix.subsec_nanos()) / 100) as i64
+            let since_unix = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap();
+            ((since_unix.as_secs() + 11_644_473_600) * 10_000_000
+                + u64::from(since_unix.subsec_nanos()) / 100) as i64
         };
-        assert_eq!(binder.pid, child.id(), "the row named this process, not the child that connected");
-        assert!(binder.bound > 0 && binder.bound <= now, "bind time {} against now {now}", binder.bound);
+        assert_eq!(
+            binder.pid,
+            child.id(),
+            "the row named this process, not the child that connected"
+        );
+        assert!(
+            binder.bound > 0 && binder.bound <= now,
+            "bind time {} against now {now}",
+            binder.bound
+        );
         assert_eq!(verdict, PeerOwner::Mine);
         assert!(
             matches!(later_verdict, PeerOwner::Unknown(ref why) if why.contains("created after the bind")),

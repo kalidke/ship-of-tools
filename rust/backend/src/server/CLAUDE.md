@@ -92,6 +92,9 @@ The crate root holds the rest of this subsystem: `main.rs` (sotd's entry), `clie
 - `reply.rs`: the write deadline, the frame writers, the reply and error containment, and the off-loop job pool
 - `pipe.rs`: the shared byte pipe after a connect frame (`pipe_bidirectional`) and the one error frame for a refused connect (`reject`)
 
+## Rules
+- Native listener tests observe accept-time rejection before connection-handler entry, a same-account control, and Windows access denial using the live session-pipe descriptor; hello account-conflict tests do not substitute for OS admission.
+
 ## Start here
 An op: the `match` in `dispatch`. Bind, accept and the lock: `run_local` and `lock_daemon`. Boot order and
 buses: `run`. Write deadlines and the job pool: `reply.rs`.

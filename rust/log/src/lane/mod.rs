@@ -6,6 +6,7 @@ pub mod client;
 pub mod pipe_win;
 pub mod platform_transport;
 pub mod socket_unix;
+#[cfg(unix)]
 pub mod test_progress;
 pub mod transport;
 pub mod wire;
