@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c1-revert-paint",
+  "original": {
+    "sha": "98a128db4482d3f1f2ce562249256d6d30ce3073",
+    "branch": "tmp/ci-t1-c1-revert-paint"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "4b487c8148afe18247bd242ec77043d36ff73618",
+  "tree": "revert-paint",
+  "overlays": [
+    {
+      "tree": "revert-paint",
+      "file": "rust/frontend/src/ui/chrome/view.rs",
+      "base_sha256": "fc5b69efcd08e314c292f8008ec71005e94b663846ec8bce4fbfb540bb047a80",
+      "overlay_sha256": "e05426bee48c7a90df6439e1c1d46c2f3827d83b906a5f483edb53459fa52c7b",
+      "patch": "overlays/revert-paint-ui-chrome-view.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/chrome/view.rs",
+      "accepted_overlay_sha256": "e05426bee48c7a90df6439e1c1d46c2f3827d83b906a5f483edb53459fa52c7b",
+      "replay_sha256": "416f7226c1831a3433e49c3ffc6392462e7d1f743b67be4b28a05e1bcbcce214",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}

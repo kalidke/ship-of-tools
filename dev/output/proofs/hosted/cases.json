@@ -1,0 +1,15 @@
+[
+  {
+    "label": "c1-revert-paint-prompt_pinned_cells_have_attention_style",
+    "tree": "revert-paint",
+    "test": "ui::chrome::view::tests::prompt_pinned_cells_have_attention_style",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "prompt foreground",
+    "observations": [
+      "T1 fixture observed: rendered pinned prompt cells"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  }
+]
