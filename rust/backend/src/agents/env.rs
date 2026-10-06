@@ -163,23 +163,10 @@ pub(crate) fn account_spawn_env(
                         )
                         .map(|outcome| (outcome, prefix))
                     });
-                match prepared {
-                    Ok((TrustOutcome::Outside, prefix)) => tracing::warn!(
-                        workspace_id, cwd = ?cwd, prefix = ?prefix,
-                        outcome = ?TrustOutcome::Outside, "folder trust preparation skipped"
-                    ),
-                    Ok((TrustOutcome::NotDeclared, _)) => tracing::warn!(
-                        workspace_id, declaration = ?crate::agents::trust_declaration::declaration_file(),
-                        outcome = ?TrustOutcome::NotDeclared, "folder trust preparation skipped"
-                    ),
-                    Ok((outcome, _)) => {
-                        tracing::debug!(workspace_id, cwd = ?cwd, outcome = ?outcome, "folder trust preparation")
-                    }
-                    Err(msg) => tracing::warn!(
-                        workspace_id, cwd = ?cwd, error = %msg,
-                        "folder trust not recorded; the agent starts anyway"
-                    ),
+                if let Err(msg) = prepared {
+                    tracing::warn!(workspace_id, cwd = ?cwd, error = %msg, "folder trust not recorded; the agent starts anyway");
                 }
+
             }
             Ok(extra)
         }

@@ -76,16 +76,7 @@ pub fn ensure_folder_trusted(
     if !root.is_absolute() {
         return Err(format!("project root {root:?} is not an absolute path: nothing is trusted"));
     }
-    let resolved_prefix = crate::paths::simplify_verbatim(
-        prefix
-            .canonicalize()
-            .map_err(|e| format!("declared prefix {prefix:?}: {e}"))?,
-    );
-    let resolved_root = crate::paths::simplify_verbatim(
-        root.canonicalize()
-            .map_err(|e| format!("project root {root:?}: {e}"))?,
-    );
-    if !resolved_root.starts_with(&resolved_prefix) {
+    if !root.starts_with(prefix) {
         return Ok(TrustOutcome::Outside);
     }
 
