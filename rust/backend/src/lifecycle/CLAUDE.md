@@ -40,7 +40,11 @@ computer's sessions end (ADR 0050).
 - A child started through `Signal::spawn` or `Signal::spawn_std` dies with everything it started when its owner
   kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires; its leader is reaped only after
   that kill, and neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`;
-  `exited_pid` uses `WNOWAIT`); a spawn after the fire is killed and refused.
+  `exited_pid` uses `WNOWAIT`); a start is refused before anything is created
+  once the signal has fired, and a child created while it fires is counted from before its creation and killed when it
+  registers, so the shutdown's 3 s wait for its children (`CHILDREN_WAIT`) covers it (`Signal::reserve`, `Held::fill`);
+  a start that stalls longer than that between creation and registration is counted but outlives the exit (on Unix no
+  group is registered yet; on Windows it is suspended outside its job).
 - `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
   keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a

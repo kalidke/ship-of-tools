@@ -194,7 +194,9 @@ mod tests {
     use std::path::PathBuf;
 
     /// The daemon's own standard handles are not `gio`'s: it is handed null ones. Read as text through the production
-    /// view, from the signature through the function's closing brace.
+    /// view, from the signature through the function's closing brace. Every `.stdin`, `.stdout` and `.stderr` in the
+    /// function's text, a method call however spaced or commented or a field read, is the null setting; a call spelled
+    /// `Command::stdin(...)` is outside this check.
     #[test]
     fn gio_gets_no_inherited_stdio() {
         let source = sot_log::test_scan::without_test_modules(include_str!("io.rs"));
@@ -211,6 +213,7 @@ mod tests {
         for handle in ["stdin", "stdout", "stderr"] {
             let setting = format!(".{handle}(std::process::Stdio::null())");
             assert_eq!(body.matches(&setting).count(), 1, "gio's {handle} is not null");
+            assert_eq!(body.matches(&format!(".{handle}")).count(), 1, "gio's {handle} has a setter other than the null one");
         }
     }
 

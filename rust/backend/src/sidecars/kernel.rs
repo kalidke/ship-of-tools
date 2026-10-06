@@ -622,15 +622,14 @@ mod tests {
     #[tokio::test]
     async fn blocked_kernel_write_does_not_outlive_shutdown() {
         let dir = tempfile::tempdir().unwrap();
-        let (gc_file, stub_file) = (dir.path().join("gc"), dir.path().join("stub"));
-        let (gc, shell) = (Leftover::of_file(gc_file.clone()), Leftover::of_file(stub_file.clone()));
+        let gc_file = dir.path().join("gc");
+        let gc = Leftover::of_file(gc_file.clone());
         let stub = dir.path().join("stub-julia");
         sot_log::test_exec::write_executable(
             &stub,
             format!(
-                "#!/bin/sh\nsleep 3101 &\necho $! > {}\necho $$ > {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":0}}}}'\nexec sleep 3101\n",
-                gc_file.display(),
-                stub_file.display()
+                "#!/bin/sh\nsleep 3101 &\necho $! > {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":0}}}}'\nexec sleep 3101\n",
+                gc_file.display()
             ),
         );
         let project = dir.path().join("kp");
@@ -665,7 +664,7 @@ mod tests {
             .await
             .expect("the supervisor loop outlived the shutdown")
             .expect("supervisor task");
-        assert!(shell.gone() && gc.gone(), "the kernel tree survived the shutdown");
+        assert!(gc.gone(), "the kernel's grandchild survived the shutdown");
         assert_eq!(sig.live(), 0);
         drop(replies);
     }

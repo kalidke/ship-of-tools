@@ -236,7 +236,9 @@ mod tests {
         std::env::temp_dir().join(format!("sot-updater-lock-{label}-{}", std::process::id()))
     }
 
-    /// A process this account may not signal is still alive: the probe must not read it as dead.
+    /// A process this account may not signal is still alive: the probe must not read it as dead. pid 1 is never this
+    /// account's (the hosted runners run tests as a user who is not root), and signal 0 delivers nothing. On macOS this
+    /// runs `kill`'s EPERM path; on Linux the probe reads `/proc/1`, so there it shows only that a live pid reads alive.
     #[cfg(unix)]
     #[test]
     fn a_pid_this_account_cannot_signal_is_alive() {

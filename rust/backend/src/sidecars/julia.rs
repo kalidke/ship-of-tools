@@ -4,10 +4,12 @@
 // is shared — one function, no privileged caller).
 //
 // Invariant: never spawn a PATH candidate this resolver has not verified is
-// plausibly real Julia, and never an app-execution alias, wherever it was
-// found, not even one `SOT_JULIA_BIN` names. An explicit `SOT_JULIA_BIN` is
-// otherwise exempt (an operator's own choice, format-validated but not
-// second-guessed).
+// plausibly real Julia, and never a path with a `WindowsApps` component (the
+// folder app-execution aliases live in), wherever it was found, not even one
+// `SOT_JULIA_BIN` names. The check reads the path, not the file, so an alias
+// reached by another spelling (a junction, a link) passes it. An explicit
+// `SOT_JULIA_BIN` is otherwise exempt (an operator's own choice,
+// format-validated but not second-guessed).
 
 use std::path::{Path, PathBuf};
 
@@ -17,21 +19,21 @@ use serde_json::Value;
 const JULIA_EXE: &str = if cfg!(windows) { "julia.exe" } else { "julia" };
 
 /// Resolve the `julia` binary honestly. Order:
-/// 1. `SOT_JULIA_BIN`, trimmed — must not be a Windows app-execution alias
+/// 1. `SOT_JULIA_BIN`, trimmed — must not have a `WindowsApps` path component
 ///    (a hard error), and must be an absolute path (upstream juliaup's
 ///    own override semantics); a non-empty but relative value is a hard
 ///    error rather than a silently-ignored fall-through, so a typo in an
 ///    explicit override is never masked by auto-detection picking something
 ///    else.
 /// 2. juliaup's DEFAULT-CHANNEL binary, resolved by reading `juliaup.json`
-///    directly (bypasses the launcher shim; an app-execution alias there is an
+///    directly (bypasses the launcher shim; a `WindowsApps` path there is an
 ///    error like any other) — re-resolved on every call, so
 ///    a channel update or a removed version recovers on the very next spawn
 ///    attempt rather than replaying a permanently cached path.
 /// 3. A PATH candidate, rejected (and the search continued to the next
 ///    entry) if it is not a real executable (Unix: the executable bit is
-///    unset) or is a Windows Store app-execution alias (a `WindowsApps`
-///    path component). If no candidate exists, or every one found is
+///    unset) or has a `WindowsApps`
+///    path component (the folder Windows Store app-execution aliases live in). If no candidate exists, or every one found is
 ///    rejected, this is an error: a bare `"julia"` is never offered, since
 ///    the OS would resolve the same rejected file (and Windows resolves a
 ///    bare name to the Store alias).
@@ -40,8 +42,9 @@ pub(crate) fn resolve_bin() -> Result<(String, &'static str), String> {
 }
 
 /// [`resolve_bin`] with the `PATH` value passed in: the one place the PATH search reads it, so a test supplies its own
-/// and never changes the process's. Whatever [`find_on`] finds is checked once more here, so no answer is an
-/// app-execution alias, wherever it was found (a juliaup version's `Path` may point anywhere).
+/// and never changes the process's. Whatever [`find_on`] finds is checked once more here, so no answer has a
+/// `WindowsApps` path component, wherever it was found (a juliaup version's `Path` may point anywhere); the check reads
+/// the path, not the file.
 fn resolve_bin_on(path: Option<&std::ffi::OsStr>) -> Result<(String, &'static str), String> {
     let (bin, source) = find_on(path)?;
     if is_windows_apps_alias_path(Path::new(&bin)) {

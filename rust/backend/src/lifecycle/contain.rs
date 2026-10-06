@@ -169,16 +169,27 @@ mod tests {
     use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
 
-    fn exits_within(pid: u32, ms: u32) -> bool {
-        // SAFETY: plain process-handle calls; the handle is closed here.
-        unsafe {
-            let h = OpenProcess(SYNCHRONIZE, 0, pid);
-            if h.is_null() {
-                return true;
-            }
-            let r = WaitForSingleObject(h, ms);
-            CloseHandle(h);
-            r == WAIT_OBJECT_0
+    /// A process opened while it is alive, so a later wait is on that process and not on a number.
+    struct Watched(windows_sys::Win32::Foundation::HANDLE);
+
+    impl Watched {
+        fn open(pid: u32) -> Self {
+            // SAFETY: a plain open of a process by pid for SYNCHRONIZE; the handle is closed on drop.
+            let h = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+            assert!(!h.is_null(), "process {pid} could not be opened to watch: {}", std::io::Error::last_os_error());
+            Watched(h)
+        }
+
+        fn exits_within(&self, ms: u32) -> bool {
+            // SAFETY: a wait on a handle this value owns.
+            unsafe { WaitForSingleObject(self.0, ms) == WAIT_OBJECT_0 }
+        }
+    }
+
+    impl Drop for Watched {
+        fn drop(&mut self) {
+            // SAFETY: the handle is this value's own.
+            unsafe { CloseHandle(self.0) };
         }
     }
 
@@ -201,8 +212,9 @@ mod tests {
         })
         .await
         .expect("the grandchild's pid never arrived");
+        let watched = Watched::open(pid);
         sig.fire();
-        exits_within(pid, 3000)
+        watched.exits_within(3000)
     }
 
     fn ping_tree() -> std::process::Command {
@@ -235,8 +247,9 @@ mod tests {
                 break pid;
             }
         };
+        let watched = Watched::open(pid);
         drop(child);
-        assert!(exits_within(pid, 3000), "the dropped child's descendant survived");
+        assert!(watched.exits_within(3000), "the dropped child's descendant survived");
     }
 
     #[test]

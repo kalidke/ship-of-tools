@@ -189,7 +189,9 @@ mod tests {
     /// Std passes an inherited standard handle to a Windows child as an inheritable copy, whatever `harden_own_stdio`
     /// did to the window's own: the opener's child must be handed null ones, or it holds the window's log files open
     /// for as long as the browser runs. Read as text through the production view, from the signature through the
-    /// function's closing brace.
+    /// function's closing brace. Every `.stdin`, `.stdout` and `.stderr` in the function's text, a method call however
+    /// spaced or commented or a field read, is the null setting; a call spelled `Command::stdin(...)` is outside this
+    /// check.
     #[test]
     fn the_opener_hands_its_child_no_inherited_stdio() {
         let source = sot_log::test_scan::without_test_modules(include_str!("browser_open.rs"));
@@ -207,6 +209,7 @@ mod tests {
         for handle in ["stdin", "stdout", "stderr"] {
             let setting = format!(".{handle}(std::process::Stdio::null())");
             assert_eq!(body.matches(&setting).count(), 3, "an opener's {handle} is not null");
+            assert_eq!(body.matches(&format!(".{handle}")).count(), 3, "an opener's {handle} has a setter other than the null one");
         }
     }
 

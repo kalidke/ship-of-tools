@@ -614,8 +614,8 @@ mod tests {
         assert_eq!(repo_from_env(), "fork/x");
     }
 
-    /// The julia an update's prepare runs is the resolver's, which never returns an app-execution alias; only a backend
-    /// role runs one.
+    /// The julia an update's prepare runs is the resolver's, which never returns a path with a `WindowsApps` component; only a
+    /// backend role runs one.
     #[test]
     fn the_update_prepare_runs_the_resolvers_julia() {
         let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

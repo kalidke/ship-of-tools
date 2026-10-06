@@ -90,7 +90,8 @@ drawer end without resuming anything, retrying a kept row once a second to that 
 deadline, and a row of any other runtime is left running and counted not ended; every
 process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit
 (n)), is killed with everything it started that did not leave it (residual 7): each runs in its own process group
-on Unix and its own job on Windows, its leader is reaped only after that kill, and their owners are given 3 s to
+on Unix and its own job on Windows, its leader is reaped only after that kill, a start in flight when the signal fires
+is counted before it creates anything and killed if it registers within those 3 s, and their owners are given 3 s to
 let go; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
@@ -203,9 +204,10 @@ connection is the only handle.
    row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
    service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
    julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
-   mechanism is not documented). The daemon never starts one: every julia it runs, the update prepare's
-   included, comes from `resolve_bin` (`rust/backend/src/sidecars/julia.rs`), which refuses one wherever it found it;
-   code a row or a REPL runs can.
+   mechanism is not documented). Every julia the daemon runs, the update prepare's included, comes from `resolve_bin`
+   (`rust/backend/src/sidecars/julia.rs`), which refuses a path with a `WindowsApps` component, the folder app-execution
+   aliases live in, wherever it found it; it does not inspect the file, so an alias reached by another spelling (a
+   junction, a link) is not refused. Code a row or a REPL runs can start one.
 
 ## Known limits (0.6.6)
 
