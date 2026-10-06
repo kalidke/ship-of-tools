@@ -101,7 +101,7 @@ jobs:
           echo "result-routing-parent exit $result expected 1"
           [ "$result" -eq 1 ]
           grep -F 'result-routing phase=completed ok=false entered_bodies=1 completed_bodies=1' ../dev/output/row-lifetime.log
-          grep -F 'result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view' ../dev/output/row-lifetime.log
+          grep -F "result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view" ../dev/output/row-lifetime.log
       - name: Prove native minimized workload and progress
         run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
 
@@ -132,7 +132,7 @@ jobs:
           echo "result-routing-parent exit $result expected 1"
           [ "$result" -eq 1 ]
           grep -F 'result-routing phase=completed ok=false entered_bodies=1 completed_bodies=1' ../dev/output/row-lifetime.log
-          grep -F 'result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view' ../dev/output/row-lifetime.log
+          grep -F "result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view" ../dev/output/row-lifetime.log
       - name: Prove native minimized workload and progress
         run: cargo test -p sot-frontend --test window_minimized --features test-window-progress --locked
 
