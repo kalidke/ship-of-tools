@@ -189,6 +189,9 @@ if (-not $DevBinDir) {
 }
 if (-not $ProjectRoot) { $ProjectRoot = $env:USERPROFILE }
 
+# Start-SotBridge, the one way a launch script starts the bridge (sot-lease.ps1 defines functions only).
+. (Join-Path $PSScriptRoot 'sot-lease.ps1')
+
 function Write-LocalDaemonLog {
     param([string]$Message)
     Write-Host "sot-local-daemon: $Message"
@@ -235,20 +238,15 @@ function Remove-OldDaemonLogs {
 }
 
 # Bounded connect probe -- see the header for why this replaces a namespace listing. sotd's own bridge makes the
-# connection (`stdio-bridge --endpoint`): it opens the pipe at identification level and connects only to a pipe this
-# OS account serves, so a pipe another account holds under this name is never this daemon. Its input is closed at
-# once, so a live daemon sees one harmless connect-then-EOF. No runnable sotd.exe: not open.
+# connection (`stdio-bridge --endpoint`, started by Start-SotBridge, so its input carries no byte this script did not
+# write): it opens the pipe at identification level and connects only to a pipe this OS account serves, so a pipe
+# another account holds under this name is never this daemon. Its input is closed at once, so a live daemon sees one
+# harmless connect-then-EOF. No runnable sotd.exe: not open.
 function Test-SotPipeOpen {
     param([string]$Name)
     if (-not $daemonExe -or -not (Test-Path -LiteralPath $daemonExe -PathType Leaf)) { return $false }
     try {
-        $psi = New-Object System.Diagnostics.ProcessStartInfo($daemonExe, ('stdio-bridge --endpoint "pipe:\\.\pipe\{0}"' -f $Name))
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $p = [System.Diagnostics.Process]::Start($psi)
+        $p = Start-SotBridge $daemonExe ('\\.\pipe\' + $Name)
         $p.StandardInput.Close()
         if (-not $p.WaitForExit(5000)) { try { $p.Kill() } catch { }; return $false }
         return ($p.ExitCode -eq 0)

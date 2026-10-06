@@ -1,4 +1,4 @@
-# comm-lib-base.sh: the library's base: platform test, the comm folder's paths, clock, tool checks, jq and host helpers, ages.
+# comm-lib-base.sh: the library's base: platform test, the comm folder's paths, clock, tool checks, the command bound, jq and host helpers, ages.
 # Sourced by comm-lib.sh; defines functions and globals only, and sets the umask.
 
 # _sot_is_windows — the ONE shared platform test (Codex review, PR1 round 2
@@ -62,6 +62,56 @@ sot_require_tools() {
         rc=1
     done
     return "$rc"
+}
+
+# sot_bounded SECS CMD [ARG...] — runs the program CMD (not a shell function) with this shell's stdin, stdout and
+# stderr, and ends it SECS seconds (a whole number above 0) after it starts. The four timed comm calls run under it:
+# sot_ssh_bridge's ssh, sot_dial's bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless
+# claude. One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
+# run. At the bound, or when that process is itself sent TERM, INT or HUP, one routine signals the whole group (TERM,
+# or the signal it got) and KILLs it a second later if any member is left, so the bound holds when this shell is
+# killed and a descendant holding CMD's output ends too. CMD ending on its own returns at once with its status. Status:
+# CMD's own; 124 at the bound, 137 when that took KILL; 128+N when the bound itself was sent signal N; 127 when CMD
+# could not start; 125 when nothing ran (no perl, no process group, or a bound that is not a whole number above 0).
+# Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring descendant holding the output, and
+# macOS has none.
+sot_bounded() {
+    command -v perl >/dev/null 2>&1 || {
+        echo "sot_bounded: no perl to bound $2 with" >&2
+        return 125
+    }
+    perl -e '
+        use POSIX ();
+        my ($secs, @cmd) = @ARGV;
+        if ($secs !~ /^[1-9][0-9]*$/) { print STDERR "sot_bounded: the bound is a whole number of seconds above 0, not $secs\n"; exit 125; }
+        my %num = (TERM => POSIX::SIGTERM(), INT => POSIX::SIGINT(), HUP => POSIX::SIGHUP());
+        my $pid = fork;
+        if (!defined $pid) { print STDERR "sot_bounded: fork: $!\n"; exit 125; }
+        if (!$pid) {
+            if (!setpgrp(0, 0)) { print STDERR "sot_bounded: no process group for $cmd[0]: $!\n"; POSIX::_exit(125); }
+            exec { $cmd[0] } @cmd;
+            print STDERR "sot_bounded: $cmd[0]: $!\n";
+            POSIX::_exit(127);
+        }
+        setpgrp($pid, $pid);
+        $SIG{$_} = sub { die "$_[0]\n" } for qw(ALRM TERM INT HUP);
+        my $st;
+        eval { alarm $secs; waitpid($pid, 0); $st = $?; alarm 0; };
+        exit($st & 127 ? 128 + ($st & 127) : $st >> 8) if defined $st;
+        chomp(my $why = $@);
+        $SIG{$_} = "IGNORE" for qw(ALRM TERM INT HUP);
+        alarm 0;
+        kill(exists $num{$why} ? $why : "TERM", -$pid);
+        for (1 .. 20) {
+            waitpid($pid, POSIX::WNOHANG());
+            last unless kill(0, -$pid);
+            select(undef, undef, undef, 0.05);
+        }
+        my $hard = kill(0, -$pid);
+        kill("KILL", -$pid) if $hard;
+        waitpid($pid, 0);
+        exit(exists $num{$why} ? 128 + $num{$why} : $hard ? 137 : 124);
+    ' "$@"
 }
 
 # sot_jq ARGS... — run jq, but normalise ITS OWN OUTPUT so a caller that

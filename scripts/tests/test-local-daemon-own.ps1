@@ -4,6 +4,7 @@
 
 try {
     Write-Host "`n=== 4b. a pipe another OS account serves is not this daemon (ADR 0049) ===" -ForegroundColor Cyan
+    . (Join-Path $PSScriptRoot '..\sot-lease.ps1')   # Start-SotBridge, which Test-SotPipeOpen runs
     $ownAst = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$null)
     foreach ($fname in @('Test-SotPipeOpen', 'Get-LocalDaemonProcess')) {
         $fn = $ownAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
@@ -19,7 +20,7 @@ try {
         $accept4b = $server4b.WaitForConnectionAsync()
         $open4b = Test-SotPipeOpen $pipe4b
         if (-not $accept4b.Wait(5000)) { throw 'the own-account pipe fixture was not reached within 5 s' }
-        Check '4b: a pipe this account serves is open' $open4b 'the production probe refused the test-owned pipe'
+        Check '4b: a pipe this account serves is open' $open4b 'the production probe did not open the test-owned pipe: refused, or its bridge did not end within 5 s (7c reads the bytes a bridge sends)'
     } finally { $server4b.Dispose() }
     Check '4b: epmapper, served by SYSTEM, is not this daemon' (-not (Test-SotPipeOpen 'epmapper')) 'the production probe opened a foreign pipe'
 } catch { Check '4b: section ran' $false $_.Exception.Message }
@@ -54,9 +55,11 @@ try {
         if (-not (Wait-Pipe $pipe5b2)) { throw "the handover daemon never opened its pipe; log: $out5b2" }
         $global:SotLeases = @(Open-SotLease (Get-PipePath $pipe5b2) $realSotd)
         Check '5b2: the real daemon grants the bridge-held lease' ($global:SotLeases.Count -eq 1) "got $($global:SotLeases.Count); log: $($script:supLines5b -join ' | ')"
-        Close-SotLeases
-        Start-Sleep -Seconds 5
-        Check '5b2: the handover holds the daemon' (Test-PipeAnswering $pipe5b2) 'the daemon ended before the 60 s handover bound'
+        if ($global:SotLeases.Count -eq 1) {
+            Close-SotLeases
+            Start-Sleep -Seconds 5
+            Check '5b2: the handover holds the daemon' (Test-PipeAnswering $pipe5b2) 'the daemon ended before the 60 s handover bound'
+        }
     } finally {
         Close-SotLeases
         Get-DaemonProcs (Get-PipePath $pipe5b2) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

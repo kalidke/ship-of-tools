@@ -123,6 +123,73 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     server.join().expect("echo server");
 }
 
+/// `sot_bounded`, the bound each of the four timed comm calls runs under, on this platform's bash, with a `timeout`
+/// and a `gtimeout` that are not coreutils first on PATH (the bound uses neither). One perl process owns the deadline
+/// and the command's process group. The command keeps the shell's stdin and its own status, `sot_ssh_bridge` carries
+/// its input, a late command returns 124 and is gone, a descendant holding a captured command's output ends with it,
+/// an errexit caller ends with 124, a caller killed mid-bound leaves no command behind, with no perl or a bound of 0
+/// nothing runs (125), and a command that cannot start returns 127. On Unix also: a command that ignores TERM, and a
+/// TERM-ignoring descendant holding captured output after its leader died, end with 137, and a TERM sent to the
+/// bound itself reaches the group and is escalated to KILL (143). Windows' Git Bash emulates signals and process
+/// groups, so those three are not claimed there.
+#[test]
+fn the_comm_bound_owns_its_command_until_its_group_ends() {
+    let Some(_) = bash() else { return };
+    let home = tempfile::tempdir().expect("scratch home");
+    let (unix, unix_want) = if cfg!(windows) {
+        ("", "")
+    } else {
+        (
+            r#"sot_bounded 1 sh -c 'trap "" TERM; echo $$ > "$HOME/deaf.pid"; exec tail -f /dev/null'; echo "deaf $?"
+kill -0 "$(cat "$HOME/deaf.pid")" 2>/dev/null && echo "deaf alive" || echo "deaf gone"
+deafheld="$(sot_bounded 1 sh -c '(trap "" TERM; exec tail -f /dev/null) & echo $! > "$HOME/deafheld.pid"; wait')"; echo "deaf held $?"
+kill -0 "$(cat "$HOME/deafheld.pid")" 2>/dev/null && echo "deaf held alive" || echo "deaf held gone"
+sot_bounded 5 sh -c 'trap "" TERM; echo $$ > "$HOME/cancel.pid"; exec tail -f /dev/null' &
+c=$!
+for _ in $(seq 1 100); do [ -s "$HOME/cancel.pid" ] && break; sleep 0.05; done
+kill -TERM "$(ps -o ppid= -p "$(cat "$HOME/cancel.pid")" | tr -d ' ')"
+wait "$c"; echo "cancel $?"
+kill -0 "$(cat "$HOME/cancel.pid")" 2>/dev/null && echo "cancel alive" || echo "cancel gone"
+"#,
+            "deaf 137\ndeaf gone\ndeaf held 137\ndeaf held gone\ncancel 143\ncancel gone\n",
+        )
+    };
+    let want = format!(
+        "in\nstatus 7\nssh-in\nlate 124\nlate gone\nheld 124\nheld gone\nerrexit 124\norphan gone\nno perl 125\n{unix_want}missing 127\nzero 125\n"
+    );
+    let script = format!(
+        r#". "$1" && PATH="$HOME/no-gnu:$HOME/stub-ssh:$PATH"
+mkdir -p "$HOME/stub-ssh" "$HOME/no-gnu" "$HOME/no-perl"
+printf '#!/bin/sh\ncase "$1" in -G) exit 0 ;; esac\nexec cat\n' > "$HOME/stub-ssh/ssh"
+printf '#!/bin/sh\necho "ERROR: Invalid syntax."\nexit 1\n' > "$HOME/no-gnu/timeout"
+cp "$HOME/no-gnu/timeout" "$HOME/no-gnu/gtimeout"
+chmod +x "$HOME/stub-ssh/ssh" "$HOME/no-gnu/timeout" "$HOME/no-gnu/gtimeout"
+printf 'in\n' | sot_bounded 5 cat
+sot_bounded 5 sh -c 'exit 7'; echo "status $?"
+printf 'ssh-in\n' | sot_ssh_bridge stubhost "" 5
+sot_bounded 1 sh -c 'echo $$ > "$HOME/late.pid"; exec tail -f /dev/null'; echo "late $?"
+kill -0 "$(cat "$HOME/late.pid")" 2>/dev/null && echo "late alive" || echo "late gone"
+held="$(sot_bounded 1 sh -c 'tail -f /dev/null & echo $! > "$HOME/held.pid"; wait')"; echo "held $?"
+kill -0 "$(cat "$HOME/held.pid")" 2>/dev/null && echo "held alive" || echo "held gone"
+( set -e; sot_bounded 1 sh -c 'exec tail -f /dev/null'; echo unreachable ); echo "errexit $?"
+( sot_bounded 1 sh -c 'echo $$ > "$HOME/orphan.pid"; exec tail -f /dev/null' ) &
+w=$!
+for _ in $(seq 1 100); do [ -s "$HOME/orphan.pid" ] && break; sleep 0.05; done
+kill "$w"
+for _ in $(seq 1 100); do kill -0 "$(cat "$HOME/orphan.pid")" 2>/dev/null || break; sleep 0.05; done
+kill -0 "$(cat "$HOME/orphan.pid")" 2>/dev/null && echo "orphan alive" || echo "orphan gone"
+( PATH="$HOME/no-perl"; sot_bounded 5 true 2>/dev/null ); echo "no perl $?"
+{unix}sot_bounded 5 /no/such/command 2>/dev/null; echo "missing $?"
+sot_bounded 0 true 2>/dev/null; echo "zero $?"
+"#
+    );
+    let mut child = shell(home.path(), &script, "").expect("bash");
+    drop(child.stdin.take());
+    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert!(status.success(), "the bound: bash failed: {stderr}");
+    assert_eq!(stdout, want, "the bound: {stderr}");
+}
+
 #[cfg(windows)]
 #[test]
 fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {

@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_ENV_LOG')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_ENV_LOG', 'FAKE_SOTD_STDIN_LOG')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -77,6 +77,15 @@ public static class FakeSotd
 
     public static int Main(string[] a)
     {
+        string stdinLog = Environment.GetEnvironmentVariable("FAKE_SOTD_STDIN_LOG");
+        if (a.Length == 3 && a[0] == "stdio-bridge" && a[1] == "--endpoint" && !string.IsNullOrEmpty(stdinLog))
+        {
+            // Records, in hex, every byte its input carries until the input ends, connects nowhere and exits 0 (7c).
+            MemoryStream got = new MemoryStream();
+            using (Stream input = Console.OpenStandardInput()) { input.CopyTo(got); }
+            File.WriteAllText(stdinLog, BitConverter.ToString(got.ToArray()));
+            return 0;
+        }
         if (a.Length == 3 && a[0] == "stdio-bridge" && a[1] == "--endpoint"
             && Environment.GetEnvironmentVariable("FAKE_SOTD_BRIDGE_EARLY_EXIT") == "1")
         {
@@ -161,7 +170,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_ENV_LOG')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT', 'FAKE_SOTD_ENV_LOG', 'FAKE_SOTD_STDIN_LOG')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }

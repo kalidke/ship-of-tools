@@ -8,7 +8,7 @@ messaging; charter: comm/CLAUDE.md.
 
 ## Files
 - `comm-lib.sh`: the loader; sources the seven parts below, in this order, and holds nothing else
-- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
+- `comm-lib-base.sh`: the platform test, the comm folder's paths (`COMM_HOME`, `REGISTRY`, the lock path), the clock, tool checks, the command bound (`sot_bounded`), jq and host helpers, ages, and `COMM_LIVE_SECS` (how old a `last_seen` may be and still be live)
 - `comm-lib-client.sh`: the shell client of the daemon's wire: endpoints, the ssh bridge, the hello frame, `_sot_os_user` (this shell's OS account, on Windows the SID `_sot_windows_sid` reads), `sot_oneshot_request`, pty input and screen
 - `comm-lib-registry-lock.sh`: the registry lock: `with_lock` and the lock record's take, judge and fail steps
 - `comm-lib-registry.sh`: the registry file: `ensure_home`, the writers, the reads, a row's status and `sot_heartbeat_fresh` (is a `last_seen` live)
@@ -67,6 +67,13 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   (raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first), not `sot_host`. A capsule's pinned self file is
   named by the daemon with its declared host, which is `sot_host`'s rule.
 - bash 3.2 and git-bash.
+- The four timed comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
+  `sot_dial`'s bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless claude. One perl process
+  owns the deadline and the command's process group: at the bound, or when it is itself sent TERM, INT or HUP, it
+  signals the whole group and KILLs it a second later if any member is left, so a descendant holding the output ends
+  too, and the bound holds when the caller is killed. With no perl, no process group or a bound that is not a whole
+  number above 0, the call does not run (125). The PostToolUse heartbeat (hooks/comm-status-heartbeat.sh) keeps its
+  own watchdog over comm-context.sh: TERM at its bound, then a wait, and the output discarded.
 - The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.

@@ -220,8 +220,8 @@ _sot_ssh_sharing_ok() {
 # output (reproduced: `timeout 1 f` on an exported function). A caller
 # that wants a bound passes it as this THIRD POSITIONAL parameter, never
 # an environment variable (`VAR=x func` scoping in bash is a quirk nobody
-# should have to remember) -- this wraps its OWN `ssh` in `timeout` when
-# the bound is non-empty, and runs unbounded, exactly as before, when it
+# should have to remember) -- this runs its OWN `ssh` under `sot_bounded`
+# when the bound is non-empty, and unbounded, exactly as before, when it
 # is empty.
 sot_ssh_bridge() {
     local target="$1" host="${2:-}" secs="${3:-}"
@@ -232,7 +232,7 @@ sot_ssh_bridge() {
         opts+=(-o ControlMaster=auto -o ControlPath="$(_sot_ssh_control)" -o ControlPersist=600)
     fi
     if [ -n "$secs" ]; then
-        timeout "$secs" ssh "${opts[@]}" "$target" "$remote"
+        sot_bounded "$secs" ssh "${opts[@]}" "$target" "$remote"
     else
         ssh "${opts[@]}" "$target" "$remote"
     fi
@@ -244,7 +244,7 @@ sot_ssh_bridge() {
 # a pipe only when this account serves it, else exit 1 and one stderr line saying why. A bare `pipe:<name>` is written
 # `pipe:\\.\pipe\<name>`. An `ssh:` endpoint is `sot_ssh_bridge`, whose far end is that box's own bridge. The bridge
 # closes the connection when its input ends, so a caller keeps stdin open until it has read what it waits for. The bound
-# is a parameter, as `sot_ssh_bridge`'s is: `timeout` cannot run a function.
+# is a parameter, as `sot_ssh_bridge`'s is: `sot_bounded` runs a program, not a function.
 sot_dial() {
     local ep="$1" secs="${2:-}" bin="" rest name
     case "$ep" in
@@ -255,7 +255,7 @@ sot_dial() {
                 pipe:*) name="${ep#pipe:}"; ep="pipe:\\\\.\\pipe\\${name##*\\}" ;;
             esac
             if [ -n "$secs" ]; then
-                MSYS2_ARG_CONV_EXCL='*' timeout "$secs" "$bin" stdio-bridge --endpoint "$ep"
+                sot_bounded "$secs" env MSYS2_ARG_CONV_EXCL='*' "$bin" stdio-bridge --endpoint "$ep"
             else
                 MSYS2_ARG_CONV_EXCL='*' "$bin" stdio-bridge --endpoint "$ep"
             fi

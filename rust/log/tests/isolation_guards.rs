@@ -333,14 +333,13 @@ fn no_script_dials_outside_the_bridge() {
         assert_eq!(raw_dial(line), want, "the rule reads {line:?} wrong");
     }
     // Each product line that runs the bridge, by file and exact trimmed text.
-    const BRIDGE_LINES: [(&str, &str); 7] = [
+    const BRIDGE_LINES: [(&str, &str); 6] = [
         ("comm/lib/comm-lib-client.sh", r#"local remote='export PATH="$HOME/.local/share/sot/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"; sotd stdio-bridge'"#),
-        ("comm/lib/comm-lib-client.sh", r#"MSYS2_ARG_CONV_EXCL='*' timeout "$secs" "$bin" stdio-bridge --endpoint "$ep""#),
+        ("comm/lib/comm-lib-client.sh", r#"sot_bounded "$secs" env MSYS2_ARG_CONV_EXCL='*' "$bin" stdio-bridge --endpoint "$ep""#),
         ("comm/lib/comm-lib-client.sh", r#"MSYS2_ARG_CONV_EXCL='*' "$bin" stdio-bridge --endpoint "$ep""#),
         ("scripts/lib/sot-daemon.sh", r#""$1" stdio-bridge --endpoint "unix:$2" </dev/null >/dev/null 2>&1"#),
         ("scripts/restart-backend.sh", r#""$BIN" stdio-bridge --endpoint "unix:$SOCKET" </dev/null >/dev/null 2>&1"#),
         ("scripts/sot-lease.ps1", r#"$psi = New-Object System.Diagnostics.ProcessStartInfo($SotdExe, ('stdio-bridge --endpoint "pipe:{0}"' -f $PipePath))"#),
-        ("scripts/sot-local-daemon.ps1", r#"$psi = New-Object System.Diagnostics.ProcessStartInfo($daemonExe, ('stdio-bridge --endpoint "pipe:\\.\pipe\{0}"' -f $Name))"#),
     ];
     // Test scripts that dial raw, by file, each with what it dials and why.
     const TEST_FILES: &[(&str, &str)] = &[

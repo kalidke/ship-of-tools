@@ -1,5 +1,6 @@
-# sot-lease.ps1 -- the launcher's leases on this computer's daemon: open one, hand every one over.
-# Dot-sourced by launch-sot.ps1, which keeps $LeaseReplyWaitMs, $HandoverBoundSeconds and $global:SotLeases.
+# sot-lease.ps1 -- the launcher's leases on this computer's daemon: open one, hand every one over; and Start-SotBridge,
+# the one way a launch script starts the bridge. Dot-sourced by launch-sot.ps1, which keeps $LeaseReplyWaitMs,
+# $HandoverBoundSeconds and $global:SotLeases, and by sot-local-daemon.ps1 for its probe. Functions only.
 # ASCII ONLY in string literals (Windows PowerShell 5.1; see launch-sot.ps1).
 
 # The Windows boot identity: the registry BootId as an unsigned decimal string,
@@ -26,14 +27,40 @@ function ConvertTo-SotJsonString([string]$Text) {
     return '"' + $Text.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
+# Start the bridge, `<SotdExe> stdio-bridge --endpoint pipe:<PipePath>`, with its input, output and errors redirected,
+# and return the process: the one way the launcher's lease and sot-local-daemon.ps1's probe start it (ADR 0049, User
+# isolation). Its input carries exactly the bytes its caller writes. Windows PowerShell 5.1's .NET Framework opens a
+# redirected input as a writer in [Console]::InputEncoding and flushes it at once, which writes that encoding's
+# preamble (the UTF-8 BOM, when the console's input encoding has one) before the caller writes anything, and the
+# daemon cannot parse a hello behind it. So while the process starts, the console's input encoding is UTF-8 without a
+# preamble whenever the caller's has one, and the caller's is put back after. A console whose encoding cannot be set
+# throws, to the caller's own catch.
+function Start-SotBridge([string]$SotdExe, [string]$PipePath) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo($SotdExe, ('stdio-bridge --endpoint "pipe:{0}"' -f $PipePath))
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $callerInput = [Console]::InputEncoding
+    $swap = $callerInput.GetPreamble().Length -gt 0
+    if ($swap) { [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false) }
+    try {
+        return [System.Diagnostics.Process]::Start($psi)
+    } finally {
+        if ($swap) { [Console]::InputEncoding = $callerInput }
+    }
+}
+
 # Open a lease on the local daemon: emits the open stream when granted and NOTHING otherwise (callers collect with
 # @()). Never throws: $ErrorActionPreference is Stop and an escaped throw would kill the supervisor. The connection is
-# sotd's own (`stdio-bridge --endpoint`, run from $SotdExe): it opens the pipe at identification level and connects
-# only to a pipe this OS account serves (ADR 0049, User isolation). The daemon reads the process that connects, so
-# the lease names the bridge child (its pid and creation time) and lasts as long as the child's connection. The
+# sotd's own (`stdio-bridge --endpoint`, started by Start-SotBridge): it opens the pipe at identification level and
+# connects only to a pipe this OS account serves (ADR 0049, User isolation). The daemon reads the process that connects,
+# so the lease names the bridge child (its pid and creation time) and lasts as long as the child's connection. The
 # stream returned is the child's input: what is written to it reaches the daemon, and disposing it ends the child and
-# the lease. The first line is the hello the daemon admits every connection by (role handoff, this computer and the
-# OS account, the process token's user SID); the lease line follows in the same write and the two replies are read in
+# the lease. The first line is the hello the daemon admits every connection by (role handoff, this computer and the OS
+# account, the process token's user SID); the lease line follows in the same write and the two replies are read in
 # order. A lease not granted is logged with the bridge's own stderr line, when it wrote one.
 function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     $bridge = $null
@@ -41,14 +68,7 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     try {
         $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
-        $psi = New-Object System.Diagnostics.ProcessStartInfo($SotdExe, ('stdio-bridge --endpoint "pipe:{0}"' -f $PipePath))
-        $psi.UseShellExecute = $false
-        $psi.CreateNoWindow = $true
-        $psi.RedirectStandardInput = $true
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
-        $bridge = [System.Diagnostics.Process]::Start($psi)
+        $bridge = Start-SotBridge $SotdExe $PipePath
         $created = $bridge.StartTime.ToFileTimeUtc()
         $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $bridge.Id + '}}'
         $in = $bridge.StandardInput.BaseStream
@@ -78,13 +98,16 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     }
     if ($bridge) {
         try { $bridge.StandardInput.Close() } catch { }
-        # The bridge's own stderr line says why it ended (a refusal, no daemon), whichever step above failed first. It is
-        # read once the bridge has exited (its input is closed, so it ends), so a bridge that ended before the lease
-        # was written is named too.
+        # The bridge's exit code and its own stderr line say why it ended (a refusal, no daemon, a hello the daemon
+        # could not read), whichever step above failed first. They are read once the bridge has exited (its input is
+        # closed, so it ends), so a bridge that ended before the lease was written is named too.
         try {
             if ($bridge.WaitForExit($LeaseReplyWaitMs)) {
                 $err = $bridge.StandardError.ReadToEnd().Trim()
-                if ($err) { $why = "$why; $err" }
+                $why = "$why; the bridge exited $($bridge.ExitCode)"
+                if ($err) { $why = "${why}: $err" }
+            } else {
+                $why = "$why; the bridge was still running $LeaseReplyWaitMs ms after its input closed"
             }
         } catch { }
         try { $bridge.Dispose() } catch { }

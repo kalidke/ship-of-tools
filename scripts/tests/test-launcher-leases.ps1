@@ -93,7 +93,7 @@ try {
     if ($compiled) {
         try {
         Write-Host "`n=== 11. ConvergeLeaseHandover: the hello and lease lines, the handover line, the refusal warnings ===" -ForegroundColor Cyan
-        foreach ($fname in @('Get-SotBootId', 'Get-SotHelloHost', 'ConvertTo-SotJsonString', 'Open-SotLease', 'Close-SotLeases')) {
+        foreach ($fname in @('Get-SotBootId', 'Get-SotHelloHost', 'ConvertTo-SotJsonString', 'Open-SotLease', 'Start-SotBridge', 'Close-SotLeases')) {
             $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             Check "11: $fname is defined" ($null -ne $fn) 'function not found'
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
@@ -318,7 +318,7 @@ try {
         -not $ok })
     Check '16d: $global:SotLeases is set only when unset, or by Close-SotLeases' (($sets16.Count -ge 2) -and ($bad16.Count -eq 0)) "assignments $($sets16.Count), unguarded $($bad16.Count): $(@($bad16 | ForEach-Object { $_.Extent.Text }) -join ' | ')"
     if ($compiled) {
-        foreach ($fname in @('Get-SotBootId', 'Open-SotLease')) {
+        foreach ($fname in @('Get-SotBootId', 'Open-SotLease', 'Start-SotBridge')) {
             $fn = $leaseAst.Find({ param($n) ($n -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and $n.Name -eq $fname }, $true)
             if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
         }
