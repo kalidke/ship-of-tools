@@ -70,12 +70,15 @@ async fn a_blackhole_is_unreachable_and_retried() {
     }
     relay.resume();
 
+    let alive_deadline = Instant::now() + Duration::from_secs(100);
     kill_supervisor_only(&env.state_root);
 
-    let alive_deadline = Instant::now() + Duration::from_secs(100);
-    while Instant::now() < alive_deadline {
+    loop {
         client.pump();
         assert!(!client.is_dead(), "the prior 30s outage must not have been charged to the health window: {}", client.status_line());
+        if Instant::now() >= alive_deadline {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
@@ -279,6 +282,7 @@ async fn a_terminal_row_is_terminal_after_the_window() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let (_woke, wake) = wake_flag_for_test();
+    let start = Instant::now();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
         daemon_lane_endpoint(&relay),
         default_target,
@@ -291,7 +295,6 @@ async fn a_terminal_row_is_terminal_after_the_window() {
     )
     .expect("attach starts even against a terminal row");
 
-    let start = Instant::now();
     let mut last_pgrep_check = Instant::now();
     // Every change of the client's status line, with its time since the attach: a hang prints them.
     let mut lines = vec![(Duration::ZERO, client.status_line().to_string())];
