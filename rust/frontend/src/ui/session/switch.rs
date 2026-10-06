@@ -2,13 +2,27 @@
 
 use super::*;
 
-/// The window's mirror of the daemon's `session_name` (rust/backend/src/rows/mod.rs):
-/// it only adds the prefix, where the daemon's rule slugs a label first.
-pub(in crate::ui) fn session_name_of(slug: &str) -> String {
-    format!("sot-be-{slug}")
-}
-
 impl State {
+    pub(in crate::ui) fn switch_to_resolved_workspace(
+        &mut self,
+        target: ResolvedWorkspace,
+        person_driven: bool,
+    ) {
+        let attachment = match target.attachment() {
+            Ok(attachment) => attachment,
+            Err(reason) => {
+                self.refuse_result(&reason);
+                return;
+            }
+        };
+        self.switch_to_workspace(
+            target.row_key().0.clone(),
+            target.slug(),
+            attachment,
+            person_driven,
+        );
+    }
+
     /// Cycle to the next or previous workspace in `workspace_slugs`
     /// order — the UNION across every connected host (ADR 0042 L2a), so
     /// cycling can cross hosts. `direction = +1` walks forward
@@ -51,7 +65,17 @@ impl State {
             .unwrap_or(0);
         let next = ((idx + direction).rem_euclid(n)) as usize;
         let (next_host, next_slug) = self.workspace_slugs[next].clone();
-        let session_name = session_name_of(&next_slug);
+        let target = match resolve_listed_workspace(&self.workspace_lists, &next_host, &next_slug) {
+            Ok(target) => target,
+            Err(reason) => {
+                self.refuse_result(&reason);
+                return;
+            }
+        };
+        if let Err(reason) = target.attachment() {
+            self.refuse_result(&reason);
+            return;
+        }
         // Flick the brand wheels in the direction of travel (forward = CW). The
         // per-frame decay + redraw live in the bottom-strip block; nudge the
         // event loop so the spin animates even if nothing else is dirty.
@@ -59,7 +83,7 @@ impl State {
             .clamp(-WHEEL_MAX_VEL, WHEEL_MAX_VEL);
         self.dirty = true;
         self.window.request_redraw();
-        self.switch_to_workspace(next_host, Some(next_slug), Some(session_name), person_driven);
+        self.switch_to_resolved_workspace(target, person_driven);
     }
 
     /// Single entry point for "switch the chrome's active workspace".
@@ -82,10 +106,9 @@ impl State {
     /// 6. Persist `last_workspace_id` (and the resumed mode/target)
     ///    for the next launch.
     ///
-    /// `session_name` is `Some(name)` when the caller already has the
-    /// target name (Sessions-Enter, workspace.create reply); `None`
-    /// derives it with `session_name_of(slug)` — i.e. `sot-be-<slug>`. The default workspace (`slug = None`)
-    /// keeps the current BL pane target.
+    /// A listed row is attached by its session_name from workspace.list; neither a slug nor a session name is derived from the other.
+    /// A create reply can supply its stored name before the next list arrives.
+    /// Without a supplied name, resolve the host's current list before switching.
     ///
     /// `host` (ADR 0042 L2a) is the row/event's own connection — set as
     /// `active_host` FIRST, before anything below fires a request, so
@@ -107,6 +130,34 @@ impl State {
         session_name: Option<String>,
         person_driven: bool,
     ) {
+        let (slug, session_name) = match session_name {
+            Some(name) if !name.is_empty() => (slug, Some(name)),
+            Some(_) => {
+                self.refuse_result("listed workspace has no attachment target");
+                return;
+            }
+            None => {
+                let target = match resolve_listed_workspace(
+                    &self.workspace_lists,
+                    &host,
+                    slug.as_deref().unwrap_or(""),
+                ) {
+                    Ok(target) => target,
+                    Err(reason) => {
+                        self.refuse_result(&reason);
+                        return;
+                    }
+                };
+                let attachment = match target.attachment() {
+                    Ok(attachment) => attachment,
+                    Err(reason) => {
+                        self.refuse_result(&reason);
+                        return;
+                    }
+                };
+                (target.slug(), attachment)
+            }
+        };
         let old_tree_key = self.retarget_workspace(host, slug, session_name, person_driven);
         let restored = self.restore_entering_workspace();
         let files_root_inflight = self.load_entering_tree(old_tree_key);
@@ -139,6 +190,11 @@ impl State {
         // snapshot-restore below has settled the entering mode.
         let old_tree_key = self.active_tree_key();
         self.active_host = host;
+        self.default_workspace_slug = self
+            .workspace_lists
+            .get(&self.active_host)
+            .and_then(|rows| rows.iter().find(|row| row.is_default))
+            .map(|row| row.slug.clone());
         // Manager review (round 2, finding 14): project the declaration
         // into the status line HERE too, not only in `drain_events`'s own
         // `Connected` handling — switching to a host that is ALREADY
@@ -203,8 +259,7 @@ impl State {
         // the ENTERING workspace's cursor-follow preview until the user
         // moved the cursor (blank preview on switch).
         self.driven_preview_hold_cursor = None;
-        if let Some(target) = session_name.or_else(|| slug.as_ref().map(|s| session_name_of(s)))
-        {
+        if let Some(target) = session_name {
             // `self.active_host` was just set to `host` above, before
             // anything in this function fired a request — correct BY
             // CONSTRUCTION, not a default (see `attach_session_to_bl`'s
@@ -442,16 +497,5 @@ impl State {
         self.status = format!("nav ← agent (pending) · {path}");
         tracing::info!(%node_id, ws = %slug,
             "pending nav.preview driven on workspace switch");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn session_name_of_prefixes_the_slug_unchanged() {
-        assert_eq!(session_name_of("proj"), "sot-be-proj");
-        assert_eq!(session_name_of("My.Pkg"), "sot-be-My.Pkg");
     }
 }

@@ -28,24 +28,15 @@ pub(in crate::ui) fn truncate_caption(s: &str) -> String {
 /// one whose figure the user is least likely to still be looking at.
 const CAPTION_STORE_CAP: usize = 256;
 
-/// Sticky per-(workspace, file) figure captions, with bounded FIFO eviction.
-/// Keyed by the SAME normalized workspace key the render path looks up with
-/// (`ws_key_of`), so a caption addressed to the default workspace by slug and
-/// one addressed to it as "default" land in one slot instead of two.
-///
-/// Keying by workspace (rather than storing "the current caption" on `State`)
-/// is what makes the cross-workspace badge work AND makes the ADR-0034 F2
-/// hazard — workspace A's annotation rendered over workspace B's image —
-/// unrepresentable: a lookup can only ever return the active workspace's
-/// caption for the file actually on screen.
+/// Captions are keyed by (host, listed workspace slug, file); the store keeps at most 256 (CaptionStore). ROI readiness and consumption use the same host-qualified row key.
 #[derive(Default)]
 pub(in crate::ui) struct CaptionStore {
-    map: HashMap<(String, String), String>,
-    order: std::collections::VecDeque<(String, String)>,
+    map: HashMap<(WsKey, String), String>,
+    order: std::collections::VecDeque<(WsKey, String)>,
 }
 
 impl CaptionStore {
-    pub(in crate::ui) fn set(&mut self, ws_key: String, node_id: String, text: String) {
+    pub(in crate::ui) fn set(&mut self, ws_key: WsKey, node_id: String, text: String) {
         let key = (ws_key, node_id);
         if self.map.insert(key.clone(), text).is_none() {
             self.order.push_back(key);
@@ -57,15 +48,15 @@ impl CaptionStore {
         }
     }
 
-    pub(in crate::ui) fn clear_one(&mut self, ws_key: &str, node_id: &str) {
-        let key = (ws_key.to_string(), node_id.to_string());
+    pub(in crate::ui) fn clear_one(&mut self, ws_key: &WsKey, node_id: &str) {
+        let key = (ws_key.clone(), node_id.to_string());
         if self.map.remove(&key).is_some() {
             self.order.retain(|k| k != &key);
         }
     }
 
-    pub(in crate::ui) fn get(&self, ws_key: &str, node_id: &str) -> Option<&String> {
-        self.map.get(&(ws_key.to_string(), node_id.to_string()))
+    pub(in crate::ui) fn get(&self, ws_key: &WsKey, node_id: &str) -> Option<&String> {
+        self.map.get(&(ws_key.clone(), node_id.to_string()))
     }
 }
 
@@ -369,7 +360,9 @@ impl State {
         if !Self::is_image_node_id(&node_id) {
             return clear_and_none(self);
         }
-        let ws_key = self.current_workspace_key();
+        let Some(ws_key) = self.active_result_row_key() else {
+            return clear_and_none(self);
+        };
         let Some(text) = self.preview_captions.get(&ws_key, &node_id).cloned() else {
             return clear_and_none(self);
         };
@@ -510,33 +503,73 @@ mod tests {
     #[test]
     fn caption_store_is_keyed_by_workspace_and_evicts_fifo() {
         let mut s = CaptionStore::default();
-        s.set("wsA".into(), "files:p.png".into(), "A's caption".into());
-        s.set("wsB".into(), "files:p.png".into(), "B's caption".into());
+        s.set(
+            ("<host>".into(), "wsA".into()),
+            "files:p.png".into(),
+            "A's caption".into(),
+        );
+        s.set(
+            ("<host>".into(), "wsB".into()),
+            "files:p.png".into(),
+            "B's caption".into(),
+        );
         // Same FILE, different workspace → distinct entries. This is the ADR-0034
         // F2 hazard (one workspace's annotation over another's image) made
         // unrepresentable rather than merely avoided.
-        assert_eq!(s.get("wsA", "files:p.png").unwrap(), "A's caption");
-        assert_eq!(s.get("wsB", "files:p.png").unwrap(), "B's caption");
-        assert_eq!(s.get("wsC", "files:p.png"), None);
+        assert_eq!(
+            s.get(&("<host>".into(), "wsA".into()), "files:p.png")
+                .unwrap(),
+            "A's caption"
+        );
+        assert_eq!(
+            s.get(&("<host>".into(), "wsB".into()), "files:p.png")
+                .unwrap(),
+            "B's caption"
+        );
+        assert_eq!(s.get(&("<host>".into(), "wsC".into()), "files:p.png"), None);
         // Latest-wins on re-set, and no duplicate order entry.
-        s.set("wsA".into(), "files:p.png".into(), "A's second".into());
-        assert_eq!(s.get("wsA", "files:p.png").unwrap(), "A's second");
+        s.set(
+            ("<host>".into(), "wsA".into()),
+            "files:p.png".into(),
+            "A's second".into(),
+        );
+        assert_eq!(
+            s.get(&("<host>".into(), "wsA".into()), "files:p.png")
+                .unwrap(),
+            "A's second"
+        );
         assert_eq!(s.order.len(), 2);
         // Retiring one leaves the other alone.
-        s.clear_one("wsA", "files:p.png");
-        assert_eq!(s.get("wsA", "files:p.png"), None);
-        assert_eq!(s.get("wsB", "files:p.png").unwrap(), "B's caption");
+        s.clear_one(&("<host>".into(), "wsA".into()), "files:p.png");
+        assert_eq!(s.get(&("<host>".into(), "wsA".into()), "files:p.png"), None);
+        assert_eq!(
+            s.get(&("<host>".into(), "wsB".into()), "files:p.png")
+                .unwrap(),
+            "B's caption"
+        );
         assert_eq!(s.order.len(), 1);
         // Bounded: past the cap the oldest badge is evicted, newest retained.
         let mut s = CaptionStore::default();
         for i in 0..(CAPTION_STORE_CAP + 10) {
-            s.set("ws".into(), format!("files:{i}.png"), format!("cap {i}"));
+            s.set(
+                ("<host>".into(), "ws".into()),
+                format!("files:{i}.png"),
+                format!("cap {i}"),
+            );
         }
         assert_eq!(s.map.len(), CAPTION_STORE_CAP);
-        assert_eq!(s.get("ws", "files:0.png"), None, "oldest evicted");
+        assert_eq!(
+            s.get(&("<host>".into(), "ws".into()), "files:0.png"),
+            None,
+            "oldest evicted"
+        );
         let newest = CAPTION_STORE_CAP + 9;
         assert_eq!(
-            s.get("ws", &format!("files:{newest}.png")).unwrap(),
+            s.get(
+                &("<host>".into(), "ws".into()),
+                &format!("files:{newest}.png")
+            )
+            .unwrap(),
             &format!("cap {newest}")
         );
     }

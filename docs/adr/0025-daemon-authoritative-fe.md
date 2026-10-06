@@ -290,3 +290,7 @@ command-channel half (§1–§5).
   FE mirrors. A UX/architecture nice-to-have only; no longer needed for boot.
 - **v1.1 primary-FE tracking** — `fe.active` op + daemon `primary_client`; fast-follow.
 - **`preview` inline-bytes form** — for generated images not written to a file; deferred.
+
+## Update (0.6.6): host-qualified result targets
+
+Goto, preview, reveal and nav envelopes resolve the producing host and its listed workspace before any effect. Unknown targets are visibly refused. Captions and ROI aims carry that host-qualified row identity, so equal slugs and paths on two hosts cannot share result state.

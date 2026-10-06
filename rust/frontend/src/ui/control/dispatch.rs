@@ -2,42 +2,67 @@
 
 use super::*;
 
-/// True when an `op::FE_COMMAND` preview's `workspace` arg names the workspace
-/// the FE is currently viewing — so the preview renders in place instead of
-/// badging (fix for the dropped same-ws branch). `workspace` empty / "default"
-/// / "<default>" means the daemon-default workspace, whose slug is
-/// `default_slug`; the active view is `active_id` falling back to `default_slug`.
-/// Pure so the same-ws decision is unit-testable without a live daemon/FE.
-fn preview_targets_active_ws(
-    active_id: Option<&str>,
-    default_slug: Option<&str>,
-    workspace: &str,
-) -> bool {
-    let is_default = is_default_workspace_name(workspace);
-    let target = if is_default {
-        default_slug
-    } else {
-        Some(workspace)
-    };
-    let current = active_id.or(default_slug);
-    target.is_some() && target == current
+pub(super) enum ResultRoute {
+    Refusal(String),
+    Render(ResolvedWorkspace),
+    Badge(ResolvedWorkspace),
+    Switch(ResolvedWorkspace),
 }
 
-/// Which host a cross-workspace preview badge is filed under. `from_host` is
-/// the connection that delivered the `FeCommand` — the daemon that actually
-/// owns the target workspace — and wins whenever it's known; `active_host`
-/// (whatever host the FE's view happened to be on when the badge arrived) is
-/// only the fallback for a locally-originated dispatch (`from_host: None`).
-/// Filing under `active_host` unconditionally was the bug: the view can move
-/// to a different host between the badge and the later switch, and the
-/// switch-time consume looks the entry up under the switched-TO
-/// `active_host` — a badge keyed on the wrong host is never found. Pure so
-/// the key choice is unit-testable without a live `State`.
-fn badge_host_key(from_host: Option<&HostKey>, active_host: &HostKey) -> HostKey {
-    from_host.cloned().unwrap_or_else(|| active_host.clone())
+fn result_route_decision(
+    lists: &HashMap<HostKey, Vec<crate::net::transport::WorkspaceInfo>>,
+    host: &HostKey,
+    spelling: &str,
+    active: Option<&ResultRowIdentity>,
+    urgent: bool,
+    goto: bool,
+) -> ResultRoute {
+    let target = match resolve_listed_workspace(lists, host, spelling) {
+        Ok(target) => target,
+        Err(reason) => return ResultRoute::Refusal(reason),
+    };
+    let same_row = active == Some(target.identity());
+    if !goto && same_row {
+        return ResultRoute::Render(target);
+    }
+    if !goto && !target.visible() {
+        return ResultRoute::Refusal("result target has no visible session row".to_string());
+    }
+    if goto || urgent {
+        if let Err(reason) = target.attachment() {
+            return ResultRoute::Refusal(reason);
+        }
+        ResultRoute::Switch(target)
+    } else {
+        ResultRoute::Badge(target)
+    }
 }
 
 impl State {
+    pub(super) fn result_route(
+        &self,
+        host: &HostKey,
+        spelling: &str,
+        urgent: bool,
+        goto: bool,
+    ) -> ResultRoute {
+        let active = self.active_result_workspace();
+        result_route_decision(
+            &self.workspace_lists,
+            host,
+            spelling,
+            active.as_ref().map(ResolvedWorkspace::identity),
+            urgent,
+            goto,
+        )
+    }
+
+    pub(in crate::ui) fn refuse_result(&mut self, reason: &str) {
+        self.status = format!("result refused · {reason}");
+        tracing::warn!(%reason, "result target refused");
+        self.window.request_redraw();
+    }
+
     /// Drain commands the FE-control watcher (ADR 0019) enqueued and dispatch
     /// each on the main thread. Called near the top of `window_event` after a
     /// `request_redraw` wake; a cheap no-op when the queue is empty. The lock
@@ -60,28 +85,13 @@ impl State {
     pub(in crate::ui) fn dispatch_fe_command(&mut self, from_host: Option<&HostKey>, cmd: FeCommand) {
         match cmd {
             FeCommand::Workspace { slug, boot } => {
-                // null/empty/"default"/"<default>" → the daemon-default
-                // workspace (active_workspace_id = None, keep current BL).
-                // ADR 0042 L2a: the `fe.command` envelope names no host
-                // (no protocol change in this slice) — resolved against
-                // `active_host`, exactly the single-connection behavior
-                // this command always had. Targeting another host is a
-                // later slice's protocol addition.
-                let slug = slug.filter(|s| !is_default_workspace_name(s));
-                if let Some(s) = slug.as_deref() {
-                    if !self
-                        .workspace_slugs
-                        .iter()
-                        .any(|(h, x)| h == &self.active_host && x == s)
-                    {
-                        tracing::warn!(slug = %s, "fe-command workspace: unknown slug, ignoring");
-                        return;
-                    }
+                let host = from_host.unwrap_or(&self.active_host).clone();
+                match self.result_route(&host, slug.as_deref().unwrap_or(""), true, true) {
+                    ResultRoute::Switch(target) => self.switch_to_resolved_workspace(target, false),
+                    ResultRoute::Refusal(reason) => self.refuse_result(&reason),
+                    _ => unreachable!("goto always switches a resolved target"),
                 }
-                let tmux = slug.as_ref().map(|s| session_name_of(s));
-                tracing::info!(?slug, boot, "fe-command: switch workspace");
-                // Agent-driven, not a person looking: leave blue as-is.
-                self.switch_to_workspace(self.active_host.clone(), slug, tmux, false);
+                let _ = boot;
             }
             FeCommand::CycleWs { dir } => {
                 let dir = if dir == 0 { 1 } else { dir };
@@ -174,18 +184,23 @@ impl State {
                 roi,
                 caption,
             } => {
-                // ADR 0025 `preview --roi` (2026-07-21 update): arm the viewport
-                // aim before routing — it rides preview's badge-floor routing
-                // unchanged (aiming a viewport is MORE intrusive than previewing,
-                // so no new focus-stealing) and is consumed by the render pass
-                // once the aimed image is actually on screen: same-ws now,
-                // cross-ws at badge-consume. One slot, latest-wins; a plain
-                // re-preview of the same file retires a stale aim so it can't
-                // fire on an old rect.
+                let host = from_host.unwrap_or(&self.active_host).clone();
+                let route = self.result_route(&host, &workspace, urgent, false);
+                let target = match &route {
+                    ResultRoute::Refusal(reason) => {
+                        self.refuse_result(reason);
+                        return;
+                    }
+                    ResultRoute::Render(target)
+                    | ResultRoute::Badge(target)
+                    | ResultRoute::Switch(target) => target,
+                };
+                let key = target.row_key().clone();
                 let node_id = format!("files:{path}");
                 match roi {
                     Some(rect) => {
                         self.pending_roi_aim = Some(RoiAim {
+                            row_key: key.clone(),
                             workspace: workspace.clone(),
                             path: path.clone(),
                             node_id: node_id.clone(),
@@ -197,92 +212,28 @@ impl State {
                         if self
                             .pending_roi_aim
                             .as_ref()
-                            .is_some_and(|a| a.node_id == node_id)
+                            .is_some_and(|aim| aim.row_key == key && aim.node_id == node_id)
                         {
                             self.pending_roi_aim = None;
                         }
                     }
                 }
-                // Figure caption: stored against the TARGET workspace (not the
-                // active one) so a cross-ws badge carries its caption across the
-                // switch that happens minutes later. Latest-wins per file, and
-                // a caption-less re-preview of the same file retires the old one
-                // — same staleness rule as the roi aim above, for the same
-                // reason: a caption left over from a previous badge would
-                // describe an image the agent has since replaced.
-                let cap_ws_key = self.caption_ws_key(&workspace);
-                match &caption {
-                    Some(text) => {
-                        self.preview_captions
-                            .set(cap_ws_key, node_id.clone(), text.clone());
+                match caption {
+                    Some(text) => self.preview_captions.set(key, node_id, text),
+                    None => self.preview_captions.clear_one(&key, &node_id),
+                }
+                match route {
+                    ResultRoute::Render(_) => self.drive_same_ws_open(&path),
+                    ResultRoute::Badge(target) => {
+                        let (host, slug) = target.row_key().clone();
+                        self.mark_pending_nav(host, slug, path);
                     }
-                    None => self.preview_captions.clear_one(&cap_ws_key, &node_id),
-                }
-                // Same-ws short-circuit: if the target workspace is the one we're
-                // already viewing, render in place NOW (mirrors handle_nav_envelope
-                // ui/control/envelope.rs, the in-place branch the imperative path dropped).
-                // Without this, a same-ws preview badges + waits for a switch that
-                // never comes (you're already there) — so a naive `sot-fe
-                // preview <active-ws> <file>` opened nothing. The decision is a
-                // pure fn (`preview_targets_active_ws`) so it's unit-tested.
-                if preview_targets_active_ws(
-                    self.active_workspace_id.as_deref(),
-                    self.default_workspace_slug.as_deref(),
-                    &workspace,
-                ) {
-                    tracing::info!(%workspace, %path, "fe-command: preview (same-ws, render in place)");
-                    // Drive both panes: preview body + deep-path cursor reveal.
-                    // The cursor follows the preview even when the file's
-                    // ancestor dirs aren't expanded yet, so the nav header +
-                    // viewport stay in sync (no more body-only / header mismatch).
-                    self.drive_same_ws_open(&path);
-                    return;
-                }
-                // Cross-workspace preview: badge by default, NEVER steal the
-                // user's session (maintainer clarification 2026-07-10 PM,
-                // revising the same morning's directive after living with
-                // always-switch: "always set the nav and show means the file
-                // should be selected in the nav and shown in preview, NOT to
-                // yank my session over... I don't want to be yanked over mid
-                // sentence"). The morning's actual bug was completeness — the
-                // on-switch consume wasn't landing the nav cursor — which the
-                // pending-nav reveal (#4 fix, switch_to_workspace) now does:
-                // when the user visits the badged workspace, the file is
-                // cursored in the nav AND rendered in the preview, always.
-                //
-                // `urgent` is the explicit user-requested "capture session
-                // focus" option (sot-fe --urgent --fe <handle>): the route
-                // layer only honors it on a DIRECTED send (broadcast urgent is
-                // stripped — route_preview_urgent_is_directed_only), so a
-                // blanket agent broadcast can never force-switch the view.
-                if urgent {
-                    tracing::info!(%workspace, %path, "fe-command: preview (user-requested focus capture)");
-                    self.mark_pending_nav(
-                        self.active_host.clone(),
-                        workspace.clone(),
-                        path.clone(),
-                    );
-                    let is_default = is_default_workspace_name(&workspace);
-                    let (slug, tmux) = if is_default {
-                        (None, None)
-                    } else {
-                        (Some(workspace.clone()), Some(session_name_of(&workspace)))
-                    };
-                    // Focus capture is honoring the AGENT's --urgent request,
-                    // not a person switching the view: leave blue as-is.
-                    self.switch_to_workspace(self.active_host.clone(), slug, tmux, false);
-                } else {
-                    // Badge floor: record + badge; the pending preview (body +
-                    // nav-cursor reveal) is driven when the user next switches
-                    // to `workspace` (see `switch_to_workspace`). Filed under
-                    // the DELIVERING host (`badge_host_key`) — the daemon that
-                    // owns `workspace` — not unconditionally `active_host`,
-                    // which is only the view's host at arrival time and can
-                    // differ from it (see `badge_host_key`'s doc comment).
-                    let host = badge_host_key(from_host, &self.active_host);
-                    tracing::info!(%workspace, %path, target_host = %host,
-                        active_host = %self.active_host, "fe-command: preview (badge)");
-                    self.mark_pending_nav(host, workspace, path);
+                    ResultRoute::Switch(target) => {
+                        let (host, slug) = target.row_key().clone();
+                        self.mark_pending_nav(host, slug, path);
+                        self.switch_to_resolved_workspace(target, false);
+                    }
+                    ResultRoute::Refusal(_) => unreachable!("refusal checked before effects"),
                 }
             }
             FeCommand::Reveal {
@@ -338,74 +289,51 @@ impl State {
 }
 
 #[cfg(test)]
-mod tests {
+mod result_route_tests {
     use super::*;
 
     #[test]
-    fn badge_host_key_prefers_the_delivering_host() {
-        // A badge delivered from host A while the view sits on host B must
-        // file under A -- the badge-key bug filed it under B (active_host),
-        // so a later switch to A's workspace (which looks the entry up under
-        // the switched-TO active_host, i.e. A once the switch lands) never
-        // found it.
-        let from_a: HostKey = "host-a".to_string();
-        let active_b: HostKey = "host-b".to_string();
-        assert_eq!(
-            badge_host_key(Some(&from_a), &active_b),
-            "host-a",
-            "a known delivering host wins over the view's current host"
-        );
-        // A locally-originated dispatch (from_host: None) has no delivering
-        // host to prefer, so it falls back to active_host -- the only case
-        // the pre-fix code was actually correct for.
-        assert_eq!(
-            badge_host_key(None, &active_b),
-            "host-b",
-            "no delivering host known -> falls back to active_host"
-        );
-    }
-
-    #[test]
-    fn preview_same_ws_decision() {
-        // Explicit slug == the active workspace -> render in place.
-        assert!(preview_targets_active_ws(
-            Some("myanalysis"),
-            Some("ship_of_tools"),
-            "myanalysis"
+    fn unlisted_ambiguous_and_inert_results_refuse_before_effects() {
+        let host = "<host>".to_string();
+        let mut lists = HashMap::new();
+        assert!(matches!(
+            result_route_decision(&lists, &host, "project", None, true, false),
+            ResultRoute::Refusal(_)
         ));
-        // Explicit slug != active -> NOT same-ws (force-show / badge path).
-        assert!(!preview_targets_active_ws(
-            Some("myanalysis"),
-            Some("ship_of_tools"),
-            "ship_of_tools"
+        let mut row = ws_info("anchor", "anchor-target");
+        row.is_default = true;
+        row.agent = "none".into();
+        lists.insert(host.clone(), vec![row.clone()]);
+        for alias in ["", "default", "<default>", "anchor"] {
+            assert!(matches!(
+                result_route_decision(&lists, &host, alias, None, false, false),
+                ResultRoute::Refusal(_)
+            ));
+            let target = resolve_listed_workspace(&lists, &host, alias).unwrap();
+            assert!(matches!(
+                result_route_decision(&lists, &host, alias, Some(target.identity()), false, false),
+                ResultRoute::Render(_)
+            ));
+            assert!(matches!(
+                result_route_decision(&lists, &host, alias, None, true, true),
+                ResultRoute::Switch(_)
+            ));
+        }
+        row.agent = "claude".into();
+        row.session_name.clear();
+        lists.insert(host.clone(), vec![row.clone()]);
+        assert!(matches!(
+            result_route_decision(&lists, &host, "anchor", None, false, false),
+            ResultRoute::Badge(_)
         ));
-        // On the default workspace (active id None): targeting it by slug,
-        // or by "default"/"<default>"/"" all resolve to same-ws.
-        assert!(preview_targets_active_ws(
-            None,
-            Some("ship_of_tools"),
-            "ship_of_tools"
+        assert!(matches!(
+            result_route_decision(&lists, &host, "anchor", None, true, true),
+            ResultRoute::Refusal(_)
         ));
-        assert!(preview_targets_active_ws(
-            None,
-            Some("ship_of_tools"),
-            "default"
+        lists.get_mut(&host).unwrap().push(row);
+        assert!(matches!(
+            result_route_decision(&lists, &host, "anchor", None, true, false),
+            ResultRoute::Refusal(_)
         ));
-        assert!(preview_targets_active_ws(
-            None,
-            Some("ship_of_tools"),
-            "<default>"
-        ));
-        assert!(preview_targets_active_ws(None, Some("ship_of_tools"), ""));
-        // On a NON-default ws, targeting "default" is a real cross-ws switch,
-        // not same-ws (so it must NOT short-circuit to in-place render).
-        assert!(!preview_targets_active_ws(
-            Some("myanalysis"),
-            Some("ship_of_tools"),
-            "default"
-        ));
-        // No default slug known yet (pre-hello) + "default" target -> can't
-        // resolve, so not same-ws (falls through to the safe badge path).
-        assert!(!preview_targets_active_ws(None, None, "default"));
     }
 }

@@ -24,6 +24,6 @@ rust/frontend/src/ui/CLAUDE.md.
 - An ROI is in source-image pixels, the same on any display (`visible_roi_px`, `solve_roi_view`; ADR 0022).
 - One source pixel never grows past 16x16 screen pixels (`png_zoom_max`, `MAX_PX_PER_SRC_PX`).
 - The scalebar keys off the source-to-screen mapping, never the raster buffer size (`build_scalebar`; ADR 0034).
-- Captions are keyed by (workspace, file); the store keeps at most 256 (`CaptionStore`).
+- Captions are keyed by (host, listed workspace slug, file); the store keeps at most 256 (CaptionStore). ROI readiness and consumption use the same host-qualified row key.
 - A failed figure stays failed until a fresh preview reply clears `figure_failed` (`figure_already_handled`).
 - Only a raster node qualifies for crop and scale, never a PDF page (`State::is_image_node_id`).

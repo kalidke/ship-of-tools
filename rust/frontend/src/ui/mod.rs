@@ -1329,12 +1329,10 @@ struct State {
     /// from the adaptive bar length by `build_scalebar` (shaped OUTSIDE the
     /// render pass). `None` when the bar isn't drawn.
     scalebar_label: Option<crate::ui::preview::markdown::MarkdownPreview>,
-    /// Agent-supplied figure captions, sticky per (workspace, file). Written by
-    /// the `preview`/`reveal` fe-commands, read at render time for whichever
-    /// image the pane is actually showing. Deliberately NOT part of
-    /// `WorkspaceUiSnapshot`: the key already carries the workspace, so unlike
-    /// `preview_scale` there is no swap-in path that could hand one workspace's
-    /// caption to another's image.
+    /// Agent-supplied figure captions, sticky per (host, listed workspace slug, file).
+    /// Commands write the resolved target key and rendering reads the corresponding
+    /// active row key. The store is shared across snapshots because its keys carry
+    /// the host and workspace identity.
     preview_captions: CaptionStore,
     /// The shaped caption buffer for the image on screen, rebuilt each frame by
     /// `build_caption` (shaped OUTSIDE the render pass, like `scalebar_label`).
@@ -1631,3 +1629,361 @@ use self::preview::pane::{
     is_raster_preview_mime, preview_max_scroll, preview_scroll_target, resolve_preview_changed,
     resolve_previewed_path, SAMPLE_MARKDOWN,
 };
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+
+    impl State {
+        pub(in crate::ui) fn result_target_uses_host_and_listed_identity(&mut self) -> Result<()> {
+            let (a, b, mut a_rx, mut b_rx) = self.prepare_result_probe();
+            self.result_host_probe(&b, &mut a_rx)?;
+            self.result_identity_probe(&b, &mut b_rx)?;
+            self.result_entry_controls(&a, &b, &mut a_rx, &mut b_rx)?;
+            self.result_caption_roi_probe(&a, &b, &mut a_rx, &mut b_rx)?;
+            println!("result-routing host_and_identity=true ingress_controls=true caption_roi=true entered_bodies=1 completed_bodies=1");
+            Ok(())
+        }
+
+        fn prepare_result_probe(
+            &mut self,
+        ) -> (
+            HostKey,
+            HostKey,
+            tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+            tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        ) {
+            let a = "<host-a>".to_string();
+            let b = "<host-b>".to_string();
+            let (a_tx, mut a_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (b_tx, mut b_rx) = tokio::sync::mpsc::unbounded_channel();
+            self.conns = vec![(a.clone(), a_tx), (b.clone(), b_tx)];
+            self.active_host = a.clone();
+            self.active_workspace_id = Some("project".into());
+            let mut row_a = ws_info("project", "stored-a");
+            row_a.workspace_id = "id-a".into();
+            let mut row_b = ws_info("project", "stored-b");
+            row_b.workspace_id = "id-b".into();
+            let mut default_a = ws_info("base-a", "default-a");
+            default_a.is_default = true;
+            let mut default_b = ws_info("base-b", "default-b");
+            default_b.is_default = true;
+            self.on_workspaces(a.clone(), vec![row_a, default_a]);
+            self.on_workspaces(b.clone(), vec![row_b, default_b]);
+            self.pending_nav.clear();
+            while a_rx.try_recv().is_ok() {}
+            while b_rx.try_recv().is_ok() {}
+            (a, b, a_rx, b_rx)
+        }
+
+        fn result_host_probe(
+            &mut self,
+            b: &HostKey,
+            a_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        ) -> Result<()> {
+            self.dispatch_fe_command(
+                Some(&b),
+                FeCommand::Preview {
+                    workspace: "project".into(),
+                    path: "same.png".into(),
+                    urgent: false,
+                    roi: Some(RoiRect {
+                        x: 1,
+                        y: 2,
+                        w: 3,
+                        h: 4,
+                    }),
+                    caption: Some("from b".into()),
+                },
+            );
+            anyhow::ensure!(self.pending_nav.get(&(b.clone(), "project".into())).map(String::as_str) == Some("same.png")
+                && a_rx.try_recv().is_err(), "result_target_uses_host_and_listed_identity: another host's same slug rendered in the active view");
+            Ok(())
+        }
+
+        fn result_identity_probe(
+            &mut self,
+            b: &HostKey,
+            b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        ) -> Result<()> {
+            self.dispatch_fe_command(
+                Some(&b),
+                FeCommand::Reveal {
+                    workspace: "id-b".into(),
+                    path: "by-id.png".into(),
+                    urgent: false,
+                    roi: None,
+                    caption: None,
+                },
+            );
+            anyhow::ensure!(
+                self.pending_nav
+                    .get(&(b.clone(), "project".into()))
+                    .map(String::as_str)
+                    == Some("by-id.png")
+                    && !self.pending_nav.contains_key(&(b.clone(), "id-b".into())),
+                "canonical spelling created a phantom strip key"
+            );
+            let before = (
+                self.active_host.clone(),
+                self.active_workspace_id.clone(),
+                self.pending_nav.clone(),
+            );
+            self.dispatch_fe_command(
+                Some(&b),
+                FeCommand::Preview {
+                    workspace: "unknown".into(),
+                    path: "same.png".into(),
+                    urgent: true,
+                    roi: None,
+                    caption: Some("unknown".into()),
+                },
+            );
+            anyhow::ensure!(
+                before
+                    == (
+                        self.active_host.clone(),
+                        self.active_workspace_id.clone(),
+                        self.pending_nav.clone()
+                    )
+                    && self.status.starts_with("result refused"),
+                "unknown urgent target mutated result state"
+            );
+            for command in [
+                FeCommand::Reveal {
+                    workspace: "unknown".into(),
+                    path: "same.png".into(),
+                    urgent: true,
+                    roi: None,
+                    caption: None,
+                },
+                FeCommand::Workspace {
+                    slug: Some("unknown".into()),
+                    boot: false,
+                },
+            ] {
+                self.dispatch_fe_command(Some(b), command);
+                anyhow::ensure!(
+                    before
+                        == (
+                            self.active_host.clone(),
+                            self.active_workspace_id.clone(),
+                            self.pending_nav.clone()
+                        ),
+                    "unknown goto or reveal mutated result state"
+                );
+            }
+            self.dispatch_fe_command(
+                Some(&b),
+                FeCommand::Workspace {
+                    slug: Some("id-b".into()),
+                    boot: false,
+                },
+            );
+            let requests: Vec<_> = std::iter::from_fn(|| b_rx.try_recv().ok()).collect();
+            anyhow::ensure!(self.active_host == *b && self.active_workspace_id.as_deref() == Some("project")
+                && requests.iter().any(|r| matches!(r, OutgoingReq::PtyOpen { target: Some(name), .. } if name == "stored-b")),
+                "stored attachment name was not used for the listed canonical row");
+            Ok(())
+        }
+
+        fn result_entry_controls(
+            &mut self,
+            a: &HostKey,
+            b: &HostKey,
+            a_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+            b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        ) -> Result<()> {
+            self.cycle_workspace(1, false);
+            anyhow::ensure!(
+                self.bl_pane_target.as_ref() == Some(&(b.clone(), "default-b".into())),
+                "cycle derived an attachment name"
+            );
+            self.dispatch_fe_command(
+                Some(a),
+                FeCommand::Workspace {
+                    slug: Some("default".into()),
+                    boot: false,
+                },
+            );
+            anyhow::ensure!(
+                self.active_host == *a
+                    && self.active_workspace_id.is_none()
+                    && self.default_workspace_slug.as_deref() == Some("base-a"),
+                "default resolved using another host's list"
+            );
+            let envelope = parse_nav_envelope(
+                r#"{"sot_ui":{"v":1,"cmd":"nav.preview","workspace":"id-b","path":"envelope.png"}}"#,
+            )
+            .unwrap();
+            self.handle_nav_envelope(b, &envelope);
+            anyhow::ensure!(
+                self.pending_nav
+                    .get(&(b.clone(), "project".into()))
+                    .map(String::as_str)
+                    == Some("envelope.png"),
+                "envelope failed listed id resolution"
+            );
+            let mut selected = node("sessions:selected", "selected", false);
+            selected.kind = "session".into();
+            selected.payload = serde_json::json!({"host": b, "workspace_id":"id-b", "slug":"project", "name":"stored-b"}).as_object().unwrap().clone();
+            self.tree
+                .set_root(node("sessions:", "sessions", true), vec![selected]);
+            self.tree.selected = 1;
+            self.bl_pane_target = None;
+            let _ = session::keys::session_enter_key(self);
+            anyhow::ensure!(
+                self.active_host == *b
+                    && self.active_workspace_id.as_deref() == Some("project")
+                    && self.bl_pane_target.as_ref() == Some(&(b.clone(), "stored-b".into())),
+                "Sessions-Enter reversed a session name into a slug"
+            );
+            self.on_workspace_created(
+                a.clone(),
+                Ok(crate::net::transport::WorkspaceCreatedInfo {
+                    workspace_id: "new-id".into(),
+                    slug: "created".into(),
+                    label: "created".into(),
+                    project_root: "<root>".into(),
+                    session_name: "created-target".into(),
+                }),
+            );
+            anyhow::ensure!(std::iter::from_fn(|| a_rx.try_recv().ok()).any(|r|
+                matches!(r, OutgoingReq::PtyOpen { target: Some(name), .. } if name == "created-target")), "create reply lost its supplied target");
+            while b_rx.try_recv().is_ok() {}
+            Ok(())
+        }
+        fn result_caption_roi_probe(
+            &mut self,
+            a: &HostKey,
+            b: &HostKey,
+            a_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+            b_rx: &mut tokio::sync::mpsc::UnboundedReceiver<OutgoingReq>,
+        ) -> Result<()> {
+            self.switch_to_workspace(a.clone(), Some("project".into()), None, false);
+            let command = |workspace: &str, caption: &str| FeCommand::Preview {
+                workspace: workspace.into(),
+                path: "same.png".into(),
+                urgent: false,
+                roi: Some(RoiRect {
+                    x: 1,
+                    y: 2,
+                    w: 3,
+                    h: 4,
+                }),
+                caption: Some(caption.into()),
+            };
+            self.dispatch_fe_command(Some(a), command("project", "caption a"));
+            self.dispatch_fe_command(Some(b), command("id-b", "caption b"));
+            let rect = ScreenRect {
+                x: 0.0,
+                y: 0.0,
+                w: 320.0,
+                h: 240.0,
+            };
+            self.preview_node_id_fired = Some("files:same.png".into());
+            anyhow::ensure!(
+                self.build_caption(rect).is_some()
+                    && self.caption_label.as_ref().unwrap().buffer.lines[0].text() == "caption a",
+                "host-qualified caption render read another host's same file"
+            );
+            self.install_result_probe_image(a);
+            anyhow::ensure!(
+                self.pending_roi_aim.as_ref().is_some_and(|aim| !aim.ready),
+                "another host's same file certified ROI readiness"
+            );
+            while a_rx.try_recv().is_ok() {}
+            self.paint_result_probe_image(rect)?;
+            anyhow::ensure!(
+                self.pending_roi_aim.is_some() && a_rx.try_recv().is_err(),
+                "another host's ROI was consumed or reported by the active renderer"
+            );
+            self.switch_to_workspace(b.clone(), Some("project".into()), None, false);
+            self.dispatch_fe_command(Some(b), command("id-b", "caption b"));
+            self.install_result_probe_image(b);
+            anyhow::ensure!(
+                self.pending_roi_aim.as_ref().is_some_and(|aim| aim.ready),
+                "matching ROI was not certified ready"
+            );
+            anyhow::ensure!(
+                self.build_caption(rect).is_some()
+                    && self.caption_label.as_ref().unwrap().buffer.lines[0].text() == "caption b",
+                "matching host caption did not reach its renderer"
+            );
+            while b_rx.try_recv().is_ok() {}
+            self.paint_result_probe_image(rect)?;
+            let reports: Vec<_> = std::iter::from_fn(|| b_rx.try_recv().ok())
+                .filter_map(|req| {
+                    if let OutgoingReq::AgentSend { text, .. } = req {
+                        serde_json::from_str::<serde_json::Value>(&text).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            anyhow::ensure!(
+                self.pending_roi_aim.is_none()
+                    && reports.len() == 1
+                    && reports[0]["evt"] == "preview_roi_applied"
+                    && reports[0]["ws"] == "id-b"
+                    && reports[0]["path"] == "same.png",
+                "matching ROI did not apply once with its public workspace spelling"
+            );
+            Ok(())
+        }
+
+        fn install_result_probe_image(&mut self, host: &HostKey) {
+            self.on_preview(
+                host.clone(),
+                Some("files:same.png".into()),
+                self.active_workspace_id.clone(),
+                "image/png".into(),
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../logo.png")).to_vec(),
+                None,
+                self.preview_req_gen,
+            );
+        }
+
+        fn paint_result_probe_image(&mut self, rect: ScreenRect) -> Result<()> {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("result fixture"),
+                size: wgpu::Extent3d {
+                    width: self.config.width,
+                    height: self.config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.config.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("result fixture"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("result fixture"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+                self.paint_preview_png(&mut pass, Some(rect), rect)?;
+            }
+            self.queue.submit([encoder.finish()]);
+            Ok(())
+        }
+    }
+}

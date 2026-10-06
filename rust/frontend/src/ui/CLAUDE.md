@@ -27,7 +27,7 @@ is a folder whose `impl State` blocks and free functions reach the shared fields
   dispatch cannot disagree.
 - A reply counts only if its generation, host and workspace are current: `reply_is_current` (preview/fetch.rs) for
   the preview and concept slots; nav replies go into the tree their key names (`State::swap_active_tree`).
-- Workspace maps key on `WsKey` = (host, id) (mod.rs; keys built in session/workspace_key.rs), never a bare slug.
+- Workspace view maps use WsKey = (host, normalized slug); strip keys use the listed (host, slug). Canonical ids are resolved through workspace.list before command effects.
 - `State::set_focus` (chrome/panes.rs) is the one write of `focus`; scan_tests.rs (`focus_written_only_by_set_focus`)
   fails any other.
 - Input reaches only the selected row's client or is counted: `State::send_pane_input` (agent_pane/input.rs) bumps

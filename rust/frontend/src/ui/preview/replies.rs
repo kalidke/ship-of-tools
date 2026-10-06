@@ -275,9 +275,12 @@ impl State {
         // render-pass solve gates on this — never on the previous
         // file's quad. The solve itself stays in the render pass,
         // where the live pane geometry exists.
+        let row_key = self.active_result_row_key();
         let drop_aim = match self.pending_roi_aim.as_mut() {
             Some(aim)
-                if !aim.ready && node_id.as_deref() == Some(aim.node_id.as_str()) =>
+                if !aim.ready
+                    && row_key.as_ref() == Some(&aim.row_key)
+                    && node_id.as_deref() == Some(aim.node_id.as_str()) =>
             {
                 if is_raster_preview_mime(&mime) && self.preview_png.is_some() {
                     aim.ready = true;
