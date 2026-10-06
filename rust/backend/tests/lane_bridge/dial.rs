@@ -381,6 +381,7 @@ fn stub_ssh_dying_with(dir: &Path, stderr_line: &str, guard: &ParentSshEnvironme
     let script = format!("#!/bin/sh\necho '{stderr_line}' >&2\nexit 255\n");
     let path = dir.join("ssh");
     sot_log::test_exec::write_executable(&path, script);
+    unsafe { std::env::set_var("SHELL", "t2-proof-shell") };
     guard.observe("after preparing dying fixture");
 }
 
@@ -493,6 +494,7 @@ async fn a_stub_ssh_that_dies_first_puts_its_stderr_line_in_the_lane_status() {
     }
     guard.observe("after result");
     client.shutdown(Duration::from_secs(5)); drop(client);
+    match &guard.values[1] { Some(value) => unsafe { std::env::set_var("SHELL", value) }, None => unsafe { std::env::remove_var("SHELL") } }
     guard.finish();
 }
 
