@@ -25,7 +25,8 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-comm-poll-cursor.sh`: the read cursor is a line offset that survives a torn line, a cut-back file and a legacy stamp
 - `test-crlf-jq-output.sh`: the comm scripts compare handles correctly under a jq that writes CRLF
 - `test-endpoint-gate.sh`: every endpoint value leaves `comm-lib.sh` through one gate; ssh resolvers and the wire round trip; no `sotd --socket` in another process's argv is ever an endpoint, and a process is asked for a socket only when its binary is named sotd
-- `test-heartbeat-ctx-wait.sh`: the heartbeat hook's wait on `comm-context.sh` polls fast, is bounded and cleans up
+- `test-heartbeat-ctx-wait.sh`: guarded entry for the heartbeat context-deadline suite; runs the staged hook against finite context fixtures in its own temporary home
+- `test-heartbeat-ctx-wait.py`: observes context entry, hook exit plus stdout and stderr EOFs, registry effects and separate fixture/artifact cleanup, including foreground children, ignored TERM and output retained after leader exit
 - `test-hub-files.sh`: the inbox append: one lock, both writers, fail closed, whole lines, routes and lock records
 - `test-inbox-lock-onehost.sh`: the inbox lock on one machine whose mount lock is unknown (needs one peer host)
 - `test-inbox-lock-twohost.sh`: concurrent shell and Rust appenders, frozen and killed holders across two boxes (needs a peer host)
@@ -35,7 +36,7 @@ the other bin folders without editing a suite. Part of messaging; charter: comm/
 - `test-registry-lock-twohost.sh`: the registry lock's fresh read and distinct machine ids across boxes (needs peer hosts)
 - `test-registry-twohost.sh`: registry writes on one box are read whole on another (needs peer hosts)
 - `test-relay-file-first.sh`: the relay's ack means the frame is filed; a listed handle never touches the wire
-- `test-rm-guard.sh`: every delete rooted in a variable is written `${VAR:?}`, and every comm and agents suite sources the guard first, and every clock read and every `sleep N` or `sleep $X` in comm/tests and agents/tests match their row in the wait table, which may only fall
+- `test-rm-guard.sh`: the retained suite-bootstrap guard check and executed shared-await controls; removal and timing source catalogs are retired, with changed-entry cleanup observed by their owning suites
 - `test-send-routes-to-relay.sh`: a registry miss goes to the wire; a listed handle that is not live is FAILED with nothing appended and no daemon asked, a live one files locally, never both; every script append, inbox redirection and `last_seen` file in the tracked tree is on a pinned list
 - `test-status-floor.sh`: the work-state reduction, its lifecycle through the hooks, closing markers and the turn auditor
 
@@ -65,6 +66,5 @@ directory, `guard_fresh_home`, `guard_stage_bin`, run the scripts from the stage
   step a case starts in the background is awaited by a signal it gives (`await`; `stopped` for a holder that stops
   itself), never a fixed sleep, and ends before the case returns. Lower bounds ("waited at least the deadline") stay:
   load only lengthens a wait. The suites that need peer hosts and comm-matrix.sh time real boxes and are outside this
-  rule. test-rm-guard.sh pins every clock read and every `sleep N` or `sleep $X` in comm/tests and agents/tests to its
-  wait table (a wait spelled another way, through a quoted or variable command name or perl's `select`, is the review's
-  to read); a row may only fall, and the rows marked owed are the waits this rule still has to replace.
+  rule. Existing timing debt remains in the agent/socket suites, layer-orphan and slot waits, registry-read swaps, dependency waits and fixed scenario delays; their owners replace those waits.
+- The heartbeat context-deadline suite uses an independent observation deadline to detect an unbounded wait or an open stdout/stderr pipe after exit. A fixture's finite lifetime is longer than that deadline; cleanup is awaited separately, and cleanup completion never changes a failed exit/EOF observation into a pass. Every case requires context-entry evidence or an explicit no-invocation assertion, and the successful stamp control must run.
