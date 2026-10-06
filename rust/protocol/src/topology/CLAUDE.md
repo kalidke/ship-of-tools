@@ -36,6 +36,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 - `DaemonLaneEndpoint::new` initializes the private spare state; callers outside the lane-client module cannot construct an endpoint literal. Tests exercise dial sequences and owned-child lifetimes, not a source inventory.
 
+- A failed supervisor handshake drops its parked spare before returning; `Endpoint::drop_spare` also drops it after an unproven supervisor hello or failed Status. Dropping the endpoint reaps any remaining parked child.
+
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `SshRecipe::new`,
 `is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,

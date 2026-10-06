@@ -400,6 +400,13 @@ impl Endpoint for DaemonLaneEndpoint {
         PeerAuthOutcome::Authenticated(conn.peer)
     }
 
+    fn drop_spare(&self) {
+        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*state, VoyageSpare::Parked(_)) {
+            *state = VoyageSpare::Unused;
+        }
+    }
+
     /// The host's link gate for an ssh dial; every other dial is local.
     fn link_up(&self) -> bool {
         match &self.dial {
@@ -704,7 +711,11 @@ impl DaemonLaneEndpoint {
             }
         };
 
-        handshake(stream, &hello, &frame)
+        let result = handshake(stream, &hello, &frame);
+        if kind == "supervisor" && result.is_err() {
+            self.drop_spare();
+        }
+        result
     }
 }
 

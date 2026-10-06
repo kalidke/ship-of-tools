@@ -476,6 +476,7 @@ request = json.loads(sys.stdin.readline())
 assert hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
 assert request['op'] == 'lane.connect'
 if request['payload']['lane'] == 'supervisor':
+    (root / 'supervisor-pid').write_text(str(os.getpid()))
     deadline = time.monotonic() + 1.5
     while len(list(root.glob('start-*'))) < 2 and time.monotonic() < deadline:
         time.sleep(0.005)
@@ -499,4 +500,75 @@ fn the_spare_login_starts_before_the_supervisor_handshake_completes() {
     assert!(dir.path().join("ordered").is_file(), "the spare login must start before the supervisor handshake completes");
     assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })), "ordering fixture returned {:?}", result.err());
     drop(endpoint);
+}
+
+#[test]
+fn a_failed_supervisor_handshake_drops_the_spare() {
+    use sot_log::lane::client::Endpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let endpoint = stub_endpoint(ordering_fixture(dir.path()));
+    let result = endpoint.connect_supervisor_unchallenged("row-abandoned");
+    assert!(dir.path().join("ordered").is_file(), "both owned children started before refusal");
+    assert!(matches!(result, Err(sot_log::lane::transport::TransportError::Refused { .. })));
+    let supervisor = std::fs::read_to_string(dir.path().join("supervisor-pid")).unwrap();
+    let mut spares = 0;
+    for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if let Some(pid) = name.strip_prefix("start-").filter(|pid| *pid != supervisor) {
+            spares += 1;
+            assert!(!Path::new(&format!("/proc/{pid}/stat")).exists(), "a failed supervisor handshake must reap its spare while the endpoint is alive");
+        }
+    }
+    assert_eq!(spares, 1, "one owned spare was observed");
+    drop(endpoint);
+}
+
+/// Observe the private daemon's admission close before the first voyage consumes its spare.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_spare_uses_a_fresh_voyage_login() {
+    use sot_log::lane::client::Endpoint;
+    let _serial = SERIAL.lock().await;
+    let env = Env::new("lb-expired-spare");
+    env.spawn_sotd();
+    let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
+    let (_, target) = create_ready_capsule_row(&env, &mut conn, &mut next_id, "lb-expired-row").await;
+    let relay = Relay::start(env.socket_path.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    stub_ssh_relaying_to(dir.path(), &relay.path);
+    let pids = Arc::new(Mutex::new(Vec::new()));
+    let observed = pids.clone();
+    let path = dir.path().join("ssh");
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |recipe, gate| {
+        let command = gate.command(recipe)?;
+        let child = std::process::Command::new(&path).args(command.get_args())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)?;
+        observed.lock().unwrap().push(child.id());
+        Ok(child)
+    }));
+    let supervisor = endpoint.connect_supervisor_unchallenged(&target).unwrap();
+    assert_eq!(pids.lock().unwrap().len(), 2, "the initial pair started");
+    let spare = pids.lock().unwrap()[1];
+    let stat = format!("/proc/{spare}/stat");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let text = std::fs::read_to_string(&stat).expect("the retained child stays unreaped until consumption");
+        if text.rsplit_once(") ").unwrap().1.starts_with('Z') { break; }
+        assert!(Instant::now() < deadline, "the private daemon never closed the idle bridge at admission expiry");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(supervisor);
+    let mut client = FeAttachClient::attach(endpoint, target, 80, 24, "expiry-fe".into(), "expiry-fe".into(), None, Box::new(|| {})).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !client.is_checkpointed() {
+        client.pump();
+        assert!(!client.is_dead(), "expired-spare fallback died: {}", client.status_line());
+        assert!(Instant::now() < deadline, "expired-spare fallback never received its checkpoint");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(pids.lock().unwrap().len(), 4, "retry supervisor plus one fresh voyage login");
+    assert!(!Path::new(&stat).exists(), "the expired owned child was reaped before fallback");
+    client.shutdown(Duration::from_secs(5));
+    env.kill_daemon_bounded().await;
 }

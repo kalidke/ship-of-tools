@@ -735,3 +735,34 @@ fn diagnose_appends_the_ssh_line_to_the_error() {
     assert_eq!(got.to_string(), want);
     assert_eq!(got.kind(), std::io::ErrorKind::BrokenPipe, "the error keeps its kind");
 }
+
+#[test]
+fn abandonment_rearms_only_before_the_first_voyage() {
+    let (ep, calls) = counted_endpoint(None);
+    drop(ssh_step(&ep, "supervisor").unwrap());
+    let (mut output, pid) = match &*ep.spare.lock().unwrap() {
+        VoyageSpare::Parked(child) => (child.out.try_clone().unwrap(), child.child.lock().unwrap().id()),
+        _ => panic!("the initial supervisor parks its spare"),
+    };
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    ep.drop_spare();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || { let _ = tx.send(output.read(&mut [0])); });
+    assert_eq!(rx.recv_timeout(Duration::from_secs(2)).expect("abandonment closes the owned spare").unwrap(), 0);
+    reader.join().unwrap();
+    #[cfg(unix)]
+    {
+        unsafe extern "C" { fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32; }
+        assert_eq!(unsafe { waitpid(pid as i32, std::ptr::null_mut(), 1) }, -1, "abandonment reaps its spare before retry");
+        assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(10));
+    }
+    #[cfg(windows)]
+    let _ = pid;
+    drop(ssh_step(&ep, "supervisor").unwrap());
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "a pre-voyage retry starts a replacement pair");
+    drop(ssh_step(&ep, "voyage").unwrap());
+    assert_eq!(calls.load(Ordering::SeqCst), 4, "first voyage consumes the replacement without a fifth spawn");
+    ep.drop_spare();
+    for kind in ["supervisor", "voyage"] { drop(ssh_step(&ep, kind).unwrap()); }
+    assert_eq!(calls.load(Ordering::SeqCst), 6, "cleanup after Spent never rearms a spare");
+}

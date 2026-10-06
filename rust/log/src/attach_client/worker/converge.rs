@@ -30,7 +30,11 @@ pub(super) fn connect_supervisor_lane<E: Endpoint>(endpoint: &E, h: &str) -> Res
     let conn = endpoint.connect_supervisor_unchallenged(h).map_err(classify_transport)?;
     let mut exchange = SupervisorLaneExchange::new(SUPERVISOR_LANE_BUILD_ID);
     let deadline = Instant::now() + HELLO_BUDGET;
-    match endpoint.challenge(&conn, &mut exchange, deadline) {
+    let challenged = endpoint.challenge(&conn, &mut exchange, deadline);
+    if !matches!(&challenged, ChallengeOutcome::Proven(_)) {
+        endpoint.drop_spare();
+    }
+    match challenged {
         ChallengeOutcome::Proven(process) => Ok((conn, process)),
         // The shared challenge machinery folds "SID mismatch" (Windows) /
         // "not same-uid" (Linux) and "a well-formed WRONG reply" into the
@@ -286,7 +290,10 @@ pub(super) fn converge_on_ready<E: Endpoint>(
     loop {
         let (sv, _leg, phase) = match supervisor_status::<E>(&conn, &mut sup_reader) {
             Ok(v) => v,
-            Err(_) => return ReadyOutcome::LaneDown,
+            Err(_) => {
+                endpoint.drop_spare();
+                return ReadyOutcome::LaneDown;
+            }
         };
         // Finding 2: an answered Status, whatever its phase, proves the
         // supervisor lane is not the thing that is unresponsive right

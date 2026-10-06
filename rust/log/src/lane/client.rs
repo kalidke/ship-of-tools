@@ -176,6 +176,10 @@ pub trait Endpoint {
     /// identity — no wire I/O, deliberately weaker than [`Self::challenge`]
     /// (see either concrete module's own `authenticate_server` doc).
     fn authenticate_server(&self, conn: &Self::Client) -> PeerAuthOutcome;
+    /// Abandon work parked for a supervisor attempt before the first voyage dial.
+    /// Local endpoints have no such work.
+    fn drop_spare(&self) {}
+
     /// Whether a dial through this endpoint can start at all right now.
     /// An endpoint reached over a link another component watches (an ssh
     /// lane) reports that link here, so a worker pauses instead of dialing
