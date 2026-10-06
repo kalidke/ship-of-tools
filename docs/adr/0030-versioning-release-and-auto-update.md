@@ -723,3 +723,13 @@ layout check; the dev-pair-first binary rule is unrelated (picks which
 on a pinned checkout now triggers on an applied update or a missing comm
 install, not "a pull succeeded" — closing the auto-apply `update_comm` item
 above.
+
+## Amendment 2026-09-24 — every install tracks the newest release, rc or not
+
+This replaces the channel rule of the 2026-09-08 amendment. A stable install
+now considers prereleases too. `select_target` picks the highest-semver
+published release, stable or rc, and moves only when it is strictly newer
+than what's running. A `0.6.5` box moves to `0.6.6-rc1` when it is cut, then
+to `0.6.6` when that release replaces the rc. Every box the owner runs wants
+the rc line, and a stable-only channel meant a hand reinstall for each rc.
+Discovery, the no-downgrade rule and the `-dev` guard stay the same.
