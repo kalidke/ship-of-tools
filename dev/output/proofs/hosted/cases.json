@@ -1,0 +1,15 @@
+[
+  {
+    "label": "c1-revert-logs-quit_transitions_log_only_finite_fields",
+    "tree": "revert-logs",
+    "test": "ui::app::exit::tests::quit_transitions_log_only_finite_fields",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "missing transition event: quit prompt: open",
+    "observations": [
+      "T1 fixture observed: captured actual quit transitions"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  }
+]

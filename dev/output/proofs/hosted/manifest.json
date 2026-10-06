@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c1-revert-logs",
+  "original": {
+    "sha": "29213e2a6d52897f0b495448863541577c574c1b",
+    "branch": "tmp/ci-t1-c1-revert-logs"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "4b487c8148afe18247bd242ec77043d36ff73618",
+  "tree": "revert-logs",
+  "overlays": [
+    {
+      "tree": "revert-logs",
+      "file": "rust/frontend/src/ui/app/exit.rs",
+      "base_sha256": "55b514a674a370afb1bc7ec432b774beeb2a6340194c72082a2ca0ebd58ed440",
+      "overlay_sha256": "d8ac0319d029089b9d124987a5eee7719f54402dae4e2abf6954eec90cd792f7",
+      "patch": "overlays/revert-logs-ui-app-exit.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/app/exit.rs",
+      "accepted_overlay_sha256": "d8ac0319d029089b9d124987a5eee7719f54402dae4e2abf6954eec90cd792f7",
+      "replay_sha256": "d8ac0319d029089b9d124987a5eee7719f54402dae4e2abf6954eec90cd792f7",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
