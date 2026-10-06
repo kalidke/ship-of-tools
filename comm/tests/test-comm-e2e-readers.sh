@@ -170,7 +170,7 @@ D="$1"; TAG="$3"
 source "$D/e2e/lib-test-body.sh" || exit 2
 SOT_E2E_PING_LOG="$D/log/ping-$TAG.log" test_body_run comm_wake_e2e "$D/log/wake-body-$TAG.log" -- \
     cargo test --manifest-path "${SOT_E2E_MANIFEST:?set SOT_E2E_MANIFEST to rust/Cargo.toml}" \
-    -p sot-backend --test comm_wake comm_wake_e2e -- --ignored --exact \
+    -p sot-backend --test comm_wake comm_wake_e2e -- --ignored \
     --format pretty --color never --show-output --test-threads=1
 status=$?
 printf '%s\n' "$status" > "$D/log/wake-result-$TAG" || exit 2
