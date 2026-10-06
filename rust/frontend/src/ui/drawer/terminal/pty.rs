@@ -197,6 +197,7 @@ impl LocalTerminal {
         // apps running inside it use colour escape sequences.
         cmd.env("TERM", "xterm-256color");
 
+        #[allow(clippy::disallowed_methods, reason = "the window's Terminal drawer shell, owned by the window (ADR 0017)")]
         let child = pair
             .slave
             .spawn_command(cmd)

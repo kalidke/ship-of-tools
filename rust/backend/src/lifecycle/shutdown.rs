@@ -3,10 +3,9 @@
 //!
 //! [`end_rows`] ends every capsule row and the drawer by one deadline,
 //! retrying a refused end once per second; any other row, and what it
-//! could not end, is counted, never guessed. [`fired`] is the one
-//! process-wide signal every child owner selects on, because
-//! `kill_on_drop` does not run at `process::exit`; [`ChildGuard`] counts
-//! the children still alive.
+//! could not end, is counted, never guessed. The daemon's own children
+//! end through [`super::child_signal`]: its signal fires once and kills
+//! every contained tree.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};

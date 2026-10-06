@@ -36,6 +36,7 @@
 use std::process::Command;
 
 fn git(args: &[&str]) -> Option<String> {
+    #[allow(clippy::disallowed_methods, reason = "a build script runs git at compile time; no daemon runs here")]
     let out = Command::new("git").args(args).output().ok()?;
     if !out.status.success() {
         return None;
@@ -54,7 +55,9 @@ fn git(args: &[&str]) -> Option<String> {
 /// silently assumed clean): a version string that CAN'T prove it is the
 /// commit it names must not claim to be.
 fn is_dirty() -> bool {
-    match Command::new("git").args(["status", "--porcelain"]).output() {
+    #[allow(clippy::disallowed_methods, reason = "a build script runs git at compile time; no daemon runs here")]
+    let status = Command::new("git").args(["status", "--porcelain"]).output();
+    match status {
         Ok(out) if out.status.success() => !out.stdout.is_empty(),
         _ => true,
     }

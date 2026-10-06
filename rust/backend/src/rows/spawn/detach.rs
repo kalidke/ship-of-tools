@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use sot_log::supervisor::StartMode;
 #[cfg(target_os = "linux")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::process::{Child, Command};
 
 /// `sot-capsule supervise`'s own `--first-leg-without --continue`, passed
@@ -270,7 +270,9 @@ fn spawn_detached(
     let _ = workspace_id;
     let mut cmd = build("normal", false);
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
-    match cmd.spawn() {
+    #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+    let first = cmd.spawn();
+    match first {
         Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
             tracing::warn!(
                 state_dir = ?state_dir,
@@ -279,7 +281,9 @@ fn spawn_detached(
             );
             let mut cmd = build("degraded", false);
             cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-            cmd.spawn()
+            #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+            let degraded = cmd.spawn();
+            degraded
         }
         other => other,
     }
@@ -354,26 +358,18 @@ fn user_scope_available() -> std::io::Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + USER_SCOPE_PROBE_BOUND;
-    let status = loop {
-        if let Some(s) = child.try_wait()? {
-            break s;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                ErrorKind::TimedOut,
-                format!("systemd-run --user --scope did not answer within {USER_SCOPE_PROBE_BOUND:?}"),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    // Contained like every process the daemon starts: the tree dies with the probe, and the leader is reaped only after that.
+    let mut c = crate::lifecycle::child_signal::process().spawn_std(&mut command)?;
+    let Some(status) = c.wait_within(USER_SCOPE_PROBE_BOUND)? else {
+        return Err(std::io::Error::new(
+            ErrorKind::TimedOut,
+            format!("systemd-run --user --scope did not answer within {USER_SCOPE_PROBE_BOUND:?}"),
+        ));
     };
     if status.success() {
         return Ok(());
     }
-    let stderr = child
+    let stderr = c
         .stderr
         .take()
         .map(|pipe| drain_stderr_bounded(pipe, STDERR_DRAIN_BOUND))
@@ -448,7 +444,9 @@ fn spawn_detached(
             Ok(())
         });
     }
-    cmd.spawn()
+    #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+    let spawned = cmd.spawn();
+    spawned
 }
 
 /// Every platform `sotd` ships for. The gate this module carried until
@@ -511,7 +509,9 @@ fn spawn_detached(
             Ok(())
         });
     }
-    cmd.spawn()
+    #[allow(clippy::disallowed_methods, reason = "a capsule supervisor outlives the daemon by design (ADR 0043, ADR 0046)")]
+    let spawned = cmd.spawn();
+    spawned
 }
 
 #[cfg(test)]

@@ -64,6 +64,7 @@ use std::process::Command;
 const MAX_BUILD_ID_LEN: usize = 128;
 
 fn git(args: &[&str]) -> Option<String> {
+    #[allow(clippy::disallowed_methods, reason = "a build script runs git at compile time; no daemon runs here")]
     let out = Command::new("git").args(args).output().ok()?;
     if !out.status.success() {
         return None;
@@ -80,7 +81,9 @@ fn git(args: &[&str]) -> Option<String> {
 /// itself could not be determined (fails closed: an unverifiable tree is
 /// treated as dirty, never silently assumed clean).
 fn is_dirty() -> bool {
-    match Command::new("git").args(["status", "--porcelain"]).output() {
+    #[allow(clippy::disallowed_methods, reason = "a build script runs git at compile time; no daemon runs here")]
+    let status = Command::new("git").args(["status", "--porcelain"]).output();
+    match status {
         Ok(out) if out.status.success() => !out.stdout.is_empty(),
         _ => true,
     }

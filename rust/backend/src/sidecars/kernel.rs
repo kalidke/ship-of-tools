@@ -35,7 +35,7 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, watch, OnceCell};
 
 use super::WireRequest;
@@ -319,8 +319,8 @@ fn julia_bin(kernel_project: &Path) -> Result<(String, &'static str), String> {
 /// Resolve + spawn one child, fold `kernel.hello` into the same
 /// request/response loop every other op uses (no separate raw exchange),
 /// publish `Running` the moment it answers, then keep serving until it
-/// dies OR `status` closes (the owning `Kernel` was dropped — `kill_on_drop`
-/// reaps the child as `child` goes out of scope on return). Returns
+/// dies OR `status` closes (the owning `Kernel` was dropped — the
+/// contained tree dies as `contained` goes out of scope on return). Returns
 /// `(reached_running, reason)`: `reached_running` tells the caller whether
 /// to reset the backoff ladder; `reason` is the human-readable cause of
 /// this generation's end (spawn failure, the child's exit — before or
@@ -353,34 +353,30 @@ async fn run_one_generation(
 
     tracing::info!(julia_bin = %julia_bin, source, "spawning kernel");
 
-    let mut child: Child = match Command::new(&julia_bin)
-        .arg(format!("--project={}", kernel_project.display()))
+    let mut cmd = Command::new(&julia_bin);
+    cmd.arg(format!("--project={}", kernel_project.display()))
         .arg("-e")
         .arg(&julia_src)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Belt and braces: this task's own future should never be dropped
-        // mid-generation (it isn't owned by any cancellable caller job —
-        // see the module invariant), but if it ever were, the OS kills the
-        // child the instant `child` drops instead of orphaning it.
-        .kill_on_drop(true)
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    // `contained` is the one kill: it ends the tree before the child on every
+    // return, and the shutdown fires it from anywhere, so a child this loop is
+    // not polling for (a full stdin pipe) and what it started still die.
+    let mut contained = match sig.spawn(&mut cmd) {
         Ok(c) => c,
         Err(e) => return (false, format!("spawn {julia_bin} failed: {e}")),
     };
-    let _child_guard = sig.guard();
 
-    let mut stdin = match child.stdin.take() {
+    let mut stdin = match contained.stdin.take() {
         Some(s) => s,
         None => return (false, "kernel child stdin missing".to_string()),
     };
-    let stdout = match child.stdout.take() {
+    let stdout = match contained.stdout.take() {
         Some(s) => s,
         None => return (false, "kernel child stdout missing".to_string()),
     };
-    let stderr = match child.stderr.take() {
+    let stderr = match contained.stderr.take() {
         Some(s) => s,
         None => return (false, "kernel child stderr missing".to_string()),
     };
@@ -412,15 +408,14 @@ async fn run_one_generation(
     loop {
         tokio::select! {
             biased;
-            // The daemon is shutting down: nothing kills this child at
-            // `process::exit`, so it is killed here.
+            // The daemon is shutting down: the signal has already killed the
+            // child's tree.
             _ = sig.fired() => {
-                let _ = child.kill().await;
                 return (published_running, "the daemon is shutting down".to_string());
             }
             // Every `Kernel` handle sharing this `status` has been dropped
             // (a destroyed workspace, most commonly) — stop serving; the
-            // function returning drops `child` (`kill_on_drop`) and
+            // function returning drops `contained`, which kills the tree, and
             // `pending`'s senders (their receivers, if any caller is
             // somehow still awaiting one, just see a dropped channel —
             // nobody is watching `status` to read a `Dead` we could no
@@ -567,6 +562,8 @@ fn log_hello(payload: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::lifecycle::child_signal::tests::Leftover;
 
     /// Program-path override per kernel project, so no test touches the process env.
     pub(super) static STUB_BIN: std::sync::Mutex<Vec<(PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
@@ -618,6 +615,60 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "respawned after the fire");
     }
 
+    /// A kernel that stops reading fills its pipe and the supervisor sits in
+    /// `write_request`, where it never polls the signal: the shutdown must
+    /// still take the kernel and what the kernel started.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn blocked_kernel_write_does_not_outlive_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let gc_file = dir.path().join("gc");
+        let gc = Leftover::of_file(gc_file.clone());
+        let stub = dir.path().join("stub-julia");
+        sot_log::test_exec::write_executable(
+            &stub,
+            format!(
+                "#!/bin/sh\nsleep 3101 &\necho $! > {}\nread l\necho '{{\"id\":1,\"payload\":{{\"protocol\":0}}}}'\nexec sleep 3101\n",
+                gc_file.display()
+            ),
+        );
+        let project = dir.path().join("kp");
+        std::fs::create_dir(&project).unwrap();
+        STUB_BIN.lock().unwrap().push((project.clone(), stub.to_string_lossy().into_owned()));
+        let sig: &'static crate::lifecycle::child_signal::Signal = Box::leak(Box::new(crate::lifecycle::child_signal::Signal::new()));
+        let (status, mut status_rx) = watch::channel(Status::Starting);
+        let task = tokio::spawn(supervisor_loop(project, dir.path().to_path_buf(), status, sig));
+        let tx = loop {
+            let seen = status_rx.borrow_and_update().clone();
+            if let Status::Running(tx) = seen {
+                break tx;
+            }
+            tokio::time::timeout(Duration::from_secs(5), status_rx.changed())
+                .await
+                .expect("the stub kernel never answered hello")
+                .expect("status channel");
+        };
+        // 256 KiB per request: the stub never reads again, so the first
+        // write fills the pipe and the rest queue behind it.
+        let big = "x".repeat(256 * 1024);
+        let mut replies = Vec::new();
+        for _ in 0..3 {
+            let (reply, rx) = oneshot::channel();
+            tx.send(Submission { op: "test.big".to_string(), payload: json!(big), reply }).await.unwrap();
+            replies.push(rx);
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(tx.capacity() < tx.max_capacity(), "the supervisor was not blocked on a full pipe");
+        sig.fire();
+        tokio::time::timeout(Duration::from_secs(3), task)
+            .await
+            .expect("the supervisor loop outlived the shutdown")
+            .expect("supervisor task");
+        assert!(gc.gone(), "the kernel's grandchild survived the shutdown");
+        assert_eq!(sig.live(), 0);
+        drop(replies);
+    }
+
     #[test]
     fn kernel_unavailable_display_is_composable() {
         let dead = KernelUnavailable::Dead {
@@ -635,6 +686,9 @@ mod tests {
     async fn missing_kernel_project_reports_dead_without_spawning() {
         let dir = tempfile::tempdir().unwrap();
         let missing_project = dir.path().join("does-not-exist");
+        // A stand-in program, never spawned: the check under test comes after the julia lookup, and a host with
+        // no julia (a CI runner) fails that lookup first.
+        STUB_BIN.lock().unwrap().push((missing_project.clone(), "never-spawned".to_string()));
         let kernel = Kernel::new(missing_project, dir.path().to_path_buf());
         let err = kernel.request("kernel.hello", json!({})).await.unwrap_err();
         let unavailable = err

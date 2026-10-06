@@ -102,14 +102,24 @@ pub(super) fn apply(topo: &Topology, dry_run: bool) -> Result<(), String> {
 const TUNNEL_TEMPLATE: (&str, &str) = ("sot-relay-tunnel@", ".service");
 const RELAY_TEMPLATE: (&str, &str) = ("sot-host-relay-", ".socket");
 
+/// A `systemctl` command. A test names its own program in `tests::STUB_SYSTEMCTL`, so none changes the process `PATH`.
+fn systemctl() -> std::process::Command {
+    #[cfg(test)]
+    if let Some(program) = tests::STUB_SYSTEMCTL.lock().unwrap().clone() {
+        return std::process::Command::new(program);
+    }
+    std::process::Command::new("systemctl")
+}
+
 /// Host names of every unit in one family systemd --user currently
 /// reports `enabled`. The only I/O `apply` does to read state;
 /// `topology::relay_units::apply_plan` is the pure decision made from its result.
 fn enabled_hosts((prefix, suffix): (&str, &str)) -> Result<Vec<String>, String> {
     let pattern = format!("{prefix}*{suffix}");
-    let out = std::process::Command::new("systemctl")
-        .args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"])
-        .output()
+    let mut cmd = systemctl();
+    cmd.args(["--user", "list-unit-files", &pattern, "--no-legend", "--no-pager"]);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut cmd)
         .map_err(|e| format!("systemctl --user list-unit-files: {e}"))?;
     if !out.status.success() {
         // systemd exits 1 when a PATTERN matched no unit files, with
@@ -313,10 +323,9 @@ fn is_main_pid(show: &str, me: u32) -> bool {
 #[cfg(target_os = "linux")]
 fn supervised_by_systemd() -> Result<bool, String> {
     let what = format!("systemctl --user show -p MainPID --value {DAEMON_UNIT}");
-    let out = std::process::Command::new("systemctl")
-        .args(["--user", "show", "-p", "MainPID", "--value", DAEMON_UNIT])
-        .output()
-        .map_err(|e| format!("{what}: {e}"))?;
+    let mut cmd = systemctl();
+    cmd.args(["--user", "show", "-p", "MainPID", "--value", DAEMON_UNIT]);
+    let out = crate::lifecycle::child_signal::process().output(&mut cmd).map_err(|e| format!("{what}: {e}"))?;
     if !out.status.success() {
         return Err(format!("{what}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -352,9 +361,10 @@ fn run_systemctl(args: &[&str]) -> Result<(), String> {
 
 /// `systemctl args`: its stdout on success.
 fn systemctl_stdout(args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("systemctl")
-        .args(args)
-        .output()
+    let mut cmd = systemctl();
+    cmd.args(args);
+    let out = crate::lifecycle::child_signal::process()
+        .output(&mut cmd)
         .map_err(|e| format!("systemctl {}: {e}", args.join(" ")))?;
     if !out.status.success() {
         return Err(format!("systemctl {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
@@ -548,6 +558,36 @@ mod tests {
         assert!(e.contains("not the hub"), "{e}");
         assert!(!called && !dir.join("sot-host-relay-remote-a@.service").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The program `systemctl()` starts in place of the real one while a test holds it; `None` outside such a test.
+    pub(super) static STUB_SYSTEMCTL: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+    /// Clears the stub program on every path out of the test.
+    #[cfg(target_os = "linux")]
+    struct ClearStub;
+
+    #[cfg(target_os = "linux")]
+    impl Drop for ClearStub {
+        fn drop(&mut self) {
+            *STUB_SYSTEMCTL.lock().unwrap() = None;
+        }
+    }
+
+    /// The refresh's one-shots run in their own containment: what a
+    /// `systemctl` leaves running dies with it, though it exits at once.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_relay_probe_takes_its_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bg = dir.path().join("bg");
+        let descendant = crate::lifecycle::child_signal::tests::Leftover::of_file(bg.clone());
+        let _clear = ClearStub;
+        let stub = dir.path().join("systemctl");
+        sot_log::test_exec::write_executable(&stub, format!("#!/bin/sh\nsleep 3110 >/dev/null 2>&1 &\necho $! > '{}'\necho 0\n", bg.display()));
+        *STUB_SYSTEMCTL.lock().unwrap() = Some(stub);
+        assert_eq!(supervised_by_systemd(), Ok(false));
+        assert!(descendant.gone(), "the relay probe's descendant survived");
     }
 }
 

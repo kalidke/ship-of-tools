@@ -156,11 +156,6 @@ pub async fn check_release(repo: &str, current_version: &str, fetcher: &Fetcher)
     }
 }
 
-/// Back-compat wrapper: check via a full config (ignores the root).
-pub async fn check(cfg: &UpdaterConfig) -> CheckOutcome {
-    check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await
-}
-
 /// The completed-stage directory for one release identity. Keyed by tag AND
 /// target: on a shared `$HOME`, machines of different platforms share one
 /// updates root, and tag-only dirs would make them clobber each other's
@@ -547,7 +542,7 @@ mod tests {
             updates_root: updates.clone(),
         };
 
-        let out = check(&cfg).await;
+        let out = check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
         assert_eq!(out.status, "ok");
         assert!(out.update_available);
         let id = out.identity.unwrap();
@@ -576,7 +571,7 @@ mod tests {
             current_version: version.into(),
             ..cfg.clone()
         };
-        let out2 = check(&cfg_current).await;
+        let out2 = check_release(&cfg_current.repo, &cfg_current.current_version, &cfg_current.fetcher).await;
         assert_eq!(out2.status, "ok");
         assert!(!out2.update_available);
 

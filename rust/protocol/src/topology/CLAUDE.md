@@ -16,13 +16,18 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - This box's own endpoint: the session socket or pipe path, the local daemon label, `slug`, `local_endpoint`
   (`$SOT_SOCKET` beats `$SOT_BACKEND_LABEL` beats the local label) and the plain host-name grammar
   (`is_plain_host_name`), in `endpoint.rs`.
-- The ssh recipe (`SshRecipe`), its options and `LinkGate`, in `ssh_bridge.rs`.
+- The ssh recipe (`SshRecipe`), its options `SSH_OPTS`, which turn ssh sharing off as the relay unit's do and with
+  which the daemon's monitor also starts its ssh, and `LinkGate` (`spawn_sync`, `spawn_async`, `probe`, and `command`
+  for a caller that contains the child), in `ssh_bridge.rs`.
 - The lane dial `DaemonLaneEndpoint`, the attach worker's endpoint over op `lane.connect`, in `lane_client.rs`.
 - The hub's systemd unit text for each relayed host, in `relay_units.rs`.
 
 ## Promises
 - `SshRecipe::new` checks both the ssh target and the host against the plain host-name grammar.
-- While a host's `LinkGate` is down, no gated spawn starts ssh.
+- While a host's `LinkGate` is down, no gated spawn or command starts ssh.
+- Every ssh started from `SSH_OPTS` turns sharing off (`ControlMaster=no`, `ControlPath=none`, `ControlPersist=no`):
+  the bridges `SshRecipe` builds and the daemon's monitor sampler (`argv_has_no_shell_and_the_stated_option_set` pins
+  the list).
 - A lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and can be cancelled; refusals come back typed;
   no ssh child outlives its client.
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
@@ -30,13 +35,13 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `SshRecipe::new`,
-`is_plain_host_name`, `LinkGate`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,
+`is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
 `scripts/lib/sot-daemon.sh`, `TopologyStore`, `topology.set`, `topology.changed`, `sot_ssh_bridge`,
 `_sot_is_plain_host_name`, `comm/lib/comm-lib-client.sh`, `sot_slug`, `comm/lib/comm-lib-identity.sh`, `slug`. Uses:
-`dispatch`, `sotd stdio-bridge`, `ChildGuard`, `Signal`, `child_signal::fired`, `child_signal::process`,
-`lane.connect`, `Endpoint`, `DaemonLaneEndpoint`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
-`boot_identity`, `process_created`, `IdentityExchange`.
+`dispatch`, `sotd stdio-bridge`, `Signal::spawn_std`, `Signal::output`, `ContainedStd`, `Signal`, `child_signal::fired`,
+`child_signal::process`, `lane.connect`, `Endpoint`, `DaemonLaneEndpoint`, `sot_state_dir`, `sot_config_dir`,
+`host_name`, `state_dir_hash`, `boot_identity`, `process_created`, `IdentityExchange`.
 
 ## Folders
 - `rust/protocol/src/topology/`: this folder.

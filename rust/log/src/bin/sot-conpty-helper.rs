@@ -161,6 +161,7 @@ fn main() {
         // exited process's resources once its last handle closes,
         // regardless of whether anything waited on it.
         #[allow(clippy::zombie_processes)]
+        #[allow(clippy::disallowed_methods, reason = "a test rig binary for the capsule's containment tests")]
         let mut grandchild = std::process::Command::new(exe)
             .arg("--child")
             .stdin(std::process::Stdio::null())
@@ -233,6 +234,7 @@ fn spawn_breakaway(args: &[String]) {
     cmd.args(rest).creation_flags(CREATE_BREAKAWAY_FROM_JOB);
     let mut stdout = std::io::stdout().lock();
     #[allow(clippy::zombie_processes)] // never waited on -- the test owns this child's lifetime
+    #[allow(clippy::disallowed_methods, reason = "a test rig binary for the capsule's containment tests")]
     match cmd.spawn() {
         Ok(child) => {
             let _ = writeln!(stdout, "pid={}", child.id());

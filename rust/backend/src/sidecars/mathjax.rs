@@ -23,7 +23,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Clone)]
@@ -133,23 +133,24 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
             script_path.display()
         ));
     }
-    let mut child: Child = Command::new(node_bin)
-        .arg(script_path)
+    let mut cmd = Command::new(node_bin);
+    cmd.arg(script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut contained = crate::lifecycle::child_signal::process()
+        .spawn(&mut cmd)
         .with_context(|| format!("spawn {node_bin} {}", script_path.display()))?;
 
-    let stdin = child
+    let stdin = contained
         .stdin
         .take()
         .context("mathjax child stdin missing")?;
-    let stdout = child
+    let stdout = contained
         .stdout
         .take()
         .context("mathjax child stdout missing")?;
-    let stderr = child
+    let stderr = contained
         .stderr
         .take()
         .context("mathjax child stderr missing")?;
@@ -164,17 +165,16 @@ fn spawn_supervisor(node_bin: &str, script_path: &std::path::Path) -> Result<mps
         }
     });
 
-    tokio::spawn(supervisor_task(child, stdin, stdout, submit_rx));
+    tokio::spawn(supervisor_task(contained, stdin, stdout, submit_rx));
     Ok(submit_tx)
 }
 
 async fn supervisor_task(
-    mut child: Child,
+    mut contained: crate::lifecycle::child_signal::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
 ) {
-    let _child_guard = crate::lifecycle::child_signal::ChildGuard::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<RenderedSvg>>> = HashMap::new();
     let mut next_id: u64 = 1;
     let mut stdout_lines = BufReader::new(stdout).lines();
@@ -182,10 +182,9 @@ async fn supervisor_task(
     loop {
         tokio::select! {
             biased;
-            // The daemon is shutting down: nothing kills this child at
-            // `process::exit`, so it is killed here.
+            // The daemon is shutting down: the signal has already killed the
+            // child's tree.
             _ = crate::lifecycle::child_signal::fired() => {
-                let _ = child.kill().await;
                 break;
             }
             // Drain incoming submissions, write to child stdin.
@@ -193,7 +192,7 @@ async fn supervisor_task(
                 let Some(sub) = sub else {
                     // No more callers — close stdin, await child, exit.
                     drop(stdin);
-                    let _ = child.wait().await;
+                    let _ = contained.wait().await;
                     return;
                 };
                 let id = next_id;
@@ -242,8 +241,7 @@ async fn supervisor_task(
     for (_id, reply) in pending.drain() {
         let _ = reply.send(Err(anyhow!("mathjax sidecar terminated")));
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ = contained.kill().await;
 }
 
 fn route_response(

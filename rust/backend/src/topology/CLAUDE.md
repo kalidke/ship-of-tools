@@ -34,3 +34,6 @@ for `sotd status`; `stdio_bridge.rs` `run` for the bridge.
 - `refresh_at_start` acts only when this process is sotd.service's MainPID (`supervised_by_systemd`), and the daemon
   never waits on it (main spawns it on its own thread).
 - In `refresh`, only `daemon-reload` is fatal.
+- The relay refresh's `systemctl` calls run through `Signal::output`, so what one leaves running dies with it.
+- The dial's ssh runs through `Signal::spawn_std`: dropping its `ChildGuard` in dial.rs, or a `Track::cancel`, kills
+  the ssh tree through its `ContainedStd` before the child is reaped.

@@ -343,7 +343,7 @@ async fn ensure_base(spec: &PrepareSpec, base: &Path) -> Result<()> {
 
 /// Remove a version worktree properly (worktree remove + prune), falling back
 /// to a plain delete + prune for a dir git no longer recognizes.
-pub async fn remove_worktree(base: &Path, checkout: &Path) -> Result<()> {
+pub(crate) async fn remove_worktree(base: &Path, checkout: &Path) -> Result<()> {
     let res = git(
         base,
         &[
@@ -457,6 +457,7 @@ async fn run_in(dir: &Path, bin: &str, args: &[&str], timeout: Duration, what: &
 async fn exec(mut cmd: tokio::process::Command, timeout: Duration, what: &str) -> Result<Vec<u8>> {
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
+    #[allow(clippy::disallowed_methods, reason = "an updater step; started inside the daemon it is ADR 0050 known limit (n)")]
     let out = match tokio::time::timeout(timeout, cmd.output()).await {
         Err(_) => bail!("{what} timed out after {}s", timeout.as_secs()),
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!("{what}: binary not found"),

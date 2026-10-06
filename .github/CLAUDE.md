@@ -41,13 +41,16 @@ scripts/CLAUDE.md.
   carries `#[allow(clippy::too_many_lines, reason = "...")]`, and the step "Function length allowances can only fall"
   pins how many such allows `rust/` holds (not `rust/vt100`); removing one means lowering that number in the same commit.
 - Disallowed methods are gated: the `rust.yml` step "Disallowed methods" runs clippy's `disallowed_methods` over every
-  library and binary on all three legs. `rust/clippy.toml` holds one array in labelled groups, each opening with its
-  rule (local endpoint dials, accepts and TCP dials, ADR 0049, User isolation; and file locks: `File`'s lock methods, `libc::flock`, `LockFileEx` and `LockFile`, held only in a guard whose Drop unlocks). A sanctioned site carries
-  `#[allow(clippy::disallowed_methods, reason = "...")]` on the one statement that calls the method; a new method joins
-  its group, and a new rule is a new group in the same array. Like the other clippy steps it runs on main and on
-  demand, not on every branch push, so a lane merge gate runs the same line (`cargo clippy --workspace --exclude
-  vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods`) on the merged tree before the
-  merge.
+  library, binary and build script on all three legs. `rust/clippy.toml` holds one array in labelled groups, each
+  opening with its rule. A sanctioned site carries `#[allow(clippy::disallowed_methods, reason = "...")]` on the one
+  statement that calls the method; a new method joins its group, and a new rule is a new group in the same array. Like
+  the other clippy steps it runs on main and on demand, not on every branch push, so a lane merge gate runs the same
+  line (`cargo clippy
+  --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods`) on the merged
+  tree before the merge.
+- The Windows containment tests that need julia, Git for Windows' bash or a job around the test process are `#[ignore]`
+  in `cargo test`; the job "containment, ignored tests (windows-latest)" runs them with julia installed
+  (rust/backend/src/lifecycle/contain.rs).
 - The `paths:` filters decide which pushes run `rust.yml` and `CI.yml`; a new top-level code folder joins the filter of
   the workflow that tests it. Both workflows skip a commit whose message starts `release: v`.
 - Release jobs pin every action by commit SHA, and only `publish` gets `contents: write`: the release is the updater's

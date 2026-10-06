@@ -87,8 +87,12 @@ closing and new leases are refused, the listener dropped and the socket unlinked
 any row is touched; the run gate closes and in-flight starts drain, until the rows
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
-deadline, and a row of any other runtime is left running and counted not ended; the
-daemon's own children are signalled and given 3 s; the final record is written; the
+deadline, and a row of any other runtime is left running and counted not ended; every
+process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit
+(n)), is killed with everything it started that did not leave it (residual 7): each runs in its own process group
+on Unix and its own job on Windows, its leader is reaped only after that kill, a start in flight when the signal fires
+is counted before it creates anything and killed if it registers within those 3 s, and their owners are given 3 s to
+let go; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
@@ -187,9 +191,23 @@ connection is the only handle.
    `setsid`) survives, in each of these cases: its supervisor died before its end; it was
    started before 0.6.6; it runs on a host without a reachable user systemd manager,
    without cgroup v2 at `/sys/fs/cgroup`, or without `cgroup.kill` (Linux before 5.14).
-   macOS has no such container at all. On Windows the leg's job permits no breakaway (ruling (g)).
+   macOS has no such container at all. On Windows the leg's job permits no breakaway (ruling (g)); see residual 7.
 6. Closed: a row's remembered scopes are the durable file `row-scopes` in its state dir,
    read by every end, a startup Cleanup included, so a daemon restart no longer loses them.
+7. A daemon child's tree is killed with it, but a process can leave. Unix: a descendant that moves to another
+   process group is outside it, by `setpgid` (a shell's job control does this) or by `setsid`; this covers Julia's
+   `detach` (a `run(detach(cmd))` child has pgid = sid = its own pid), so Pluto's notebook workers, which Malt starts
+   detached, and quarto's julia server, which quarto starts detached (measured with quarto 1.7.31). Under the systemd
+   unit the daemon's cgroup ends them when the daemon exits; started without systemd, an idle worker exits when its
+   server socket closes and a busy one when its cell ends. Every ssh the daemon starts (its two bridges and the monitor's
+   sampler) sets `ControlMaster=no`, `ControlPath=none` and `ControlPersist=no`, so none leaves a master behind. Windows: nothing started inside a daemon child's job or a
+   row's job can leave it. Outside it are a process a broker starts (WMI, COM activation, the task scheduler, a
+   service) and a program started through an app-execution alias, which the Store install of juliaup makes `julia`: a
+   julia started that way ran, with what it started, outside the starting process's job (measured 2026-10-03; the
+   mechanism is not documented). Every julia the daemon runs, the update prepare's included, comes from `resolve_bin`
+   (`rust/backend/src/sidecars/julia.rs`), which refuses a path with a `WindowsApps` component, the folder app-execution
+   aliases live in, wherever it found it; it does not inspect the file, so an alias reached by another spelling (a
+   junction, a link) is not refused. Code a row or a REPL runs can start one.
 
 ## Known limits (0.6.6)
 
@@ -212,11 +230,15 @@ connection is the only handle.
   persistent write failure warns on every attempt.
 - (h) A failed closing-record write: the shutdown still ends the rows, and a kill during it
   may resume them.
-- (i) A child blocked on a write may survive the shutdown uncounted.
-- (j) Quarto engines whose launcher was already reaped survive a shutdown, and Windows has
-  no tree containment for them.
 - (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
   at the next window; it stays in the record until acknowledged.
-- (l) The Windows forwarding cancellation does not kill an already-spawned ssh child.
-- (m) The monitor's backoff ignores the shutdown signal.
+- (n) Every process `rust/updater` starts inside the daemon runs outside containment, with at most `kill_on_drop`,
+  which does not run at the daemon's exit. The daemon reaches them through the updater's four entries, each called in
+  update.rs under a `clippy::disallowed_methods` allow naming this limit: `check_release` (in `check`), `stage` and
+  `prepare::prepare` (in `stage_prepare_arm_inner`), and `PreparedState::matches` (in `handle_update_check`). A shutdown
+  or exit while one runs leaves it and what it started to end on their own; under the systemd unit its cgroup ends them.
+- (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
+  their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
+  an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
+  daemon does not handle. Under the systemd unit its cgroup ends them.
 - Window: see the release notes.

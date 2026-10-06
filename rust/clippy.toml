@@ -1,7 +1,7 @@
-# The methods below are disallowed in every library and binary. rust.yml's "Disallowed methods" step runs `cargo clippy
-# --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods` on all three
-# platforms, and a lane's merge gate runs the same line on the merged tree (.github/CLAUDE.md). One array in labelled
-# groups, each opening with its rule; a new rule is a new group. A sanctioned site carries
+# The methods below are disallowed in every library, binary and build script. rust.yml's "Disallowed methods" step runs
+# `cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods`
+# on all three platforms, and a lane's merge gate runs the same line on the merged tree (.github/CLAUDE.md). One array
+# in labelled groups, each opening with its rule; a new rule is a new group. A sanctioned site carries
 # #[allow(clippy::disallowed_methods, reason = "...")] on the one statement that calls the method. A path that does not
 # exist on a platform draws a warning there, never an error.
 disallowed-methods = [
@@ -26,6 +26,7 @@ disallowed-methods = [
   { path = "interprocess::os::windows::named_pipe::tokio::PipeStream::connect_by_path", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "interprocess::os::windows::named_pipe::tokio::PipeStream::connect_by_path_with_wait_mode", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "tokio::net::windows::named_pipe::ClientOptions::open", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::ClientOptions::open_with_security_attributes_raw", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation); on Windows its security attributes must set bInheritHandle to 0 (Inheritable handles)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFileW", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFileA", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::Storage::FileSystem::CreateFile2", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
@@ -61,7 +62,7 @@ disallowed-methods = [
   { path = "windows_sys::Win32::System::Pipes::CreateNamedPipeW", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "windows_sys::Win32::System::Pipes::CreateNamedPipeA", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "tokio::net::windows::named_pipe::ServerOptions::create", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
-  { path = "tokio::net::windows::named_pipe::ServerOptions::create_with_security_attributes_raw", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
+  { path = "tokio::net::windows::named_pipe::ServerOptions::create_with_security_attributes_raw", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation); on Windows its security attributes must set bInheritHandle to 0 (Inheritable handles)" },
   { path = "interprocess::local_socket::ListenerOptions::create_sync", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::local_socket::ListenerOptions::create_sync_as", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
   { path = "interprocess::local_socket::ListenerOptions::create_tokio", reason = "a listener is listed in rust/log/tests/isolation_guards.rs, its allow naming its guard (ADR 0049, User isolation)" },
@@ -87,11 +88,58 @@ disallowed-methods = [
   { path = "libc::flock", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "windows_sys::Win32::Storage::FileSystem::LockFileEx", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
   { path = "windows_sys::Win32::Storage::FileSystem::LockFile", reason = "hold a kernel file lock in a guard whose Drop unlocks (sot_log::host::WriterLock, comm::mail::inbox::InboxLock)" },
+  # Process spawns (ADR 0050, Shutdown): the daemon starts a process only through lifecycle::child_signal's
+  # Signal::spawn, Signal::spawn_std and Signal::output, which contain it and what it starts. The rule holds exactly
+  # the functions listed below: a call of one fails unless its statement carries an allow whose reason says why it
+  # stands. std's and tokio's entries are every way those crates start a process; the libc, windows-sys and
+  # portable-pty entries and the workspace libraries' entries are the ones listed, not every start those crates
+  # have. What the rule does not hold is named in rust/backend/src/lifecycle/CLAUDE.md.
+  { path = "std::process::Command::spawn", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "std::process::Command::output", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "std::process::Command::status", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "tokio::process::Command::spawn", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "tokio::process::Command::output", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "tokio::process::Command::status", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "std::os::unix::process::CommandExt::exec", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "windows_sys::Win32::System::Threading::CreateProcessW", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "windows_sys::Win32::System::Threading::CreateProcessA", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "windows_sys::Win32::System::Threading::CreateProcessAsUserW", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "windows_sys::Win32::System::Threading::CreateProcessAsUserA", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_protocol::topology::ssh_bridge::LinkGate::spawn_sync", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_protocol::topology::ssh_bridge::LinkGate::spawn_async", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_protocol::topology::ssh_bridge::LinkGate::probe", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_updater::check_release", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_updater::stage", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_updater::prepare::prepare", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "sot_updater::prepare::PreparedState::matches", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "portable_pty::SlavePty::spawn_command", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::fork", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::vfork", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::posix_spawn", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::posix_spawnp", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::execv", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::execve", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::execvp", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  { path = "libc::system", reason = "start a daemon child through lifecycle::child_signal (ADR 0050, Shutdown); anywhere else, the allow says why it stands" },
+  # Inheritable handles: on Windows a child started while a handle is open and inheritable holds it until the
+  # child ends. tokio's TcpListener::bind, TcpStream::connect and UdpSocket::bind make their socket through mio,
+  # which leaves it inheritable; tokio's TcpSocket and std do not. Accepted sockets are cleared at accept
+  # (serve_own, the accepts group). Two constructors of this class that take raw security attributes are listed
+  # once, in the group of their first rule, with a reason naming both: tokio's
+  # ServerOptions::create_with_security_attributes_raw under Accepts and ClientOptions::open_with_security_attributes_raw
+  # under Local endpoint dials; the other constructors under those groups that take security attributes or an
+  # inheritable option (windows-sys's CreateNamedPipeW, CreateNamedPipeA and CreateFile functions, interprocess's
+  # PipeListenerOptions) are held by those groups' rules alone. tokio::net::TcpStream::connect is listed once, in
+  # the TCP dials group. The rule holds exactly the constructors listed; what it does not hold is named in
+  # rust/backend/src/lifecycle/CLAUDE.md.
+  { path = "tokio::net::TcpListener::bind", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
+  { path = "tokio::net::UdpSocket::bind", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
+  { path = "interprocess::unnamed_pipe::pipe", reason = "a socket or pipe made this way is inheritable on Windows: make a socket with tokio's TcpSocket or through std and from_std; make a pipe with null security attributes" },
   # TCP dials (ADR 0049, User isolation): the control plane dials no TCP port; a Rust process reaches a daemon through
   # its socket or pipe, or an ssh login. The one sanctioned TCP dial is the page plane's: the daemon's proxy reaching a
-  # page port it serves on loopback (`handle_proxy_connect`, rust/backend/src/pages/proxy.rs).
+  # page port it serves on loopback (`dial_upstream`, rust/backend/src/pages/proxy.rs).
   { path = "std::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
   { path = "std::net::TcpStream::connect_timeout", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
-  { path = "tokio::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
+  { path = "tokio::net::TcpStream::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation); on Windows mio makes this socket inheritable: dial with tokio's TcpSocket" },
   { path = "tokio::net::TcpSocket::connect", reason = "the control plane dials no TCP port (ADR 0049, User isolation)" },
 ]

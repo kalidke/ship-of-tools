@@ -251,8 +251,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `SOT_PROBE_READ_TIMEOUT`, `SOT_PROBE_READY_WAIT` | env | agents | `agents/spawn/comm-probe.sh` |
 | `GH_OAUTH_CLIENT_ID`, `SOT_GH_SCOPES` (sot-gh-auth also honours gh's own `GH_HOST`, `GH_CONFIG_DIR`) | env | agents | `agents/sot-gh-auth.sh` |
 | `SOT_BACKEND_LABEL`, `SOT_RELAY_ENDPOINT`, `SOT_RELAY_LABEL`, `SOT_RELAY_SOTD`, `SOT_RELAY_TARGET` | env | topology | `rust/protocol/src/topology/relay_units.rs` `relay_command_line`; `comm/lib/comm-lib-client.sh` `sot_relay_endpoint` |
-| `SOT_JULIA_BIN`, `SOT_NODE_BIN` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path` |
-| which Julia binary the daemon runs (`julia::resolve_bin`: an absolute `SOT_JULIA_BIN`, juliaup's default channel, a verified PATH candidate) | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; second choice `rust/backend/src/update.rs` `prepare_spec` (see two owners) |
+| `SOT_JULIA_BIN`, `SOT_NODE_BIN`, `QUARTO_JULIA` | env | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/sidecars/mathjax.rs` `default_script_path`; `QUARTO_JULIA` is set for quarto by `rust/backend/src/pages/ops.rs` `run_quarto` |
+| which Julia binary the daemon runs (`julia::resolve_bin`: an absolute `SOT_JULIA_BIN`, juliaup's default channel, a verified PATH candidate; never a path with a `WindowsApps` component) | rule | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; read by `rust/backend/src/update.rs` `prepare_julia` and `rust/backend/src/pages/ops.rs` `run_quarto` |
 | `SOT_WATCH_BUDGET` | env | files | `rust/backend/src/files/watcher.rs` `watch_budget` |
 | `SOT_VIDEO_PORT`, `SOT_DOCS_PORT`, `SOT_PROXY_EXTRA_PORTS` | env | pages | `rust/backend/src/pages/video.rs` `video_port`; `rust/backend/src/pages/site/mod.rs` `site_port`; `rust/backend/src/pages/proxy.rs` `allowed_proxy_ports` |
 | `SOT_SETTINGS`, `SOT_KEYBINDINGS`, `SOT_PROJECTS_ROOT`, `SOT_REMOTE_HOME` | env | fe-ui | `rust/frontend/src/ui/persist/discover.rs` `find_config_file`; `rust/frontend/src/ui/persist/settings.rs`; `rust/frontend/src/ui/input/keybindings.rs`; `rust/frontend/src/ui/session/picker.rs` |
@@ -269,7 +269,8 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | `LinkGate` (one per host; the window's transport is its only writer) | state | topology | `rust/protocol/src/topology/ssh_bridge.rs` `LinkGate`; written `rust/frontend/src/net/transport/mod.rs` |
 | per-host table (`host_connected`, `host_transports`, `host_resolved_dial`, `link_gates`, `declared_host`, `reconnect_now`) | state | fe-net | `rust/frontend/src/net/hosts.rs` `HostTable`; `rust/frontend/src/ui/connections.rs` |
 | `FrontendIdentity` | state | fe-net | `rust/frontend/src/net/identity.rs` `FrontendIdentity`, `frontend_identity` |
-| `Signal`, `ChildGuard`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `ChildGuard`, `fire` |
+| `Signal` and its tree registry, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire` | state, lock | lifecycle | `rust/backend/src/lifecycle/child_signal.rs` `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`, `Contained`, `ContainedStd`, `fire`; `rust/backend/src/lifecycle/contain.rs` `Tree` |
+| process-start rule: each call of a function in `rust/clippy.toml`'s process-spawns group outside `Signal::spawn`, `Signal::spawn_std` and `Signal::output` is a reasoned exception; what the group does not hold is named in rust/backend/src/lifecycle/CLAUDE.md | rule | lifecycle | `rust/clippy.toml` (process-spawns group); `rust/backend/src/lifecycle/child_signal.rs` `Signal::spawn`, `Signal::spawn_std`, `Signal::output` |
 | `Leases`, its mutex and phase | state, lock | lifecycle | `rust/backend/src/lifecycle/lease.rs` `Leases`, `Phase` |
 | window exit decision (`ExitReason`, `ExitStep`, `exit_intent`, `close_now`) | state | lifecycle | `rust/frontend/src/lease.rs` `ExitReason`, `ExitStep`, `exit_intent`, `close_now` |
 | quit prompt, `request_quit` | UI | fe-ui | `rust/frontend/src/ui/app/exit.rs` `quit_prompt_key`; `rust/frontend/src/ui/app/handler.rs` |
@@ -310,7 +311,6 @@ user or another process sees.
 | Apply transaction in two languages | distribution | `scripts/sot-apply.sh`; `scripts/sot-apply.ps1` | One apply in Rust, one crash-loop rule | behaviour |
 | Julia instantiate done twice | distribution | `scripts/install.sh`; `scripts/launch-sot.ps1`; `rust/updater/src/prepare.rs` | The updater's prepare owns it on every target | behaviour |
 | Codex home resolved two ways | agents | `rust/backend/src/agents/accounts.rs` `account_home`; `agents/codex/bin/ccx`; `src/homes.jl` `codex_home` | `accounts.rs` honours `$CODEX_HOME`; the shell and Julia copies stay as twins | behaviour |
-| Julia binary chosen twice | sidecars | `rust/backend/src/sidecars/julia.rs` `resolve_bin`; `rust/backend/src/update.rs` `prepare_spec` | `prepare_spec` takes `resolve_bin()`'s result | behaviour |
 | Default handle derived twice | messaging | `comm/lib/comm-lib-identity.sh` `sot_derive_handle`; `agents/codex/bin/ccx` | `ccx` builds its default from the same pieces | behaviour |
 | Label-to-slug rule written in Rust and in shell | rows | `rust/protocol/src/topology/endpoint.rs` `slug`; `comm/lib/comm-lib-identity.sh` `sot_slug` | The shell twin stays, pinned by one case table | pure (a test) |
 | `.sot/worktree.toml` `display_prefix` parsed twice, byte-identical | agents | `agents/worktree/comm-worktree-new.sh`; `agents/worktree/comm-worktree-clean.sh` | One shell function both call | pure |

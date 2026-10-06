@@ -6,7 +6,7 @@ use std::process::Stdio;
 use anyhow::Context;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStdin, Command};
 
 use super::*;
 use super::lifecycle::{browser_ports_key, lifecycle_begin_starting, lifecycle_transition};
@@ -33,7 +33,7 @@ pub(super) fn spawn_supervisor(
     lifecycle: SharedLifecycle,
 ) -> Result<mpsc::Sender<Submission>> {
     let repl_project = Repl::repl_project();
-    let julia_bin = crate::sidecars::julia::resolve_bin_or_bare();
+    let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
     if !repl_project.exists() {
         return Err(anyhow!(
             "repl project missing at {}",
@@ -42,19 +42,20 @@ pub(super) fn spawn_supervisor(
     }
     let julia_src = "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)";
 
-    let mut child: Child = Command::new(&julia_bin)
-        .arg(format!("--project={}", repl_project.display()))
+    let mut cmd = Command::new(&julia_bin);
+    cmd.arg(format!("--project={}", repl_project.display()))
         .arg("-e")
         .arg(julia_src)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    let mut contained = crate::lifecycle::child_signal::process()
+        .spawn(&mut cmd)
         .with_context(|| format!("spawn {julia_bin} --project={}", repl_project.display()))?;
 
-    let stdin = child.stdin.take().context("repl child stdin missing")?;
-    let stdout = child.stdout.take().context("repl child stdout missing")?;
-    let stderr = child.stderr.take().context("repl child stderr missing")?;
+    let stdin = contained.stdin.take().context("repl child stdin missing")?;
+    let stdout = contained.stdout.take().context("repl child stdout missing")?;
+    let stderr = contained.stderr.take().context("repl child stderr missing")?;
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
 
@@ -66,7 +67,7 @@ pub(super) fn spawn_supervisor(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     tokio::spawn(supervisor_task(
-        child, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
     ));
     Ok(submit_tx)
 }
@@ -91,7 +92,7 @@ pub(super) fn spawn_supervisor_with_project(
     lifecycle: SharedLifecycle,
 ) -> Result<mpsc::Sender<Submission>> {
     let repl_project = Repl::repl_project();
-    let julia_bin = crate::sidecars::julia::resolve_bin_or_bare();
+    let (julia_bin, _) = crate::sidecars::julia::resolve_bin().map_err(|e| anyhow!(e))?;
     if !repl_project.exists() {
         return Err(anyhow!(
             "repl project missing at {}",
@@ -114,8 +115,8 @@ pub(super) fn spawn_supervisor_with_project(
     let sep = ":";
     let load_path = format!("@{sep}{}{sep}", repl_project.display());
 
-    let mut child: Child = Command::new(&julia_bin)
-        .env("JULIA_LOAD_PATH", &load_path)
+    let mut cmd = Command::new(&julia_bin);
+    cmd.env("JULIA_LOAD_PATH", &load_path)
         // The workspace root, for the shim's relative-path fallback and for
         // user scripts (pty sessions already get it; REPL children didn't).
         .env("SOT_WORKSPACE_ROOT", user_project)
@@ -129,18 +130,17 @@ pub(super) fn spawn_supervisor_with_project(
         .arg(julia_src)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={load_path})",
-                user_project.display()
-            )
-        })?;
+        .stderr(Stdio::piped());
+    let mut contained = crate::lifecycle::child_signal::process().spawn(&mut cmd).with_context(|| {
+        format!(
+            "spawn {julia_bin} --project={} (JULIA_LOAD_PATH={load_path})",
+            user_project.display()
+        )
+    })?;
 
-    let stdin = child.stdin.take().context("repl child stdin missing")?;
-    let stdout = child.stdout.take().context("repl child stdout missing")?;
-    let stderr = child.stderr.take().context("repl child stderr missing")?;
+    let stdin = contained.stdin.take().context("repl child stdin missing")?;
+    let stdout = contained.stdout.take().context("repl child stdout missing")?;
+    let stderr = contained.stderr.take().context("repl child stderr missing")?;
 
     let (submit_tx, submit_rx) = mpsc::channel::<Submission>(16);
 
@@ -150,7 +150,7 @@ pub(super) fn spawn_supervisor_with_project(
     let my_gen = lifecycle_begin_starting(&lifecycle, &frame_tx, &workspace_id);
 
     tokio::spawn(supervisor_task(
-        child, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
+        contained, stdin, stdout, submit_rx, frame_tx, workspace_id, stderr_tail, lifecycle, my_gen,
     ));
     Ok(submit_tx)
 }
@@ -182,7 +182,7 @@ fn spawn_stderr_tail(
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines, reason = "the REPL supervisor task: one loop over the child's output and the submissions; predates the 100-line limit")]
 async fn supervisor_task(
-    mut child: Child,
+    mut contained: crate::lifecycle::child_signal::Contained,
     mut stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     mut submit_rx: mpsc::Receiver<Submission>,
@@ -192,7 +192,6 @@ async fn supervisor_task(
     lifecycle: SharedLifecycle,
     my_gen: u64,
 ) {
-    let _child_guard = crate::lifecycle::child_signal::ChildGuard::new();
     let mut pending: HashMap<u64, oneshot::Sender<Result<Value>>> = HashMap::new();
     // Streamed (fire-and-forget) evals in flight: eval_id recorded at submit,
     // cleared when its `done` frame routes. On child death each survivor gets
@@ -210,16 +209,15 @@ async fn supervisor_task(
     loop {
         tokio::select! {
             biased;
-            // The daemon is shutting down: nothing kills this child at
-            // `process::exit`, so it is killed here.
+            // The daemon is shutting down: the signal has already killed the
+            // child's tree.
             _ = crate::lifecycle::child_signal::fired() => {
-                let _ = child.kill().await;
                 break;
             }
             sub = submit_rx.recv() => {
                 let Some(sub) = sub else {
                     drop(stdin);
-                    let _ = child.wait().await;
+                    let _ = contained.wait().await;
                     // Intentional teardown (sender dropped — restart or
                     // shutdown). Gen-guarded: when a restart has already
                     // opened the next generation this is a no-op, so the
@@ -340,11 +338,11 @@ async fn supervisor_task(
             // submit channel whose sender still reports open. Every later
             // submit then queued into a channel nobody would ever read — a
             // wait with no child behind it and no respawn, which is the one
-            // outcome a submit must never produce. `Child::wait` is cancel
+            // outcome a submit must never produce. `Contained::wait` is cancel
             // safe, so re-creating it each loop iteration is free, and this
             // branch is polled LAST (`biased`), so stdout the child already
             // wrote is still routed before we notice it is gone.
-            status = child.wait() => {
+            status = contained.wait() => {
                 match status {
                     Ok(s) => tracing::warn!(status = ?s, "repl child exited"),
                     Err(e) => tracing::warn!(error = %e, "repl child wait failed"),
@@ -402,8 +400,7 @@ async fn supervisor_task(
             frame: serde_json::json!({ "kind": "done", "eval_id": eid, "elapsed_ms": 0 }),
         });
     }
-    let _ = child.kill().await;
-    let _ = child.wait().await;
+    let _ = contained.kill().await;
 }
 
 /// Route one stdout line off the REPL child. A `repl.frame` evt is fanned out

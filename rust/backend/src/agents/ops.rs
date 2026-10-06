@@ -71,6 +71,7 @@ pub(crate) fn agent_exec() -> ! {
             std::env::set_var(k, v);
         }
         use std::os::unix::process::CommandExt;
+        #[allow(clippy::disallowed_methods, reason = "`sotd agent-exec` replaces its own process with the agent; no daemon runs here")]
         let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
         eprintln!("sotd agent-exec: exec {:?} failed: {err}", argv[0]);
         std::process::exit(2);

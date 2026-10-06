@@ -33,10 +33,11 @@ files each `agent.message` whose `to` this box's registry lists through `file_co
   `sot_heartbeat_fresh`), stamped by the session and by the daemon running its row (`comm/registry/liveness.rs`). A
   forward skips both tests and returns the hub's answer verbatim.
 - `forward_comm_file` waits `inbox_lock_wait` plus `COMM_FORWARD_SLACK` (5 s) at most, or until the shutdown signal
-  fires; either way it kills the ssh child before returning.
+  fires; either way it kills the ssh child and what it started before returning.
 - `handle_agent_send` broadcasts one `AgentMessage` (`to == ""` is a broadcast); `handle_agent_filed` broadcasts one
   `AgentReceipt` whose `filer` is the answering connection's hello name, and refuses `bad_filer` when it has none.
 - inbox.rs stays std and serde only outside its macOS arm: tests/comm_file.rs includes it by path.
 - The link reads the topology once, at start (`recipe_for`). `hold_link` backs off from 1 s, doubling to 30 s, starts
-  over after a connection that lasted 60 s, and never reconnects once the shutdown signal fires. `move_fe_inbox` runs
+  over after a connection that lasted 60 s, and never reconnects once the shutdown signal fires; the link's ssh starts through `Signal::spawn`, so its tree dies at
+  the fire. `move_fe_inbox` runs
   before the first connection; a failed move leaves the old inbox in place.

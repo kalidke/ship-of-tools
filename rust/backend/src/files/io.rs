@@ -147,9 +147,16 @@ pub fn write_file(abs: &Path, content: &str, expected: Option<&str>) -> Result<W
 /// for system trash, `Some(destination)` for the fallback — the caller
 /// surfaces which path was taken (no quiet substitution).
 pub fn trash_file(abs: &Path, workspace_root: &Path) -> Result<Option<std::path::PathBuf>> {
-    match std::process::Command::new("gio").arg("trash").arg(abs).status() {
-        Ok(status) if status.success() => return Ok(None),
-        _ => {}
+    let mut cmd = std::process::Command::new("gio");
+    cmd.arg("trash")
+        .arg(abs)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Ok(mut c) = crate::lifecycle::child_signal::process().spawn_std(&mut cmd) {
+        if c.wait().is_ok_and(|status| status.success()) {
+            return Ok(None);
+        }
     }
     trash_file_fallback(abs, workspace_root).map(Some)
 }
@@ -185,6 +192,31 @@ fn trash_file_fallback(abs: &Path, workspace_root: &Path) -> Result<std::path::P
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// The daemon's own standard handles are not `gio`'s: it is handed null ones. Read as text through the production
+    /// view, from the signature through the function's closing brace. Every contiguous `.stdin`, `.stdout` and
+    /// `.stderr` in the function's text, a method call (however the text between the name and its parenthesis is spaced
+    /// or commented) or a field read, is the null setting; a call spelled `Command::stdin(...)`, or with a space or
+    /// comment between the dot and the name, is outside this check.
+    #[test]
+    fn gio_gets_no_inherited_stdio() {
+        let source = sot_log::test_scan::without_test_modules(include_str!("io.rs"));
+        let mut body = String::new();
+        for line in source.lines().skip_while(|l| !l.starts_with("pub fn trash_file(")) {
+            body.push_str(line);
+            body.push('\n');
+            if line == "}" {
+                break;
+            }
+        }
+        assert!(!body.is_empty(), "trash_file was not found");
+        assert_eq!(body.matches("Command::new(\"gio\")").count(), 1);
+        for handle in ["stdin", "stdout", "stderr"] {
+            let setting = format!(".{handle}(std::process::Stdio::null())");
+            assert_eq!(body.matches(&setting).count(), 1, "gio's {handle} is not null");
+            assert_eq!(body.matches(&format!(".{handle}")).count(), 1, "gio's {handle} has a setter other than the null one");
+        }
+    }
 
     /// Per-test scratch dir under the OS temp dir, removed on drop. Named by the
     /// test so parallel tests in this binary don't collide.

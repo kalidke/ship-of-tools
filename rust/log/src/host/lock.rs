@@ -140,7 +140,7 @@ fn open_lock_file(lock_path: &Path) -> Result<File> {
 /// the share deny protects the OPENED object: without the flag CreateFileW
 /// follows a symlink/junction planted at the lock path and the fence would
 /// bind (and deny sharing on) the TARGET, leaving the link free to be
-/// re-pointed for a second fence. Std never makes handles inheritable.
+/// re-pointed for a second fence. Std opens its files non-inheritable.
 #[cfg(windows)]
 fn open_lock_file(lock_path: &Path) -> Result<File> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};

@@ -145,6 +145,16 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     ports
 }
 
+/// The dial to a served page port on 127.0.0.1. Made with tokio's `TcpSocket`, whose Windows socket is not inheritable,
+/// where `TcpStream::connect` makes one that is: a child process the daemon starts while the connection is open must
+/// not hold it.
+async fn dial_upstream(port: u16) -> std::io::Result<TcpStream> {
+    let socket = tokio::net::TcpSocket::new_v4()?;
+    #[allow(clippy::disallowed_methods, reason = "the page plane: the daemon's proxy dials a page port it serves on loopback (ADR 0049, User isolation)")]
+    let stream = socket.connect(std::net::SocketAddr::from(([127, 0, 0, 1], port))).await;
+    stream
+}
+
 /// Handle a connection whose frame behind its `handoff` hello was `proxy.connect` (ADR 0035).
 /// `rx` is the buffered reader that already consumed that frame (any
 /// bytes it buffered past the envelope are preserved — `copy` drains the
@@ -188,12 +198,7 @@ where
 
     // Dial the backend service. A short connect timeout keeps a wedged
     // target from parking the proxy task forever.
-    #[allow(clippy::disallowed_methods, reason = "the page plane: the daemon's proxy dials a page port it serves on loopback (ADR 0049, User isolation)")]
-    let dial = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        TcpStream::connect(("127.0.0.1", req.port)),
-    )
-    .await;
+    let dial = tokio::time::timeout(std::time::Duration::from_secs(5), dial_upstream(req.port)).await;
     let upstream = match dial {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
@@ -297,6 +302,22 @@ mod tests {
         let n = allowed_proxy_ports().iter().filter(|p| (46000..46020).contains(*p)).count();
         assert!(n <= BROWSER_PORTS_PER_WS, "cap enforced, kept {n}");
         revoke_browser_ports("wsCap-test");
+    }
+
+    /// ADR 0049, User isolation: the proxy's dial to a page port is not inherited by a child the daemon starts.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_proxy_dial_is_not_inheritable() {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stream = dial_upstream(port).await.unwrap();
+        let mut flags = 0u32;
+        // SAFETY: a plain query on a socket this test holds.
+        let ok = unsafe { GetHandleInformation(stream.as_raw_socket() as _, &mut flags) };
+        assert_ne!(ok, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0, "the proxy's dial is inheritable");
     }
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

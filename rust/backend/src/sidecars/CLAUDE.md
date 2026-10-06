@@ -9,14 +9,19 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 - Per daemon one Pluto (`Pluto`, pluto.rs) and one MathJax node child (`MathJax`, mathjax.rs).
 - One sampler per monitored host (`MonitorHub::start` and `supervise`, monitor.rs).
 - The julia choice: `julia::resolve_bin` takes `SOT_JULIA_BIN`, then juliaup's default channel, then a verified PATH
-  entry.
+  entry; it never returns a path with a `WindowsApps` component (where app-execution aliases live), wherever it
+  found one, though it does not inspect the file, so an alias reached by another spelling is not refused, and never a
+  bare `julia`: none found is an error. The kernel, the REPL, Pluto, quarto (`run_quarto`) and the update prepare (`prepare_julia`) all run its answer.
 
 ## Promises
 - A kernel caller waits at most `KERNEL_REQUEST_TIMEOUT` (10 s, `Kernel::request`) and never spawns or kills.
 - `supervisor_loop` respawns a dead kernel with a backoff from 250 ms doubling to 30 s.
 - Pluto and MathJax respawn on the next call after a death (`ensure_supervisor`).
-- The shutdown signal kills every child: kernel and Pluto select on the `Signal` passed in, MathJax and the monitor on
-  `crate::lifecycle::child_signal::fired()`.
+- Every sidecar child starts through `Signal::spawn`, so the shutdown signal kills it with everything it started: the
+  kernel, Pluto and the monitor take the `Signal` passed in, the REPL and MathJax use `child_signal::process()` and
+  `fired()`; the monitor's respawn backoff ends at the fire.
+- A remote host's sampler ssh is built from `SSH_OPTS`, so it turns ssh sharing off as the bridges do
+  (`sampler_command`).
 - The kernel runs only its own `julia/kernel` project (`run_one_generation`).
 - A dead monitor source shows as a `stale` tick and respawns after 5 s; its reason is logged once per change
   (`should_log`).
@@ -33,7 +38,7 @@ stdio. Callers submit and wait; they never spawn, kill or retry.
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Kernel::request`, `file.preview`,
 `repl.eval`, `repl.run_file`, `repl.interrupt`, `repl.execute`, `kernel.request`, `math.render`, `pluto.open`,
 `monitor.subscribe`, `monitor.unsubscribe`, `monitor.history`, `repl.frame`, `monitor.tick`, `bound_pluto_port`,
-`allowed_proxy_ports`, `Kernel`, `Repl`. Uses: `dispatch`, `ChildGuard`, `Signal`, `child_signal::fired`,
+`allowed_proxy_ports`, `Kernel`, `Repl`, `julia::resolve_bin`. Uses: `dispatch`, `SSH_OPTS`, `Signal::spawn`, `Contained`, `Signal`, `child_signal::fired`,
 `child_signal::process`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`, `sot_state_dir`, `sot_config_dir`,
 `host_name`, `state_dir_hash`, `resource_dir`, `rust/backend/src/paths.rs`, `record_browser_port`,
 `revoke_browser_ports`, `loopback_port_from_url`, `rust/protocol/src/page_url.rs`, `ensure_proxy_for_url`.
@@ -60,10 +65,10 @@ kernel.rs `run_one_generation` for a kernel's life; julia.rs `resolve_bin` for w
 for a sampler's life.
 
 ## Rules
-- The kernel resolves julia at every generation (`julia_bin` in kernel.rs); Pluto and MathJax resolve their binary once,
-  in `Pluto::new` and `MathJax::new`.
+- The kernel resolves julia at every generation (`julia_bin` in kernel.rs), Pluto at every start (`ensure_supervisor`)
+  and the REPL at every spawn, and a resolver error fails the spawn; MathJax resolves node once, in `MathJax::new`.
 - A wire shape changes together with its other side: kernel NDJSON and `KERNEL_PROTOCOL_VERSION` with julia/kernel;
   Pluto's `READY`/`OPEN`/`URL`/`ERR` lines with julia/pluto/start.jl; MathJax `{id, tex, display}` with
   rust/backend/sidecars/mathjax/render.mjs.
-- The shutdown wiring exists in two forms (kernel and Pluto take the `Signal`; MathJax and the monitor use
-  `ChildGuard` and `fired`); change one, check the other.
+- The shutdown wiring exists in two forms (the kernel, Pluto and the monitor take the `Signal`; the REPL and MathJax
+  use `child_signal::process()` and `fired()`); change one, check the other.

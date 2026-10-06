@@ -3955,6 +3955,7 @@ version = "0.6.6-rc9.12"
 dependencies = [
  "anyhow",
  "gethostname 0.5.0",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

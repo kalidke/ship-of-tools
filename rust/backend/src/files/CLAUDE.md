@@ -18,7 +18,8 @@ Per workspace row (built in `rows/workspace.rs`):
 - Reads follow links (`node_id_to_path`). Mutations resolve through `node_id_to_path_confined`, which canonicalizes and
   refuses a path outside the root.
 - `write_file` refuses when the caller's version differs from the FNV-1a 64 of the bytes on disk (`content_version`).
-- Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`).
+- Delete is a trash, never an unlink (`trash_file`: `gio trash`, else `<root>/.sot-trash/`); `gio` runs through
+  `Signal::spawn_std` with null standard handles and counts as system trash only after it exited 0.
 - A concept target never holds `..`, an absolute path or an empty segment, and `.md` is appended, never substituted
   (`ConceptStore::target_to_path`).
 - The watcher never watches the daemon's own state, install or updates trees (`self_owned_roots`, `should_skip`), never
@@ -32,7 +33,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `dir.create`, `preview.changed`, `FilesMode`, `ConceptStore`, `rust/backend/src/rows/workspace.rs`, `Watcher`,
 `rust/backend/src/rows/registry.rs`. Uses: `dispatch`, `write_frame_to`, `Workspaces::resolve`, `row_or_reply`, `capsule_guard`,
 `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`, `Kernel::request`, `file.preview`,
-`is_servable_video`.
+`is_servable_video`, `Signal::spawn_std`, `ContainedStd`, `child_signal::process`.
 
 ## Folders
 - `examples/preview/` (repo root): sample files that previews are tried on.

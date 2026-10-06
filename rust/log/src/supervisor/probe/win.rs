@@ -120,7 +120,9 @@ impl ProbeOps for RealProbeOps {
     type Process = ChallengedProcess;
 
     fn spawn(&self, command: &mut std::process::Command) -> SpawnOutcome<Self::SpawnedChild> {
-        match command.spawn() {
+        #[allow(clippy::disallowed_methods, reason = "the supervisor starts its leg (ADR 0043)")]
+        let spawned = command.spawn();
+        match spawned {
             Ok(child) => SpawnOutcome::Spawned(SpawnedChild::from_child(child)),
             Err(e) => SpawnOutcome::Failed(e),
         }
