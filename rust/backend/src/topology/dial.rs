@@ -468,7 +468,7 @@ pub(crate) mod tests {
             dir.path(),
             &format!("echo 'Permission denied (publickey).' >&2\nsleep 30 >/dev/null &\necho $! > '{}'\nexit 255\n", pid_file.display()),
         );
-        let _holder = crate::lifecycle::child_signal::tests::Leftover::of_file(pid_file.clone());
+        let holder = crate::lifecycle::child_signal::tests::Leftover::of_file(pid_file.clone());
         prepend_to_path(dir.path());
 
         let started = std::time::Instant::now();
@@ -486,6 +486,7 @@ pub(crate) mod tests {
             err.contains("ssh:hub") && err.contains("hello"),
             "the error must name the endpoint and the step that failed, got: {err}"
         );
+        assert!(holder.gone(), "the refused login's descendant outlived the error path");
     }
 
     /// A cancel kills the tracked child's tree through the guard's own handle on every platform, and the guard's drop

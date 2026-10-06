@@ -402,7 +402,7 @@ pub(crate) mod tests {
     use std::time::Duration;
 
     /// A pid is gone once a probe fails, polled for up to 3 s.
-    pub(crate) fn gone(pid: i32) -> bool {
+    fn gone(pid: i32) -> bool {
         (0..150).any(|_| {
             std::thread::sleep(Duration::from_millis(20));
             // SAFETY: signal 0 only probes the pid.
@@ -410,8 +410,14 @@ pub(crate) mod tests {
         })
     }
 
-    /// A process a test started: dropped, it is SIGKILLed unless the test saw it gone. Built from its pid, or from a
-    /// file the stub wrote the pid to, read when the pid is first needed.
+    /// A process a test started and holds no handle to (a descendant, or a child whose handle the code under test
+    /// owns): dropped, it is SIGKILLed unless the test saw it gone. A child the test holds ends through its handle,
+    /// which kills it by pid while it is unreaped, so a leftover is never built on a held child's pid, and each one is
+    /// seen gone once, but a process alive at the test's end by design.
+    /// `each_file_checks_as_many_leftovers_as_it_builds_and_parses_their_pids` checks this: every one built from a pid
+    /// parses it from what the process wrote, and each file holds as many seen-gone checks as leftovers it builds, but
+    /// those alive at the end by design. Built from its pid, or from a file the stub wrote the pid to, read when the pid
+    /// is first needed.
     pub(crate) struct Leftover {
         pid: std::cell::Cell<Option<i32>>,
         file: Option<std::path::PathBuf>,
@@ -689,7 +695,6 @@ pub(crate) mod tests {
             cmd.pre_exec(move || if libc::setpgid(0, theirs) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) });
         }
         let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
-        let _leftover = Leftover::of_pid(c.id() as i32);
         signal.fire();
         let began = std::time::Instant::now();
         let mut exited = false;
@@ -721,11 +726,43 @@ pub(crate) mod tests {
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("3113");
         let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
-        let pid = Leftover::of_pid(c.id() as i32);
         assert!(c.wait_within(Duration::from_millis(200)).expect("wait_within").is_none(), "a child past its bound was waited for");
         assert!(signal.held_groups().is_empty(), "the tree is still held");
+        assert_eq!(
+            std::os::unix::process::ExitStatusExt::signal(&c.wait().expect("the reaped status")),
+            Some(libc::SIGKILL),
+            "the child past its bound was not killed"
+        );
         drop(c);
         assert_eq!(signal.live(), 0);
-        assert!(pid.gone(), "the child survived its bound");
+    }
+
+    /// No test builds a leftover on the pid of a child it holds: that child's drop would signal, and its check would
+    /// probe, a pid that was reaped. Every one built from a pid parses it from what the process wrote. And per file
+    /// there are as many seen-gone checks as leftovers built, but those alive at the test's end by design, listed by
+    /// file and count. The count is per file, so a check on something else in the same file can hide an unchecked one.
+    #[test]
+    fn each_file_checks_as_many_leftovers_as_it_builds_and_parses_their_pids() {
+        // Built with `concat!`, so this file does not hold the texts it counts.
+        let (made, seen, of_pid) = (concat!("Leftover::", "of_"), concat!(".gone", "()"), concat!("Leftover::", "of_pid("));
+        const ALIVE_AT_END: [(&str, usize); 1] = [("rust/backend/src/pages/ops.rs", 1)];
+        let mut found = Vec::new();
+        for (rel, text) in sot_log::test_scan::rust_sources() {
+            for (n, line) in text.lines().enumerate() {
+                if line.contains(of_pid) && !line.contains(".parse(") {
+                    found.push(format!("{rel}:{}: a Leftover whose pid is not parsed from what the process wrote: {}", n + 1, line.trim()));
+                }
+            }
+            let built = text.matches(made).count();
+            if built == 0 {
+                continue;
+            }
+            let checked = text.matches(seen).count();
+            let alive = ALIVE_AT_END.iter().find(|(f, _)| *f == rel).map_or(0, |(_, c)| *c);
+            if built != checked + alive {
+                found.push(format!("{rel}: {built} Leftovers, {checked} seen gone, {alive} alive at the end by design"));
+            }
+        }
+        assert!(found.is_empty(), "a Leftover not seen gone, or one whose pid is not read from the process:\n{}", found.join("\n"));
     }
 }
