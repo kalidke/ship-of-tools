@@ -340,8 +340,9 @@ mod tests {
     #[cfg(windows)]
     use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 
-    /// ADR 0049 `## User isolation`: a connection is admitted only when the OS says its process runs as this
-    /// account; another account's, and a peer the OS did not name, are out.
+    /// ADR 0049 `## User isolation`: a Unix connection is admitted only when its kernel-recorded effective uid is this
+    /// account's; foreign or missing records are refused. On macOS this checks cached connection provenance, without
+    /// establishing the holder's current euid or binding it to the live token's observed process.
     #[cfg(unix)]
     #[test]
     fn same_account_table() {

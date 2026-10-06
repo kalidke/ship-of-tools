@@ -69,9 +69,9 @@
 //! object with all three properties. The candidate replacement is a kqueue
 //! knote — `kevent(EV_ADD, EVFILT_PROC, NOTE_EXIT, ident = pid)` — which
 //! attaches to a `proc`, not to a number, and is therefore the only macOS
+//! primitive that can make an *un-fired* registration mean "this pid still
 //! names the process I proved". Four kernel behaviours carry that design,
 //! and nobody on this project can observe any of them:
-//! carry that design, and nobody on this project can observe any of them:
 //!
 //! - **Fact 3 — once, and only once.** The watch treats "an exit was ever
 //!   delivered" as proof, and asks the question with a non-blocking drain.

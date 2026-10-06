@@ -1,7 +1,11 @@
 # rust/log/src/identity: peer identity, the same-connection challenge (platform)
 
-Before a reply on a local connection is trusted, the client proves the peer is this user's process, with a known pid and
-creation time. The OS-specific steps 1-3 run first, in one file per platform; the shared wire steps 4-5 follow. Part of
+Before a reply on a local connection is trusted, the client checks the kernel's recorded account for the connection
+and observes a pid and creation time. On macOS, steps 1-3 authenticate cached connection provenance, without
+establishing the descriptor holder's current euid or binding it to the live token's observed process. Credential
+transitions and descriptor transfers leave that account record unchanged. Process attribution requires an honest
+responder reporting its own identity; liveness after registration also requires it to read the request before replying.
+The OS-specific steps 1-3 run first, in one file per platform; the shared wire steps 4-5 follow. Part of
 platform; charter: rust/log/src/host/CLAUDE.md.
 
 ## Files

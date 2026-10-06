@@ -305,12 +305,12 @@ fn transition_helper(spec: &str) {
     let mut parts = spec.split(' ');
     let (role, path) = (parts.next().expect("role"), parts.next().expect("path"));
     let uid: libc::uid_t = parts.next().expect("uid").parse().expect("a uid");
-    let _held: Box<dyn std::any::Any> = if role == "connect" {
-        Box::new(std::os::unix::net::UnixStream::connect(path).expect("helper: connect"))
+    let (_stream, _listener) = if role == "connect" {
+        (Some(std::os::unix::net::UnixStream::connect(path).expect("helper: connect")), None)
     } else {
         let listener = std::os::unix::net::UnixListener::bind(path).expect("helper: bind");
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666)).expect("helper: chmod");
-        Box::new(listener)
+        (None, Some(listener))
     };
     // SAFETY: seteuid changes only this process's credentials.
     assert_eq!(unsafe { libc::seteuid(uid) }, 0, "helper: seteuid({uid}): {}", std::io::Error::last_os_error());
@@ -389,6 +389,9 @@ fn a_client_that_takes_this_accounts_euid_after_connecting_is_still_another_acco
     if let Ok(spec) = std::env::var(TRANSITION_HELPER) {
         return transition_helper(&spec);
     }
+    if !run_isolated(NAME) {
+        return;
+    }
     let dir = private_tmp();
     let path = dir.path().join("s.sock");
     let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
@@ -409,6 +412,9 @@ fn a_server_that_takes_this_accounts_euid_after_listening_is_foreign() {
     const NAME: &str = "a_server_that_takes_this_accounts_euid_after_listening_is_foreign";
     if let Ok(spec) = std::env::var(TRANSITION_HELPER) {
         return transition_helper(&spec);
+    }
+    if !run_isolated(NAME) {
+        return;
     }
     let dir = private_tmp();
     let path = dir.path().join("s.sock");
