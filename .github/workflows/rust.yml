@@ -68,6 +68,51 @@ jobs:
           workspaces: rust
       - name: Build workspace
         run: cargo build --workspace --locked
+
+      - name: MAC-SOCK-a revert-read assertion matrix
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, re, signal, subprocess, sys
+          os.umask(0o22)
+          root = pathlib.Path.cwd()
+          target = pathlib.Path(os.environ.get("CARGO_TARGET_DIR", str(root / "target")))
+          logs = target / "logs"
+          logs.mkdir(parents=True, exist_ok=True)
+          child_env = dict(os.environ)
+          child_env.update(CARGO_NET_OFFLINE="true", CARGO_PROFILE_DEV_DEBUG="line-tables-only", CARGO_TARGET_DIR=str(target))
+          def run(label, test, expected, needle="", prerequisite=""):
+              command = ["nice", "-n", "10", "cargo", "test", "-p", "sot-log", "--test", "socket_unix", "-j", "8", "--locked", "--"]
+              if test: command += [test, "--exact"]
+              command += ["--nocapture"]
+              log = logs / (label + ".log")
+              with log.open("w") as stream:
+                  child = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, env=child_env, start_new_session=True)
+                  try: status = child.wait(timeout=540)
+                  except subprocess.TimeoutExpired:
+                      os.killpg(child.pid, signal.SIGKILL)
+                      child.wait(timeout=5)
+                      status = 124
+              data = log.read_text()
+              data = data.replace(str(root.parent), "<repo>").replace(str(target), "<target>")
+              data = re.sub(r"/(?:home|Users)/[^/\s]+", "<home>", data)
+              log.write_text(data)
+              print("::group::" + label + ".log", flush=True)
+              print(data, flush=True)
+              print("::endgroup::", flush=True)
+              print(f"{label} exit {status} expected {expected}", flush=True)
+              if status != expected or not re.search(r"running [1-9][0-9]* tests?", data): sys.exit(1)
+              if needle and needle not in data: sys.exit(1)
+              if prerequisite and prerequisite not in data: sys.exit(1)
+              if expected and "stack backtrace:" not in data: sys.exit(1)
+              return data
+          print("MAC-SOCK-a A1=c9ae5ba7ff7e1877c1abf3e96770a0c78d3c71e7 variant=revert-read", flush=True)
+          run("revert-read-absent", "diagnostics::absent_event_reports_named_wait", 0, '', 'connection=accepted bodies=1')
+          run("revert-read-unrelated", "diagnostics::unrelated_event_reports_named_wait", 0, '', 'unrelated=observed bodies=1')
+          run("revert-read-cutoff", "diagnostics::child_cutoff_preserves_last_begin", 0, '', 'server=bound bodies=1')
+          data = run("revert-read-eof", "diagnostics::stalled_peer_eof_reports_read_timeout", 101, 'a.eof did not finish at its read bound', "peer=open bytes=0 bodies=1")
+          PY
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length

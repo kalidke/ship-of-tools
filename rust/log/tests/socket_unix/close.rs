@@ -144,14 +144,6 @@ pub(super) fn read_a_eof(
     client_a: &mut UnixStream,
     buf: &mut [u8],
 ) -> std::io::Result<usize> {
-    io_named!(
-        test,
-        "a.read_timeout",
-        "10s read bound",
-        conn,
-        client_a.set_read_timeout(Some(TIMEOUT))
-    )
-    .unwrap();
     io_named!(test, "a.eof", "zero bytes", conn, client_a.read(buf))
 }
 
