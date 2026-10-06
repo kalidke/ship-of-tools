@@ -3,7 +3,6 @@
 # real libtest fixture and scratch-owned body witnesses. No comm tool, daemon, peer host or full
 # candidate gate is run.
 set -u
-[ "$#" -eq 2 ] || { echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2; }
 case ${1:-} in --portable|--all) mode=${1#--} ;; *) echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2 ;; esac
 [ -f "$2" ] || { echo 'compiled fixture required' >&2; exit 2; }
 root=$(mktemp -d) || exit 2
