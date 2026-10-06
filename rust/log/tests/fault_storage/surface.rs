@@ -188,9 +188,10 @@ from pathlib import Path
 import hashlib, io, json, subprocess, sys, zipfile
 BASE = 'bde3b3e0066ed2d26af5e26d48cc6bcd5a76a0ab'
 repo, destination = map(Path, sys.argv[1:3])
-product = subprocess.check_output(['git','diff',BASE,'HEAD','--','rust/log/src'],cwd=repo)
+git_repo=Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],cwd=repo,text=True).strip())
+product = subprocess.check_output(['git','diff',BASE,'HEAD','--','rust/log/src'],cwd=git_repo)
 assert not product, 'premise branch must contain no product edits'
-archive = subprocess.check_output(['git','archive','--format=zip','HEAD','rust'],cwd=repo)
+archive = subprocess.check_output(['git','archive','--format=zip','HEAD','rust'],cwd=git_repo)
 destination.mkdir(parents=True,exist_ok=True)
 
 def replace(text, old, new, count=1):
@@ -437,6 +438,8 @@ for label in ['parent','head','revert']:
     boundary=target/'boundaries.rs'
     text=boundary.read_text()
     for name in ['spawn_and_bind_preserve_native_storage_error','nonstorage_errors_keep_severity','real_full_volume_before_ready','real_full_volume_after_output_starts']:
+        # A Linux proof driver itself lives in an already registered parent copy.
+        text=text.replace('#[test]\npub fn '+name+'(', 'pub fn '+name+'(')
         text=replace(text,'pub fn '+name+'(', '#[test]\npub fn '+name+'(')
     boundary.write_text(text)
     for rel,overlay in [('rust/log/src/host/volume.rs',volume_overlay),('rust/log/src/supervisor/journal/reset.rs',reset_overlay)]:
@@ -454,6 +457,8 @@ for label in ['parent','head','revert']:
             text=text.replace('if crate::host::storage_exhaustion(&error).is_none()', 'if true')
             p.write_text(text)
     hashes={str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in root.rglob('*.rs')}
-    (root/'source-hashes.json').write_text(json.dumps(hashes,sort_keys=True,indent=2)+'\n')
+    manifest=json.dumps(hashes,sort_keys=True,indent=2)+'\n'
+    (root/'source-hashes.json').write_text(manifest)
+    print('L3 P1 snapshot='+label+' base='+BASE+' rust-source-manifest-sha256='+hashlib.sha256(manifest.encode()).hexdigest()+' git-archive-sha256='+hashlib.sha256(archive).hexdigest())
 print('L3 premise snapshots parent/head/revert prepared')
 "###;

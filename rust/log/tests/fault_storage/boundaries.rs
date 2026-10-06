@@ -54,6 +54,11 @@ fn source(kind: &str, code: i32) -> Error {
     let source = std::io::Error::from_raw_os_error(code);
     match kind {
         "io" => Error::Io(source),
+        "state" => Error::State("malformed state".into()),
+        "unsupported" => Error::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "incompatible volume",
+        )),
         "transport" => Error::Transport(TransportError::Io {
             op: "premise",
             source,
@@ -160,12 +165,15 @@ pub fn nonstorage_errors_keep_severity() {
     #[cfg(windows)]
     let codes = [5, 1117];
     for code in codes {
-        let dir = tempfile::tempdir_in(scratch()).unwrap();
-        let (_tx, rx) = mpsc::channel();
-        let cfg = config(dir.path(), vec!["io".into(), code.to_string()]);
-        let summary =
-            capsule::run::<FaultProducer>(cfg, rx, &mut FaultTransport { fault: None }).unwrap();
-        assert_eq!(summary.exit_kind, capsule::ExitKind::SpawnFailed);
+        for kind in ["io", "state", "unsupported"] {
+            let dir = tempfile::tempdir_in(scratch()).unwrap();
+            let (_tx, rx) = mpsc::channel();
+            let cfg = config(dir.path(), vec![kind.into(), code.to_string()]);
+            let summary =
+                capsule::run::<FaultProducer>(cfg, rx, &mut FaultTransport { fault: None })
+                    .unwrap();
+            assert_eq!(summary.exit_kind, capsule::ExitKind::SpawnFailed);
+        }
     }
     println!("L3 P1 nonstorage EIO-permission compensation=ok");
 }
