@@ -405,7 +405,7 @@ impl Endpoint for DaemonLaneEndpoint {
     fn drop_spare(&self) {
         let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
         if matches!(*state, VoyageSpare::Parked(_)) {
-            *state = VoyageSpare::Unused;
+            *state = VoyageSpare::Spent;
         }
     }
 
