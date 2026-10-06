@@ -153,17 +153,6 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
     };
     // Capture errno before observations or test hooks can overwrite it.
     let result = if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) };
-    #[cfg(target_os = "macos")]
-    let result = match result {
-        Err(error) if group && error.raw_os_error() == Some(libc::EPERM) => match macos::checked_no_live_group(pid) {
-            Ok(()) => Ok(()),
-            Err(observation) => {
-                tracing::debug!(%observation, "macOS group EPERM: no-live observation rejected");
-                Err(error)
-            }
-        },
-        result => result,
-    };
     #[cfg(test)]
     if REQUEST_FAILURE.with(|failure| failure.get() & if group { 1 } else { 2 } != 0) {
         return Err(std::io::Error::other(if group {
