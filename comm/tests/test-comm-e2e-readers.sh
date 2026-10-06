@@ -411,7 +411,7 @@ PYRESULT
     control_pings="$(awk -v ss="$sst" '$1 < ss { n++ } END { print n+0 }' "$L/pings-norm-$t")"
     printf '  NOTE %s: private one-shot control: %s pings observed before strict start; shared-message wake coverage is not checked\n' "$h" "$control_pings"
     fin="$(cat "$L/final-$t")"
-    late="$(awk -v f="$fin" '$1>f' "$pl" | wc -l)"
+    late="$(awk -v f="$fin" '$1>f' "$pl" | awk 'END{print NR+0}')"
     printf 'NOTE: %s: %s late control pings observed after the final poll; sustained shared-inbox wake behavior is not checked.\n' "$h" "$late"
 done
 
