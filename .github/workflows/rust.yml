@@ -153,14 +153,14 @@ jobs:
       # wait inside the test is itself bounded, but a real spawned sotd.exe
       # that never comes up (or never goes down) must not hang the job.
       - name: Test local daemon launcher
-        if: matrix.os == 'windows-latest'
+        if: ${{ always() && matrix.os == 'windows-latest' }}
         shell: powershell
         timeout-minutes: 10
         run: .\scripts\tests\test-local-daemon.ps1
         working-directory: .
 
       - name: Test launcher leases
-        if: matrix.os == 'windows-latest'
+        if: ${{ always() && matrix.os == 'windows-latest' }}
         shell: powershell
         timeout-minutes: 10
         run: .\scripts\tests\test-launcher-leases.ps1

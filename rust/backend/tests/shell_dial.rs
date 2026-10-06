@@ -123,6 +123,67 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     server.join().expect("echo server");
 }
 
+/// `sot_bounded`, the bound each of the four timed comm calls runs under, on this platform's bash: as the box has it
+/// (GNU `timeout` or `gtimeout`), and with no GNU timeout at all, where a `timeout` and a `gtimeout` that are not
+/// coreutils (as Windows' own timeout.exe is not) come first on PATH and perl bounds the call. Either way the command
+/// keeps the shell's stdin and its own status, `sot_ssh_bridge` carries its input, and at the bound the command's
+/// whole process group ends: a late command returns 124 and is gone, a descendant holding a captured command's output
+/// ends with it, an errexit caller ends with 124, a caller killed mid-bound leaves no command behind, and a command
+/// that cannot start returns 127. One that ignores TERM ends with 137 (not on Windows, whose Git Bash emulates
+/// signals).
+#[test]
+fn the_comm_bound_keeps_stdin_and_status_and_ends_a_late_command() {
+    let Some(_) = bash() else { return };
+    let home = tempfile::tempdir().expect("scratch home");
+    let (deaf, deaf_want) = if cfg!(windows) {
+        ("", "")
+    } else {
+        (
+            r#"sot_bounded 1 sh -c 'trap "" TERM; echo $$ > "$HOME/deaf.pid"; exec tail -f /dev/null'; echo "deaf $?"
+kill -0 "$(cat "$HOME/deaf.pid")" 2>/dev/null && echo "deaf alive" || echo "deaf gone"
+"#,
+            "deaf 137\ndeaf gone\n",
+        )
+    };
+    let want = format!(
+        "in\nstatus 7\nssh-in\nlate 124\nlate gone\nheld 124\nheld gone\nerrexit 124\norphan gone\n{deaf_want}missing 127\n"
+    );
+    for (path, prelude) in [
+        ("as this box has it", r#"PATH="$HOME/stub-ssh:$PATH""#),
+        ("with no GNU timeout", r#"PATH="$HOME/no-gnu:$HOME/stub-ssh:$PATH""#),
+    ] {
+        let script = format!(
+            r#". "$1" && {prelude}
+mkdir -p "$HOME/stub-ssh" "$HOME/no-gnu"
+printf '#!/bin/sh\ncase "$1" in -G) exit 0 ;; esac\nexec cat\n' > "$HOME/stub-ssh/ssh"
+printf '#!/bin/sh\necho "ERROR: Invalid syntax."\nexit 1\n' > "$HOME/no-gnu/timeout"
+cp "$HOME/no-gnu/timeout" "$HOME/no-gnu/gtimeout"
+chmod +x "$HOME/stub-ssh/ssh" "$HOME/no-gnu/timeout" "$HOME/no-gnu/gtimeout"
+printf 'in\n' | sot_bounded 5 cat
+sot_bounded 5 sh -c 'exit 7'; echo "status $?"
+printf 'ssh-in\n' | sot_ssh_bridge stubhost "" 5
+sot_bounded 1 sh -c 'echo $$ > "$HOME/late.pid"; exec tail -f /dev/null'; echo "late $?"
+kill -0 "$(cat "$HOME/late.pid")" 2>/dev/null && echo "late alive" || echo "late gone"
+held="$(sot_bounded 1 sh -c 'tail -f /dev/null & echo $! > "$HOME/held.pid"; wait')"; echo "held $?"
+kill -0 "$(cat "$HOME/held.pid")" 2>/dev/null && echo "held alive" || echo "held gone"
+( set -e; sot_bounded 1 sh -c 'exec tail -f /dev/null'; echo unreachable ); echo "errexit $?"
+( sot_bounded 1 sh -c 'echo $$ > "$HOME/orphan.pid"; exec tail -f /dev/null' ) &
+w=$!
+for _ in $(seq 1 100); do [ -s "$HOME/orphan.pid" ] && break; sleep 0.05; done
+kill "$w"
+for _ in $(seq 1 100); do kill -0 "$(cat "$HOME/orphan.pid")" 2>/dev/null || break; sleep 0.05; done
+kill -0 "$(cat "$HOME/orphan.pid")" 2>/dev/null && echo "orphan alive" || echo "orphan gone"
+{deaf}sot_bounded 5 /no/such/command 2>/dev/null; echo "missing $?"
+"#
+        );
+        let mut child = shell(home.path(), &script, "").expect("bash");
+        drop(child.stdin.take());
+        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        assert!(status.success(), "the bound, {path}: bash failed: {stderr}");
+        assert_eq!(stdout, want, "the bound, {path}: {stderr}");
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {
