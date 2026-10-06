@@ -76,19 +76,7 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
     } catch {
         $why = $_.Exception.Message
     }
-    if ($bridge) {
-        try { $bridge.StandardInput.Close() } catch { }
-        # The bridge's own stderr line says why it ended (a refusal, no daemon), whichever step above failed first. It is
-        # read once the bridge has exited (its input is closed, so it ends), so a bridge that ended before the lease
-        # was written is named too.
-        try {
-            if ($bridge.WaitForExit($LeaseReplyWaitMs)) {
-                $err = $bridge.StandardError.ReadToEnd().Trim()
-                if ($err) { $why = "$why; $err" }
-            }
-        } catch { }
-        try { $bridge.Dispose() } catch { }
-    }
+    if ($bridge) { try { $bridge.StandardInput.Close() } catch { }; try { $bridge.Dispose() } catch { } }
     Write-SupLog "WARNING: relaunch: lease not granted ($why) - this computer's sessions end if no window holds the backend within $HandoverBoundSeconds s"
 }
 
