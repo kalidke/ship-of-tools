@@ -14,9 +14,11 @@ scripts/CLAUDE.md.
   `scripts/tests/` suites on their legs, the comm hermetic suites on ubuntu, and on ubuntu the steps "Check the layout"
   (`scripts/tests/check-layout.sh` with `check-layout.allow`) and "Test the layout tools" (its two self-tests)), `conpty-windows-2022` (ConPTY and capsule
   tests), `p2-e2e` (the SDK helper, offline), `fresh-install-smoke` (a `--be-only` install of the latest published tag
-  into a clean container). On `tmp/ci-d-l-premises-2`, only `d-l-premises` runs: a three-OS matrix installs Julia 1.12
-  and Node 22, performs a locked MathJax install and executable readiness gate, then compiles offline and runs the
-  three named native premises. Missing setup prerequisites fail before premise execution.
+  into a clean container). On `tmp/ci-d-l-premises-3`, only `d-l-premises` runs: a three-OS matrix installs Julia 1.12
+  and Node 22, performs a locked MathJax install and executable readiness gate, then fetches locked Cargo dependencies
+  online in the same Cargo home before offline compilation and the three named native premises. Fetch, compilation
+  and premise commands use runner step timeouts; fixture waits remain bounded. Missing setup prerequisites fail
+  before premise execution.
 - `workflows/CI.yml` ("CI"): push to `main` (paths `core/**`, `julia/**`, `docs/**`, `src/**`, `test/**`, `Project.toml`,
   `Manifest.toml` and the file itself) and dispatch. Jobs: `test` (the root package on Julia 1.12 and pre-release),
   `julia-packages` (core, kernel, repl, the two preview plugins and SotLog), `docs` (builds the manual with
