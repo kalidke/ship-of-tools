@@ -172,6 +172,7 @@ fn unresponsive_supervisor_expires_the_health_window() {
     let _server = sot_log::lane::socket_unix::SocketServer::bind_supervisor(&h, 1).expect("bind a bare supervisor socket");
 
     let (_woke, wake) = wake_flag();
+    let mid_deadline = Instant::now() + Duration::from_secs(15);
     let mut client: FeAttachClient = FeAttachClient::attach(
         PlatformEndpoint::default(),
         h,
@@ -186,7 +187,6 @@ fn unresponsive_supervisor_expires_the_health_window() {
 
     // Well inside the window: proves it does not expire early, exactly
     // as the predecessor test did.
-    let mid_deadline = Instant::now() + Duration::from_secs(15);
     let mut saw_retry_status = false;
     loop {
         client.pump();
