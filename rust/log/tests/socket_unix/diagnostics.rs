@@ -1,7 +1,10 @@
-//! Socket diagnostic proofs observe flushed output of exact-body ISO children.
+//! Socket diagnostic proofs validate flushed child output, observed role/pid start and exact failure causes.
 
 use super::*;
-use sot_log::test_isolated::{enter, ISOLATION_TIMEOUT};
+use sot_log::test_isolated::{
+    enter, fixture_start_matches, fixture_start_record, readiness_failure, readiness_scenarios,
+    verify_readiness, verify_readiness_controls, FixtureOutcome, ReadinessCase, ISOLATION_TIMEOUT,
+};
 
 fn child_role(test: &str) -> bool {
     if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() == Ok(test) {
@@ -655,87 +658,85 @@ fn successful_iso_role() {
         return;
     }
 }
+const READINESS_ROLE: &str = "diagnostics::readiness_child_role";
+fn readiness_fixture(
+    case: ReadinessCase,
+    control: &str,
+    held: bool,
+    zero: bool,
+) -> (FixtureOutcome<()>, bool) {
+    let output = tempfile::NamedTempFile::new().unwrap();
+    let role = READINESS_ROLE;
+    let (mut command, entry) = test_command(role);
+    let ready = WaitContext::new(role, "readiness.start", "fixture started", None, TIMEOUT);
+    let child = command
+        .env("SOT_TEST_SOCKET_ROLE", role)
+        .env("SOT_TEST_SOCKET_ZERO_ENTRY", if zero { "1" } else { "0" })
+        .env("SOT_TEST_SOCKET_HELD", if held { "1" } else { "0" })
+        .env("SOT_TEST_FIXTURE_WITNESS", control)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(output.reopen().unwrap()))
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let mut start = false;
+    let outcome = supervise_fixture_until(child, entry, ready.deadline, |_, _, deadline| {
+        let missing = output.path().with_extension("missing");
+        let path = if control == "before" {
+            &missing
+        } else {
+            output.path()
+        };
+        observe_marker(&ready, path, "fixture-start-written")?;
+        let text = std::fs::read_to_string(output.path())
+            .map_err(|e| FixtureFailure::Error(e.to_string()))?;
+        start = fixture_start_matches(&text, role, pid);
+        eprintln!("fixture-witness child={pid} record={text:?}");
+        let bound = Duration::from_millis(150);
+        let wait = WaitContext::new(role, "readiness.missing", "ready", None, bound);
+        *deadline = wait.started + Duration::from_millis(750);
+        readiness_failure(
+            case,
+            control,
+            &output.path().with_extension("missing"),
+            || observe_marker(&wait, output.path(), "withheld-ready"),
+        )
+    });
+    (outcome, start)
+}
 
 #[test]
 fn readiness_failure_finishes_owned_child_checks() {
-    for (failure, held, zero) in [
-        ("timeout", false, false),
-        ("error", false, false),
-        ("panic", false, false),
-        ("timeout", true, false),
-        ("timeout", false, true),
-    ] {
-        let output = tempfile::NamedTempFile::new().unwrap();
-        let role = "diagnostics::readiness_child_role";
-        let (mut command, entry) = test_command(role);
-        let ready = WaitContext::new(role, "readiness.start", "fixture started", None, TIMEOUT);
-        let child = command
-            .env("SOT_TEST_SOCKET_ROLE", role)
-            .env("SOT_TEST_SOCKET_ZERO_ENTRY", if zero { "1" } else { "0" })
-            .env("SOT_TEST_SOCKET_HELD", if held { "1" } else { "0" })
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(output.reopen().unwrap()))
-            .spawn()
-            .unwrap();
-        let outcome: sot_log::test_isolated::FixtureOutcome<()> =
-            supervise_fixture_until(child, entry, ready.deadline, |_, _, deadline| {
-                observe_marker(&ready, output.path(), "fixture-start observed=true")?;
-                let wait = WaitContext::new(
-                    role,
-                    "readiness.missing",
-                    "withheld marker",
-                    None,
-                    Duration::from_millis(150),
-                );
-                *deadline = wait.started + Duration::from_millis(750);
-                match failure {
-                    "panic" => panic!("deliberate readiness panic"),
-                    "error" => {
-                        observe_marker(&wait, &output.path().with_extension("missing"), "ready")
-                    }
-                    _ => observe_marker(&wait, output.path(), "withheld-ready"),
-                }
-            });
-        outcome.report(role);
-        assert!(outcome.work.is_err(), "readiness failure not observed");
-        assert!(
-            outcome.termination.is_ok(),
-            "readiness failure bypassed owned-child finalization"
-        );
-        if zero {
-            assert!(outcome
-                .entry
-                .as_ref()
-                .unwrap_err()
-                .contains("isolated body did not enter"));
-        } else {
-            assert!(
-                outcome.entry.is_ok(),
-                "readiness failure bypassed owned-child finalization"
-            );
-        }
-        if held {
-            assert!(matches!(
-                outcome.wait.unwrap_err().kind,
-                ChildWaitKind::Expired
-            ));
-        } else {
-            assert!(outcome.wait.unwrap().success());
-        }
+    for (case, held, zero) in readiness_scenarios() {
+        let (outcome, start) = readiness_fixture(case, "valid", held, zero);
+        verify_readiness(&outcome, READINESS_ROLE, start, case, held, zero);
     }
+}
+#[test]
+fn readiness_proof_rejects_wrong_failure() {
+    verify_readiness_controls(READINESS_ROLE, |case, control| {
+        readiness_fixture(case, control, false, false)
+    });
 }
 
 #[test]
 fn readiness_child_role() {
-    let role = "diagnostics::readiness_child_role";
+    let role = READINESS_ROLE;
     if std::env::var("SOT_TEST_SOCKET_ROLE").as_deref() != Ok(role) {
         return;
     }
     if std::env::var("SOT_TEST_SOCKET_ZERO_ENTRY").as_deref() != Ok("1") {
         enter(role);
     }
-    eprintln!("fixture-start observed=true");
+    let pid = std::process::id();
+    let record = match std::env::var("SOT_TEST_FIXTURE_WITNESS").as_deref() {
+        Ok("pid") => fixture_start_record(role, 0),
+        Ok("role") => fixture_start_record("diagnostics::wrong_role", pid),
+        Ok("partial") => format!("fixture-start test={role}\n"),
+        _ => fixture_start_record(role, pid),
+    };
+    eprint!("{record}fixture-start-written\n");
     std::io::stderr().flush().unwrap();
     if std::env::var("SOT_TEST_SOCKET_HELD").as_deref() == Ok("1") {
         loop {

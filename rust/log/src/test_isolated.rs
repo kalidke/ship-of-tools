@@ -3,7 +3,8 @@
 //! cannot pass, and an entry record dropped unchecked fails too. Every wait here is bounded: a child that overruns is
 //! killed, and output that a descendant still holds open after the child's exit fails the caller at the bound. What
 //! this does not prove: that a killed child's descendants are gone; a kill whose exit is not seen within 5 s is
-//! reported as unconfirmed. Direct fixtures retain readiness failures until owned-child/entry checks finish.
+//! reported as unconfirmed. Direct fixtures retain child/entry and separate stream observations on failure.
+//! Regression proofs validate observed role/pid prerequisites and exact causes before accepting a red.
 //! Both output streams are captured as bytes; invalid UTF-8 is rendered as explicit uppercase byte escapes.
 
 use std::io::{Read, Write};
@@ -213,6 +214,8 @@ pub struct FixtureOutcome<T> {
     pub termination: Result<(), String>,
     pub entry: Result<(), String>,
     pub output: Result<(String, String), String>,
+    /// Separate observations survive failure of the other stream.
+    pub streams: FixtureOutput,
 }
 
 impl<T> FixtureOutcome<T> {
@@ -278,7 +281,8 @@ pub fn supervise_fixture_until<T>(
     };
     let entry = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| entry.assert_once(pid)))
         .map_err(panic_text);
-    let output = draining.output_until(deadline);
+    let streams = draining.observe_output_until(deadline);
+    let output = streams.combined();
     FixtureOutcome {
         child: pid,
         work,
@@ -286,6 +290,7 @@ pub fn supervise_fixture_until<T>(
         termination,
         entry,
         output,
+        streams,
     }
 }
 
@@ -318,13 +323,14 @@ pub fn drain(mut child: Child) -> Draining {
 }
 
 impl Draining {
-    fn output_until(&mut self, deadline: Instant) -> Result<(String, String), String> {
-        let out = read_output(self.out.take(), deadline, "stdout");
-        let err = read_output(self.err.take(), deadline, "stderr");
-        match (out, err) {
-            (Ok(out), Ok(err)) => Ok((out, err)),
-            (out, err) => Err(format!("stdout: {out:?}; stderr: {err:?}")),
+    fn observe_output_until(&mut self, deadline: Instant) -> FixtureOutput {
+        FixtureOutput {
+            stdout: read_output(self.out.take(), deadline, "stdout"),
+            stderr: read_output(self.err.take(), deadline, "stderr"),
         }
+    }
+    fn output_until(&mut self, deadline: Instant) -> Result<(String, String), String> {
+        self.observe_output_until(deadline).combined()
     }
     /// Waits for the child within `bound` ([`wait_within`]), then for its output to end within what remains of that
     /// bound (and at least 1 s, so a child that exits at the bound's edge is not failed for its readers' last step).
@@ -342,11 +348,41 @@ impl Draining {
     }
 }
 
+/// An output failure retains its stream, original I/O cause and any captured diagnostic.
+#[derive(Clone, Debug)]
+pub struct OutputFailure {
+    pub stream: &'static str,
+    pub kind: Option<std::io::ErrorKind>,
+    pub reason: String,
+    pub captured: String,
+}
+impl std::fmt::Display for OutputFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "reading the child's {}: {}; captured={}",
+            self.stream, self.reason, self.captured
+        )
+    }
+}
+/// Both output observations are retained independently before the compatibility tuple is formed.
+pub struct FixtureOutput {
+    pub stdout: Result<String, OutputFailure>,
+    pub stderr: Result<String, OutputFailure>,
+}
+impl FixtureOutput {
+    fn combined(&self) -> Result<(String, String), String> {
+        match (&self.stdout, &self.stderr) {
+            (Ok(out), Ok(err)) => Ok((out.clone(), err.clone())),
+            (out, err) => Err(format!("stdout: {out:?}; stderr: {err:?}")),
+        }
+    }
+}
 fn read_output(
     reader: Option<Receiver<(Vec<u8>, std::io::Result<()>)>>,
     deadline: Instant,
-    what: &str,
-) -> Result<String, String> {
+    what: &'static str,
+) -> Result<String, OutputFailure> {
     let Some(reader) = reader else {
         return Ok(String::new());
     };
@@ -357,15 +393,180 @@ fn read_output(
     match reader.recv_timeout(left) {
         Ok((bytes, result)) => {
             let text = render_bytes(&bytes);
-            result.map(|()| text.clone()).map_err(|error| {
-                format!("reading the child's {what}: {error}; captured={text}")
+            result.map(|()| text.clone()).map_err(|error| OutputFailure {
+                stream: what, kind: Some(error.kind()), reason: error.to_string(), captured: text,
             })
         }
-        Err(RecvTimeoutError::Timeout) => Err(format!(
-            "the child exited but its {what} did not end within the output deadline (a descendant may hold it)"
-        )),
-        Err(RecvTimeoutError::Disconnected) => Err(format!("the reader of the child's {what} ended without a result")),
+        Err(error) => Err(OutputFailure {
+            stream: what, kind: None, captured: String::new(),
+            reason: match error {
+                RecvTimeoutError::Timeout => format!("the child exited but its {what} did not end within the output deadline (a descendant may hold it)"),
+                RecvTimeoutError::Disconnected => format!("the reader of the child's {what} ended without a result"),
+            },
+        }),
     }
+}
+
+/// Exact selected readiness cause, shared by the proofs and their rejection controls.
+#[derive(Clone, Copy, Debug)]
+pub enum ReadinessCase {
+    Timeout,
+    Error,
+    Panic,
+}
+impl ReadinessCase {
+    pub fn expected(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Timeout => ("timeout", "expected readiness marker missing"),
+            Self::Error => ("error", "readiness read failed: NotFound"),
+            Self::Panic => ("panic", "deliberate readiness panic"),
+        }
+    }
+}
+/// The same selected failure operation is used by ISO and socket fixture controllers.
+pub fn readiness_failure(
+    case: ReadinessCase,
+    control: &str,
+    missing: &std::path::Path,
+    timeout: impl FnOnce() -> Result<(), FixtureFailure>,
+) -> Result<(), FixtureFailure> {
+    if control == "variant" {
+        return Err(match case {
+            ReadinessCase::Error => FixtureFailure::Timeout("another timeout phase".into()),
+            _ => FixtureFailure::Error("unrelated readiness failure".into()),
+        });
+    }
+    if control == "reason" {
+        return match case {
+            ReadinessCase::Timeout => Err(FixtureFailure::Timeout("another timeout phase".into())),
+            ReadinessCase::Error => Err(FixtureFailure::Error("unrelated read failure".into())),
+            ReadinessCase::Panic => panic!("unrelated readiness panic"),
+        };
+    }
+    match case {
+        ReadinessCase::Panic => panic!("deliberate readiness panic"),
+        ReadinessCase::Error => {
+            let error = std::fs::read(missing).unwrap_err();
+            eprintln!("fixture-io kind={:?} reason={error}", error.kind());
+            Err(FixtureFailure::Error(format!(
+                "readiness read failed: {:?}",
+                error.kind()
+            )))
+        }
+        ReadinessCase::Timeout => timeout(),
+    }
+}
+pub fn readiness_scenarios() -> [(ReadinessCase, bool, bool); 5] {
+    [
+        (ReadinessCase::Timeout, false, false),
+        (ReadinessCase::Error, false, false),
+        (ReadinessCase::Panic, false, false),
+        (ReadinessCase::Timeout, true, false),
+        (ReadinessCase::Timeout, false, true),
+    ]
+}
+/// The complete start witness associates the actual child's role and spawned pid.
+pub fn fixture_start_record(role: &str, pid: u32) -> String {
+    format!("fixture-start test={role} child={pid}\n")
+}
+pub fn fixture_start_matches(text: &str, role: &str, pid: u32) -> bool {
+    text.split_inclusive('\n')
+        .any(|line| line == fixture_start_record(role, pid))
+}
+/// Report the cause separately from finalization; all observations have already been collected by ISO.
+pub fn verify_readiness(
+    outcome: &FixtureOutcome<()>,
+    role: &str,
+    start: bool,
+    selected: ReadinessCase,
+    held: bool,
+    zero: bool,
+) {
+    outcome.report(role);
+    let (kind, reason) = selected.expected();
+    let actual = outcome.work.as_ref().err();
+    let matched = start && actual.is_some_and(|f| f.kind() == kind && f.to_string() == reason);
+    eprintln!("fixture-cause test={role} child={} start={} selected={kind} actual={} reason={} matched={matched}",
+        outcome.child, if start { "observed" } else { "missing" },
+        actual.map_or("ok", FixtureFailure::kind), actual.map_or(String::new(), ToString::to_string));
+    assert!(start, "readiness proof did not observe fixture start");
+    assert!(matched, "readiness proof observed the wrong failure");
+    let ended = if held {
+        outcome
+            .wait
+            .as_ref()
+            .is_err_and(|e| matches!(e.kind, ChildWaitKind::Expired) && e.termination_confirmed)
+    } else {
+        outcome.wait.as_ref().is_ok_and(ExitStatus::success)
+    };
+    let entered = if zero {
+        outcome
+            .entry
+            .as_ref()
+            .is_err_and(|e| e.contains("isolated body did not enter"))
+    } else {
+        outcome.entry.is_ok()
+    };
+    assert!(
+        ended && entered && outcome.termination.is_ok() && outcome.output.is_ok(),
+        "readiness failure bypassed owned-child finalization"
+    );
+}
+/// Real-fixture rejection controls use exactly the ordinary readiness verifier.
+pub fn verify_readiness_controls(
+    role: &str,
+    mut fixture: impl FnMut(ReadinessCase, &str) -> (FixtureOutcome<()>, bool),
+) {
+    let mut checked = 0;
+    for case in [
+        ReadinessCase::Timeout,
+        ReadinessCase::Error,
+        ReadinessCase::Panic,
+    ] {
+        for control in [
+            "before", "pid", "role", "partial", "variant", "reason", "valid",
+        ] {
+            if std::env::var("SOT_TEST_PROOF_CONTROL").is_ok_and(|wanted| wanted != control) {
+                continue;
+            }
+            checked += 1;
+            let (outcome, start) = fixture(case, control);
+            outcome.report(role);
+            assert!(
+                outcome.wait.as_ref().unwrap().success()
+                    && outcome.termination.is_ok()
+                    && outcome.entry.is_ok()
+            );
+            let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                verify_readiness(&outcome, role, start, case, false, false)
+            }));
+            if control == "valid" {
+                assert!(rejected.is_ok());
+                continue;
+            }
+            let missing = matches!(control, "before" | "pid" | "role" | "partial");
+            assert!(
+                rejected.is_err(),
+                "readiness proof accepted {}",
+                if missing {
+                    "an unobserved fixture start"
+                } else {
+                    "the wrong failure"
+                }
+            );
+            let reason = panic_text(rejected.unwrap_err());
+            assert!(
+                reason.contains(if missing {
+                    "readiness proof did not observe fixture start"
+                } else {
+                    "readiness proof observed the wrong failure"
+                }),
+                "{reason}"
+            );
+            eprintln!("readiness-rejection control={control} reason={reason}");
+        }
+    }
+    assert!(checked > 0, "readiness controls selected no fixture");
 }
 
 /// Keep valid UTF-8 spans and escape every invalid byte, including an incomplete final sequence.
@@ -484,7 +685,20 @@ mod tests {
             enter("test_isolated::tests::a_role");
         }
         if let Some(path) = std::env::var_os("SOT_TEST_FIXTURE_STARTED") {
-            std::fs::write(path, b"started\n").unwrap();
+            let mut record =
+                fixture_start_record("test_isolated::tests::a_role", std::process::id());
+            match std::env::var("SOT_TEST_FIXTURE_WITNESS").as_deref() {
+                Ok("pid") => record = fixture_start_record("test_isolated::tests::a_role", 0),
+                Ok("role") => {
+                    record =
+                        fixture_start_record("test_isolated::tests::wrong_role", std::process::id())
+                }
+                Ok("partial") => {
+                    record = "fixture-start test=test_isolated::tests::a_role\n".into()
+                }
+                _ => {}
+            }
+            std::fs::write(path, record + "fixture-start-written\n").unwrap();
         }
         match role.as_str() {
             // More than any platform's pipe holds (64 KiB on Linux and macOS, about 4 KiB on Windows), then exit.
@@ -496,13 +710,13 @@ mod tests {
             }
             "stall" => std::thread::sleep(Duration::from_secs(120)),
             "bytes" => {
-                let mut out = std::io::stdout().lock();
-                out.write_all(b"valid stdout control\n").unwrap();
-                out.flush().unwrap();
                 let mut err = std::io::stderr().lock();
                 err.write_all(b"intended child diagnostic \xFF\xFE\xC3(\n")
                     .unwrap();
                 err.flush().unwrap();
+                let mut out = std::io::stdout().lock();
+                writeln!(out, "valid stdout control\nutf8-start test=test_isolated::tests::a_role child={} intended child failure", std::process::id()).unwrap();
+                out.flush().unwrap();
                 panic!("intended child failure");
             }
             "byte-controls" => {
@@ -660,94 +874,99 @@ mod tests {
         }
     }
 
-    /// Start is observable independently of the withheld readiness marker.
-    fn observe_start(path: &std::path::Path, deadline: Instant) -> Result<(), FixtureFailure> {
+    fn observe_record(
+        path: &std::path::Path,
+        deadline: Instant,
+        marker: &str,
+    ) -> Result<String, FixtureFailure> {
         loop {
-            let bytes = std::fs::read(path).map_err(|e| FixtureFailure::Error(e.to_string()))?;
-            if bytes == b"started\n" {
-                return Ok(());
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                eprintln!("fixture-io kind={:?} reason={}", e.kind(), e);
+                FixtureFailure::Error(format!("readiness read failed: {:?}", e.kind()))
+            })?;
+            if text
+                .split_inclusive('\n')
+                .any(|line| line.ends_with('\n') && line.starts_with(marker))
+            {
+                return Ok(text);
             }
             if Instant::now() >= deadline {
-                return Err(FixtureFailure::Timeout("fixture start missing".into()));
+                return Err(FixtureFailure::Timeout(
+                    "expected readiness marker missing".into(),
+                ));
             }
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-
+    fn readiness_fixture(
+        selected: ReadinessCase,
+        control: &str,
+        role: &str,
+    ) -> (FixtureOutcome<()>, bool) {
+        let started = tempfile::NamedTempFile::new().unwrap();
+        let (mut command, entry) = test_command("test_isolated::tests::a_role");
+        let child = command
+            .env(ROLE, role)
+            .env("SOT_TEST_FIXTURE_STARTED", started.path())
+            .env("SOT_TEST_FIXTURE_WITNESS", control)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let mut start = false;
+        let outcome = supervise_fixture_until(
+            child,
+            entry,
+            Instant::now() + ISOLATION_TIMEOUT,
+            |_, _, end| {
+                let path = if control == "before" {
+                    started.path().with_extension("missing")
+                } else {
+                    started.path().to_path_buf()
+                };
+                let witness = observe_record(&path, *end, "fixture-start-written")?;
+                start = fixture_start_matches(&witness, "test_isolated::tests::a_role", pid);
+                eprintln!("fixture-witness child={pid} record={witness:?}");
+                let readiness_end = Instant::now() + Duration::from_millis(150);
+                *end = readiness_end + Duration::from_millis(600);
+                readiness_failure(
+                    selected,
+                    control,
+                    &started.path().with_extension("missing"),
+                    || observe_record(started.path(), readiness_end, "withheld-ready").map(|_| ()),
+                )
+            },
+        );
+        (outcome, start)
+    }
     #[test]
     fn readiness_failure_finishes_owned_child_checks() {
-        for (failure, role) in [
-            ("timeout", "release"),
-            ("error", "release"),
-            ("panic", "release"),
-            ("timeout", "stall"),
-            ("timeout", "zero-release"),
-        ] {
-            let started = tempfile::NamedTempFile::new().unwrap();
-            let (mut command, entry) = test_command("test_isolated::tests::a_role");
-            let child = command
-                .env(ROLE, role)
-                .env("SOT_TEST_FIXTURE_STARTED", started.path())
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap();
-            let pid = child.id();
-            let deadline = Instant::now() + ISOLATION_TIMEOUT;
-            let outcome: FixtureOutcome<()> =
-                supervise_fixture_until(child, entry, deadline, |_, _, end| {
-                    observe_start(started.path(), *end)?;
-                    eprintln!("fixture-start child={pid} observed=true");
-                    let readiness_end = Instant::now() + Duration::from_millis(150);
-                    *end = readiness_end + Duration::from_millis(600);
-                    match failure {
-                        "panic" => panic!("deliberate readiness panic"),
-                        "error" => {
-                            let error = std::fs::read(started.path().with_extension("missing"))
-                                .unwrap_err();
-                            Err(FixtureFailure::Error(format!(
-                                "readiness read failed: {}",
-                                error.kind()
-                            )))
-                        }
-                        _ => {
-                            while Instant::now() < readiness_end {
-                                std::thread::sleep(Duration::from_millis(5));
-                            }
-                            Err(FixtureFailure::Timeout(
-                                "expected readiness marker missing".into(),
-                            ))
-                        }
-                    }
-                });
-            outcome.report("test_isolated::tests::a_role");
-            assert!(outcome.work.is_err(), "readiness failure not observed");
-            assert!(
-                outcome.termination.is_ok(),
-                "readiness failure bypassed owned-child finalization"
+        for (case, held, zero) in readiness_scenarios() {
+            let role = if held {
+                "stall"
+            } else if zero {
+                "zero-release"
+            } else {
+                "release"
+            };
+            let (outcome, start) = readiness_fixture(case, "valid", role);
+            verify_readiness(
+                &outcome,
+                "test_isolated::tests::a_role",
+                start,
+                case,
+                role == "stall",
+                role == "zero-release",
             );
-            if role == "zero-release" {
-                assert!(outcome
-                    .entry
-                    .as_ref()
-                    .unwrap_err()
-                    .contains("isolated body did not enter"));
-            } else {
-                assert!(
-                    outcome.entry.is_ok(),
-                    "readiness failure bypassed owned-child finalization"
-                );
-            }
-            if role == "stall" {
-                assert!(matches!(
-                    outcome.wait.unwrap_err().kind,
-                    ChildWaitKind::Expired
-                ));
-            } else {
-                assert!(outcome.wait.unwrap().success());
-            }
         }
+    }
+    #[test]
+    fn readiness_proof_rejects_wrong_failure() {
+        verify_readiness_controls("test_isolated::tests::a_role", |case, control| {
+            readiness_fixture(case, control, "release")
+        });
     }
 
     #[test]
@@ -772,8 +991,7 @@ mod tests {
         assert!(out.contains("€\n\\x80\\xC3(\\xE2\\x82"), "{out}");
     }
 
-    #[test]
-    fn invalid_utf8_stderr_preserves_the_child_diagnostic() {
+    fn byte_fixture() -> FixtureOutcome<()> {
         let (mut command, entry) = test_command("test_isolated::tests::a_role");
         let child = command
             .env(ROLE, "bytes")
@@ -781,25 +999,106 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let pid = child.id();
-        let captured = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            drain(child).wait_within(ISOLATION_TIMEOUT)
-        }));
-        entry.assert_once(pid);
-        eprintln!("entry-proof test=test_isolated::tests::a_role child={pid} entry=once");
-        assert!(
-            captured.is_ok(),
-            "child output lost escaped invalid UTF-8 diagnostic"
+        supervise_fixture_until(
+            child,
+            entry,
+            Instant::now() + ISOLATION_TIMEOUT,
+            |_, _, _| Ok(()),
+        )
+    }
+    // Independent child prerequisites precede decoder classification, including in every negative control.
+    fn verify_utf8(
+        outcome: &FixtureOutcome<()>,
+        injected: Option<&OutputFailure>,
+    ) -> Result<(), &'static str> {
+        let role = "test_isolated::tests::a_role";
+        outcome.report(role);
+        let out = outcome
+            .streams
+            .stdout
+            .as_ref()
+            .map_err(|_| "UTF-8 fixture stdout failed")?;
+        let witness = format!(
+            "utf8-start test={role} child={} intended child failure\n",
+            outcome.child
         );
-        let (status, out, err) = captured.unwrap();
-        assert!(!status.success(), "intended child failure was not observed");
-        assert!(out.contains("valid stdout control"));
         assert!(
-            err.contains("intended child diagnostic \\xFF\\xFE\\xC3("),
+            outcome.wait.as_ref().is_ok_and(|s| s.code() == Some(101))
+                && outcome.termination.is_ok()
+                && outcome.entry.is_ok()
+                && out.contains("valid stdout control\n")
+                && out.split_inclusive('\n').any(|line| line == witness),
+            "UTF-8 fixture prerequisites failed"
+        );
+        eprintln!(
+            "utf8-child child={} status={} cleanup=confirmed entry=once witness={witness:?}",
+            outcome.child,
+            outcome.wait.as_ref().unwrap()
+        );
+        let failure = injected.or_else(|| outcome.streams.stderr.as_ref().err());
+        if let Some(failure) = failure {
+            let decoder = failure.stream == "stderr"
+                && failure.kind == Some(std::io::ErrorKind::InvalidData)
+                && failure.reason == "stream did not contain valid UTF-8";
+            eprintln!("utf8-cause test={role} child={} status={} cleanup=confirmed entry=once stream={} kind={:?} reason={} decoder={}",
+                outcome.child, outcome.wait.as_ref().unwrap(), failure.stream, failure.kind, failure.reason, if decoder { "matched" } else { "rejected" });
+            return Err(if decoder {
+                "child output lost escaped invalid UTF-8 diagnostic"
+            } else {
+                "UTF-8 proof observed an unrelated capture failure"
+            });
+        }
+        let err = outcome.streams.stderr.as_ref().unwrap();
+        assert!(
+            err.contains("intended child diagnostic \\xFF\\xFE\\xC3(")
+                && err.contains("intended child failure"),
             "child output lost escaped invalid UTF-8 diagnostic: {err}"
         );
-        assert!(err.contains("intended child failure"));
-        eprintln!("{err}child-status={status} child={pid} bodies=1 cleanup=confirmed");
+        eprintln!(
+            "{err}child-status={} child={} bodies=1 cleanup=confirmed",
+            outcome.wait.as_ref().unwrap(),
+            outcome.child
+        );
+        Ok(())
+    }
+    #[test]
+    fn invalid_utf8_stderr_preserves_the_child_diagnostic() {
+        verify_utf8(&byte_fixture(), None).unwrap_or_else(|reason| panic!("{reason}"));
+    }
+    #[test]
+    fn utf8_proof_rejects_wrong_capture_failure() {
+        for (stream, kind, reason) in [
+            (
+                "stderr",
+                std::io::ErrorKind::Other,
+                "unrelated output observation failure",
+            ),
+            (
+                "stdout",
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            ),
+            (
+                "stderr",
+                std::io::ErrorKind::InvalidData,
+                "another decoder reason",
+            ),
+        ] {
+            let outcome = byte_fixture();
+            let failure = OutputFailure {
+                stream,
+                kind: Some(kind),
+                reason: reason.into(),
+                captured: String::new(),
+            };
+            let rejected = verify_utf8(&outcome, Some(&failure));
+            assert_eq!(
+                rejected,
+                Err("UTF-8 proof observed an unrelated capture failure"),
+                "UTF-8 proof accepted an unrelated capture failure"
+            );
+            eprintln!("utf8-rejection stream={stream} kind={kind:?} reason={reason}");
+        }
     }
 
     // Body entry and child cleanup are behavioral proofs; the rerun spelling catalog is retired.
