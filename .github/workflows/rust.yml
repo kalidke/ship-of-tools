@@ -577,3 +577,29 @@ jobs:
           out="$(PATH="$RUNNER_TEMP/fakebin:$PATH" SOT_INSTALL_TAG="$tag" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" --prefix "$HOME/.local/share/sot2" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           [ -x "$HOME/.local/share/sot2/bin/sotd" ] || { echo "second prefix missing sotd"; exit 1; }
+
+  w1-native-proof:
+    name: W1 C3 parent proof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Expected behavioral reds
+        run: |
+          set +e
+          cargo test -p sot-backend --bin sotd -j 8 --locked trust_config_controls -- --nocapture > config.log 2>&1
+          result=$?
+          cat config.log
+          echo "C3 parent config exit $result expected 101"
+          test "$result" -eq 101 || exit 1
+          grep -F 'W1 effective child config missed the separate exact-cwd key' config.log || exit 1
+          grep -F 'W1 config guard did not restore configuration directories' config.log || exit 1
