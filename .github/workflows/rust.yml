@@ -65,6 +65,15 @@ jobs:
           workspaces: rust
       - name: Build workspace
         run: cargo build --workspace --locked
+      # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
+      # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
+      - name: Function length
+        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
+      # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
+      # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
+      # that does not exist on a leg draws a warning there.
+      - name: Disallowed methods
+        run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Validate T1 replay observations
         shell: bash
         working-directory: .
@@ -76,15 +85,6 @@ jobs:
           name: t1-replay-${{ matrix.os }}
           path: dev/output/proofs/hosted/logs/
           if-no-files-found: error
-      # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
-      # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
-      - name: Function length
-        run: cargo clippy --workspace --exclude vt100-ctt --all-targets --locked -- -A clippy::all -D clippy::too_many_lines
-      # rust/clippy.toml holds the rules this step enforces, one labelled group each, every group opening with its
-      # rule; a sanctioned site carries #[allow(clippy::disallowed_methods, reason = "...")] on its one statement. A path
-      # that does not exist on a leg draws a warning there.
-      - name: Disallowed methods
-        run: cargo clippy --workspace --exclude vt100-ctt --lib --bins --locked -- -A clippy::all -D clippy::disallowed_methods
       - name: Function length allowances can only fall
         if: matrix.os == 'ubuntu-latest'
         working-directory: .
