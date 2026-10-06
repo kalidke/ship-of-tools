@@ -571,3 +571,203 @@ jobs:
           out="$(PATH="$RUNNER_TEMP/fakebin:$PATH" SOT_INSTALL_TAG="$tag" bash "$GITHUB_WORKSPACE/scripts/install.sh" --be-only --no-service --version "$tag" --prefix "$HOME/.local/share/sot2" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
           [ -x "$HOME/.local/share/sot2/bin/sotd" ] || { echo "second prefix missing sotd"; exit 1; }
+
+  # Scratch proof input only; T2 owns this SSH fixture and T3 extends it.
+  t2-k5:
+    name: T2 cold switch SSH (ubuntu-latest)
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/tmp/ci-t2-k5'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # Match the completed test job's cache without changing its workflow.
+      # Proof Cargo runs stay offline; a missing cached crate fails loudly.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          shared-key: test
+          save-if: false
+      - name: One ephemeral SSH fixture; k3b once and k5 three times
+        working-directory: rust
+        shell: bash
+        run: |
+          umask 022
+          python3 - <<'PY'
+          import os, pathlib, pwd, re, shutil, socket, subprocess, sys, tempfile, time
+
+          workspace = pathlib.Path.cwd()
+          target = pathlib.Path(os.environ['RUNNER_TEMP']) / 't2-k5-target'
+          logs = target / 'logs'
+          scratch = target / 'scratch'
+          logs.mkdir(parents=True, exist_ok=True)
+          scratch.mkdir(parents=True, exist_ok=True)
+          account = pwd.getpwuid(os.getuid()).pw_name
+          redactions = [(str(workspace.parent), '<workspace>'),
+                        (str(target.parent), '<runner-temp>'),
+                        (os.environ.get('HOME', ''), '<home>'),
+                        (socket.gethostname(), '<host>'), (account, '<user>')]
+
+          def safe(text):
+              for value, replacement in redactions:
+                  if value:
+                      text = text.replace(value, replacement)
+              text = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', '<address>', text)
+              return re.sub(r'(?<![\w:])::1(?![\w:])', '<address>', text)
+
+          def run(label, argv, env):
+              result = subprocess.run(argv, env=env, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True, timeout=930)
+              output = safe(result.stdout)
+              (logs / (label + '.log')).write_text(output)
+              print('::group::' + label, flush=True)
+              print(output, end='', flush=True)
+              print(f'{label} exit {result.returncode} expected 0', flush=True)
+              print('::endgroup::', flush=True)
+              if result.returncode:
+                  raise RuntimeError(label + ' failed; required proof did not pass')
+              return output
+
+          def cargo(label, args, env):
+              return run(label, ['nice', 'timeout', '900', 'cargo'] + args, env)
+
+          def check_k5(output, sample):
+              output = re.sub(r'(?m)^test k5_cold_switch_over_ssh \.\.\. ', '', output)
+              rounds = re.findall(r'^k5 round (\d) L=([0-9.]+)ms local total=([0-9.]+)ms ssh total=([0-9.]+)ms$', output, re.M)
+              if [int(row[0]) for row in rounds] != list(range(5)):
+                  raise RuntimeError('k5 must print all five L/local/SSH sample lines')
+              if any(float(total) > 2000 for row in rounds for total in row[2:]):
+                  raise RuntimeError('a printed k5 sample exceeded CONNECT_BOUND')
+              for label in ('L', 'local', 'ssh'):
+                  if not re.search(r'^k5 ' + label + r' p50=[0-9.]+ms$', output, re.M):
+                      raise RuntimeError('missing k5 ' + label + ' p50 line')
+              if not re.search(r'^k5 excess p50=-?[0-9.]+ms ratio=-?[0-9.]+$', output, re.M):
+                  raise RuntimeError('missing k5 excess/ratio line')
+              if not re.search(r'^k5 PASS$', output, re.M):
+                  raise RuntimeError('k5 must pass its unchanged excess <= 1.5 x L assertion')
+              if 'test result: ok. 1 passed; 0 failed; 0 ignored;' not in output:
+                  raise RuntimeError('k5 must execute exactly one ignored test')
+              # Test success also certifies its full-precision per-sample check;
+              # the printed decimal timings alone are not that witness.
+              line = f'k5 run {sample} CONNECT_BOUND check: 10/10 samples <= 2000 ms PASS'
+              print(line, flush=True)
+              with (logs / 'connect-bound.log').open('a') as file:
+                  file.write(line + '\n')
+
+          def main():
+              if sys.platform != 'linux' or os.environ.get('GITHUB_ACTIONS') != 'true':
+                  raise RuntimeError('this proof requires an isolated hosted Linux runner')
+              tools = {name: shutil.which(name, path=os.environ['PATH'] + ':/usr/sbin')
+                       for name in ('ssh', 'sshd', 'ssh-keygen')}
+              if not all(tools.values()):
+                  raise RuntimeError('OpenSSH client, server and key generator are required; no skip')
+              env = {key: value for key, value in os.environ.items() if not key.startswith('SOT_')}
+              env.pop('SSH_AUTH_SOCK', None)
+              env.update(CARGO_TARGET_DIR=str(target), CARGO_NET_OFFLINE='true',
+                         CARGO_PROFILE_DEV_DEBUG='line-tables-only')
+              cargo('t2-k5-build-sotd', ['build', '-p', 'sot-backend', '--bin', 'sotd', '-j', '8', '--locked'], env)
+              cargo('t2-k5-build-capsule', ['build', '-p', 'sot-log', '--bin', 'sot-capsule', '-j', '8', '--locked'], env)
+              cargo('t2-k5-build-tests', ['test', '-p', 'sot-backend', '--test', 'keystroke_latency', '--no-run', '-j', '8', '--locked'], env)
+              with tempfile.TemporaryDirectory(prefix='ssh-home-', dir=scratch) as folder:
+                  home = pathlib.Path(folder)
+                  host_key, client_key = home / 'host-key', home / 'client-key'
+                  for label, key in [('host', host_key), ('client', client_key)]:
+                      run('t2-k5-key-' + label, [tools['ssh-keygen'], '-q', '-t', 'ed25519', '-N', '',
+                                               '-C', 't2-fixture', '-f', str(key)], env)
+                  authorized = home / 'authorized-keys'
+                  authorized.write_text(client_key.with_suffix('.pub').read_text())
+                  authorized.chmod(0o600)
+                  with socket.socket() as reservation:
+                      reservation.bind(('localhost', 0))
+                      port = reservation.getsockname()[1]
+                  server_config = home / 'sshd-config'
+                  server_config.write_text('\n'.join([
+                      'AddressFamily inet', 'ListenAddress localhost', f'Port {port}',
+                      f'HostKey "{host_key}"', f'PidFile "{home / "sshd.pid"}"',
+                      f'AuthorizedKeysFile "{authorized}"', 'StrictModes no',
+                      'PasswordAuthentication no', 'KbdInteractiveAuthentication no',
+                      'AuthenticationMethods publickey', 'PubkeyAuthentication yes',
+                      'UsePAM no', f'SetEnv HOME={home}', 'PermitRootLogin no', 'AllowAgentForwarding no',
+                      'AllowTcpForwarding no', 'X11Forwarding no', 'LogLevel ERROR', '']))
+                  known = home / 'known-hosts'
+                  known.write_text(f'[localhost]:{port} ' + host_key.with_suffix('.pub').read_text())
+                  client_config = home / 'ssh-config'
+                  client_config.write_text('\n'.join([
+                      'Host localhost', '  HostName localhost', '  AddressFamily inet', f'  Port {port}',
+                      f'  IdentityFile "{client_key}"', '  IdentitiesOnly yes',
+                      f'  UserKnownHostsFile "{known}"', '  GlobalKnownHostsFile /dev/null',
+                      '  StrictHostKeyChecking yes', '  BatchMode yes', '  ConnectTimeout 2', '']))
+                  binaries = home / 'bin'
+                  binaries.mkdir(mode=0o700)
+                  wrapper = binaries / 'ssh'
+                  wrapper.write_text('#!/usr/bin/env python3\nimport os, sys\n' +
+                                     f'os.execv({tools["ssh"]!r}, [{tools["ssh"]!r}, "-F", {str(client_config)!r}] + sys.argv[1:])\n')
+                  wrapper.chmod(0o700)
+                  # These are initial child values; the tests observe that their
+                  # parent PATH/SHELL stay unchanged throughout each fixture.
+                  test_env = dict(env, HOME=str(home), PATH=str(binaries) + os.pathsep + env['PATH'])
+                  run('t2-k5-sshd-config', [tools['sshd'], '-t', '-f', str(server_config)], test_env)
+                  daemon = subprocess.Popen([tools['sshd'], '-D', '-e', '-f', str(server_config)],
+                                            env=test_env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                            text=True, start_new_session=True)
+                  owned_pid = daemon.pid
+                  print(f'SSH fixture started owned pid {owned_pid}', flush=True)
+                  try:
+                      deadline = time.monotonic() + 15
+                      ready = None
+                      while time.monotonic() < deadline:
+                          if daemon.poll() is not None:
+                              raise RuntimeError('the fixture sshd exited before authenticated readiness')
+                          ready = subprocess.run([str(wrapper), 'localhost', 'true'], env=test_env,
+                                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                 text=True, timeout=5)
+                          if ready.returncode == 0:
+                              break
+                          time.sleep(0.1)
+                      if ready is None or ready.returncode:
+                          raise RuntimeError('SSH fixture authentication failed: ' + (ready.stdout if ready else 'no result'))
+                      print('SSH fixture authenticated against its own ephemeral daemon', flush=True)
+                      selection = ['test', '-p', 'sot-backend', '--test', 'keystroke_latency', '-j', '8', '--locked']
+                      flags = ['--', '--exact', '--ignored', '--nocapture', '--test-threads=1']
+                      output = cargo('t2-k3b', selection + ['k3b_ssh_cold_dial'] + flags, test_env)
+                      for expected in ['k3b local run of the remote command reaches the private daemon (session id matched): true',
+                                       'k3b measured: ssh + bridge hello', 'k3b dial: n=5 ',
+                                       'test result: ok. 1 passed; 0 failed; 0 ignored;']:
+                          if expected not in output:
+                              raise RuntimeError('missing k3b private-daemon or executed-test witness')
+                      for sample in range(1, 4):
+                          output = cargo(f't2-k5-run-{sample}', selection + ['k5_cold_switch_over_ssh'] + flags, test_env)
+                          check_k5(output, sample)
+                  finally:
+                      if daemon.poll() is None:
+                          daemon.terminate()
+                      try:
+                          _, diagnostic = daemon.communicate(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          daemon.kill()
+                          _, diagnostic = daemon.communicate(timeout=5)
+                      diagnostic = safe(diagnostic)
+                      (logs / 'sshd.log').write_text(diagnostic)
+                      if diagnostic:
+                          print(diagnostic, end='', file=sys.stderr, flush=True)
+                      print(f'SSH fixture reaped owned pid {owned_pid}', flush=True)
+              print('T2 hosted SSH proof: k3b once; k5 three independent processes; all required samples printed', flush=True)
+
+          try:
+              main()
+          except Exception as error:
+              print(safe('T2 hosted SSH proof failed: ' + str(error)), file=sys.stderr, flush=True)
+              sys.exit(1)
+          PY
+      - name: Retain every sample and diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t2-k5-${{ github.sha }}
+          path: ${{ runner.temp }}/t2-k5-target/logs
+          if-no-files-found: error
