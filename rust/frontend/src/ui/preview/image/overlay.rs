@@ -37,7 +37,7 @@ pub(in crate::ui) struct CaptionStore {
 
 impl CaptionStore {
     pub(in crate::ui) fn set(&mut self, ws_key: WsKey, node_id: String, text: String) {
-        let key = (ws_key, node_id);
+        let key = ((String::new(), ws_key.1), node_id);
         if self.map.insert(key.clone(), text).is_none() {
             self.order.push_back(key);
         }
@@ -49,14 +49,15 @@ impl CaptionStore {
     }
 
     pub(in crate::ui) fn clear_one(&mut self, ws_key: &WsKey, node_id: &str) {
-        let key = (ws_key.clone(), node_id.to_string());
+        let key = ((String::new(), ws_key.1.clone()), node_id.to_string());
         if self.map.remove(&key).is_some() {
             self.order.retain(|k| k != &key);
         }
     }
 
     pub(in crate::ui) fn get(&self, ws_key: &WsKey, node_id: &str) -> Option<&String> {
-        self.map.get(&(ws_key.clone(), node_id.to_string()))
+        self.map
+            .get(&((String::new(), ws_key.1.clone()), node_id.to_string()))
     }
 }
 
