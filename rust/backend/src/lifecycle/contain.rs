@@ -29,7 +29,8 @@ impl Tree {
     }
 }
 
-/// Make `cmd`'s child start inside its own containment.
+/// Make `cmd`'s child start inside its own containment. On Windows this replaces the command's creation flags with
+/// `CREATE_SUSPENDED`: std has no getter to add to them, so a caller that needs a flag of its own adds it here.
 pub(crate) fn prepare(cmd: &mut std::process::Command) {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd, 0);

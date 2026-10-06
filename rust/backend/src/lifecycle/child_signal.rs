@@ -741,6 +741,7 @@ pub(crate) mod tests {
     /// probe, a pid that was reaped. Every one built from a pid parses it from what the process wrote. And per file
     /// there are as many seen-gone checks as leftovers built, but those alive at the test's end by design, listed by
     /// file and count. The count is per file, so a check on something else in the same file can hide an unchecked one.
+    /// Comment lines are not counted.
     #[test]
     fn each_file_checks_as_many_leftovers_as_it_builds_and_parses_their_pids() {
         // Built with `concat!`, so this file does not hold the texts it counts.
@@ -748,16 +749,19 @@ pub(crate) mod tests {
         const ALIVE_AT_END: [(&str, usize); 1] = [("rust/backend/src/pages/ops.rs", 1)];
         let mut found = Vec::new();
         for (rel, text) in sot_log::test_scan::rust_sources() {
+            // Comment lines are not counted, as rust/log/tests/connect_own.rs reads them: a comment that names a counted
+            // text must not hide an unchecked Leftover.
+            let code = || text.lines().filter(|l| !l.trim_start().starts_with("//"));
             for (n, line) in text.lines().enumerate() {
-                if line.contains(of_pid) && !line.contains(".parse(") {
+                if !line.trim_start().starts_with("//") && line.contains(of_pid) && !line.contains(".parse(") {
                     found.push(format!("{rel}:{}: a Leftover whose pid is not parsed from what the process wrote: {}", n + 1, line.trim()));
                 }
             }
-            let built = text.matches(made).count();
+            let built: usize = code().map(|l| l.matches(made).count()).sum();
             if built == 0 {
                 continue;
             }
-            let checked = text.matches(seen).count();
+            let checked: usize = code().map(|l| l.matches(seen).count()).sum();
             let alive = ALIVE_AT_END.iter().find(|(f, _)| *f == rel).map_or(0, |(_, c)| *c);
             if built != checked + alive {
                 found.push(format!("{rel}: {built} Leftovers, {checked} seen gone, {alive} alive at the end by design"));

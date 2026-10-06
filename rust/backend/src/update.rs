@@ -440,9 +440,12 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
         (Some(id), Some(cfg)) => {
             let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);
             let probes = async {
+                let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
+                #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
+                let prepared = PreparedState::matches(&stage_dir, id).await;
                 (
-                    sot_updater::is_staged(&cfg.updates_root, id).await,
-                    PreparedState::matches(&stage_dir, id).await,
+                    staged,
+                    prepared,
                     matches!(
                         sot_updater::pending::read(&cfg.updates_root, &id.target).await,
                         Ok(Some(p)) if p.identity == *id

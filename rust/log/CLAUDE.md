@@ -83,3 +83,10 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - A test writes a program it will run only through `test_exec::write_executable`, so no process holds it open for writing when it runs (`test_exec::tests::only_test_exec_makes_a_test_program_executable`).
 - Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).
 - Helper binaries `sot-pty-helper`, `sot-conpty-helper` and `sot-fault-writer` are test fixtures and never ship.
+- Another crate can reach the processes this crate starts (the capsule's agent, the supervisor's legs, the Claude
+  adapter's helper) through its public items, as read on 2026-10-05: `capsule::run`, `capsule::producer::Producer::spawn`,
+  `capsule::producer::conpty::ConptySpawn::spawn`, `supervisor::supervise`,
+  `supervisor::probe::classify::probe_owned_spawn`, `supervisor::probe::ProbeOps::spawn` and `claude::run`.
+  `rust/clippy.toml` lists none of them, so the lint does not see a call from another crate; today no other crate calls
+  them but `src/bin/sot-capsule.rs`, which reaches them through `capsule::run`, `supervisor::supervise` and
+  `claude::run`.

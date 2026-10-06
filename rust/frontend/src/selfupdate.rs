@@ -168,10 +168,14 @@ struct Phase {
 /// must say it doesn't know rather than print a `false` it never measured.
 async fn phase(cfg: &UpdaterConfig, id: &sot_updater::ReleaseIdentity) -> Option<Phase> {
     let probes = async {
+        let partial_bytes = sot_updater::partial_asset_bytes(&cfg.updates_root, id).await;
+        let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
+        #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
+        let prepared = PreparedState::matches(&sot_updater::stage_dir(&cfg.updates_root, id), id).await;
         Phase {
-            partial_bytes: sot_updater::partial_asset_bytes(&cfg.updates_root, id).await,
-            staged: sot_updater::is_staged(&cfg.updates_root, id).await,
-            prepared: PreparedState::matches(&sot_updater::stage_dir(&cfg.updates_root, id), id).await,
+            partial_bytes,
+            staged,
+            prepared,
             armed: matches!(
                 sot_updater::pending::read(&cfg.updates_root, &id.target).await,
                 Ok(Some(p)) if p.identity == *id
