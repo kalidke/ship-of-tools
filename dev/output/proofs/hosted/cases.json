@@ -1,0 +1,55 @@
+[
+  {
+    "label": "c3a-head-bind_failure_removes_its_folder",
+    "tree": "head",
+    "test": "lease::grant_tests::bind_failure_removes_its_folder",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "private lease listener directory is removed after a bind failure",
+    "observations": [
+      "forced occupied-path bind failure observed"
+    ],
+    "occupied_bind": true,
+    "isolated": false,
+    "not_runnable_here": true,
+    "platforms": [
+      "linux",
+      "macos"
+    ]
+  },
+  {
+    "label": "c3a-head-bind_removes_its_folder_when_dropped",
+    "tree": "head",
+    "test": "lease::grant_tests::bind_removes_its_folder_when_dropped",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "was left behind",
+    "observations": [
+      "T1 fixture observed: successful listener owns its private directory"
+    ],
+    "occupied_bind": false,
+    "isolated": false,
+    "not_runnable_here": true,
+    "platforms": [
+      "linux",
+      "macos"
+    ]
+  },
+  {
+    "label": "c3a-head-harness_never_leases",
+    "tree": "head",
+    "test": "lease::grant_tests::harness_never_leases",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "an exempt window must not connect",
+    "observations": [
+      "T1 fixture observed: private listener bound and exempt lease refused connection"
+    ],
+    "occupied_bind": false,
+    "isolated": false,
+    "not_runnable_here": true,
+    "platforms": [
+      "windows"
+    ]
+  }
+]

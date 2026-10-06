@@ -65,6 +65,17 @@ jobs:
           workspaces: rust
       - name: Build workspace
         run: cargo build --workspace --locked
+      - name: Validate T1 replay observations
+        shell: bash
+        working-directory: .
+        run: python3 dev/output/proofs/hosted/run.py --platform "${{ runner.os }}"
+      - name: Archive T1 replay observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t1-replay-${{ matrix.os }}
+          path: dev/output/proofs/hosted/logs/
+          if-no-files-found: error
       # Functions over 100 code lines fail unless they carry an allow with a reason. The vendored vt100
       # crate is excluded: it denies clippy::all in its own source, which beats -A on the command line.
       - name: Function length

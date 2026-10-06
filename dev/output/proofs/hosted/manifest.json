@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c3a-head",
+  "original": {
+    "sha": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+    "branch": "tmp/ci-t1-c3a-head"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "tree": "head",
+  "overlays": [
+    {
+      "tree": "head",
+      "file": "rust/frontend/src/lease_grant_tests.rs",
+      "base_sha256": "9348809fca70002c0f04881b91058fadd2a31d6b605580eee615f1300025c375",
+      "overlay_sha256": "73f6e49d1490b315ea6fef988a00baa04345e8805716fef7c9f7aac95129762f",
+      "patch": "overlays/head.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/lease_grant_tests.rs",
+      "accepted_overlay_sha256": "73f6e49d1490b315ea6fef988a00baa04345e8805716fef7c9f7aac95129762f",
+      "replay_sha256": "73f6e49d1490b315ea6fef988a00baa04345e8805716fef7c9f7aac95129762f",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
