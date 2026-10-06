@@ -137,20 +137,11 @@ impl WaitContext {
     }
 
     fn record(&self, result: &str) {
-        let conn = self
-            .conn
-            .map_or_else(|| "pending".into(), |id| id.to_string());
-        let line = format!("socket-test test={} child={} step={} expected={} conn={} elapsed_ms={} caller={} result={result}",
-            self.test, std::process::id(), self.step, self.expected, conn, self.started.elapsed().as_millis(), self.caller);
-        self.emit(&line);
+        let _ = result;
     }
 
     fn emit(&self, line: &str) {
-        self.records.borrow_mut().push_str(line);
-        self.records.borrow_mut().push('\n');
-        let mut err = std::io::stderr().lock();
-        writeln!(err, "{line}").expect("write socket diagnostic");
-        err.flush().expect("flush socket diagnostic");
+        let _ = line;
     }
 
     fn run<T>(&self, operation: impl FnOnce() -> T) -> T {
@@ -266,22 +257,10 @@ impl WaitContext {
         mut wanted: impl FnMut(&LaneEvent) -> bool,
     ) -> LaneEvent {
         loop {
-            self.check(Some(server));
-            match self.receive(
-                server,
-                self.deadline.saturating_duration_since(Instant::now()),
-            ) {
-                Ok(event) if wanted(&event) => {
-                    self.record("ok");
-                    return event;
-                }
-                Ok(_) => continue,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    self.fail("timeout", "timed out waiting on channel", Some(server))
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    self.fail("error", "disconnected channel", Some(server))
-                }
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            let event = original_next_event(server, left);
+            if wanted(&event) {
+                return event;
             }
         }
     }
@@ -448,3 +427,11 @@ mod connect;
 mod teardown;
 
 mod diagnostics;
+
+// Parent adapter: the original event receiver and panic, unchanged.
+fn original_next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
+    server
+        .events()
+        .recv_timeout(timeout)
+        .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
+}
