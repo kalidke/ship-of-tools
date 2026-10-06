@@ -41,7 +41,11 @@ fn input_continuation<S, P>(
 ) {
     if synthetic || !pressed { return; }
     if let Some(keep) = keep {
-        next(state, InputRoute::Prompt(quit_prompt_step(keep, logical, repeat)));
+        let action = resolve(state).0;
+        let bound_key = if *logical == Key::Named(NamedKey::Tab) { Key::Named(NamedKey::Tab) }
+            else if action == Some(Action::Confirm) { Key::Named(NamedKey::Enter) }
+            else { Key::Named(NamedKey::Escape) };
+        next(state, InputRoute::Prompt(quit_prompt_step(keep, &bound_key, repeat)));
         return;
     }
     if matches!(logical, Key::Named(NamedKey::Control | NamedKey::Shift |
