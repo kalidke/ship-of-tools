@@ -36,17 +36,23 @@ end
         end
     end
 
-    @testset "(a) no manifest yet: the frozen list prunes, nothing else" begin
+    @testset "(a) no manifest yet: every retired helper prunes, nothing else" begin
         withhome() do home, bin
-            write(joinpath(bin, "comm-listen.sh"), "stale")
-            write(joinpath(bin, "bus.sh"), "stale")
-            write(joinpath(bin, "comm-wake.sh"), "stale")
+            retired = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-watch.sh",
+                       "codex-watch.sh", "comm-postcompact-reminder.sh",
+                       "comm-postclear-reminder.sh", "comm-session-skill.sh", "comm-pipe-request.ps1"]
+            @test !ispath(joinpath(bin, manifest))
+            for name in retired
+                write(joinpath(bin, name), "stale")
+            end
             write(joinpath(bin, "comm-poll.sh"), "OLD")
             write(joinpath(bin, "my-own-tool.sh"), "mine")
             ShipTools.update_comm(clis = [:claude])
-            @test !isfile(joinpath(bin, "comm-listen.sh"))
-            @test !isfile(joinpath(bin, "bus.sh"))
-            @test !isfile(joinpath(bin, "comm-wake.sh"))
+            for name in retired
+                @testset "manifestless retirement: $name" begin
+                    @test !ispath(joinpath(bin, name))
+                end
+            end
             @test read(joinpath(bin, "comm-poll.sh")) == srcbytes("comm-poll.sh")
             @test read(joinpath(bin, "my-own-tool.sh"), String) == "mine"
             @test isfile(joinpath(bin, "comm-status-idle.sh"))

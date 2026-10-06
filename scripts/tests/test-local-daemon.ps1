@@ -28,6 +28,7 @@
 # without a build. Section 6 additionally only runs ON CI even when a real
 # sotd.exe IS present -- see its own comment for why.
 # Sections 9-11 and 16 live in test-launcher-leases.ps1.
+# Sections 4b, 4c and 5b2 live in test-local-daemon-own.ps1, dot-sourced after 5b in this scope.
 # Section 5c's cases (iii)-(viii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
@@ -63,8 +64,9 @@ try {
             (Join-Path $repo 'scripts\sot-freshness.ps1'),
             (Join-Path $repo 'scripts\sot-lease.ps1'),
             (Join-Path $repo 'scripts\shutdown-sot.ps1'),
-            (Join-Path $repo 'agents\comm-pipe-request.ps1'),
+            (Join-Path $repo 'scripts\tests\pipe-request.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon-pipe.ps1'),
+            (Join-Path $repo 'scripts\tests\test-local-daemon-own.ps1'),
             (Join-Path $repo 'scripts\tests\test-local-daemon.ps1')
         )) {
         $errs = $null
@@ -234,16 +236,17 @@ try {
         $pipe5b = New-TestPipeName
         $out5b = & $script -Prefix $p3 -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe5b -ProjectRoot $spacedProjectRoot 6>&1 2>&1
         Check '5b: the daemon starts' (Wait-Pipe $pipe5b) "pipe never opened; log: $out5b"
-        $streams5b = @(Open-SotLease (Get-PipePath $pipe5b))
+        $streams5b = @(Open-SotLease (Get-PipePath $pipe5b) $realSotd)
         Check '5b: the real daemon grants the launcher a lease' ($streams5b.Count -eq 1) "got $($streams5b.Count); log: $($script:supLines5b -join ' | ')"
         foreach ($c in $streams5b) { try { $c.Dispose() } catch { } }
         Check '5b: the lease ending shuts the daemon down' (Wait-PipeGone $pipe5b) 'pipe still answering'
         Get-DaemonProcs (Get-PipePath $pipe5b) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
         } catch { Check '5b: section ran' $false $_.Exception.Message }
+        . (Join-Path $PSScriptRoot 'test-local-daemon-own.ps1')
         try {
-        Write-Host "`n=== 5c. the pipe transport of every sot-comm client against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request, and a request up to the envelope cap is answered, not stalled (ADR 0049) ===" -ForegroundColor Cyan
-        # agents\comm-pipe-request.ps1 matches a reply by its op. A refused hello is a reply to the hello, so the transport
+        Write-Host "`n=== 5c. a raw pipe client (scripts\tests\pipe-request.ps1) against a real daemon of its own: a refused hello is printed and exits 1, an accepted one answers the request, and a request up to the envelope cap is answered, not stalled (ADR 0049) ===" -ForegroundColor Cyan
+        # A raw pipe client (scripts\tests\pipe-request.ps1) matches a reply by its op. A refused hello is a reply to the hello, so the transport
         # must hand it over (and fail) rather than wait out its bound and report a silent daemon: the caller names the
         # refusal. (ii) is the same request with an accepted hello, so the transport's own answer path is exercised too.
         # This daemon closes after refusing, so the transport reads on past a protocol refusal to the end of the

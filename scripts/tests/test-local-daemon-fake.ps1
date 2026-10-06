@@ -5,7 +5,7 @@
     # this file runs under (CI step `shell: powershell`). C# 5 syntax only.
     Write-Host "`n=== 7-8 setup. compile the fake daemon ===" -ForegroundColor Cyan
     if ($null -eq $envSaved) { $envSaved = @{} }
-    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG')) {
+    foreach ($k in @('LOCALAPPDATA', 'FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT')) {
         if (-not $envSaved.ContainsKey($k)) { $envSaved[$k] = [Environment]::GetEnvironmentVariable($k) }
     }
     $fakeLocalAppData = Join-Path $root 'fakelocal'
@@ -77,6 +77,36 @@ public static class FakeSotd
 
     public static int Main(string[] a)
     {
+        if (a.Length == 3 && a[0] == "stdio-bridge" && a[1] == "--endpoint"
+            && Environment.GetEnvironmentVariable("FAKE_SOTD_BRIDGE_EARLY_EXIT") == "1")
+        {
+            // Stay alive until the test closes input, after the caller has read this child's start time.
+            // No hello or lease byte may arrive in this mode.
+            using (Stream input = Console.OpenStandardInput())
+            {
+                if (input.ReadByte() != -1) { return 2; }
+            }
+            Console.Error.WriteLine("sotd stdio-bridge: pipe:x: not connecting: test refusal");
+            Console.Error.Flush();
+            return 1;
+        }
+        if (a.Length == 3 && a[0] == "stdio-bridge" && a[1] == "--endpoint" && a[2].StartsWith("pipe:"))
+        {
+            string pipe = a[2].Substring(5);
+            pipe = pipe.Substring(pipe.LastIndexOf('\\') + 1);
+            using (NamedPipeClientStream client = new NamedPipeClientStream(".", pipe, PipeDirection.InOut))
+            {
+                try { client.Connect(500); } catch (Exception) { return 1; }
+                Thread output = new Thread(delegate () {
+                    try { client.CopyTo(Console.OpenStandardOutput()); } catch (Exception) { }
+                });
+                output.IsBackground = true;
+                output.Start();
+                Console.OpenStandardInput().CopyTo(client);
+                client.Flush();
+                return 0;
+            }
+        }
         string name = null;
         for (int i = 0; i + 1 < a.Length; i++)
         {
@@ -128,7 +158,7 @@ public static class FakeSotd
     Check 'the fake daemon compiles' $compiled "Add-Type failed: $compileErr"
 
     function Clear-FakeEnv {
-        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG')) {
+        foreach ($k in @('FAKE_SOTD_EXIT_AFTER_MS', 'FAKE_SOTD_BIND_DELAY_MS', 'FAKE_SOTD_LEASE_OUTCOME', 'FAKE_SOTD_HELLO_REFUSAL', 'FAKE_SOTD_LOG', 'FAKE_SOTD_BRIDGE_EARLY_EXIT')) {
             Remove-Item "Env:\$k" -ErrorAction SilentlyContinue
         }
     }

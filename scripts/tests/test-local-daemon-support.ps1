@@ -32,12 +32,11 @@ function New-Fixture {
 function New-TestPipeName { 'test-sot-ld-' + [guid]::NewGuid().ToString('N').Substring(0, 8) }
 function Get-PipePath([string]$Name) { '\\.\pipe\' + $Name }
 
-# Bounded connect probe (500ms), matching sot-local-daemon.ps1's own
-# Test-SotPipeOpen exactly -- a namespace listing is not a health check (see
-# that script's header for why), so the test must observe the same fact
-# production does, not a weaker proxy for it. try/catch even though
-# $ErrorActionPreference is 'Stop' at file scope, so a transient failure
-# here fails one Check, not the whole suite.
+# Bounded raw connect probe (500 ms) for test-owned pipes: it establishes listener availability.
+# It does not authenticate the serving account. Production Test-SotPipeOpen runs sotd's owner-checking
+# stdio-bridge and waits up to 5 s for its exit; case 4b tests that production function separately.
+# A namespace listing does not prove a listener accepts connections (see the production script's header).
+# Catch transient connect failures so they fail one Check instead of ending the suite.
 function Test-PipeAnswering([string]$Name) {
     try {
         $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Name, [System.IO.Pipes.PipeDirection]::InOut)
@@ -108,11 +107,11 @@ function Complete-LocalDaemonTest {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# agents\comm-pipe-request.ps1 as its own process, as the shell clients run it: $Lines on its stdin through a file, its
+# scripts\tests\pipe-request.ps1, the suites' raw pipe client, as its own process: $Lines on its stdin through a file, its
 # stdout and stderr to files, and a 20 s bound on the wait, so a transport that hangs fails its section with what it
 # wrote instead of stalling the job.
 function Invoke-PipeTransport([string]$Pipe, [string]$Op, [string[]]$Lines) {
-    $transport = Join-Path $repo 'agents\comm-pipe-request.ps1'
+    $transport = Join-Path $repo 'scripts\tests\pipe-request.ps1'
     $base = Join-Path $root ('transport-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     [System.IO.File]::WriteAllText("$base.in", ($Lines -join "`n") + "`n", (New-Object System.Text.UTF8Encoding($false)))
     $argv = '-NoProfile -ExecutionPolicy Bypass -File "' + $transport + '" -PipeName ' + $Pipe + ' -Op ' + $Op + ' -TimeoutSec 10'
