@@ -24,6 +24,6 @@ the help view shows in each pane.
 - Help is `Primary+?` (`help.toggle`) and `F1` (`drawer.help`); there is no bare `?` chord.
 - A `keybindings.toml` entry replaces that action's default chords (`KeyBindings::merge_text`).
 - A bare-character override never fires where the pane types text (`KeyBindings::resolve`'s `literal_text`).
-- `keyboard_input` admits the quit prompt first; `route_key` then orders help, the shared keys and the focused pane.
-  A layer that takes a key returns `Break`, which skips every later layer and the keypress tail.
+- The call order in `route_key` is the keys' precedence: quit prompt, help, the shared keys, then the
+  focused pane. A layer that takes a key returns `Break`, which skips every later layer and the keypress tail.
 - The quit prompt reads logical Key and repeat before modifier-only suppression or configurable actions; prompt logs contain only finite QuitPromptStep fields, never a typed key. A consumed prompt event never reaches later input layers.

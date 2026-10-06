@@ -21,7 +21,6 @@ pub(in crate::ui) fn quit_prompt_step(keep: bool, key: &Key, repeat: bool) -> Qu
             _ => QuitPromptStep::Cancel,
         }
     };
-    tracing::info!(?step, "quit prompt: key");
     step
 }
 
@@ -52,7 +51,6 @@ pub(in crate::ui) fn redraw_exits(should_exit: bool, leaving: bool, harness: boo
 
 fn open_quit_prompt(prompt: &mut Option<NavPrompt>) {
     *prompt = Some(NavPrompt::ConfirmQuit { keep: false });
-    tracing::info!(keep = false, "quit prompt: open");
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -61,7 +59,6 @@ enum LeaveEffect { Redraw, Finish(i32) }
 /// Only leases and exit-state slots are available to this transition.
 fn begin_leave(leases: &crate::lease::Leases, prompt: &mut Option<NavPrompt>, leaving: &mut Option<crate::lease::Leaving>,
     should_exit: &mut bool, intent: LeaveIntent, code: i32, now: std::time::Instant) -> LeaveEffect {
-    tracing::info!(?intent, code, "window: leaving");
     *prompt = None;
     *leaving = leases.leave_all(intent, code, now);
     *should_exit = true;
