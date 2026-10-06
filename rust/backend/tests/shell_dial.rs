@@ -142,9 +142,6 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
             // blocking. Its reads are bounded by the test's wait for this thread's result below, never by a read
             // timeout: Darwin refuses SO_RCVTIMEO on an accepted AF_UNIX socket (EINVAL; see
             // rust/log/tests/macos_kernel_facts/peertoken.rs).
-            stream
-                .set_nonblocking(false)
-                .expect("a blocking stream for the server's reads");
             let mut line = String::new();
             BufReader::new(&mut stream)
                 .read_line(&mut line)

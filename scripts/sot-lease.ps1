@@ -70,7 +70,7 @@ function Open-SotLease([string]$PipePath, [string]$SotdExe) {
         $hello = '{"v":3,"id":0,"kind":"req","op":"hello","payload":{"client_id":"sot-launcher","protocol":3,"app_version":"launcher","host":' + (ConvertTo-SotJsonString (Get-SotHelloHost)) + ',"os_user":' + (ConvertTo-SotJsonString $sid) + ',"role":"handoff"}}'
         $bridge = Start-SotBridge $SotdExe $PipePath
         $created = $bridge.StartTime.ToFileTimeUtc()
-        $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $bridge.Id + '}}'
+        $line = '{"v":3,"id":1,"kind":"req","op":"fe.lease","payload":{"boot":"' + (Get-SotBootId) + '","created":' + $created + ',"pid":' + $PID + '}}'
         $in = $bridge.StandardInput.BaseStream
         $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($hello + "`n" + $line + "`n")
         $in.Write($bytes, 0, $bytes.Length)
