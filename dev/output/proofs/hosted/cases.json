@@ -1,0 +1,28 @@
+[
+  {
+    "label": "c2-revert-timer-frozen_worker_and_multiple_holders_share_one_deadline",
+    "tree": "revert",
+    "test": "lease::delivery_tests::frozen_worker_and_multiple_holders_share_one_deadline",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "transport worker extended forced delivery:",
+    "observations": [
+      "T1 fixture observed: frozen worker and responsive mixed holders"
+    ],
+    "isolated": true,
+    "not_runnable_here": true
+  },
+  {
+    "label": "c2-revert-timer-forced_exit_delivers_the_queued_close",
+    "tree": "revert",
+    "test": "lease::leave_tests::forced_exit_delivers_the_queued_close",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "the queued close reaches the daemon before eof:",
+    "observations": [
+      "T1 fixture observed: accepted Keep and queued Close before EOF"
+    ],
+    "isolated": false,
+    "not_runnable_here": true
+  }
+]

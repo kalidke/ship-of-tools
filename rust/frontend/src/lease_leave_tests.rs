@@ -343,6 +343,7 @@ async fn inflight_handshake_ended_unanswered_is_not_confirmed() {
 
 #[test]
 fn forced_exit_delivers_the_queued_close() {
+    println!("T1 body entered: lease::leave_tests::forced_exit_delivers_the_queued_close");
     // The transport worker can progress while the synchronous UI caller
     // waits for the queued Close write; dropping its runtime is the exit.
     let daemon = tokio::runtime::Runtime::new().unwrap();
@@ -372,6 +373,8 @@ fn forced_exit_delivers_the_queued_close() {
         seen.len() == 3 && is_leave(&seen[0], "keep") && is_leave(&seen[1], "close"),
         "the queued close reaches the daemon before eof: {seen:?}"
     );
+    println!("T1 fixture observed: accepted Keep and queued Close before EOF");
+    println!("T1 assertion passed: the queued close reaches the daemon before eof:");
 }
 
 #[tokio::test]

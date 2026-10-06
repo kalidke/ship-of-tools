@@ -822,6 +822,7 @@ mod delivery_tests {
     #[test]
     fn frozen_worker_and_multiple_holders_share_one_deadline() {
         if !run_isolated("lease::delivery_tests::frozen_worker_and_multiple_holders_share_one_deadline") { return; }
+        println!("T1 body entered: lease::delivery_tests::frozen_worker_and_multiple_holders_share_one_deadline");
         use super::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}};
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
         let leases = Leases::new(false, vec![]);
@@ -851,6 +852,7 @@ mod delivery_tests {
             let _ = gate.recv_timeout(Duration::from_secs(3));
         });
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        println!("T1 fixture observed: frozen worker and responsive mixed holders");
         let keep = leases.leave_all(LeaveIntent::Keep, 0, Instant::now()).unwrap();
         let close = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
         let log = sot_log::test_log::capture();
@@ -875,5 +877,6 @@ mod delivery_tests {
         assert!(!text.contains("ready"), "written holder was reported unconfirmed: {text}");
         assert_eq!(text.matches("exiting before every queued leave was written").count(), 1);
         println!("forced delivery: frozen worker and mixed holders returned within 1.5 seconds");
+        println!("T1 assertion passed: transport worker extended forced delivery:");
     }
 }

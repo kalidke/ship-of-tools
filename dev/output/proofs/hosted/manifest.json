@@ -1,0 +1,41 @@
+{
+  "branch": "tmp/ci-t1-r2-c2-revert-timer",
+  "original": {
+    "sha": "79e8205377895731528acf578594b5099f862c7e",
+    "branch": "tmp/ci-t1-c2-revert-timer"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "05d7cb36bb02b0ec46cfa064b9b529443d38e7d2",
+  "tree": "revert",
+  "overlays": [
+    {
+      "tree": "revert",
+      "file": "rust/frontend/src/lease.rs",
+      "base_sha256": "4df5ab528baec8654bce181a612cb7e6f233af65738ec5993f53043e5b6cebc4",
+      "overlay_sha256": "f804e30e5e3eabd90279431fff2b7255cec2f49af8eb987ecf115cfb81e99215",
+      "patch": "overlays/revert-lease.rs.patch"
+    },
+    {
+      "tree": "revert",
+      "file": "rust/frontend/src/lease_leave_tests.rs",
+      "base_sha256": "6c0e1573300dc66e5a2298354c0731eed850f73b1da1fb7c7087b3e1c75fe4d8",
+      "overlay_sha256": "cff4e32485be9edc9b413a9ca35f86cd4b77da77b6bf1b6dcd7ae88aeb8c1850",
+      "patch": "overlays/revert-lease_leave_tests.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/lease.rs",
+      "accepted_overlay_sha256": "f804e30e5e3eabd90279431fff2b7255cec2f49af8eb987ecf115cfb81e99215",
+      "replay_sha256": "f804e30e5e3eabd90279431fff2b7255cec2f49af8eb987ecf115cfb81e99215",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    },
+    {
+      "file": "rust/frontend/src/lease_leave_tests.rs",
+      "accepted_overlay_sha256": "cff4e32485be9edc9b413a9ca35f86cd4b77da77b6bf1b6dcd7ae88aeb8c1850",
+      "replay_sha256": "cff4e32485be9edc9b413a9ca35f86cd4b77da77b6bf1b6dcd7ae88aeb8c1850",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
