@@ -40,7 +40,9 @@ pub struct HelloReq {
     /// This connection's declared role: `"fe"` a frontend, `"bridge"` a
     /// session's listener loop, `"cli"` a one-shot call from a shell,
     /// `"agent"` a one-shot call from inside a session (ADR 0046 decision
-    /// 1). Required since protocol 2: an empty role is never `"fe"`.
+    /// 1), or [`HANDOFF_ROLE`] (`"handoff"`), a connection whose next frame
+    /// leaves the control loop. Required since protocol 2: an empty role is
+    /// never `"fe"`.
     #[serde(default)]
     pub role: String,
     /// Opaque per-process instance discriminator (ADR 0046 decision 1) —
@@ -57,6 +59,42 @@ pub struct HelloReq {
     /// field for every role. `None` for a role that declares nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The OS account this client runs as (`sot_log::identity::os_account::own_account_id()`: `uid:<n>` on Unix,
+    /// the token user's SID on Windows). Required with `host`: a hello missing either is refused
+    /// (`identity_missing`). A detector, never a credential (ADR 0049 `## User isolation`): a daemon that sees one
+    /// declared `host` say hello as two different accounts refuses that host until it restarts, so two OS accounts
+    /// sharing one hub account are refused instead of receiving each other's mail. Never an address, never part of
+    /// a handle, never written anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_user: Option<String>,
+}
+
+/// The hello role of a connection that is about to become a byte pipe or a lease: its next frame is
+/// `proxy.connect`, `lane.connect` or `fe.lease`, and the daemon takes it out of the control loop after answering
+/// the hello. Any other frame next is `bad_request`. Every other role is a control session at once.
+pub const HANDOFF_ROLE: &str = "handoff";
+
+impl HelloReq {
+    /// This process's hello: the wire protocol and product version it speaks, `role`, the declared `host` and
+    /// the OS account it runs as. The caller sets `name`, `instance` and the session fields. A process that cannot
+    /// read its own account is an error: it sends no hello.
+    pub fn this_process(client_id: impl Into<String>, role: &str, host: Option<String>) -> anyhow::Result<Self> {
+        let os_user = sot_log::identity::os_account::own_account_id()
+            .ok_or_else(|| anyhow::anyhow!("this process's OS account is unreadable"))?;
+        Ok(Self {
+            client_id: client_id.into(),
+            session_id: None,
+            last_seen_revision: 0,
+            token: None,
+            protocol: crate::PROTOCOL_VERSION,
+            app_version: crate::app_version(),
+            host,
+            role: role.to_string(),
+            instance: None,
+            name: None,
+            os_user: Some(os_user),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

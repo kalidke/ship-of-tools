@@ -115,6 +115,22 @@ pub struct ClientInfo {
     pub sessions: Option<Vec<sot_protocol::DeclaredSession>>,
 }
 
+/// A hello refused because its declared host has said hello to this daemon as two different OS accounts: two
+/// accounts on one computer that share this daemon's hub account would otherwise receive each other's mail (ADR
+/// 0049 `## User isolation`). Names the host only, never an account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsUserConflict {
+    pub host: String,
+}
+
+/// The OS accounts one declared host has said hello as, for this daemon's life: one, or several. `Several` is
+/// never left until the daemon restarts.
+#[derive(Debug, PartialEq, Eq)]
+enum HostAccounts {
+    One(String),
+    Several,
+}
+
 #[derive(Default)]
 struct Inner {
     /// Keyed by per-connection serial (NOT client_id) so two live
@@ -131,6 +147,9 @@ struct Inner {
     /// again on every daemon restart (accepted limit — see `uptime`,
     /// which is what makes that limit visible rather than silent).
     disconnected: HashMap<String, Instant>,
+    /// Declared host -> the OS account(s) that said hello for it, live or long gone. In memory only, empty again
+    /// on every daemon restart.
+    hosts: HashMap<String, HostAccounts>,
 }
 
 /// Shared, cheaply-cloneable handle to the connected-client roster.
@@ -160,6 +179,27 @@ impl Clients {
     /// this.
     pub fn uptime(&self) -> Duration {
         Instant::now().saturating_duration_since(self.started_at)
+    }
+
+    /// Admits `host`'s hello as `os_user`, or refuses it: the first account to say hello for a host is remembered;
+    /// the first time another account does, the host becomes `Several` and that hello is refused, and so is every
+    /// later hello for the host, whichever account, until the daemon restarts. Connections already registered for
+    /// the host are left alone. The check and the record are one step under the roster's lock, so two accounts
+    /// connecting at the same instant cannot both pass.
+    pub fn admit_account(&self, host: &str, os_user: &str) -> Result<(), OsUserConflict> {
+        let mut g = self.inner.lock().unwrap();
+        match g.hosts.get(host) {
+            None => {
+                g.hosts.insert(host.to_string(), HostAccounts::One(os_user.to_string()));
+                Ok(())
+            }
+            Some(HostAccounts::One(first)) if first == os_user => Ok(()),
+            Some(HostAccounts::One(_)) => {
+                g.hosts.insert(host.to_string(), HostAccounts::Several);
+                Err(OsUserConflict { host: host.to_string() })
+            }
+            Some(HostAccounts::Several) => Err(OsUserConflict { host: host.to_string() }),
+        }
     }
 
     /// Register a connection. Returns a guard that deregisters on drop —
@@ -694,7 +734,7 @@ pub async fn handle_fe_presence(req_id: u64) -> Result<HandlerOutput> {
 /// them. Unlike `fe.presence` (which needs no payload and stamps via
 /// `server/dispatch.rs`'s dispatch loop, since the thing being stamped is the
 /// connection itself), the store happens here — the payload IS what's
-/// stored. An unregistered `serial` (`None`, pre-hello) is a harmless
+/// stored. An unregistered `serial` (`None`) is a harmless
 /// no-op ack, same as `touch_person_input`; a registered connection with
 /// NO declared hello `name` is refused (`unnamed_connection`) rather than
 /// stored — the `disconnected` map keys on that name, so a declaration
@@ -711,7 +751,7 @@ pub async fn handle_fe_sessions(
     let req: sot_protocol::FeSessionsReq =
         serde_json::from_value(payload_json).context("fe.sessions payload")?;
     let Some(serial) = serial else {
-        // Pre-hello (no connection registered yet): the same harmless
+        // No roster entry: the same harmless
         // no-op `touch_person_input` accepts, since there is nothing to
         // store OR refuse against.
         return Ok(vec![(

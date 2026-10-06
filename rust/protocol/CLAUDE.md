@@ -19,12 +19,13 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 - Reaching a daemon: the topology grammar, endpoints, ssh recipe and lane client (`topology/`).
 
 ## Promises
-- An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB). `write_frame` and `write_frame_blocking` fail with
-  `EnvelopeTooLarge` before writing any byte.
+- An envelope is at most `MAX_ENVELOPE_BYTES` (1 MiB), its newline not counted, in every writer and reader.
+  `write_frame` and `write_frame_blocking` fail with `EnvelopeTooLarge` before writing any byte.
 - A frame whose payload has `blob.len` is followed by exactly that many bytes; `read_frame` reads them, and the
   blocking pair never reads a blob tail.
-- Facts of the code today, not promises: the async `read_frame` reads the whole line before its 1 MiB check, and it
-  allocates the blob length the envelope declares with no cap. `read_frame_blocking` caps while it reads.
+- `read_frame` refuses an envelope one byte past the cap, never reading a line with no newline to its end, and grows
+  a blob's buffer only with bytes that arrived, never by the length the envelope declares; `read_envelope` reads the
+  envelope alone, for a reader that must not read a blob it has not admitted. `read_frame_blocking` caps while it reads.
 - A payload grows only by `#[serde(default)]` fields; any other change raises `PROTOCOL_VERSION`, and hello requires
   both sides to agree.
 - The version string is bare `X.Y.Z` only for a CI build on its clean release tag. `is_release_build` is the only
@@ -32,7 +33,7 @@ ssh recipes live beside the wire because they are how a frame gets to the other 
 
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `Frame`, `codec::read_frame`,
-`codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
+`codec::read_envelope`, `codec::write_frame`, `hello`, `PROTOCOL_VERSION`, `rust/protocol/src/ops/mod.rs`, `rust/protocol/src/ops/`,
 `sot_hello_frame`, `comm/lib/comm-lib-client.sh`, `fe.lease`, `fe.leaving`, `scripts/sot-lease.ps1`,
 `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`, `is_release_build`, `rust/backend/src/update.rs`,
 `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`. Uses: `sot_state_dir`, `sot_config_dir`, `host_name`,

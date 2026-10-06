@@ -8,7 +8,7 @@
 //! failure class.
 //!
 //! A proxy connection is DEDICATED: the client opens a fresh daemon-socket
-//! connection and sends `proxy.connect { port }` as its FIRST frame. If the
+//! connection and sends a `handoff` hello and then `proxy.connect { port }`. If the
 //! port is allowed and dials, the daemon answers `{ok:true}` and then pipes
 //! every subsequent byte verbatim in both directions (`copy_bidirectional`)
 //! until either side closes — which is exactly what carries the WebSocket
@@ -145,8 +145,8 @@ pub fn allowed_proxy_ports() -> BTreeSet<u16> {
     ports
 }
 
-/// Handle a connection whose first frame was `proxy.connect` (ADR 0035).
-/// `rx` is the buffered reader that already consumed that first frame (any
+/// Handle a connection whose frame behind its `handoff` hello was `proxy.connect` (ADR 0035).
+/// `rx` is the buffered reader that already consumed that frame (any
 /// bytes it buffered past the envelope are preserved — `copy` drains the
 /// BufReader before touching the socket); `tx` is the write half; `frame` is
 /// the parsed handshake frame. Returns when the pipe closes; errors are logged by the
@@ -188,6 +188,7 @@ where
 
     // Dial the backend service. A short connect timeout keeps a wedged
     // target from parking the proxy task forever.
+    #[allow(clippy::disallowed_methods, reason = "the page plane: the daemon's proxy dials a page port it serves on loopback (ADR 0049, User isolation)")]
     let dial = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         TcpStream::connect(("127.0.0.1", req.port)),

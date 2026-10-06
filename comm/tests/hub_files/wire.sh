@@ -36,6 +36,116 @@ wire_send() {
     return 0
 }
 
+# On Windows `_sot_os_user` is the process token's user SID, read by the first of three probes (`whoami` called
+# directly, `whoami` through `cmd`, PowerShell) that prints one; a box where none does fails loudly and says what each
+# printed. Faked here with OS=Windows_NT and stubs first on PATH.
+case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one() {
+    local d="$WORK/sidfake" got err
+    sid_of() {  # <stubs...> -- run _sot_os_user with $d as the only probe dir
+        got="$(cd "$WORK" && PATH="$d:$PATH" OS=Windows_NT SOT_COMM_TEST_HOST="$HOST_PIN" bash -c '. "$1/comm-lib.sh"; _sot_os_user' _ "$SCRIPTS_DIR" 2>"$WORK/err.txt")" || true
+        err="$(cat "$WORK/err.txt")"
+    }
+    stub() {  # <name> <output...>
+        local n="$1"; shift
+        printf '#!/bin/sh\nprintf "%%s\\r\\n" %s\n' "$(printf "'%s' " "$@")" > "$d/$n"; chmod +x "$d/$n"
+    }
+    rm -rf "${d:?}"; mkdir -p "$d"
+    stub whoami '"fakehost\\fakeuser","S-1-5-21-1-2-3-1001"'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1001" ] || { echo "  whoami probe: got '$got' ($err)"; return 1; }
+    rm -rf "${d:?}"; mkdir -p "$d"
+    stub whoami 'not a sid'
+    stub cmd '"fakehost\\fakeuser","S-1-5-21-1-2-3-1002"'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1002" ] || { echo "  cmd probe: got '$got' ($err)"; return 1; }
+    rm -rf "${d:?}"; mkdir -p "$d"
+    stub whoami 'not a sid'
+    stub cmd 'also not'
+    stub powershell.exe 'S-1-5-21-1-2-3-1003'
+    sid_of; [ "$got" = "S-1-5-21-1-2-3-1003" ] || { echo "  powershell probe: got '$got' ($err)"; return 1; }
+    rm -rf "${d:?}"; mkdir -p "$d"
+    stub whoami 'not a sid'
+    stub cmd 'also not'
+    stub powershell.exe 'nor this'
+    sid_of
+    [ -z "$got" ] || { echo "  no probe: got '$got'"; return 1; }
+    contains "$err" "no probe printed this process's user SID" && contains "$err" "[whoami: not a sid]" && contains "$err" "[cmd: also not]" \
+        && contains "$err" "_sot_os_user: this process's OS account is unreadable" || { echo "  err: $err"; return 1; }
+    return 0
+}
+
+# oneshot_version_query -- `sot_oneshot_request` for `version.query` against the stub `nc` in $HUB, with $HUB/shim (the
+# logging sleep, where a case made one) first on its PATH. Its window (60 s) is longer than every hang guard here
+# (await's 30 s), so no verdict below rests on how fast the host runs.
+oneshot_version_query() {
+    ONESHOT_RC=0
+    ONESHOT_OUT="$(cd "$WORK" && PATH="$HUB/shim:$HUB:$PATH" SOT_COMM_TEST_HOST="$HOST_PIN" SOT_SEND_TIMEOUT=60 bash -c '
+        . "$1/comm-lib.sh"; ENDPOINT="unix:$2/hub.sock"
+        sot_oneshot_request "{\"v\":1,\"id\":1,\"kind\":\"req\",\"op\":\"version.query\",\"payload\":{}}" version.query' _ "$SCRIPTS_DIR" "$WORK" 2>"$WORK/err.txt")" || ONESHOT_RC=$?
+    ONESHOT_ERR="$(cat "$WORK/err.txt" 2>/dev/null)"
+}
+
+# A daemon that refuses the hello (a second OS account on the host, an older protocol) ends the connection:
+# `sot_oneshot_request` says why on stderr, prints no reply and returns 1, never the next op's silence (ADR 0049
+# `## User isolation`).
+case_a_refused_hello_is_named_by_the_oneshot_request() {
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
+    { printf '#!/bin/sh\n'; cat <<'STUB'
+IFS= read -r line
+case "$line" in
+    *'"op":"hello"'*) printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"host-a has said hello as more than one OS account","code":"os_user_conflict"}}\n' ;;
+esac
+STUB
+    } > "$HUB/nc"; chmod +x "$HUB/nc"
+    oneshot_version_query
+    [ "$ONESHOT_RC" -eq 1 ] || { echo "  rc $ONESHOT_RC, want 1 (out: $ONESHOT_OUT err: $ONESHOT_ERR)"; return 1; }
+    [ -z "$ONESHOT_OUT" ] || { echo "  a refused hello printed a reply: $ONESHOT_OUT"; return 1; }
+    [ "$ONESHOT_ERR" = "sot_oneshot_request: hello refused: host-a has said hello as more than one OS account" ] \
+        || { echo "  err: $ONESHOT_ERR"; return 1; }
+    return 0
+}
+
+# write_refusing_stub CODE -- a stub `nc` that refuses the hello with CODE and then answers `version.query`, but only once
+# `sot_oneshot_request` has made two more of its 0.1 s polls after the refusal was written, counted through the logging
+# sleep (sleep_log, lib-wait.sh). A one-shot that stops at the refusal makes at most one more, so it never sees the
+# answer; one that reads on does. Nothing here is timed.
+write_refusing_stub() {
+    rm -rf "${HUB:?}"; mkdir -p "$HUB"
+    sleep_log "$HUB/shim" "$HUB/sleeps.log" || return 1
+    { printf "#!/usr/bin/env bash\nd='%s'\ncode='%s'\n. '%s/lib-wait.sh'\n" "$HUB" "$1" "$SCRIPT_DIR"; cat <<'STUB'
+PATH="${PATH#"$d/shim:"}"   # the stub's own waits are not the one-shot's
+polls() { local n; n="$(grep -c -x '0\.1' "$d/sleeps.log" 2>/dev/null)"; printf '%s\n' "${n:-0}"; }
+IFS= read -r line
+printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"host-a has said hello as more than one OS account","code":"%s"}}\n' "$code"
+want=$(( $(polls) + 2 ))
+read_on() { [ "$(polls)" -ge "$want" ]; }
+await read_on || exit 1
+printf '{"v":1,"id":1,"kind":"res","op":"version.query","payload":{"ok":true}}\n'
+STUB
+    } > "$HUB/nc"; chmod +x "$HUB/nc"
+}
+
+# A refusal that is not about the protocol comes from a daemon of this release, which closes: the one-shot stops at it at
+# once, though its transport (here the stub, which holds the connection) stays open, and never reads the answer behind it.
+case_a_hello_refusal_stops_the_oneshot_request_at_once() {
+    write_refusing_stub os_user_conflict || { echo "  no logging sleep"; return 1; }
+    oneshot_version_query
+    [ "$ONESHOT_RC" -eq 1 ] || { echo "  rc $ONESHOT_RC, want 1 (out: $ONESHOT_OUT err: $ONESHOT_ERR)"; return 1; }
+    [ -z "$ONESHOT_OUT" ] || { echo "  read on past the refusal to: $ONESHOT_OUT"; return 1; }
+    [ "$ONESHOT_ERR" = "sot_oneshot_request: hello refused: host-a has said hello as more than one OS account" ] \
+        || { echo "  err: $ONESHOT_ERR"; return 1; }
+    return 0
+}
+
+# An older daemon refuses only the protocol and then answers the request (here after two more of the one-shot's polls, so
+# a one-shot that stops at the refusal is caught): the one-shot returns that answer and says nothing.
+case_a_protocol_refusal_does_not_decide_the_oneshot_request() {
+    write_refusing_stub protocol_mismatch || { echo "  no logging sleep"; return 1; }
+    oneshot_version_query
+    [ "$ONESHOT_RC" -eq 0 ] || { echo "  rc $ONESHOT_RC, want 0 (out: $ONESHOT_OUT err: $ONESHOT_ERR)"; return 1; }
+    printf '%s' "$ONESHOT_OUT" | jq -e '.op == "version.query" and .payload.ok == true' >/dev/null 2>&1 || { echo "  reply: $ONESHOT_OUT"; return 1; }
+    [ -z "$ONESHOT_ERR" ] || { echo "  stderr: $ONESHOT_ERR"; return 1; }
+    return 0
+}
+
 # S4 — a directed wire send with no daemon found is that send's FAILED line.
 case_a_wire_send_with_no_daemon_is_failed() {
     setup_rows || { echo "  setup: could not join both rows"; return 1; }
@@ -90,7 +200,9 @@ while IFS= read -r line; do
 done
 FAKEPS
 } > "$WINFAKE/powershell.exe"
-chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe"
+# `cmd //c "whoami /user /fo csv /nh"`, the hello's `os_user` on Windows (comm-lib-client.sh `_sot_os_user`).
+printf '#!/bin/sh\nprintf '"'"'"fakehost\\\\fakeuser","S-1-5-21-1-2-3-1001"\\r\\n'"'"'\n' > "$WINFAKE/cmd"
+chmod +x "$WINFAKE/uname" "$WINFAKE/powershell.exe" "$WINAPP/sot/bin/sotd.exe" "$WINFAKE/cmd"
 win_send() {  # ANSWER
     rm -f "${WINHUB:?}"/*.log; printf '%s' "$1" > "$WINHUB/answer"
     SEND_OUT="$(cd "$WORK" && unset OS OSTYPE SOT_SOCKET SOTD_BIN && PATH="$WINFAKE:$PATH" LOCALAPPDATA="$WINAPP" \

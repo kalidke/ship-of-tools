@@ -19,7 +19,7 @@ pub(super) async fn read_hello_reply<R: tokio::io::AsyncBufRead + Unpin>(
         .map_err(|_| anyhow::anyhow!("hello reply timed out after {timeout:?}"))?
 }
 
-/// The daemon answered the hello with a refusal (bad token, protocol skew):
+/// The daemon answered the hello with a refusal (protocol skew, no account named, a second account):
 /// a reply, so the link itself is fine and the gate stays up.
 #[derive(Debug)]
 pub(super) struct HelloRefused(pub(super) String);
@@ -72,24 +72,25 @@ pub(super) async fn send_hello<W: AsyncWrite + Unpin>(
     session: &SessionState,
     token: Option<&str>,
 ) -> Result<()> {
+    // ADR 0030 §2: `this_process` advertises our wire-contract protocol + product version so the backend can
+    // gate on protocol equality and name both sides in a mismatch error, and the OS account this window runs as
+    // (ADR 0049 `## User isolation`); an unreadable account sends no hello.
+    //
+    // This FE's own declared identity (ADR 0046 decision 1): `name` is its address, `fe@<host>` — the value a
+    // `--fe <host>` target matches against, so the daemon can name "the frontend a person is at"
+    // (`fe.presence`) without a second derivation.
+    let identity = crate::net::identity::frontend_identity();
     let hello = HelloReq {
-        client_id: session.memory.client_id.clone(),
         session_id: session.memory.session_id.clone(),
         last_seen_revision: session.memory.last_seen_revision,
         token: token.map(|s| s.to_string()),
-        // ADR 0030 §2: advertise our wire-contract protocol + product version
-        // so the backend can gate on protocol equality and name both sides in
-        // a mismatch error.
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        // This FE's own declared identity (ADR 0046 decision 1): `name`
-        // is its address, `fe@<host>` — the value a `--fe <host>` target
-        // matches against, so the daemon can name "the frontend a person
-        // is at" (`fe.presence`) without a second derivation.
-        host: Some(crate::net::identity::frontend_identity().host.clone()),
-        role: crate::net::identity::FrontendIdentity::ROLE.to_string(),
-        instance: Some(crate::net::identity::frontend_identity().instance.clone()),
-        name: Some(crate::net::identity::frontend_identity().name.clone()),
+        instance: Some(identity.instance.clone()),
+        name: Some(identity.name.clone()),
+        ..HelloReq::this_process(
+            session.memory.client_id.clone(),
+            crate::net::identity::FrontendIdentity::ROLE,
+            Some(identity.host.clone()),
+        )?
     };
     codec::write_frame(
         &mut tx,
@@ -121,35 +122,31 @@ pub(super) async fn read_hello<R: tokio::io::AsyncBufRead + Unpin, Wn: Redraw>(
         session.memory.last_seen_revision = session.memory.last_seen_revision.max(r);
     }
     // Inspect the frame for an error envelope first — the backend rejects
-    // bad auth (and any other hello-time refusal) with `{error, code}`,
-    // which does not deserialize as HelloRes. Surfacing it as a clear
-    // auth-failed message beats a `serde_json` "hello res" error.
+    // a hello it does not admit with `{error, code}` (ADR 0049 `## User
+    // isolation`: another protocol, no host or OS account named, a second
+    // account on the host), which does not deserialize as HelloRes. Every
+    // refusal is the person's to read: push it as a HelloRefused evt so the
+    // chrome shows a persistent blocking screen, the daemon's own message
+    // for an account refusal and, for a version skew (ADR 0030 §2, not a
+    // transient drop), a readable multi-line body built from the backend's
+    // structured fields (falling back to its already-formatted `error`
+    // string) with the dev fix hint. We still bail afterward so the
+    // reconnect loop keeps the socket warm — a re-hello re-affirms the same
+    // overlay, idempotently, until the cause is resolved.
     if let Some(err_msg) = frame.payload.get("error").and_then(|v| v.as_str()) {
         let code = frame
             .payload
             .get("code")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if code == "token_mismatch" {
-            tracing::error!(code, "hello rejected: authentication failed ({err_msg})");
-            return Err(HelloRefused(format!("authentication failed: {err_msg}")).into());
-        }
-        if code == "protocol_mismatch" {
-            // ADR 0030 §2: a version skew, not a transient drop. Build a
-            // readable multi-line body from the backend's structured fields
-            // (falling back to its already-formatted `error` string) and add
-            // the dev fix hint, then push it as a ProtocolMismatch evt so the
-            // chrome shows a persistent blocking "update needed" screen. We
-            // still bail afterward so the reconnect loop keeps the socket warm
-            // — a re-hello re-affirms the same overlay, idempotently, until one
-            // side is updated.
-            let message = protocol_mismatch_message(&frame.payload, err_msg);
-            tracing::error!(code, "hello rejected: {err_msg}");
-            emit(IncomingEvt::ProtocolMismatch { message });
-            window.request_redraw();
-            return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
-        }
         tracing::error!(code, "hello rejected: {err_msg}");
+        let message = if code == "protocol_mismatch" {
+            protocol_mismatch_message(&frame.payload, err_msg)
+        } else {
+            err_msg.to_string()
+        };
+        emit(IncomingEvt::HelloRefused { message });
+        window.request_redraw();
         return Err(HelloRefused(format!("hello rejected: {err_msg} (code={code})")).into());
     }
     Ok(frame)

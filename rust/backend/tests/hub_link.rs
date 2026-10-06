@@ -92,16 +92,8 @@ async fn connect_and_hello(socket_path: &Path, name: &str) -> Conn {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     let hello = HelloReq {
-        client_id: name.to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some("hub-a".to_string()),
-        role: "cli".to_string(),
-        instance: None,
         name: Some(name.to_string()),
+        ..HelloReq::this_process(name, "cli", Some("hub-a".to_string())).expect("this process's account")
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None).await.expect("write hello");
     loop {

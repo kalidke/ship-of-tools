@@ -372,7 +372,8 @@ _stderr_text() {  # KIND
 # write_row_ssh_stub DIR COMMFILE RECEIPT ACK EXIT STDERR_KIND [RECEIVERS] [ID_MODE] [FILER]
 # -- a stub `ssh` (and the same script as `nc`, for a unix: endpoint) that says
 # exactly what one row asks for; each connection is one run of it. COMMFILE is
-# the hub's `comm.file` answer: ok, code, nocode, not_here, or none. The row is
+# the hub's `comm.file` answer: ok, code, nocode, not_here, or none. ACK is the
+# `agent.send` answer: yes (ok, with the roster), error, or no. The row is
 # baked into the script's own header (and its stderr text into a file beside
 # it, which keeps every quote in that text out of the generated script), so
 # the body below is one static template for all 54 rows. RECEIVERS is the
@@ -397,7 +398,15 @@ receiver=$(printf '%s' "$receivers" | sed -n 's/^\["\([^"]*\)".*/\1/p')
 while IFS= read -r line; do
     case "$line" in
         *'"op":"hello"'*)
-            printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n' ;;
+            # A refusing daemon answers the hello with its error. Of this release it then closes; an older one refuses
+            # only a protocol mismatch and goes on serving what is behind the hello.
+            if [ -s "$d/hello-refusal.txt" ]; then
+                code=os_user_conflict; [ -s "$d/hello-code.txt" ] && code="$(cat "$d/hello-code.txt")"
+                printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"error":"%s","code":"%s"}}\n' "$(cat "$d/hello-refusal.txt")" "$code"
+                [ "$code" = protocol_mismatch ] || exit "$status"
+            else
+                printf '{"v":1,"id":1,"kind":"res","op":"hello","payload":{"ok":true}}\n'
+            fi ;;
         *'"op":"comm.file"'*)
             printf '%s\n' "$line" >> "$d/comm-file.log"
             to=$(printf '%s' "$line" | sed -n 's/.*"to":"\([^"]*\)".*/\1/p')
@@ -415,6 +424,8 @@ while IFS= read -r line; do
             id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
             if [ "$ack" = yes ]; then
                 printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"ok":true,"receivers":%s,"id":"%s"}}\n' "$receivers" "$id"
+            elif [ "$ack" = error ]; then
+                printf '{"v":1,"id":1,"kind":"res","op":"agent.send","payload":{"error":"the daemon could not read this agent.send","code":"bad_request"}}\n'
             fi
             [ "$idmode" = wrong ] && id="$id-not-yours"
             if [ "$receipt" = yes ]; then
@@ -566,6 +577,113 @@ case_every_combination_gets_the_verdict_the_rule_requires() {
     return 0
 }
 
+# A daemon that refuses this client's hello (ADR 0049 `## User isolation`) is read by one rule: the request behind the hello
+# is decided by its own reply, and the refusal is named only when nothing answered. A daemon of this release closes after
+# refusing (stub: os_user_conflict), so there is no reply; an older one refuses only the protocol and then answers.
+HELLO_REFUSAL="host-a has said hello as more than one OS account"
+# refuse_hello DIR [CODE] -- the stub in DIR refuses the hello with HELLO_REFUSAL under CODE (default os_user_conflict).
+refuse_hello() {
+    printf '%s' "$HELLO_REFUSAL" > "$1/hello-refusal.txt"
+    [ -z "${2:-}" ] || printf '%s' "$2" > "$1/hello-code.txt"
+}
+case_a_refused_hello_is_the_verdict_for_a_directed_send() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    refuse_hello "$dir"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: hello refused: $HELLO_REFUSAL" \
+        || { echo "  stderr was '$RELAY_ERR', want the refusal named"; return 1; }
+    contains "$RELAY_ERR" "did not answer" && { echo "  a daemon that answered was called silent: '$RELAY_ERR'"; return 1; }
+    [ -z "$RELAY_OUT" ] || { echo "  a refused send printed a verdict on stdout: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+
+case_a_refused_hello_is_the_verdict_for_a_broadcast() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    refuse_hello "$dir"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send --all "to everyone"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: hello refused: $HELLO_REFUSAL" \
+        || { echo "  stderr was '$RELAY_ERR', want the refusal named"; return 1; }
+    [ -z "$RELAY_OUT" ] || { echo "  a refused broadcast printed a verdict on stdout: '$RELAY_OUT'"; return 1; }
+    return 0
+}
+
+# An older daemon refuses the protocol and goes on to serve the request: its answer is the verdict.
+case_an_older_daemons_protocol_refusal_does_not_decide_a_directed_send() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    refuse_hello "$dir" protocol_mismatch
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC, want 0 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "filed -> @peer-$PEER_HOST" \
+        || { echo "  verdict was '$RELAY_OUT', want 'filed -> @peer-$PEER_HOST'"; return 1; }
+    contains "$RELAY_ERR" "refused" && { echo "  the refusal was named though the request was answered: '$RELAY_ERR'"; return 1; }
+    return 0
+}
+
+case_an_older_daemons_protocol_refusal_does_not_decide_a_broadcast() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    refuse_hello "$dir" protocol_mismatch
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send --all "to everyone"
+    [ "$RELAY_RC" -eq 0 ] || { echo "  exited $RELAY_RC, want 0 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_OUT" "relayed -> <all> (1 receiver(s)) via unix:$WORK/stub.sock" \
+        || { echo "  verdict was '$RELAY_OUT', want the relayed count"; return 1; }
+    return 0
+}
+
+# An ack that carries an error is the daemon's answer to the send and decides it, even behind an older daemon's protocol
+# refusal: the refusal is named only when nothing else decided.
+ACK_ERROR="the daemon could not read this agent.send"
+case_an_ack_with_an_error_decides_the_not_mine_leg() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" not_here no error 0 none
+    refuse_hello "$dir" protocol_mismatch
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  directed: exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: $ACK_ERROR" || { echo "  directed: stderr was '$RELAY_ERR', want the ack's words"; return 1; }
+    contains "$RELAY_ERR" "hello refused" && { echo "  directed: the refusal was named over the ack: '$RELAY_ERR'"; return 1; }
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send --all "to everyone"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  broadcast: exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: $ACK_ERROR" || { echo "  broadcast: stderr was '$RELAY_ERR', want the ack's words"; return 1; }
+    contains "$RELAY_ERR" "hello refused" && { echo "  broadcast: the refusal was named over the ack: '$RELAY_ERR'"; return 1; }
+    return 0
+}
+
+# A process that cannot name its OS account sends nothing, and says so: the builder's words, never "did not answer".
+UNREADABLE_ACCOUNT="_sot_os_user: this process's OS account is unreadable -- cannot declare an identity"
+case_an_unreadable_account_is_named_by_a_directed_send() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    printf '#!/bin/sh\nexit 0\n' > "$dir/id"; chmod +x "$dir/id"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send "@peer-$PEER_HOST" "over the wire"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> @peer-$PEER_HOST: $UNREADABLE_ACCOUNT" \
+        || { echo "  stderr was '$RELAY_ERR', want the builder's words"; return 1; }
+    return 0
+}
+
+case_an_unreadable_account_is_named_by_a_broadcast() {
+    setup_rows || { echo "  setup: could not join both rows"; return 1; }
+    local dir; dir="$(mktemp -d "$WORK/stub-XXXXXX")"
+    write_row_ssh_stub "$dir" ok yes yes 0 none
+    printf '#!/bin/sh\nexit 0\n' > "$dir/id"; chmod +x "$dir/id"
+    relay_send_with_path "$dir" "unix:$WORK/stub.sock" send --all "to everyone"
+    [ "$RELAY_RC" -eq 1 ] || { echo "  exited $RELAY_RC, want 1 (out: '$RELAY_OUT' err: '$RELAY_ERR')"; return 1; }
+    contains "$RELAY_ERR" "FAILED -> <all>: $UNREADABLE_ACCOUNT" \
+        || { echo "  stderr was '$RELAY_ERR', want the builder's words"; return 1; }
+    return 0
+}
+
 check "a registry target is filed with the daemon down" case_registry_target_is_filed_with_the_daemon_down
 check "the hub's own answer is the delivery: one comm.file frame, no id, no filer named" case_the_hubs_answer_is_the_delivery
 check "an ack with no receipt is NOT CONFIRMED and names who was attached" case_an_unanswered_send_is_not_confirmed_and_names_who_was_attached
@@ -578,6 +696,13 @@ check "a receipt outranks the SIGPIPE (141) the child takes when the send succee
 check "a receipt outranks an abrupt ssh teardown (255) after the frame was filed" case_a_receipt_outranks_an_abrupt_teardown_exit
 check "a dying ssh child says FAILED and names the target, its exit status and its stderr" case_ssh_endpoint_bridge_failure_says_failed_with_reason
 check "all 16 comm.file answer/exit/stderr rows and 36+2 not-mine rows get the verdict the rule requires" case_every_combination_gets_the_verdict_the_rule_requires
+check "a refused hello with nothing behind it is the verdict of a directed send, in the daemon's own words" case_a_refused_hello_is_the_verdict_for_a_directed_send
+check "a refused hello with nothing behind it is the verdict of a broadcast, in the daemon's own words" case_a_refused_hello_is_the_verdict_for_a_broadcast
+check "an older daemon's protocol refusal does not decide a directed send: its answer does" case_an_older_daemons_protocol_refusal_does_not_decide_a_directed_send
+check "an older daemon's protocol refusal does not decide a broadcast: its answer does" case_an_older_daemons_protocol_refusal_does_not_decide_a_broadcast
+check "an ack that carries an error decides the not-mine leg, a directed send and a broadcast, over a protocol refusal" case_an_ack_with_an_error_decides_the_not_mine_leg
+check "an unreadable OS account is named by a directed send" case_an_unreadable_account_is_named_by_a_directed_send
+check "an unreadable OS account is named by a broadcast" case_an_unreadable_account_is_named_by_a_broadcast
 
 echo "---"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"

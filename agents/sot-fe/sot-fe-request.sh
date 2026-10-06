@@ -6,16 +6,12 @@ resolve_endpoint() {
     sot_daemon_endpoint "${ENDPOINT:-${SOT_FE_ENDPOINT:-${SOT_SPAWN_ENDPOINT:-}}}"
 }
 
-# Send a frame to the daemon, return the first response line matching op $2.
-# Uses nc when present; otherwise falls back to bash /dev/tcp for tcp endpoints
-# (so this works in git-bash on Windows). A unix-socket endpoint still needs
-# nc -U. The exec lives in a subshell: a redirect-only exec whose redirect fails
-# would otherwise EXIT a non-interactive shell outright (same class as the
-# comm-relay.sh /dev/tcp fix).
-# Hello: the daemon reads each connection's first frame for the protocol
-# version and ignores its token field — `sot_oneshot_request` prepends
-# `sot_hello_frame` (comm-lib.sh, ADR 0046 decision 1) to every connection.
-# The hello reply is ignored — sot_send greps by op.
+# Send a frame to the daemon, return the first response line matching op $2,
+# through comm-lib's one-shot (`sot_oneshot_request`), which reaches a unix:,
+# ssh: or pipe: endpoint and says hello first: the daemon admits a connection
+# only by that first frame (`sot_hello_frame`, comm-lib.sh; ADR 0046 decision 1,
+# ADR 0049 `## User isolation`).
+# sot_send takes the reply by its op; `sot_oneshot_request` names a refused hello when no reply came.
 sot_send() {
     # Delegates to comm-lib's hardened one-shot (poll-file read, writer
     # linger) — the old inline `writer | nc | grep -m1` raced the response

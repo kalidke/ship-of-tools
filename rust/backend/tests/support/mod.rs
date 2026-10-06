@@ -4,7 +4,7 @@
 //! protocol over a real local socket. Lifted out of `capsule_workspaces/main.rs`
 //! verbatim (ADR 0045 lane B4b) so `lane_bridge/main.rs`'s own cross-
 //! process proofs — an attach client reaching a capsule row THROUGH a
-//! daemon in the middle, over a test-owned TCP\u{2192}Unix relay — can
+//! daemon in the middle, over a test-owned Unix-socket relay — can
 //! stand up the identical `Env`/wire-protocol fixture without a second,
 //! drifting copy. Not itself a `tests/*.rs` file (Cargo only auto-
 //! discovers direct children of `tests/` as integration-test binaries,
@@ -213,21 +213,53 @@ pub async fn connect_and_hello(socket_path: &Path) -> (Conn, u64) {
     )
     .await;
     let mut conn = tokio::io::BufReader::new(stream);
-    let hello = HelloReq {
-        client_id: "capsule-workspaces-test".to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: None,
-        role: String::new(),
-        instance: None,
-        name: None,
-    };
+    let hello = HelloReq::this_process("capsule-workspaces-test", "", Some("host-a".to_string())).expect("this process's account");
     let reply = call(&mut conn, 1, op::HELLO, serde_json::to_value(&hello).unwrap()).await;
     assert!(reply.payload.get("error").is_none(), "hello refused: {:?}", reply.payload);
     (conn, 2)
+}
+/// A connection that becomes a pipe or a lease: a hello with role `handoff` and `frame` (its `proxy.connect`,
+/// `lane.connect` or `fe.lease`) in one write, as every client of one does. Returns the connection once the hello's
+/// reply has been read and found accepted, with the frame's own reply left to read.
+#[allow(dead_code, reason = "used by the suites whose connection is handed off to a pipe or a lease")]
+pub async fn handoff(socket_path: &Path, frame: &Frame) -> Conn {
+    handoff_with(socket_path, frame, &[]).await
+}
+
+/// [`handoff`] with `trailing` raw bytes (meant for the pipe the frame opens) in the same write, behind the frame:
+/// the proof that the daemon reads exactly the hello and the frame and leaves the rest for the pipe.
+#[allow(dead_code, reason = "used by the suites whose connection is handed off to a pipe or a lease")]
+pub async fn handoff_with(socket_path: &Path, frame: &Frame, trailing: &[u8]) -> Conn {
+    let stream = poll_until(
+        || async { try_connect(socket_path).await },
+        BOUND,
+        "sotd's local socket to accept a connection",
+    )
+    .await;
+    let mut conn = tokio::io::BufReader::new(stream);
+    handoff_on(&mut conn, frame, trailing).await;
+    conn
+}
+
+/// [`handoff_with`] on a connection that is already open (accepted, and silent until now).
+#[allow(dead_code, reason = "used by the suites whose connection is handed off to a pipe or a lease")]
+pub async fn handoff_on(conn: &mut Conn, frame: &Frame, trailing: &[u8]) {
+    let hello = HelloReq::this_process("handoff-test", sot_protocol::HANDOFF_ROLE, Some("host-a".to_string()))
+        .expect("this process's account");
+    let mut bytes = Vec::new();
+    codec::write_frame(&mut bytes, &Frame::req(0, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
+        .await
+        .expect("encode the hello");
+    codec::write_frame(&mut bytes, frame, None).await.expect("encode the handed-off frame");
+    bytes.extend_from_slice(trailing);
+    tokio::io::AsyncWriteExt::write_all(conn, &bytes).await.expect("write the hello and the frame");
+    tokio::io::AsyncWriteExt::flush(conn).await.expect("flush the hello and the frame");
+    let (reply, _blob) = tokio::time::timeout(BOUND, codec::read_frame(conn))
+        .await
+        .unwrap_or_else(|_| panic!("the handoff hello was not answered within {BOUND:?}"))
+        .expect("read the handoff hello's reply");
+    assert!(reply.kind == Kind::Res && reply.op == op::HELLO, "the handoff hello's reply: {reply:?}");
+    assert!(reply.payload.get("error").is_none(), "handoff hello refused: {:?}", reply.payload);
 }
 pub fn find_row(payload: &serde_json::Value, workspace_id: &str) -> Option<serde_json::Value> {
     payload["workspaces"].as_array()?.iter().find(|w| w["workspace_id"] == workspace_id).cloned()

@@ -158,6 +158,10 @@ check "a two-line record whose line 1 matches appends locally" case_a_two_line_r
 check "S2: a torn tail is cut back to the last newline and the new line is whole" case_a_torn_tail_is_cut_before_the_new_line
 check "S2: a write cut short by the file-size limit is FAILED and leaves the file byte-identical" case_a_write_cut_short_leaves_the_file_byte_identical
 check "S-a: a NUL-filled tail is cut, and a file of only NULs is cut to empty" case_a_nul_tail_is_cut_before_the_new_line
+check "the Windows account is the SID from the first probe that prints one, and no probe fails loudly" case_the_windows_account_is_the_sid_from_the_first_probe_that_prints_one
+check "a refused hello is named by sot_oneshot_request: the daemon's message on stderr, no reply, rc 1" case_a_refused_hello_is_named_by_the_oneshot_request
+check "a hello refusal that is not about the protocol stops sot_oneshot_request at once, though the connection stays open" case_a_hello_refusal_stops_the_oneshot_request_at_once
+check "a protocol refusal does not decide sot_oneshot_request: the request's own reply is returned" case_a_protocol_refusal_does_not_decide_the_oneshot_request
 check "S4: a directed wire send with no daemon found is FAILED -> @h, exit 1" case_a_wire_send_with_no_daemon_is_failed
 check "T5 (faked Windows): a send is one comm.file frame over the pipe, never a local append" case_a_windows_send_is_one_comm_file_over_the_pipe
 check "a v3 record naming this machine's own none@<machine-id> appends locally" case_a_v3_record_naming_this_machine_appends_locally

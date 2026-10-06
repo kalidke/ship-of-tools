@@ -58,7 +58,7 @@ impl State {
         // order. Listener teardown-on-downgrade is a follow-up.
         self.set_status_line_fields(event_host.clone(), revision, project_root, backend_version);
         let _ = session_id;
-        self.clear_protocol_mismatch(event_host.clone());
+        self.clear_hello_refused(event_host.clone());
         // An in-flight file.upload can't survive a transport reset —
         // its chunk/ack loop is broken and any daemon-side partial is
         // orphaned. Clear the stranded state (in-flight file AND any

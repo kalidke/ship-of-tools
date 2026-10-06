@@ -3942,6 +3942,7 @@ name = "sot-protocol"
 version = "0.6.6-rc9.12"
 dependencies = [
  "anyhow",
+ "interprocess",
  "serde",
  "serde_json",
  "sot-log",

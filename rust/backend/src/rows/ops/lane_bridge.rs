@@ -1,6 +1,6 @@
 //! rows/ops/lane_bridge.rs — ADR 0045 decision 2: `lane.connect`, the daemon-side
 //! half of "one attach path: through the daemon, local or remote"
-//! (decision 1). A dedicated connection whose first frame is
+//! (decision 1). A dedicated connection whose hello says `handoff` and whose next frame is
 //! `lane.connect` becomes, after one reply, a raw byte pipe onto the
 //! capsule row's supervisor or voyage lane — the `proxy.connect`
 //! mechanism (ADR 0035), verbatim, for lane endpoints instead of a
@@ -189,9 +189,9 @@ fn dial_and_authenticate(
     }
 }
 
-/// Handle a connection whose first frame was `lane.connect` (ADR 0045
+/// Handle a connection whose frame behind its `handoff` hello was `lane.connect` (ADR 0045
 /// decision 2). `rx` is the buffered reader that already consumed that
-/// first frame; `tx` is the write half; `frame` is the parsed handshake
+/// frame; `tx` is the write half; `frame` is the parsed handshake
 /// frame; `workspaces` is the registry `lane.connect` resolves `target`
 /// against. Returns when the pipe closes; errors are logged by the
 /// caller (mirrors `proxy::handle_proxy_connect`).

@@ -87,7 +87,7 @@ pub(crate) fn lane_dial(
 /// drain's Connected and Disconnected arms and the transport spawn write it.
 pub(crate) struct HostTable {
     /// Per-host connection status, derived from each connection's own
-    /// `Connected`/`Disconnected`/`ProtocolMismatch` events (ADR 0042 L2a —
+    /// `Connected`/`Disconnected`/`HelloRefused` events (ADR 0042 L2a —
     /// no new wire signal). Absent or `false` = unreachable (never
     /// connected, or currently reconnecting); `true` = connected. The
     /// Sessions tree's host nodes read this to badge status and grey an
@@ -185,9 +185,6 @@ mod tests {
             Some((sot_protocol::topology::lane_client::LaneDial::Ssh(..), _)) => {
                 panic!("must follow the resolved Local selection, not guess ssh")
             }
-            Some((sot_protocol::topology::lane_client::LaneDial::Tcp(_), _)) => {
-                panic!("lane_dial never produces Tcp (C3 as amended)")
-            }
             None => panic!("a resolved+configured pipe must dial, got None"),
         }
         // An ssh-configured host whose control connection resolved SSH —
@@ -204,9 +201,6 @@ mod tests {
             }
             Some((sot_protocol::topology::lane_client::LaneDial::Local(_), _)) => {
                 panic!("must follow the resolved Ssh selection, not guess local")
-            }
-            Some((sot_protocol::topology::lane_client::LaneDial::Tcp(_), _)) => {
-                panic!("lane_dial never produces Tcp (C3 as amended)")
             }
             None => panic!("a resolved ssh connection must dial, got None"),
         }

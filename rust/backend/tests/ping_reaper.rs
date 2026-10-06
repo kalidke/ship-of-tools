@@ -174,16 +174,9 @@ async fn poll_until_connected(socket_path: &std::path::Path) -> Conn {
 async fn connect_and_hello(socket_path: &std::path::Path, client_id: &str, role: &str) -> (Conn, u64) {
     let mut conn = poll_until_connected(socket_path).await;
     let hello = HelloReq {
-        client_id: client_id.to_string(),
-        session_id: None,
-        last_seen_revision: 0,
-        token: None,
-        protocol: sot_protocol::PROTOCOL_VERSION,
-        app_version: sot_protocol::app_version(),
-        host: Some("test-host".to_string()),
-        role: role.to_string(),
         instance: Some("test-instance".to_string()),
         name: Some(format!("{role}@{client_id}")),
+        ..HelloReq::this_process(client_id, role, Some("test-host".to_string())).expect("this process's account")
     };
     codec::write_frame(&mut conn, &Frame::req(1, op::HELLO, serde_json::to_value(&hello).unwrap()), None)
         .await

@@ -82,29 +82,28 @@ async fn fe_client_reaches_a_capsule_row_through_the_daemon() {
 }
 
 // -----------------------------------------------------------------------
-// (ii) An old daemon (no lane bridge) is a terminal "no bridge" — never a
-// second dial attempt.
+// (ii) An old daemon is a terminal refusal — never a second dial attempt: one
+// that predates the lane bridge answers `lane.connect` with the generic "unknown
+// op", and one that predates protocol 3 refuses the dial's hello.
 // -----------------------------------------------------------------------
 
-#[tokio::test]
-async fn an_old_daemon_is_a_terminal_no_bridge() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+/// A fake daemon that answers the first bytes of every connection with `reply`; returns the status line the
+/// attach client went terminal with and how many connections it opened.
+async fn attach_to_a_daemon_that_answers(reply: Frame) -> (String, usize) {
+    let dir = tempfile::Builder::new().prefix("sot-old-daemon-").permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700)).tempdir_in("/tmp").expect("fake daemon folder");
+    let path = dir.path().join("daemon.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
     let dials = Arc::new(AtomicUsize::new(0));
     let dials2 = Arc::clone(&dials);
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             dials2.fetch_add(1, Ordering::SeqCst);
+            let reply = reply.clone();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf);
-                // The generic "unknown op" shape a daemon predating the
-                // lane bridge answers — matches `sot-protocol`'s own
-                // `lane_client.rs` unit test `an_unknown_op_reply_is_no_
-                // bridge` exactly.
-                let res = Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "error": "unknown op: lane.connect" }));
-                let mut line = serde_json::to_vec(&res).unwrap();
+                let mut line = serde_json::to_vec(&reply).unwrap();
                 line.push(b'\n');
                 let _ = stream.write_all(&line);
                 std::thread::sleep(Duration::from_millis(300));
@@ -114,7 +113,7 @@ async fn an_old_daemon_is_a_terminal_no_bridge() {
 
     let (_woke, wake) = wake_flag_for_test();
     let mut client = FeAttachClient::<DaemonLaneEndpoint>::attach(
-        DaemonLaneEndpoint { dial: LaneDial::Tcp(addr), token: None },
+        DaemonLaneEndpoint { dial: LaneDial::Local(path), token: None },
         "row-old-daemon".to_string(),
         80,
         24,
@@ -123,18 +122,34 @@ async fn an_old_daemon_is_a_terminal_no_bridge() {
         None,
         wake,
     )
-    .expect("attach starts even against a bridge-less daemon");
+    .expect("attach starts even against an old daemon");
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while !client.is_dead() {
         client.pump();
-        assert!(Instant::now() < deadline, "client never went terminal against a no-bridge daemon");
+        assert!(Instant::now() < deadline, "client never went terminal against an old daemon");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(client.status_line().contains("no bridge"), "status must name the missing bridge, got {:?}", client.status_line());
-
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(dials.load(Ordering::SeqCst), 1, "a Refused{{no_bridge}} reply must be terminal — never a second dial");
+    (client.status_line().to_string(), dials.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn a_daemon_without_the_bridge_is_a_terminal_no_bridge() {
+    // The generic "unknown op" shape a daemon predating the lane bridge answers — matches `sot-protocol`'s own
+    // `lane_client.rs` unit test `an_unknown_op_reply_is_no_bridge` exactly.
+    let reply = Frame::res(1, op::LANE_CONNECT, serde_json::json!({ "error": "unknown op: lane.connect" }));
+    let (status, dials) = attach_to_a_daemon_that_answers(reply).await;
+    assert!(status.contains("no bridge"), "status must name the missing bridge, got {status:?}");
+    assert_eq!(dials, 1, "a Refused{{no_bridge}} reply must be terminal — never a second dial");
+}
+
+#[tokio::test]
+async fn a_daemon_on_an_older_protocol_is_a_terminal_refusal() {
+    let payload = serde_json::json!({ "error": "protocol mismatch: update the older side", "code": "protocol_mismatch" });
+    let (status, dials) = attach_to_a_daemon_that_answers(Frame::res(1, op::HELLO, payload)).await;
+    assert!(status.contains("protocol_mismatch"), "status must name the daemon's refusal, got {status:?}");
+    assert_eq!(dials, 1, "a refused hello must be terminal — never a second dial");
 }
 
 // -----------------------------------------------------------------------
@@ -302,7 +317,7 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 // -----------------------------------------------------------------------
 // C3 as amended (isolation-plan.md §3, dev/output/c3-second-connection-
 // amendment.md §7): `LaneDial::Ssh` reaches the SAME daemon-in-the-middle
-// as `LaneDial::Tcp` above, through a spawned child instead of an
+// as `LaneDial::Local` above, through a spawned child instead of an
 // already-open socket. A stub `ssh` first on `PATH` stands in for the
 // real binary — it ignores every option/command argv `ssh_bridge::argv`
 // builds and instead relays its stdin/stdout to the harness's own
@@ -312,12 +327,11 @@ async fn a_never_started_row_is_not_started_by_a_bridge_dial() {
 
 /// Writes an executable `ssh` (no extension: this is the Linux-only half
 /// of this file, `#![cfg(target_os = "linux")]` at the top) into a fresh
-/// temp dir that relays stdin/stdout to `addr` via `nc` — already this
-/// repo's own hermetic lever for a hostile/absent network peer
-/// (`comm-relay.sh`'s `/dev/tcp` self-heal path is the shell twin). The
-/// caller prepends the returned dir to `$PATH`.
-fn stub_ssh_relaying_to(dir: &Path, addr: SocketAddr) {
-    let script = format!("#!/bin/sh\nexec nc {} {}\n", addr.ip(), addr.port());
+/// temp dir that relays stdin/stdout to the Unix socket at `socket` via `nc -U`
+/// (`comm-relay.sh`'s own `nc -U` path is the shell twin). The caller
+/// prepends the returned dir to `$PATH`.
+fn stub_ssh_relaying_to(dir: &Path, socket: &Path) {
+    let script = format!("#!/bin/sh\nexec nc -U {}\n", socket.display());
     let path = dir.join("ssh");
     sot_log::test_exec::write_executable(&path, script);
 }
@@ -362,7 +376,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
 
     let relay = Relay::start(env.socket_path.clone()).await;
     let stub_dir = tempfile::Builder::new().prefix("sot-stub-ssh-").tempdir().expect("tempdir");
-    stub_ssh_relaying_to(stub_dir.path(), relay.addr);
+    stub_ssh_relaying_to(stub_dir.path(), &relay.path);
     let _path_guard = PathGuard::prepend(stub_dir.path());
 
     let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).expect("plain host name");
@@ -387,7 +401,7 @@ async fn fe_client_reaches_a_capsule_row_through_a_stub_ssh_child() {
         assert!(Instant::now() < deadline, "never checkpointed through the ssh-child bridge");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // The peer report is the DAEMON's (proven the same way the Tcp case
+    // The peer report is the DAEMON's (proven the same way the direct case
     // above proves it: a live checkpoint only reaches this far once the
     // bridge's split-identity proof — `DaemonLaneEndpoint::challenge`
     // against the daemon's own `LaneConnectRes` report — has already
