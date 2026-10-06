@@ -1,0 +1,60 @@
+[
+  {
+    "label": "c3-head-blocked_pool_ok_cleans_yielding_child",
+    "tree": "head",
+    "test": "ui::app::exit_process_tests::blocked_pool_ok_cleans_yielding_child",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "runtime finalization exceeded two seconds:",
+    "observations": [
+      "T1 fixture observed: original child entered once and remained alive",
+      "T1 fixture observed: yielding task and blocked pool ready",
+      "T1 fixture observed: yielding ownership dropped and original child exited"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c3-head-blocked_pool_error_cleans_yielding_child",
+    "tree": "head",
+    "test": "ui::app::exit_process_tests::blocked_pool_error_cleans_yielding_child",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "error return bypassed runtime finalization",
+    "observations": [
+      "T1 fixture observed: original child entered once and remained alive",
+      "T1 fixture observed: yielding task and blocked pool ready",
+      "T1 fixture observed: yielding ownership dropped and original child exited"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c3-head-held_worker_exposes_delayed_child_destruction",
+    "tree": "head",
+    "test": "ui::app::exit_process_tests::held_worker_exposes_delayed_child_destruction",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "runtime finalization exceeded two seconds:",
+    "observations": [
+      "T1 fixture observed: original child entered once and remained alive",
+      "T1 fixture observed: yielding task and held worker ready",
+      "T1 fixture observed: yielding ownership dropped and original child exited"
+    ],
+    "isolated": true,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c3-head-absent_runtime_and_repeated_finalization_preserve_results",
+    "tree": "head",
+    "test": "ui::app::exit_process_tests::absent_runtime_and_repeated_finalization_preserve_results",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "None runtime and repeated finalization preserve Ok and Err",
+    "observations": [
+      "T1 fixture observed: absent runtime and repeated finalization"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  }
+]

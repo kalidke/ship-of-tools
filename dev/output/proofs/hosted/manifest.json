@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c3-head",
+  "original": {
+    "sha": "47515125839fb523b4d567d3bb7f7ab5480e4707",
+    "branch": "tmp/ci-t1-c3-head"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "47515125839fb523b4d567d3bb7f7ab5480e4707",
+  "tree": "head",
+  "overlays": [
+    {
+      "tree": "head",
+      "file": "rust/frontend/src/ui/app/exit_process_tests.rs",
+      "base_sha256": "0c1b9257de94f5968dedce7f15bda6114f12b1407fae0668c0e8b4aff0fbd1da",
+      "overlay_sha256": "12647e214591d574c07820c5e505b82b5ead90300703f92f7520879faa7c8f4a",
+      "patch": "overlays/head-ui-app-exit_process_tests.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/app/exit_process_tests.rs",
+      "accepted_overlay_sha256": "12647e214591d574c07820c5e505b82b5ead90300703f92f7520879faa7c8f4a",
+      "replay_sha256": "958bc43ce0ec425946c64e90b5bb53235e21df43cfd2ffa50b10ddd2531698c4",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}
