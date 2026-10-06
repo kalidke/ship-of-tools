@@ -122,14 +122,8 @@ impl BridgedClient {
     }
 
     fn lock_child(&self, deadline: std::time::Instant) -> std::io::Result<std::sync::MutexGuard<'_, std::process::Child>> {
-        loop {
-            if std::time::Instant::now() >= deadline { return Err(self.failure("deadline", "child lock acquisition expired")); }
-            match self.child.try_lock() {
-                Ok(child) => return Ok(child),
-                Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(std::time::Duration::from_millis(5)),
-            }
-        }
+        let _ = deadline;
+        Ok(self.child.lock().unwrap_or_else(|error| error.into_inner()))
     }
 
     fn request_termination(&self, child: &mut std::process::Child) -> std::io::Result<()> {
