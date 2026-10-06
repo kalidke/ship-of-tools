@@ -47,7 +47,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
   "Disallowed methods" step fails on any other. The group holds every way std and tokio start a process, portable-pty's
   `spawn_command`, libc's `fork`, `vfork`, `posix_spawn`, `posix_spawnp`, `execv`, `execve`, `execvp` and `system`,
   windows-sys's `CreateProcessW`, `CreateProcessA`, `CreateProcessAsUserW` and `CreateProcessAsUserA`, `LinkGate`'s
-  `spawn_sync`, `spawn_async` and `probe`, and the updater's four entries (rust/updater/CLAUDE.md). Not held:
+  `spawn_sync`, `spawn_async` and `probe`, and no updater entry: the updater requires its caller's `Spawner` and starts no process directly (rust/updater/CLAUDE.md). Not held:
   - other process starts in libc and windows-sys, among them libc's other exec, fork and spawn functions and `popen`,
     and windows-sys's `CreateProcessWithLogonW`, `CreateProcessWithTokenW`, `WinExec`, `ShellExecute*`,
     `SHCreateProcessAsUserW` and `SHOpenWithDialog`, called nowhere in the workspace today (libc:
@@ -92,7 +92,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `signal_exit::install`, `shutdown::exit`, `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
-`Signal::output`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
+`Signal::output`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `sot_updater::Spawner`, `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
 `durable::write`, `durable::remove`, `rust/backend/src/durable.rs`, `deploy/sotd.service`, `sot-apply.sh`.

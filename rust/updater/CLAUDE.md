@@ -18,6 +18,7 @@ never because a marker file exists. Part of distribution; charter: scripts/CLAUD
 - `src/prepare.rs`: transactional preparation of a version (checkout and Julia instantiate) and the children it runs.
 - `src/select.rs`: channel selection, the tag a given installed version should track.
 - `src/semver.rs`: semver parsing and ordering for release tags.
+- `src/spawn.rs`: the required caller-owned `Spawner` interface; no production native spawner is supplied by this crate.
 - `src/unique.rs`: unique names for temp dirs and lock nonces.
 
 ## Start here
@@ -28,7 +29,4 @@ leaves on disk.
 - `stage` verifies the checksum before extraction and renames the stage into place last; an incomplete stage is never
   taken for a finished one.
 - Staging runs under the `updates/.lock` taken in `lock.rs`; sot-apply uses the same lock.
-- Another crate reaches a process this crate starts only through `check_release`, `stage`, `prepare::prepare` and
-  `prepare::PreparedState::matches`, which `rust/clippy.toml` lists (Process spawns). Every other path to a start was
-  crate-private when read on 2026-10-05; no test fails when a public one is added, and the class goes when the updater
-  takes its spawner from its caller. The stage lock's liveness probe starts none (`pid_alive`).
+- Every spawn-bearing entry, including `check_release`, `stage`, `prepare::prepare` and `prepare::PreparedState::matches`, requires its caller's `Spawner`. Fetch, archive and prepare helpers use that spawner for all process output; production updater code starts no process directly. The daemon supplies containment and the window supplies its own lifetime policy. The stage lock's liveness probe starts no process (`pid_alive`).

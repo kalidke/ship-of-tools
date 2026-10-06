@@ -20,7 +20,7 @@ each belong to one other subsystem, named below. Part of fe-ui; charter: rust/fr
 - `src/lease_leave_tests.rs`: the lease tests for leaving and what the daemon is told on the way out (lifecycle).
 - `src/pages.rs`: the window's page proxy, loopback listeners that pipe each browser connection to the owning
   daemon's `proxy.connect` (pages; charter rust/backend/src/pages/CLAUDE.md).
-- `src/selfupdate.rs`: startup self-update staging and `--update-status` (distribution; charter scripts/CLAUDE.md).
+- `src/selfupdate.rs`: startup self-update staging, `--update-status`, and `WindowSpawner`, the window's explicit native async-output policy (distribution; charter scripts/CLAUDE.md).
 - `src/relaunch.rs`: the relaunch sentinel, its watcher thread, and the Windows foreground handover (distribution;
   charter scripts/CLAUDE.md).
 - `src/net/`: the window's connections to daemons (fe-net; charter rust/frontend/src/net/CLAUDE.md).
@@ -31,6 +31,7 @@ each belong to one other subsystem, named below. Part of fe-ui; charter: rust/fr
 charter in src/ui/; for a connection or a request, to src/net/.
 
 ## Rules
+- The shared updater starts commands only through its caller's `Spawner`. `WindowSpawner` keeps native output's kill-on-drop lifetime; it does not promise daemon-style tree containment.
 - Exit codes 75 and 76 are a contract with the launcher scripts: the watcher in relaunch.rs (`spawn_watcher`) sets 75,
   or 76 when the sentinel's content is `converge`, and the window exits with it.
 - `--ephemeral`, `--capture` and `--no-lease` never take a lease (`lease_exempt` in lease.rs).

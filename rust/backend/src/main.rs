@@ -628,3 +628,6 @@ fn complete_main<T>(
         };
     terminate(code)
 }
+
+#[cfg(test)]
+mod update_children_tests;

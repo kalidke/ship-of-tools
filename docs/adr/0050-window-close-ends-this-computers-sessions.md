@@ -86,7 +86,7 @@ any row is touched; the run gate closes and in-flight starts drain, until the ro
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
 deadline, and a row of any other runtime is left running and counted not ended; every
-process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit (n)), receives a checked termination attempt for its contained tree; descendants that leave it remain residual 7. Each runs in its own process group on Unix and its own job on Windows; successful requests precede the owner's direct-child reap. Creation through adoption and registration shares the registry mutex with the permanent child signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can delay fire and process exit; the final record is written; the
+process the daemon starts, but a capsule supervisor, receives a checked termination attempt for its contained tree; descendants that leave it remain residual 7. Each runs in its own process group on Unix and its own job on Windows; successful requests precede the owner's direct-child reap. Creation through adoption and registration shares the registry mutex with the permanent child signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can delay fire and process exit; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
@@ -98,6 +98,8 @@ again, taken only while no shutdown is under way, so a shutdown's own exit alway
 1 is a failure (lock timeout or refuse-live). The nominal bounds chain is `HANDOVER_BOUND (60) < SHUTDOWN_BOUND (120) < DAEMON_LOCK_WAIT (150) < LAUNCH_WAIT (160)`: a successor allows more time than the shutdown budget, and a launcher allows more time than the successor's lock budget. An OS creation or adoption stalled under the start/registry mutex can delay fire and actual process exit beyond these budgets.
 
 0.6.6 amendment: every controlled daemon termination, including Unix SIGINT and SIGTERM, uses `shutdown::exit`, which synchronously attempts and checks contained-tree termination through the permanent child signal before the sole raw process exit. Request errors are logged without changing the chosen exit code; this is not a wait for confirmed death, and contained children can outlive daemon exit. The main result and main-future unwind reach it before runtime teardown. An independently scheduled Unix watcher registers both handlers and checks its unblocked SIGINT/SIGTERM mask before daemon child work, including when the main thread inherited both blocked; SIGINT exits 130 and SIGTERM exits 143. These signals request termination of daemon-owned contained trees; capsule rows remain independent. An OS creation/adoption stall can delay fire; uncatchable signals, aborts and process/OS crashes cannot execute cleanup.
+
+The updater requires a caller spawner for discovery, staging, preparation and prepared-state probes. The daemon supplies its contained adapter for every such command; the window supplies its own policy. The updater has no production process-start primitive.
 
 ### The record, `held.json`
 
@@ -225,10 +227,5 @@ connection is the only handle.
   may resume them.
 - (k) A startup Cleanup's count reaches a window granted before the Cleanup finished only
   at the next window; it stays in the record until acknowledged.
-- (n) Every process `rust/updater` starts inside the daemon runs outside containment, with at most `kill_on_drop`,
-  which does not run at the daemon's exit. The daemon reaches them through the updater's four entries, each called in
-  update.rs under a `clippy::disallowed_methods` allow naming this limit: `check_release` (in `check`), `stage` and
-  `prepare::prepare` (in `stage_prepare_arm_inner`), and `PreparedState::matches` (in `handle_update_check`). A shutdown
-  or exit while one runs leaves it and what it started to end on their own; under the systemd unit its cgroup ends them.
 
 - Window: see the release notes.

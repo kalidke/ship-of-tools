@@ -8,7 +8,7 @@ pub(crate) mod shutdown;
 pub(crate) mod startup;
 
 #[cfg(test)]
-mod start_tests;
+pub(crate) mod start_tests;
 
 #[cfg(test)]
 pub(crate) mod exit_tests;

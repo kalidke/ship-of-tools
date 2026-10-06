@@ -32,6 +32,40 @@ use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, Updat
 use crate::lifecycle::lease::Leases;
 use crate::server::reply::HandlerOutput;
 
+/// Daemon policy: every updater command belongs to this signal's contained tree registry.
+pub(crate) struct UpdaterSpawner(pub(crate) &'static crate::lifecycle::child_signal::Signal);
+
+impl sot_updater::Spawner for UpdaterSpawner {
+    fn output<'a>(
+        &'a self,
+        command: &'a mut tokio::process::Command,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            use tokio::io::AsyncReadExt;
+            command
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            let mut child = self.0.spawn(command)?;
+            let mut stdout = child.stdout.take().expect("piped stdout");
+            let mut stderr = child.stderr.take().expect("piped stderr");
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let (status, _, _) = tokio::try_join!(
+                child.wait(),
+                stdout.read_to_end(&mut out),
+                stderr.read_to_end(&mut err)
+            )?;
+            Ok(std::process::Output {
+                status,
+                stdout: out,
+                stderr: err,
+            })
+        })
+    }
+}
+
 /// Delay before the first automatic check after boot, then the steady cadence.
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
@@ -125,12 +159,13 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "ADR 0050 known limit (n): the updater's children run outside containment"
-        )]
-        let checked =
-            sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await;
+        let checked = sot_updater::check_release(
+            &UpdaterSpawner(crate::lifecycle::child_signal::process()),
+            &self.repo,
+            &self.current,
+            &Fetcher::from_env(),
+        )
+        .await;
         checked
     }
 }
@@ -200,11 +235,12 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 }
 
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "ADR 0050 known limit (n): the updater's children run outside containment"
-    )]
-    let staged = sot_updater::stage(cfg, id).await;
+    let staged = sot_updater::stage(
+        &UpdaterSpawner(crate::lifecycle::child_signal::process()),
+        cfg,
+        id,
+    )
+    .await;
     if let Err(e) = staged {
         // The whole chain, not just the outermost context: the OS error is the
         // thing that names the fault, and `%e` drops it.
@@ -236,11 +272,12 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
             return;
         }
     };
-    #[allow(
-        clippy::disallowed_methods,
-        reason = "ADR 0050 known limit (n): the updater's children run outside containment"
-    )]
-    let state = match sot_updater::prepare::prepare(&spec).await {
+    let state = match sot_updater::prepare::prepare(
+        &UpdaterSpawner(crate::lifecycle::child_signal::process()),
+        &spec,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(tag = %id.tag, error = %e, "preparing update failed — not arming");
@@ -469,11 +506,12 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
             let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);
             let probes = async {
                 let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
-                #[allow(
-                    clippy::disallowed_methods,
-                    reason = "ADR 0050 known limit (n): the updater's children run outside containment"
-                )]
-                let prepared = PreparedState::matches(&stage_dir, id).await;
+                let prepared = PreparedState::matches(
+                    &UpdaterSpawner(crate::lifecycle::child_signal::process()),
+                    &stage_dir,
+                    id,
+                )
+                .await;
                 (
                     staged,
                     prepared,

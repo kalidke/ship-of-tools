@@ -23,6 +23,8 @@ pub mod sums;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::Spawner;
+
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::identity::{validate_repo, validate_tag};
@@ -53,7 +55,11 @@ impl Fetcher {
     /// Resolve from `SOT_UPDATE_FETCHER`: `curl` (default), `gh`, or
     /// `dir:<path>`.
     pub fn from_env() -> Self {
-        match std::env::var("SOT_UPDATE_FETCHER").ok().as_deref().map(str::trim) {
+        match std::env::var("SOT_UPDATE_FETCHER")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+        {
             Some("gh") => Fetcher::Gh,
             Some(s) if s.starts_with("dir:") => Fetcher::Dir(PathBuf::from(&s[4..])),
             None | Some("") | Some("curl") => Fetcher::Curl,
@@ -69,18 +75,23 @@ impl Fetcher {
     /// draft is dropped here since it has no public download URL at all;
     /// everything else, including prereleases, is left for the selection
     /// function to filter by channel).
-    pub(crate) async fn list_releases(&self, repo: &str) -> Result<Vec<(String, bool)>> {
+    pub(crate) async fn list_releases(
+        &self,
+        spawner: &dyn Spawner,
+        repo: &str,
+    ) -> Result<Vec<(String, bool)>> {
         validate_repo(repo)?;
         match self {
             Fetcher::Curl => {
                 let url = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
                 // Short budget: this runs inline in the `update.check` op —
                 // a slow check must not wedge the daemon connection.
-                let bytes = curl_fetch(&url, None, Duration::from_secs(30)).await?;
+                let bytes = curl_fetch(spawner, &url, None, Duration::from_secs(30)).await?;
                 parse_release_list(&bytes)
             }
             Fetcher::Gh => {
                 let stdout = run_cmd(
+                    spawner,
                     "gh",
                     &["api", &format!("repos/{repo}/releases?per_page=20")],
                     Duration::from_secs(30),
@@ -106,7 +117,10 @@ impl Fetcher {
                     .iter()
                     .find_map(|e| crate::platform::parse_asset_name(&e.name).map(|(v, _)| v))
                     .ok_or_else(|| {
-                        anyhow!("no recognizable sot-* asset in {}/SHA256SUMS", dir.display())
+                        anyhow!(
+                            "no recognizable sot-* asset in {}/SHA256SUMS",
+                            dir.display()
+                        )
                     })?;
                 Ok(vec![(format!("v{version}"), false)])
             }
@@ -119,18 +133,21 @@ impl Fetcher {
     /// normal outcome, not an error.
     pub(crate) async fn latest(
         &self,
+        spawner: &dyn Spawner,
         repo: &str,
         current_version: &str,
     ) -> Result<Option<LatestRelease>> {
         validate_repo(repo)?;
-        let releases = self.list_releases(repo).await?;
+        let releases = self.list_releases(spawner, repo).await?;
         let Some(tag) = select_target(current_version, &releases) else {
             return Ok(None);
         };
         validate_tag(&tag)?;
         let dir = tempdir("sums").await?;
         let sums_path = dir.join("SHA256SUMS");
-        let res = self.download(repo, &tag, "SHA256SUMS", &sums_path).await;
+        let res = self
+            .download(spawner, repo, &tag, "SHA256SUMS", &sums_path)
+            .await;
         let text = match res {
             Ok(()) => tokio::fs::read_to_string(&sums_path)
                 .await
@@ -147,7 +164,14 @@ impl Fetcher {
     /// Download one named release file for an explicit tag into `dest` (a file
     /// path). Callers validate the identity; this validates the raw strings
     /// again before building URLs/paths (defense in depth).
-    pub(crate) async fn download(&self, repo: &str, tag: &str, name: &str, dest: &Path) -> Result<()> {
+    pub(crate) async fn download(
+        &self,
+        spawner: &dyn Spawner,
+        repo: &str,
+        tag: &str,
+        name: &str,
+        dest: &Path,
+    ) -> Result<()> {
         validate_repo(repo)?;
         validate_tag(tag)?;
         if name.contains('/') || name.contains('\\') || name.contains("..") {
@@ -161,7 +185,7 @@ impl Fetcher {
                 let url = format!("https://github.com/{repo}/releases/download/{tag}/{name}");
                 // Downloads can be tens of MB; stream straight to the file
                 // (curl -o) — never buffered through this process's memory.
-                curl_fetch(&url, Some(dest), Duration::from_secs(900)).await?;
+                curl_fetch(spawner, &url, Some(dest), Duration::from_secs(900)).await?;
                 Ok(())
             }
             Fetcher::Gh => {
@@ -169,6 +193,7 @@ impl Fetcher {
                     .parent()
                     .ok_or_else(|| anyhow!("download dest has no parent"))?;
                 run_cmd(
+                    spawner,
                     "gh",
                     &[
                         "release",
@@ -235,7 +260,12 @@ fn parse_release_list(bytes: &[u8]) -> Result<Vec<(String, bool)>> {
 /// --proto-redir =https`), bounded redirects and time. With `output`, curl
 /// streams straight to that file and the returned Vec is empty; without it,
 /// the body is returned (small documents only).
-async fn curl_fetch(url: &str, output: Option<&Path>, max_time: Duration) -> Result<Vec<u8>> {
+async fn curl_fetch(
+    spawner: &dyn Spawner,
+    url: &str,
+    output: Option<&Path>,
+    max_time: Duration,
+) -> Result<Vec<u8>> {
     let max_time_s = max_time.as_secs().to_string();
     let mut args = vec![
         "-fsSL",
@@ -262,19 +292,23 @@ async fn curl_fetch(url: &str, output: Option<&Path>, max_time: Duration) -> Res
     args.push(url);
     // Outer ceiling above curl's own --max-time so curl owns the timeout
     // and we still have a backstop that kills a wedged process.
-    run_cmd("curl", &args, max_time + Duration::from_secs(30)).await
+    run_cmd(spawner, "curl", &args, max_time + Duration::from_secs(30)).await
 }
 
 /// Run a command with a timeout, killing the child if the timeout fires
 /// (kill_on_drop). A missing binary maps to a clear error; a nonzero exit
 /// surfaces the first stderr line.
-async fn run_cmd(bin: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>> {
+async fn run_cmd(
+    spawner: &dyn Spawner,
+    bin: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Vec<u8>> {
     let mut cmd = tokio::process::Command::new(bin);
     cmd.args(args);
     cmd.stdin(std::process::Stdio::null());
     cmd.kill_on_drop(true);
-    #[allow(clippy::disallowed_methods, reason = "an updater step; started inside the daemon it is ADR 0050 known limit (n)")]
-    let out = match tokio::time::timeout(timeout, cmd.output()).await {
+    let out = match tokio::time::timeout(timeout, spawner.output(&mut cmd)).await {
         Err(_) => bail!("{bin} timed out after {}s", timeout.as_secs()),
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!("{bin} not found"),
         Ok(Err(e)) => return Err(e).with_context(|| format!("spawning {bin}")),
@@ -282,10 +316,18 @@ async fn run_cmd(bin: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>>
     };
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        let first = stderr.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let first = stderr
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
         bail!(
             "{bin} failed: {}",
-            if first.is_empty() { "unknown error" } else { first }
+            if first.is_empty() {
+                "unknown error"
+            } else {
+                first
+            }
         );
     }
     Ok(out.stdout)
@@ -300,8 +342,7 @@ async fn run_cmd(bin: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>>
 /// and one caller's `remove_dir_all` deleted the other's `SHA256SUMS` between
 /// its download and its read.
 async fn tempdir(label: &str) -> Result<PathBuf> {
-    let dir =
-        std::env::temp_dir().join(format!("sot-updater-{label}-{}", crate::unique::suffix()));
+    let dir = std::env::temp_dir().join(format!("sot-updater-{label}-{}", crate::unique::suffix()));
     tokio::fs::create_dir_all(&dir)
         .await
         .with_context(|| format!("creating {}", dir.display()))?;
@@ -311,6 +352,10 @@ async fn tempdir(label: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spawn::tests::{reject, RecordingSpawner};
+    const NO_COMMANDS: RecordingSpawner<
+        fn(&tokio::process::Command) -> std::io::Result<std::process::Output>,
+    > = RecordingSpawner(reject);
 
     #[test]
     fn fetcher_from_env_forms() {
@@ -383,17 +428,22 @@ mod tests {
         )
         .await
         .unwrap();
-        tokio::fs::write(dir.join("blob.bin"), b"payload").await.unwrap();
+        tokio::fs::write(dir.join("blob.bin"), b"payload")
+            .await
+            .unwrap();
 
         let f = Fetcher::Dir(dir.clone());
 
         // No `releases.json`: the directory's own SHA256SUMS is the single
         // (stable-channel) release on offer.
-        let listed = f.list_releases("kalidke/ship-of-tools").await.unwrap();
+        let listed = f
+            .list_releases(&NO_COMMANDS, "example/project")
+            .await
+            .unwrap();
         assert_eq!(listed, vec![("v0.6.0".to_string(), false)]);
 
         let latest = f
-            .latest("kalidke/ship-of-tools", "0.1.0")
+            .latest(&NO_COMMANDS, "example/project", "0.1.0")
             .await
             .unwrap()
             .expect("0.6.0 is newer than 0.1.0");
@@ -402,28 +452,34 @@ mod tests {
 
         // Already past this release: no update, not an error.
         assert!(f
-            .latest("kalidke/ship-of-tools", "9.9.9")
+            .latest(&NO_COMMANDS, "example/project", "9.9.9")
             .await
             .unwrap()
             .is_none());
 
         let dest = dir.join("out/blob.bin");
-        f.download("kalidke/ship-of-tools", "v0.6.0", "blob.bin", &dest)
+        f.download(&NO_COMMANDS, "example/project", "v0.6.0", "blob.bin", &dest)
             .await
             .unwrap();
         assert_eq!(tokio::fs::read(&dest).await.unwrap(), b"payload");
 
         // Path-material names are refused before touching the filesystem.
         assert!(f
-            .download("kalidke/ship-of-tools", "v0.6.0", "../evil", &dest)
+            .download(&NO_COMMANDS, "example/project", "v0.6.0", "../evil", &dest)
             .await
             .is_err());
         assert!(f
-            .download("kalidke/bad repo", "v0.6.0", "blob.bin", &dest)
+            .download(
+                &NO_COMMANDS,
+                "example/bad repo",
+                "v0.6.0",
+                "blob.bin",
+                &dest
+            )
             .await
             .is_err());
         assert!(f
-            .download("kalidke/ship-of-tools", "latest", "blob.bin", &dest)
+            .download(&NO_COMMANDS, "example/project", "latest", "blob.bin", &dest)
             .await
             .is_err());
 
@@ -484,10 +540,14 @@ mod tests {
 
         let f = Fetcher::Dir(dir.clone());
         // A stable install never sees the rcs.
-        assert!(f.latest("kalidke/ship-of-tools", "0.5.10").await.unwrap().is_none());
+        assert!(f
+            .latest(&NO_COMMANDS, "example/project", "0.5.10")
+            .await
+            .unwrap()
+            .is_none());
         // An rc install tracks the newest rc.
         let l = f
-            .latest("kalidke/ship-of-tools", "0.6.0-rc.11")
+            .latest(&NO_COMMANDS, "example/project", "0.6.0-rc.11")
             .await
             .unwrap()
             .expect("rc.13 supersedes rc.11");
@@ -496,38 +556,28 @@ mod tests {
         tokio::fs::remove_dir_all(&dir).await.unwrap();
     }
 
-    /// Hits the real public repo's release listing — read-only, no auth, no
-    /// stage/apply. Gated on `--ignored` (network-dependent, and the real
-    /// listing changes daily); run manually after touching the discovery
-    /// path. Proves `list_releases` parses live GitHub JSON and that
-    /// `select_target` keeps a stable-channel install off every listed
-    /// prerelease, without hardcoding today's actual tag numbers (the repo
-    /// cuts rcs daily, so any exact-tag assertion would rot).
+    /// Curl and gh discovery request the same release-list shape through the caller, without contacting a service.
     #[tokio::test]
-    #[ignore]
-    async fn live_list_releases_against_real_repo() {
-        let repo = "kalidke/ship-of-tools";
-        let releases = Fetcher::Curl.list_releases(repo).await.expect("list_releases");
-        assert!(!releases.is_empty(), "expected at least one published release");
-        assert!(
-            releases.iter().any(|(_, prerelease)| *prerelease),
-            "expected at least one prerelease in a repo that cuts rcs daily"
-        );
-        for (tag, _) in &releases {
-            assert!(crate::semver::parse_semver(tag).is_some(), "unparsable tag: {tag}");
-        }
-
-        // A stable-channel install must never be pointed at a prerelease.
-        if let Some(tag) = select_target("0.0.1", &releases) {
-            assert!(
-                !tag.contains("-rc.") && !tag.contains("-alpha") && !tag.contains("-beta"),
-                "stable install selected a prerelease: {tag}"
+    async fn recorded_release_lists_drive_both_channels() {
+        use crate::spawn::tests::output;
+        for fetcher in [Fetcher::Curl, Fetcher::Gh] {
+            let spawner = RecordingSpawner(|cmd: &tokio::process::Command| {
+                let bin = cmd.as_std().get_program();
+                assert!(bin == "curl" || bin == "gh", "unexpected discovery command");
+                Ok(output(0, br#"[{"tag_name":"v0.6.0-rc.13","prerelease":true},{"tag_name":"v0.5.10","prerelease":false}]"#.to_vec()))
+            });
+            let releases = fetcher
+                .list_releases(&spawner, "example/project")
+                .await
+                .unwrap();
+            assert_eq!(
+                select_target("0.0.1", &releases).as_deref(),
+                Some("v0.5.10")
+            );
+            assert_eq!(
+                select_target("0.0.1-rc.1", &releases).as_deref(),
+                Some("v0.6.0-rc.13")
             );
         }
-
-        // A very-old prerelease install must be offered SOMETHING newer
-        // (the live repo always has more recent releases than 0.0.1-rc.1).
-        let picked = select_target("0.0.1-rc.1", &releases);
-        assert!(picked.is_some(), "expected an update from a very old rc");
     }
 }

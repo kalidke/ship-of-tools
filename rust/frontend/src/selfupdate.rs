@@ -34,6 +34,25 @@ use sot_protocol::app_version;
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{Fetcher, InstallManifest, UpdaterConfig};
 
+/// Window policy: native async output kills its direct child on cancellation; it does not contain descendants.
+struct WindowSpawner;
+
+impl sot_updater::Spawner for WindowSpawner {
+    fn output<'a>(
+        &'a self,
+        command: &'a mut tokio::process::Command,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send + 'a>,
+    > {
+        command.kill_on_drop(true);
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "the window's explicit native updater policy; kill-on-drop covers its direct child, without daemon tree containment"
+        )]
+        Box::pin(command.output())
+    }
+}
+
 /// The guard chain, as a value: the install to act on, or the one sentence
 /// saying why this box does nothing. A value rather than four early returns
 /// because `--update-status` has to answer the same question, and a guard
@@ -56,7 +75,10 @@ fn guard() -> std::result::Result<InstallManifest, &'static str> {
         return Err("fe self-update: not a release build — hard guard, skipping (update with git pull + cargo build)");
     }
     if matches!(
-        std::env::var("SOT_UPDATE_MODE").ok().as_deref().map(str::trim),
+        std::env::var("SOT_UPDATE_MODE")
+            .ok()
+            .as_deref()
+            .map(str::trim),
         Some("off")
     ) {
         return Err("fe self-update disabled: SOT_UPDATE_MODE=off");
@@ -89,7 +111,10 @@ pub fn spawn_startup_selfcheck() {
     let spawned = std::thread::Builder::new()
         .name("sot-selfupdate".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
                 Ok(rt) => rt,
                 Err(e) => {
                     tracing::warn!(error = %e, "fe self-update: no runtime");
@@ -129,7 +154,10 @@ fn backend_owns_updates(
 /// should stay out of it? See `backend_owns_updates` for the decision and
 /// `spawn_startup_selfcheck`'s doc comment for the guard order this sits in.
 fn backend_owns_updates_here(install: &InstallManifest) -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let topo = sot_protocol::topology::load()
+        .ok()
+        .flatten()
+        .map(|(_, t)| t);
     let me = sot_log::host::state_dir::host_name().unwrap_or_default();
     backend_owns_updates(topo.as_ref(), &me, install.daemon)
 }
@@ -139,7 +167,8 @@ fn backend_owns_updates_here(install: &InstallManifest) -> bool {
 /// the pipeline that actually runs here, not of a second one derived alike.
 fn config(current: String) -> std::result::Result<UpdaterConfig, String> {
     let repo = sot_updater::identity::repo_from_env();
-    let updates_root = sot_updater::resolve_updates_root().map_err(|e| format!("no updates root: {e}"))?;
+    let updates_root =
+        sot_updater::resolve_updates_root().map_err(|e| format!("no updates root: {e}"))?;
     Ok(UpdaterConfig {
         repo,
         current_version: current,
@@ -170,8 +199,12 @@ async fn phase(cfg: &UpdaterConfig, id: &sot_updater::ReleaseIdentity) -> Option
     let probes = async {
         let partial_bytes = sot_updater::partial_asset_bytes(&cfg.updates_root, id).await;
         let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
-        #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-        let prepared = PreparedState::matches(&sot_updater::stage_dir(&cfg.updates_root, id), id).await;
+        let prepared = PreparedState::matches(
+            &WindowSpawner,
+            &sot_updater::stage_dir(&cfg.updates_root, id),
+            id,
+        )
+        .await;
         Phase {
             partial_bytes,
             staged,
@@ -195,8 +228,13 @@ async fn run(install: InstallManifest, current: String) {
             return;
         }
     };
-    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-    let out = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher).await;
+    let out = sot_updater::check_release(
+        &WindowSpawner,
+        &cfg.repo,
+        &cfg.current_version,
+        &cfg.fetcher,
+    )
+    .await;
     if !out.update_available {
         tracing::info!(status = %out.status, current = %cfg.current_version, "fe self-update: no newer release — nothing to do");
         return;
@@ -223,8 +261,7 @@ async fn run(install: InstallManifest, current: String) {
         partial_bytes = at.partial_bytes.unwrap_or(0),
         "fe self-update: newer release found — continuing from what is already on disk"
     );
-    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-    let staged = sot_updater::stage(&cfg, &id).await;
+    let staged = sot_updater::stage(&WindowSpawner, &cfg, &id).await;
     if let Err(e) = staged {
         tracing::warn!(tag = %id.tag, error = %e, "fe self-update: staging failed");
         return;
@@ -240,8 +277,7 @@ async fn run(install: InstallManifest, current: String) {
         julia_bin: None,
         npm: false,
     };
-    #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-    let state = match sot_updater::prepare::prepare(&spec).await {
+    let state = match sot_updater::prepare::prepare(&WindowSpawner, &spec).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(tag = %id.tag, error = %e, "fe self-update: prepare failed — not arming");
@@ -289,7 +325,10 @@ pub fn print_status() -> ! {
     println!("  install        {}", install.prefix.display());
     println!("  repo           {}", cfg.repo);
     println!("  updates root   {}", cfg.updates_root.display());
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
             println!("  no runtime: {e}");
@@ -299,14 +338,21 @@ pub fn print_status() -> ! {
     let code = rt.block_on(async {
         // Same 45 s ceiling the daemon's handler uses: a wedged network path
         // must degrade to a printed status, not hang at the keyboard.
-        #[allow(clippy::disallowed_methods, reason = "the window's own update pipeline (ADR 0030), not a daemon process")]
-        let check = sot_updater::check_release(&cfg.repo, &cfg.current_version, &cfg.fetcher);
+        let check = sot_updater::check_release(
+            &WindowSpawner,
+            &cfg.repo,
+            &cfg.current_version,
+            &cfg.fetcher,
+        );
         let Ok(out) = tokio::time::timeout(std::time::Duration::from_secs(45), check).await else {
             println!("  release        check unavailable: timed out");
             return 1;
         };
         let Some(id) = out.identity.filter(|_| out.update_available) else {
-            println!("  release        none newer than {} ({})", cfg.current_version, out.status);
+            println!(
+                "  release        none newer than {} ({})",
+                cfg.current_version, out.status
+            );
             return 0;
         };
         let Some(at) = phase(&cfg, &id).await else {
@@ -361,6 +407,42 @@ mod tests {
     use super::*;
     use sot_updater::identity::DEFAULT_REPO;
 
+    #[tokio::test]
+    async fn window_spawner_returns_native_output_and_status() {
+        use sot_updater::Spawner;
+        let dir =
+            std::env::temp_dir().join(format!("sot-l2-window-{}", sot_updater::unique::suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        let (path, body) = (
+            dir.join("fixture"),
+            "#!/bin/sh\nprintf 'window stdout'; printf 'window stderr' >&2; exit 7\n",
+        );
+        #[cfg(windows)]
+        let (path, body) = (dir.join("fixture.ps1"), "[Console]::Out.Write('window stdout'); [Console]::Error.Write('window stderr'); exit 7\n");
+        sot_log::test_exec::write_executable(&path, body);
+        #[cfg(unix)]
+        let mut command = tokio::process::Command::new(&path);
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = tokio::process::Command::new("powershell");
+            c.args(["-NoProfile", "-File"]).arg(&path);
+            c
+        };
+        command.stdin(std::process::Stdio::null());
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            WindowSpawner.output(&mut command),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(out.status.code(), Some(7));
+        assert_eq!(out.stdout, b"window stdout");
+        assert_eq!(out.stderr, b"window stderr");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     fn topo(text: &str) -> sot_protocol::topology::Topology {
         sot_protocol::topology::parse(text).expect("fixture must parse")
     }
@@ -395,9 +477,15 @@ mod tests {
             armed: false,
         };
         let lines = phase_lines(&an_identity(), &at).join("\n");
-        assert!(lines.contains("downloaded     42.0 MiB of sot-9.9.9-"), "{lines}");
+        assert!(
+            lines.contains("downloaded     42.0 MiB of sot-9.9.9-"),
+            "{lines}"
+        );
         assert!(lines.contains("staged         no"), "{lines}");
-        assert!(lines.contains("next           the next frontend start continues"), "{lines}");
+        assert!(
+            lines.contains("next           the next frontend start continues"),
+            "{lines}"
+        );
     }
 
     // Armed is the end of this box's own work: a converge applies it
@@ -415,7 +503,9 @@ mod tests {
         assert!(lines.contains("downloaded     nothing yet"), "{lines}");
         assert!(lines.contains("armed          yes"), "{lines}");
         assert!(
-            lines.contains("next           nothing — the next converge or launcher start applies it"),
+            lines.contains(
+                "next           nothing — the next converge or launcher start applies it"
+            ),
             "{lines}"
         );
     }

@@ -20,6 +20,7 @@ and the launch path fails open: no update step can stop a window from starting.
   `updates/`, `logs/`.
 
 ## Promises
+- `rust/updater` requires the caller's `Spawner` for every command in discovery, staging, preparation and prepared-state probes. The daemon supplies `UpdaterSpawner`, which uses its permanent `Signal`; the window supplies `WindowSpawner`. No production updater helper starts a process directly.
 - A tag is cut only from `main`, `fixes/*` or `rc/*`, sorts above every tag of its line, and has green `rust.yml` and
   `CI.yml` runs in HEAD's history (`release.sh` preflight).
 - Install checksums verify before any write, and `install.json` is written last (`install.sh` steps 2 and 9).
@@ -32,12 +33,12 @@ and the launch path fails open: no update step can stop a window from starting.
   (`install_comm` in `src/comm.jl`).
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `--socket`, `--dial`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `sot_updater::Spawner`, `--socket`, `--dial`,
 `--relaunched`, `relaunch.request`, `spawn_watcher`, `rust/frontend/src/relaunch.rs`, `deploy/sotd.service`,
 `sot-apply.sh`, `install_comm`, `update_comm`, `comm/bin-folders.txt`, `src/sources.jl`, `~/.sot-comm/bin`,
 `scripts/install.sh`, `docs/INSTALL-AGENT.md`, `v*`, `.github/workflows/release.yml`, `rust/updater`, `SHA256SUMS`,
 `scripts/release.sh`, `compare_versions`, `updates/pending-<target>.json`, `updates/.lock`, `sot-apply.ps1`,
-`ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `fe.lease`,
+`ExecStartPre=-`, `sot-launch`, `Invoke-PendingApply`, `render_sot_launch`, `launch-sot.ps1`. Uses: `UpdaterSpawner`, `WindowSpawner`, `Signal::spawn`, `Contained::wait`, `fe.lease`,
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
