@@ -43,8 +43,6 @@ impl Drop for SelfFileEnvGuard {
             ("SOT_COMM_HOME", &self.sot_comm_home),
             ("SOT_SELF_HOST", &self.sot_self_host),
             ("CLAUDE_CONFIG_DIR", &self.claude_config_dir),
-            ("XDG_CONFIG_HOME", &self.xdg_config_home),
-            ("LOCALAPPDATA", &self.localappdata),
         ] {
             match val {
                 Some(v) => std::env::set_var(key, v),
