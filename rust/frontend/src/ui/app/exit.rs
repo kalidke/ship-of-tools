@@ -175,6 +175,7 @@ mod tests {
 
     #[tokio::test]
     async fn leave_close_keep_and_handover_only_leave_leases() {
+        println!("T1 body entered: ui::app::exit::tests::leave_close_keep_and_handover_only_leave_leases");
         use crate::lease::{grant_tests::bind, leave_tests::{leave_fake, logged, is_leave, finish}, LeaveStep};
         for (intent, name, code) in [(LeaveIntent::Close, "close", 0), (LeaveIntent::Keep, "keep", 0),
             (LeaveIntent::Handover, "handover", 75), (LeaveIntent::Handover, "handover", 76)] {
@@ -207,6 +208,8 @@ mod tests {
                 std::time::Instant::now()), LeaveEffect::Finish(0));
             assert!(should_exit && leaving.is_none());
         }
+        println!("T1 fixture observed: actual lease frames and exit effects");
+        println!("T1 assertion passed: exit state is set before the UI effect");
     }
 
 }

@@ -1,0 +1,41 @@
+{
+  "branch": "tmp/ci-t1-r2-c1-revert-gate",
+  "original": {
+    "sha": "638a050b2b4552b0a6d4bf8150246aa221f8d2fa",
+    "branch": "tmp/ci-t1-c1-revert-gate"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "4b487c8148afe18247bd242ec77043d36ff73618",
+  "tree": "revert",
+  "overlays": [
+    {
+      "tree": "revert",
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "base_sha256": "60aad9197eb34a8b74a4dd22f33544b719d6821326f32b8bc1384ec7fa9c2fbc",
+      "overlay_sha256": "1ac932ef5c28b2e9f8a92fca38d86f485330a71a2c2b58272098e84ec7136b8c",
+      "patch": "overlays/revert-ui-input-keypress.rs.patch"
+    },
+    {
+      "tree": "revert",
+      "file": "rust/frontend/src/ui/app/exit.rs",
+      "base_sha256": "f7c61104b3cae0adee44de25447f01989b647cafd191de11671f17f87fdea4db",
+      "overlay_sha256": "9bc483f6911c570690a34c47b567e6aba5d338b8af506c13ea6ca523123829b2",
+      "patch": "overlays/revert-ui-app-exit.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "accepted_overlay_sha256": "1ac932ef5c28b2e9f8a92fca38d86f485330a71a2c2b58272098e84ec7136b8c",
+      "replay_sha256": "49afe3a24b223df5e6f93089ebc2f67252d9cf94536eaed1044402175143b203",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    },
+    {
+      "file": "rust/frontend/src/ui/app/exit.rs",
+      "accepted_overlay_sha256": "9bc483f6911c570690a34c47b567e6aba5d338b8af506c13ea6ca523123829b2",
+      "replay_sha256": "9bc483f6911c570690a34c47b567e6aba5d338b8af506c13ea6ca523123829b2",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}

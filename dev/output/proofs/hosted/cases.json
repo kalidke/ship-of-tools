@@ -1,0 +1,28 @@
+[
+  {
+    "label": "c1-revert-gate-quit_modifier_presses_cancel_before_the_filter",
+    "tree": "revert",
+    "test": "ui::input::keypress::tests::quit_modifier_presses_cancel_before_the_filter",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "modifier must cancel before suppression",
+    "observations": [
+      "T1 fixture observed: routed raw modifier and downstream recorder"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  },
+  {
+    "label": "c1-revert-gate-leave_close_keep_and_handover_only_leave_leases",
+    "tree": "revert",
+    "test": "ui::app::exit::tests::leave_close_keep_and_handover_only_leave_leases",
+    "exit": 0,
+    "result": "ok",
+    "assertion": "exit state is set before the UI effect",
+    "observations": [
+      "T1 fixture observed: actual lease frames and exit effects"
+    ],
+    "isolated": false,
+    "not_runnable_here": true
+  }
+]

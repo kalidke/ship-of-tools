@@ -186,12 +186,15 @@ mod tests {
 
     #[test]
     fn quit_modifier_presses_cancel_before_the_filter() {
+        println!("T1 body entered: ui::input::keypress::tests::quit_modifier_presses_cancel_before_the_filter");
         for keep in [false, true] {
             for key in [NamedKey::Control, NamedKey::Shift, NamedKey::Alt, NamedKey::Super, NamedKey::Meta, NamedKey::AltGraph] {
                 let seen = route(Some(keep), Key::Named(key), modifiers(), false, false, true, false);
+                println!("T1 fixture observed: routed raw modifier and downstream recorder");
                 assert_eq!(seen, (Some(QuitPromptStep::Cancel), 0, vec![]), "modifier must cancel before suppression");
             }
         }
+        println!("T1 assertion passed: modifier must cancel before suppression");
     }
 
     #[test]
