@@ -12,9 +12,9 @@
 //!
 //! `src/identity/challenge_unix.rs` (Linux only, read its "Why `SO_PEERCRED` on the
 //! CLIENT's own fd works" section) proves the peer's pid from the CLIENT's
-//! OWN fd: `SO_PEERCRED` is latched at `connect(2)` onto BOTH ends of a
-//! connected `AF_UNIX` socket, so a client reading its own socket learns
-//! the real server pid — which is the entire foundation of
+//! OWN fd: `SO_PEERCRED` is copied at `connect(2)`: the client's end carries what
+//! the kernel recorded for the listener at `listen()`, so a client reading its
+//! own socket learns the real server pid — which is the entire foundation of
 //! `authenticate_server()`. macOS has no `SO_PEERCRED`, and `getpeereid`
 //! yields euid/egid only: no pid, and nothing that pins an identity
 //! against pid reuse. The candidate replacement is
@@ -32,8 +32,8 @@
 //! It ASSERTS both halves: the client's (the one `authenticate_server`
 //! needs) and the server's own read on its accepted fd, taken while the
 //! client is still connected (the one `server/listen.rs` `admit_peer`
-//! admits a connection by: the client's pid, a nonzero pidversion and
-//! its euid). It also records the server's `getpeereid`.
+//! takes the client's pid and pidversion from; it takes the account from
+//! `getpeereid`). It also records the server's `getpeereid`.
 //!
 //! # Fact 2 — does closing a pty master reap the child on the slave side?
 //!
@@ -69,10 +69,8 @@
 //! object with all three properties. The candidate replacement is a kqueue
 //! knote — `kevent(EV_ADD, EVFILT_PROC, NOTE_EXIT, ident = pid)` — which
 //! attaches to a `proc`, not to a number, and is therefore the only macOS
-//! primitive that can make an *un-fired* registration mean "this pid still
-//! names the process I proved". (It has to be: there is no user-space API
-//! that reads another process's `pidversion`, so `reverify` cannot be a
-//! re-read of the identity the way it is on Linux.) Four kernel behaviours
+//! names the process I proved". Four kernel behaviours carry that design,
+//! and nobody on this project can observe any of them:
 //! carry that design, and nobody on this project can observe any of them:
 //!
 //! - **Fact 3 — once, and only once.** The watch treats "an exit was ever

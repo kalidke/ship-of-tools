@@ -297,10 +297,11 @@ fn same_account(peer_euid: Option<u32>, own: u32) -> bool {
 }
 
 /// The admission every connection passes first, at accept and before a byte is read (ADR 0049 `## User
-/// isolation`): the connecting process, read from the OS, or `None` when it is not ours or cannot be read. Linux
-/// admits a peer whose `SO_PEERCRED` euid is ours; macOS takes the euid from the same `LOCAL_PEERTOKEN` read that
-/// gives the pid and pidversion; on Windows the pipe's owner-only descriptor has already decided, and the pid is
-/// read here. The pid and creation time ride on for a lease.
+/// isolation`): cached connection provenance plus a pid/creation observation, or `None` when the account is foreign
+/// or the read fails. Linux and macOS admit a connection whose recorded effective uid is ours: `SO_PEERCRED` on Linux,
+/// and on macOS `challenge_macos::peer_euid_pid_created`, which reads it with `getpeereid` and the pid and pidversion
+/// with `LOCAL_PEERTOKEN`. On Windows the pipe's owner-only descriptor has already decided, and the pid is read here.
+/// The pid and creation time ride on for a lease; on macOS these are live token observations.
 pub(crate) fn admit_peer(stream: &interprocess::local_socket::tokio::Stream) -> Option<PeerAuthenticated> {
     #[cfg(target_os = "macos")]
     {
@@ -358,7 +359,7 @@ mod tests {
     }
 
     /// This process, dialling its own listener, is admitted with its own pid and creation time (the macOS
-    /// `pidversion`, from the `LOCAL_PEERTOKEN` read the admission is made by).
+    /// `pidversion`, read from `LOCAL_PEERTOKEN`).
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[tokio::test]
     async fn admit_peer_admits_this_process_with_its_pid_and_creation_time() {

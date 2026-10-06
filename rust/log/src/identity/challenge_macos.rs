@@ -1,6 +1,7 @@
 //! macOS half of the same-connection challenge (ADR 0043 decision 8):
-//! ONE `getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)` -- that single call IS
-//! steps 1-3 -- plus the identity a proof returns
+//! steps 1-3 are two reads of the connected socket, the peer's account
+//! from the credentials the kernel cached for the connection (`getpeereid`)
+//! and its pid and pidversion from `LOCAL_PEERTOKEN`, plus the identity a proof returns
 //! ([`ChallengedProcess`]). Steps 4-5 (the wire half) are shared,
 //! platform-neutral logic in `crate::identity::challenge` -- see that module's own
 //! doc; [`challenge()`] and [`authenticate_server()`] below call into it
@@ -8,21 +9,27 @@
 //! and is deliberately a fraction of its length -- why, is the whole
 //! point of this module (see "What macOS does not need" below).
 //!
-//! # The kernel fact this rests on
+//! # The kernel facts this rests on
 //!
-//! `tests/macos_kernel_facts/` pins it as a permanent, named
-//! regression test rather than a one-off probe: on a connected `AF_UNIX`
-//! socket, `getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)` hands a CLIENT the
-//! 32-byte `audit_token_t` of its peer -- the SERVER -- carrying that
-//! peer's euid (word 1), its pid (word 5) and its `pidversion` (word 7),
-//! the kernel's own monotonic process-creation generation. THE DIRECTION
-//! IS WHAT MAKES [`authenticate_server()`] POSSIBLE AT ALL, exactly as
-//! on the other two platforms: Linux latches `SO_PEERCRED` onto both
-//! ends at `connect(2)`, Windows' `GetNamedPipeServerProcessId` resolves
-//! the peer from either end, and here the client's OWN fd is where the
-//! server's identity is read. A macOS kernel that changed this would
-//! report itself as that named red test, not as a silent auth
-//! regression.
+//! On a connected `AF_UNIX` socket, either end can read two things about
+//! its peer:
+//!
+//! * `getpeereid`: the credentials the kernel cached for the connection,
+//!   the listener's at `listen()` as a client sees them and the client's
+//!   at `connect(2)` as a server sees them. Nothing the peer does later
+//!   changes them, so the account (step 3) is read here
+//!   (`tests/challenge_macos.rs`'s credential-transition tests pin it).
+//! * `getsockopt(SOL_LOCAL, LOCAL_PEERTOKEN)`: the 32-byte `audit_token_t`
+//!   of the process at the peer end's `last_pid`, looked up when it is
+//!   called, carrying its pid (word 5) and its `pidversion` (word 7), the
+//!   kernel's monotonic process-creation generation. It names a process,
+//!   never the account: its euid word is not read.
+//!
+//! THE DIRECTION IS WHAT MAKES [`authenticate_server()`] POSSIBLE AT ALL,
+//! exactly as on the other two platforms: the CLIENT's own fd is where the
+//! peer observations are read. `tests/macos_kernel_facts/` pins that a
+//! client's token names the live test server; a kernel that changed this would
+//! report itself as that named red test, not as a silent auth regression.
 //!
 //! # What macOS does NOT need
 //!
@@ -34,14 +41,18 @@
 //! ticks, a pre-connect anchor the transport has to sample and carry,
 //! `SO_PEERPIDFD` (or `pidfd_open` plus an `fdinfo` cross-check to catch
 //! the two mechanisms disagreeing), and a double read to narrow the
-//! window between them. Darwin's token is latched at `connect(2)` and
-//! carries `(pid, pidversion)` TOGETHER, from one kernel read: there is
-//! no second mechanism to reconcile, no anchor to sample, and no window
-//! to narrow. Steps 1-3 are therefore one syscall and three comparisons,
-//! and [`SocketChallengeable`] here has no `connect_anchor_boot_ticks`
-//! twin -- `socket_unix::SocketClient`'s own anchor field stays unread
-//! (and `#[allow(dead_code)]`) on this target. Adding a second identity
-//! path here would be building a ladder the kernel already climbed.
+//! window between them. Darwin's token carries `(pid, pidversion)`
+//! TOGETHER, from one kernel read: there is no second mechanism to
+//! reconcile and no anchor to sample. It is not latched at `connect(2)`,
+//! though: the kernel looks the peer's pid up when the token is read, so
+//! once the peer has exited and its pid is reused the token describes the
+//! new process. Attributing that process to the responder requires an
+//! honest reply reporting its own identity (step 5); the death watch's
+//! liveness argument also requires a reply after reading the request.
+//! The account never rests on them. Steps 1-3 are two reads and three
+//! comparisons, and [`SocketChallengeable`] here has no
+//! `connect_anchor_boot_ticks` twin -- `socket_unix::SocketClient`'s own
+//! anchor field stays unread (and `#[allow(dead_code)]`) on this target.
 //!
 //! # `created` is the pidversion
 //!
@@ -49,9 +60,9 @@
 //! `status_ok.created` carries, compared for equality only"
 //! (`client::PeerIdentity::created`): Windows packs the creation
 //! `FILETIME`, Linux the `/proc` start ticks, macOS the `pidversion`.
-//! It is the right unit here precisely because it is the anti-reuse
-//! generation itself -- a reply binding `(pid, pidversion)` binds the
-//! process INSTANCE, not merely a number the kernel may hand out again.
+//! It is the right unit here because it distinguishes process instances.
+//! A matching reply attributes that instance to its sender only when the
+//! responder honestly reports its own identity.
 //! [`self_pidversion()`] is the self-facing twin a server reports with,
 //! the macOS counterpart of `challenge_unix::self_start_ticks`.
 //!
@@ -102,16 +113,16 @@ use std::time::{Duration, Instant};
 
 /// The macOS-shaped extension every [`ChallengeableConnection`] this
 /// crate actually challenges must also supply: raw fd access, for the
-/// one `getsockopt` steps 1-3 consist of -- the macOS twin of
+/// two reads steps 1-3 consist of -- the macOS twin of
 /// `challenge_win::PipeChallengeable` and `challenge_unix::
 /// SocketChallengeable`. Deliberately ONE method: the Linux twin's
 /// second one (`connect_anchor_boot_ticks`) exists only to anchor a pin
 /// this platform gets from the kernel already (module doc, "What macOS
 /// does not need").
 pub trait SocketChallengeable: ChallengeableConnection {
-    /// This end's own fd for the connected socket -- `LOCAL_PEERTOKEN`
-    /// resolves the peer from either end (see this module's own doc), so
-    /// the CLIENT's own fd is exactly what steps 1-3 need.
+    /// This end's own fd for the connected socket -- `getpeereid` and
+    /// `LOCAL_PEERTOKEN` both answer about the peer from either end (see this
+    /// module's own doc), so the CLIENT's own fd is exactly what steps 1-3 need.
     fn raw_fd(&self) -> RawFd;
 }
 
@@ -127,21 +138,18 @@ struct AuditToken {
     val: [u32; 8],
 }
 
-const TOK_EUID: usize = 1;
 const TOK_PID: usize = 5;
 const TOK_PIDVERSION: usize = 7;
 
-/// The three words of the peer's audit token this module reads -- the
-/// macOS twin of `challenge_unix::PeerCredentials`, and like it the
-/// product of exactly ONE `getsockopt`. Private: unlike the Linux
-/// version (whose `pin_peer_for_test` hook takes one), nothing outside
-/// this module has a pin path to drive.
+/// The two words of the peer's audit token this module reads, from ONE
+/// `getsockopt`. `LOCAL_PEERTOKEN` looks the peer's pid up when it is
+/// called, so they describe the process holding that pid at that moment:
+/// a process, never the account (see [`peer_euid_pid_created`]).
 struct PeerToken {
     pid: u32,
-    euid: u32,
-    /// The kernel's process-creation generation for `pid`, latched into
-    /// this token at `connect(2)`. Zero is treated as "no generation"
-    /// and never trusted -- see [`authenticate_steps_1_to_3`].
+    /// The kernel's process-creation generation for `pid`, as of the read.
+    /// Zero is treated as "no generation" and never trusted -- see
+    /// [`authenticate_steps_1_to_3`].
     pidversion: u32,
 }
 
@@ -175,18 +183,33 @@ fn peer_token(fd: RawFd) -> io::Result<PeerToken> {
     }
     Ok(PeerToken {
         pid: token.val[TOK_PID],
-        euid: token.val[TOK_EUID],
         pidversion: token.val[TOK_PIDVERSION],
     })
 }
 
-/// The peer's euid, pid and kernel pidversion (the macOS `created`), from
-/// the one `LOCAL_PEERTOKEN` read: the daemon admits a connection by the
-/// first and keeps the other two for a lease. The token is the peer's whole
-/// audit token, so its pid and euid words are one process's.
+/// The peer's account: the effective uid in the credentials the kernel
+/// cached for the connection (`getpeereid`), the listener's at `listen()`
+/// as a client sees it and the client's at `connect(2)` as a server sees
+/// it. Nothing the peer does later changes it.
+fn peer_euid(fd: RawFd) -> io::Result<u32> {
+    let (mut euid, mut egid) = (0, 0);
+    // SAFETY: `fd` is a live socket owned by the caller for the whole
+    // call; both out-pointers are locals.
+    if unsafe { libc::getpeereid(fd, &mut euid, &mut egid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(euid)
+}
+
+/// The one macOS reader of a connected peer: its euid from [`peer_euid`],
+/// which decides the account, and its pid and pidversion (the macOS
+/// `created`) from [`peer_token`], which name a process. The daemon admits
+/// a connection by the euid and keeps the other two for a lease; steps 1-3
+/// read the same three.
 pub fn peer_euid_pid_created(fd: RawFd) -> io::Result<(u32, u32, u64)> {
+    let euid = peer_euid(fd)?;
     let t = peer_token(fd)?;
-    Ok((t.euid, t.pid, u64::from(t.pidversion)))
+    Ok((euid, t.pid, u64::from(t.pidversion)))
 }
 
 /// `TASK_AUDIT_TOKEN` (`osfmk/mach/task_info.h`): the `task_info`
@@ -245,22 +268,24 @@ pub fn self_pidversion() -> io::Result<u32> {
 }
 
 /// Steps 1-3 of the OS-side identity check, shared by [`challenge()`]
-/// and [`authenticate_server()`]: one `getsockopt` for the peer's whole
-/// audit token, the two "is this even an identity" rejections, then the
-/// same-user comparison. Returns `(pid, created)`; `Foreign`/
-/// `Undetermined` are already the caller's own terminal outcome.
+/// and [`authenticate_server()`]: the one reader
+/// ([`peer_euid_pid_created`]), the two "is this even an identity"
+/// rejections, then the same-user comparison on the cached credential's
+/// euid. Returns `(pid, created)`; `Foreign`/`Undetermined` are already
+/// the caller's own terminal outcome.
 fn authenticate_steps_1_to_3(conn: &dyn SocketChallengeable) -> ChallengeOutcome<(u32, u64)> {
-    // Steps 1-2: one getsockopt for pid + euid + pidversion together.
-    let token = match peer_token(conn.raw_fd()) {
-        Ok(t) => t,
+    // Steps 1-2: the account from the cached credential, the pid and
+    // pidversion from the token.
+    let (euid, pid, created) = match peer_euid_pid_created(conn.raw_fd()) {
+        Ok(v) => v,
         Err(_) => return ChallengeOutcome::Undetermined,
     };
-    if token.pid == 0 {
+    if pid == 0 {
         // No peer pid at all -- never a real pid to bind a reply to
         // (the twin of `challenge_unix`'s own `creds.pid == 0` arm).
         return ChallengeOutcome::Undetermined;
     }
-    if token.pidversion == 0 {
+    if created == 0 {
         // A pid with no generation behind it is exactly the identity
         // Linux refuses to proceed on without a pidfd: the number alone
         // cannot distinguish this process from its successor. Not
@@ -274,17 +299,18 @@ fn authenticate_steps_1_to_3(conn: &dyn SocketChallengeable) -> ChallengeOutcome
     // anything from the peer until same-user equality has been checked
     // (property 20).
     // SAFETY: `geteuid` takes no arguments and cannot fail.
-    if token.euid != unsafe { libc::geteuid() } {
+    if euid != unsafe { libc::geteuid() } {
         return ChallengeOutcome::Foreign;
     }
 
-    ChallengeOutcome::Proven((token.pid, u64::from(token.pidversion)))
+    ChallengeOutcome::Proven((pid, created))
 }
 
-/// A process this crate has PROVEN is the server behind one challenged
-/// connection, together with the retained `kqueue` death watch that
-/// binds the proof to that INSTANCE: `(kqueue, pid, pidversion)`, the
-/// last two latched into the peer token at `connect(2)`. Dropping this
+/// A challenged connection's process handle, together with the retained
+/// `kqueue` death watch: `(kqueue, pid, pidversion)`. The last two are
+/// live token observations matched by step 5; attributing the watched
+/// instance to the responder requires it to report its own identity
+/// honestly after reading the request. Dropping this
 /// closes the kqueue and with it the knote. ONLY the full five-step
 /// [`challenge()`] ever produces one -- see [`PeerAuthenticated`] for
 /// the deliberately weaker, deliberately watch-less steps-1-3-only
@@ -387,14 +413,13 @@ impl ChallengedProcess {
     /// the "it is simply gone" case, is an ordinary expected outcome,
     /// not a bug* -- reached by a different mechanism.
     ///
-    /// There is no re-read to do: the peer's audit token is latched onto
-    /// the socket at `connect(2)` and NEVER changes, so re-reading it
-    /// would return the same snapshot and prove nothing. What this asks
-    /// instead is the kqueue, non-blocking: the knote is bound to the
-    /// INSTANCE, so an undelivered exit means the number still names the
-    /// process this handle was minted against. That is not weaker than
-    /// re-reading `/proc`'s start time -- it is one kernel object's
-    /// answer about itself rather than the equality of two samples.
+    /// It asks this handle's kqueue, non-blocking, rather than reading the
+    /// peer token again: the knote is bound to the INSTANCE, so an
+    /// undelivered exit concerns the process attached at registration,
+    /// where a token read would describe whatever process holds the pid
+    /// now. Attributing that watched process to the responder requires
+    /// an honest self-identity reply after reading the request. The watch
+    /// answers about one kernel object rather than comparing two samples.
     pub fn reverify(&self) -> io::Result<bool> {
         Ok(!self.observe_exit(Duration::ZERO)?)
     }
@@ -526,8 +551,9 @@ impl PeerProcess for ChallengedProcess {
 }
 
 /// The five pinned steps (ADR 0041 Lifecycle "The challenge", ADR 0043
-/// decision 8), in order: (1-2) `LOCAL_PEERTOKEN` for
-/// `(pid, euid, pidversion)`; (3) same-user comparison; (4) only then
+/// decision 8), in order: (1-2) [`peer_euid_pid_created`], the euid
+/// from `getpeereid` and `(pid, pidversion)` from `LOCAL_PEERTOKEN`; (3) same-user
+/// comparison of that euid; (4) only then
 /// `exchange`'s request on the SAME connection; (5) proven iff same-user
 /// matched AND reply-pid == the observed pid AND reply creation == the
 /// observed pidversion -- pid compared FIRST (mirrors both siblings'
@@ -535,17 +561,17 @@ impl PeerProcess for ChallengedProcess {
 /// `Undetermined` because something else also failed). Nothing in the
 /// reply is decoded for meaning or acted on before step 3 succeeds.
 ///
-/// `reply_deadline` bounds ONLY steps 4-5 -- steps 1-3 are one local,
-/// synchronous OS call with no wait to bound. `Proven` here means the
-/// FULL five-step proof -- see [`authenticate_server()`] for the
-/// deliberately separate, deliberately weaker steps-1-3-only operation.
+/// `reply_deadline` bounds ONLY steps 4-5 -- steps 1-3 are two local,
+/// synchronous OS calls with no wait to bound. `Proven` here means all
+/// five checks passed; process attribution requires an honest responder
+/// reporting its own identity. See [`authenticate_server()`] for the
+/// separate steps-1-3-only operation.
 ///
-/// The one macOS-shaped addition to that order: the [`watch_exit`]
-/// registration sits BETWEEN step 3 and step 4, which is what makes the
-/// death watch bind the same instance the proof names. It is not a
-/// sixth step and it changes no outcome -- it only fails `Undetermined`
-/// -- but its POSITION is load-bearing, and the body says at length
-/// why.
+/// The macOS addition: [`watch_exit`] registration sits BETWEEN step 3
+/// and step 4. It binds the watched instance to the responder only when
+/// an honest responder reports its own identity after reading the request.
+/// It is not a sixth step and changes no outcome except to fail
+/// `Undetermined`; the body states this conditional liveness argument.
 pub fn challenge(
     conn: &dyn SocketChallengeable,
     exchange: &mut dyn IdentityExchange,
@@ -561,41 +587,38 @@ pub fn challenge(
     // and the ordering is the entire argument. DO NOT "simplify" it by
     // moving the registration after the exchange:
     //
-    //   Registering AFTER the proof is a race with NO repair. If the
-    //   peer exits and its pid is recycled between the token read and
-    //   the `EV_ADD`, the knote attaches to a DIFFERENT process, which
-    //   will never report the exit that already happened, and this
-    //   handle then answers "still alive" forever. And no post-attach
-    //   re-read can close it: the audit token is latched onto the socket
-    //   at `connect(2)` and never changes, so reading it again returns
-    //   the same snapshot -- it is not a fresh observation.
+    //   Registering AFTER the proof can attach to the wrong instance. If
+    //   the peer exits and its pid is recycled between the token read and
+    //   the `EV_ADD`, the knote attaches to a DIFFERENT process. Its
+    //   exit signal then concerns that successor, not the original peer.
     //
-    //   Registering HERE is airtight, not merely narrower, because the
-    //   attach happens before the request is even written, and the peer
-    //   writes its reply only after reading that request. Step 5 below
-    //   proves the reply came from a process reporting
-    //   `(pid, pidversion) == (P, V)` -- the exact instance the token
-    //   names -- and it reported it AFTER this attach existed. So a
-    //   `ChallengedProcess` is minted only when the verified instance
-    //   was demonstrably alive at a moment later than the registration.
-    //
-    // All three ways the window can go wrong fail closed:
+    //   Registering HERE closes that race only for an honest responder
+    //   reporting its own `(pid, pidversion)` after reading the request:
+    //   attach precedes the request, so a matching reply (step 5) then
+    //   shows that instance alive after registration. A holder that lies
+    //   about its identity can match the tuple even if it waits to reply.
+    // Under that honest self-identity, request-then-reply condition:
     //   * peer already exited, pid not yet recycled -> `proc_find` does
     //     not return zombies -> `EV_ADD` is `ESRCH` -> `Undetermined`;
-    //   * peer exited AND its pid was recycled -> the dead peer sends no
-    //     reply -> `exchange_identity` hits the deadline ->
-    //     `Undetermined`;
-    //   * the socket was inherited by a child that answers -> the reply
-    //     carries the CHILD's `(pid, pidversion)` -> step 5 -> `Foreign`.
+    //   * peer exited AND its pid was recycled, and no holder supplies a
+    //     buffered or forged matching reply -> the exchange cannot prove
+    //     it (EOF or deadline -> `Undetermined`);
+    //   * an inheriting child honestly reports its own `(pid, pidversion)`
+    //     -> that tuple differs from the observed one -> step 5 -> `Foreign`.
+    // These conclusions do not cover a dishonest or pre-written reply.
     //
-    // Residual, stated precisely: a same-euid peer that writes a
-    // well-formed reply carrying its own `(pid, pidversion)` BEFORE it
-    // is asked, then exits, then has its pid recycled, all inside this
-    // window. Our own leg never pre-writes, and producing that reply
-    // requires reading the instance's own `pidversion`, which only that
-    // instance can do -- so the attacker is same-euid, which is the
-    // trust boundary step 3 above already rests on (property 20). Not a
-    // new exposure; the existing one.
+    // Residual, stated precisely: the request carries no nonce, and a
+    // pidversion is not secret (`proc_pidinfo` with
+    // `PROC_PIDUNIQIDENTIFIERINFO` can read another process's generation
+    // without the same-user check, subject to other security-policy checks).
+    // Whoever holds the peer's end can write a well-formed reply naming
+    // an arbitrary `(pid, pidversion)`, before it is asked or after. Step 3
+    // authorizes cached connection provenance, not the holder's current
+    // euid: credential transitions or descriptor transfers leave it
+    // unchanged (property 20). A forged reply cannot change that account
+    // decision, but can misattribute a process across accounts. Process
+    // attribution requires an honest responder reporting its own identity;
+    // liveness after registration also requires reading the request first.
     let kq = match watch_exit(pid) {
         Ok(Some(kq)) => kq,
         // THIS caller's reading of `ESRCH` (`Ok(None)`): the peer is
@@ -640,11 +663,11 @@ pub fn challenge(
     })
 }
 
-/// ADR 0041 Lifecycle "The challenge", steps 1-3 ONLY: identify the peer
-/// process behind a live connection and authenticate its same-user
-/// identity. No wire I/O of any kind -- see `challenge_win::
-/// authenticate_server`'s own doc for why the shared, lane-agnostic
-/// connect constructor can only ever offer this, never the full proof.
+/// ADR 0041 Lifecycle "The challenge", steps 1-3 ONLY: authenticate
+/// cached connection provenance and return the live token's process
+/// observation. This does not establish the holder's current euid or
+/// bind it to that process. No wire I/O -- the lane-agnostic connect
+/// constructor offers these checks, not the full challenge.
 pub fn authenticate_server(conn: &dyn SocketChallengeable) -> PeerAuthOutcome {
     match authenticate_steps_1_to_3(conn) {
         ChallengeOutcome::Foreign => PeerAuthOutcome::Foreign,

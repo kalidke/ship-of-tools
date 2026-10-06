@@ -87,32 +87,25 @@ const FAILURE_CLEANUP_REAP_BOUND: Duration = Duration::from_secs(2);
 /// What BOTH halves of A4's identity comparison put in the generation
 /// slot on this platform, so that comparison is pid equality and says so.
 ///
-/// Every other platform has a second field it can read INDEPENDENTLY of
-/// the challenge: Windows reads the creation `FILETIME` off the child's
-/// own `HANDLE`, Linux the start ticks out of `/proc`. macOS's identity
-/// unit is the kernel's `pidversion` (`challenge_macos`'s module doc,
-/// "`created` is the pidversion"), and there is no user-space API that
-/// reads another process's — not `proc_bsdinfo`, not
-/// `proc_bsdshortinfo`, and `task_for_pid` needs an entitlement. That is
-/// true of a CHILD too: the only source is the audit token the kernel
-/// latches onto a socket at `connect(2)`, which is the challenge's own
-/// source. Reporting it here would therefore compare the challenge
-/// against itself.
+/// Every other platform reads a second field INDEPENDENTLY of the
+/// challenge: Windows the creation `FILETIME` off the child's own
+/// `HANDLE`, Linux the start ticks out of `/proc`. macOS's unit is the
+/// kernel's `pidversion` (`challenge_macos`'s module doc, "`created` is
+/// the pidversion"), which `proc_pidinfo` (`PROC_PIDUNIQIDENTIFIERINFO`)
+/// can read for a child, but this code makes no such read: the
+/// comparison below needs only the pid.
 ///
-/// What A4 actually needs is still decided, by pid alone, because the
-/// child's pid is PINNED: `SIGCHLD` is `SIG_DFL` and nothing reaps this
-/// child before [`SpawnedChild::wait`] observes its exit, so at the
-/// moment of the comparison the number still names our child and nothing
-/// else. The peer's pid comes from the kernel's own audit token, not
-/// from the peer. Equal pids therefore mean the answering server IS this
-/// episode's child, which is exactly the question A4 asks — a stale,
-/// orphaned capsule from a prior crash holds its own, different number.
+/// A4 compares the pid alone because the child's number remains pinned
+/// by its unreaped zombie. Equality identifies the observed token's
+/// process as this episode's child. Attributing it to the answering server
+/// also requires an honest responder reporting its own identity after
+/// reading the request; cached credentials establish connection provenance,
+/// not the current holder's identity or euid.
 ///
 /// This is narrower than the two siblings, which compare a second field
-/// as well, and it is stated here rather than hidden in a `0`: if a
-/// future macOS ever exposes a peer generation, this constant is the one
-/// place both halves stop using it.
-const NO_OWNER_READABLE_GENERATION: u64 = 0;
+/// as well, and it is stated here rather than hidden in a `0`: a read of the
+/// child's `pidversion` would replace this constant in both halves.
+const PID_ONLY_GENERATION: u64 = 0;
 
 /// A just-spawned, NOT YET CHALLENGED child process handle — the macOS
 /// twin of `supervisor::probe::unix::SpawnedChild`, and identical in contract: Stage
@@ -250,10 +243,10 @@ impl SpawnedChild {
 
     /// This CHILD's own identity, read independently of anything a
     /// challenge over its socket observed — which on macOS is the pid
-    /// and nothing else. See [`NO_OWNER_READABLE_GENERATION`] for why
+    /// and nothing else. See [`PID_ONLY_GENERATION`] for why
     /// that is the honest pair here and what still makes A4 decidable.
     pub fn identity(&self) -> std::io::Result<(u32, u64)> {
-        Ok((self.pid as u32, NO_OWNER_READABLE_GENERATION))
+        Ok((self.pid as u32, PID_ONLY_GENERATION))
     }
 
     /// Reap exactly once (`reaped` guards a second call from re-reaping
@@ -369,15 +362,14 @@ impl ProbeOps for RealProbeOps {
         child.identity()
     }
 
-    /// The PROVEN peer's own half of A4's comparison. Its generation
-    /// slot is [`NO_OWNER_READABLE_GENERATION`] for the reason stated
-    /// there — the child half has no independently-readable generation
-    /// to compare against, so reporting the real `created()` here would
-    /// only guarantee the comparison never holds.
-    /// [`ChallengedProcess::created`] itself is untouched and still
-    /// carries the pidversion the challenge proved.
+    /// The challenged process's half of A4's pid-only comparison. Its
+    /// generation slot is [`PID_ONLY_GENERATION`]: the child half does not
+    /// independently read a generation, so using the token's real `created()`
+    /// here would prevent equality. [`ChallengedProcess::created`] keeps
+    /// that live token observation, matched by the reply; attributing it to
+    /// the responder requires honest self-reporting after reading the request.
     fn proven_identity(&self, process: &Self::Process) -> (u32, u64) {
-        (process.pid(), NO_OWNER_READABLE_GENERATION)
+        (process.pid(), PID_ONLY_GENERATION)
     }
 
     fn now(&self) -> Instant {

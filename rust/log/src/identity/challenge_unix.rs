@@ -18,10 +18,12 @@
 //!
 //! # Why `SO_PEERCRED` on the CLIENT's own fd works (verified empirically)
 //!
-//! `SO_PEERCRED`/`SO_PEERPIDFD` are latched onto a connected `AF_UNIX`
-//! stream socket at `connect(2)` time with the CONNECTING process's own
-//! credentials -- both the newly-accepted server-side socket AND the
-//! client's own socket carry that SAME value. For our usage (the server
+//! `SO_PEERCRED`/`SO_PEERPIDFD` on a connected `AF_UNIX` stream socket
+//! are copied at `connect(2)`: the newly-accepted server-side socket
+//! carries the CONNECTING process's credentials, and the client's own socket
+//! carries those the kernel recorded for the listener at its last `listen()`
+//! (Linux v5.15 `net/unix/af_unix.c`, `unix_listen` and `unix_stream_connect`).
+//! For our usage (the server
 //! always calls `socket`/`bind`/`listen`/`accept` itself, in the one
 //! process that will run `accept_loop`, never on an fd inherited from a
 //! DIFFERENT process) this resolves correctly: the client's own

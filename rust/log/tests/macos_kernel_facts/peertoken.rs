@@ -299,8 +299,8 @@ fn client_fd_reports_the_server_pid_via_local_peertoken() {
          instead -- a decision for the owner.{summary}"
     );
 
-    // The server's half, the one that admits a connection at accept (`server/listen.rs` `admit_peer`): the token
-    // is the client's whole audit token, so the client's pid in it proves the euid word is the client's too.
+    // The server's half: `server/listen.rs` `admit_peer` takes the client's pid and pidversion from this token (its
+    // account from `getpeereid`). The client is alive and connected, so the euid word is the client's too.
     // SAFETY: geteuid has no preconditions and cannot fail.
     let own_euid = unsafe { libc::geteuid() };
     assert_eq!(

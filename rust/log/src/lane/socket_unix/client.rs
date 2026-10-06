@@ -500,10 +500,10 @@ pub(crate) fn connect_supervisor_socket_unchallenged(h: &str) -> Result<SocketCl
 ///
 /// ONE body for both targets: which module answers is the `challenge_os`
 /// alias's business, not this function's. The two differ only in
-/// mechanism — Linux reads `SO_PEERCRED` plus a pidfd pin, macOS one
-/// `LOCAL_PEERTOKEN` audit token carrying pid and reuse generation
-/// together (M2) — and that difference is already stated once, where the
-/// alias is declared.
+/// mechanism — Linux reads `SO_PEERCRED` plus a pidfd pin, macOS `getpeereid`
+/// for the account plus one `LOCAL_PEERTOKEN` audit token carrying pid
+/// and reuse generation together (M2, MAC-ID) — and that difference is
+/// already stated once, where the alias is declared.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn connect_voyage_socket(voyage_id: &str) -> Result<SocketClient, TransportError> {
     let client = connect_voyage_socket_unchallenged(voyage_id)?;
