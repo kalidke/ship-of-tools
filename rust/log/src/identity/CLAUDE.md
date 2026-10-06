@@ -30,7 +30,9 @@ Read `challenge.rs` (`exchange_identity`, `ChallengeOutcome`) first, then the pl
 - The OS steps 1-3 (Linux `SO_PEERCRED` plus a pidfd pin, macOS `getpeereid` plus one `LOCAL_PEERTOKEN` read,
   Windows the pipe server's token SID) run before the shared wire steps 4-5 in `challenge::exchange_identity`.
 - A peer's account is the kernel's record of the connection, never the wire's or a live lookup's: Linux `SO_PEERCRED`, macOS `getpeereid` (for a client, the listener's credentials at `listen()`; for a server, the client's at `connect(2)`). macOS `LOCAL_PEERTOKEN` looks the peer's pid up when it is read, so it observes a process (pid and pidversion), never the account. The identity request carries no nonce: process attribution requires an honest responder reporting its own identity, and liveness after registration also requires it to read the request before replying. Cached credentials authorize connection provenance, not the descriptor holder's current euid; credential transitions or descriptor transfers do not change that record. The source pin checks the production `LOCAL_PEERTOKEN`/`TOK_EUID` spellings and whitespace-normalized `.val` accesses in the private `AuditToken` module, permitting only pid/pidversion reads with indices pinned to 5/7; it does not analyze arbitrary equivalent Rust or numeric socket-option calls, and excludes test-only reads.
-- The wire round trip is bounded by `deadline::run_with_deadline`.
+- The wire round trip is bounded by `deadline::run_with_deadline`, whose early settlement on a panic is disarmed the
+  moment the body returns: it settles exactly the runs whose body did not return, whatever the thread was doing before
+  (a run made during a panic's unwind, a panic caught inside such a cleanup).
 - A reply that is not exactly one well-formed identity is `Foreign`, never `Proven` (`exchange.rs` `feed`).
 - `created` is compared for equality only, in each OS's own unit: FILETIME bits, `/proc` start ticks, pidversion.
 - The macOS kernel facts the challenge and the daemon's accept rest on (a client reading `LOCAL_PEERTOKEN` on its own
