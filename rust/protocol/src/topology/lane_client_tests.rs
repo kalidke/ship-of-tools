@@ -495,3 +495,31 @@ fn a_failed_lane_write_names_its_error_and_the_ssh_line_once() {
         other => panic!("a write to a login that has gone is Unreachable, got {:?}", other.map(|_| ())),
     }
 }
+
+/// `diagnose` puts the ssh child's last line after the io error's own words, never in their place (review round 3,
+/// NOTE 1: the handshake test above may take its read path, where `diagnose` is not called).
+#[cfg(unix)]
+#[test]
+fn diagnose_appends_the_ssh_line_to_the_error() {
+    let child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("echo 'a line ssh wrote to stderr' >&2")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("`sh` must be on PATH for this test");
+    let client = BridgedClient::wrap(child).expect("wrap");
+    client.child.lock().unwrap().wait().expect("the stand-in exits");
+    // The drainer has the line before `diagnose` looks (a hang guard, not a speed bound).
+    let guard = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while client.last_stderr.lock().unwrap().is_none() {
+        assert!(std::time::Instant::now() < guard, "the stderr drainer never took the line");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let source = std::io::Error::from(std::io::ErrorKind::BrokenPipe);
+    let want = format!("{source}: a line ssh wrote to stderr");
+    let got = client.diagnose(source);
+    assert_eq!(got.to_string(), want);
+    assert_eq!(got.kind(), std::io::ErrorKind::BrokenPipe, "the error keeps its kind");
+}
