@@ -220,6 +220,7 @@ impl LinkGate {
     pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<C, SpawnError> {
         let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
         if !self.is_up() { return Err(SpawnError::LinkDown); }
+        drop(_admission);
         #[cfg(test)]
         let rendezvous = self.rendezvous.lock().unwrap().clone();
         #[cfg(test)]
