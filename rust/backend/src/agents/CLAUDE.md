@@ -32,3 +32,8 @@ execs.
   (`resolve_claude`, `agent_env`).
 - The auto-memory flag names a directory only when one shared store is proven, else no flag (`auto_memory_reason`).
 - The variables in `NESTING_ENV_VARS_TO_SCRUB` are removed from every spawn and from `sotd agent-exec`.
+- Every session's environment carries `SOTD_BIN`, the path this daemon was started by (its argv[0], made absolute once
+  at startup: a bare name through `PATH`, a relative path against the working folder; never a link's target or the
+  resolved `current_exe()`), with forward slashes on Windows, over any value the daemon inherited
+  (`capsule_supervisor_env`, `own_sotd_bin`): the comm shell in the session bridges with the daemon's own binary. A bare
+  name on no `PATH` entry adds none, and the shell's own ladder applies.

@@ -90,6 +90,7 @@ mod platform;
 mod pty;
 #[cfg(target_os = "linux")]
 mod resume;
+mod session_env;
 mod spawn;
 
 #[cfg(target_os = "linux")]

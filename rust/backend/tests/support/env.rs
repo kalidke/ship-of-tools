@@ -433,7 +433,12 @@ impl Env {
     /// needs, without adding a parameter to the shared `spawn_sotd`.
     /// Portable like `spawn_sotd` itself — must still compile on Windows.
     pub fn spawn_sotd_with_env(&self, extra: &[(&str, &str)]) {
-        let mut cmd = sotd_command();
+        self.spawn_sotd_at(&sotd_program(), extra);
+    }
+
+    /// [`Env::spawn_sotd_with_env`] for the binary at `program`: a copy of the built `sotd`, or a link to one.
+    pub fn spawn_sotd_at(&self, program: &Path, extra: &[(&str, &str)]) {
+        let mut cmd = sotd_command_at(program);
         cmd.arg("--socket")
             .arg(&self.socket_path)
             .arg("--project-root")
@@ -454,7 +459,10 @@ impl Env {
         }
         let child = cmd.spawn().expect("spawn sotd");
         let previous = self.daemon.borrow_mut().replace(child);
-        debug_assert!(previous.is_none(), "spawn_sotd_with_env called while a prior daemon was still tracked");
+        debug_assert!(
+            previous.is_none(),
+            "spawn_sotd_at called while a prior daemon was still tracked"
+        );
     }
 
     /// ADR 0043 decision 32 (lane L2), test 1's own precondition: launches

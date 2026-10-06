@@ -54,17 +54,21 @@ const CAPSULE_SIBLING_NAME: &str = "sot-capsule";
 /// process. Pure path/metadata check, no `current_exe()` call, so it is
 /// unit-testable against a plain temp directory.
 pub fn capsule_sibling_present(daemon_exe: &Path) -> bool {
-    let sibling = daemon_exe.with_file_name(CAPSULE_SIBLING_NAME);
+    runnable_file(&daemon_exe.with_file_name(CAPSULE_SIBLING_NAME))
+}
+
+/// Whether `path` is a file this process could run: a file, and executable on Unix.
+pub(crate) fn runnable_file(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(&sibling)
+        std::fs::metadata(path)
             .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
             .unwrap_or(false)
     }
     #[cfg(not(unix))]
     {
-        sibling.is_file()
+        path.is_file()
     }
 }
 

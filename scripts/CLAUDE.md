@@ -113,8 +113,7 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   literally (`restart-backend.sh`, `Get-LocalDaemonProcess`).
 - This computer's local daemon has one binary on Windows: `sot-local-daemon.ps1`'s resolver chooses it (the complete
   dev pair, else the complete install pair), and the daemon's start, stop, probes and pipe-name query and the
-  launcher's own query and lease (`-Resolve`) all run that `sotd.exe`. The daemon starts with `SOTD_BIN` set to it, so
-  the comm shell in every session it spawns bridges with it too.
+  launcher's own query and lease (`-Resolve`) all run that `sotd.exe`.
 - On Windows the bridge is started only by `Start-SotBridge` (sot-lease.ps1), so its input carries exactly the bytes
   its caller writes: while it starts the process, the console's input encoding is UTF-8 without a preamble whenever
   the caller's has one, which Windows PowerShell 5.1 would otherwise write first.

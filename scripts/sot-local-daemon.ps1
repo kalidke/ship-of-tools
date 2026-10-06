@@ -476,14 +476,6 @@ $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 # scratch/test daemon must never pass this (field defect).
 $daemonArgLine = '--socket "{0}" --project-root "{1}" --label local --adopt-legacy-registry' -f $PipePath, $ProjectRoot
 Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"
-# The daemon and every session it spawns get SOTD_BIN = the sotd.exe it runs, so the comm shell in those sessions
-# (comm/lib/comm-lib-client.sh _sot_windows_sotd_exe, which takes SOTD_BIN when it names a file) bridges with the
-# daemon's own binary, not with whatever install is on this box. Forward slashes, as a Git Bash shell reads a path
-# (SOT_COMM_HOME reaches the sessions the same way). $env: is this whole process's environment, and the launcher runs
-# this script in its own process, so the caller's value is put back once the daemon has started (an unset one stays
-# unset).
-$callerSotdBin = $env:SOTD_BIN
-$env:SOTD_BIN = $daemonExe.Replace('\', '/')
 try {
     $proc = Start-Process -FilePath $daemonExe -ArgumentList $daemonArgLine `
         -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr `
@@ -491,8 +483,6 @@ try {
 } catch {
     Write-LocalDaemonLog "REFUSED: failed to start $daemonExe - $($_.Exception.Message)"
     exit 1
-} finally {
-    $env:SOTD_BIN = $callerSotdBin
 }
 Write-LocalDaemonLog "spawned pid=$($proc.Id), output in $daemonStdout and $daemonStderr"
 
