@@ -81,14 +81,12 @@ When intents arrive in order on one lease, the latest wins.
 
 ### Shutdown
 
-In this order: a backstop thread sleeps `SHUTDOWN_BOUND` (120 s) and exits 1 if the
-process is still alive, leaving the next start to finish the job; the record is marked
-closing and new leases are refused, the listener dropped and the socket unlinked, before
+In this order: a backstop thread sleeps `SHUTDOWN_BOUND` (120 s) and calls `shutdown::exit(1)` if the process is still alive, leaving the next start to finish the job. Fire attempts and checks containment termination before exit; an OS creation or adoption stalled under the registry mutex can delay actual exit beyond that budget. The record is marked closing and new leases are refused, the listener dropped and the socket unlinked, before
 any row is touched; the run gate closes and in-flight starts drain, until the rows
 deadline (`SHUTDOWN_BOUND` minus the 10 s `SHUTDOWN_TAIL`); every capsule row and the
 drawer end without resuming anything, retrying a kept row once a second to that same
 deadline, and a row of any other runtime is left running and counted not ended; every
-process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit (n)), receives a checked termination attempt for its contained tree; descendants that leave it remain residual 7. Each runs in its own process group on Unix and its own job on Windows; successful requests precede the owner's direct-child reap. Creation through adoption and registration shares the registry mutex with the permanent child signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can delay fire. Exits that still bypass fire remain known limit (p); the final record is written; the
+process the daemon starts, but a capsule supervisor and the update pipeline's children (known limit (n)), receives a checked termination attempt for its contained tree; descendants that leave it remain residual 7. Each runs in its own process group on Unix and its own job on Windows; successful requests precede the owner's direct-child reap. Creation through adoption and registration shares the registry mutex with the permanent child signal. Fire attempts every registered tree and reports errors, without a child-count grace period or waiting for confirmed death; contained children can still outlive daemon exit. An OS creation or adoption that never returns can delay fire and process exit; the final record is written; the
 waiting `fe.leaving{close}` is answered with the not-ended count, and if that is above
 zero the daemon waits up to 5 s for `fe.notice_seen` before exiting 0. Rows that ended
 are forgotten, their registration deleted and its directory synced before the final
@@ -97,10 +95,9 @@ never runs `pkill` or `tmux kill-server`.
 
 Exit codes: 0 is a requested shutdown and stays down; 75 is an update restart and starts
 again, taken only while no shutdown is under way, so a shutdown's own exit always stands;
-1 is a failure (lock timeout or refuse-live). The bounds chain is
-`HANDOVER_BOUND (60) < SHUTDOWN_BOUND (120) < DAEMON_LOCK_WAIT (150) < LAUNCH_WAIT (160)`:
-a successor waits longer than any shutdown lasts, and a launcher waits longer than a
-successor waits for its lock.
+1 is a failure (lock timeout or refuse-live). The nominal bounds chain is `HANDOVER_BOUND (60) < SHUTDOWN_BOUND (120) < DAEMON_LOCK_WAIT (150) < LAUNCH_WAIT (160)`: a successor allows more time than the shutdown budget, and a launcher allows more time than the successor's lock budget. An OS creation or adoption stalled under the start/registry mutex can delay fire and actual process exit beyond these budgets.
+
+0.6.6 amendment: every controlled daemon termination uses `shutdown::exit`, which synchronously attempts and checks contained-tree termination through the permanent child signal before the sole raw process exit. Request errors are logged without changing the chosen exit code; this is not a wait for confirmed death, and contained children can outlive daemon exit. The main result and main-future unwind reach it before runtime teardown. Uncatchable signals, aborts and process/OS crashes cannot execute cleanup. Unix SIGINT and SIGTERM remain known limit (p) until their watcher is installed.
 
 ### The record, `held.json`
 
@@ -233,8 +230,6 @@ connection is the only handle.
   update.rs under a `clippy::disallowed_methods` allow naming this limit: `check_release` (in `check`), `stage` and
   `prepare::prepare` (in `stage_prepare_arm_inner`), and `PreparedState::matches` (in `handle_update_check`). A shutdown
   or exit while one runs leaves it and what it started to end on their own; under the systemd unit its cgroup ends them.
-- (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
-  their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
-  an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
-  daemon does not handle. Under the systemd unit its cgroup ends them.
+- (p) Unix SIGTERM and SIGINT still use default termination and therefore bypass the daemon's fire-before-exit function. Under the systemd unit its cgroup ends the children. Other controlled daemon exits already fire synchronously.
+
 - Window: see the release notes.

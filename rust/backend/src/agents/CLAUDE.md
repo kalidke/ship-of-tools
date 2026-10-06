@@ -22,6 +22,7 @@ trust record; `agent_argv` in `argv.rs` for a spawn's argv, and `agent_exec_argv
 execs.
 
 ## Rules
+- `agent-exec` failures exit 2 through `lifecycle::shutdown::exit`; a successful Unix exec replaces the early command process before daemon work starts.
 - A named account never shares the login: only the names in `SHARED_ENTRIES` are linked, by `ensure_account_links`.
 - Folder trust is written only for a root under the declared prefix, and an entry already accepted is never rewritten
   (`ensure_folder_trusted`).

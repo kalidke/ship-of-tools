@@ -29,8 +29,8 @@ use sot_updater::identity::repo_from_env;
 use sot_updater::prepare::{PrepareSpec, PreparedState};
 use sot_updater::{CheckOutcome, Fetcher, InstallManifest, ReleaseIdentity, UpdaterConfig};
 
-use crate::server::reply::HandlerOutput;
 use crate::lifecycle::lease::Leases;
+use crate::server::reply::HandlerOutput;
 
 /// Delay before the first automatic check after boot, then the steady cadence.
 const FIRST_CHECK_DELAY: Duration = Duration::from_secs(120);
@@ -53,7 +53,11 @@ enum Mode {
 }
 
 fn mode_from_env() -> Mode {
-    match std::env::var("SOT_UPDATE_MODE").ok().as_deref().map(str::trim) {
+    match std::env::var("SOT_UPDATE_MODE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
         Some("off") => Mode::Off,
         Some("auto") => Mode::Auto,
         Some("notify") | None | Some("") => Mode::Notify,
@@ -121,8 +125,12 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
-        let checked = sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await;
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "ADR 0050 known limit (n): the updater's children run outside containment"
+        )]
+        let checked =
+            sot_updater::check_release(&self.repo, &self.current, &Fetcher::from_env()).await;
         checked
     }
 }
@@ -132,8 +140,7 @@ impl Updater {
 /// that all block on (their own process's) staging lock. One pipeline run at
 /// a time per daemon; extra requests are a cheap no-op — the next check
 /// reports the truth.
-static PIPELINE_RUNNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static PIPELINE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// (tag, reason) of the most recent stage that exhausted its commit-rename
 /// backoff (Defect 0c), or `None` once a stage has since succeeded. A single
@@ -193,12 +200,19 @@ async fn stage_prepare_arm(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
 }
 
 async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
-    #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "ADR 0050 known limit (n): the updater's children run outside containment"
+    )]
     let staged = sot_updater::stage(cfg, id).await;
     if let Err(e) = staged {
         // The whole chain, not just the outermost context: the OS error is the
         // thing that names the fault, and `%e` drops it.
-        let cause = e.chain().map(|c| c.to_string()).collect::<Vec<_>>().join(": ");
+        let cause = e
+            .chain()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(": ");
         tracing::warn!(tag = %id.tag, error = %cause, "staging update failed");
         // Defect 0c: the shared crate already retried the commit rename for
         // about a minute before giving up. Record it so the NEXT check
@@ -222,7 +236,10 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
             return;
         }
     };
-    #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "ADR 0050 known limit (n): the updater's children run outside containment"
+    )]
     let state = match sot_updater::prepare::prepare(&spec).await {
         Ok(s) => s,
         Err(e) => {
@@ -232,7 +249,9 @@ async fn stage_prepare_arm_inner(cfg: &UpdaterConfig, id: &ReleaseIdentity) {
     };
     match sot_updater::pending::arm(&cfg.updates_root, id, &state.checkout, &state.commit).await {
         Ok(true) => {}
-        Ok(false) => tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)"),
+        Ok(false) => {
+            tracing::info!(tag = %id.tag, "a newer release is already armed (or this one is marked bad)")
+        }
         Err(e) => tracing::warn!(tag = %id.tag, error = %e, "arming update failed"),
     }
 }
@@ -273,7 +292,10 @@ fn backend_role_from_topology(
 /// box the topology has no entry for (a real shape: a frontend-only-over-ssh
 /// install with no hosts.toml at all).
 fn backend_role_wanted(install: &InstallManifest) -> bool {
-    let topo = sot_protocol::topology::load().ok().flatten().map(|(_, t)| t);
+    let topo = sot_protocol::topology::load()
+        .ok()
+        .flatten()
+        .map(|(_, t)| t);
     let me = crate::comm::mail::filer::comm_self_host();
     backend_role_from_topology(topo.as_ref(), &me, install.daemon)
 }
@@ -281,10 +303,16 @@ fn backend_role_wanted(install: &InstallManifest) -> bool {
 /// The julia an update's prepare runs for its envs: only a backend role runs one, and it is the resolver's answer, the
 /// one every other daemon child runs, with the resolver's reason when there is none.
 fn prepare_julia(backend_role: bool) -> Result<Option<String>, String> {
-    backend_role.then(|| crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin)).transpose()
+    backend_role
+        .then(|| crate::sidecars::julia::resolve_bin().map(|(bin, _source)| bin))
+        .transpose()
 }
 
-fn prepare_spec(install: &InstallManifest, cfg: &UpdaterConfig, id: &ReleaseIdentity) -> Result<PrepareSpec, String> {
+fn prepare_spec(
+    install: &InstallManifest,
+    cfg: &UpdaterConfig,
+    id: &ReleaseIdentity,
+) -> Result<PrepareSpec, String> {
     let backend_role = backend_role_wanted(install);
     Ok(PrepareSpec {
         identity: id.clone(),
@@ -389,7 +417,7 @@ async fn run_check_once(
                 // Re-check after the grace sleep: a client that attached in
                 // the window must not have its session killed.
                 if clients.count() == 0 {
-                    exit_for_update(leases, |code| std::process::exit(code));
+                    exit_for_update(leases, |code| crate::lifecycle::shutdown::exit(code));
                 } else {
                     tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
                 }
@@ -441,7 +469,10 @@ pub async fn handle_update_check(req_id: u64) -> Result<HandlerOutput> {
             let stage_dir = sot_updater::stage_dir(&cfg.updates_root, id);
             let probes = async {
                 let staged = sot_updater::is_staged(&cfg.updates_root, id).await;
-                #[allow(clippy::disallowed_methods, reason = "ADR 0050 known limit (n): the updater's children run outside containment")]
+                #[allow(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0050 known limit (n): the updater's children run outside containment"
+                )]
                 let prepared = PreparedState::matches(&stage_dir, id).await;
                 (
                     staged,
@@ -567,7 +598,7 @@ pub async fn handle_update_apply(
         tokio::time::sleep(Duration::from_millis(1500)).await;
         exit_for_update(&leases, |code| {
             tracing::info!("update.apply: exiting now");
-            std::process::exit(code)
+            crate::lifecycle::shutdown::exit(code)
         });
     });
 
@@ -587,8 +618,11 @@ pub async fn handle_update_apply(
 /// shutdown is under way: the check holds the lease lock through the exit,
 /// so none begins between them. Once one has begun its own exit stands and
 /// the update's is skipped (ruling f).
-fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
-    if leases.while_open(|| exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)).is_none() {
+pub(crate) fn exit_for_update(leases: &Leases, finish: impl FnOnce(i32)) {
+    if leases
+        .while_open(|| finish(sot_protocol::ops::lease::EXIT_UPDATE_RESTART))
+        .is_none()
+    {
         tracing::info!("update exit skipped: a shutdown is under way, and its own exit stands");
     }
 }
@@ -602,7 +636,9 @@ mod tests {
     /// or blank, the trimmed value otherwise; the prior value is restored.
     #[test]
     fn repo_from_env_trims_and_defaults() {
-        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _restore = crate::paths::EnvGuard::capture("SOT_UPDATE_REPO");
         std::env::remove_var("SOT_UPDATE_REPO");
         assert_eq!(repo_from_env(), DEFAULT_REPO);
@@ -618,15 +654,26 @@ mod tests {
     /// backend role runs one.
     #[test]
     fn the_update_prepare_runs_the_resolvers_julia() {
-        let _serial = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _serial = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _restore = crate::paths::EnvGuard::capture("SOT_JULIA_BIN");
-        std::env::set_var("SOT_JULIA_BIN", r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe");
+        std::env::set_var(
+            "SOT_JULIA_BIN",
+            r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\julia.exe",
+        );
         let err = prepare_julia(true).unwrap_err();
-        assert!(err.contains("app-execution alias"), "unexpected error: {err}");
+        assert!(
+            err.contains("app-execution alias"),
+            "unexpected error: {err}"
+        );
         let dir = tempfile::tempdir().unwrap();
         let stub = dir.path().join("julia");
         std::env::set_var("SOT_JULIA_BIN", &stub);
-        assert_eq!(prepare_julia(true), Ok(Some(stub.to_string_lossy().into_owned())));
+        assert_eq!(
+            prepare_julia(true),
+            Ok(Some(stub.to_string_lossy().into_owned()))
+        );
         assert_eq!(prepare_julia(false), Ok(None));
     }
 
@@ -635,9 +682,21 @@ mod tests {
     #[test]
     fn update_exit_code_is_restart() {
         let body = sot_log::test_scan::without_test_modules(include_str!("update.rs"));
-        assert!(!body.contains(&format!("process::exit({})", 0)), "update.rs exits 0, a requested shutdown");
-        assert_eq!(body.matches("process::exit(").count(), body.matches("process::exit(code)").count(), "an update exits only with the code exit_for_update hands it");
-        assert_eq!(body.matches("exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)").count(), 1, "the update's one exit is a restart");
+        assert!(
+            !body.contains("shutdown::exit(0)"),
+            "update.rs exits 0, a requested shutdown"
+        );
+        assert_eq!(
+            body.matches("shutdown::exit(").count(),
+            body.matches("shutdown::exit(code)").count(),
+            "an update exits only with the code exit_for_update hands it"
+        );
+        assert_eq!(
+            body.matches("finish(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)")
+                .count(),
+            1,
+            "the update's one exit is a restart"
+        );
     }
 
     /// Once a shutdown has begun its own exit stands: the update's is
@@ -650,11 +709,23 @@ mod tests {
             exit_for_update(leases, |c| code = Some(c));
             code
         };
-        assert_eq!(exit_code(&leases), Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART), "no shutdown under way: the update exits 75");
+        assert_eq!(
+            exit_code(&leases),
+            Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART),
+            "no shutdown under way: the update exits 75"
+        );
         leases.begin_close();
-        assert_eq!(exit_code(&leases), None, "the update exits 75 during a shutdown");
+        assert_eq!(
+            exit_code(&leases),
+            None,
+            "the update exits 75 during a shutdown"
+        );
         leases.finish_shutdown(0, Vec::new()).unwrap();
-        assert_eq!(exit_code(&leases), None, "the update exits 75 after the shutdown's final record");
+        assert_eq!(
+            exit_code(&leases),
+            None,
+            "the update exits 75 after the shutdown's final record"
+        );
     }
 
     fn topo(text: &str) -> sot_protocol::topology::Topology {
@@ -737,8 +808,13 @@ mod tests {
     // `daemon` flag decides (the recorded bit is `true` and must not win).
     #[test]
     fn backend_role_wanted_reads_this_hosts_declared_entry() {
-        let _guard = crate::paths::ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let saved = (std::env::var_os("SOT_HOSTS"), std::env::var_os("SOT_SELF_HOST"));
+        let _guard = crate::paths::ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let saved = (
+            std::env::var_os("SOT_HOSTS"),
+            std::env::var_os("SOT_SELF_HOST"),
+        );
         let dir = tempfile::tempdir().unwrap();
         let hosts = dir.path().join("hosts.toml");
         std::fs::write(
@@ -747,7 +823,8 @@ mod tests {
         )
         .unwrap();
         let install: InstallManifest =
-            serde_json::from_value(json!({"schema": 1, "prefix": "/nowhere", "daemon": true})).unwrap();
+            serde_json::from_value(json!({"schema": 1, "prefix": "/nowhere", "daemon": true}))
+                .unwrap();
         std::env::set_var("SOT_HOSTS", &hosts);
         std::env::set_var("SOT_SELF_HOST", "mw21-laptop");
         let laptop = backend_role_wanted(&install);
@@ -793,7 +870,10 @@ mod tests {
         record_stage_block("v9.9.9", "Access is denied. (os error 5)");
 
         let blocked = overlay_stage_block(ok_outcome(fake_identity("v9.9.9")));
-        assert_eq!(blocked.status, "update blocked: Access is denied. (os error 5)");
+        assert_eq!(
+            blocked.status,
+            "update blocked: Access is denied. (os error 5)"
+        );
 
         let unrelated = overlay_stage_block(ok_outcome(fake_identity("v9.9.10")));
         assert_eq!(unrelated.status, "ok");

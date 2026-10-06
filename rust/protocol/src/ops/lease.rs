@@ -70,7 +70,7 @@ pub struct FeNoticeSeenRes {}
 // The close lifecycle's bounds and exit codes, shared by daemon, window and launchers.
 use std::time::Duration;
 pub const HANDOVER_BOUND: Duration = Duration::from_secs(60);
-/// Decision to process exit.
+/// Nominal decision-to-exit budget; stalled OS child creation/adoption can delay terminal fire and actual exit.
 pub const SHUTDOWN_BOUND: Duration = Duration::from_secs(120);
 /// Reserved for the last steps of a shutdown (4-6).
 pub const SHUTDOWN_TAIL: Duration = Duration::from_secs(10);

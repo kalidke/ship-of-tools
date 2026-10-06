@@ -14,8 +14,8 @@ use anyhow::{Context, Result};
 
 use crate::paths;
 
-use super::{Workspace, Workspaces};
 use super::workspace::now_unix;
+use super::{Workspace, Workspaces};
 
 use codec::*;
 use migrate::*;
@@ -60,7 +60,9 @@ pub fn scan_disk(reg: &Workspaces, adopt_legacy_registry: bool) -> Result<usize>
     // while that save still waited for the row's guard, or an older daemon
     // can leave one handle on several tomls. comm-join.sh writes the registry
     // entry before it declares the handle, so the entry names the newer join.
-    for (handle, cleared) in reg.clear_shared_handles(|h| crate::comm::registry::registry::last_joiner(h, &declared_host())) {
+    for (handle, cleared) in reg
+        .clear_shared_handles(|h| crate::comm::registry::registry::last_joiner(h, &declared_host()))
+    {
         let ids: Vec<&str> = cleared.iter().map(|ws| ws.workspace_id.as_str()).collect();
         tracing::warn!(handle = %handle, cleared = ?ids, "scan_disk: two row tomls declare one handle; cleared on every row but the one the comm registry names");
         for ws in &cleared {
@@ -126,8 +128,7 @@ fn scan_dir(reg: &Workspaces, dir: &Path, legacy: bool) -> Result<usize> {
 /// Returns `Ok(None)` for files that don't look like either (so we can
 /// skip without erroring).
 fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("read {path:?}"))?;
+    let text = std::fs::read_to_string(path).with_context(|| format!("read {path:?}"))?;
 
     // First pass: top-level (ADR 0014) keys.
     let kv = parse_kv(&text);
@@ -169,7 +170,11 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
             .unwrap_or(false);
         // Older tomls predate these keys → default "" / derive agent.
         let agent = kv.get("agent").cloned().unwrap_or_else(|| {
-            if autostart_claude { "claude".into() } else { "none".into() }
+            if autostart_claude {
+                "claude".into()
+            } else {
+                "none".into()
+            }
         });
         let agent_name = kv.get("agent_name").cloned().unwrap_or_default();
         let task = kv.get("task").cloned().unwrap_or_default();
@@ -258,14 +263,16 @@ fn load_toml(path: &Path, legacy_ok: bool) -> Result<Option<Workspace>> {
 pub fn save(ws: &Workspace) -> Result<PathBuf> {
     let target = workspaces_dir().join(format!("{}.toml", ws.slug));
     if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create config dir {parent:?}"))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("create config dir {parent:?}"))?;
     }
     let existing = std::fs::read_to_string(&target).unwrap_or_default();
     let preserved = strip_canonical_top_and_kernel(&existing);
 
     let mut body = String::new();
-    body.push_str(&format!("workspace_id  = {}\n", toml_quote(&ws.workspace_id)));
+    body.push_str(&format!(
+        "workspace_id  = {}\n",
+        toml_quote(&ws.workspace_id)
+    ));
     body.push_str(&format!("slug          = {}\n", toml_quote(&ws.slug)));
     body.push_str(&format!("label         = {}\n", toml_quote(&ws.label)));
     body.push_str(&format!(
@@ -277,10 +284,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
         toml_quote(&ws.session_name)
     ));
     body.push_str(&format!("created       = {}\n", ws.created));
-    body.push_str(&format!(
-        "autostart_claude = {}\n",
-        ws.autostart_claude
-    ));
+    body.push_str(&format!("autostart_claude = {}\n", ws.autostart_claude));
     body.push_str(&format!("agent         = {}\n", toml_quote(&ws.agent())));
     // agent_name / task are free text — quote+escape them exactly as
     // `label` is via `toml_quote` (handles quotes, backslashes, and
@@ -289,7 +293,10 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
     // now round-trips exactly (field defect fixed 2026-09-04: the reader
     // used to only strip the surrounding quotes, leaving every escape
     // literal — see `toml_unquote`'s doc).
-    body.push_str(&format!("agent_name    = {}\n", toml_quote(&ws.agent_name())));
+    body.push_str(&format!(
+        "agent_name    = {}\n",
+        toml_quote(&ws.agent_name())
+    ));
     body.push_str(&format!("task          = {}\n", toml_quote(&ws.task)));
     body.push_str(&format!("runtime       = {}\n", toml_quote(&ws.runtime)));
     body.push_str(&format!(
@@ -328,7 +335,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 pub(crate) fn declared_host() -> String {
     sot_log::host::state_dir::host_name().unwrap_or_else(|e| {
         tracing::error!(error = %e, "cannot start: no declared host (ADR 0046 decision 1)");
-        std::process::exit(1);
+        crate::lifecycle::shutdown::exit(1);
     })
 }
 

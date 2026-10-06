@@ -16,6 +16,7 @@ subsystem; charter: `rust/backend/src/rows/CLAUDE.md`.
 `mod.rs::scan_disk` for how rows come back at boot, `save` for how a row is written; `codec.rs` for the file format.
 
 ## Rules
+- A refused declared host exits 1 through `lifecycle::shutdown::exit`, so even a runtime refusal fires the child signal before terminating.
 - Every save is a durable replace: `save` writes through `crate::durable::write` and keeps the sections the frontend
   owns (`[nav_state]`, `[layout]`).
 - A legacy toml never overrides a canonical row of the same slug: `scan_dir` skips it when `has_slug` is true.

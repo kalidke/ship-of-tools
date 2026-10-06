@@ -1,24 +1,24 @@
 //! Start/fire barriers at creation and at adopted-tree registration.
 
 #[cfg(unix)]
-mod unix {
+pub(crate) mod unix {
     use crate::lifecycle::child_signal::Signal;
     use std::sync::{mpsc, Arc, Barrier};
     use std::time::Duration;
 
     #[cfg(target_os = "linux")]
-    struct Watched(std::os::fd::OwnedFd);
+    pub(crate) struct Watched(std::os::fd::OwnedFd);
 
     #[cfg(target_os = "linux")]
     impl Watched {
-        fn open(pid: u32) -> Self {
+        pub(crate) fn open(pid: u32) -> Self {
             use std::os::fd::FromRawFd;
             // SAFETY: open a retained identity of the still-ready fixture; the returned descriptor is owned here.
             let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
             assert!(fd >= 0, "cannot retain the ready fixture identity: {}", std::io::Error::last_os_error());
             Self(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
         }
-        fn dead(&self) -> bool {
+        pub(crate) fn dead(&self) -> bool {
             use std::os::fd::AsRawFd;
             let mut fd = libc::pollfd { fd: self.0.as_raw_fd(), events: libc::POLLIN, revents: 0 };
             // SAFETY: poll this object's retained pidfd, which cannot observe a reused PID.
@@ -44,11 +44,11 @@ mod unix {
     }
 
     #[cfg(target_os = "macos")]
-    struct Watched(std::os::fd::OwnedFd);
+    pub(crate) struct Watched(std::os::fd::OwnedFd);
 
     #[cfg(target_os = "macos")]
     impl Watched {
-        fn open(pid: u32) -> Self {
+        pub(crate) fn open(pid: u32) -> Self {
             use std::os::fd::FromRawFd;
             // SAFETY: retain an exit notification while the owned fixture is still ready and alive.
             let fd = unsafe { libc::kqueue() };
@@ -66,7 +66,7 @@ mod unix {
             Self(owned)
         }
 
-        fn dead(&self) -> bool {
+        pub(crate) fn dead(&self) -> bool {
             use std::os::fd::AsRawFd;
             let mut event: libc::kevent = unsafe { std::mem::zeroed() };
             let bound = libc::timespec { tv_sec: 3, tv_nsec: 0 };
@@ -351,7 +351,7 @@ mod unix {
 }
 
 #[cfg(windows)]
-mod windows {
+pub(crate) mod windows {
     use crate::lifecycle::child_signal::Signal;
     use std::sync::{mpsc, Arc, Barrier};
     use std::time::{Duration, Instant};
@@ -359,16 +359,16 @@ mod windows {
     use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
     use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject};
 
-    struct Watched(usize);
+    pub(crate) struct Watched(usize);
 
     impl Watched {
-        fn open(pid: u32) -> Self {
+        pub(crate) fn open(pid: u32) -> Self {
             // SAFETY: the fixture is alive and owned; this retained handle is closed by Drop.
             let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
             assert!(!handle.is_null(), "cannot retain the fixture identity: {}", std::io::Error::last_os_error());
             Self(handle as usize)
         }
-        fn dead(&self) -> bool {
+        pub(crate) fn dead(&self) -> bool {
             // SAFETY: wait on this object's retained handle, rather than a potentially reused PID.
             unsafe { WaitForSingleObject(self.0 as _, 3000) == WAIT_OBJECT_0 }
         }

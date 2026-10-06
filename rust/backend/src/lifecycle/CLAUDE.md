@@ -1,9 +1,10 @@
 # rust/backend/src/lifecycle: lifecycle (charter)
 
 ## Idea
-Every process the daemon starts, except those ADR 0050 names as outside, runs in its own containment. Owner release or the process-wide signal attempts termination of that contained tree and reports request failures; successful requests do not establish death before return or daemon exit. A start and the signal share the tree-registry mutex through creation and registration. Row shutdown has an OS-clock deadline; an OS creation or adoption that never returns can delay fire. Exits that still bypass fire remain ADR 0050 limit (p). The last window on a computer decides, through its lease, whether that computer's sessions end (ADR 0050).
+Every process the daemon starts, except those ADR 0050 names as outside, runs in its own containment. Owner release or the process-wide signal attempts termination of that contained tree and reports request failures; successful requests do not establish death before return or daemon exit. A start and the signal share the tree-registry mutex through creation and registration. Row shutdown has an OS-clock deadline; an OS creation or adoption that never returns can delay fire and process exit. The last window on a computer decides, through its lease, whether that computer's sessions end (ADR 0050).
 
 ## Owns
+- The daemon's terminal function: `shutdown::exit`, which fires before the sole raw process exit.
 - The window leases and `<state>/held.json`: `Leases`, `read_record`, `write_or_delete` (`crate::lifecycle::lease`, the file
   `lease.rs` here).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
@@ -16,6 +17,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
 - The window's half, rust/frontend/src/lease.rs.
 
 ## Promises
+- Every controlled daemon termination uses `shutdown::exit`: requested close, backstop, update restart, explicit boot/command refusal, main result and main-future unwind. It synchronously attempts and checks every contained-tree termination request before process exit; errors are logged and the chosen exit code is preserved. It does not wait for confirmed tree death. Uncatchable signals, aborts and process/OS crashes cannot execute this cleanup; Unix SIGINT/SIGTERM remain ADR 0050 limit (p) until their watcher is installed.
 - A lease is granted only to a peer whose pid, creation time and boot equal what the OS reported at accept
   (`lease::claim`, called by `Leases::grant`).
 - Deadlines are wall-clock unix milliseconds, so a persisted handover deadline survives a restart (`startup_plan`
@@ -28,11 +30,11 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
   (`rows::run::resume::resume_all`).
 - The close stops accepting before it touches a row (the accept loop in `server::run` breaks on `Leases::gone`, drops
   the listener, then calls `shutdown::run`), ends rows without resuming any (`end_rows`), counts each row not confirmed
-  ended, and a backstop thread exits 1 at `bounds::SHUTDOWN_BOUND` (`shutdown::run`, step 0).
+  ended. The backstop requests exit 1 at `SHUTDOWN_BOUND`; an OS creation or adoption stalled under the start/registry mutex can delay fire and actual process exit.
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
   shutdown has begun (`Leases::while_open`, called by update.rs).
 - `fire()` is permanent: the signal is never reset for the life of the process (`Signal::fire`).
-- A child started through `Signal::spawn` or `Signal::spawn_std` receives checked tree-termination attempts when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires. Explicit operations propagate cleanup errors; Drop logs them. Successful requests precede the direct-child reap, which remains the contained owner's responsibility; fire neither reaps nor proves tree death before return or daemon exit. Neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`; `exited_pid` uses `WNOWAIT`). Creation through adoption and registration holds the registry mutex that `Signal::fire` takes. A start after fire creates nothing; fire cannot return past an unregistered start. An OS creation or adoption that never returns can therefore delay fire. There is no child-count grace period. Exits that still bypass fire remain ADR 0050 limit (p).
+- A child started through `Signal::spawn` or `Signal::spawn_std` receives checked tree-termination attempts when its owner kills, waits for or drops its `Contained` or `ContainedStd`, or the signal fires. Explicit operations propagate cleanup errors; Drop logs them. Successful requests precede the direct-child reap, which remains the contained owner's responsibility; fire neither reaps nor proves tree death before return or daemon exit. Neither type hands its caller the child to reap (`Contained::wait`, `ContainedStd::wait`; `exited_pid` uses `WNOWAIT`). Creation through adoption and registration holds the registry mutex that `Signal::fire` takes. A start after fire creates nothing; fire cannot return past an unregistered start. An OS creation or adoption that never returns can therefore delay fire and process exit. There is no child-count grace period.
 - `ContainedStd::wait_within` bounds waiting for a live leader. At timeout, `Ok(None)` confirms successful tree-termination requests and a direct-child reap; it does not confirm descendant death. Probe/request/reap errors are returned, preserving both probe and cleanup reasons when both fail. OS termination/reap is not given a wall-clock ceiling.
 - `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
@@ -85,7 +87,7 @@ Every process the daemon starts, except those ADR 0050 names as outside, runs in
 - A window started with `--ephemeral`, `--capture` or `--no-lease` never leases (the frontend's `lease_exempt`).
 
 ## Connections
-Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
+Each connection is one row of docs/integration.md, owned by its provider. Provides: `shutdown::exit`, `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
 `Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
 `Signal::output`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
@@ -100,11 +102,12 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ## Files
 - `child_signal.rs`: the process-wide signal, the tree registry, synchronized child creation and registration, and the contained children (`Contained`, `ContainedStd`).
 - `contain.rs`: platform containment, adoption, checked termination requests and exit observations without reaping.
+- `exit_tests.rs`: the terminal-body ordering, main completion paths and complete backend exit inventory.
 - `start_tests.rs`: suspended-start and ready-tree registration races, plus checked cleanup failures.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
 - `mod.rs`: declares the five modules.
-- `shutdown.rs`: the close, its backstop and the row ends.
+- `shutdown.rs`: the close, its backstop, the row ends and `exit`, the one fire-before-termination function.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 
 ## Start here

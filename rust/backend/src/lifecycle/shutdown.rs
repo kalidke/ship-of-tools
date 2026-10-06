@@ -4,8 +4,8 @@
 //! [`end_rows`] ends every capsule row and the drawer by one deadline,
 //! retrying a refused end once per second; any other row, and what it
 //! could not end, is counted, never guessed. The daemon's own children
-//! end through [`super::child_signal`]: its signal fires once and kills
-//! every contained tree.
+//! receive checked tree-termination requests through [`super::child_signal`].
+//! [`exit`] fires before the sole raw termination primitive; tree death is not awaited.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -31,14 +31,20 @@ const REASON: &str = "window closed";
 /// tests, read once per process; unset in every real deployment.
 pub(crate) fn shutdown_bound() -> Duration {
     static OVERRIDE_MS: OnceLock<Option<u64>> = OnceLock::new();
-    let override_ms =
-        *OVERRIDE_MS.get_or_init(|| std::env::var("SOT_TEST_SHUTDOWN_BOUND_MS").ok().and_then(|s| s.parse().ok()));
-    override_ms.map(Duration::from_millis).unwrap_or(bounds::SHUTDOWN_BOUND)
+    let override_ms = *OVERRIDE_MS.get_or_init(|| {
+        std::env::var("SOT_TEST_SHUTDOWN_BOUND_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+    });
+    override_ms
+        .map(Duration::from_millis)
+        .unwrap_or(bounds::SHUTDOWN_BOUND)
 }
 
 /// The shutdown (1.4), after step 1 stopped the accepting; it never
-/// returns. Step 0 is a backstop thread that exits 1 at the bound, for
-/// the next start to finish. Steps 2 and 3 share the rows deadline,
+/// returns.
+/// Step 0 requests exit 1 at the bound through `shutdown::exit`; stalled OS child creation/adoption can delay terminal fire and actual exit. The next start finishes any unfinished close.
+/// Steps 2 and 3 share the rows deadline,
 /// `decided + bound - SHUTDOWN_TAIL`; the tail is not scaled with an
 /// overridden bound, because steps 4 to 6 take as long either way. Then the daemon's own children, the final
 /// record, the waiting closer's answer, and exit 0.
@@ -52,15 +58,16 @@ pub(crate) async fn run(
     let backstop = bound.saturating_sub(decided.elapsed());
     std::thread::spawn(move || {
         std::thread::sleep(backstop);
-        tracing::error!("shutdown still running after {bound:?}: exiting 1; the next start finishes it");
-        std::process::exit(1);
+        tracing::error!("shutdown still running after {bound:?}: requesting exit 1 through child fire; the next start finishes it");
+        super::shutdown::exit(1);
     });
     leases.begin_close();
     tracing::info!("shutting down: ending this computer's sessions");
 
     let rows_deadline = decided + bound.saturating_sub(bounds::SHUTDOWN_TAIL);
     let gate = workspaces.clone();
-    let gate_deadline = std::time::Instant::now() + rows_deadline.saturating_duration_since(Instant::now());
+    let gate_deadline =
+        std::time::Instant::now() + rows_deadline.saturating_duration_since(Instant::now());
     let settled = tokio::time::timeout_at(
         rows_deadline,
         tokio::task::spawn_blocking(move || gate.close_gate_and_settle(gate_deadline)),
@@ -71,12 +78,27 @@ pub(crate) async fn run(
     }
 
     let report = match sot_log::host::state_dir::sot_state_dir() {
-        Some(state_root) => end_rows(workspaces.list(), &workspaces, &ws_events, &state_root, rows_deadline).await,
+        Some(state_root) => {
+            end_rows(
+                workspaces.list(),
+                &workspaces,
+                &ws_events,
+                &state_root,
+                rows_deadline,
+            )
+            .await
+        }
         None => {
             // No state root: nothing can be ended, so every row is counted.
             let rows = workspaces.list().len() as u32;
-            tracing::warn!(rows, "shutdown: no state root, so no row was ended; all are counted not ended");
-            EndReport { not_ended: rows, ..Default::default() }
+            tracing::warn!(
+                rows,
+                "shutdown: no state root, so no row was ended; all are counted not ended"
+            );
+            EndReport {
+                not_ended: rows,
+                ..Default::default()
+            }
         }
     };
 
@@ -91,8 +113,12 @@ pub(crate) async fn run(
         let wait = bounds::LEASE_REPLY_WAIT * 2 + bounds::NOTICE_ACK_WAIT;
         let _ = tokio::time::timeout(wait, leases.answered()).await;
     }
-    tracing::info!(ended = report.ended.len(), not_ended = report.not_ended, "shutdown complete");
-    std::process::exit(bounds::EXIT_REQUESTED_SHUTDOWN)
+    tracing::info!(
+        ended = report.ended.len(),
+        not_ended = report.not_ended,
+        "shutdown complete"
+    );
+    super::shutdown::exit(bounds::EXIT_REQUESTED_SHUTDOWN)
 }
 
 /// What [`end_rows`] did. `ended` and `forget` are both ended runs;
@@ -136,7 +162,9 @@ pub(crate) async fn end_rows(
 ) -> EndReport {
     let drawer = drawer_is_target(state_root);
     let anchor = workspaces.default_id();
-    let limit = Arc::new(tokio::sync::Semaphore::new(crate::rows::run::resume::LANE_CONCURRENCY));
+    let limit = Arc::new(tokio::sync::Semaphore::new(
+        crate::rows::run::resume::LANE_CONCURRENCY,
+    ));
     let mut joins = Vec::with_capacity(rows.len() + 1);
     for ws in rows {
         let is_anchor = anchor.as_deref() == Some(ws.workspace_id.as_str());
@@ -157,7 +185,9 @@ pub(crate) async fn end_rows(
         joins.push((
             "the drawer".to_string(),
             tokio::spawn(async move {
-                let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, limit.acquire_owned()).await else {
+                let Ok(Ok(_permit)) =
+                    tokio::time::timeout_at(deadline, limit.acquire_owned()).await
+                else {
                     return Ended::Not;
                 };
                 end_drawer(state_root, deadline).await
@@ -169,7 +199,10 @@ pub(crate) async fn end_rows(
 
 /// Every target's end, each awaited no later than `deadline`: one still
 /// running then is abandoned and counted not ended.
-async fn join_by(deadline: Instant, joins: Vec<(String, tokio::task::JoinHandle<Ended>)>) -> EndReport {
+async fn join_by(
+    deadline: Instant,
+    joins: Vec<(String, tokio::task::JoinHandle<Ended>)>,
+) -> EndReport {
     let mut report = EndReport::default();
     for (target, j) in joins {
         match tokio::time::timeout_at(deadline, j).await {
@@ -246,19 +279,25 @@ async fn end_row(
     }
     // The ended agent cannot run its own comm-leave; prune its registry
     // rows, as `workspace.destroy` does.
-    let (reg_agent, reg_ws, reg_host) =
-        (agent_name.clone(), ws.workspace_id.clone(), crate::rows::store::declared_host());
+    let (reg_agent, reg_ws, reg_host) = (
+        agent_name.clone(),
+        ws.workspace_id.clone(),
+        crate::rows::store::declared_host(),
+    );
     let prune = tokio::task::spawn_blocking(move || {
-        crate::comm::registry::registry::remove_comm_agents_for_workspace(&reg_agent, &reg_ws, &reg_host)
+        crate::comm::registry::registry::remove_comm_agents_for_workspace(
+            &reg_agent, &reg_ws, &reg_host,
+        )
     });
     if tokio::time::timeout_at(deadline, prune).await.is_err() {
         tracing::warn!(workspace_id = %ws.workspace_id, "window closed: the comm prune was still running at the deadline; not ended");
         return Ended::Not;
     }
     let slug = ws.slug.clone();
-    let ended =
-        forget_unless_removed(ws.workspace_id.clone(), deadline, || crate::rows::run::end::remove_row_files(&slug))
-            .await;
+    let ended = forget_unless_removed(ws.workspace_id.clone(), deadline, || {
+        crate::rows::run::end::remove_row_files(&slug)
+    })
+    .await;
     let _ = workspaces.remove_by_id(&ws.workspace_id);
     drop(held);
     let _ = ws_events.send(WorkspaceChanged {
@@ -285,7 +324,9 @@ async fn end_drawer(state_root: PathBuf, deadline: Instant) -> Ended {
             })
             .await
             {
-                Ok(Ok(o)) => confirmed(crate::rows::run::end::capsule_destroy_outcome_of(o)).map(|_| ()),
+                Ok(Ok(o)) => {
+                    confirmed(crate::rows::run::end::capsule_destroy_outcome_of(o)).map(|_| ())
+                }
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(join_err) => Err(format!("end_run task panicked: {join_err}")),
             }
@@ -314,7 +355,11 @@ fn confirmed(outcome: CapsuleDestroyOutcome) -> Result<bool, String> {
 /// An ended row's registration files, removed with retries until
 /// `deadline`. Files that would not go put the id in `forget`, for the
 /// next start to drop (#26).
-async fn forget_unless_removed(id: String, deadline: Instant, mut remove: impl FnMut() -> bool) -> Ended {
+async fn forget_unless_removed(
+    id: String,
+    deadline: Instant,
+    mut remove: impl FnMut() -> bool,
+) -> Ended {
     let removed = retry_until(deadline, || {
         let removed = remove();
         async move {
@@ -346,7 +391,11 @@ where
         match tokio::time::timeout_at(deadline, attempt()).await {
             Ok(Ok(done)) => return Ok(done),
             Ok(Err(refused)) => last = refused,
-            Err(_) => return Err(format!("still running at the deadline; last refusal: {last}")),
+            Err(_) => {
+                return Err(format!(
+                    "still running at the deadline; last refusal: {last}"
+                ))
+            }
         }
         let next = Instant::now() + RETRY_EVERY;
         if next >= deadline {
@@ -380,12 +429,19 @@ mod tests {
         let mut tries = 0;
         let got = retry_until(deadline, || {
             tries += 1;
-            async { confirmed(crate::rows::run::end::capsule_destroy_outcome_of(O::NotEnded("refused".into()))) }
+            async {
+                confirmed(crate::rows::run::end::capsule_destroy_outcome_of(
+                    O::NotEnded("refused".into()),
+                ))
+            }
         })
         .await;
         assert_eq!(got, Err("refused".to_string()));
         assert_eq!(tries, 10, "one attempt per second across the 10 s");
-        assert!(Instant::now() + RETRY_EVERY >= deadline, "gave up before the deadline");
+        assert!(
+            Instant::now() + RETRY_EVERY >= deadline,
+            "gave up before the deadline"
+        );
 
         // An attempt still running at the deadline: abandoned, not ended.
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -397,10 +453,20 @@ mod tests {
     #[test]
     fn drawer_is_an_end_target() {
         let root = tempfile::tempdir().expect("tempdir");
-        assert!(!drawer_is_target(root.path()), "no pointer, no drawer to end");
+        assert!(
+            !drawer_is_target(root.path()),
+            "no pointer, no drawer to end"
+        );
 
-        std::fs::write(sot_log::supervisor::journal::pointer::pointer_path(root.path()), "x").expect("pointer");
-        assert!(drawer_is_target(root.path()), "a drawer pointer makes the drawer an end target");
+        std::fs::write(
+            sot_log::supervisor::journal::pointer::pointer_path(root.path()),
+            "x",
+        )
+        .expect("pointer");
+        assert!(
+            drawer_is_target(root.path()),
+            "a drawer pointer makes the drawer an end target"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -422,40 +488,80 @@ mod tests {
             tries == 3
         })
         .await;
-        assert_eq!(ended, Ended::Row("late".into()), "removed on a retry is not forgotten");
+        assert_eq!(
+            ended,
+            Ended::Row("late".into()),
+            "removed on a retry is not forgotten"
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn end_rows_returns_by_the_shared_deadline() {
         let deadline = Instant::now() + Duration::from_secs(5);
         let joins = vec![
-            ("stuck".to_string(), tokio::spawn(std::future::pending::<Ended>())),
-            ("done".to_string(), tokio::spawn(async { Ended::Row("done".into()) })),
+            (
+                "stuck".to_string(),
+                tokio::spawn(std::future::pending::<Ended>()),
+            ),
+            (
+                "done".to_string(),
+                tokio::spawn(async { Ended::Row("done".into()) }),
+            ),
         ];
-        let report = tokio::time::timeout_at(deadline + Duration::from_secs(1), join_by(deadline, joins))
-            .await
-            .expect("end_rows did not return by its deadline");
-        assert_eq!(report, EndReport { ended: vec!["done".into()], not_ended: 1, forget: Vec::new() });
+        let report =
+            tokio::time::timeout_at(deadline + Duration::from_secs(1), join_by(deadline, joins))
+                .await
+                .expect("end_rows did not return by its deadline");
+        assert_eq!(
+            report,
+            EndReport {
+                ended: vec!["done".into()],
+                not_ended: 1,
+                forget: Vec::new()
+            }
+        );
     }
 
     #[tokio::test]
     async fn non_capsule_row_is_counted_not_ended() {
         let root = tempfile::tempdir().expect("tempdir");
         let reg = Workspaces::new();
-        let mut row =
-            Workspace::from_label("tm", PathBuf::from("/p/tm"), false, "none".into(), String::new(), String::new());
+        let mut row = Workspace::from_label(
+            "tm",
+            PathBuf::from("/p/tm"),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        );
         row.runtime = "tmux".to_string();
         reg.insert(row);
         let (events, _rx) = broadcast::channel(4);
-        let report = end_rows(reg.list(), &reg, &events, root.path(), Instant::now() + Duration::from_secs(3)).await;
-        assert_eq!(report.not_ended, 1, "a row the shutdown cannot end was not counted");
+        let report = end_rows(
+            reg.list(),
+            &reg,
+            &events,
+            root.path(),
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await;
+        assert_eq!(
+            report.not_ended, 1,
+            "a row the shutdown cannot end was not counted"
+        );
     }
 
     #[tokio::test]
     async fn already_removed_row_is_not_kept() {
         let reg = Workspaces::new();
-        let mut row =
-            Workspace::from_label("gone", PathBuf::from("/p/gone"), false, "none".into(), String::new(), String::new());
+        let mut row = Workspace::from_label(
+            "gone",
+            PathBuf::from("/p/gone"),
+            false,
+            "none".into(),
+            String::new(),
+            String::new(),
+        );
         row.runtime = "capsule".to_string();
         let row = reg.insert(row);
         // Another end removed it first.
@@ -464,6 +570,29 @@ mod tests {
         let started = Instant::now();
         let ended = end_row(&row, false, &reg, &events, started + Duration::from_secs(3)).await;
         assert_eq!(ended, Ended::Gone);
-        assert!(started.elapsed() < RETRY_EVERY, "an already-removed row was retried");
+        assert!(
+            started.elapsed() < RETRY_EVERY,
+            "an already-removed row was retried"
+        );
     }
+}
+
+/// Fire synchronously before the one raw daemon termination primitive.
+pub(crate) fn exit(code: i32) -> ! {
+    terminal(super::child_signal::process(), code, |code| {
+        std::process::exit(code)
+    })
+}
+
+/// Shared terminal body: tests supply a private signal and observe the callback without polling for death.
+pub(super) fn terminal<T>(
+    signal: &'static super::child_signal::Signal,
+    code: i32,
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
+    if let Err(error) = signal.fire() {
+        tracing::error!(%error, "terminal child fire failed");
+        eprintln!("sotd: terminal child fire failed: {error}");
+    }
+    terminate(code)
 }

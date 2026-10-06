@@ -14,7 +14,10 @@ use std::path::PathBuf;
 /// an honest, non-fatal answer, and `workspace.create`'s own account
 /// check hits the same "no home" case as its own refusal if it matters
 /// there.
-pub async fn handle_accounts_list(req_id: u64, _payload_json: serde_json::Value) -> Result<HandlerOutput> {
+pub async fn handle_accounts_list(
+    req_id: u64,
+    _payload_json: serde_json::Value,
+) -> Result<HandlerOutput> {
     use sot_protocol::{AccountEntry, AccountsListRes};
     let accounts = crate::agents::accounts::account_home()
         .map(|home| crate::agents::accounts::discover_accounts(&home))
@@ -48,7 +51,7 @@ pub(crate) fn agent_exec() -> ! {
     #[cfg(not(unix))]
     {
         eprintln!("sotd agent-exec is not supported on this platform");
-        std::process::exit(2);
+        crate::lifecycle::shutdown::exit(2);
     }
     #[cfg(unix)]
     {
@@ -58,7 +61,7 @@ pub(crate) fn agent_exec() -> ! {
             Ok(argv) => argv,
             Err(msg) => {
                 eprintln!("sotd agent-exec: {msg}");
-                std::process::exit(2);
+                crate::lifecycle::shutdown::exit(2);
             }
         };
         for var in crate::agents::env::NESTING_ENV_VARS_TO_SCRUB {
@@ -71,9 +74,12 @@ pub(crate) fn agent_exec() -> ! {
             std::env::set_var(k, v);
         }
         use std::os::unix::process::CommandExt;
-        #[allow(clippy::disallowed_methods, reason = "`sotd agent-exec` replaces its own process with the agent; no daemon runs here")]
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "`sotd agent-exec` replaces its own process with the agent; no daemon runs here"
+        )]
         let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
         eprintln!("sotd agent-exec: exec {:?} failed: {err}", argv[0]);
-        std::process::exit(2);
+        crate::lifecycle::shutdown::exit(2);
     }
 }

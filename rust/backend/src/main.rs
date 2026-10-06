@@ -135,7 +135,10 @@ fn open_private_log_file() -> Option<Arc<Mutex<std::fs::File>>> {
 
 /// The daemon's log: events at the level `filter` passes (`main` gives the `RUST_LOG` level, default `info`), each masked of page secrets
 /// (`sot_log::secret`) and written, without colour codes, through `TeeWriter` to stdout and the private file.
-fn log_subscriber(filter: EnvFilter, file: Option<Arc<Mutex<std::fs::File>>>) -> impl tracing::Subscriber + Send + Sync {
+fn log_subscriber(
+    filter: EnvFilter,
+    file: Option<Arc<Mutex<std::fs::File>>>,
+) -> impl tracing::Subscriber + Send + Sync {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)
@@ -185,7 +188,11 @@ Pure queries (no startup side effects, answered before any of the above):
 /// and a wrong guess only prints help, so there is one rule and no second option list.
 fn help_for(args: &[String]) -> Option<&'static str> {
     let first = args.first()?;
-    let owned = if first == "agent-exec" { &args[1..args.len().min(2)] } else { args };
+    let owned = if first == "agent-exec" {
+        &args[1..args.len().min(2)]
+    } else {
+        args
+    };
     if !owned.iter().any(|a| a == "--help" || a == "-h") {
         return None;
     }
@@ -208,6 +215,9 @@ mod help_tests {
 
     #[test]
     fn help_for_table() {
+        if !sot_log::test_isolated::run_isolated("help_tests::help_for_table") {
+            return;
+        }
         let rows: &[(&str, &str)] = &[
             ("--help", SOTD_HELP),
             ("--version --help", SOTD_HELP),
@@ -216,9 +226,15 @@ mod help_tests {
             ("session-socket-path --help", SOTD_HELP),
             ("agent-exec --help", SOTD_HELP),
             ("ancestors --help", comm::registry::ancestors::USAGE),
-            ("ancestors --from 1 --help", comm::registry::ancestors::USAGE),
+            (
+                "ancestors --from 1 --help",
+                comm::registry::ancestors::USAGE,
+            ),
             ("stdio-bridge --help", topology::stdio_bridge::USAGE),
-            ("stdio-bridge --host a --help", topology::stdio_bridge::USAGE),
+            (
+                "stdio-bridge --host a --help",
+                topology::stdio_bridge::USAGE,
+            ),
             ("status --help", topology::status::USAGE),
             ("topology --help", topology::cli::USAGE),
             ("topology plan --help", topology::cli::USAGE),
@@ -256,11 +272,29 @@ mod help_tests {
     }
 }
 
-#[tokio::main]
-#[allow(clippy::too_many_lines, reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit")]
-async fn main() -> Result<()> {
+fn main() {
     #[cfg(unix)]
     lifecycle::child_signal::reset_child_signal();
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("sotd: runtime creation failed: {error}");
+            lifecycle::shutdown::exit(1);
+        }
+    };
+    complete_main(&runtime, daemon_main(), |code| {
+        lifecycle::shutdown::exit(code)
+    });
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the daemon entry: startup checks, boot and the serve loop in one function; predates the 100-line limit"
+)]
+async fn daemon_main() -> Result<()> {
     // Pure query subcommands (security review): checked against raw argv
     // BEFORE any startup side effect (umask, private log file/state dir
     // creation, tracing init) below. Previously pure path/version queries were
@@ -274,7 +308,10 @@ async fn main() -> Result<()> {
     // `parse_args()`.
     // Help comes first: see `help_for`. Read lossily: `env::args` panics on a value that is not
     // UTF-8, and such a value can never be `--help` or `-h` anyway.
-    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     if let Some(text) = help_for(&args) {
         println!("{}", sot_protocol::version_line("sotd"));
         println!("{text}");
@@ -295,7 +332,9 @@ async fn main() -> Result<()> {
             }
             // `sotd ancestors [--from <pid>]` (Windows only): comm-lib.sh reads it to count
             // the agents above a comm script. A pure query like the arms around it.
-            "ancestors" => std::process::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
+            "ancestors" => lifecycle::shutdown::exit(comm::registry::ancestors::run(
+                &std::env::args().skip(2).collect::<Vec<_>>(),
+            )),
             "agent-exec" => agents::ops::agent_exec(),
             // The last inch of a cross-host dial: connect to THIS box's
             // own endpoint for a label and shuttle stdin/stdout. Sits in
@@ -305,23 +344,22 @@ async fn main() -> Result<()> {
             // printed would land on the byte stream it owns.
             "stdio-bridge" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::stdio_bridge::run(&args));
+                lifecycle::shutdown::exit(topology::stdio_bridge::run(&args));
             }
             // The declared topology (`hosts.toml` v2): what this box
             // derives from it — the launcher's tunnel/dial plan, the relay
             // endpoint, the declared table, a fetch of the hub's copy.
             "topology" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::cli::run(&args));
+                lifecycle::shutdown::exit(topology::cli::run(&args));
             }
             // `sotd status` (topology plan §E): declared + LIVE, fanned out
             // to every reachable daemon concurrently — unlike `topology`
-            // above this needs the runtime we're already inside (`sotd` is
-            // `#[tokio::main]`), so it's awaited here rather than called as
+            // above this needs the runtime we're already inside (owned by the synchronous main boundary), so it's awaited here rather than called as
             // a plain synchronous query.
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::status::run(&args).await);
+                lifecycle::shutdown::exit(topology::status::run(&args).await);
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
@@ -339,7 +377,7 @@ async fn main() -> Result<()> {
     // mid-request (or fall back to a shared directory).
     if let Err(msg) = rows::store::check_config_dir() {
         eprintln!("sotd: {msg}");
-        std::process::exit(78);
+        lifecycle::shutdown::exit(78);
     }
     // Defect fix (field-proven, Windows; see `sot_log::host::winhandle`'s module
     // doc): harden this process's own inherited stdio before anything is
@@ -385,7 +423,7 @@ async fn main() -> Result<()> {
             "sotd: state dir {} is not private ({e}) — refusing to start",
             paths::state_dir().display()
         );
-        std::process::exit(1);
+        lifecycle::shutdown::exit(1);
     }
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -419,7 +457,7 @@ async fn main() -> Result<()> {
             );
             eprintln!("{msg}");
             tracing::error!("{msg}");
-            std::process::exit(1);
+            lifecycle::shutdown::exit(1);
         }
     }
 
@@ -549,10 +587,40 @@ mod log_tests {
         let _log = sot_log::test_log::install(subscriber);
         tracing::error!(%token, "open http://127.0.0.1:1/x?secret=Ab12Cd34");
         let written = std::fs::read_to_string(&path).unwrap();
-        assert!(written.contains("<redacted>"), "the event did not reach the file: {written}");
-        assert!(!written.contains(token), "the token reached the file: {written}");
-        assert!(!written.contains("Ab12Cd34"), "the secret reached the file: {written}");
+        assert!(
+            written.contains("<redacted>"),
+            "the event did not reach the file: {written}"
+        );
+        assert!(
+            !written.contains(token),
+            "the token reached the file: {written}"
+        );
+        assert!(
+            !written.contains("Ab12Cd34"),
+            "the secret reached the file: {written}"
+        );
         // No colour codes: they would split a field name from its `=`, so `secret=` would not read as one marker.
-        assert!(!written.contains('\u{1b}'), "the file carries ANSI escapes: {written:?}");
+        assert!(
+            !written.contains('\u{1b}'),
+            "the file carries ANSI escapes: {written:?}"
+        );
     }
+}
+
+/// Convert main completion while the caller still owns the runtime, then take its terminal path.
+fn complete_main<T>(
+    runtime: &tokio::runtime::Runtime,
+    future: impl std::future::Future<Output = Result<()>>,
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
+    let code =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future))) {
+            Ok(Ok(())) => 0,
+            Ok(Err(error)) => {
+                eprintln!("Error: {error:?}");
+                1
+            }
+            Err(_) => 101,
+        };
+    terminate(code)
 }
