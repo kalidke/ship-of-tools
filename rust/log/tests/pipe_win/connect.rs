@@ -168,26 +168,21 @@ fn connect_retries_within_the_bound_when_busy_then_succeeds_once_freed() {
     let first_client = connect_voyage_pipe(&id).unwrap();
     let first_conn = expect_accepted(&server, TIMEOUT);
 
-    // Codex review round finding 9: synchronize on the thread actually
-    // having STARTED before relying on any sleep at all -- a raw
-    // `sleep(300ms)` with no such signal cannot tell "genuinely still
-    // retrying" apart from "never got scheduled yet" on a busy runner.
+    // The connector sends its pre-call origin; wait only until origin + 300 ms before freeing the instance.
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let id_for_thread = id.clone();
     let second = std::thread::spawn(move || {
-        let _ = started_tx.send(());
         let started = Instant::now();
+        let _ = started_tx.send(started);
         let client = connect_voyage_pipe(&id_for_thread).expect("expected the busy retry to eventually succeed");
         (client, started.elapsed())
     });
-    started_rx
+    let started = started_rx
         .recv_timeout(TIMEOUT)
         .expect("expected the second connect thread to signal it has started");
 
-    // A generous grace period AFTER that signal -- long enough for at
-    // least one real busy-retry round trip, short enough that the actual
-    // join deadline below remains the meaningful bound.
-    std::thread::sleep(Duration::from_millis(300));
+    // The connector sends its pre-call origin; wait only until origin + 300 ms before freeing the instance.
+    std::thread::sleep((started + Duration::from_millis(300)).saturating_duration_since(Instant::now()));
     assert!(
         !second.is_finished(),
         "expected the second connect to still be retrying against a busy pipe 300ms after it started"
