@@ -25,6 +25,7 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
 `sot_oneshot_request` for a request to the daemon.
 
 ## Rules
+- Agent-layer input opens establish stderr redirection first; vanished process files preserve the existing chain/refusal result without a shell input-open diagnostic. The test table covers stat, cmdline and both winpid reads.
 - `comm-lib.sh` only sources its parts, and a part calls nothing while it is sourced: outside function bodies there are
   assignments only, and comm-lib-base.sh's `umask 077`, which reads nothing, so the order of the parts changes no
   behaviour. A new part is a new file here and a new line

@@ -301,9 +301,62 @@ CAPL=(); for ((i = 1; i <= 30; i++)); do CAPL+=("$((9900 + i))${TAB}bash.exe${TA
 bsotd 9040 0 "${CAPL[@]}" "9999${TAB}$CAPA"
 breq 2 "windows walk: the 64 cap spans both kinds of record, so a capsule past it is not reached" "$R_TREE_TEXT" "$SA" ""
 
+# Each callable boundary removes only its fixture input, immediately before the
+# real read. The enumerated leaf remains a symlink after its owned target goes
+# away, so the enumeration still attempts the vanished input.
+case_vanished_input() {
+    local member="$1" entry="$2" out rc expected target
+    bwalk 0 "${WALK[@]}"
+    target="$BR/vanishing-input"
+    case "$member" in
+        current-winpid) mv "$BR/$$/winpid" "$target"; ln -s "$target" "$BR/$$/winpid" ;;
+        enumerated-winpid) mkdir -p "$BR/7002"; printf '7002\n' > "$target"; ln -s "$target" "$BR/7002/winpid" ;;
+    esac
+    out="$( (
+        unset SOT_COMM_SELF_FILE SOT_WORKSPACE_ID
+        _SOT_PROC="$BR"; export SOTD_BIN="$WORK/sotd-bridge"
+        # Retain the real stat reader; the wrapper is an executing read barrier.
+        eval "$(declare -f _sot_proc_ppid | sed '1s/_sot_proc_ppid/_c4_proc_ppid/')"
+        _sot_proc_ppid() {
+            if [ "$member" = stat ]; then mv "$_SOT_PROC/$1/stat" "$_SOT_PROC/$1/stat.gone"; fi
+            _c4_proc_ppid "$1" || return 1
+            if [ "$member" = cmdline ]; then mv "$_SOT_PROC/$1/cmdline" "$_SOT_PROC/$1/cmdline.gone"; fi
+        }
+        _sot_is_windows() {
+            case "$member" in current-winpid|enumerated-winpid) mv "$target" "$target.gone" ;; esac
+            return 0
+        }
+        if [ "$entry" = chain ]; then _sot_ancestor_chain; else sot_require_agent; fi
+    ) 2> "$WORK/vanished-$member-$entry.err" )"
+    rc=$?
+    if [ "$entry" = chain ]; then
+        case "$member" in stat|cmdline) expected=1 ;; *) expected=0 ;; esac
+        eq "vanished $member: chain status preserved" "$rc" "$expected"
+        case "$member" in
+            enumerated-winpid) has "vanished $member: complete chain preserved" "$out" '!end' ;;
+            *) has "vanished $member: truncated chain preserved" "$out" '!truncated' ;;
+        esac
+    else
+        if [ "$member" = enumerated-winpid ]; then
+            eq "vanished $member: eligibility preserved" "$rc" 0
+        else
+            eq "vanished $member: refusal preserved" "$rc" 2
+            has "vanished $member: deliberate explanation preserved" "$out" "$R_TREE_TEXT"
+        fi
+    fi
+    if [ ! -s "$WORK/vanished-$member-$entry.err" ]; then
+        ok "vanished $member ($entry): no shell input-open diagnostic"
+    else
+        bad "vanished $member ($entry): shell input-open diagnostic"
+    fi
+}
+for vanished in stat cmdline current-winpid enumerated-winpid; do
+    case_vanished_input "$vanished" chain
+    case_vanished_input "$vanished" require
+done
+
 if [ -z "$LINUX" ]; then
     echo "SKIP: the end-to-end chains, the badawk case and SIMWIN read Linux's /proc; the tables and bridge fixtures above ran"
     echo "agent layers: $PASS passed, $FAIL failed"
     [ "$FAIL" -eq 0 ]; exit
 fi
-

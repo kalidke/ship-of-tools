@@ -24,6 +24,7 @@
 # Source of truth: comm/work_state/hooks/codex-status-blocked.sh in
 # Ship of Tools, deployed to ~/.sot-comm/bin by ShipTools.update_comm().
 set -uo pipefail
+[ "${SOT_COMM_HOOKS:-}" = off ] && exit 0
 COMM_HOME="${SOT_COMM_HOME:-$HOME/.sot-comm}"
 STATUS="$COMM_HOME/bin/comm-status.sh"
 [ -x "$STATUS" ] || exit 0
