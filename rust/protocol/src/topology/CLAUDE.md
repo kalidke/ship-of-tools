@@ -61,7 +61,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `lane_client_tests.rs`: wire, refusal, handshake and local-transport behavior against test-owned peers
 - `lane_client_ownership_tests.rs`: counted endpoint fixtures and spare consumption, fallback, destruction and retry behavior
 - `lane_child.rs`: the piped lane child, error diagnosis, cancellation and bounded teardown
-- `lane_child_tests.rs`: child teardown bounds, error reporting and observed exit/reaping
+- `lane_child_tests.rs`: owner-entry teardown and child-lock deadline witnesses, error reporting and observed exit/reaping
 - `relay_units.rs`: the unit text `sotd topology apply` writes for each relayed host.
 - `tests.rs`: the parser, search rule, edit and status-table tests.
 
@@ -70,6 +70,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `endpoint.rs` `local_endpoint` for how a process finds its own daemon.
 
 ## Rules
+- The admission witness observes the actual close-lock attempt and down transition before releasing child creation; both delayed-release teardown witnesses arm from the child owner's own start and deadline, never from fixture setup.
 - `relay_units.rs` lives here, not in the backend, because the backend's relay_refresh test calls
   `relay_command_line()` and sot-backend has no library target.
 - Read hosts.toml only through `locate`, `load` and `parse`; build an ssh login only through `SshRecipe`.

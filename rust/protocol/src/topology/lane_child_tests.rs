@@ -83,31 +83,87 @@ fn rescue_child(client: &BridgedClient) {
     }
 }
 
-fn delayed_release(client: &BridgedClient) -> (std::thread::JoinHandle<()>, std::sync::mpsc::Receiver<()>) {
-    let mut input = client.inp.try_clone().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    let monitor = std::thread::spawn(move || {
-        use std::io::Write;
-        std::thread::sleep(Duration::from_millis(2400));
-        let _ = input.write_all(b"exit\n");
-        tx.send(()).unwrap();
-    });
-    (monitor, rx)
+#[derive(Clone, Copy)]
+struct OwnerClock { started: Instant, deadline: Instant }
+
+pub(super) struct TeardownRendezvous {
+    entry: std::sync::mpsc::Sender<OwnerClock>,
+    armed: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    pub(super) completed: std::sync::mpsc::Sender<Instant>,
+}
+
+impl TeardownRendezvous {
+    pub(super) fn enter(&self, started: Instant, deadline: Instant) {
+        self.entry.send(OwnerClock { started, deadline }).unwrap();
+        self.armed.lock().unwrap().recv_timeout(Duration::from_secs(5)).expect("owner entry arming watchdog");
+    }
+}
+
+struct ReleaseMonitor {
+    entry: std::sync::mpsc::Receiver<OwnerClock>,
+    armed: std::sync::mpsc::Sender<()>,
+    released: std::sync::mpsc::Sender<(OwnerClock, Instant, Instant)>,
+}
+
+impl ReleaseMonitor {
+    fn await_release_time(&self) -> OwnerClock {
+        let clock = self.entry.recv_timeout(Duration::from_secs(5)).expect("monitor owner-entry watchdog");
+        let earliest = clock.deadline + Duration::from_millis(400);
+        self.armed.send(()).unwrap();
+        // Scheduling delays can only lengthen the hold past the owner's deadline.
+        while Instant::now() < earliest {
+            std::thread::sleep(earliest.saturating_duration_since(Instant::now()));
+        }
+        clock
+    }
+}
+
+fn teardown_watch(client: &BridgedClient) -> (ReleaseMonitor, std::sync::mpsc::Receiver<(OwnerClock, Instant, Instant)>, std::sync::mpsc::Receiver<Instant>) {
+    let (entry_tx, entry) = std::sync::mpsc::channel();
+    let (armed, armed_rx) = std::sync::mpsc::channel();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let (released, release) = std::sync::mpsc::channel();
+    *client.teardown_observer.lock().unwrap() = Some(TeardownRendezvous { entry: entry_tx, armed: std::sync::Mutex::new(armed_rx), completed });
+    (ReleaseMonitor { entry, armed, released }, release, completion)
+}
+
+fn finish_deadline_witness(client: &BridgedClient, result: std::io::Result<()>, monitor: std::thread::JoinHandle<()>, release: std::sync::mpsc::Receiver<(OwnerClock, Instant, Instant)>, completion: std::sync::mpsc::Receiver<Instant>, elapsed_assertion: &str, required_error: &str) {
+    let completed = completion.recv_timeout(Duration::from_secs(5)).expect("owner completion watchdog");
+    let (clock, held, released) = release.recv_timeout(Duration::from_secs(5)).expect("fixture release watchdog");
+    let join_deadline = Instant::now() + Duration::from_secs(5);
+    while !monitor.is_finished() {
+        assert!(Instant::now() < join_deadline, "fixture monitor join watchdog");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    monitor.join().unwrap();
+    rescue_child(client);
+    let elapsed = completed.duration_since(clock.started);
+    println!("teardown witness {required_error}: owned child {}; hold before entry {:?}; owner deadline {:?}; owner completion {:?}; actual release {:?}; result {result:?}; child reaped and monitor joined", client.id, clock.started.saturating_duration_since(held), clock.deadline.duration_since(clock.started), elapsed, released.duration_since(clock.started));
+    // Cleanup precedes every verdict; the elapsed failure is distinct from diagnostics.
+    assert!(elapsed < Duration::from_millis(2250), "{elapsed_assertion}: {elapsed:?}");
+    assert!(result.as_ref().is_err_and(|error| error.to_string().contains(required_error)), "the owner must report its relevant deadline error: {result:?}");
+    assert_eq!(clock.deadline.duration_since(clock.started), Duration::from_secs(2));
+    assert!(held <= clock.started, "the actual fixture hold precedes teardown entry");
+    assert!(released >= clock.deadline + Duration::from_millis(400), "release cannot precede the owner deadline plus 400 ms");
+    assert!(completed < released, "owner completion must precede fixture release");
 }
 
 #[test]
 fn lane_child_teardown_finishes_within_its_bound() {
     let (_fixture, client) = controlled_child();
     client.faults.lock().unwrap().hold_termination = true;
-    let (release, finished) = delayed_release(&client);
-    let started = Instant::now();
+    assert!(client.child.lock().unwrap().try_wait().unwrap().is_none(), "the recorded child is held alive");
+    let held = Instant::now();
+    let (watch, release, completion) = teardown_watch(&client);
+    let mut input = client.inp.try_clone().unwrap();
+    let monitor = std::thread::spawn(move || {
+        use std::io::Write;
+        let clock = watch.await_release_time();
+        input.write_all(b"exit\n").expect("release only the recorded child's input");
+        watch.released.send((clock, held, Instant::now())).unwrap();
+    });
     let result = client.teardown();
-    let elapsed = started.elapsed();
-    finished.recv_timeout(Duration::from_secs(5)).expect("fixture monitor watchdog");
-    release.join().unwrap();
-    rescue_child(&client);
-    assert!(elapsed < Duration::from_millis(2250), "owned child teardown exceeded its 2 s budget: {elapsed:?}");
-    assert!(result.is_err(), "an unconfirmed delayed exit is a teardown failure");
+    finish_deadline_witness(&client, result, monitor, release, completion, "owned child teardown exceeded its 2 s budget", "2 s teardown budget expired");
 }
 
 #[test]
@@ -162,19 +218,16 @@ fn the_teardown_budget_includes_child_lock_acquisition() {
     let client = std::sync::Arc::new(client);
     let holder = client.clone();
     let (ready_tx, ready) = std::sync::mpsc::channel();
-    let (done_tx, done) = std::sync::mpsc::channel();
+    let (watch, release, completion) = teardown_watch(&client);
     let monitor = std::thread::spawn(move || {
-        let _guard = holder.child.lock().unwrap();
+        let guard = holder.child.lock().unwrap();
+        let held = Instant::now();
         ready_tx.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(2400));
-        done_tx.send(()).unwrap();
+        let clock = watch.await_release_time();
+        drop(guard);
+        watch.released.send((clock, held, Instant::now())).unwrap();
     });
     ready.recv_timeout(Duration::from_secs(5)).expect("holder rendezvous watchdog");
-    let started = Instant::now();
     let result = client.teardown();
-    let elapsed = started.elapsed();
-    done.recv_timeout(Duration::from_secs(5)).expect("holder completion watchdog");
-    monitor.join().unwrap();
-    rescue_child(&client);
-    assert!(result.is_err() && elapsed < Duration::from_millis(2250), "child lock acquisition shares the teardown deadline");
+    finish_deadline_witness(&client, result, monitor, release, completion, "child lock acquisition exceeded its 2 s teardown budget", "child lock acquisition expired");
 }

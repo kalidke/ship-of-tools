@@ -186,8 +186,35 @@ impl LinkGate {
 
     /// Transport only.
     pub fn set_up(&self, up: bool) {
+        #[cfg(test)]
+        let observation = if up { None } else {
+            self.rendezvous.lock().unwrap().clone().and_then(|hook| {
+                let sender = hook.close.lock().unwrap().take()?;
+                Some((hook, sender))
+            })
+        };
+        #[cfg(test)]
+        let _admission = self.observe_close_lock(observation.as_ref().map(|(_, sender)| sender));
+        #[cfg(not(test))]
         let _admission = self.admission.lock().unwrap_or_else(|error| error.into_inner());
         self.down.store(!up, std::sync::atomic::Ordering::Release);
+        #[cfg(test)]
+        if let Some((hook, sender)) = observation {
+            hook.events.lock().unwrap().push("closed".into());
+            sender.send(tests::CloseObservation::Completed).unwrap();
+        }
+    }
+
+    #[cfg(test)]
+    fn observe_close_lock(&self, sender: Option<&std::sync::mpsc::Sender<tests::CloseObservation>>) -> std::sync::MutexGuard<'_, ()> {
+        if let Some(sender) = sender {
+            match self.admission.try_lock() {
+                Ok(guard) => return guard,
+                Err(std::sync::TryLockError::Poisoned(error)) => return error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => sender.send(tests::CloseObservation::Contended).unwrap(),
+            }
+        }
+        self.admission.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     pub(crate) fn admit<C: StartedChild>(&self, command: std::process::Command, spawn: impl FnOnce(std::process::Command) -> std::io::Result<C>) -> Result<C, SpawnError> {
@@ -254,12 +281,16 @@ pub async fn last_stderr_after_failure(
 mod tests {
     use super::*;
 
+    #[derive(Debug, PartialEq, Eq)]
+    pub(super) enum CloseObservation { Contended, Completed }
+
     #[derive(Debug)]
     pub(super) struct GateRendezvous {
         program: std::path::PathBuf,
         ready: std::sync::mpsc::Sender<()>,
         release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-        events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pub(super) events: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        pub(super) close: std::sync::Mutex<Option<std::sync::mpsc::Sender<CloseObservation>>>,
         pause: bool,
     }
 
@@ -327,14 +358,14 @@ mod tests {
         }
     }
 
-    fn gate_race(mode: &'static str, program: &std::path::Path) {
+    fn gate_race(mode: &'static str, program: &std::path::Path) -> bool {
         use std::sync::{Arc, Mutex, mpsc};
         use std::time::Duration;
         let gate = LinkGate::default();
         let events = Arc::new(Mutex::new(Vec::new()));
         let (ready_tx, ready) = mpsc::channel();
         let (release, release_rx) = mpsc::channel();
-        let hook = Arc::new(GateRendezvous { program: program.to_path_buf(), ready: ready_tx, release: Mutex::new(release_rx), events: events.clone(), pause: true });
+        let hook = Arc::new(GateRendezvous { program: program.to_path_buf(), ready: ready_tx, release: Mutex::new(release_rx), events: events.clone(), close: Mutex::new(None), pause: true });
         *gate.rendezvous.lock().unwrap() = Some(hook.clone());
         gate.set_up(false);
         assert!(gate_start(mode, &gate, true), "close-first must return LinkDown");
@@ -345,31 +376,30 @@ mod tests {
         let starter = std::thread::spawn(move || { let result = gate_start(mode, &admitted, false); spawn_done_tx.send(result).unwrap(); });
         ready.recv_timeout(Duration::from_secs(5)).expect("spawn reached its admission rendezvous");
         let closing = gate.clone();
-        let closed_events = events.clone();
-        let (closing_tx, closing_rx) = mpsc::channel();
         let (closed_tx, closed_rx) = mpsc::channel();
-        let closer = std::thread::spawn(move || {
-            closing_tx.send(()).unwrap();
-            closing.set_up(false);
-            closed_events.lock().unwrap().push("closed".into());
-            closed_tx.send(()).unwrap();
-        });
-        closing_rx.recv_timeout(Duration::from_secs(5)).expect("close invocation watchdog");
-        let closed_before_release = closed_rx.recv_timeout(Duration::from_millis(100)).is_ok();
+        // Arm only this actual close attempt, after admitted creation is held.
+        *hook.close.lock().unwrap() = Some(closed_tx);
+        let closer = std::thread::spawn(move || closing.set_up(false));
+        let first = closed_rx.recv_timeout(Duration::from_secs(5)).expect("owner close-lock observation watchdog");
         release.send(()).unwrap();
-        if !closed_before_release { closed_rx.recv_timeout(Duration::from_secs(5)).expect("close completion watchdog"); }
+        if first == CloseObservation::Contended {
+            assert_eq!(closed_rx.recv_timeout(Duration::from_secs(5)).expect("owner down-transition watchdog"), CloseObservation::Completed);
+        }
         spawn_done.recv_timeout(Duration::from_secs(5)).expect("owned child completion watchdog");
         starter.join().unwrap(); closer.join().unwrap();
         let observed = events.lock().unwrap().clone();
-        let valid_order = observed.len() == 2 && observed[0].starts_with("created ") && observed[1] == "closed";
-        // Every child has been reaped before either failing assertion can unwind.
-        assert!(valid_order && !closed_before_release, "a real child start must precede close completion: {mode}: {observed:?}");
-        let hook = Arc::new(GateRendezvous { program: program.to_path_buf(), ready: hook.ready.clone(), release: Mutex::new(mpsc::channel().1), events: events.clone(), pause: false });
+        let valid_order = first == CloseObservation::Contended && observed.len() == 2 && observed[0].starts_with("created ") && observed[1] == "closed";
+        println!("gate mode {mode}: owner {first:?}; owned child-start order {observed:?}");
+        let count = events.lock().unwrap().len();
+        assert!(gate_start(mode, &gate, true), "after close returns the gate must return LinkDown");
+        assert_eq!(events.lock().unwrap().len(), count, "after close creates no additional child");
+        let hook = Arc::new(GateRendezvous { program: program.to_path_buf(), ready: hook.ready.clone(), release: Mutex::new(mpsc::channel().1), events: events.clone(), close: Mutex::new(None), pause: false });
         *gate.rendezvous.lock().unwrap() = Some(hook);
         gate.set_up(true);
         let count = events.lock().unwrap().len();
         gate_start(mode, &gate, true);
         assert_eq!(events.lock().unwrap().len(), count + 1, "reopen admits one ordinary child start");
+        valid_order
     }
 
     #[test]
@@ -379,11 +409,13 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         let program = path.join("child.py");
         sot_log::test_exec::write_executable(&program, "import sys\nsys.stdin.buffer.read()\n");
-        // Always remove the test-owned absolute folder, including on the parent-red assertion.
+        // Always remove the test-owned absolute folder, including on a reversal assertion.
         struct Fixture(std::path::PathBuf);
         impl Drop for Fixture { fn drop(&mut self) { std::fs::remove_dir_all(&self.0).expect("remove own gate fixture"); } }
         let _fixture = Fixture(path);
-        for mode in ["sync", "async", "fixture"] { gate_race(mode, &program); }
+        let observations: Vec<_> = ["sync", "async", "fixture"].into_iter().map(|mode| (mode, gate_race(mode, &program))).collect();
+        // All three modes have released creation, reaped their children and joined before this verdict.
+        assert!(observations.iter().all(|(_, valid)| *valid), "a real child start must precede close completion: {observations:?}");
     }
 
     #[test]

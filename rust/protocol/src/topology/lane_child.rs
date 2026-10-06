@@ -24,6 +24,8 @@ pub(super) struct BridgedClient {
     faults: std::sync::Mutex<ChildFaults>,
     #[cfg(test)]
     diagnostics: std::sync::Mutex<Vec<String>>,
+    #[cfg(test)]
+    teardown_observer: std::sync::Mutex<Option<tests::TeardownRendezvous>>,
     pub(super) child: std::sync::Mutex<std::process::Child>,
     pub(super) out: std::fs::File,
     pub(super) inp: std::fs::File,
@@ -84,7 +86,7 @@ impl BridgedClient {
             (std::fs::File::from(OwnedHandle::from(stdin)), std::fs::File::from(OwnedHandle::from(stdout)))
         };
 
-        Ok(Self { id: child.id(), #[cfg(test)] faults: Default::default(), #[cfg(test)] diagnostics: Default::default(), child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
+        Ok(Self { id: child.id(), #[cfg(test)] faults: Default::default(), #[cfg(test)] diagnostics: Default::default(), #[cfg(test)] teardown_observer: Default::default(), child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
     }
 
     pub(super) fn exited(&self) -> bool {
@@ -151,9 +153,17 @@ impl BridgedClient {
     }
 
     pub(super) fn teardown(&self) -> std::io::Result<()> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(2);
+        #[cfg(test)]
+        let observer = self.teardown_observer.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(observer) = &observer { observer.enter(started, deadline); }
         self.cancelled.store(true, Ordering::SeqCst);
-        self.teardown_inner(deadline).inspect_err(|error| self.report(error))
+        let result = self.teardown_inner(deadline).inspect_err(|error| self.report(error));
+        #[cfg(test)]
+        if let Some(observer) = observer { observer.completed.send(std::time::Instant::now()).unwrap(); }
+        result
     }
 
     /// A short bounded poll for the child's last stderr line (this is the
