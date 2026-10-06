@@ -41,7 +41,7 @@ ROOT
     exit 2
 fi
 trap 'rm -rf -- "${root:?}"' EXIT
-python3 - "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root" "$proof_bash" <<'PY'
+python3 -X utf8 - "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root" "$proof_bash" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -76,8 +76,9 @@ def fresh(label):
 def run(argv, p, extra=None):
     actual = dict(env); actual.update(extra or {})
     try:
-        return subprocess.run(argv, cwd=p, env=actual, text=True, encoding='utf-8', errors='strict',
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
+        r = subprocess.run(argv, cwd=p, env=actual, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
+        text = r.stdout.decode('utf-8', 'strict').replace('\r\n', '\n').replace('\r', '\n')
+        return subprocess.CompletedProcess(r.args, r.returncode, text, None)
     except UnicodeDecodeError as error:
         raise AssertionError(f'child output is not UTF-8 ({argv[0]}): {type(error).__name__}: {error}')
 
@@ -105,7 +106,7 @@ def unexpected_arguments():
 def bootstrap_run(p, setup, arguments=None):
     # Load the actual bootstrap; replace only its driver and removal execution ports.
     text = (repo / 'scripts/tests/test-test-body.sh').read_text(encoding='utf-8', errors='strict')
-    bootstrap = text[:text.index('python3 - "$mode"')]
+    bootstrap = text[:text.index('python3 -X utf8 - "$mode"')]
     record = p / 'ports'; record.mkdir()
     tmp = p / ('relative temp spaces' if setup == 'relative' else 'absolute temp spaces')
     tmp.mkdir(); (p / 'sentinel').write_text('outside inner root')
