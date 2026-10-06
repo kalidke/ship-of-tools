@@ -1,61 +1,18 @@
-# comm-pipe-request.ps1 -- the transport a `pipe:` sot-comm endpoint uses to
-# reach a Windows box's LOCAL daemon over its named pipe (ADR 0042
-# amendment, decision 5, corrected 2026-09-07: the local daemon listens
-# ONLY on \\.\pipe\sot-<user>-local -- the box's loopback SOT_TCP_PORT is
-# the SSH tunnel OUT to the backend, never a second local listener -- and
-# git-bash cannot open a named pipe itself, so this one small PowerShell
-# script is the whole bridge).
+# pipe-request.ps1 -- the local-daemon suites' raw pipe client (test-local-daemon.ps1 5c and 5d). It reads exactly two
+# lines from stdin (a hello frame, then one request frame), writes both into the named pipe -PipeName, then reads reply
+# lines until one is a `kind:"res"` frame whose `op` equals -Op (`kind:"evt"` frames are skipped), or -TimeoutSec
+# elapses. It prints that one line and exits 0; a `kind:"res"` reply to the hello that carries an `error` is printed the
+# same way, and the script then exits 1 at once unless the code is `protocol_mismatch`, when it reads on for the answer
+# (exit 0) or the end (exit 1). Any other failure prints ONE line to stderr and exits nonzero. Test code: it checks no
+# account. The product reaches a pipe only through `sotd stdio-bridge --endpoint` (ADR 0049, User isolation).
 #
-# Invoked from bash (comm-lib.sh's sot_oneshot_request, comm-relay.sh's
-# nc_send) exactly the way those callers invoke `nc`: the lines they would
-# have written to a socket are piped to THIS script's stdin instead, never
-# passed on argv (a hello/request line can carry a token or arbitrary
-# message text -- shell-quoting that across a `powershell.exe -Command`
-# boundary is exactly the hazard this file avoids by reading it as data,
-# not code). Only short, identifier-shaped values (a pipe name, an op name,
-# a timeout) are real parameters.
-#
-# It reads exactly two lines from stdin (a hello frame, then one request
-# frame), writes both into the pipe, then reads reply lines until one is a
-# `kind:"res"` frame whose `op` equals -Op (the daemon also broadcasts
-# `kind:"evt"` frames on the same connection -- those are skipped, never
-# matched), or -TimeoutSec elapses. Prints exactly that one matching line
-# to stdout and exits 0; a `kind:"res"` reply to the hello that carries an
-# `error` is printed the same way; the script then exits 1 at once unless
-# the code is `protocol_mismatch`, which an older daemon follows with its
-# answer to the request, so it reads on for that answer (exit 0) or the end
-# (exit 1); any failure -- a connect timeout, no matching reply, the pipe
-# closing early -- prints ONE line to stderr and exits nonzero. This
-# mirrors sot_oneshot_request's own unix: and ssh: arms, which match a reply
-# by its `op` (not `id`): a request's id and the hello's id can
-# legitimately collide (both commonly id:1), so op is the only unambiguous
-# correlation available without changing the wire protocol.
-#
-# Connects with NamedPipeClientStream(".", <name>, InOut) -- the same call
-# scripts/sot-local-daemon.ps1's Test-SotPipeOpen already uses to probe
-# liveness -- so a `pipe:\\.\pipe\sot-<user>-local` or bare
-# `pipe:sot-<user>-local` endpoint both reduce to the bare NAME on the
-# bash side before this script ever runs (NamedPipeClientStream never
-# takes the \\.\pipe\ prefix itself).
-#
-# ASCII ONLY in string literals (see the same note in sot-local-daemon.ps1
-# and sot-hosts.ps1): this file has no BOM, so Windows PowerShell 5.1
-# decodes it as cp1252 and a non-ASCII byte in a string literal can
-# mojibake into a phantom quote and fail the whole parse.
-#
-# No `pwsh` was available to syntax-check this file at authoring time (a
-# Linux dev box) -- static review only; see the LU6e implementation report
-# for what a Windows box must verify.
+# ASCII ONLY in string literals: this file has no BOM, so Windows PowerShell 5.1 decodes it as cp1252 and a non-ASCII
+# byte in a string literal can mojibake into a phantom quote and fail the whole parse.
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$PipeName,
-
-    # Mode: accepted, Oneshot only, for the previous release's comm-relay.sh, which passes it and is published after
-    # this file (comm/bin-folders.txt); nothing in this release passes it. The next release deletes it.
-    [ValidateSet('Oneshot')]
-    [string]$Mode = 'Oneshot',
 
     # The reply-matching key; required.
     [string]$Op,

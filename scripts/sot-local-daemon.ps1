@@ -53,10 +53,11 @@
 # Liveness = a bounded named-pipe CONNECT probe, not a namespace listing. A
 # pipe NAME persists under \\.\pipe\ while any dead client still holds a
 # handle to it (and is listed even when every real instance is busy) --
-# presence there is not health. Connecting (then immediately closing) is
-# what proves a server is actually there to accept; the daemon treats an
-# early close as a normal EOF (server/conn.rs), so this probe is harmless to a
-# live daemon. Used for the idempotency check, the readiness wait, AND stop
+# presence there is not health. Connecting (then immediately closing),
+# through sotd's own bridge, which connects only to a pipe this OS account
+# serves (ADR 0049, User isolation), is what proves this daemon is actually
+# there to accept; the daemon treats an early close as a normal EOF
+# (server/conn.rs), so this probe is harmless to a live daemon. Used for the idempotency check, the readiness wait, AND stop
 # confirmation (probe fails AND the matched process is gone -- a process
 # that's still exiting can leave the pipe briefly unconnectable without
 # actually being gone yet).
@@ -225,19 +226,26 @@ function Remove-OldDaemonLogs {
     }
 }
 
-# Bounded connect probe (500ms) -- see the header for why this replaces a
-# namespace listing. Always closes/disposes, so a live daemon just sees one
-# harmless connect-then-EOF.
+# Bounded connect probe -- see the header for why this replaces a namespace listing. sotd's own bridge makes the
+# connection (`stdio-bridge --endpoint`): it opens the pipe at identification level and connects only to a pipe this
+# OS account serves, so a pipe another account holds under this name is never this daemon. Its input is closed at
+# once, so a live daemon sees one harmless connect-then-EOF. No runnable sotd.exe: not open.
 function Test-SotPipeOpen {
     param([string]$Name)
-    $client = New-Object System.IO.Pipes.NamedPipeClientStream('.', $Name, [System.IO.Pipes.PipeDirection]::InOut)
+    if (-not $daemonExe -or -not (Test-Path -LiteralPath $daemonExe -PathType Leaf)) { return $false }
     try {
-        $client.Connect(500)
-        return $true
+        $psi = New-Object System.Diagnostics.ProcessStartInfo($daemonExe, ('stdio-bridge --endpoint "pipe:\\.\pipe\{0}"' -f $Name))
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $p.StandardInput.Close()
+        if (-not $p.WaitForExit(5000)) { try { $p.Kill() } catch { }; return $false }
+        return ($p.ExitCode -eq 0)
     } catch {
         return $false
-    } finally {
-        $client.Dispose()
     }
 }
 
@@ -342,10 +350,17 @@ if (-not $PipePath -or -not $PipeName) {
     exit 1
 }
 
+# Whether $Proc (a Win32_Process) belongs to the account $Sid names (ADR 0049, User isolation): another account's
+# sotd.exe is never this daemon, to stop or to wait for. An owner that cannot be read is not this account's.
+function Test-SotOwnProcess($Proc, [string]$Sid) {
+    try { return ((Invoke-CimMethod -InputObject $Proc -MethodName GetOwnerSid -ErrorAction Stop).Sid -eq $Sid) } catch { return $false }
+}
+
 function Get-LocalDaemonProcess {
     $pat = '(?i)--socket\s+"?' + [regex]::Escape($PipePath) + '"?(\s|$)'
+    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     Get-CimInstance Win32_Process -Filter "Name='sotd.exe'" |
-        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) }
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match $pat) -and (Test-SotOwnProcess $_ $sid) }
 }
 
 # How long -Stop waits for the daemon's own shutdown, in ms, from held.json:

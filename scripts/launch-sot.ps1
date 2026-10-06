@@ -794,8 +794,14 @@ function Invoke-LocalDaemonEnsure {
 # (no more unconditional implicit local, item 1) -- queried the same way
 # sot-local-daemon.ps1 itself queries it (`sotd session-socket-path
 # local`), not re-derived here, so the two can never disagree.
+# The sotd.exe this launch runs for the local daemon and its bridge: the dev build when present, else the install's.
+function Get-SotLocalSotdExe {
+    if (Test-Path $backendExe) { return $backendExe }
+    return (Join-Path $prefixDir 'bin\sotd.exe')
+}
+
 function Get-SotLocalPipePath {
-    $exe = if (Test-Path $backendExe) { $backendExe } else { Join-Path $prefixDir 'bin\sotd.exe' }
+    $exe = Get-SotLocalSotdExe
     if (-not (Test-Path -LiteralPath $exe)) { return $null }
     $queried = (& $exe session-socket-path local 2>$null | Select-Object -First 1)
     if ($queried) { return $queried.ToString().Trim() }
@@ -951,7 +957,7 @@ try {
         if ($relaunchNext) {
             $localDaemonReady = Invoke-LocalDaemonEnsure
             $localSocket = if ($localDaemonReady) { Get-SotLocalPipePath } else { $null }
-            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket) }
+            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket (Get-SotLocalSotdExe)) }
         }
         # Stage the binary for this launch, priority order:
         #   1. dev source build (the classic path — takes precedence, and a
@@ -1135,7 +1141,7 @@ try {
         # matching what a first launch with that switch would do.
         if ($convergeRequested) {
             Write-SupLog 'converge (exit 76): re-running self-update prelude + freshness pass'
-            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket) }
+            if ($localSocket) { $global:SotLeases += @(Open-SotLease $localSocket (Get-SotLocalSotdExe)) }
             # Visible progress for the whole window-less stretch: the splash
             # renders each step below and exits itself on the DONE write after
             # the respawn, exactly as on the first launch.

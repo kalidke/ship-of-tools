@@ -20,7 +20,7 @@ unread. Design of record: docs/adr/0049-messaging-on-one-page.md. The contract i
 - Housed here, not messaging: the shell daemon client in `lib/comm-lib-client.sh` (`sot_oneshot_request`) and the agent adapters under
   `adapters/`. The CLIs that start, end, probe and bootstrap rows moved to `agents/spawn/`, the `/worktree` scripts to
   `agents/worktree/`, and `sot-fe` and `sot-nav.sh` to `agents/sot-fe/`, installed into the same bin. The launchers, the
-  non-messaging skills, `sot-gh-auth.sh` and `comm-pipe-request.ps1` moved to `agents/`.
+  non-messaging skills, `sot-gh-auth.sh` moved to `agents/`.
 
 ## Promises
 - `filed` is printed only on the appender's word: a local append that synced, a daemon's `comm.file` answer `ok`, or a

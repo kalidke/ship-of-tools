@@ -24,9 +24,11 @@
 # list: the old relay/listen loops re-exec `comm-relay.sh bridge`, which is
 # still shipped and so never pruned; `codex-watch.sh` execs `comm-wake.sh` once
 # at its start, and no script here re-execs its own name.
+# comm-pipe-request.ps1 was started once per request by the library and comm-relay.sh, never by a loop of its own.
 const COMM_DEPRECATED_BIN = ["bus.sh", "comm-listen.sh", "comm-wake.sh", "comm-watch.sh",
                              "codex-watch.sh", "comm-postcompact-reminder.sh",
-                             "comm-postclear-reminder.sh", "comm-session-skill.sh"]
+                             "comm-postclear-reminder.sh", "comm-session-skill.sh",
+                             "comm-pipe-request.ps1"]
 
 # The names the last successful install shipped into `<bin>`, one per line.
 const COMM_MANIFEST = ".sot-comm-installed"

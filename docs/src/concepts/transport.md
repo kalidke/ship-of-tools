@@ -18,7 +18,9 @@ same box to reach.
 Every endpoint this version can dial has one of three schemes:
 
 - `unix:<path>` / `pipe:<name>` — a local socket or named pipe, reached
-  directly.
+  only when this OS account serves it: a Rust client through
+  `connect_own`, a shell or PowerShell script through `sotd stdio-bridge
+  --endpoint`.
 - `ssh:<target>` — that box's own daemon, reached by spawning
   `ssh <target> sotd stdio-bridge` and speaking the protocol over its
   stdin/stdout. `<target>` is a plain host name (`hosts.toml`'s own

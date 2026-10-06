@@ -165,8 +165,8 @@ const PIPE_INBOUND_BYTES: u32 = 2 * sot_protocol::codec::MAX_ENVELOPE_BYTES as u
 /// pipe's inbound buffer holds a client's hello and its request, each one envelope at most the cap. After refusing a
 /// hello the daemon reads no more, and interprocess holds the dropped pipe open until the client has read the refusal
 /// (its limbo: `FlushFileBuffers` before the close), so a client that writes its hello and its request before it reads
-/// (comm-pipe-request.ps1) must be able to finish writing without the daemon reading; with the default 512-byte buffer
-/// a request longer than the daemon's read-ahead hung there until the client's own timeout. The local-socket builder
+/// (scripts/tests/pipe-request.ps1) must be able to finish writing without the daemon reading; with the default
+/// 512-byte buffer a request longer than the daemon's read-ahead hung there until the client's own timeout. The local-socket builder
 /// passes no buffer size, so the pipe is built with `PipeListenerOptions`, which it otherwise matches.
 fn bind_session(path: &str) -> Result<interprocess::local_socket::tokio::Listener> {
     #[cfg(unix)]

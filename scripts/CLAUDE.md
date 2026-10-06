@@ -105,9 +105,10 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`; `Set-SotFolderTrust` on Windows). The
   `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-apply.sh` pin it.
 - Socket and pipe paths come from `sotd session-socket-path`; no script builds one.
-- A Unix launch script reaches a daemon's socket only through `sotd stdio-bridge --endpoint` (`sot_socket_open`,
-  `restart-backend.sh`), which connects only to an endpoint this OS account serves (ADR 0049 `## User isolation`);
-  `restart-backend.sh` finds its daemon among this account's processes only.
+- A launch script reaches a daemon's socket or pipe only through `sotd stdio-bridge --endpoint` (`sot_socket_open`,
+  `restart-backend.sh`, `Test-SotPipeOpen`, `Open-SotLease`, whose lease names its bridge child), which connects only to
+  an endpoint this OS account serves (ADR 0049 `## User isolation`); a script that finds this account's daemon in a
+  process list lists only this account's processes (`restart-backend.sh`, `Get-LocalDaemonProcess`).
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and
   the handover bound, all in `rust/protocol/src/ops/lease.rs`) are pinned by `launcher_bounds_match_ops` in
   `tests/installer-state.sh`; change both sides together.
