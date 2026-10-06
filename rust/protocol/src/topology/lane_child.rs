@@ -109,11 +109,7 @@ impl BridgedClient {
         child.try_wait()
     }
 
-    fn report(&self, error: &std::io::Error) {
-        eprintln!("lane child teardown failed: {error}");
-        #[cfg(test)]
-        self.diagnostics.lock().unwrap().push(format!("lane child teardown failed: {error}"));
-    }
+    fn report(&self, _error: &std::io::Error) {}
 
     fn failure(&self, operation: &str, error: impl std::fmt::Display) -> std::io::Error {
         std::io::Error::other(format!("{operation} owned child {}: {error}", self.id))
