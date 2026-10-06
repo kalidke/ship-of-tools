@@ -146,13 +146,13 @@ async fn julia_private_signal_premise() {
     if !isolated_premise("sidecars::contract_tests::julia_private_signal_premise") {
         return;
     }
-    let root = tempfile::tempdir().expect("owned fixture root");
-    let shim = root.path().join("shim");
+    let root = tempfile::tempdir().expect("owned fixture root").keep();
+    let shim = root.join("shim");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl");
     copy_folder(&source.join("src"), &shim.join("src"));
     std::fs::copy(source.join("Project.toml"), shim.join("Project.toml"))
         .expect("copy shim project");
-    let mut command = isolated_julia(root.path(), &shim);
+    let mut command = isolated_julia(&root, &shim);
     command.args([
         "-e",
         "using ShipToolsRepl; ShipToolsRepl.serve(stdin, stdout)",
@@ -170,6 +170,7 @@ async fn julia_private_signal_premise() {
         "Julia",
     )
     .await;
+    std::fs::remove_dir_all(&root).expect("remove fixture only after confirmed reap");
 }
 
 #[tokio::test]
@@ -201,19 +202,21 @@ async fn offline_stdlib_add_premise() {
     if !isolated_premise("sidecars::contract_tests::offline_stdlib_add_premise") {
         return;
     }
-    let root = tempfile::tempdir().expect("owned package fixture root");
-    let shim = root.path().join("shim");
-    let workspace = root.path().join("workspace with spaces");
+    let root = tempfile::tempdir()
+        .expect("owned package fixture root")
+        .keep();
+    let shim = root.join("shim");
+    let workspace = root.join("workspace with spaces");
     std::fs::create_dir(&workspace).expect("create bare workspace");
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../julia/repl");
     copy_folder(&source.join("src"), &shim.join("src"));
     std::fs::copy(source.join("Project.toml"), shim.join("Project.toml"))
         .expect("copy shim project");
     let project_before = std::fs::read(shim.join("Project.toml")).expect("read copied project");
-    let registry = root.path().join("depot/registries/Fixture");
+    let registry = root.join("depot/registries/Fixture");
     std::fs::create_dir_all(&registry).expect("create owned minimal registry");
     std::fs::write(registry.join("Registry.toml"), "name = \"Fixture\"\nuuid = \"a58b057d-d7df-4e29-a186-405f45c2cafd\"\nrepo = \"\"\n[packages]\n").expect("write owned minimal registry");
-    let mut command = isolated_julia(root.path(), &workspace);
+    let mut command = isolated_julia(&root, &workspace);
     let separator = if cfg!(windows) { ';' } else { ':' };
     command.current_dir(&workspace).env(
         "JULIA_LOAD_PATH",
@@ -237,4 +240,5 @@ async fn offline_stdlib_add_premise() {
         "premise: package operation edited copied shim"
     );
     println!("D-L premise copied-shim-unchanged PASS");
+    std::fs::remove_dir_all(&root).expect("remove package fixture only after confirmed reap");
 }
