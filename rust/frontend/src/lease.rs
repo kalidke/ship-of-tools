@@ -112,6 +112,7 @@ struct Book {
     late: Option<mpsc::UnboundedSender<PendingAck>>,
     /// Each daemon's newest nonzero not-ended count no presented frame has acked, keyed at
     /// its grant by the state root it named (else its label): `owed`, `notice_seen`.
+    rt: Option<tokio::runtime::Handle>,
     owed: BTreeMap<HostKey, u32>,
 }
 
@@ -145,7 +146,7 @@ impl Leases {
             .collect();
         Arc::new(Self {
             exempt,
-            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, owed: BTreeMap::new() }),
+            book: Mutex::new(Book { slots, leaving: None, inflight: 0, late: None, rt: None, owed: BTreeMap::new() }),
             reply_wait: lease::LEASE_REPLY_WAIT,
         })
     }
@@ -304,6 +305,7 @@ impl Leases {
                     // The count and the holder its ack goes through are published under one lock: a count drawn
                     // and acked before its holder was installed would be acked to nobody and stay owed forever.
                     let mut book = self.book.lock().unwrap();
+                    book.rt.get_or_insert_with(tokio::runtime::Handle::current);
                     if res.not_ended > 0 {
                         book.owed.insert(key, res.not_ended);
                     }
@@ -413,15 +415,15 @@ impl Leases {
     /// in all, so the stream's EOF never overtakes a queued Close.
     pub fn deliver_queued(&self, bound: Duration) {
         let deadline = Instant::now() + bound;
-        let mut waits = loop {
+        let (waits, rt) = loop {
             match self.book.try_lock() {
-                Ok(book) => break book.slots.iter().filter_map(|(host, slot)| {
+                Ok(book) => break (book.slots.iter().filter_map(|(host, slot)| {
                     let holder = slot.holder.as_ref()?;
                     let (tx, rx) = oneshot::channel();
                     // A failed send leaves a closed receipt, which is unconfirmed.
                     let _ = holder.send(HolderCmd::Written(tx));
                     Some((host.clone(), rx))
-                }).collect::<Vec<_>>(),
+                }).collect::<Vec<_>>(), book.rt.clone()),
                 Err(std::sync::TryLockError::WouldBlock) => {
                     let left = deadline.saturating_duration_since(Instant::now());
                     if left.is_zero() {
@@ -433,21 +435,15 @@ impl Leases {
                 Err(std::sync::TryLockError::Poisoned(_)) => panic!("window lease book poisoned"),
             }
         };
-        let mut unwritten = Vec::new();
-        loop {
-            waits.retain_mut(|(host, rx)| match rx.try_recv() {
-                Ok(()) => false,
-                Err(TryRecvError::Closed) => { unwritten.push(host.clone()); false }
-                Err(TryRecvError::Empty) => true,
-            });
-            if waits.is_empty() { break; }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                unwritten.extend(waits.into_iter().map(|(host, _)| host));
-                break;
+        let Some(rt) = rt else { return; };
+        let unwritten = rt.block_on(async {
+            let deadline = tokio::time::Instant::now() + bound;
+            let mut unwritten = Vec::new();
+            for (host, rx) in waits {
+                if !matches!(tokio::time::timeout_at(deadline, rx).await, Ok(Ok(()))) { unwritten.push(host); }
             }
-            std::thread::sleep(left.min(Duration::from_millis(2)));
-        }
+            unwritten
+        });
         if !unwritten.is_empty() {
             tracing::warn!(hosts = ?unwritten, "window lease: exiting before every queued leave was written");
         }
