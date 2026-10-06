@@ -44,9 +44,9 @@ fn bind_with(tag: &str, before_bind: impl FnOnce(&std::path::Path)) -> (Bound, P
             .as_nanos()
     );
     #[cfg(windows)]
-    let (path, folder) = (PathBuf::from(format!(r"\\.\pipe\{unique}")), Folder(None));
+    let path = PathBuf::from(format!(r"\\.\pipe\{unique}"));
     #[cfg(not(windows))]
-    let (path, folder) = {
+    let path = {
         // macOS's temp_dir() is long enough to overflow sun_path
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let _ = &unique;
@@ -58,13 +58,13 @@ fn bind_with(tag: &str, before_bind: impl FnOnce(&std::path::Path)) -> (Bound, P
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::DirBuilder::new().mode(0o700).create(&dir).expect("private folder");
-        let folder = Folder(Some(dir));
-        (folder.0.as_ref().unwrap().join("s.sock"), folder)
+        dir.join("s.sock")
     };
     let _ = std::fs::remove_file(&path);
     before_bind(&path);
     let name = path.to_str().unwrap().to_fs_name::<GenericFilePath>().unwrap();
     let listener = ListenerOptions::new().name(name).create_tokio().expect("bind");
+    let folder = Folder(if cfg!(windows) { None } else { path.parent().map(PathBuf::from) });
     (Bound { listener, _folder: folder }, path)
 }
 
