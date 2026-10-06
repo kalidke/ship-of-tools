@@ -106,9 +106,10 @@ struct Leg<'t, P> {
 
 /// Run one producer under a capsule, generic over `P: Producer` (ADR 0043
 /// "Decisions for LU2"). Blocks until the run ends — either the producer
-/// exits on its own, `commands` delivers [`Command::Kill`], or the mgmt
-/// lane's `shutdown` drives `Action::Shutdown` once its ack is physically
-/// written (ADR 0041 Lifecycle: an externally requested end — EndRun).
+/// exits on its own, `commands` delivers [`Command::Kill`], or a mgmt
+/// `shutdown` commits the durable EndRun latch. The latch starts teardown
+/// without waiting for physical ack completion; the ack grace bounds
+/// the wait for a pending shutdown acknowledgement (ADR 0041 EndRun).
 /// `commands` mirrors `claude.rs`'s `operator: mpsc::Receiver<OperatorCmd>`
 /// parameter; the caller owns its `Sender` (see the module doc's
 /// stdin-ownership point). `transport` is the ADR 0041 step-5 pipe

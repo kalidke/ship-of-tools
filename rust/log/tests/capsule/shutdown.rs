@@ -326,33 +326,8 @@ fn aggregate_teardown_expiry_is_terminal_not_a_silent_seal() {
     );
 }
 
-/// Test 13 (U1a, ADR 0041 EndRun state machine item 4 / "ack grace"): a
-/// mgmt `shutdown` accepted during teardown (mirroring "a request accepted
-/// in the final service poll") must have its `ShutdownAck` physically
-/// written before this capsule's own transport disappears — proven by
-/// holding that ack's completion and observing `run` genuinely blocks
-/// rather than tearing the pipe down out from under it, then releasing it
-/// and observing `run` completes promptly.
-///
-/// U1a Codex round-1, Blocker 3 discharge: an EARLIER version of this test
-/// held the ack while running a persistent `cmd.exe` but never sent
-/// `Command::Kill` -- since `AttachAction::Shutdown` (which sets
-/// `shutdown_requested`) is only emitted once THIS SAME held ack is
-/// reported physically written, `run` never reached teardown AT ALL, let
-/// alone the grace loop, and the test could only time out. A SEPARATE
-/// cause (here, `Command::Kill`) must drive the primary into teardown
-/// independently of the held connection.
-///
-/// U1a Codex round-1, minor cluster: the "still blocked" observation is a
-/// CONTINUOUS poll against `shutdown_all_call_count` (the actual
-/// mechanism-relevant signal), not one sleep-then-check at an arbitrary
-/// point -- a single check at, say, 500ms can pass merely because
-/// ordinary Phase A/B teardown itself hadn't finished yet, proving
-/// nothing about the grace specifically. Polling continuously up to a
-/// GENEROUS floor (1.5s, safely under the 2s grace and safely over the
-/// sub-second teardown a trivial killed `cmd.exe` takes) means ANY early
-/// firing is caught the instant it happens, regardless of how long
-/// ordinary teardown took to get there.
+/// Observe shutdown with its ack held, from before the management request.
+/// The conservative floor does not identify the teardown phase.
 #[test]
 fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     let _serial = serial();
@@ -360,36 +335,30 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace1", argv, 80, 25);
     let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
         capsule::run::<P>(cfg, rx, &mut t)
     });
 
-    // A SEPARATE cause drives the primary into teardown (an operator kill,
-    // mirroring a natural producer exit just as well) -- the late mgmt
-    // connection below is a RACING request, not what ends the run.
+    // The management request can start teardown before Kill; the floor does not identify grace.
     const LATE_MGMT: ConnId = 1;
     transport.open(LATE_MGMT);
     transport.set_hold_for(LATE_MGMT, true); // never completes on its own
+    let floor = Instant::now() + Duration::from_millis(1500);
     transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
     let mut watcher = FrameWatcher::new(&transport);
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    tx.send(Command::Kill).unwrap();
-
-    // The ack's bytes are already QUEUED (proven above via `wait_for`, which
-    // watches queued bytes, not completions) but its physical-write
-    // completion is HELD -- `run` must not let its transport disappear
-    // while that is true. Continuous poll, not one snapshot: an ORDER
-    // assertion that holds regardless of how long ordinary teardown itself
-    // happens to take.
-    let floor = Instant::now() + Duration::from_millis(1500);
-    while Instant::now() < floor {
+    // The management request can start teardown before Kill; the floor does not identify grace.
+    loop {
         assert!(!transport.shutdown_all_was_called(), "shutdown_all must not run before the grace resolves");
         assert!(!handle.is_finished(), "the ack grace must hold the transport open until the late ack completes");
+        if Instant::now() >= floor {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
 
@@ -409,25 +378,8 @@ fn shutdown_ack_grace_defers_transport_shutdown_until_the_late_ack_completes() {
     assert_eq!(dead["reason"], "late-in-teardown");
 }
 
-/// Test 14 (U1a): the grace is a DEADLINE, not an indefinite wait — if the
-/// late ack's completion never arrives, `run` still completes once
-/// `SHUTDOWN_ACK_GRACE` (2s) elapses, and `shutdown_all` still runs
-/// afterward.
-///
-/// U1a Codex round-1, Blocker 3 discharge: as in the test above, a
-/// SEPARATE `Command::Kill` drives teardown -- the held connection's own
-/// `shutdown` request never completes its ack, so it can never itself
-/// trigger `AttachAction::Shutdown`/`shutdown_requested`.
-///
-/// U1a Codex round-1, minor cluster: no clock-injection seam exists for
-/// `SHUTDOWN_ACK_GRACE` inside `run` (it is a real integration test
-/// against a real ConPTY producer, so real time is unavoidable at this
-/// level regardless) — the continuous pre-deadline poll below is the
-/// ORDER assertion the review asked for, layered ON TOP of (not instead
-/// of) confirming the pinned 2s bound itself: the lower-bound duration
-/// check only fires if the deadline expired too early, which real-clock
-/// scheduler jitter can only ever make LARGER, never smaller, so it is
-/// not a source of flake in this direction.
+/// Observe shutdown with its ack held, from before the management request.
+/// The conservative floor does not identify the teardown phase.
 #[test]
 fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     let _serial = serial();
@@ -435,7 +387,7 @@ fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace2", argv, 80, 25);
     let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -445,16 +397,13 @@ fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     const LATE_MGMT: ConnId = 1;
     transport.open(LATE_MGMT);
     transport.set_hold_for(LATE_MGMT, true); // NEVER released -- proves the deadline, not the release
+    let started = Instant::now();
     transport.feed(LATE_MGMT, frame::mgmt_shutdown("never-acked"));
     let mut watcher = FrameWatcher::new(&transport);
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    tx.send(Command::Kill).unwrap();
-
-    let started = Instant::now();
-    // ORDER assertion: continuously poll a floor safely under the 2s
-    // grace, asserting it has NOT expired early.
+    // The management request can start teardown before Kill; the floor does not identify grace.
     let floor = started + Duration::from_millis(1500);
     while Instant::now() < floor {
         assert!(!transport.shutdown_all_was_called(), "must not expire the grace early");
@@ -474,11 +423,7 @@ fn shutdown_ack_grace_expires_and_teardown_still_completes() {
     );
 }
 
-/// Test 15 (U1a Codex round-1, Major 6 discharge): the grace drains only
-/// what is ALREADY pending — a brand new connection arriving squarely
-/// inside the grace window must be closed outright, with NO reply ever
-/// sent for its request, rather than admitted and given almost none of
-/// the 2s the "final service poll" guarantee actually promises.
+/// Observe a new connection closed without a reply before transport shutdown.
 #[test]
 fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
     let _serial = serial();
@@ -486,7 +431,7 @@ fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
     let argv = vec![SHELL_ARGV.to_string()]; // stays open until killed
     let cfg = config(dir.path(), "ackgrace3", argv, 80, 25);
     let transport = TestTransport::new();
-    let (tx, rx) = mpsc::channel();
+    let (_tx, rx) = mpsc::channel();
     let run_transport = transport.clone();
     let handle = std::thread::spawn(move || {
         let mut t = run_transport;
@@ -496,40 +441,59 @@ fn shutdown_ack_grace_admits_no_new_connections_or_bytes() {
     const LATE_MGMT: ConnId = 1;
     transport.open(LATE_MGMT);
     transport.set_hold_for(LATE_MGMT, true); // held throughout -- keeps the grace open for this whole test
+    let floor = Instant::now() + Duration::from_millis(500);
     transport.feed(LATE_MGMT, frame::mgmt_shutdown("late-in-teardown"));
     let mut watcher = FrameWatcher::new(&transport);
     watcher.wait_for("late mgmt shutdown_ok queued", LATE_MGMT, Duration::from_secs(10), |f| {
         matches!(f, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ShutdownOk)).then_some(())
     });
-    tx.send(Command::Kill).unwrap();
-
-    // Confirm we are GENUINELY mid-grace (not merely "still doing ordinary
-    // Phase A/B teardown") before probing the new-admission behavior --
-    // the same continuous-poll proof the other ack-grace tests use.
-    let floor = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < floor {
+    loop {
         assert!(!handle.is_finished(), "the ack grace must still be holding at this point");
+        if Instant::now() >= floor {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // A brand NEW connection, opened squarely inside the confirmed-active
-    // grace window: it must be closed outright, and no reply may ever be
-    // sent to it.
-    const NEW_CONN: ConnId = 2;
-    transport.open(NEW_CONN);
-    transport.feed(NEW_CONN, frame::mgmt_probe());
+    let assert_ack_pending = || {
+        assert!(!transport.closed_conns().contains(&LATE_MGMT), "the held ack connection must remain open");
+        assert!(!handle.is_finished(), "run must remain unfinished while observing rejection");
+        assert!(!transport.shutdown_all_was_called(), "rejection must precede transport shutdown");
+    };
     let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline && !transport.closed_conns().contains(&NEW_CONN) {
+    let mut candidate: ConnId = 2;
+    assert_ack_pending();
+    transport.open(candidate);
+    transport.feed(candidate, frame::mgmt_probe());
+    loop {
+        assert_ack_pending();
+        assert!(Instant::now() < deadline, "no closed/no-reply connection observed before the probe bound");
+        let sent = transport.sent_frames();
+        let replies: Vec<_> = sent.iter().filter(|(conn, _)| *conn == candidate).collect();
+        if !replies.is_empty() {
+            let mut splitter = wire::FrameSplitter::new();
+            for (_, bytes) in replies {
+                let (frames, err) = splitter.feed(bytes);
+                assert_eq!(err, None, "unexpected probe reply wire error");
+                assert!(
+                    frames.iter().all(|frame| matches!(frame, wire::DecodedFrame::MgmtReply(wire::MgmtReply::ProbeOk))),
+                    "an admitted management probe must receive ProbeOk"
+                );
+            }
+            transport.close_conn(candidate);
+            candidate += 1;
+            transport.open(candidate);
+            transport.feed(candidate, frame::mgmt_probe());
+        } else if transport.closed_conns().contains(&candidate) {
+            assert!(
+                transport.sent_frames().iter().all(|(conn, _)| *conn != candidate),
+                "no reply may ever be sent to a connection rejected during the ack grace"
+            );
+            assert_ack_pending();
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(
-        transport.closed_conns().contains(&NEW_CONN),
-        "a connection opened during the ack grace must be closed, never left admitted"
-    );
-    assert!(
-        transport.sent_frames().iter().all(|(c, _)| *c != NEW_CONN),
-        "no reply may ever be sent to a connection admitted during the ack grace"
-    );
 
     transport.release_held();
     let summary = wait_for_join(handle, Duration::from_secs(10))

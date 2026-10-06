@@ -174,6 +174,8 @@ fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the
     let state_dir = dir.path().join("state-with-no-supervisor-ever-run");
     std::fs::create_dir_all(&state_dir).unwrap();
 
+    // Anchor before attach and always pump once before the deadline exit.
+    let spell = Instant::now() + Duration::from_secs(2);
     let mut client = FeAttachClient::<PlatformEndpoint>::attach_headless(
         PlatformEndpoint::default(),
         state_dir_hash(&state_dir),
@@ -181,12 +183,12 @@ fn headless_attach_against_a_pointerless_state_dir_waits_and_shutdown_closes_the
     )
     .expect("attach_headless (the constructor itself never touches the network)");
 
-    // A spell long enough for several fail-fast connect rounds and their
-    // backoffs; the client must still be waiting, not dead, not checkpointed.
-    let spell = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < spell {
+    loop {
         client.pump();
         assert!(!client.is_dead(), "a pointerless state dir is a wait, never a terminal client (status={})", client.status_line());
+        if Instant::now() >= spell {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(!client.is_checkpointed(), "no checkpoint can exist without a supervisor");
