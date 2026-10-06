@@ -466,7 +466,7 @@ impl ContainedStd {
         self.reaped.is_some()
     }
 
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     pub(crate) fn id(&self) -> u32 {
         self.child.id()
     }

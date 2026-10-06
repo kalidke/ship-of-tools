@@ -11,6 +11,7 @@
 //! containment identity across that wait. Explicit kill requests termination first.
 //! Requests run under the registry lock. [`crate::lifecycle::child_signal::Signal::spawn`]
 //! owns the registry; this module holds nothing but the platform calls.
+//! On macOS only, a real group-request EPERM counts as no live member only after checked observation confirms that the retained leader has exited without being reaped and a complete libproc process-group membership/status query finds no live member; live, failed or ambiguous observations preserve the original error, and leader requests and injected failures remain independently checked. No Unix signal or process-group identity query occurs after leader reap.
 
 /// One child's containment. Explicit termination checks requests; Drop logs failures.
 pub(crate) struct Tree {
@@ -137,7 +138,7 @@ thread_local! {
     pub(crate) static REAP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A group and its unreaped leader are checked independently; ESRCH alone means already absent.
+/// A group and its unreaped leader are checked independently. macOS also recognizes a checked all-zombie group.
 #[cfg(unix)]
 fn request(pid: i32, group: bool) -> std::io::Result<()> {
     // SAFETY: the caller retains the unreaped leader identity, and this only signals its own group or leader.
@@ -150,6 +151,19 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
             libc::kill(pid, libc::SIGKILL)
         }
     };
+    // Capture errno before observations or test hooks can overwrite it.
+    let result = if rc == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) };
+    #[cfg(target_os = "macos")]
+    let result = match result {
+        Err(error) if group && error.raw_os_error() == Some(libc::EPERM) => match macos::checked_no_live_group(pid) {
+            Ok(()) => Ok(()),
+            Err(observation) => {
+                tracing::debug!(%observation, "macOS group EPERM: no-live observation rejected");
+                Err(error)
+            }
+        },
+        result => result,
+    };
     #[cfg(test)]
     if REQUEST_FAILURE.with(|failure| failure.get() & if group { 1 } else { 2 } != 0) {
         return Err(std::io::Error::other(if group {
@@ -158,14 +172,142 @@ fn request(pid: i32, group: bool) -> std::io::Result<()> {
             "injected leader request failure"
         }));
     }
-    if rc == 0 {
-        return Ok(());
+    match result {
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        result => result,
     }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
+}
+
+#[cfg(target_os = "macos")]
+pub(super) mod macos {
+    use std::io;
+
+    // sys/proc_info.h in the macOS SDK. libc supplies both functions, proc_bsdinfo, PROC_PIDTBSDINFO and SZOMB.
+    const PROC_PGRP_ONLY: u32 = 2;
+
+    #[cfg(test)]
+    thread_local! {
+        pub(crate) static FAULT: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+        pub(crate) static EVENTS: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn rejected() -> io::Error {
+        io::Error::other("incomplete, live or inconsistent macOS group observation")
+    }
+
+    pub(in crate::lifecycle) fn checked_no_live_group(leader: i32) -> io::Result<()> {
+        leader_exited(leader)?;
+        let members = members(leader, false)?;
+        let identities = members.iter().map(|&pid| zombie(pid, leader, false)).collect::<io::Result<Vec<_>>>()?;
+        if members != self::members(leader, true)? {
+            return Err(rejected());
+        }
+        for (&pid, identity) in members.iter().zip(identities) {
+            if zombie(pid, leader, true)? != identity {
+                return Err(rejected());
+            }
+        }
+        leader_exited(leader)
+    }
+
+    fn leader_exited(leader: i32) -> io::Result<()> {
+        if leader <= 0 {
+            return Err(rejected());
+        }
+        #[cfg(test)]
+        EVENTS.with(|events| events.borrow_mut().push("exited-unreaped"));
+        // SAFETY: observe only the exclusively retained direct child; WNOWAIT never releases its identity.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc =
+            unsafe { libc::waitid(libc::P_PID, leader as _, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if info.si_signo != libc::SIGCHLD
+            || unsafe { info.si_pid() } != leader
+            || !matches!(info.si_code, libc::CLD_EXITED | libc::CLD_KILLED | libc::CLD_DUMPED)
+        {
+            return Err(rejected());
+        }
         Ok(())
-    } else {
-        Err(error)
+    }
+
+    fn members(leader: i32, _recheck: bool) -> io::Result<Vec<i32>> {
+        #[cfg(test)]
+        EVENTS.with(|events| events.borrow_mut().push("members-any-uid"));
+        // SAFETY: the SDK sizing call writes nothing and queries the retained group, without a uid filter.
+        let needed = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, leader as _, std::ptr::null_mut(), 0) };
+        let width = std::mem::size_of::<i32>();
+        let mut capacity = usize::try_from(needed).ok().filter(|n| *n > 0 && *n % width == 0).ok_or_else(rejected)?;
+        for _ in 0..4 {
+            let bytes = capacity.checked_add(width).filter(|n| *n <= 4 * 1024 * 1024).ok_or_else(rejected)?;
+            let size = i32::try_from(bytes).map_err(|_| rejected())?;
+            let mut pids = vec![0i32; bytes / width];
+            // SAFETY: the writable buffer has exactly size bytes and every returned entry is validated below.
+            let count = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, leader as _, pids.as_mut_ptr().cast(), size) };
+            #[cfg(test)]
+            let count = match FAULT.with(|fault| fault.get()) {
+                1 => -1,
+                2 => size,
+                9 => 1,
+                _ => count,
+            };
+            let count = usize::try_from(count)
+                .ok()
+                .filter(|n| *n > 0 && *n <= bytes && *n % width == 0)
+                .ok_or_else(rejected)?;
+            if count == bytes {
+                capacity = bytes.checked_mul(2).ok_or_else(rejected)?;
+                continue;
+            }
+            pids.truncate(count / width);
+            #[cfg(test)]
+            match FAULT.with(|fault| fault.get()) {
+                5 => pids.retain(|&pid| pid != leader),
+                8 if _recheck => pids.clear(),
+                _ => {}
+            }
+            pids.sort_unstable();
+            if !pids.contains(&leader) || pids.iter().any(|&pid| pid <= 0) || pids.windows(2).any(|p| p[0] == p[1]) {
+                return Err(rejected());
+            }
+            return Ok(pids);
+        }
+        Err(rejected())
+    }
+
+    fn zombie(pid: i32, leader: i32, _recheck: bool) -> io::Result<(u64, u64)> {
+        #[cfg(test)]
+        EVENTS.with(|events| events.borrow_mut().push("status"));
+        // SAFETY: libc's SDK layout is the full BSD record. arg=1 includes zombies (proc_info.c findzomb).
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = i32::try_from(std::mem::size_of_val(&info)).map_err(|_| rejected())?;
+        let count = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 1, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+        };
+        #[cfg(test)]
+        let count = match FAULT.with(|fault| fault.get()) {
+            3 => -1,
+            4 => size - 1,
+            _ => count,
+        };
+        #[cfg(test)]
+        match FAULT.with(|fault| fault.get()) {
+            6 => info.pbi_status = libc::SRUN,
+            7 => info.pbi_status = u32::MAX,
+            10 => info.pbi_pid = 0,
+            11 => info.pbi_pgid = 0,
+            12 if _recheck => info.pbi_start_tvusec = info.pbi_start_tvusec.wrapping_add(1),
+            _ => {}
+        }
+        if count != size
+            || info.pbi_pid != pid as u32
+            || info.pbi_pgid != leader as u32
+            || info.pbi_status != libc::SZOMB
+        {
+            return Err(rejected());
+        }
+        Ok((info.pbi_start_tvsec, info.pbi_start_tvusec))
     }
 }
 
