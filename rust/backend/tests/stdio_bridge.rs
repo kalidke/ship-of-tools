@@ -1,5 +1,6 @@
 #![cfg(unix)]
-//! `sotd stdio-bridge [--host <host>]` against real processes — the claims
+//! `sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]`
+//! against real processes — the claims
 //! its callers depend on, each proved by running the real binary with real
 //! pipes rather than by calling into `stdio_bridge::run`:
 //!
@@ -13,8 +14,8 @@
 //! 2. **`--host <host>` reaches the hub's relay socket for that host**, a
 //!    different derivation (`topology::relay_socket_path`) than the
 //!    no-argument form — proved by the same byte-transparency round trip.
-//! 3. **A third form is a usage error** — nonzero, one line on stderr
-//!    naming the usage, nothing on stdout.
+//! 3. **An unrecognised form is a usage error** — nonzero, one line on stderr
+//!    naming all supported forms, nothing on stdout.
 //! 4. **A missing endpoint is a prompt, named failure** — nonzero at once,
 //!    one line on stderr naming it, nothing at all on stdout. The value of
 //!    the code is deliberately not asserted: there is one failure code,
@@ -217,6 +218,45 @@ fn dash_dash_host_reaches_the_hubs_relay_socket_for_that_host() {
     round_trip(&socket, &["--host", "bridge-host"]);
 }
 
+/// ADR 0049, User isolation: a local endpoint in this account's private folder is reached byte-for-byte.
+#[test]
+fn dash_dash_endpoint_reaches_a_socket_in_a_private_folder() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = runtime_root().join("endpoint.sock");
+    let endpoint = format!("unix:{}", socket.display());
+    round_trip(&socket, &["--endpoint", &endpoint]);
+}
+
+/// ADR 0049, User isolation: a socket outside this account's private folder is never connected to.
+#[test]
+fn dash_dash_endpoint_refuses_a_socket_outside_a_private_folder() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let socket = std::path::PathBuf::from(format!("/tmp/sotbr-open-{}.sock", std::process::id()));
+    let listener = UnixListener::bind(&socket).expect("bind the public-folder listener");
+    listener.set_nonblocking(true).expect("nonblocking listener");
+    let endpoint = format!("unix:{}", socket.display());
+    let out = spawn_bridge(&["--endpoint", &endpoint]).wait_with_output().expect("wait for the bridge");
+    std::fs::remove_file(&socket).expect("remove the test's socket");
+    assert!(!out.status.success(), "a socket outside a private folder is refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("is not a private folder of this OS account"), "{stderr:?}");
+    assert!(out.stdout.is_empty(), "a refusal writes nothing to stdout");
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+        "the bridge connected to a socket outside a private folder");
+}
+
+/// ADR 0049, User isolation: the endpoint form accepts only this platform's local scheme.
+#[test]
+fn dash_dash_endpoint_refuses_the_other_platforms_scheme() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let out = spawn_bridge(&["--endpoint", "pipe:x"]).wait_with_output().expect("wait for the bridge");
+    assert!(!out.status.success(), "the other platform's scheme is refused");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stderr.lines().count(), 1, "one line names the refused endpoint: {stderr:?}");
+    assert!(stderr.contains("pipe:x"), "{stderr:?}");
+    assert!(out.stdout.is_empty(), "a refusal writes nothing to stdout");
+}
+
 #[test]
 fn a_third_form_is_a_usage_error() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -228,7 +268,10 @@ fn a_third_form_is_a_usage_error() {
     assert!(out.stdout.is_empty(), "nothing may reach stdout on the usage-error path: {:?}", out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stderr.lines().count(), 1, "one line names the usage: {stderr:?}");
-    assert!(stderr.contains("Usage: sotd stdio-bridge [--host <host>]"), "{stderr:?}");
+    assert!(
+        stderr.contains("Usage: sotd stdio-bridge [--host <host> | --endpoint <unix:PATH|pipe:PATH>]"),
+        "{stderr:?}"
+    );
 }
 
 #[test]

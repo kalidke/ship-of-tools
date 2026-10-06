@@ -34,6 +34,9 @@ resolves this box's own daemon, at the label this box resolves for
 itself — never one a caller names, which is exactly the mistake that let
 a Windows box dial a pipe nothing listens on.
 
+`--endpoint <unix:path|pipe:path>` is for a script on this same box that
+already holds a local endpoint; the ssh forms above never carry one.
+
 ## What `sotd topology plan` gives out
 
 `sotd topology plan --self <host>` answers, one fact per line: `self`,

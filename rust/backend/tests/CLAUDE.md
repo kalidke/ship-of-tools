@@ -22,7 +22,7 @@ own home, config, state, runtime and comm folders. The suites span subsystems, s
 - `preview_order.rs`: server; a `preview.get` written behind a `preview.set_scale` on one connection carries the new scale
 - `relay_refresh.rs`: topology; `sotd topology refresh` on a scratch hub with a stand-in `systemctl`
 - `status_integration.rs`: topology; `sotd status` against a real daemon the test starts and stops
-- `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host]` with real pipes and real processes
+- `stdio_bridge.rs`: topology; `sotd stdio-bridge [--host | --endpoint]` with real pipes and real processes
 - `subcommand_help.rs`: server; every `sotd` subcommand's `--help` prints usage and dials nothing
 - `topology_set.rs`: topology; `topology.set` and `topology.changed` over the wire; a hub daemon started from umask 022 creates its comm files owner-only
 - `window_start.rs`: lifecycle; a daemon's start from `held.json`, resumed or ended rows
