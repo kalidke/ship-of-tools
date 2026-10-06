@@ -324,28 +324,25 @@ check "a live daemon from another prefix refuses before any FE file is even look
     "$(installer_ownership_gate "$OTHER_PREFIX/bin/sotd" "$GHOME" "$GPREFIX" Linux 1 0)"
 
 case_start "ensure_never_removes_the_socket"
-# --- an nc that cannot probe a UNIX socket never deletes it -----
-# netcat-traditional has no -U, so its probe of a LIVE daemon's socket failed and
-# the wrapper removed the socket.
+# A socket the bridge refuses is not this account's daemon: the ensure starts one and the socket stays.
 LBIN="$WORK/launch-bin"; mkdir -p "$LBIN"
-cat > "$LBIN/nc" <<'NC'
-#!/bin/sh
-# netcat-traditional: its help lists no -U, and -U is an invalid option.
-case "$1" in -h) printf '[v1.10-47]\n\t-u\t\t\tUDP mode\n' >&2; exit 1 ;; esac
-echo "nc: invalid option -- 'U'" >&2; exit 1
-NC
 cat > "$LBIN/sotd" <<'SOTD'
 #!/bin/sh
+[ "$1" != stdio-bridge ] || exit 1
 : > "$(dirname "$0")/sotd-started"
 SOTD
-chmod +x "$LBIN/nc" "$LBIN/sotd"
+chmod +x "$LBIN/sotd"
 LSOCK="$WORK/sot.sock"
-python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$LSOCK"
+python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(60)' "$LSOCK" &
+LPID=$!
+for _ in {1..100}; do [ -S "$LSOCK" ] && break; sleep 0.05; done
+[ -S "$LSOCK" ] || { echo 'FAIL socket fixture did not bind' >&2; kill "$LPID"; wait "$LPID" || true; exit 1; }
 LAUNCH_RC="$(SOCKET="$LSOCK" PATH="$LBIN:$PATH" bash -c '. "'"$(dirname "$0")"'/../lib/sot-daemon.sh"
     sleep() { if [ "$1" = 1 ]; then command sleep 1; fi; }  # the probe waits for real, the retries do not
     sot_daemon_ensure "'"$WORK"'/launch" "'"$LBIN"'/sotd" "$SOCKET"; echo $?' 2>/dev/null)" || LAUNCH_RC=exited
-check "an nc without -U leaves the socket in place and starts no daemon" \
-    "0 socket=yes started=no" \
+kill "$LPID"; wait "$LPID" || true
+check "a socket the bridge refuses stays while the ensure starts its own daemon" \
+    "1 socket=yes started=yes" \
     "$LAUNCH_RC socket=$([ -S "$LSOCK" ] && echo yes || echo no) started=$([ -e "$LBIN/sotd-started" ] && echo yes || echo no)"
 
 # ---------------------------------------------------------------------------
@@ -528,7 +525,7 @@ done
 
 # ---------------------------------------------------------------------------
 # Wrapper fixture: the rendered sot-launch under the sandboxed PATH. Event log
-# lines: probe (nc), spawn (sot), rollback / apply (sot-apply), hop (a re-exec'd
+# lines: probe (the bridge), spawn (sot), rollback / apply (sot-apply), hop (a re-exec'd
 # wrapper), plus the systemctl and pkill argv.
 # <dir> <sot exit codes> <owned 1|0> <pending 1|0> <apply: rollback-only|consume>
 mk_wrapper() {
@@ -536,12 +533,6 @@ mk_wrapper() {
     lib="$prefix/repo/current/scripts/lib"
     mkdir -p "$d/stubs" "$d/home/.local/bin" "$d/home/.config/systemd/user" "$prefix/bin" "$prefix/updates" "$lib"
     mk_stubs "$d/stubs"
-    cat > "$d/stubs/nc" <<'NC'
-#!/bin/sh
-case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
-echo probe >> "$STUB_LOG"
-exit 0
-NC
     cat > "$d/stubs/systemctl" <<'SC'
 #!/bin/sh
 printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
@@ -552,7 +543,7 @@ SC
 echo pkill >> "$STUB_LOG"
 exit 0
 PK
-    chmod +x "$d/stubs/nc" "$d/stubs/systemctl" "$d/stubs/pkill"
+    chmod +x "$d/stubs/systemctl" "$d/stubs/pkill"
     [ "$owned" = 1 ] || rm -f "${d:?}/stubs/systemctl"
     cp "$LIB" "$lib/sot-daemon.sh"
     printf '%s\n' "$codes" > "$d/codes"
@@ -560,6 +551,9 @@ PK
     python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
     cat > "$prefix/bin/sotd" <<SD
 #!/bin/sh
+case "\$1 \$2 \$3" in
+    "stdio-bridge --endpoint unix:"*) echo probe >> "\$STUB_LOG"; exit 0 ;;
+esac
 [ "\$1" = session-socket-path ] && echo "$d/sot.sock"
 exit 0
 SD
@@ -660,24 +654,22 @@ check "an apply that leaves the pointer re-execs nothing and spawns once" \
 
 # ---------------------------------------------------------------------------
 case_start "dev_launcher_ensures"
-# The dev launcher (pipefail) under the sandboxed PATH. nc's -h lists -U and
-# exits 1; its -U probe connects for real, and the sotd stub, like the daemon,
-# unlinks a stale socket before it binds.
+# The dev launcher (pipefail) under the sandboxed PATH. The bridge probe connects
+# for real, and the sotd stub, like the daemon, unlinks a stale socket before it binds.
 dev_row() {  # <dir> <stale socket 0|1> <description>
     local d="$1"
     mkdir -p "$d/repo/scripts/lib" "$d/home/.local/share/sot/bin" "$d/stubs"
     mk_stubs "$d/stubs"; rm -f "${d:?}/stubs/systemctl" "${d:?}/stubs/sotd"
-    cat > "$d/stubs/nc" <<'NC'
-#!/bin/sh
-case "$1" in -h) printf '\t-U\t\t\tUNIX socket\n' >&2; exit 1 ;; esac
-exec python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' "$2"
-NC
     cp "$(dirname "$0")/../launch-sot.sh" "$d/repo/scripts/launch-sot.sh"
     cp "$(dirname "$0")/../lib/sot-hosts.sh" "$d/repo/scripts/lib/sot-hosts.sh"
     cp "$LIB" "$d/repo/scripts/lib/sot-daemon.sh"
     : > "$d/log"
     cat > "$d/home/.local/share/sot/bin/sotd" <<SD
 #!/bin/sh
+case "\$1 \$2 \$3" in
+    "stdio-bridge --endpoint unix:"*)
+        exec python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).connect(sys.argv[1])' "\${3#unix:}" ;;
+esac
 case "\$1 \$2" in
     "topology sync") exit 0 ;;
     "topology plan") printf 'self testbox\ndial testbox unix:$d/sot.sock\n'; exit 0 ;;
@@ -693,7 +685,7 @@ SD
 #!/bin/sh
 echo "fe \$([ -S "$d/sot.sock" ] && echo yes || echo no)" >> "$d/log"
 FE
-    chmod +x "$d/stubs/nc" "$d/home/.local/share/sot/bin/sotd" "$d/fe"
+    chmod +x "$d/home/.local/share/sot/bin/sotd" "$d/fe"
     [ "$2" != 1 ] || python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/sot.sock"
     ( HOME="$d/home" PATH="$d/stubs:$TOOLS" SOT_PREFIX= SOT_NO_UPDATE=1 SOT_FRONTEND_BIN="$d/fe" bash "$d/repo/scripts/launch-sot.sh" ) >/dev/null 2>&1 || true
     check "$3" "started $d/home/.local/share/sot/bin/sotd fe yes" "$(events "$d")"
@@ -751,6 +743,36 @@ check "sot-lease.ps1's hello is a handoff" "yes" "$(grep -qF "\"role\":\"$HANDOF
 
 # ---------------------------------------------------------------------------
 printf '\n'
+# ---------------------------------------------------------------------------
+case_start "restart_backend_judges_this_accounts_daemon"
+d="$WORK/restart-own"; mkdir -p "$d/repo/scripts" "$d/repo/rust/target/release" "$d/stubs"
+cp "$(dirname "$0")/../restart-backend.sh" "$d/repo/scripts/"
+cat > "$d/repo/rust/target/release/sotd" <<SD
+#!/bin/sh
+case "\$1 \$2 \$3" in
+    "stdio-bridge --endpoint unix:"*) exit 0 ;;
+esac
+[ "\$1" = session-socket-path ] && echo "$d/sot.sock"
+exit 0
+SD
+cat > "$d/stubs/ps" <<PS
+#!/bin/sh
+case "\$1" in
+    -u) printf '333 /x/bin/sotd --project-root /x --label sot\n222 /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock\n' ;;
+    -eo) printf '111 /other/bin/sotd --project-root /other --label sot\n333 /x/bin/sotd --project-root /x --label sot\n222 /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock\n' ;;
+    -p) echo 5 ;;
+esac
+PS
+printf '#!/bin/sh\nexit 1\n' > "$d/stubs/systemctl"
+chmod +x "$d/repo/rust/target/release/sotd" "$d/stubs/ps" "$d/stubs/systemctl"
+python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(60)' "$d/sot.sock" &
+RPID=$!
+for _ in {1..100}; do [ -S "$d/sot.sock" ] && break; sleep 0.05; done
+[ -S "$d/sot.sock" ] || { echo 'FAIL restart socket fixture did not bind' >&2; kill "$RPID"; wait "$RPID" || true; exit 1; }
+restart_line="$(PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
+kill "$RPID"; wait "$RPID" || true
+starts_with "restart judges this account's daemon on this socket" "running daemon pid 222 " "$restart_line"
+
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'
 else

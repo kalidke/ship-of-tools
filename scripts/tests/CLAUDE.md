@@ -5,7 +5,7 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 
 ## Files
 - `installer-state.sh`: install.sh's decisions, the rendered unit and wrapper, `sot_daemon_ensure`, the log pruner,
-  and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
+  the bridge probe refusal and the account-filtered restart judge, and the pinned bounds and copies. Runs in the `rust.yml` step "Test installer state (bash)" (ubuntu leg) and in
   `rc-gate.sh`.
 - `installer-apply.sh`: `sot-apply.sh` apply and rollback, the one-copy helper and the network refusal. Runs in the
   `rust.yml` step "Test installer apply (bash)" (ubuntu leg) and in `rc-gate.sh`.
@@ -143,7 +143,8 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
 - `installer-support.sh` sources `install.sh` with `SOT_INSTALL_SOURCE_ONLY=1` and `lib/sot-daemon.sh` for both installer
   suites; `installer-state.sh` reads `rust/protocol/src/ops/lease.rs` for the pinned bounds (`launcher_bounds_match_ops`), so a
   rename there breaks it.
-- The suites stub `sotd` (and `systemctl`, `nc` in `installer-support.sh`); none needs a network. `test-local-daemon.ps1`
+- The suites stub `sotd` (whose `stdio-bridge --endpoint` arm makes the probe) and `systemctl` in
+  `installer-support.sh`; none needs a network. `test-local-daemon.ps1`
   sections 3 to 6 need a real `sotd.exe`: a failure on CI when absent, a skip elsewhere.
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.

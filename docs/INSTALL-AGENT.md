@@ -410,10 +410,10 @@ For backend roles, prove the daemon answers a hello. Two branches:
   and refuses to update when dirty.)
 
 Then probe its socket (success = it prints `backend answers: <the release
-version>`). The probe needs `nc` — minimal server images may lack it; if
-`command -v nc` fails, install it (or skip the probe and rely on the
-systemd-active check), and do NOT report a healthy backend as dead on a
-missing-`nc` box:
+version>`). The probe goes through `sotd stdio-bridge`, which connects only
+to a socket in a folder private to this OS account; its input stays open
+for the five seconds the probe waits, because the bridge closes the
+connection when its input ends:
 
 ```bash
 sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"
@@ -427,9 +427,9 @@ proto_field=""
 [ -n "$proto" ] && proto_field="\"protocol\":$proto,"
 tmp="$(mktemp "${TMPDIR:-/tmp}/sot-hello.XXXXXX")"
 (
-  printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,%s"app_version":"agent-install","host":"install-check","os_user":"uid:%s"}}\n' \
-    "$proto_field" "$(id -u)" \
-    | nc -U "$sock" > "$tmp"
+  { printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"install-check","last_seen_revision":0,%s"app_version":"agent-install","host":"install-check","os_user":"uid:%s"}}\n' \
+      "$proto_field" "$(id -u)"; sleep 5; } \
+    | ~/.local/share/sot/bin/sotd stdio-bridge --endpoint "unix:$sock" > "$tmp"
 ) &
 pid=$!
 for _ in 1 2 3 4 5; do [ -s "$tmp" ] && break; sleep 1; done

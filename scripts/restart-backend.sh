@@ -39,26 +39,20 @@ if [ -z "$SOCKET" ]; then
     SOCKET="$("$BIN" session-socket-path "$LABEL")" || exit 2
 fi
 
+# This account's daemon only (ADR 0049, User isolation: another user's `sotd --label sot` is never judged, killed or
+# reported as this one): its own processes, the one started on exactly this socket before one started by the label.
 find_pid() {
-    ps -eo pid=,args= | awk -v sock="$SOCKET" -v label="$LABEL" '
-        $0 ~ /[s]otd/ && ($0 ~ "--socket " sock || $0 ~ "--label " label) { print $1; exit }
+    ps -u "$(id -u)" -o pid=,args= | awk -v sock="$SOCKET" -v label="$LABEL" '
+        $0 ~ /[s]otd/ && $0 ~ "--socket " sock { print $1; found = 1; exit }
+        $0 ~ /[s]otd/ && $0 ~ "--label " label && first == "" { first = $1 }
+        END { if (!found && first != "") print first }
     '
 }
+# The socket answers this OS account: sotd's own bridge connects only to a socket in a folder private to this account
+# and, its input empty, closes again at once.
 socket_open() {
     [ -S "$SOCKET" ] || return 1
-    if command -v nc >/dev/null 2>&1; then
-        timeout 1 nc -U "$SOCKET" </dev/null >/dev/null 2>&1
-        rc=$?
-        # A reachable backend accepts the connection and then waits for a
-        # hello frame. With empty stdin, nc can sit until timeout; that timeout
-        # still proves the socket accepted a connection.
-        [ "$rc" -eq 0 ] || [ "$rc" -eq 124 ]
-        return $?
-    fi
-    # Minimal environments may not have nc. A socket file proves the daemon
-    # bound its endpoint; launchers will fail loud if the first real connect
-    # cannot complete.
-    return 0
+    "$BIN" stdio-bridge --endpoint "unix:$SOCKET" </dev/null >/dev/null 2>&1
 }
 
 OLD=$(find_pid)

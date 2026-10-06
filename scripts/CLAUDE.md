@@ -41,7 +41,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
-`scripts/lib/sot-daemon.sh`, `Leases::while_open`, `julia::resolve_bin`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`,
+`scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::while_open`, `julia::resolve_bin`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`,
 `docs/make.jl`, `.github/workflows/CI.yml`.
 
 ## Folders
@@ -105,6 +105,9 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   (`sot_install_copy`, `render_sotd_unit`, `render_sot_launch`; `Set-SotFolderTrust` on Windows). The
   `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-apply.sh` pin it.
 - Socket and pipe paths come from `sotd session-socket-path`; no script builds one.
+- A Unix launch script reaches a daemon's socket only through `sotd stdio-bridge --endpoint` (`sot_socket_open`,
+  `restart-backend.sh`), which connects only to an endpoint this OS account serves (ADR 0049 `## User isolation`);
+  `restart-backend.sh` finds its daemon among this account's processes only.
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and
   the handover bound, all in `rust/protocol/src/ops/lease.rs`) are pinned by `launcher_bounds_match_ops` in
   `tests/installer-state.sh`; change both sides together.
