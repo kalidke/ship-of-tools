@@ -575,7 +575,7 @@ jobs:
   # Scratch proof input only; T2 owns this SSH fixture and T3 extends it.
   t2-k5:
     name: T2 cold switch SSH (ubuntu-latest)
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/tmp/ci-t2-k5'
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/tmp/ci-t2-k5')
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 45
