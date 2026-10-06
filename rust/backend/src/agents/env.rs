@@ -317,6 +317,11 @@ mod tests {
             get("SOT_COMM_SELF_FILE"),
             Some("/fake-home/.sot-comm/self/testhost__ws-myrepo-1a2b.txt")
         );
+        assert_eq!(
+            get("SOTD_BIN"),
+            own_sotd_bin(),
+            "SOTD_BIN is this process's own start path, made once"
+        );
     }
 
     #[test]
@@ -390,4 +395,84 @@ mod tests {
         std::env::remove_var("USERPROFILE");
         assert_eq!(capsule_comm_home_str(), None);
     }
+    #[test]
+    fn sotd_bin_value_makes_the_start_path_absolute_as_its_start_found_it() {
+        use std::ffi::OsStr;
+        let work = tempfile::tempdir().expect("a work folder");
+        let bin = work.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        // The program as the platform names it: on Windows a bare name gets `.exe` added, so the file has it.
+        let name = "sotd-start-probe";
+        let file = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        sot_log::test_exec::write_executable(&bin.join(&file), "#!/bin/sh\n");
+        let cwd = std::env::current_dir().expect("the working folder");
+        let shown = |p: &Path| {
+            let text = p.to_string_lossy().into_owned();
+            if cfg!(windows) {
+                text.replace('\\', "/")
+            } else {
+                text
+            }
+        };
+        let path_var =
+            std::env::join_paths([work.path().join("empty"), bin.clone()]).expect("a PATH");
+        // Absolute: itself.
+        assert_eq!(
+            sotd_bin_value(bin.join(&file).as_os_str(), None),
+            Some(shown(&bin.join(&file)))
+        );
+        // Relative: against the working folder, with no lookup.
+        let relative = Path::new("target").join("release").join(&file);
+        assert_eq!(
+            sotd_bin_value(relative.as_os_str(), None),
+            Some(shown(&cwd.join(&relative)))
+        );
+        // Bare: the first PATH entry holding it, by the name with `.exe` added on Windows, or as given.
+        assert_eq!(
+            sotd_bin_value(OsStr::new(name), Some(&path_var)),
+            Some(shown(&bin.join(&file)))
+        );
+        assert_eq!(
+            sotd_bin_value(OsStr::new(&file), Some(&path_var)),
+            Some(shown(&bin.join(&file)))
+        );
+        // Bare, found nowhere, or with no PATH; and an empty start path.
+        assert_eq!(
+            sotd_bin_value(OsStr::new("no-such-sotd"), Some(&path_var)),
+            None
+        );
+        assert_eq!(sotd_bin_value(OsStr::new(name), None), None);
+        assert_eq!(sotd_bin_value(OsStr::new(""), Some(&path_var)), None);
+        // Windows: a drive-relative start (`D:sotd.exe`) is against that drive's working folder, here this process's.
+        #[cfg(windows)]
+        {
+            let drive = cwd
+                .to_string_lossy()
+                .chars()
+                .next()
+                .filter(char::is_ascii_alphabetic);
+            let drive = drive.expect("a working folder on a lettered drive");
+            assert_eq!(
+                sotd_bin_value(OsStr::new(&format!("{drive}:{file}")), None),
+                Some(shown(&cwd.join(&file)))
+            );
+        }
+        // Unix: a link on PATH is the path given, never its target.
+        #[cfg(unix)]
+        {
+            let link = work.path().join("link");
+            std::fs::create_dir_all(&link).expect("mkdir link");
+            std::os::unix::fs::symlink(bin.join(name), link.join(name)).expect("link the probe");
+            let link_path = std::env::join_paths([link.clone()]).expect("a PATH");
+            assert_eq!(
+                sotd_bin_value(OsStr::new(name), Some(&link_path)),
+                Some(shown(&link.join(name)))
+            );
+        }
+    }
+
 }
