@@ -17,8 +17,9 @@ use tokio::sync::watch;
 pub(crate) struct Signal {
     fired: watch::Sender<bool>,
     live: AtomicUsize,
-    /// Every contained child's tree by id; `None` once fired, so a spawn
-    /// after the fire is killed at once.
+    /// Every contained child's tree by id; `None` once fired, so a start after the fire is refused before it
+    /// creates anything ([`reserve`](Self::reserve)), and a child created before the fire is killed when it
+    /// registers ([`Held::fill`]).
     trees: Mutex<Option<HashMap<u64, crate::lifecycle::contain::Tree>>>,
     next: AtomicU64,
     /// Test-only: called right after a child is created, to put the shutdown's fire in that window.
@@ -92,18 +93,18 @@ impl Signal {
         Ok(Held { sig: self, id })
     }
 
-    /// Start `cmd` in its own containment and register the tree. The owner
-    /// keeps the returned [`Contained`]: waiting for it, killing it,
-    /// dropping it, or [`fire`](Self::fire) ends the child and everything it
-    /// started. Once the signal has fired the child is killed at once and
-    /// refused.
+    /// Reserve a counted slot, then create `cmd`'s child in its own containment, adopt it and register its
+    /// tree ([`reserve`](Self::reserve), create, adopt, [`Held::fill`]). The owner keeps the returned
+    /// [`Contained`]: waiting for it, killing it, dropping it, or [`fire`](Self::fire) ends the child and
+    /// everything it started. Once the signal has fired the start is refused before anything is created; a
+    /// child created while it fires is killed when it registers.
     pub(crate) fn spawn(&'static self, cmd: &mut tokio::process::Command) -> std::io::Result<Contained> {
         let held = self.reserve()?;
         // Made before the spawn, so no exit goes unseen by `Contained::wait`.
         #[cfg(unix)]
         let sigchld = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
         crate::lifecycle::contain::prepare(cmd.as_std_mut());
-        #[allow(clippy::disallowed_methods, reason = "the containment's own start: contain::prepare ran before it, and adopt and hold follow (ADR 0050, Shutdown)")]
+        #[allow(clippy::disallowed_methods, reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)")]
         let mut child = cmd.spawn()?;
         #[cfg(test)]
         self.after_create();
@@ -137,7 +138,7 @@ impl Signal {
     pub(crate) fn spawn_std(&'static self, cmd: &mut std::process::Command) -> std::io::Result<ContainedStd> {
         let held = self.reserve()?;
         crate::lifecycle::contain::prepare(cmd);
-        #[allow(clippy::disallowed_methods, reason = "the containment's own start: contain::prepare ran before it, and adopt and hold follow (ADR 0050, Shutdown)")]
+        #[allow(clippy::disallowed_methods, reason = "the containment's own start: reserve and contain::prepare ran before it, and adopt and fill follow (ADR 0050, Shutdown)")]
         let mut child = cmd.spawn()?;
         #[cfg(test)]
         self.after_create();

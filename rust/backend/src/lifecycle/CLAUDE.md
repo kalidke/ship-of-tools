@@ -43,8 +43,10 @@ computer's sessions end (ADR 0050).
   `exited_pid` uses `WNOWAIT`); a start is refused before anything is created
   once the signal has fired, and a child created while it fires is counted from before its creation and killed when it
   registers, so the shutdown's 3 s wait for its children (`CHILDREN_WAIT`) covers it (`Signal::reserve`, `Held::fill`);
-  a start that stalls longer than that between creation and registration is counted but outlives the exit (on Unix no
-  group is registered yet; on Windows it is suspended outside its job).
+  a start that stalls longer than that between creation and registration is counted but can outlive the exit: on Unix
+  its group is not registered yet; on Windows a pause before job assignment leaves it suspended outside any job, while
+  a pause after it (`contain::adopt` assigns, then resumes) leaves it running inside its kill-on-close job, whose last
+  handle the daemon holds, so the daemon's exit ends it.
 - `main` resets `SIGCHLD` to its default and unblocks it in the main thread before anything else (`reset_child_signal`),
   so neither an ignored nor a blocked one inherited from the parent can make the kernel reap a contained leader early or
   keep `Contained::wait` from seeing its exit; the main thread lives as long as the daemon, so the signal always has a

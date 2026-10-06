@@ -194,9 +194,10 @@ mod tests {
     use std::path::PathBuf;
 
     /// The daemon's own standard handles are not `gio`'s: it is handed null ones. Read as text through the production
-    /// view, from the signature through the function's closing brace. Every `.stdin`, `.stdout` and `.stderr` in the
-    /// function's text, a method call however spaced or commented or a field read, is the null setting; a call spelled
-    /// `Command::stdin(...)` is outside this check.
+    /// view, from the signature through the function's closing brace. Every contiguous `.stdin`, `.stdout` and
+    /// `.stderr` in the function's text, a method call (however the text between the name and its parenthesis is spaced
+    /// or commented) or a field read, is the null setting; a call spelled `Command::stdin(...)`, or with a space or
+    /// comment between the dot and the name, is outside this check.
     #[test]
     fn gio_gets_no_inherited_stdio() {
         let source = sot_log::test_scan::without_test_modules(include_str!("io.rs"));
