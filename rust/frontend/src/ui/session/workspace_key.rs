@@ -45,7 +45,7 @@ impl ResolvedWorkspace {
         } else if self.session_name.is_empty() {
             Err("listed workspace has no attachment target".to_string())
         } else {
-            Ok(Some(self.session_name.clone()))
+            Ok(Some(format!("sot-be-{}", self.row_key.1)))
         }
     }
 }
