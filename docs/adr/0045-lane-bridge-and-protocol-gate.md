@@ -102,7 +102,7 @@ migration mechanism, not two.
    on or terminate. Invariant: an endpoint value names one thing (a
    dial); a row is named in exactly one place.
 
-   **2026-10 amendment (0.6.6, T2):** An ssh endpoint's first supervisor dial also starts one parked voyage login. The first voyage dial consumes that login once, replacing it with a fresh login if it has expired; after first voyage consumption, subsequent dials start no spare. The wire hello still precedes `lane.connect`, in the same write, and the production handshake remains `CONNECT_BOUND`.
+   **2026-10 amendment (0.6.6, T2):** An ssh endpoint's initial supervisor attempt may start one parked voyage login as an optional optimization. A spare spawn failure does not fail an otherwise successful supervisor dial. The first voyage consumes a usable spare once or performs the ordinary gated dial when no spare is usable, including admission expiry; local endpoints park none. After first voyage consumption, subsequent dials start no spare. The wire hello still precedes `lane.connect`, in the same write, and the production handshake remains `CONNECT_BOUND`.
 
    An abandoned supervisor attempt drops its parked login before retrying: a failed lane handshake, an unproven supervisor hello, or a failed Status calls `Endpoint::drop_spare`. **Pre-voyage retry exception:** an abandoned pre-voyage attempt may park another login until the first voyage consumes it. A spent endpoint stays spent; dropping the endpoint tears down any remaining parked child within the owner's bound and reports failure.
 

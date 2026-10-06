@@ -31,7 +31,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - A production lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and cancellable; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and reports termination, reap or deadline failures (`lane_child.rs`).
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
-- An ssh endpoint's first supervisor dial starts at most one parked voyage login; the first voyage dial consumes it once, and a spent endpoint starts no further spare (`start_spare`, `take_spare`).
+- On an SSH route an initial supervisor attempt may park at most one voyage login as an optional optimization; spare spawn failure leaves ordinary voyage fallback available. A local route parks none. The first voyage consumes a usable spare once or uses an ordinary gated dial; a spent endpoint starts no further spare, with pre-voyage abandonment governed by ADR 0045 (`start_spare`, `take_spare`).
 
 - `DaemonLaneEndpoint::new` fixes the endpoint's route and initializes its private spare state. Callers cannot replace the route or construct an endpoint literal; a shared `LinkGate` changes liveness only. Tests exercise dial sequences and owned-child lifetimes.
 
