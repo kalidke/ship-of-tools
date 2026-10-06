@@ -644,7 +644,7 @@ fn ssh_stand_in(replies: &[serde_json::Value]) -> std::process::Child {
 fn handshake_over_ssh_stand_in(replies: &[serde_json::Value]) -> Result<DaemonLaneClient, TransportError> {
     let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
     let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
-    handshake(LaneStream::Bridged(BridgedClient::wrap(ssh_stand_in(replies)).expect("wrap")), &hello, &request)
+    handshake(LaneStream::Bridged(BridgedClient::wrap(ssh_stand_in(replies)).expect("wrap")), &hello, &request, CONNECT_BOUND)
 }
 
 /// Over an ssh login a daemon's answer is returned as the daemon gave it, never replaced by the login's stderr (BLOCKER 2
@@ -692,7 +692,7 @@ fn a_failed_lane_write_names_its_error_and_the_ssh_line_once() {
     client.child.lock().unwrap().wait().expect("the stand-in exits");
     let hello = Frame::req(1, op::HELLO, serde_json::json!({}));
     let request = Frame::req(2, op::LANE_CONNECT, serde_json::json!({}));
-    match handshake(LaneStream::Bridged(client), &hello, &request) {
+    match handshake(LaneStream::Bridged(client), &hello, &request, CONNECT_BOUND) {
         Err(TransportError::Unreachable(e)) => {
             // Normally the write fails (`lane write: <the io error>: <the line>`). A test running beside others can
             // have the pipe's read end held for an instant by a sibling's forked child, so the write succeeds and the

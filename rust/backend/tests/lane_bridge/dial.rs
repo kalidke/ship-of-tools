@@ -572,3 +572,70 @@ async fn an_expired_spare_uses_a_fresh_voyage_login() {
     client.shutdown(Duration::from_secs(5));
     env.kill_daemon_bounded().await;
 }
+
+/// A fixed spare-entry delay and bounded rendezvous; entry order never establishes a lane role.
+fn rendezvous_endpoint(dir: &Path, delay: u64, reversed: bool) -> DaemonLaneEndpoint {
+    let path = dir.join("rendezvous.py");
+    let script = format!(r#"import json, os, pathlib, sys, time
+root = pathlib.Path({root:?})
+slot = int(sys.argv[1])
+reverse = {reverse}
+deadline = time.monotonic() + 30
+if slot == 1:
+    time.sleep({delay})
+wait_for = 'start-1' if reverse and slot == 0 else ('start-0' if not reverse and slot == 1 else None)
+while wait_for and not (root / wait_for).exists():
+    assert time.monotonic() < deadline, 'fixture entry rendezvous timed out'
+    time.sleep(0.005)
+(root / ('start-' + str(slot))).write_text(str(os.getpid()))
+hello = json.loads(sys.stdin.readline())
+request = json.loads(sys.stdin.readline())
+assert hello['kind'] == 'req' and hello['op'] == 'hello' and hello['payload']['role'] == 'handoff'
+assert request['kind'] == 'req' and request['op'] == 'lane.connect'
+role = request['payload']['lane']
+if role == 'supervisor':
+    while not (root / 'start-0').exists() or not (root / 'start-1').exists():
+        assert time.monotonic() < deadline, 'fixture spare rendezvous timed out'
+        time.sleep(0.005)
+    (root / 'ordered').write_text('supervisor observed spare before answering')
+    print('Permission denied (fixture).', file=sys.stderr, flush=True)
+    sys.exit(255)
+sys.stdin.buffer.read()
+"#, root=dir.to_string_lossy(), reverse=if reversed { "True" } else { "False" });
+    sot_log::test_exec::write_executable(&path, script);
+    let slots = Arc::new(AtomicUsize::new(0));
+    let recipe = sot_protocol::topology::ssh_bridge::SshRecipe::new("teststub", None).unwrap();
+    DaemonLaneEndpoint::new(LaneDial::Ssh(recipe, Default::default()), None).with_test_ssh_spawner(Arc::new(move |recipe, gate| {
+        let command = gate.command(recipe)?;
+        std::process::Command::new("python3").arg("-u").arg(&path).arg(slots.fetch_add(1, Ordering::SeqCst).to_string()).args(command.get_args())
+            .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn().map_err(sot_protocol::topology::ssh_bridge::SpawnError::Io)
+    }))
+}
+
+#[test]
+fn the_slow_fixture_uses_its_own_handshake_bound() {
+    use sot_log::lane::client::Endpoint;
+    let dir = tempfile::tempdir().unwrap();
+    let endpoint = rendezvous_endpoint(dir.path(), 3, false).with_test_handshake_bound(Duration::from_secs(60));
+    let result = endpoint.connect_supervisor_unchallenged("row-slow-fixture");
+    let error = result.err().expect("the fixture deliberately refuses the login").to_string();
+    assert!(error.contains("Permission denied"), "the slow fixture must reach its intended Permission denied result: {error}");
+    assert!(dir.path().join("ordered").exists(), "the delayed spare arrived before the fixture answered");
+}
+
+#[test]
+fn fixture_bounds_are_local_to_the_endpoint() {
+    use sot_log::lane::client::Endpoint;
+    let configured = tempfile::tempdir().unwrap();
+    let slow = rendezvous_endpoint(configured.path(), 3, false).with_test_handshake_bound(Duration::from_secs(60));
+    let ordinary = tempfile::tempdir().unwrap();
+    let default = rendezvous_endpoint(ordinary.path(), 3, false);
+    let started = Instant::now();
+    let error = default.connect_supervisor_unchallenged("row-default").err().unwrap().to_string();
+    assert!(error.contains("handshake timed out"), "an unconfigured endpoint retains CONNECT_BOUND: {error}");
+    assert!(started.elapsed() >= sot_log::lane::transport::CONNECT_BOUND);
+    assert!(!ordinary.path().join("ordered").exists(), "the ordinary endpoint stopped before the three-second spare entry");
+    let error = slow.connect_supervisor_unchallenged("row-configured").err().unwrap().to_string();
+    assert!(error.contains("Permission denied"), "only the configured endpoint waits for its slow peer: {error}");
+}

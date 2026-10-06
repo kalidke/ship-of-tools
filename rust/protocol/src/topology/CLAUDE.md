@@ -38,6 +38,8 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 
 - A failed supervisor handshake drops its parked spare before returning; `Endpoint::drop_spare` also drops it after an unproven supervisor hello or failed Status. Dropping the endpoint reaps any remaining parked child.
 
+- Production lane handshakes use `CONNECT_BOUND`; fixture bounds belong to the endpoint's test configuration under `cfg(any(test, feature = "test-handshake-bound"))` and affect only that endpoint (`with_test_handshake_bound`).
+
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `SshRecipe::new`,
 `is_plain_host_name`, `LinkGate`, `SSH_OPTS`, `DaemonLaneEndpoint`, `SshRecipe`, `recipe_for`, `dial_and_call_tracked`,

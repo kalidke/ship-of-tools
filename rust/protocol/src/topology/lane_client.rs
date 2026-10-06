@@ -99,6 +99,8 @@ pub struct DaemonLaneEndpoint {
     spare: std::sync::Mutex<VoyageSpare>,
     #[cfg(any(test, feature = "test-handshake-bound"))]
     test_ssh_spawner: Option<TestSshSpawner>,
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    test_handshake_bound: Option<std::time::Duration>,
 }
 
 enum VoyageSpare {
@@ -594,8 +596,8 @@ fn with_ssh_line(stream: &LaneStream, e: std::io::Error) -> std::io::Error {
 
 /// The handshake over a connected stream: the hello and the `lane.connect` request, the replies classified, and the
 /// client that holds the stream and the peer the daemon reported.
-fn handshake(stream: LaneStream, hello: &Frame, req: &Frame) -> Result<DaemonLaneClient, TransportError> {
-    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + CONNECT_BOUND)?;
+fn handshake(stream: LaneStream, hello: &Frame, req: &Frame, bound: std::time::Duration) -> Result<DaemonLaneClient, TransportError> {
+    let (pid, created) = run_handshake(&stream, hello, req, Instant::now() + bound)?;
     Ok(DaemonLaneClient { stream, peer: PeerAuthenticated { pid, created } })
 }
 
@@ -607,12 +609,20 @@ impl DaemonLaneEndpoint {
             spare: std::sync::Mutex::new(VoyageSpare::Unused),
             #[cfg(any(test, feature = "test-handshake-bound"))]
             test_ssh_spawner: None,
+            #[cfg(any(test, feature = "test-handshake-bound"))]
+            test_handshake_bound: None,
         }
     }
 
     #[cfg(any(test, feature = "test-handshake-bound"))]
     pub fn with_test_ssh_spawner(mut self, spawner: TestSshSpawner) -> Self {
         self.test_ssh_spawner = Some(spawner);
+        self
+    }
+
+    #[cfg(any(test, feature = "test-handshake-bound"))]
+    pub fn with_test_handshake_bound(mut self, bound: std::time::Duration) -> Self {
+        self.test_handshake_bound = Some(bound);
         self
     }
 
@@ -711,7 +721,11 @@ impl DaemonLaneEndpoint {
             }
         };
 
-        let result = handshake(stream, &hello, &frame);
+        #[cfg(any(test, feature = "test-handshake-bound"))]
+        let bound = self.test_handshake_bound.unwrap_or(CONNECT_BOUND);
+        #[cfg(not(any(test, feature = "test-handshake-bound")))]
+        let bound = CONNECT_BOUND;
+        let result = handshake(stream, &hello, &frame, bound);
         if kind == "supervisor" && result.is_err() {
             self.drop_spare();
         }
