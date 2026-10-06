@@ -343,10 +343,10 @@ async fn inflight_handshake_ended_unanswered_is_not_confirmed() {
 
 #[test]
 fn forced_exit_delivers_the_queued_close() {
-    // The window's runtime runs only inside its `block_on`s, as if the
-    // exit came before the holder's next turn; dropping it is the exit.
+    // The transport worker can progress while the synchronous UI caller
+    // waits for the queued Close write; dropping its runtime is the exit.
     let daemon = tokio::runtime::Runtime::new().unwrap();
-    let window = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let window = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
     let (log, _, fake, path) = daemon.block_on(async {
         let (listener, path) = bind("forcedexit");
         let (log, replied, fake) = leave_fake(listener, None, Some("keep"), Duration::ZERO);
@@ -361,7 +361,7 @@ fn forced_exit_delivers_the_queued_close() {
     });
     // An X queues a Close; a second X exits at once.
     let _close = leases.leave_all(LeaveIntent::Close, 0, Instant::now()).unwrap();
-    window.block_on(leases.written(LEAVE_WRITE_WAIT));
+    leases.deliver_queued(LEAVE_WRITE_WAIT);
     // The exit closes every handle, not just the runtime: on Windows the
     // pipe's halves share one handle, which stays open while any owner lives.
     drop(window);
