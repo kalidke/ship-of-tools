@@ -43,6 +43,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Temporary W2(c) premise job. Never run a second user manager on a lab host.
+  w2c-p5:
+    name: w2c-p5 (${{ matrix.label }})
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/tmp/ci-w2c-p5'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: systemd-249
+          - os: ubuntu-24.04
+            label: systemd-current
+    steps:
+      - uses: actions/checkout@v7
+      - name: Measure P5 on the owned private bus
+        timeout-minutes: 3
+        run: bash rust/backend/tests/fixtures/w2c-p5/proofs.sh --label ${{ matrix.label }}
+      - name: Print the P5 receipt, including failures
+        if: always()
+        env:
+          P5_LABEL: ${{ matrix.label }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path('dev/output/w2c-p5') / os.environ['P5_LABEL'] / 'receipt.json'
+          if not path.is_file():
+              raise SystemExit('P5 receipt missing: premise NOT CHECKED')
+          print(path.read_text(), end='')
+          PY
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
