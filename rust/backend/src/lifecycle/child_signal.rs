@@ -673,6 +673,34 @@ pub(crate) mod tests {
         assert_eq!(c.kill().expect("kill after the reap"), status);
     }
 
+    /// A leader that moved to another process group is outside its tree's group kill, so the fire must take it by
+    /// pid as well. A killed leader stays a zombie until its owner reaps it, so "gone" is seen as an exit, unreaped.
+    #[cfg(unix)]
+    #[test]
+    fn a_leader_that_left_its_group_dies_at_the_fire() {
+        use std::os::unix::process::CommandExt;
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        // SAFETY: a plain read of this process's own group.
+        let theirs = unsafe { libc::getpgrp() };
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("3114").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        // SAFETY: only setpgid, which is async-signal-safe.
+        unsafe {
+            cmd.pre_exec(move || if libc::setpgid(0, theirs) == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) });
+        }
+        let mut c = signal.spawn_std(&mut cmd).expect("spawn_std");
+        let _leftover = Leftover::of_pid(c.id() as i32);
+        signal.fire();
+        let began = std::time::Instant::now();
+        let mut exited = false;
+        while !exited && began.elapsed() < Duration::from_secs(3) {
+            exited = c.exited(false).expect("exited");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(exited, "a leader that left its group survived the fire");
+        drop(c);
+    }
+
     /// A bounded wait returns the status of a child that exits in time.
     #[cfg(unix)]
     #[test]

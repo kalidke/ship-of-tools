@@ -2,7 +2,7 @@
 //! its tree": the process group or job, adopting a child, the kill, and seeing
 //! an exit without reaping it. What can leave a tree is ADR 0050 residual 7.
 //!
-//! Unix: each child runs in its own process group, killed with `killpg`.
+//! Unix: each child runs in its own process group, killed with `killpg`, and its leader by pid as well.
 //! Windows: each child runs in its own anonymous job (no breakaway),
 //! created suspended, assigned, and only then resumed, so no instruction
 //! runs outside the job (the ADR 0041 rule `sot_log::capsule::producer::conpty` follows).
@@ -65,10 +65,13 @@ pub(crate) fn adopt(
 impl Drop for Tree {
     fn drop(&mut self) {
         #[cfg(unix)]
-        // SAFETY: a plain signal to the group this daemon created. The result
-        // is ignored: ESRCH means the group is already gone.
+        // SAFETY: plain signals to the group this daemon created and to its leader. A tree is dropped only while its
+        // leader is unreaped (the registry releases a tree before its owner reaps), so the pid is still the leader's;
+        // the group kill misses a leader that moved to another group, the pid kill does not. The results are ignored:
+        // ESRCH means it is already gone.
         unsafe {
             libc::killpg(self.pgid, libc::SIGKILL);
+            libc::kill(self.pgid, libc::SIGKILL);
         }
         #[cfg(windows)]
         let _ = self.job.terminate();
