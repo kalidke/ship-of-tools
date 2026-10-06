@@ -77,7 +77,7 @@ def run(argv, p, extra=None):
     actual = dict(env); actual.update(extra or {})
     try:
         r = subprocess.run(argv, cwd=p, env=actual, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
-        text = r.stdout.decode('utf-8', 'strict').replace('\r\n', '\n').replace('\r', '\n')
+        text = r.stdout.decode('cp1252', 'strict').replace('\r\n', '\n').replace('\r', '\n')
         return subprocess.CompletedProcess(r.args, r.returncode, text, None)
     except UnicodeDecodeError as error:
         raise AssertionError(f'child output is not UTF-8 ({argv[0]}): {type(error).__name__}: {error}')
