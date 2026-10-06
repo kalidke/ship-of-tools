@@ -652,7 +652,7 @@ impl DaemonLaneEndpoint {
         }
         let client = self.spawn_ssh(recipe, gate)?;
         if kind == "supervisor" {
-            self.start_spare(|| self.spawn_ssh(recipe, gate));
+            self.start_spare(|| Err(TransportError::LinkDown));
         }
         Ok(client)
     }
