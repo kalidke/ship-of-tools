@@ -164,7 +164,7 @@ mod tests {
         for keep in [false, true] {
             for key in [Key::Character("typed-fixture-text".into()), Key::Named(NamedKey::F12), Key::Named(NamedKey::Escape)] {
                 let (step, calls, bytes) = route(Some(keep), key, modifiers(), false, false, true, false);
-                        println!("T1 fixture observed: routed raw key and downstream recorder");
+                println!("T1 fixture observed: routed raw key and downstream recorder");
                 assert_eq!(step, Some(QuitPromptStep::Cancel), "other key must cancel");
                 assert_eq!((calls, bytes), (0, vec![]), "trigger reached downstream input");
             }

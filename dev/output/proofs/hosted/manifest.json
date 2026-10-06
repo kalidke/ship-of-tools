@@ -35,8 +35,10 @@
     {
       "file": "rust/frontend/src/ui/input/keypress.rs",
       "accepted_overlay_sha256": "1ffeb18f0a8ebf1d89427686faf080930bfd2a72e4d404173d35855d50279a39",
-      "replay_sha256": "f03e9f042b000c61f3689175473dc7b53618e31d0b46e2f37a30803c4a48aedf",
-      "change": "new observation statement whitespace only; inherited lines untouched"
+      "replay_sha256": "501538ca8fcf90cf5fc53625328633c851631f55996f953f58bd1c95b88f7db3",
+      "change": "new observation statement whitespace only; inherited lines untouched",
+      "previous_replay_sha256": "f03e9f042b000c61f3689175473dc7b53618e31d0b46e2f37a30803c4a48aedf",
+      "final_added_line_formatting": "indentation only; no new formatter edit touches added lines"
     },
     {
       "file": "rust/frontend/src/ui/chrome/view.rs",
