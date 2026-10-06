@@ -1,7 +1,7 @@
 # test-local-daemon-pipe.ps1 -- part of test-local-daemon.ps1, dot-sourced inside section 5c and run in that
 # section's scope ($pipe5c, $new5c, $old5c, $request5c, $p3 and the support helpers): the session pipe under load,
-# cases (iii)-(vii). Large requests behind an accepted and a refused hello, the inbound buffer's memory, and a peer
-# the daemon gives up on.
+# cases (iii)-(viii). Large requests behind an accepted and a refused hello, the inbound buffer's memory, a peer the
+# daemon gives up on, and a session that ends on a frame the daemon will not read.
 #
 # ASCII ONLY: Windows PowerShell 5.1 decodes a BOM-less .ps1 as cp1252.
         # (iii)-(v): requests longer than the pipe's default 512-byte buffer and the daemon's 4 KB read-ahead, the
@@ -76,4 +76,32 @@
             Check '5c (vii): a refused hello after it is still answered, and the daemon closes it' ((-not $r5c.Hung) -and ($r5c.Exit -eq 1) -and ($r5c.Out.Count -eq 1) -and ($r5c.Err -match 'closed before a matching reply')) "hung: $($r5c.Hung) exit: $($r5c.Exit) stdout: $($r5c.Out -join ' | ') stderr: $($r5c.Err)"
         } finally {
             try { $wedged5c.Dispose() } catch { }
+        }
+        # (viii): no end of a control session owes its peer bytes. One connection says hello and never reads; once it
+        # is on the roster it sends a line that is no frame, and the daemon ends the session (a line over the cap ends
+        # it the same way). A refused hello after that must still be answered and closed: if that session's close
+        # waited in interprocess's one linger thread for its peer to read, every later close waited behind it.
+        $unreadHello5c = $new5c -replace '"client_id":"t-cli"', '"client_id":"t-unread"'
+        $listed5c = {
+            $q = Invoke-PipeTransport $pipe5c version.query @($new5c, $request5c)
+            $v = @($q.Out | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.op -eq 'version.query' })
+            ($v.Count -eq 1) -and (@($v[0].payload.clients | Where-Object { $_.client_id -eq 't-unread' }).Count -gt 0)
+        }
+        $unread5c = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipe5c, [System.IO.Pipes.PipeDirection]::InOut)
+        try {
+            $unread5c.Connect(3000)
+            $hu5c = (New-Object System.Text.UTF8Encoding($false)).GetBytes($unreadHello5c + "`n")
+            $unread5c.Write($hu5c, 0, $hu5c.Length)
+            $on5c = $false
+            for ($w5c = 0; $w5c -lt 30 -and -not $on5c; $w5c++) { $on5c = & $listed5c }
+            Check '5c (viii): the connection that never reads is on the roster' $on5c 'not listed by version.query in 30 tries'
+            $junk5c = (New-Object System.Text.UTF8Encoding($false)).GetBytes("this line is no frame`n")
+            $unread5c.Write($junk5c, 0, $junk5c.Length)
+            $off5c = $false
+            for ($w5c = 0; $w5c -lt 30 -and -not $off5c; $w5c++) { $off5c = -not (& $listed5c) }
+            Check '5c (viii): the daemon ends that session' $off5c 'still listed after 30 tries'
+            $r5c = Invoke-PipeTransport $pipe5c version.query @($old5c, $request5c)
+            Check '5c (viii): a refused hello after it is still answered, and the daemon closes it' ((-not $r5c.Hung) -and ($r5c.Exit -eq 1) -and ($r5c.Out.Count -eq 1) -and ($r5c.Err -match 'closed before a matching reply')) "hung: $($r5c.Hung) exit: $($r5c.Exit) stdout: $($r5c.Out -join ' | ') stderr: $($r5c.Err)"
+        } finally {
+            try { $unread5c.Dispose() } catch { }
         }

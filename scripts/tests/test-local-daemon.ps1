@@ -28,7 +28,7 @@
 # without a build. Section 6 additionally only runs ON CI even when a real
 # sotd.exe IS present -- see its own comment for why.
 # Sections 9-11 and 16 live in test-launcher-leases.ps1.
-# Section 5c's cases (iii)-(vii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
+# Section 5c's cases (iii)-(viii), the session pipe under load, live in test-local-daemon-pipe.ps1, dot-sourced there.
 #
 # Before touching a REAL sotd.exe, sections 3-5 redirect HOME/USERPROFILE/
 # LOCALAPPDATA/XDG_STATE_HOME/XDG_CONFIG_HOME at directories under the test

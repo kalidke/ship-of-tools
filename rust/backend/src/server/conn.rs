@@ -12,9 +12,9 @@ use super::reply::{finish_dispatch, write_reply, HandlerOutput, OutTx, OFFLOOP_C
 use super::*;
 use sot_protocol::HANDOFF_ROLE;
 
-/// The write half of a connection the daemon can give up on (ADR 0027). On Windows the session pipe's drop waits, in
-/// interprocess's one linger thread, until the peer has read what the daemon wrote; a peer the daemon has given up on
-/// never does, and every later close would wait behind it. `abandon` drops that wait for this connection only.
+/// The write half of a connection whose close owes its peer nothing (ADR 0027). On Windows the session pipe's drop
+/// waits, in interprocess's one linger thread, until the peer has read what the daemon wrote; a peer that never reads
+/// would hold every later close behind it. `abandon` drops that wait for this connection only.
 pub(super) trait Abandon {
     fn abandon(&self);
 }
@@ -31,13 +31,6 @@ impl Abandon for interprocess::local_socket::tokio::SendHalf {
             pipe.assume_flushed();
         }
     }
-}
-
-/// How a control session ended: its peer closed or broke the protocol (`Closed`), or the daemon's ping reaper gave up
-/// on it (`GaveUp`). A write the daemon could not finish ends it with an error, which is a give-up too.
-enum Ended {
-    Closed,
-    GaveUp,
 }
 
 /// How long a connection may take to send its first frame, and a `handoff` connection its next one after its hello: a
@@ -206,12 +199,11 @@ where
         topo_changed_tx, leases,
     )
     .await;
-    // A session the daemon gave up on (reaped, or a write it could not finish) is closed without waiting for its peer
-    // to read; every other end keeps that wait, so a peer that is reading gets every byte.
-    if !matches!(ended, Ok(Ended::Closed)) {
-        tx.abandon();
-    }
-    ended.map(|_| ())
+    // No end of a control session owes its peer bytes: a reap, a write the daemon could not finish, a frame it would
+    // not read and a second hello forfeit the unread replies, and a peer that closed has read what it wanted. So its
+    // close never waits for the peer to read.
+    tx.abandon();
+    ended
 }
 
 /// A connection whose hello said `handoff`: answers the hello, reads its one next frame and gives the connection to
@@ -235,10 +227,12 @@ where
         Ok(Ok(read)) => read,
         Ok(Err(e)) => {
             tracing::debug!(error = %e, "handoff connection closed before its frame");
+            tx.abandon();
             return Ok(());
         }
         Err(_) => {
             tracing::debug!("no frame after a handoff hello within the admission bound; closing");
+            tx.abandon();
             return Ok(());
         }
     };
@@ -280,7 +274,7 @@ async fn serve_control<R, W>(
     repl_frame_tx: broadcast::Sender<ReplFrameMsg>, clients: Clients,
     topology_store: Arc<crate::topology::store::TopologyStore>,
     topo_changed_tx: broadcast::Sender<crate::topology::store::TopologyChanged>, leases: Arc<crate::lifecycle::lease::Leases>,
-) -> Result<Ended>
+) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -450,12 +444,12 @@ where
                     Ok((f, _blob)) => f,
                     Err(e) => {
                         tracing::debug!(error = %e, "read_frame returned; closing");
-                        return Ok(Ended::Closed);
+                        return Ok(());
                     }
                 }
             }
             Woke::Again => continue,
-            Woke::Reap => return Ok(Ended::GaveUp),
+            Woke::Reap => return Ok(()),
         };
 
         // Any frame from an ARMED connection is proof of life — push the
@@ -475,7 +469,7 @@ where
         // One hello per connection, the one that admitted it: a second closes the connection with no reply.
         if frame.op == op::HELLO {
             tracing::info!("a second hello on one connection: closing it unanswered");
-            return Ok(Ended::Closed);
+            return Ok(());
         }
 
         dispatch(
