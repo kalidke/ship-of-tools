@@ -71,7 +71,7 @@ def require(condition, message):
 def hosted_guard(label):
     require(os.environ.get("GITHUB_ACTIONS") == "true" and
             os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted" and
-            os.environ.get("GITHUB_REF") == "refs/heads/tmp/ci-w2c-p5",
+            os.environ.get("GITHUB_REF") == "refs/heads/tmp/ci-w2c-p5-2",
             "P5 runs only on the dedicated branch on a disposable GitHub-hosted runner")
     require(os.geteuid() != 0, "P5 requires an unprivileged hosted-runner process")
     release = dict(line.split("=", 1) for line in Path("/etc/os-release").read_text().splitlines()
@@ -102,6 +102,21 @@ class Fixture:
                     "SYSTEMD_UNIT_PATH": str(root / "units"),
                     "SYSTEMD_LOG_TARGET": "console", "SYSTEMD_LOG_LEVEL": "warning"}
         self.manager = None
+
+    def startup_diagnostic(self, stage):
+        diagnostic = self.receipt.data["startup"]
+        diagnostic["stage"] = stage
+        diagnostic["manager_exit"] = self.manager.poll() if self.manager else None
+        if self.manager and diagnostic["manager_exit"] is None:
+            diagnostic["manager_cgroup"] = read_diagnostic(
+                Path(f"/proc/{self.manager.pid}/cgroup"))
+        else:
+            diagnostic["manager_cgroup"] = "unavailable: recorded manager child exited or not created"
+        diagnostic["manager_log_tail"] = read_diagnostic(
+            self.root / "manager.log").splitlines()[-40:]
+        # Persist before a readiness error escapes, even if later cleanup fails.
+        self.receipt.save()
+        print(f"P5 {self.receipt.label} startup-diagnostic {stage} SAVED", flush=True)
 
     def run(self, args, name, expected=0):
         start = time.monotonic()
@@ -165,7 +180,20 @@ class Fixture:
         self.receipt.data["manager_binary_version"] = version
         if self.receipt.label == "systemd-249":
             require(re.match(r"systemd 249(?:\D|$)", version), "manager binary is not systemd 249")
-        self.manager = self.spawn([manager_bin, "--user", "--unit=default.target"], "manager")
+        self.receipt.data["startup"] = delegation_observation()
+        try:
+            self.manager = self.spawn([manager_bin, "--user", "--unit=default.target"], "manager")
+            self.wait_for_manager(deadline)
+            require(self.receipt.data["startup"]["child_cgroup_created"],
+                    "delegated child cgroup could not be created; see startup diagnostic")
+        except Exception:
+            self.startup_diagnostic("readiness-failure")
+            raise
+        self.startup_diagnostic("ready")
+        self.receipt.check("delegated-cgroup writable")
+        self.receipt.check("private-bus-and-manager-owned")
+
+    def wait_for_manager(self, deadline):
         while True:
             require(self.manager.poll() is None, "private manager exited before readiness")
             rc, output, _ = self.bus(
@@ -183,7 +211,6 @@ class Fixture:
             peer.connect(str(self.runtime / "systemd/private"))
             pid, uid, _ = struct.unpack("3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             require(pid == self.manager.pid and uid == os.getuid(), "foreign private manager endpoint")
-        self.receipt.check("private-bus-and-manager-owned")
 
     def close(self):
         failures = []
@@ -203,6 +230,32 @@ class Fixture:
             self.receipt.data.setdefault("process_logs", {})[tag] = log.read_text(errors="backslashreplace")
         require(not failures, "owned-child cleanup failed: " + "; ".join(failures))
         self.receipt.check("owned-children-reaped")
+
+
+def read_diagnostic(path):
+    try:
+        return path.read_text(errors="backslashreplace")
+    except OSError as error:
+        return f"unavailable: {type(error).__name__}: {error}"
+
+
+def delegation_observation(proc=Path("/proc/self/cgroup"), mount=Path("/sys/fs/cgroup")):
+    record = read_diagnostic(proc)
+    diagnostic = {"probe_cgroup": record, "child_cgroup_created": False}
+    try:
+        unified = next(line[3:] for line in record.splitlines() if line.startswith("0::/"))
+        relative = Path(unified)
+        require(relative.is_absolute() and ".." not in relative.parts,
+                "unexpected unified cgroup path")
+        directory = mount / unified.lstrip("/")
+        diagnostic["cgroup_directory"] = str(directory)
+        # A child of this delegated service only; removed by its absolute mktemp path.
+        child = Path(tempfile.mkdtemp(prefix="w2c-p5-write-", dir=directory)).resolve()
+        child.rmdir()
+        diagnostic["child_cgroup_created"] = True
+    except (OSError, StopIteration, RuntimeError) as error:
+        diagnostic["child_cgroup_error"] = f"{type(error).__name__}: {error}"
+    return diagnostic
 
 
 def scalar(output, signature):
