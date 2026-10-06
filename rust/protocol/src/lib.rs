@@ -51,7 +51,7 @@ use serde::{Deserialize, Serialize};
 /// The wire protocol a hello must speak; the daemon's gate refuses any other with `protocol_mismatch`. 3 (ADR
 /// 0049 `## User isolation`): every hello declares the host and the OS account it runs as, and a connection
 /// that becomes a pipe or a lease says so in its hello. Every pre-0.6.6 client speaks 2 and so meets the gate.
-/// The shell client's hello carries the same number by hand; `comm_lib_hello_speaks_this_protocol` pins the two.
+/// The shell client's hello carries the same number by hand; `the_shell_hello_is_this_protocols_hello` checks it.
 pub const PROTOCOL_VERSION: u32 = 3;
 
 mod version;
@@ -141,27 +141,59 @@ mod client_wire_tests {
         found
     }
 
-    /// The shell client builds its hello by hand, so its `"protocol":N` cannot follow `PROTOCOL_VERSION` on its
-    /// own; this pins the two together, and pins that the hello declares the host and the OS account.
+    /// The shell client's hello as its builder, `sot_hello_frame`, prints it: one request frame whose payload is a
+    /// `hello` at this `PROTOCOL_VERSION`, naming the host and this process's OS account, with no token. The builder
+    /// writes its `"protocol"` by hand, so this run is what holds it to `PROTOCOL_VERSION`.
     #[test]
-    fn comm_lib_hello_speaks_this_protocol() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../comm/lib/comm-lib-client.sh");
-        let lib = std::fs::read_to_string(path).expect("read comm-lib-client.sh");
-        let hellos: Vec<&str> =
-            lib.lines().filter(|l| l.contains("printf") && l.contains(r#""op":"hello""#)).collect();
-        assert_eq!(hellos.len(), 1, "comm-lib-client.sh builds exactly one hello: {hellos:?}");
-        let n: String = hellos[0]
-            .split(r#""protocol":"#)
-            .nth(1)
-            .expect("the hello carries a protocol field")
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        assert_eq!(n, super::PROTOCOL_VERSION.to_string(), "the shell client's hello: {}", hellos[0]);
-        for field in [r#""host":%s"#, r#""os_user":%s"#] {
-            assert!(hellos[0].contains(field), "the shell client's hello declares {field}: {}", hellos[0]);
-        }
-        assert!(!hellos[0].contains(r#""token""#), "the shell client's hello sends no token: {}", hellos[0]);
+    fn the_shell_hello_is_this_protocols_hello() {
+        let Some(bash) = bash() else { return };
+        let lib =
+            format!("{}/../../comm/lib/comm-lib.sh", env!("CARGO_MANIFEST_DIR")).replace('\\', "/");
+        let home = tempfile::tempdir().expect("scratch home");
+        let out = Command::new(bash)
+            .args(["-c", &format!(". '{lib}' && sot_hello_frame")])
+            .env("HOME", home.path())
+            .env("SOT_COMM_HOME", home.path().join(".sot-comm"))
+            .env("SOT_SELF_HOST", "hello-test-host")
+            .env_remove("SOT_WORKSPACE")
+            .output()
+            .expect("run bash");
+        assert!(
+            out.status.success(),
+            "sot_hello_frame failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let frame: super::Frame =
+            serde_json::from_slice(&out.stdout).expect("the shell hello is one JSON frame");
+        assert_eq!(
+            (frame.kind, frame.op.as_str()),
+            (super::Kind::Req, "hello"),
+            "the shell hello's envelope"
+        );
+        assert!(
+            frame.payload.get("token").is_none(),
+            "the shell client's hello sends no token: {}",
+            frame.payload
+        );
+        let hello: super::ops::HelloReq =
+            serde_json::from_value(frame.payload).expect("its payload is a hello request");
+        assert_eq!(
+            hello.protocol,
+            super::PROTOCOL_VERSION,
+            "the shell client's hello protocol"
+        );
+        assert_eq!(
+            hello.host.as_deref(),
+            Some("hello-test-host"),
+            "the shell client's hello host"
+        );
+        let own = sot_log::identity::os_account::own_account_id()
+            .expect("the OS issues this process's account");
+        assert_eq!(
+            hello.os_user.as_deref(),
+            Some(own.as_str()),
+            "the shell client's hello account"
+        );
     }
 
     /// ADR 0049 `## User isolation`: a hello names the OS account its process runs as, and two accounts on one

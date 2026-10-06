@@ -158,7 +158,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | supervisor worker per operation | thread | capsule | `rust/log/src/supervisor/lifecycle.rs` `Lifecycle`; `rust/log/src/supervisor/oneshot.rs` `endrun_inner`, `reset_inner` |
 | lane accept and reaper threads | thread | capsule | `rust/log/src/lane/socket_unix/accept.rs`; `rust/log/src/lane/pipe_win/accept.rs` |
 | frame format, codec, 1 MiB cap | wire | wire | `rust/protocol/src/lib.rs` `Frame`; `rust/protocol/src/codec.rs` `read_frame`, `write_frame`, `MAX_ENVELOPE_BYTES` |
-| `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, pinned by `comm_lib_hello_speaks_this_protocol`) |
+| `PROTOCOL_VERSION` | wire | wire | `rust/protocol/src/lib.rs` `PROTOCOL_VERSION` (the shell literal in `comm/lib/comm-lib-client.sh` `sot_hello_frame`, held to it by `the_shell_hello_is_this_protocols_hello`, which runs it) |
 | product version, `is_release_build` | wire | wire | `rust/protocol/src/version.rs` `app_version`, `is_release_build`; `rust/protocol/build.rs` |
 | IR `TreeNode`, `PreviewPayload`, `BlobDescriptor` | wire | wire | `rust/protocol/src/ir.rs` |
 | `hello` | op | server | `rust/backend/src/server/hello.rs` `handle_hello`, `protocol_gate`, `admit_hello`, `register_hello`; the host account record `rust/backend/src/clients.rs` `admit_account`; every Rust client builds it with `rust/protocol/src/ops/session.rs` `HelloReq::this_process` |

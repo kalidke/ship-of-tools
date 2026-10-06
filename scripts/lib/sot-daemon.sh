@@ -4,10 +4,10 @@ SOT_LOG_CAP_BYTES=16777216   # 16MB: the unprotected logs' total a start prunes 
 
 # sot-daemon.sh -- the one place the sotd unit, the all-in-one sot-launch
 # wrapper and the backend ensure are written down. Sourced by install.sh,
-# sot-apply.sh, launch-sot.sh and, through the text render_sot_launch writes,
-# by the rendered wrapper itself. sot-apply.sh runs under /bin/sh (dash) and
-# macOS ships bash 3.2, so this file is POSIX shell plus `local`: no arrays,
-# `[[`, `declare`, `$'...'`, `function`, or `==` in `[`.
+# sot-apply.sh, launch-sot.sh, restart-backend.sh and, through the text
+# render_sot_launch writes, by the rendered wrapper itself. sot-apply.sh runs
+# under /bin/sh (dash) and macOS ships bash 3.2, so this file is POSIX shell
+# plus `local`: no arrays, `[[`, `declare`, `$'...'`, `function`, or `==` in `[`.
 
 # ExecStart's binary path from a unit's text (stdin -> stdout); the same
 # two shapes as install.sh's installer_unit_owner_path, which stays there

@@ -415,16 +415,21 @@ try {
         $heldPath = Join-Path $fakeLocalAppData 'sot\held.json'
         Remove-Item -LiteralPath $heldPath -Force -ErrorAction SilentlyContinue
 
-        # (a) -FrontendKilled, and the fake exits by itself after 6 s.
+        # (a) -FrontendKilled, and the fake exits by itself 6 s after the test starts measuring. Its bind comes 4 s
+        # late: setup time that, with a timer started at the fake's own start, shortened the measured wait.
         try {
         Clear-FakeEnv
-        $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
+        $arm8a = Join-Path $root 'exit-arm-8a'
+        $env:FAKE_SOTD_EXIT_ARM_FILE = $arm8a
+        $env:FAKE_SOTD_BIND_DELAY_MS = '4000'
         $p8a = New-FakePrefix 'p8a'
         $pipe8a = New-TestPipeName
         try {
             $null = & $script -Prefix $p8a -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8a -ProjectRoot $root 6>&1 2>&1
             Check '8a: the fake started' (@(Get-DaemonProcs (Get-PipePath $pipe8a)).Count -eq 1) 'the fake daemon did not start'
+            # The origin: the stopwatch starts first, then the fake's exit timer, once this file appears.
             $sw8a = [System.Diagnostics.Stopwatch]::StartNew()
+            Set-Content -LiteralPath $arm8a -Value '6000' -Encoding ASCII
             $out8a = & $script -Stop -FrontendKilled -Prefix $p8a -PipeName $pipe8a 6>&1 2>&1
             $exit8a = $LASTEXITCODE
             $sec8a = $sw8a.Elapsed.TotalSeconds
@@ -441,13 +446,15 @@ try {
         # (b) no switch, but held.json says the daemon is closing.
         try {
         Clear-FakeEnv
-        $env:FAKE_SOTD_EXIT_AFTER_MS = '6000'
+        $arm8b = Join-Path $root 'exit-arm-8b'
+        $env:FAKE_SOTD_EXIT_ARM_FILE = $arm8b
         Set-Content -LiteralPath $heldPath -Value '{"v":1,"holders":[],"handover_until_ms":null,"closing":true,"not_ended":0,"forget":[]}' -Encoding ASCII
         $p8b = New-FakePrefix 'p8b'
         $pipe8b = New-TestPipeName
         try {
             $null = & $script -Prefix $p8b -DevBinDir 'C:\sot-test-does-not-exist' -PipeName $pipe8b -ProjectRoot $root 6>&1 2>&1
             $sw8b = [System.Diagnostics.Stopwatch]::StartNew()
+            Set-Content -LiteralPath $arm8b -Value '6000' -Encoding ASCII
             $out8b = & $script -Stop -Prefix $p8b -PipeName $pipe8b 6>&1 2>&1
             $exit8b = $LASTEXITCODE
             $sec8b = $sw8b.Elapsed.TotalSeconds

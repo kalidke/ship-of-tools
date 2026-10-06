@@ -154,5 +154,9 @@ behaviour it pins. For a Windows script change, the `.ps1` suite named for it ab
   rename there breaks it.
 - The suites stub `sotd`, its `stdio-bridge` arm included (and `systemctl` in `installer-support.sh`); none needs a
   network. `test-local-daemon.ps1` sections 3 to 6 need a real `sotd.exe`: a failure on CI when absent, a skip elsewhere.
+- A fixture never shares a process object with the code under test: a suite that ends a child keeps a `Process` of its
+  own for it, its handle taken while the child runs (`GetProcessById`), since production disposes its own. A timed fake
+  starts its timer at the test's own origin, the arm file the test writes as it starts measuring
+  (`FAKE_SOTD_EXIT_ARM_FILE`), never at its own start.
 - `rc-gate.sh` needs `CARGO_TARGET_DIR` to itself while it runs; its verdict ends `<logdir>/summary.txt` as `ALLDONE` or
   `ALLDONE FAILED`.

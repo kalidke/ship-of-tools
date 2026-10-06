@@ -726,15 +726,6 @@ check "sot-lease.ps1 names the fe.leaving op" "yes" "$(grep -qF "\"op\":\"$OPS_F
 WIRE_PROTO="$(sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);.*/\1/p' "$(dirname "$0")/../../rust/protocol/src/lib.rs")"
 check "lib.rs names one wire protocol" "yes" "$([ -n "$WIRE_PROTO" ] && echo yes || echo no)"
 check "sot-lease.ps1's fe.leaving frame speaks the wire protocol" "yes" "$(grep -qF "{\"v\":$WIRE_PROTO,\"id\":2,\"kind\":\"req\",\"op\":\"$OPS_FE_LEAVING\"" "$PS_LEASE" && echo yes || echo no)"
-LEASE_PREFIX="{\"v\":$WIRE_PROTO,\"id\":1,\"kind\":\"req\",\"op\":\"fe.lease\",\"payload\":{\"boot\":\""
-in_order() {  # <file> <strip-backslashes 0|1>: prefix, then ","created":, then ,"pid": on one line
-    local txt
-    if [ "$2" = 1 ]; then txt="$(sed 's/\\//g' "$1")"; else txt="$(cat "$1")"; fi
-    printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | grep -qF '","created":' && \
-        printf '%s\n' "$txt" | grep -F "$LEASE_PREFIX" | sed 's/.*","created":/","created":/' | grep -qF ',"pid":' && echo yes || echo no
-}
-check "sot-lease.ps1 builds the golden lease line prefix and key order" "yes" "$(in_order "$PS_LEASE" 0)"
-check "ops/lease.rs holds the same golden lease line" "yes" "$(in_order "$OPS_RS" 1)"
 # The launcher's hello (ADR 0049, User isolation) speaks the wire protocol and names the handoff role.
 HANDOFF_ROLE="$(sed -n 's/.*pub const HANDOFF_ROLE: &str = "\([^"]*\)".*/\1/p' "$(dirname "$0")/../../rust/protocol/src/ops/session.rs")"
 check "session.rs names the handoff role" "yes" "$([ -n "$HANDOFF_ROLE" ] && echo yes || echo no)"
@@ -745,8 +736,9 @@ check "sot-lease.ps1's hello is a handoff" "yes" "$(grep -qF "\"role\":\"$HANDOF
 printf '\n'
 # ---------------------------------------------------------------------------
 case_start "restart_backend_judges_this_accounts_daemon"
-d="$WORK/restart-own"; mkdir -p "$d/repo/scripts" "$d/repo/rust/target/release" "$d/stubs"
+d="$WORK/restart-own"; mkdir -p "$d/repo/scripts/lib" "$d/repo/rust/target/release" "$d/stubs"
 cp "$(dirname "$0")/../restart-backend.sh" "$d/repo/scripts/"
+cp "$(dirname "$0")/../lib/sot-daemon.sh" "$d/repo/scripts/lib/"
 cat > "$d/repo/rust/target/release/sotd" <<SD
 #!/bin/sh
 case "\$1 \$2 \$3" in

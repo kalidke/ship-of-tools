@@ -150,6 +150,14 @@ try {
                         ($leaseChild11.StartTime.ToFileTimeUtc() -eq $payload11.created)
                 }
                 Check '11a: the second logged line is the lease, held by the bridge child' $heldByChild11 "lines: $($lines11a -join ' | ')"
+                # The lease line speaks the protocol its own hello declares: the real daemon's gate holds that hello to
+                # PROTOCOL_VERSION, and reads the lease's fields into its FeLeaseReq, granting only the bridge's own
+                # boot, pid and creation time (5b, 5b2).
+                $sameProtocol11 = $false
+                if ($lines11a.Count -ge 2) {
+                    $sameProtocol11 = (($lines11a[1] | ConvertFrom-Json).v -eq ($lines11a[0] | ConvertFrom-Json).payload.protocol)
+                }
+                Check '11a: the lease line speaks the protocol its hello declares' $sameProtocol11 "lines: $($lines11a -join ' | ')"
                 Close-SotLeases
                 $wait11a = [System.Diagnostics.Stopwatch]::StartNew()
                 do {
@@ -209,30 +217,44 @@ try {
 
             # (f) a bridge that ends before the lease is written still says why (ADR 0049)
             Clear-FakeEnv
-            $env:FAKE_SOTD_BRIDGE_EARLY_EXIT = '1'
+            $go11f = Join-Path $root 'bridge-go-11f'
+            $env:FAKE_SOTD_BRIDGE_EARLY_EXIT = $go11f
             $script:child11f = $null
+            $input11f = [Console]::InputEncoding
             $realBoot11f = ${function:Get-SotBootId}
             function Get-SotBootId {
-                $child11f = Get-Variable -Name bridge -Scope 1 -ValueOnly -ErrorAction SilentlyContinue
-                if ($child11f) {
-                    $script:child11f = $child11f
-                    $child11f.StandardInput.Close()
-                    if (-not $child11f.WaitForExit(10000)) { throw 'the fake bridge did not exit within 10 s' }
-                    if ($child11f.ExitCode -ne 1) { throw "the fake bridge exited $($child11f.ExitCode), expected 1" }
+                $bridge11f = Get-Variable -Name bridge -Scope 1 -ValueOnly -ErrorAction SilentlyContinue
+                if ($bridge11f) {
+                    # A process object of the test's own for the cleanup below: Open-SotLease disposes its own when the
+                    # lease is not granted. Its handle is taken now, while the child still runs.
+                    $script:child11f = [System.Diagnostics.Process]::GetProcessById($bridge11f.Id)
+                    $null = $script:child11f.Handle
+                    # Only now may the fake read its input: the test holds its own handle, whatever the input holds.
+                    Set-Content -LiteralPath $go11f -Value 'go' -Encoding ASCII
+                    $bridge11f.StandardInput.Close()
+                    if (-not $bridge11f.WaitForExit(10000)) { throw 'the fake bridge did not exit within 10 s' }
+                    if ($bridge11f.ExitCode -ne 1) { throw "the fake bridge exited $($bridge11f.ExitCode), expected 1" }
                 }
                 & $realBoot11f
             }
             try {
+                # 11f is about the warning, not the bytes a bridge reads (7c is): its fixture fails on any input byte,
+                # so while it runs the console's input encoding has no preamble, whatever Start-SotBridge does.
+                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
                 $script:supLines = @()
                 $streams11f = @(Open-SotLease (Get-PipePath (New-TestPipeName)) $fakeExe)
                 Check '11f: no stream comes back' ($streams11f.Count -eq 0) "got $($streams11f.Count)"
                 Check '11f: the warning names the bridge''s own line' ((@($script:supLines | Where-Object { $_ -like '*not connecting: test refusal*' })).Count -ge 1) "log: $($script:supLines -join ' | ')"
             } finally {
+                [Console]::InputEncoding = $input11f
                 ${function:Get-SotBootId} = $realBoot11f
                 Clear-FakeEnv
-                if ($script:child11f -and -not $script:child11f.HasExited) {
-                    $script:child11f.Kill()
-                    if (-not $script:child11f.WaitForExit(10000)) { throw 'the fake bridge did not stop within 10 s' }
+                if ($script:child11f) {
+                    if (-not $script:child11f.HasExited) {
+                        $script:child11f.Kill()
+                        if (-not $script:child11f.WaitForExit(10000)) { throw 'the fake bridge did not stop within 10 s' }
+                    }
+                    $script:child11f.Dispose()
                 }
                 $script:child11f = $null
             }

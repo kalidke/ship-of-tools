@@ -20,5 +20,7 @@ anyhow = { workspace = true }
 sot-log = { path = "../log" }
 
 [dev-dependencies]
+# The shell hello test runs the shell client in a scratch home of its own.
+tempfile = { workspace = true }
 # The lane client's tests dial a fake daemon on a local socket or pipe, the one transport it has.
 interprocess = { workspace = true }

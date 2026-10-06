@@ -118,10 +118,14 @@ this account on Windows and a socket in a folder private to this account on Unix
 its server cannot act as the account before the check. Built by lane M1c: no product script opens a socket or pipe
 itself; a shell or PowerShell script reaches one on this computer only through `sotd stdio-bridge --endpoint`, so the
 same check applies (comm's `sot_dial`, the launch scripts' probes, and the launcher's lease, which names its bridge
-child). `rust/log/tests/isolation_guards.rs` checks this lexically: in tracked shell, PowerShell, batch, Python and Perl
-files it fails, without regard to case, on the dial tools and connector names it lists and on a line running the bridge
-that it does not list, and the test scripts that dial raw are listed by file. A name split by quotes or built at run
-time, a file of another kind and a second dial in a listed test file are outside it. Isolation holds between ordinary
+child). Each of those paths is shown by running it: `rust/backend/tests/shell_dial.rs` runs comm's `sot_dial`, with and
+without its bound, `sot_oneshot_request` and the launch scripts' `sot_socket_open` (which `restart-backend.sh` also
+runs) against a socket outside a private folder, which each refuses without connecting, and `sot_dial`, with and without
+its bound, and `sot_socket_open` reach this account's own (`sot_oneshot_request` sends through the bounded `sot_dial`);
+on Windows it runs `sot_dial` against SYSTEM's `epmapper` pipe and this account's own. The launcher suites do the same
+for the PowerShell probe and lease (sections 4b and 11e), and comm's ssh path is shown to run the far box's own bridge.
+No test reads the scripts for a dial outside these paths: a script that adds one is caught in review. Isolation holds
+between ordinary
 accounts: root, and on Windows SYSTEM and the Administrators group, can read any account's files and processes and are
 outside it. The Unix check covers the socket's own folder only. The
 daemon's bind check covers more for a derived path (the runtime folder and every folder below it down to the socket's)

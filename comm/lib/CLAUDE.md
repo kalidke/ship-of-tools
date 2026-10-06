@@ -68,12 +68,17 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   named by the daemon with its declared host, which is `sot_host`'s rule.
 - bash 3.2 and git-bash.
 - The four timed comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
-  `sot_dial`'s bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless claude. One perl process
-  owns the deadline and the command's process group: at the bound, or when it is itself sent TERM, INT or HUP, it
-  signals the whole group and KILLs it a second later if any member is left, so a descendant holding the output ends
-  too, and the bound holds when the caller is killed. With no perl, no process group or a bound that is not a whole
-  number above 0, the call does not run (125). The PostToolUse heartbeat (hooks/comm-status-heartbeat.sh) keeps its
-  own watchdog over comm-context.sh: TERM at its bound, then a wait, and the output discarded.
+  `sot_dial`'s bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless claude. One perl process owns
+  the deadline and the command's process group until the command has exited and no member of the group is left, so a
+  descendant still holding the output after the command exits is ended at the bound too, and the call's status is then
+  the bound's, with the command's own on stderr. At the bound, or when that perl is itself sent TERM, INT or HUP, it
+  signals the group and the command itself, KILLs them a second later by the clock if any is left, and returns a second
+  after that in any case, naming on stderr what still ran; the bound holds when the caller is killed. With no perl, no
+  process group or a bound that is not a whole number above 0, the call does not run (125). Outside it: a descendant
+  that leaves the command's group (setsid, as ssh's ControlPersist master does), and on Windows a native program and its
+  children (`sot_dial`'s sotd.exe, the auditor's claude), since Git Bash emulates the group and its signals for its own
+  programs only, and the tests run only those. The PostToolUse heartbeat (hooks/comm-status-heartbeat.sh) keeps its own
+  watchdog over comm-context.sh: TERM at its bound, then a wait, and the output discarded.
 - The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.

@@ -81,7 +81,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ### Dev and docs
 - `restart-backend.sh`: loads a freshly built `sotd` into a running dev daemon.
 ### Folders
-- `lib/`: `sot-daemon.sh`, sourced by the installer, the launcher and the rendered wrapper.
+- `lib/`: `sot-daemon.sh`, sourced by the installer, the launcher, `restart-backend.sh` and the rendered wrapper.
 - `tests/`: shell and PowerShell suites and `rc-gate.sh`.
 
 ## Start here
@@ -106,9 +106,10 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
   `one_copy_helper` and `partial_wrapper_write_restores` cases of `installer-apply.sh` pin it.
 - Socket and pipe paths come from `sotd session-socket-path`; no script builds one.
 - A launch script reaches a daemon's socket or pipe only through `sotd stdio-bridge --endpoint` (`sot_socket_open`,
-  `restart-backend.sh`, `Test-SotPipeOpen`, `Open-SotLease`, whose lease names its bridge child), which connects only to
-  an endpoint this OS account serves (ADR 0049 `## User isolation`); a script that finds this account's daemon in a
-  process list lists only this account's processes and compares the daemon's `--socket` or `--label` value whole and
+  which `restart-backend.sh` also runs, `Test-SotPipeOpen`, `Open-SotLease`, whose lease names its bridge child), which
+  connects only to an endpoint this OS account serves (ADR 0049 `## User isolation`; each path is shown by running it,
+  in rust/backend/tests/shell_dial.rs and test-local-daemon-own.ps1's 4b); a script that finds this account's daemon in
+  a process list lists only this account's processes and compares the daemon's `--socket` or `--label` value whole and
   literally (`restart-backend.sh`, `Get-LocalDaemonProcess`).
 - This computer's local daemon has one binary on Windows: `sot-local-daemon.ps1`'s resolver chooses it (the complete
   dev pair, else the complete install pair), and the daemon's start, stop, probes and pipe-name query and the

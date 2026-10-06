@@ -32,6 +32,9 @@ LOG="${SOT_BACKEND_LOG:-$REPO/dev/output/sotd-restart.$(uname -n).log}"
 LABEL="${SOT_BACKEND_LABEL:-sot}"
 SOCKET="${SOT_SOCKET:-}"
 
+# sot_socket_open: the launch scripts' one probe of this account's socket (ADR 0049, User isolation).
+. "$REPO/scripts/lib/sot-daemon.sh" || exit 2
+
 [ -x "$BIN" ] || { echo "ERROR: binary not built: $BIN" >&2
     echo "       build it: (cd '$REPO/rust' && cargo build --release -p sot-backend)" >&2; exit 2; }
 
@@ -55,17 +58,11 @@ find_pid() {
         END { if (!found && first != "") print first }
     '
 }
-# The socket answers this OS account: sotd's own bridge connects only to a socket in a folder private to this account
-# and, its input empty, closes again at once.
-socket_open() {
-    [ -S "$SOCKET" ] || return 1
-    "$BIN" stdio-bridge --endpoint "unix:$SOCKET" </dev/null >/dev/null 2>&1
-}
 
 OLD=$(find_pid)
 BIN_MTIME=$(stat -c %Y "$BIN")
 if [ -n "$OLD" ]; then
-    if ! socket_open; then
+    if ! sot_socket_open "$BIN" "$SOCKET"; then
         STALE=1
         echo "running daemon pid $OLD has no socket at $SOCKET"
     else
@@ -93,9 +90,9 @@ fi
 if systemctl --user is-enabled sotd.service >/dev/null 2>&1; then
     echo "sotd is systemd-supervised (sotd.service) — restarting via systemctl --user"
     systemctl --user restart sotd.service
-    for _ in $(seq 1 30); do socket_open && break; sleep 0.5; done
+    for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
     NEW=$(find_pid)
-    if [ -n "$NEW" ] && socket_open; then
+    if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
         echo "backend restarted via systemd: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
         exit 0
     fi
@@ -118,9 +115,9 @@ mkdir -p "$(dirname "$LOG")"
 setsid nohup "$BIN" --project-root "$ROOT" --label "$LABEL" >>"$LOG" 2>&1 &
 disown 2>/dev/null || true
 
-for _ in $(seq 1 30); do socket_open && break; sleep 0.5; done
+for _ in $(seq 1 30); do sot_socket_open "$BIN" "$SOCKET" && break; sleep 0.5; done
 NEW=$(find_pid)
-if [ -n "$NEW" ] && socket_open; then
+if [ -n "$NEW" ] && sot_socket_open "$BIN" "$SOCKET"; then
     echo "backend restarted: pid $NEW on $SOCKET (binary built $(date -d "@$BIN_MTIME" '+%F %T'))"
 else
     echo "ERROR: backend did not bind $SOCKET after restart — see $LOG" >&2; exit 1

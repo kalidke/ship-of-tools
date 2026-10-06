@@ -68,13 +68,18 @@ sot_require_tools() {
 # stderr, and ends it SECS seconds (a whole number above 0) after it starts. The four timed comm calls run under it:
 # sot_ssh_bridge's ssh, sot_dial's bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless
 # claude. One perl process owns the deadline and CMD's process group, which CMD gets before it runs, or it does not
-# run. At the bound, or when that process is itself sent TERM, INT or HUP, one routine signals the whole group (TERM,
-# or the signal it got) and KILLs it a second later if any member is left, so the bound holds when this shell is
-# killed and a descendant holding CMD's output ends too. CMD ending on its own returns at once with its status. Status:
-# CMD's own; 124 at the bound, 137 when that took KILL; 128+N when the bound itself was sent signal N; 127 when CMD
-# could not start; 125 when nothing ran (no perl, no process group, or a bound that is not a whole number above 0).
-# Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring descendant holding the output, and
-# macOS has none.
+# run. The call returns when CMD has exited and no member of its group is left; until then the deadline holds, so a
+# descendant still holding CMD's output after CMD exits is ended at the bound too. At the bound, or when that perl is
+# itself sent TERM, INT or HUP, it signals the group and CMD itself (TERM, or the signal it got), so CMD is reached
+# even if it left its group; a second later by the clock it KILLs what is left, and a second after that it returns in
+# any case, naming on stderr whatever still runs; it also names CMD's own status when CMD had exited before its group
+# was ended. Status: CMD's own when CMD and its group end by themselves; 124 at the bound, 137 when that took KILL;
+# 128+N when the bound itself was sent signal N; 127 when CMD could not start; 125 when nothing ran (no perl, no
+# process group, or a bound that is not a whole number above 0). Outside it: a descendant that leaves CMD's group
+# (setsid, as ssh's ControlPersist master does). On Windows, Git Bash emulates the group and its signals for its own
+# programs; whether the bound ends a native Windows program (sot_dial's sotd.exe, the auditor's claude) or its
+# children is not established. Not GNU timeout: it returns once its own child ends, leaving a TERM-ignoring
+# descendant holding the output, and macOS has none.
 sot_bounded() {
     command -v perl >/dev/null 2>&1 || {
         echo "sot_bounded: no perl to bound $2 with" >&2
@@ -94,23 +99,36 @@ sot_bounded() {
             POSIX::_exit(127);
         }
         setpgrp($pid, $pid);
-        $SIG{$_} = sub { die "$_[0]\n" } for qw(ALRM TERM INT HUP);
-        my $st;
-        eval { alarm $secs; waitpid($pid, 0); $st = $?; alarm 0; };
-        exit($st & 127 ? 128 + ($st & 127) : $st >> 8) if defined $st;
-        chomp(my $why = $@);
-        $SIG{$_} = "IGNORE" for qw(ALRM TERM INT HUP);
+        my ($why, $late, $st) = ("", 0, undef);
+        $SIG{ALRM} = sub { $late = 1 };
+        $SIG{$_} = sub { $why ||= $_[0] } for qw(TERM INT HUP);
+        my $code = sub { $_[0] & 127 ? 128 + ($_[0] & 127) : $_[0] >> 8 };
+        my $left = sub {
+            $st = $? if !defined $st && waitpid($pid, POSIX::WNOHANG()) == $pid;
+            !defined $st || kill(0, -$pid);
+        };
+        my $wait = sub {
+            $late = 0;
+            alarm 1;
+            select(undef, undef, undef, 0.01) while $left->() && !$late;
+            alarm 0;
+            $left->();
+        };
+        alarm $secs;
+        select(undef, undef, undef, 0.01) while $left->() && !$why && !$late;
         alarm 0;
-        kill(exists $num{$why} ? $why : "TERM", -$pid);
-        for (1 .. 20) {
-            waitpid($pid, POSIX::WNOHANG());
-            last unless kill(0, -$pid);
-            select(undef, undef, undef, 0.05);
+        exit($code->($st)) if !$left->();
+        $SIG{$_} = "IGNORE" for qw(TERM INT HUP);
+        my $own = $st;
+        my $end = sub { kill($_[0], -$pid); kill($_[0], $pid) if !defined $st };
+        $end->($why || "TERM");
+        my $hard = $wait->();
+        if ($hard) {
+            $end->("KILL");
+            print STDERR "sot_bounded: $cmd[0] or a member of its group was still running a second after KILL\n" if $wait->();
         }
-        my $hard = kill(0, -$pid);
-        kill("KILL", -$pid) if $hard;
-        waitpid($pid, 0);
-        exit(exists $num{$why} ? 128 + $num{$why} : $hard ? 137 : 124);
+        print STDERR "sot_bounded: $cmd[0] exited with status " . $code->($own) . " while its group ran on; the bound ended the group\n" if defined $own;
+        exit($why ? 128 + $num{$why} : $hard ? 137 : 124);
     ' "$@"
 }
 

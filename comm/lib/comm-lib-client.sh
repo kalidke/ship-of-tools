@@ -491,8 +491,8 @@ sot_hello_frame() {
     # (`sot_protocol::PROTOCOL_VERSION`, rust/protocol/src/lib.rs) — not
     # this file's own `$PROTOCOL_VERSION` (registry.json schema version,
     # unrelated). It is bumped by hand with every `PROTOCOL_VERSION`
-    # change; sot-protocol's `comm_lib_hello_speaks_this_protocol` test
-    # fails until the two match.
+    # change; sot-protocol's `the_shell_hello_is_this_protocols_hello`
+    # test runs this function and fails until the two match.
     printf '{"v":1,"id":1,"kind":"req","op":"hello","payload":{"client_id":"sot-comm","last_seen_revision":0,"protocol":3,"app_version":"comm","host":%s,"os_user":%s,"role":%s,"name":%s}}\n' \
         "$(sot_json_escape "$host")" "$(sot_json_escape "$os_user")" "$(sot_json_escape "$role")" "$(sot_json_escape "${NAME:-}")"
 }
