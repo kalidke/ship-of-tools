@@ -5,6 +5,7 @@ wire, or runs a `sotd` subcommand as a subprocess. Isolation comes from support'
 own home, config, state, runtime and comm folders. The suites span subsystems, so this page names no charter.
 
 ## Files
+- `trust_declare.rs`: offline declaration parent behavior controls in a temporary home.
 - `active_frontend.rs`: server; which frontend is active, over the wire against a real `sotd`
 - `admission.rs`: server; every connection starts with an accepted hello (every op of `sot_protocol::op` as a first frame is refused), and two OS accounts on one host are refused (ADR 0049 `## User isolation`)
 - `agent_exec.rs`: agents; `sotd agent-exec` run as a plain subprocess, no daemon
