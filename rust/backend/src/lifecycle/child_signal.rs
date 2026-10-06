@@ -47,26 +47,8 @@ impl Signal {
     /// do not establish death. A stalled OS creation/adoption can delay acquiring this mutex.
     pub(crate) fn fire(&self) -> std::io::Result<()> {
         self.fired.send_replace(true);
-        let mut trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
-        let mut failures = Vec::new();
-        if let Some(map) = trees.as_mut() {
-            map.retain(|id, tree| match tree.terminate() {
-                Ok(()) => false,
-                Err(error) => {
-                    tracing::error!(tree = id, %error, "child fire: termination request failed");
-                    failures.push(format!("tree {id}: {error}"));
-                    true
-                }
-            });
-            if map.is_empty() {
-                *trees = None;
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other(failures.join("; ")))
-        }
+        let _trees = self.trees.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(())
     }
 
     pub(crate) fn is_fired(&self) -> bool {
