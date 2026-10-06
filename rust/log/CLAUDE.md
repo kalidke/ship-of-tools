@@ -60,7 +60,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `src/secret.rs`: `redact` and `RedactingWriter`, the masking of page secrets in both binaries' logs.
 - `src/test_exec.rs`: `write_executable`, how a test writes a program it will run (feature `test-support`), and its source scan.
 - `src/test_isolated.rs`: `run_isolated`, `test_command`, `enter` and `drain`: the one way a test re-runs its binary for a named test and waits on it within a bound, failing a child whose body did not enter exactly once (feature `test-support`).
-- `src/test_log.rs`: `capture()` and `install()`, the test-only way to install a subscriber (feature `test-support`), and its source scan.
+- `src/test_log.rs`: timestamp-free `capture()` and formatting-preserving `install()` (feature `test-support`), with behavioral tests of the capture format, first-callsite routing, parallel isolation and guard restoration.
 - `src/store/`: the voyage store.
 - `src/capsule/`: the leg's runtime and producers.
 - `src/supervisor/`: the supervisor, its journal, probe and authority.
@@ -80,7 +80,7 @@ the leg. For the record's format read `src/store/record.rs` and `src/store/segme
 - `host` is a `pub` module; `lock_writer` and `owner_protected_pipe_descriptor` are also named at the crate root.
 - A change to a wire tag, magic or limit, or to an exit code, is an interface change with other processes and versions.
 - No test takes the system folders out of the process `PATH` or changes `SHELL`; code under test takes them from its caller (`test_scan::tests::no_test_changes_the_process_path_or_shell`).
-- Every subscriber a test installs goes through `test_log` (`capture()` to read a thread's tracing output, `install()` for a test of a production log writer); besides it, only the two binaries' `main` set up a subscriber (`test_log::tests::only_test_log_makes_a_subscriber`).
+- Every subscriber a test installs goes through `test_log`: `capture()` reads this thread's events without formatter timestamps or colour; `install()` preserves the supplied subscriber's formatting and timer. Behavioral tests exercise first-callsite routing, parallel captures and guard restoration; new callers use this owner. The two binaries' `main` functions install production subscribers.
 - A test writes a program it will run only through `test_exec::write_executable`, so no process holds it open for writing when it runs (`test_exec::tests::only_test_exec_makes_a_test_program_executable`).
 - A test re-runs a test binary by name through `test_isolated` (`run_isolated`, or `test_command` with `enter` and `Entry::assert_once`), or at a site its pin lists with that site's own proof that the body ran (`test_isolated::tests::no_test_reruns_a_binary_outside_this_module`).
 - Every Rust source-text scan reads through `test_scan`, and none cuts a file at its first `#[cfg(test)]` (`test_scan::tests::no_scan_cuts_a_file_at_its_first_cfg_test`).

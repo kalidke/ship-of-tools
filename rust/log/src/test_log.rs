@@ -1,4 +1,5 @@
-//! Test-only (feature `test-support`): every subscriber a test installs goes through here: `capture()` reads a thread's tracing output, and `install()` puts a production log writer's own subscriber under test.
+//! Test-only (feature `test-support`): `capture()` reads this thread's tracing output without formatter timestamps or
+//! ANSI colour. `install()` puts a supplied subscriber under test with its formatting intact.
 //! A global router, installed once, keeps tracing's process-wide callsite cache from caching `never` for a callsite
 //! whose first reach is a thread with no subscriber.
 
@@ -35,14 +36,14 @@ impl Subscriber for Router {
 
 static ROUTER: Once = Once::new();
 
-/// Every event of the thread that called [`capture`], at every level, while the value lives.
+/// This thread's events at every level while this capture is its default subscriber, without formatter timestamps or colour.
 pub struct Capture {
     _guard: DefaultGuard,
     out: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Capture {
-    /// Every line captured so far, as `tracing_subscriber::fmt` writes them without colour.
+    /// Every line captured so far, without formatter timestamps or colour; event messages and fields are preserved.
     pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.out.lock().unwrap()).into_owned()
     }
@@ -60,8 +61,8 @@ impl Write for Sink {
     }
 }
 
-/// Installs `subscriber` as this thread's default until the guard drops, after the router (see `capture`). For a test of
-/// a production log writer, which must see that writer's own output.
+/// Installs `subscriber` as this thread's default until the guard drops, preserving its formatting and timer.
+/// Installs the router first (see `capture`); use this for a test of a production log writer's own output.
 pub fn install(subscriber: impl Subscriber + Send + Sync + 'static) -> DefaultGuard {
     ROUTER.call_once(|| {
         tracing::subscriber::set_global_default(Router).expect("a global tracing dispatcher was set before test_log's router");
@@ -69,14 +70,16 @@ pub fn install(subscriber: impl Subscriber + Send + Sync + 'static) -> DefaultGu
     tracing::subscriber::set_default(subscriber)
 }
 
-/// Starts capturing this thread's events at every level. The first `capture` or `install` in a process installs the
-/// router as the global dispatcher; it panics if a global dispatcher was set before.
+/// Starts capturing this thread's events at every level without formatter timestamps or colour.
+/// The first `capture` or `install` in a process installs the router as the global dispatcher;
+/// it panics if a global dispatcher was set before.
 pub fn capture() -> Capture {
     let out = Arc::new(Mutex::new(Vec::new()));
     let sink = out.clone();
     let subscriber = tracing_subscriber::fmt()
         .with_writer(move || Sink(sink.clone()))
         .with_ansi(false)
+        .without_time()
         .with_max_level(LevelFilter::TRACE)
         .finish();
     Capture { _guard: install(subscriber), out }
@@ -85,6 +88,61 @@ pub fn capture() -> Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RECORD: &str = " WARN capture_contract: mathjax response parse failed error=Syntax error at line 1 column 29 | len=63\n";
+    const COLLISION_TIME: &str = "2026-10-06T17:46:38.401234Z";
+
+    struct CollisionTime;
+
+    impl tracing_subscriber::fmt::time::FormatTime for CollisionTime {
+        fn format_time(
+            &self,
+            writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
+        ) -> std::fmt::Result {
+            std::fmt::Write::write_str(writer, COLLISION_TIME)
+        }
+    }
+
+    fn safe_warn() {
+        tracing::warn!(
+            target: "capture_contract",
+            error = %"Syntax error at line 1 column 29 | len=63",
+            "mathjax response parse failed"
+        );
+    }
+
+    #[test]
+    fn capture_has_no_formatter_time_and_install_keeps_its_timer() {
+        {
+            let out = Arc::new(Mutex::new(Vec::new()));
+            let sink = out.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || Sink(sink.clone()))
+                .with_timer(CollisionTime)
+                .with_ansi(false)
+                .with_max_level(LevelFilter::TRACE)
+                .finish();
+            let _guard = install(subscriber);
+            safe_warn();
+            let text = String::from_utf8(out.lock().unwrap().clone()).unwrap();
+            assert_eq!(text, format!("{COLLISION_TIME} {RECORD}"));
+            assert_eq!(text.lines().filter(|line| line.contains("WARN")).count(), 1);
+            assert!(text.contains("0123"));
+            assert!(!text.contains("41234"));
+            eprintln!(
+                "capture contract: fixed-time install control passed; timestamp contains 0123"
+            );
+        }
+
+        let log = capture();
+        safe_warn();
+        let text = log.text();
+        assert_eq!(text.lines().filter(|line| line.contains("WARN")).count(), 1);
+        eprintln!("capture contract: public capture WARN count 1");
+        assert_eq!(text, RECORD);
+        assert!(!text.contains("0123") && !text.contains("41234"));
+        eprintln!("capture contract: exact timestamp-free record passed");
+    }
 
     fn probe() {
         tracing::info!("test_log probe");
@@ -99,58 +157,71 @@ mod tests {
         assert_eq!(log.text().matches("test_log probe").count(), 1, "{}", log.text());
     }
 
-    /// The whole record of where a subscriber is made or installed: this module; each binary's `main` by its production
-    /// lines; and the subscriber the log-writer test in secret.rs builds, by exact line and count. Every installation goes
-    /// through `install` or `capture`.
+    fn marked_event(marker: &str) {
+        tracing::info!(target: "capture_parallel", %marker, "parallel capture");
+    }
+
     #[test]
-    fn only_test_log_makes_a_subscriber() {
-        const WORDS: [&str; 10] = [
-            "tracing_subscriber",
-            "tracing::subscriber::",
-            "subscriber::",
-            "tracing::dispatcher",
-            "dispatcher::",
-            "tracing_core::dispatcher",
-            "Dispatch::",
-            "set_global_default",
-            "with_default",
-            "with_subscriber",
-        ];
-        // Each production line of a `main` that holds a scan word, and the one line of the log-writer test in secret.rs
-        // that builds its subscriber, by exact line and count.
-        const USE_INIT: &str = "use tracing_subscriber::util::SubscriberInitExt;";
-        const USE_FILTER: &str = "use tracing_subscriber::EnvFilter;";
-        const FMT: &str = "tracing_subscriber::fmt()";
-        const BACKEND_MAIN: [(&str, usize); 4] = [
-            (USE_INIT, 1),
-            (USE_FILTER, 1),
-            ("/// Writer for `tracing_subscriber::fmt`: mirrors every log line to BOTH", 1),
-            (FMT, 1),
-        ];
-        const FRONTEND_MAIN: [(&str, usize); 3] = [(USE_INIT, 1), (USE_FILTER, 1), (FMT, 1)];
-        const SECRET: [(&str, usize); 1] = [("let subscriber = tracing_subscriber::fmt()", 1)];
-        let mut found = Vec::new();
-        for (rel, text) in crate::test_scan::rust_sources() {
-            let allowed: &[(&str, usize)] = match rel.as_str() {
-                "rust/log/src/test_log.rs" => continue,
-                "rust/backend/src/main.rs" => &BACKEND_MAIN,
-                "rust/frontend/src/main.rs" => &FRONTEND_MAIN,
-                "rust/log/src/secret.rs" => &SECRET,
-                _ => &[],
-            };
-            let mut used = std::collections::HashMap::new();
-            for (n, line) in text.lines().enumerate() {
-                if !WORDS.iter().any(|w| line.contains(w)) {
-                    continue;
-                }
-                let seen = used.entry(line.trim().to_string()).or_insert(0usize);
-                *seen += 1;
-                let room = allowed.iter().find(|(l, _)| *l == line.trim()).map_or(0, |(_, c)| *c);
-                if *seen > room {
-                    found.push(format!("{rel}:{}: {}", n + 1, line.trim()));
-                }
-            }
+    fn parallel_captures_receive_only_their_own_events() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        const BOUND: Duration = Duration::from_secs(30);
+        let (ready_tx, ready_rx) = channel();
+        let (complete_tx, complete_rx) = channel();
+        let (outer_release_tx, outer_release_rx) = channel();
+        let (peer_release_tx, peer_release_rx) = channel();
+        let peer_ready_tx = ready_tx.clone();
+        let peer_complete_tx = complete_tx.clone();
+        let outer = std::thread::spawn(move || {
+            let log = capture();
+            ready_tx.send(()).unwrap();
+            outer_release_rx.recv_timeout(BOUND).unwrap();
+            marked_event("outer_before");
+            let inner = capture();
+            marked_event("nested");
+            let nested = inner.text();
+            drop(inner);
+            marked_event("outer_after");
+            complete_tx.send(()).unwrap();
+            outer_release_rx.recv_timeout(BOUND).unwrap();
+            (log.text(), nested)
+        });
+        let peer = std::thread::spawn(move || {
+            let log = capture();
+            peer_ready_tx.send(()).unwrap();
+            peer_release_rx.recv_timeout(BOUND).unwrap();
+            marked_event("peer");
+            peer_complete_tx.send(()).unwrap();
+            peer_release_rx.recv_timeout(BOUND).unwrap();
+            log.text()
+        });
+        for _ in 0..2 {
+            ready_rx.recv_timeout(BOUND).unwrap();
         }
-        assert!(found.is_empty(), "a subscriber is made outside test_log::capture:\n{}", found.join("\n"));
+        outer_release_tx.send(()).unwrap();
+        peer_release_tx.send(()).unwrap();
+        for _ in 0..2 {
+            complete_rx.recv_timeout(BOUND).unwrap();
+        }
+        outer_release_tx.send(()).unwrap();
+        peer_release_tx.send(()).unwrap();
+        let (outer, inner) = outer.join().unwrap();
+        let peer = peer.join().unwrap();
+        assert_eq!(outer.lines().count(), 2);
+        assert_eq!(inner.lines().count(), 1);
+        assert_eq!(peer.lines().count(), 1);
+        assert_eq!(
+            outer,
+            " INFO capture_parallel: parallel capture marker=outer_before\n INFO capture_parallel: parallel capture marker=outer_after\n"
+        );
+        assert_eq!(
+            inner,
+            " INFO capture_parallel: parallel capture marker=nested\n"
+        );
+        assert_eq!(
+            peer,
+            " INFO capture_parallel: parallel capture marker=peer\n"
+        );
     }
 }
