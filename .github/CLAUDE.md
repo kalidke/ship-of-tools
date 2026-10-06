@@ -29,6 +29,10 @@ scripts/CLAUDE.md.
 `workflows/rust.yml` to add a suite (its steps are named); `workflows/release.yml` for what a release holds.
 
 ## Rules
+- This temporary T1 replay ref runs "Validate T1 replay observations" in the `test` matrix after Build workspace,
+  before ordinary tests, then archives complete raw observations even on failure. Only the shared validator
+  accepts declared reds; unrelated ordinary-suite failures retain their own status. These proof-only changes
+  are not lane/release changes.
 - CI is the tag gate: `scripts/release.sh` refuses a cut unless the latest non-skipped `rust.yml` and `CI.yml` runs on
   the branch being cut are green and in HEAD's history; a `fixes/*` or `rc/*` branch has runs only if they are
   dispatched there (`gh workflow run <workflow> --ref <branch>`).
