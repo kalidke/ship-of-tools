@@ -1,0 +1,28 @@
+{
+  "branch": "tmp/ci-t1-r2-c1-revert-identity",
+  "original": {
+    "sha": "b8635ba7ccfec9e538a74e2cd969ebd6c2f61f4b",
+    "branch": "tmp/ci-t1-c1-revert-identity"
+  },
+  "accepted_lane": "48f49c0c26e0c26e5b2d8975e6c22c331ac328cf",
+  "accepted_commit": "4b487c8148afe18247bd242ec77043d36ff73618",
+  "tree": "revert-identity",
+  "overlays": [
+    {
+      "tree": "revert-identity",
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "base_sha256": "bde1983bc1405ae2e6af19412b483d34b370db5d19e332553b1c0170b7d2f19b",
+      "overlay_sha256": "f28cdd0755fafd60820ba7d0f06e56f04699624e77eb173fb513df13de4ee05b",
+      "patch": "overlays/revert-identity-ui-input-keypress.rs.patch"
+    }
+  ],
+  "validator_sha256": "453bdd2d03de7d06f8b7125c1d8252dc7a19c9c54d04ca1bc349b9fda382c8e8",
+  "observation_formatting": [
+    {
+      "file": "rust/frontend/src/ui/input/keypress.rs",
+      "accepted_overlay_sha256": "f28cdd0755fafd60820ba7d0f06e56f04699624e77eb173fb513df13de4ee05b",
+      "replay_sha256": "4d9a95366c5c139e2454ddd62b6615ca758c9694279db9cf05ed4735c8c1c886",
+      "change": "new observation statement whitespace only; inherited lines untouched"
+    }
+  ]
+}

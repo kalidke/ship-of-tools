@@ -1,0 +1,15 @@
+[
+  {
+    "label": "c1-revert-identity-quit_enter_and_tab_use_identity_with_modifiers_and_rebindings",
+    "tree": "revert-identity",
+    "test": "ui::input::keypress::tests::quit_enter_and_tab_use_identity_with_modifiers_and_rebindings",
+    "exit": 101,
+    "result": "FAILED",
+    "assertion": "logical Tab/Enter must win",
+    "observations": [
+      "T1 fixture observed: routed raw key and downstream recorder"
+    ],
+    "isolated": false,
+    "not_runnable_here": false
+  }
+]

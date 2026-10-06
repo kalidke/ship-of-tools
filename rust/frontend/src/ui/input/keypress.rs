@@ -172,6 +172,7 @@ mod tests {
 
     #[test]
     fn quit_enter_and_tab_use_identity_with_modifiers_and_rebindings() {
+        println!("T1 body entered: ui::input::keypress::tests::quit_enter_and_tab_use_identity_with_modifiers_and_rebindings");
         for keep in [false, true] {
             for rebound in [false, true] {
                 for bits in 0..16 {
@@ -180,12 +181,14 @@ mod tests {
                     for (key, want) in [(NamedKey::Tab, QuitPromptStep::Stay { keep: !keep }),
                         (NamedKey::Enter, QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }))] {
                         let (step, calls, bytes) = route(Some(keep), Key::Named(key), m, false, false, true, rebound);
+                        println!("T1 fixture observed: routed raw key and downstream recorder");
                         assert_eq!(step, Some(want), "logical Tab/Enter must win");
                         assert_eq!((calls, bytes), (0, vec![]));
                     }
                 }
             }
         }
+        println!("T1 assertion passed: logical Tab/Enter must win");
     }
 
     #[test]
