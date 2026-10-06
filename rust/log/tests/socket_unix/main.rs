@@ -32,15 +32,17 @@
 //! (since each one that touches real I/O runs in its own isolated child
 //! process, per above) never race another test's own env var mutation.
 
-use sot_log::test_isolated::run_isolated;
+use sot_log::host::state_dir::current_uid;
+use sot_log::lane::attach_proto::ConnId;
 #[cfg(target_os = "linux")]
 use sot_log::lane::socket_unix::connect_voyage_socket;
-use sot_log::lane::attach_proto::ConnId;
 use sot_log::lane::socket_unix::{voyage_socket_path, SocketClient, SocketServer};
-use sot_log::host::state_dir::current_uid;
 #[cfg(target_os = "linux")]
 use sot_log::lane::transport::CONNECT_BOUND;
-use sot_log::lane::transport::{ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE};
+use sot_log::lane::transport::{
+    ClosedReason, LaneEvent, TransportError, TEARDOWN_AGGREGATE_DEADLINE,
+};
+use sot_log::test_isolated::run_isolated;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(target_os = "linux")]
@@ -86,23 +88,275 @@ fn isolated_runtime_dir() -> RuntimeDirGuard {
     RuntimeDirGuard { _tmp: tmp }
 }
 
-/// Bounded wait for the next transport event.
-fn next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
-    server
-        .events()
-        .recv_timeout(timeout)
-        .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
+/// One absolute deadline and one caller for a named blocking operation.
+struct WaitContext {
+    test: String,
+    step: String,
+    expected: String,
+    conn: Option<ConnId>,
+    started: Instant,
+    deadline: Instant,
+    caller: String,
+    records: std::cell::RefCell<String>,
 }
 
-fn expect_accepted(server: &SocketServer, timeout: Duration) -> ConnId {
-    match next_event(server, timeout) {
+impl WaitContext {
+    #[track_caller]
+    fn new(test: &str, step: &str, expected: &str, conn: Option<ConnId>, bound: Duration) -> Self {
+        assert!(
+            test.contains("::") && !test.trim().is_empty(),
+            "qualified test identity required"
+        );
+        assert!(!step.trim().is_empty(), "nonempty wait step required");
+        assert!(
+            !expected.trim().is_empty(),
+            "nonempty wait expectation required"
+        );
+        let at = std::panic::Location::caller();
+        let file = at.file().replace('\\', "/");
+        let file = if let Some(i) = file.find("rust/") {
+            file[i..].to_string()
+        } else if let Some(i) = file.find("log/") {
+            format!("rust/{}", &file[i..])
+        } else {
+            format!("rust/log/{file}")
+        };
+        let started = Instant::now();
+        let wait = Self {
+            test: test.into(),
+            step: step.into(),
+            expected: expected.into(),
+            conn,
+            started,
+            deadline: started + bound,
+            caller: format!("{file}:{}", at.line()),
+            records: Default::default(),
+        };
+        wait.record("begin");
+        wait
+    }
+
+    fn record(&self, result: &str) {
+        let _ = result;
+    }
+
+    fn emit(&self, line: &str) {
+        let _ = line;
+    }
+
+    fn run<T>(&self, operation: impl FnOnce() -> T) -> T {
+        self.record("begin");
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+            Ok(value) => {
+                self.record("ok");
+                value
+            }
+            Err(panic) => {
+                self.record("error");
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+
+    fn io<T, E: WaitError>(&self, operation: impl FnOnce() -> Result<T, E>) -> Result<T, E> {
+        self.record("begin");
+        let result = operation();
+        match &result {
+            Ok(_) => self.record("ok"),
+            Err(e) => {
+                self.record(e.kind());
+                self.emit(&format!("socket-error step={} error={e}", self.step));
+            }
+        }
+        result
+    }
+
+    fn join<T>(
+        &self,
+        operation: impl FnOnce() -> std::thread::Result<T>,
+    ) -> std::thread::Result<T> {
+        self.record("begin");
+        let joined = operation();
+        self.record(if joined.is_ok() { "ok" } else { "error" });
+        joined
+    }
+
+    fn syscall(&self, operation: impl FnOnce() -> i32) -> (i32, Option<std::io::Error>) {
+        self.record("begin");
+        let rc = operation();
+        let error = (rc < 0).then(std::io::Error::last_os_error);
+        self.record(if rc < 0 { "error" } else { "ok" });
+        (rc, error)
+    }
+
+    fn fail(&self, result: &str, why: &str, server: Option<&SocketServer>) -> ! {
+        self.record(result);
+        if let Some(server) = server {
+            self.emit(&server.progress_for_test().to_string());
+        }
+        panic!("{}reason={why}", self.records.borrow());
+    }
+
+    fn check(&self, server: Option<&SocketServer>) {
+        if Instant::now() >= self.deadline {
+            self.fail("timeout", "absolute deadline expired", server);
+        }
+    }
+
+    fn receive(
+        &self,
+        server: &SocketServer,
+        bound: Duration,
+    ) -> Result<LaneEvent, std::sync::mpsc::RecvTimeoutError> {
+        self.receive_from(server.events(), bound, Some(server))
+    }
+
+    fn receive_from(
+        &self,
+        receiver: &std::sync::mpsc::Receiver<LaneEvent>,
+        bound: Duration,
+        server: Option<&SocketServer>,
+    ) -> Result<LaneEvent, std::sync::mpsc::RecvTimeoutError> {
+        let left = self
+            .deadline
+            .saturating_duration_since(Instant::now())
+            .min(bound);
+        self.record("begin");
+        let result = receiver.recv_timeout(left);
+        match &result {
+            Ok(_) => self.record("ok"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                self.record("timeout");
+                if let Some(server) = server {
+                    self.emit(&server.progress_for_test().to_string());
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.record("error");
+                self.emit("socket-error disconnected channel");
+            }
+        }
+        result
+    }
+
+    fn pause(&self, duration: Duration) {
+        self.run(|| {
+            std::thread::sleep(
+                duration.min(self.deadline.saturating_duration_since(Instant::now())),
+            )
+        });
+    }
+
+    fn event(&self, server: &SocketServer) -> LaneEvent {
+        self.until(server, |_| true)
+    }
+
+    fn until(
+        &self,
+        server: &SocketServer,
+        mut wanted: impl FnMut(&LaneEvent) -> bool,
+    ) -> LaneEvent {
+        loop {
+            let left = self.deadline.saturating_duration_since(Instant::now());
+            let event = original_next_event(server, left);
+            if wanted(&event) {
+                return event;
+            }
+        }
+    }
+}
+
+trait WaitError: std::fmt::Display {
+    fn kind(&self) -> &'static str;
+}
+impl WaitError for std::io::Error {
+    fn kind(&self) -> &'static str {
+        if matches!(
+            self.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
+            "timeout"
+        } else {
+            "error"
+        }
+    }
+}
+impl WaitError for TransportError {
+    fn kind(&self) -> &'static str {
+        if let TransportError::Io { source, .. } = self {
+            WaitError::kind(source)
+        } else {
+            "error"
+        }
+    }
+}
+
+macro_rules! named {
+    ($test:expr, "child.wait", $expected:expr, $conn:expr, $body:expr) => {
+        WaitContext::new(
+            $test,
+            "child.wait",
+            $expected,
+            $conn,
+            sot_log::test_isolated::ISOLATION_TIMEOUT,
+        )
+        .run(|| $body)
+    };
+    ($test:expr, "server.drop", $conn:expr, $body:expr) => {
+        WaitContext::new(
+            $test,
+            "server.drop",
+            "drop completes",
+            $conn,
+            TEARDOWN_AGGREGATE_DEADLINE,
+        )
+        .run(|| $body)
+    };
+    ($test:expr, $step:expr, $conn:expr, $body:expr) => {
+        named!($test, $step, concat!($step, " result"), $conn, $body)
+    };
+    ($test:expr, $step:expr, $expected:expr, $conn:expr, $body:expr) => {
+        WaitContext::new($test, $step, $expected, $conn, TIMEOUT).run(|| $body)
+    };
+}
+macro_rules! io_named {
+    ($test:expr, $step:expr, $conn:expr, $body:expr) => {
+        io_named!($test, $step, concat!($step, " result"), $conn, $body)
+    };
+    ($test:expr, $step:expr, $expected:expr, $conn:expr, $body:expr) => {
+        WaitContext::new($test, $step, $expected, $conn, TIMEOUT).io(|| $body)
+    };
+}
+
+#[track_caller]
+fn next_event(
+    server: &SocketServer,
+    test: &str,
+    step: &str,
+    expected: &str,
+    conn: Option<ConnId>,
+    timeout: Duration,
+) -> LaneEvent {
+    WaitContext::new(test, step, expected, conn, timeout).event(server)
+}
+
+#[track_caller]
+fn expect_accepted(server: &SocketServer, test: &str, step: &str, timeout: Duration) -> ConnId {
+    match next_event(server, test, step, "Accepted", None, timeout) {
         LaneEvent::Accepted(id) => id,
         other => panic!("expected Accepted, got {other:?}"),
     }
 }
 
-fn expect_closed(server: &SocketServer, conn_id: ConnId, timeout: Duration) -> ClosedReason {
-    match next_event(server, timeout) {
+#[track_caller]
+fn expect_closed(
+    server: &SocketServer,
+    test: &str,
+    step: &str,
+    conn_id: ConnId,
+    timeout: Duration,
+) -> ClosedReason {
+    match next_event(server, test, step, "Closed", Some(conn_id), timeout) {
         LaneEvent::Closed(id, reason) => {
             assert_eq!(id, conn_id, "Closed for the wrong connection");
             reason
@@ -111,63 +365,73 @@ fn expect_closed(server: &SocketServer, conn_id: ConnId, timeout: Duration) -> C
     }
 }
 
-/// Floods `client` (already connected) with fixed-size chunks until its
-/// own kernel send buffer is full AND the SERVER's own reader has
-/// genuinely stopped draining it (because the events channel it feeds is
-/// itself full) — Codex review finding 6: OBSERVED, never assumed from a
-/// fixed sleep or a fixed connection count. `client` is set non-blocking;
-/// "`WouldBlock` for 500ms continuously (polled every 10ms)" is the
-/// criterion for "the reader is genuinely blocked on a full channel".
-/// Bounded by an overall 10s timeout so a genuine regression fails the
-/// test loudly rather than hanging it. `65_536` matches
-/// `lane/socket_unix/`'s own (crate-private) `READ_BUF_LEN` — not
-/// importable from this integration-test crate, so duplicated as a
-/// literal, the same way this file's other tests already hardcode it
-/// (e.g. the `QueueFull`-flooding tests above).
-fn saturate_via_stalled_writer(client: &UnixStream) {
-    client.set_nonblocking(true).expect("set_nonblocking");
+#[track_caller]
+fn saturate_via_stalled_writer(server: &SocketServer, test: &str, client: &UnixStream) {
+    let wait = WaitContext::new(
+        test,
+        "saturate",
+        "persistent WouldBlock for 500ms",
+        None,
+        TIMEOUT,
+    );
+    io_named!(
+        test,
+        "saturate.nonblocking",
+        "nonblocking socket",
+        None,
+        client.set_nonblocking(true)
+    )
+    .unwrap();
     let payload = vec![0xEFu8; 65_536];
-    let overall_deadline = Instant::now() + Duration::from_secs(10);
     let mut would_block_since: Option<Instant> = None;
     loop {
-        assert!(
-            Instant::now() < overall_deadline,
-            "saturation (the events channel genuinely full, observed via a persistently \
-             WouldBlock-ing write) was not reached within 10s"
-        );
-        match (&*client).write(&payload) {
+        wait.check(Some(server));
+        match wait.io(|| (&*client).write(&payload)) {
             Ok(_) => would_block_since = None,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 let since = *would_block_since.get_or_insert_with(Instant::now);
                 if since.elapsed() >= Duration::from_millis(500) {
+                    wait.record("ok");
                     return;
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                wait.pause(Duration::from_millis(10));
             }
-            Err(e) => panic!("unexpected write error while saturating: {e}"),
+            Err(e) => wait.fail("error", &e.to_string(), Some(server)),
         }
     }
 }
 
-/// Poll `probe` every 10ms until it reports a nonzero count, or panic
-/// loudly after `timeout` — Codex review round 2: WAIT on an OBSERVED
-/// precondition (a real `TrySendError::Full`/abandonment the production
-/// code itself counted, via `SocketServer::probe_*`) rather than assuming
-/// one from a fixed sleep, a client-side stall heuristic, or a fixed
-/// connection count.
-fn wait_for_probe(mut probe: impl FnMut() -> usize, timeout: Duration, what: &str) {
-    let deadline = Instant::now() + timeout;
+#[track_caller]
+fn wait_for_probe(
+    server: &SocketServer,
+    test: &str,
+    step: &str,
+    mut probe: impl FnMut() -> usize,
+    timeout: Duration,
+    what: &str,
+) {
+    let wait = WaitContext::new(test, step, what, None, timeout);
     loop {
         if probe() > 0 {
+            wait.record("ok");
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(10));
+        wait.check(Some(server));
+        wait.pause(Duration::from_millis(10));
     }
 }
-
 
 mod client;
 mod close;
 mod connect;
 mod teardown;
+
+mod diagnostics;
+
+// Parent adapter: the original event receiver and panic, unchanged.
+fn original_next_event(server: &SocketServer, timeout: Duration) -> LaneEvent {
+    server
+        .events()
+        .recv_timeout(timeout)
+        .unwrap_or_else(|e| panic!("expected a transport event within {timeout:?}, got {e}"))
+}

@@ -8,30 +8,31 @@ use super::*;
 /// the same way (the macOS CI leg still compiles this whole file, so an
 /// ungated helper with no non-Linux caller would warn there).
 #[cfg(target_os = "linux")]
-fn churn_one(server: &SocketServer, path: &Path) {
-    let client = UnixStream::connect(path).unwrap();
-    let conn_id = expect_accepted(server, TIMEOUT);
-    server.close(conn_id);
-    expect_closed(server, conn_id, TIMEOUT);
-    drop(client);
+fn churn_one(server: &SocketServer, test: &str, path: &Path) {
+    let client = io_named!(test, "connect", None, UnixStream::connect(path)).unwrap();
+    let conn_id = expect_accepted(server, test, "accept", TIMEOUT);
+    named!(test, "close", Some(conn_id), server.close(conn_id));
+    expect_closed(server, test, "closed", conn_id, TIMEOUT);
+    named!(test, "client.drop", None, drop(client));
 }
 /// Invalid voyage ids and out-of-range connection ceilings are rejected
 /// loudly. Provably non-wedging (every case fails before any socket
 /// syscall is ever issued), so this test is NOT process-isolated.
 #[test]
 fn invalid_voyage_ids_and_max_connections_are_rejected_loudly() {
+    let test = "close::invalid_voyage_ids_and_max_connections_are_rejected_loudly";
     let _rt = isolated_runtime_dir();
     let bad_ids = [
         "../../../etc/passwd",
         "not-a-uuid",
-        "550E8400-E29B-41D4-A716-446655440000", // uppercase
-        "550e8400e29b41d4a716446655440000",     // no hyphens ("simple" form)
-        "550e8400-e29b-41d4-a716-44665544000",  // one hex digit short
+        "550E8400-E29B-41D4-A716-446655440000",   // uppercase
+        "550e8400e29b41d4a716446655440000",       // no hyphens ("simple" form)
+        "550e8400-e29b-41d4-a716-44665544000",    // one hex digit short
         "{550e8400-e29b-41d4-a716-446655440000}", // braced GUID form
         "",
     ];
     for bad in bad_ids {
-        let err = SocketServer::bind(bad, 1).unwrap_err();
+        let err = io_named!(test, "bind", None, SocketServer::bind(bad, 1)).unwrap_err();
         assert!(
             matches!(err, TransportError::InvalidVoyageId(_)),
             "id {bad:?}: got {err}"
@@ -45,11 +46,11 @@ fn invalid_voyage_ids_and_max_connections_are_rejected_loudly() {
 
     let id = fresh_voyage_id();
     assert!(matches!(
-        SocketServer::bind(&id, 0).unwrap_err(),
+        io_named!(test, "bind", None, SocketServer::bind(&id, 0)).unwrap_err(),
         TransportError::InvalidMaxConnections
     ));
     assert!(matches!(
-        SocketServer::bind(&id, 256).unwrap_err(),
+        io_named!(test, "bind", None, SocketServer::bind(&id, 256)).unwrap_err(),
         TransportError::InvalidMaxConnections
     ));
 }
@@ -58,31 +59,92 @@ fn invalid_voyage_ids_and_max_connections_are_rejected_loudly() {
 /// client gives the server a `Closed(Eof)`.
 #[test]
 fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
-    if !run_isolated("close::server_close_yields_client_eof_and_client_drop_yields_server_closed") {
+    let test = "close::server_close_yields_client_eof_and_client_drop_yields_server_closed";
+    if !named!(
+        test,
+        "child.wait",
+        "isolated body and bounded completion",
+        None,
+        run_isolated(test)
+    ) {
         return;
     }
     let _rt = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
-    let server = SocketServer::bind(&id, 2).unwrap();
+    let server = io_named!(
+        test,
+        "server.bind",
+        "server bound",
+        None,
+        SocketServer::bind(&id, 2)
+    )
+    .unwrap();
 
-    let mut client_a = UnixStream::connect(&path).unwrap();
-    let conn_a = expect_accepted(&server, TIMEOUT);
-    server.close(conn_a);
-    let mut buf = [0u8; 16];
-    let n = client_a.read(&mut buf).unwrap();
-    assert_eq!(n, 0, "expected ordered EOF after a server-initiated close");
-    assert_eq!(
-        expect_closed(&server, conn_a, TIMEOUT),
-        ClosedReason::Closed
+    let mut client_a = io_named!(
+        test,
+        "a.connect",
+        "connected",
+        None,
+        UnixStream::connect(&path)
+    )
+    .unwrap();
+    let conn_a = expect_accepted(&server, test, "a.accept", TIMEOUT);
+    named!(
+        test,
+        "a.close",
+        "close requested",
+        Some(conn_a),
+        server.close(conn_a)
     );
+    let mut buf = [0u8; 16];
+    let n = read_a_eof(test, Some(conn_a), &mut client_a, &mut buf).unwrap();
+    assert_eq!(n, 0, "expected ordered EOF after a server-initiated close");
+    let a_closed = WaitContext::new(test, "a.closed", "Closed(Closed)", Some(conn_a), TIMEOUT);
+    match a_closed.event(&server) {
+        LaneEvent::Closed(id, reason) => {
+            assert_eq!(id, conn_a);
+            assert_eq!(reason, ClosedReason::Closed);
+        }
+        other => panic!("expected Closed(Closed), got {other:?}"),
+    }
 
-    let client_b = UnixStream::connect(&path).unwrap();
-    let conn_b = expect_accepted(&server, TIMEOUT);
-    drop(client_b);
-    assert_eq!(expect_closed(&server, conn_b, TIMEOUT), ClosedReason::Eof);
+    let client_b = io_named!(
+        test,
+        "b.connect",
+        "connected",
+        None,
+        UnixStream::connect(&path)
+    )
+    .unwrap();
+    let conn_b = expect_accepted(&server, test, "b.accept", TIMEOUT);
+    named!(
+        test,
+        "b.drop",
+        "client dropped",
+        Some(conn_b),
+        drop(client_b)
+    );
+    let b_closed = WaitContext::new(test, "b.closed", "Closed(Eof)", Some(conn_b), TIMEOUT);
+    match b_closed.event(&server) {
+        LaneEvent::Closed(id, reason) => {
+            assert_eq!(id, conn_b);
+            assert_eq!(reason, ClosedReason::Eof);
+        }
+        other => panic!("expected Closed(Eof), got {other:?}"),
+    }
+    named!(test, "server.drop", None, drop(server));
+}
 
-    drop(server);
+/// The original a.eof path, also driven against a peer kept open by diagnostics.
+#[track_caller]
+pub(super) fn read_a_eof(
+    test: &str,
+    conn: Option<ConnId>,
+    client_a: &mut UnixStream,
+    buf: &mut [u8],
+) -> std::io::Result<usize> {
+    io_named!(test, "a.eof", "zero bytes", conn, client_a.read(buf))
 }
 
 /// PRIMARY, deterministic: the client connects, the test waits for
@@ -91,25 +153,35 @@ fn server_close_yields_client_eof_and_client_drop_yields_server_closed() {
 /// separate smoke test below.
 #[test]
 fn eof_before_registration_is_handled_cleanly() {
-    if !run_isolated("close::eof_before_registration_is_handled_cleanly") {
+    let test = "close::eof_before_registration_is_handled_cleanly";
+    if !named!(
+        test,
+        "child.wait",
+        "isolated body and bounded completion",
+        None,
+        run_isolated(test)
+    ) {
         return;
     }
     let _rt = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
-    let server = SocketServer::bind(&id, 2).unwrap();
+    let server = io_named!(test, "bind", None, SocketServer::bind(&id, 2)).unwrap();
 
-    let client = UnixStream::connect(&path).unwrap();
-    let conn_id = expect_accepted(&server, TIMEOUT); // synchronize FIRST
-    drop(client); // now close, after registration is proven
+    let client = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
+    let conn_id = expect_accepted(&server, test, "accept", TIMEOUT); // synchronize FIRST
+    named!(test, "client.drop", None, drop(client)); // now close, after registration is proven
 
-    assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Eof);
+    assert_eq!(
+        expect_closed(&server, test, "closed", conn_id, TIMEOUT),
+        ClosedReason::Eof
+    );
 
-    let client2 = UnixStream::connect(&path).unwrap();
-    let _ = expect_accepted(&server, TIMEOUT);
-    drop(client2);
+    let client2 = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
+    let _ = expect_accepted(&server, test, "accept", TIMEOUT);
+    named!(test, "client2.drop", None, drop(client2));
 
-    drop(server);
+    named!(test, "server.drop", None, drop(server));
 }
 
 /// Smoke test: a client that connects and disconnects with NO
@@ -121,20 +193,38 @@ fn eof_before_registration_is_handled_cleanly() {
 /// the next client.
 #[test]
 fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
-    if !run_isolated("close::eof_before_registration_smoke_test_accepts_either_honest_outcome") {
+    let test = "close::eof_before_registration_smoke_test_accepts_either_honest_outcome";
+    if !named!(
+        test,
+        "child.wait",
+        "isolated body and bounded completion",
+        None,
+        run_isolated(test)
+    ) {
         return;
     }
     let _rt = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
-    let server = SocketServer::bind(&id, 2).unwrap();
+    let server = io_named!(test, "bind", None, SocketServer::bind(&id, 2)).unwrap();
 
-    let client = UnixStream::connect(&path).unwrap();
-    drop(client); // no synchronization -- this IS the race under test
+    let client = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
+    named!(test, "client.drop", None, drop(client)); // no synchronization -- this IS the race under test
 
-    match server.events().recv_timeout(Duration::from_secs(2)) {
+    match WaitContext::new(
+        test,
+        "smoke.accept",
+        "Accepted or timeout",
+        None,
+        Duration::from_secs(2),
+    )
+    .receive(&server, Duration::from_secs(2))
+    {
         Ok(LaneEvent::Accepted(conn_id)) => {
-            assert_eq!(expect_closed(&server, conn_id, TIMEOUT), ClosedReason::Eof);
+            assert_eq!(
+                expect_closed(&server, test, "closed", conn_id, TIMEOUT),
+                ClosedReason::Eof
+            );
         }
         Err(_timed_out) => {
             // The other honest outcome: no event at all for this attempt.
@@ -143,11 +233,11 @@ fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
     }
 
     // Whichever happened, the socket must still be healthy.
-    let client2 = UnixStream::connect(&path).unwrap();
-    let _ = expect_accepted(&server, TIMEOUT);
-    drop(client2);
+    let client2 = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
+    let _ = expect_accepted(&server, test, "accept", TIMEOUT);
+    named!(test, "client2.drop", None, drop(client2));
 
-    drop(server);
+    named!(test, "server.drop", None, drop(server));
 }
 
 /// Sequential connect/close churn must not grow this process's OS fd
@@ -156,21 +246,28 @@ fn eof_before_registration_smoke_test_accepts_either_honest_outcome() {
 #[test]
 #[cfg(target_os = "linux")]
 fn sequential_connect_close_churn_does_not_leak_fds() {
-    if !run_isolated("close::sequential_connect_close_churn_does_not_leak_fds") {
+    let test = "close::sequential_connect_close_churn_does_not_leak_fds";
+    if !named!(
+        test,
+        "child.wait",
+        "isolated body and bounded completion",
+        None,
+        run_isolated(test)
+    ) {
         return;
     }
     let _rt = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
-    let server = SocketServer::bind(&id, 4).unwrap();
+    let server = io_named!(test, "bind", None, SocketServer::bind(&id, 4)).unwrap();
 
     for _ in 0..5 {
-        churn_one(&server, &path);
+        churn_one(&server, test, &path);
     }
 
     let before = open_fd_count();
     for _ in 0..50 {
-        churn_one(&server, &path);
+        churn_one(&server, test, &path);
     }
     let after = open_fd_count();
 
@@ -180,7 +277,7 @@ fn sequential_connect_close_churn_does_not_leak_fds() {
          suspected leak"
     );
 
-    drop(server);
+    named!(test, "server.drop", None, drop(server));
 }
 
 #[cfg(target_os = "linux")]
@@ -197,21 +294,31 @@ fn open_fd_count() -> usize {
 /// gap.
 #[test]
 fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
-    if !run_isolated("close::event_channel_saturation_abandons_bytes_and_guarantees_closed") {
+    let test = "close::event_channel_saturation_abandons_bytes_and_guarantees_closed";
+    if !named!(
+        test,
+        "child.wait",
+        "isolated body and bounded completion",
+        None,
+        run_isolated(test)
+    ) {
         return;
     }
     let _rt = isolated_runtime_dir();
     let id = fresh_voyage_id();
     let path = voyage_socket_path(&id).unwrap();
-    let server = SocketServer::bind(&id, 2).unwrap();
-    let client = UnixStream::connect(&path).unwrap();
-    let conn_id = expect_accepted(&server, TIMEOUT);
+    let server = io_named!(test, "bind", None, SocketServer::bind(&id, 2)).unwrap();
+    let client = io_named!(test, "connect", None, UnixStream::connect(&path)).unwrap();
+    let conn_id = expect_accepted(&server, test, "accept", TIMEOUT);
 
     // OBSERVE the stall (Codex review round 2), rather than assuming it
     // from a fixed sleep: flood until the reader's own delivery retry is
     // genuinely stuck against the never-drained events channel.
-    saturate_via_stalled_writer(&client);
+    saturate_via_stalled_writer(&server, test, &client);
     wait_for_probe(
+        &server,
+        test,
+        "probe.1",
         || server.probe_events_full_bytes(),
         Duration::from_secs(10),
         "the events channel to genuinely report Full for a Bytes delivery",
@@ -223,6 +330,9 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     // at `BYTES_ABANDON_AFTER` (crate-private, 5s -- not importable from
     // this integration-test crate) plus a margin.
     wait_for_probe(
+        &server,
+        test,
+        "probe.2",
         || server.probe_bytes_abandoned(),
         Duration::from_secs(10),
         "deliver_bytes to genuinely abandon this connection's Bytes delivery",
@@ -235,13 +345,21 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
     // FIFO delivery order Closed is the true tail, not merely "observed
     // at some point".
     let mut last: Option<LaneEvent> = None;
-    let deadline = Instant::now() + TIMEOUT;
+    let drain_wait = WaitContext::new(
+        test,
+        "events.drain",
+        "Closed(_,Error(abandoned)) tail",
+        Some(conn_id),
+        TIMEOUT,
+    );
+    let deadline = drain_wait.deadline;
     while Instant::now() < deadline {
-        match server.events().recv_timeout(Duration::from_secs(1)) {
+        match drain_wait.receive(&server, Duration::from_secs(1)) {
             Ok(evt) => last = Some(evt),
             Err(_) => break,
         }
     }
+    drain_wait.record("ok");
     match last {
         Some(LaneEvent::Closed(cid, ClosedReason::Error(msg))) => {
             assert_eq!(cid, conn_id, "Closed for the wrong connection");
@@ -256,6 +374,6 @@ fn event_channel_saturation_abandons_bytes_and_guarantees_closed() {
         ),
     }
 
-    drop(client);
-    drop(server);
+    named!(test, "client.drop", None, drop(client));
+    named!(test, "server.drop", None, drop(server));
 }
