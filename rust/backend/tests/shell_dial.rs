@@ -120,7 +120,8 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     listener.set_nonblocking(true).expect("nonblocking listener");
     // One connection per path, in the order below, and what each sent. A "ping" gets "pong", and every connection stays
     // open until its caller closes it, as the real bridge's contract requires.
-    let server = std::thread::spawn(move || {
+    let (sent_tx, sent_rx) = channel();
+    std::thread::spawn(move || {
         let deadline = Instant::now() + BOUND;
         let mut sent = Vec::new();
         for _ in 0..3 {
@@ -137,14 +138,13 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
                     Err(e) => panic!("accept the shell: {e}"),
                 }
             };
-            // macOS gives an accepted socket its listener's O_NONBLOCK (Linux does not), and a read timeout bounds
-            // only a blocking read: without this the read fails at once there, with WouldBlock.
+            // macOS gives an accepted socket its listener's O_NONBLOCK (Linux does not), so the stream is made
+            // blocking. Its reads are bounded by the test's wait for this thread's result below, never by a read
+            // timeout: Darwin refuses SO_RCVTIMEO on an accepted AF_UNIX socket (EINVAL; see
+            // rust/log/tests/macos_kernel_facts/peertoken.rs).
             stream
                 .set_nonblocking(false)
-                .expect("a blocking stream for the bounded reads");
-            stream
-                .set_read_timeout(Some(BOUND))
-                .expect("bound the server read");
+                .expect("a blocking stream for the server's reads");
             let mut line = String::new();
             BufReader::new(&mut stream)
                 .read_line(&mut line)
@@ -158,7 +158,7 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
                 .expect("read the caller's EOF");
             sent.push(line);
         }
-        sent
+        let _ = sent_tx.send(sent);
     });
     let endpoint = format!("unix:{}", path.display());
     ping(shell(home.path(), r#". "$1" && sot_dial "$2""#, &endpoint).expect("bash on Unix"));
@@ -171,11 +171,10 @@ fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
         status.success() && stdout == "open\n",
         "sot_socket_open did not reach this account's socket: {stdout}{stderr}"
     );
-    assert_eq!(
-        server.join().expect("echo server"),
-        ["ping\n", "ping\n", ""],
-        "what each path sent"
-    );
+    let sent = sent_rx
+        .recv_timeout(BOUND)
+        .expect("the server's three connections ended within the bound");
+    assert_eq!(sent, ["ping\n", "ping\n", ""], "what each path sent");
 }
 
 /// `sot_ssh_bridge`, `sot_dial`'s path to another computer: ssh runs that box's own `sotd stdio-bridge`, with
