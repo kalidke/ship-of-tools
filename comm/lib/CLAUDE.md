@@ -67,8 +67,8 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   (raw `hostname -s`, case kept, a non-empty `SOT_COMM_TEST_HOST` first), not `sot_host`. A capsule's pinned self file is
   named by the daemon with its declared host, which is `sot_host`'s rule.
 - bash 3.2 and git-bash.
-- The four timed comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
-  `sot_dial`'s bridge, comm-list.sh's `sot-fe version` and comm-turn-auditor.sh's headless claude. One perl process owns
+- The bounded comm calls run under `sot_bounded` (comm-lib-base.sh), never under `timeout`: `sot_ssh_bridge`'s `ssh`,
+  `sot_dial`'s bridge, comm-list.sh's `sot-fe version`, comm-turn-auditor.sh's headless claude, and the PostToolUse heartbeat's comm-context.sh. One perl process owns
   the deadline and the command's process group until the command has exited and no member of the group is left, so a
   descendant still holding the output after the command exits is ended at the bound too, and the call's status is then
   the bound's, with the command's own on stderr. At the bound, or when that perl is itself sent TERM, INT or HUP, it
@@ -77,8 +77,7 @@ lock, `claim_derived_handle` for a derived handle, `sot_require_agent` for who m
   process group or a bound that is not a whole number above 0, the call does not run (125). Outside it: a descendant
   that leaves the command's group (setsid, as ssh's ControlPersist master does), and on Windows a native program and its
   children (`sot_dial`'s sotd.exe, the auditor's claude), since Git Bash emulates the group and its signals for its own
-  programs only, and the tests run only those. The PostToolUse heartbeat (hooks/comm-status-heartbeat.sh) keeps its own
-  watchdog over comm-context.sh: TERM at its bound, then a wait, and the output discarded.
+  programs only, and the tests run only those. The heartbeat stores context stdout and stderr in regular files, replays a finite diagnostic snapshot after the bounded return, discards context stdout on a bound, setup or cancellation failure, and adds no final wait of its own.
 - The installer publishes this folder before every script (comm/bin-folders.txt), so during an install the previous
   release's scripts source this library: a release removes or changes a function or global only once no script of the
   previous release uses it.

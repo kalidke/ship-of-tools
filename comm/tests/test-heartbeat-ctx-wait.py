@@ -58,6 +58,7 @@ def fixture(root, nonce, mode):
             event(root, nonce, "completed")
             return
         time.sleep(0.01)
+    event(root, nonce, "self-expired")
     event(root, nonce, "completed")
 
 
@@ -137,8 +138,9 @@ def seed(root, stage, mode, nonce, bash):
     # Only the gate is replaced; every normal case uses the actual shared bound.
     wrapper = f". {q(stage / 'comm-lib.sh')} || return 127\n"
     wrapper += f"sot_require_agent() {{ printf '%s\\n' '{nonce} gate' >> {q(root / 'events')}; return 0; }}\n"
-    if mode == "artifact-create":
-        wrapper = wrapper.replace("return 0;", 'mkdir -p "$COMM_HOME/state/.hb-ctx-$$"; return 0;')
+    if mode in ("artifact-create", "artifact-create-stderr"):
+        suffix = ".err" if mode.endswith("stderr") else ""
+        wrapper = wrapper.replace("return 0;", f'mkdir -p "$COMM_HOME/state/.hb-ctx-$${suffix}"; return 0;')
     if mode == "setup":
         wrapper += "sot_bounded() { echo 'injected bound setup failure' >&2; return 125; }\n"
     if mode == "child-gate":
@@ -162,7 +164,7 @@ def seed(root, stage, mode, nonce, bash):
     target = flat / "comm-context.sh"
     entry = f"printf '%s\\n' '{nonce} entry' >> {q(root / 'events')}\n"
     invoke = f"{q(sys.executable)} -B {q(Path(__file__).resolve())} --fixture {q(root)} {q(nonce)}"
-    script = f"#!{bash}\n{entry}"
+    script = f"#!/usr/bin/env bash\n{entry}"
     if mode in ("foreground", "native"):
         script += "trap " + q(f"printf '%s\\n' '{nonce} trapped' >> {q(root / 'events')}; exit 143") + f" TERM\necho NAME={NAME}\n"
         script += invoke + (" native\n" if mode == "native" else " hold\n")
@@ -222,7 +224,7 @@ def validate(mode, observed, entries, stamped, unchanged, artifacts, stderr):
         "artifact-remove": "removal failure stamped the row",
     }
     assert observed, failures.get(mode, "hook exit and both EOFs were not observed")
-    early = mode in ("off", "no-registry", "child-gate", "throttle", "missing", "zero", "overflow", "setup", "artifact-create")
+    early = mode in ("off", "no-registry", "child-gate", "throttle", "missing", "zero", "overflow", "setup", "artifact-create", "artifact-create-stderr")
     if mode != "real":
         assert entries == (0 if early else 1), failures.get(mode, "incorrect fixture entry count")
     skip = early or mode in ("foreground", "deaf", "leader", "empty-name", "no-row", "absent-floor", "empty-floor", "native", "default-timeout", "artifact-remove")
@@ -234,6 +236,8 @@ def validate(mode, observed, entries, stamped, unchanged, artifacts, stderr):
         assert stderr.count("completed-diagnostic-token") == 1, failures[mode]
     if mode == "overflow":
         assert "unusable" in stderr, "unusable budget diagnostic missing"
+    if mode in ("artifact-create-stderr", "artifact-remove"):
+        assert "heartbeat context artifact could not be created or removed; heartbeat skipped" in stderr, "artifact diagnostic missing"
 
 
 def run_case(work, stage, bash, label, mode, ticks, delay=0):
@@ -250,7 +254,7 @@ def run_case(work, stage, bash, label, mode, ticks, delay=0):
     command = [bash, str(flat / "comm-status-heartbeat.sh")]
     if mode in ("zero", "overflow"):
         wrapper = root / "ignore-term.sh"
-        executable(wrapper, f"#!{bash}\ntrap '' TERM\nexec {q(bash)} {q(flat / 'comm-status-heartbeat.sh')}\n")
+        executable(wrapper, f"#!/usr/bin/env bash\ntrap '' TERM\nexec {q(bash)} {q(flat / 'comm-status-heartbeat.sh')}\n")
         command = [bash, str(wrapper)]
     observation = Observation(command, env, root / "project" if mode == "real" else root)
     ready_at, released_at = None, None
@@ -269,6 +273,7 @@ def run_case(work, stage, bash, label, mode, ticks, delay=0):
         time.sleep(0.01)
     observed, facts = observation.complete(), observation.facts()
     rows = events(root, nonce)
+    native_ended = fixture_finished(root, rows) if mode == "native" else None
     entries = sum(row[1] == "entry" for row in rows)
     after = registry.read_bytes() if registry.exists() else b""
     stamped = False
@@ -298,8 +303,9 @@ def run_case(work, stage, bash, label, mode, ticks, delay=0):
         failure = str(error)
         if label == "B3-21" and "subsecond" in failure:
             failure = "fractional second budget cancelled a releasable context"
-    if mode == "artifact-create":
-        (home / f"state/.hb-ctx-{observation.pid}").rmdir()
+    if mode in ("artifact-create", "artifact-create-stderr"):
+        suffix = ".err" if mode.endswith("stderr") else ""
+        (home / f"state/.hb-ctx-{observation.pid}{suffix}").rmdir()
     if mode == "artifact-remove":
         (home / "state").chmod(0o700)
         for path in artifacts:
@@ -318,6 +324,10 @@ def run_case(work, stage, bash, label, mode, ticks, delay=0):
         release_time = released_at - ready_at if released_at else "none"
         print(f"{label} invocation-to-readiness={ready_at - observation.started:.3f} release-after-readiness={release_time} events={','.join(row[1] for row in rows)}", flush=True)
     print(f"{'FAIL' if failure else 'PASS'} {label}: {failure or 'required registry, capture and cleanup outcomes'}", flush=True)
+    if mode == "native":
+        final = events(root, nonce)
+        end = "self-expiry" if any(row[1] == "self-expired" for row in final) else "termination"
+        print(f"P5 native-ended-at-observation={native_ended} native-cleanup={cleanup} native-end={end}", flush=True)
     return failure
 
 
@@ -358,7 +368,7 @@ def main():
              ("B1-0", "zero", "0"), ("B1-000", "zero", "000"),
              ("B2-10", "release", "10", 0.7), ("B2-0010", "release", "0010", 0.7),
              ("B3-21", "release", "21", 1.5), ("B4", "overflow", "999999999999999999999999999999999999")]
-    cases += [(mode, mode, "20") for mode in ("success", "nonzero", "exit-one", "repeat", "artifact-create", "fallback", "real", "empty-name", "missing", "off", "no-registry", "child-gate", "throttle", "no-row", "absent-floor", "empty-floor")]
+    cases += [(mode, mode, "20") for mode in ("success", "nonzero", "exit-one", "repeat", "artifact-create", "artifact-create-stderr", "fallback", "real", "empty-name", "missing", "off", "no-registry", "child-gate", "throttle", "no-row", "absent-floor", "empty-floor")]
     cases += [("budget-" + label, "release", ticks, 1.5) for label, ticks in (("unset", None), ("200", "200"), ("empty", ""), ("invalid", "invalid"))]
     cases += [("budget-" + ticks, "success", ticks) for ticks in ("20", "020", "9223372036854775807")]
     cases += [("deadline-" + label, "default-timeout", ticks) for label, ticks in (("unset", None), ("200", "200"), ("empty", ""), ("invalid", "invalid"))]
@@ -366,12 +376,14 @@ def main():
         cases.append(("artifact-remove", "artifact-remove", "20"))
     if WINDOWS:
         print("Coverage: POSIX directory-mode removal fault is Unix only", flush=True)
+        print("R2 coverage: Git Bash deferred TERM; ignored TERM coverage is Unix only", flush=True)
         cases.append(("P5", "native", "20"))
     selected = set(sys.argv[3:])
     if selected:
         cases = [case for case in cases if case[0] in selected]
         assert cases, "no selected case exists"
     failures = []
+    print("B4 range=0..9223372036854775807 input=999999999999999999999999999999999999; zero/overflow inherit ignored TERM", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         jobs = [executor.submit(run_case, work, stage, bash, *case) for case in cases]
         for case, job in zip(cases, jobs):
