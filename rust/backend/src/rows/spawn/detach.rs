@@ -456,15 +456,15 @@ fn spawn_detached(
 /// is a kqueue `NOTE_EXIT` knote and the parent-death lease works. The
 /// single blocker was a daemon-side read of a FRESHLY SPAWNED
 /// supervisor's identity, in the unit that supervisor would later report
-/// over the wire — on macOS the kernel's `pidversion`, readable only out
-/// of an audit token (`mach_task_self()` for oneself, a socket peer's
-/// `LOCAL_PEERTOKEN`), neither of which exists for a child this daemon
-/// has only just forked.
+/// over the wire — on macOS the kernel's `pidversion`, which this code
+/// then read only out of an audit token (`mach_task_self()` for oneself,
+/// a socket peer's `LOCAL_PEERTOKEN`), neither of which exists for a child
+/// this daemon has only just forked.
 ///
 /// The ruling deleted the read rather than porting it: a supervisor's
 /// identity is authored by the supervisor and learned over the lane, on
-/// all three platforms. What macOS could not do, no platform now does —
-/// so there is nothing left here to gate. Linux lost only earliness,
+/// all three platforms. What this code did not read on macOS, no platform
+/// now reads here — so there is nothing left here to gate. Linux lost only earliness,
 /// provably: `challenge_unix::self_start_ticks` (what a supervisor
 /// reports) is literally `process_start_ticks(std::process::id())`, the
 /// same read the daemon used to perform on the same pid, asserted by

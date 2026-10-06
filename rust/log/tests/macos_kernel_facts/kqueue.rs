@@ -244,10 +244,11 @@ fn note_exit_is_delivered_exactly_once_and_the_knote_is_then_spent() {
     assert_eq!(
         attach.errno, 0,
         "EV_ADD of EVFILT_PROC/NOTE_EXIT on a LIVE same-user child (pid {pid}) FAILED: {}. \
-         The macOS death watch has no other primitive -- `pidversion` is unreadable for \
-         another process and `task_for_pid` is entitlement-gated -- so if this is not \
+         The macOS death watch has no other instance-bound primitive -- a `pidversion` \
+         re-read is a second sample, not a watch, and `task_for_pid` is entitlement-gated -- \
+         so if this is not \
          available the port needs a different mechanism, not a relaxed test.",
-        attach.detail
+         attach.detail
     );
 
     child.kill().expect("kill the watched child");

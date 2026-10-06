@@ -29,9 +29,11 @@ subsystem; the sotd entry point and the roster beside this folder serve the same
 - One daemon per state root: `lock_daemon` fails at once when a daemon answers on the socket, and waits up to
   `daemon_lock_wait` for a predecessor that is still shutting down.
 - A socket a live daemon answers on is never unlinked: `refuse_live_socket`, called from `run_local`.
-- A connection whose process is not this account's, or cannot be read, is dropped at accept before a byte is read
-  (`admit_peer`, called from `run_local`; Linux and macOS compare the peer's euid with `same_account`, Windows has the
-  pipe's owner-only descriptor).
+- At accept, a Unix connection is dropped before a byte is read if its recorded effective uid is foreign or the peer
+  read fails (`admit_peer`, called from `run_local`; Linux and macOS compare with `same_account`). On macOS this
+  authenticates cached connection provenance and returns a live token process observation; it establishes neither the
+  holder's current euid nor a binding to that process. Credential transitions and descriptor transfers leave the cached
+  account unchanged. Windows uses the pipe's owner-only descriptor.
 - A connection whose first frame is not a hello that parses and passes `admit_hello` gets one reply (`unauthenticated`,
   `protocol_mismatch`, `identity_missing` or `os_user_conflict`) and is closed; nothing else is served or sent to it
   (`handle_connection`). A first frame that declares a blob is refused `unauthenticated` before a byte of its blob is

@@ -157,8 +157,10 @@ pub fn exchange_identity(
 
 /// The peer's identity once authenticated (steps 1-3 ONLY — Windows:
 /// token-user SID comparison; Linux: `SO_PEERCRED` same-user comparison,
-/// ADR 0043 decision 18) — pid plus creation time read directly off the
-/// OS handle, NEVER off a reply (there is none). Deliberately a plain
+/// ADR 0043 decision 18; macOS: `getpeereid` same-user comparison) — pid plus
+/// creation time read directly off the OS, NEVER off a reply (there is none);
+/// on macOS from a live `LOCAL_PEERTOKEN` read, which names the process
+/// holding the pid at that moment. Deliberately a plain
 /// data struct with NO retained handle: the capabilities `ChallengedProcess`
 /// offers (`reverify`/`wait`/`terminate`) all depend on the full five-step
 /// proof's LIVE handle, and this weaker operation earns none of them — a

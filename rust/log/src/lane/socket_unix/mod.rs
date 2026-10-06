@@ -145,10 +145,10 @@ use crate::lane::client::Endpoint;
 // an alias -- the same device `client::PlatformEndpoint` and
 // `transport::PlatformLaneServer` already use, and the reason every
 // `Endpoint`/constructor body below is written once rather than twice.
-// Linux reads `SO_PEERCRED` plus a pidfd pin; macOS reads one
-// `LOCAL_PEERTOKEN` audit token carrying the peer's pid AND the kernel's
-// own reuse generation together (see either module's own doc). No other
-// Unix has one, which is what the gate above says.
+// Linux reads `SO_PEERCRED` plus a pidfd pin; macOS reads `getpeereid`
+// for the account and one `LOCAL_PEERTOKEN` audit token carrying the peer's
+// pid AND the kernel's own reuse generation together (see either module's
+// own doc). No other Unix has one, which is what the gate above says.
 #[cfg(target_os = "linux")]
 use crate::identity::challenge_unix as challenge_os;
 #[cfg(target_os = "macos")]

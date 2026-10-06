@@ -74,6 +74,44 @@ fn no_secret_is_passed_as_a_command_line_argument() {
     );
 }
 
+/// ADR 0049, User isolation (MAC-ID): macOS reads a peer's account only from the credential the kernel cached for the
+/// connection. Pin the production `LOCAL_PEERTOKEN`/`TOK_EUID` spellings and every whitespace-normalized `.val`
+/// access in the private `AuditToken` module to pid/pidversion, including the index constants. This is a source
+/// spelling guard, not an analysis of arbitrary equivalent Rust or numeric socket-option calls; tests are excluded.
+#[test]
+fn the_macos_peer_token_has_one_reader() {
+    let source = production_source();
+    let found: Vec<(String, String)> = source
+        .iter()
+        .filter(|(_, _, line)| line.contains("LOCAL_PEERTOKEN") || line.contains("TOK_EUID"))
+        .map(|(rel, _, line)| (rel.clone(), line.trim().to_string()))
+        .collect();
+    let at = "rust/log/src/identity/challenge_macos.rs".to_string();
+    let expected = vec![
+        (at.clone(), "libc::LOCAL_PEERTOKEN,".to_string()),
+        (at.clone(), r#"format!("LOCAL_PEERTOKEN returned {len} bytes, not a whole audit_token_t"),"#.to_string()),
+    ];
+    assert_eq!(found, expected, "an unlisted macOS peer-token spelling or production TOK_EUID");
+    let module: Vec<String> = source
+        .iter()
+        .filter(|(rel, _, _)| rel == &at)
+        .map(|(_, _, line)| line.chars().filter(|c| !c.is_whitespace()).collect::<String>())
+        .collect();
+    let indices: Vec<&str> = module.iter()
+        .filter(|line| line.starts_with("constTOK_"))
+        .map(String::as_str).collect();
+    assert_eq!(indices, vec![
+        "constTOK_PID:usize=5;",
+        "constTOK_PIDVERSION:usize=7;",
+    ], "a changed pid/pidversion index or an added token-word constant");
+    // Join before matching, so splitting the field or index across lines cannot hide an access.
+    let compact = module.concat();
+    let words: Vec<&str> = compact.split(".val").skip(1)
+        .map(|tail| tail.split(']').next().expect("split has at least one part")).collect();
+    assert_eq!(words, vec!["[TOK_PID", "[TOK_PIDVERSION", "[TOK_PIDVERSION"],
+        "an unlisted token-word access (only pid/pidversion indices are allowed)");
+}
+
 /// The Rust listeners' allowed statements, one entry per `#[allow(clippy::disallowed_methods, reason = "listener:
 /// <name>: <guard>")]` on a statement that accepts or constructs a listener, as (repo-relative file, name): the one TCP
 /// accept (`serve_own`), the daemon's session socket or pipe (its two constructors, a Unix socket's and a Windows
