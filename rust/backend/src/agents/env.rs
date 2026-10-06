@@ -152,16 +152,12 @@ pub(crate) fn account_spawn_env(
             // before this existed, and a row that will not start is
             // worse. Claude rows only -- no other agent has this dialog.
             if agent_kind == "claude" {
-                let prepared =
-                    crate::agents::folder_trust::trusted_root_prefix().and_then(|prefix| {
-                        crate::agents::folder_trust::ensure_folder_trusted(
-                            &home,
-                            account,
-                            cwd,
-                            prefix.as_deref(),
-                        )
-                    });
-                if let Err(msg) = prepared {
+                if let Err(msg) = crate::agents::folder_trust::ensure_folder_trusted(
+                    &home,
+                    account,
+                    cwd,
+                    crate::agents::folder_trust::trusted_root_prefix().as_deref(),
+                ) {
                     tracing::warn!(
                         workspace_id,
                         cwd = ?cwd,
