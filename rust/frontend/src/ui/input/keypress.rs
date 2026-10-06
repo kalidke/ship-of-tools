@@ -22,18 +22,38 @@ pub(in crate::ui) struct KeyPress<'a> {
 }
 
 pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventLoop, modifiers: ModifiersState, event: KeyEvent, is_synthetic: bool) {
-    if is_synthetic {
-        // Focus-driven synthetic key events (Alt etc. on focus
-        // change) don't represent user intent; ignore.
-        return;
-    }
-    // Allow repeat for arrow keys (Up/Down hold-to-scroll feels
-    // wrong without it) but not for action keys.
-    if event.state != ElementState::Pressed {
-        return;
-    }
-    if matches!(event.logical_key, Key::Named(NamedKey::Control | NamedKey::Shift |
+    let keep = match state.nav_prompt { Some(NavPrompt::ConfirmQuit { keep }) => Some(keep), _ => None };
+    input_continuation(state, &event.logical_key, event.repeat, is_synthetic, event.state == ElementState::Pressed,
+        keep, |state| prepare_keyboard_input(state, modifiers, &event), |state, route| match route {
+            InputRoute::Prompt(step) => confirm_quit_key(state, event_loop, step),
+            InputRoute::Next(action, (label, context, was_destroy_pending)) => {
+                let key = KeyPress { event: &event, action, ctrl: modifiers.control_key(), alt: modifiers.alt_key(),
+                    shift: modifiers.shift_key(), super_: modifiers.super_key() };
+                let _ = route_key(state, event_loop, key, label, context, was_destroy_pending);
+            }
+        });
+}
+
+/// The raw-event boundary used by KeyboardInput and headless routing tests.
+fn input_continuation<S, P>(
+    state: &mut S, logical: &Key, repeat: bool, synthetic: bool, pressed: bool, keep: Option<bool>,
+    resolve: impl FnOnce(&mut S) -> (Option<Action>, P), next: impl FnOnce(&mut S, InputRoute<P>),
+) {
+    if synthetic || !pressed { return; }
+    if matches!(logical, Key::Named(NamedKey::Control | NamedKey::Shift |
         NamedKey::Alt | NamedKey::Super | NamedKey::Meta | NamedKey::AltGraph)) { return; }
+    if let Some(keep) = keep {
+        let step = prompt_takes_key(keep, *logical == Key::Named(NamedKey::Tab), resolve(state).0, repeat);
+        next(state, InputRoute::Prompt(step));
+    } else {
+        let (action, prepared) = resolve(state);
+    next(state, InputRoute::Next(action, prepared));
+    }
+}
+
+enum InputRoute<P> { Prompt(QuitPromptStep), Next(Option<Action>, P) }
+
+fn prepare_keyboard_input(state: &mut State, modifiers: ModifiersState, event: &KeyEvent) -> (Option<Action>, (String, help::Context, Option<WsKey>)) {
     // A real, non-synthetic keypress, past this point — presence
     // reporting (design point A) precedes and is independent of
     // whatever action this key resolves to below.
@@ -53,14 +73,12 @@ pub(in crate::ui) fn keyboard_input(state: &mut State, event_loop: &ActiveEventL
     let context = state.help_context();
     let action = state.bindings.resolve(&event.logical_key, Some(&base_key),
         Modifiers { ctrl, alt, shift, super_ }, context.consumes_text(), |a| context.allows(a));
-    let key = KeyPress { event: &event, action, ctrl, alt, shift, super_ };
-    let _ = route_key(state, event_loop, key, label, context, was_destroy_pending);
+    (action, (label, context, was_destroy_pending))
 }
 
 /// Routes one keypress through the layers in their fixed order; `Break` ends the keypress, `Continue` hands it on.
 fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>, label: String, context: help::Context, was_destroy_pending: Option<WsKey>) -> ControlFlow<()> {
     let KeyPress { event, ctrl, alt, shift, super_, .. } = key;
-    confirm_quit_key(state, event_loop, key)?;
     help_key(state, key, context)?;
 
     tracing::info!(
@@ -112,4 +130,84 @@ fn route_key(state: &mut State, event_loop: &ActiveEventLoop, key: KeyPress<'_>,
     state.last_key = Some(label);
     state.window.request_redraw();
     Continue(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(keep: Option<bool>, logical: Key, m: Modifiers, repeat: bool, synthetic: bool,
+        pressed: bool, rebound: bool) -> (Option<QuitPromptStep>, usize, Vec<u8>) {
+        let mut bindings = KeyBindings::defaults();
+        if rebound { bindings.merge_text("input.confirm = \"F11\""); }
+        let context = help::Context { prompt: keep.is_some(), ..Default::default() };
+        let mut observed = (None, 0, Vec::new());
+        input_continuation(&mut observed, &logical, repeat, synthetic, pressed, keep,
+            |_| (bindings.resolve(&logical, Some(&logical), m, context.consumes_text(), |a| context.allows(a)), ()),
+            |seen, route| match route {
+                InputRoute::Prompt(step) => seen.0 = Some(step),
+                InputRoute::Next(_, ()) => {
+                    seen.1 += 1;
+                    if let Key::Character(c) = &logical { seen.2.extend_from_slice(c.as_bytes()); }
+                }
+            });
+        observed
+    }
+
+    fn modifiers() -> Modifiers { Modifiers { ctrl: false, alt: false, shift: false, super_: false } }
+
+    #[test]
+    fn quit_other_keys_cancel_and_are_consumed() {
+        for keep in [false, true] {
+            for key in [Key::Character("typed-fixture-text".into()), Key::Named(NamedKey::F12), Key::Named(NamedKey::Escape)] {
+                let (step, calls, bytes) = route(Some(keep), key, modifiers(), false, false, true, false);
+                assert_eq!(step, Some(QuitPromptStep::Cancel), "other key must cancel");
+                assert_eq!((calls, bytes), (0, vec![]), "trigger reached downstream input");
+            }
+        }
+    }
+
+    #[test]
+    fn quit_enter_and_tab_use_identity_with_modifiers_and_rebindings() {
+        for keep in [false, true] {
+            for rebound in [false, true] {
+                for bits in 0..16 {
+                    let m = Modifiers { ctrl: bits & 1 != 0, alt: bits & 2 != 0,
+                        shift: bits & 4 != 0, super_: bits & 8 != 0 };
+                    for (key, want) in [(NamedKey::Tab, QuitPromptStep::Stay { keep: !keep }),
+                        (NamedKey::Enter, QuitPromptStep::Leave(if keep { LeaveIntent::Keep } else { LeaveIntent::Close }))] {
+                        let (step, calls, bytes) = route(Some(keep), Key::Named(key), m, false, false, true, rebound);
+                        assert_eq!(step, Some(want), "logical Tab/Enter must win");
+                        assert_eq!((calls, bytes), (0, vec![]));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quit_modifier_presses_cancel_before_the_filter() {
+        for keep in [false, true] {
+            for key in [NamedKey::Control, NamedKey::Shift, NamedKey::Alt, NamedKey::Super, NamedKey::Meta, NamedKey::AltGraph] {
+                let seen = route(Some(keep), Key::Named(key), modifiers(), false, false, true, false);
+                assert_eq!(seen, (Some(QuitPromptStep::Cancel), 0, vec![]), "modifier must cancel before suppression");
+            }
+        }
+    }
+
+    #[test]
+    fn raw_admission_and_repeat_controls() {
+        for keep in [false, true] {
+            for key in [Key::Named(NamedKey::Enter), Key::Named(NamedKey::Control), Key::Character("text".into())] {
+                assert_eq!(route(Some(keep), key.clone(), modifiers(), false, true, true, false), (None, 0, vec![]));
+                assert_eq!(route(Some(keep), key.clone(), modifiers(), false, false, false, false), (None, 0, vec![]));
+                // Modifier repeats are rejected before the prompt at the parent; every accepted repeat ignores.
+                let seen = route(Some(keep), key, modifiers(), true, false, true, false);
+                assert!(seen.0.is_none() || seen.0 == Some(QuitPromptStep::Ignore));
+                assert_eq!((seen.1, seen.2), (0, vec![]));
+            }
+        }
+        assert_eq!(route(None, Key::Named(NamedKey::Control), modifiers(), false, false, true, false), (None, 0, vec![]));
+        assert_eq!(route(None, Key::Character("text".into()), modifiers(), false, false, true, false), (None, 1, b"text".to_vec()));
+    }
 }

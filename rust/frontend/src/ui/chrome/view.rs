@@ -141,7 +141,7 @@ impl ChromeView<'_> {
         let repl_title = self.drawer_title(repl_focus);
         let (repl_split, scroll_para, input_para) = self.repl_drawer_body(repl_rect, repl_focus);
 
-        render_nav_widgets(frame, nav_body, nav_list_rect, nav_pinned, nav_rect, nav_list_h);
+        render_nav_widgets(frame, nav_body, nav_list_rect, nav_pinned, nav_rect, nav_list_h, self.nav_prompt_line.is_some());
         self.render_drawer_widgets(frame, repl_rect, scroll_para, input_para, repl_split);
 
         // Paint the wireframe directly into the buffer.
@@ -658,6 +658,7 @@ fn render_nav_widgets(
     nav_pinned: Vec<String>,
     nav_rect: ratatui::layout::Rect,
     nav_list_h: usize,
+    _prompt_open: bool,
 ) {
         // Render content widgets into the interior content
         // rects (no borders). The drawer's REPL scrollback + input
@@ -678,4 +679,42 @@ fn render_nav_widgets(
                 ..nav_rect
             },
         );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt_pinned_cells_have_attention_style() {
+        let prompts = [
+            NavPrompt::CreateFile { dir_node_id: "files:".into(), input: "name".into() },
+            NavPrompt::ConfirmDelete { node_id: "files:a".into(), label: "a".into() },
+            NavPrompt::ConfirmQuit { keep: false },
+            NavPrompt::ScaleEntry { node_id: "files:a".into(), input: "1".into() },
+        ];
+        for prompt in prompts.iter().map(Some).chain(std::iter::once(None)) {
+            for (width, height) in [(80, 8), (16, 8), (16, 1), (16, 0)] {
+                let text = prompt.map(|p| match p {
+                    NavPrompt::ConfirmQuit { keep } => quit_prompt_line(*keep),
+                    _ => ("a wrapped navigation prompt with a choice".into(), "[choice]".into()),
+                });
+                let (list_h, rows, _) = nav_pinned_rows(text.as_ref().map(|(a,b)| (a.as_str(),b.as_str())),
+                    Some("notice"), None, width, height);
+                let rect = ratatui::layout::Rect::new(0, 0, width as u16, height as u16);
+                let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width as u16, height as u16)).unwrap();
+                term.draw(|frame| render_nav_widgets(frame, Paragraph::new(""),
+                    ratatui::layout::Rect { height: list_h as u16, ..rect }, rows.clone(), rect, list_h, prompt.is_some())).unwrap();
+                for (i, row) in rows.iter().enumerate() {
+                    for x in 0..row.chars().count().min(width) {
+                        let cell = &term.backend().buffer()[(x as u16, (list_h + i) as u16)];
+                        assert_eq!(cell.fg, if prompt.is_some() { Color::Yellow } else { Color::LightGreen }, "prompt foreground");
+                        assert_eq!(cell.modifier.contains(Modifier::BOLD), prompt.is_some(), "prompt weight");
+                    }
+                }
+                if height == 1 && prompt.is_some() { assert!(rows[0].contains('['), "whole choice survives clipping"); }
+                if height == 0 { assert!(rows.is_empty()); }
+            }
+        }
+    }
 }

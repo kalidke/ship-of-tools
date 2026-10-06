@@ -10,7 +10,7 @@ use std::time::Duration;
 /// `eof` the moment the stream ends, concurrently with its replies. It
 /// answers each leave whose intent is `reply_to`, after `delay`, with the
 /// sentinel `not_ended: 7`, and marks it replied only once that is written.
-fn leave_fake(
+pub(crate) fn leave_fake(
     listener: Bound,
     gate: Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>,
     reply_to: Option<&'static str>,
@@ -54,7 +54,7 @@ fn leave_fake(
 }
 
 /// Poll the way the event loop does until the step is not a wait (3 s at most).
-async fn poll_out(leaving: &mut Leaving) -> LeaveStep {
+pub(crate) async fn poll_out(leaving: &mut Leaving) -> LeaveStep {
     for _ in 0..150 {
         let step = leaving.poll(Instant::now());
         if !matches!(step, LeaveStep::Wait(_)) {
@@ -66,7 +66,7 @@ async fn poll_out(leaving: &mut Leaving) -> LeaveStep {
 }
 
 /// The fake's log once it has `n` entries (1 s at most).
-async fn logged(log: &Arc<std::sync::Mutex<Vec<String>>>, n: usize) -> Vec<String> {
+pub(crate) async fn logged(log: &Arc<std::sync::Mutex<Vec<String>>>, n: usize) -> Vec<String> {
     for _ in 0..100 {
         if log.lock().unwrap().len() >= n {
             break;
@@ -76,13 +76,13 @@ async fn logged(log: &Arc<std::sync::Mutex<Vec<String>>>, n: usize) -> Vec<Strin
     log.lock().unwrap().clone()
 }
 
-fn is_leave(entry: &str, intent: &str) -> bool {
+pub(crate) fn is_leave(entry: &str, intent: &str) -> bool {
     entry.starts_with(op::FE_LEAVING) && entry.contains(&format!(r#""intent":"{intent}""#))
 }
 
 /// Join the fake once the window's side is dropped (a panic in it fails
 /// the test); its whole log, which ends with `eof`.
-async fn finish(fake: tokio::task::JoinHandle<()>, log: &Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
+pub(crate) async fn finish(fake: tokio::task::JoinHandle<()>, log: &Arc<std::sync::Mutex<Vec<String>>>) -> Vec<String> {
     tokio::time::timeout(Duration::from_secs(5), fake).await.expect("the fake never saw eof").unwrap();
     let seen = log.lock().unwrap().clone();
     assert_eq!(seen.last().map(String::as_str), Some("eof"), "{seen:?}");

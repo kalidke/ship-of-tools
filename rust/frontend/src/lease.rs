@@ -782,8 +782,8 @@ pub(crate) fn close_now(leaving: Option<&mut crate::lease::Leaving>, code: i32) 
 
 #[cfg(test)]
 #[path = "lease_grant_tests.rs"]
-mod grant_tests;
+pub(crate) mod grant_tests;
 
 #[cfg(test)]
 #[path = "lease_leave_tests.rs"]
-mod leave_tests;
+pub(crate) mod leave_tests;
