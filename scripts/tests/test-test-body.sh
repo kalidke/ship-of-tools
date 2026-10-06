@@ -99,6 +99,7 @@ def checker_controls():
         ('qualified::ignored_positive',['qualified::ignored_positive','--ignored','--exact'],0),
         ('absent',['misleading','--exact'],101), ('misleading',['misleading','--exact'],0)]
     for i,(name,args,want) in enumerate(controls):
+        p=fresh('checker '+str(i)); (p/'go').touch()
         raw=run([fixture]+args+pretty,p); log=p/f'raw-{i}.log'; log.write_text(raw.stdout)
         r=shell(f'source {q(helper)}; test_body_check {q(name)} {raw.returncode} {q(log)}',p)
         observe('checker '+name+' raw',raw,p)
@@ -144,23 +145,26 @@ def arm_setup(p):
     return f'source {q(helper)}\nLOCAL={q(p)}; RUST_DIR={q(p)}\ncargo() {{ {q(a)} "$@"; }}\n'+function(twohost,'rust_arm')+'\n'
 
 def twohost_selection():
+    errors=[]
     p=fresh('T3 zero')
     start=twohost.index('c="$(new_case t3)"')
     leaf=twohost[start:twohost.index('# Wait until',start)]
     setup=arm_setup(p)+function(twohost,'verdict')+'\nPASS=0; FAIL=0; new_case() { echo .; }\n'
     r=shell(setup+leaf+'\nprintf "T3 FAIL=%s\\n" "$FAIL"; [ "$FAIL" -eq 1 ]',p)
     print(r.stdout,end='',flush=True)
-    check(r.returncode==0,'T3 accepted zero-body arm')
+    if r.returncode!=0: errors.append('T3 accepted zero-body arm')
     for name,want in [('absent',101),('ignored_positive',101),('qualified::ignored_positive',0)]:
         p=fresh('arm'); (p/'go').touch()
         r=shell(arm_setup(p)+f'rust_arm {q(p)} {q(name)}',p); observe('rust_arm '+name,r,p)
-        check(r.returncode==want,f'actual arm {name}: owner exit {r.returncode} expected {want}')
+        if r.returncode!=want: errors.append(f'actual arm {name}: owner exit {r.returncode} expected {want}')
         if want==0:
             check((p/'witness-ignored-positive').exists() and (p/'rust.ready').exists(),'positive body/readiness absent')
             check('filed fixture' in r.stdout and 'route local' in r.stdout,'payload lost')
+    check(not errors,'; '.join(errors))
 case('twohost_zero_selection_is_failure',twohost_selection)
 
 def async_results():
+    errors=[]
     start=twohost.index('c="$(new_case a1)"; mkfifo'); leaf=twohost[start:twohost.index('# ---- (a2)',start)]
     for failing,reverse in [(False,False),(True,False),(True,True)]:
         p=fresh('async')
@@ -186,8 +190,9 @@ def async_results():
         print(r.stdout, end='',flush=True)
         payload=(p/'a1.rust').read_text(); print('Rust writer output: '+payload.strip(),flush=True)
         print('Rust writer witnesses: '+str(sorted(x.name for x in (p/'inbox').glob('witness-*'))),flush=True)
-        check(r.returncode==0,'earlier writer failure erased')
+        if r.returncode!=0: errors.append(f'earlier writer failure erased; peer-last={reverse}')
         check((p/'inbox/witness-appender').exists() and (p/'inbox/rust.ready').exists() and (p/'inbox/go').exists(),'ready/go/body absent')
+    check(not errors,'; '.join(errors))
 case('twohost_each_async_result_is_required',async_results)
 
 def wake_script():
@@ -248,6 +253,7 @@ case('wake_report_is_private_observation',wake_report)
 
 if mode=='all':
     def gate_job():
+        errors=[]
         check(sys.platform.startswith('linux'),'gate controls require Linux')
         for name,want,panic in [('absent',101,False),('qualified::ignored_positive',101,False),('ordinary',0,False),('ordinary',101,True)]:
             p=fresh('gate job'); (p/'rust').mkdir(); (p/'steps').mkdir()
@@ -257,34 +263,45 @@ if mode=='all':
             r=run(['bash',str(repo/'scripts/tests/rc-gate.sh'),'--job',row],p,extra)
             rc=(p/'rust/control.rc').read_text().strip()
             print(f'--job one {name} panic={panic}: leaf exit {r.returncode}; result {rc}; witnesses {sorted(x.name for x in p.glob("witness-*"))}',flush=True)
-            check(rc==str(want),'selected job recorded '+rc+' instead of '+str(want))
+            if rc!=str(want): errors.append(f'{name}: selected job recorded {rc} instead of {want}')
         p=fresh('empty bin'); (p/'rust').mkdir(); (p/'steps').mkdir(); a=p/'empty-bin'
         a.write_text('#!/usr/bin/env bash\nexec '+q(fixture)+' absent --exact\n'); a.chmod(0o755)
         run(['bash',str(repo/'scripts/tests/rc-gate.sh'),'--job','\t'.join(['bin','empty',str(a),str(p)])],p,
             {'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':'/usr/bin'})
         check((p/'rust/empty.rc').read_text().strip()=='0','empty whole binary rejected')
+        check(not errors,'; '.join(errors))
     case('one_job_requires_completed_selected_body',gate_job)
 
     def producer_controls():
-        for listing in ['real','empty','failed','inconsistent']:
+        for listing in ['real','empty','failed','inconsistent','missing-fixture','duplicate-fixture']:
             p=fresh('producer'); (p/'rust').mkdir(); (p/'steps').mkdir(); exe=p/'listing-adapter'
             exe.write_text('#!/usr/bin/env python3\nimport os,sys\n'+f'fixture={fixture!r}; mode={listing!r}\n'
                 +'if "--ignored" in sys.argv:\n if mode=="empty": sys.exit(0)\n if mode=="failed": sys.exit(17)\n if mode=="inconsistent": print("absent: test"); sys.exit(0)\n'
                 +'os.execv(fixture,[fixture]+sys.argv[1:])\n'); exe.chmod(0o755)
-            (p/'tests.tsv').write_text(f'comm_wake\t{exe}\t{p}\ntest_body_fixture\t{fixture}\t{p}\n')
+            rows=f'comm_wake\t{exe}\t{p}\n'
+            fixture_row=f'test_body_fixture\t{fixture}\t{p}\n'
+            rows+=fixture_row*(0 if listing=='missing-fixture' else 2 if listing=='duplicate-fixture' else 1)
+            (p/'tests.tsv').write_text(rows)
             prefix=gate[gate.index('envs()'):gate.index('if [ "${1:-}" = --job ]')]
             body=f'source {q(helper)}\nD={q(repo)}; L={q(p)}; BUILD_RC=0; TO=(timeout 30); CE=(env); SPLIT=(comm_wake); JULIA_PKGS=()\n'+prefix+'\nproducer\n'
             r=shell(body,p); jobs=[s.split('\t') for s in r.stdout.splitlines() if s.startswith('one\t')]; emitted=[row[-1] for row in jobs]
             summary=(p/'summary.txt').read_text(); raw=run([fixture,'--list','--ignored','--format','terse'],p)
             ignored=[s[:-6] for s in raw.stdout.splitlines() if s.endswith(': test')]
             print(f'producer {listing}: emitted {emitted}; skipped {summary.count("split-skipped")}; step results {[x.read_text().strip() for x in (p/"steps").glob("*.rc")]}',flush=True)
-            if listing=='real':
+            if listing in ('missing-fixture','duplicate-fixture'):
+                check((p/'steps/test-test-body.rc').read_text().strip()=='101','fixture artifact error accepted')
+                check(not any(row[0]=='shell' and row[1]=='test-test-body' for row in (line.split('\t') for line in r.stdout.splitlines())),'invalid fixture proof job emitted')
+            elif listing=='real':
                 check(not set(emitted).intersection(ignored),'ignored names emitted as ordinary jobs')
                 check(summary.count('split-skipped')==len(ignored),'ignored skip records absent')
                 normal=run([fixture,'--list','--format','terse'],p); ordinary={s[:-6] for s in normal.stdout.splitlines() if s.endswith(': test')}-set(ignored)
                 check(set(emitted)==ordinary and len(emitted)==len(ordinary),'ordinary partition not once each')
             elif listing=='empty': check(bool(emitted),'empty ignored list rejected')
-            else: check(any(x.read_text().strip() not in ('0','unrun') for x in (p/'steps').glob('*.rc')),'listing failure has no failed gate result')
+            else: check((p/'steps/split-comm_wake.rc').read_text().strip()=='101','listing failure has no failed partition result')
+            if listing not in ('missing-fixture','duplicate-fixture'):
+                proof_jobs=[line.split('\t') for line in r.stdout.splitlines() if line.startswith('shell\ttest-test-body\t')]
+                check(len(proof_jobs)==1 and proof_jobs[0][-2:]==['--all',fixture],'proof fixture argv/discovery lost')
+            check((p/'steps/missing-fe_client_supervisor_word__unresponsive_supervisor_expires_the_health_window.rc').read_text().strip()=='101','missing slow-first request not a result failure')
     case('split_producer_does_not_schedule_ignored_as_ordinary',producer_controls)
 if failures:
     print('FAIL: selected Rust body proofs ('+mode+'): '+', '.join(failures),flush=True); sys.exit(1)
