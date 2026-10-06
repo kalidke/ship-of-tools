@@ -14,8 +14,7 @@ if ! [ -f "$proof_bash" ] || ! [ -x "$proof_bash" ] ||
     echo 'selected-body proof: executable native Bash required' >&2
     exit 2
 fi
-base=${TMPDIR:-/tmp}
-raw_root=$(mktemp -d "$base/iso-sh-proof.XXXXXX") || { echo 'selected-body proof: scratch creation failed' >&2; exit 2; }
+raw_root=$(mktemp -d) || { echo 'selected-body proof: scratch creation failed' >&2; exit 2; }
 if ! root=$(python3 - "$raw_root" <<'ROOT'
 import os
 from pathlib import Path
