@@ -7,30 +7,7 @@ set -u
 [ "$#" -eq 2 ] || { echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2; }
 case ${1:-} in --portable|--all) mode=${1#--} ;; *) echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2 ;; esac
 [ -f "$2" ] || { echo 'compiled fixture required' >&2; exit 2; }
-raw_root=$(mktemp -d) || { echo 'selected-body proof: scratch creation failed' >&2; exit 2; }
-if ! root=$(python3 - "$raw_root" <<'ROOT'
-import os
-from pathlib import Path
-import sys
-try:
-    raw = sys.argv[1]
-    if not raw:
-        raise ValueError('empty scratch path')
-    created = Path(raw)
-    absolute = created.resolve(strict=True)
-    if not absolute.is_dir() or not os.path.isabs(str(absolute)) or absolute.parent == absolute:
-        raise ValueError('scratch path must be a proper absolute directory')
-    if not created.samefile(absolute):
-        raise ValueError('scratch directory identity changed')
-    print(absolute.as_posix())
-except (OSError, ValueError):
-    print('selected-body proof: invalid scratch directory', file=sys.stderr)
-    sys.exit(2)
-ROOT
-); then
-    echo 'selected-body proof: scratch normalization failed' >&2
-    exit 2
-fi
+root=$(mktemp -d) || exit 2
 trap 'rm -rf -- "${root:?}"' EXIT
 python3 - "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root" <<'PY'
 import json
