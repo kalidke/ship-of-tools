@@ -379,6 +379,35 @@ installer_render_wrapper() {  # <prefix> <target> <be-alias-or-empty> <dest>
     fi
 }
 
+# Test-only adapter around the unchanged parent trust section.
+installer_declare_trust() {
+    local CONFIG="$XDG_CONFIG_HOME/sot"
+# Folder trust. A row the daemon spawns must reach its task without stopping
+# at the agent's folder-trust dialog on a folder nobody has opened on this box
+# before. The daemon reads ONE declared absolute prefix from this file; the
+# repo itself ships no default and names no path, because a path committed
+# there would be true on nobody's machine. So the declaration is made HERE, at
+# install time, on the box it applies to: the home folder. Written once — an
+# existing [trust] table is the owner's own answer, never rewritten, and
+# commenting the key out restores the dialog. The guard matches the table the
+# way the daemon's parser does (trim the line, strip the brackets, trim the
+# name), so `[ trust ]` counts as the table it is and never earns a second one
+# — two tables and the reader would take the last.
+if ! grep -q '^[[:space:]]*\[[[:space:]]*trust[[:space:]]*\][[:space:]]*$' "$CONFIG/settings.toml" 2>/dev/null; then
+    {
+        printf '\n[trust]\n'
+        printf '# Every session root under this absolute prefix counts as already\n'
+        printf '# trusted, so an agent the daemon spawns there never stops at its\n'
+        printf '# folder-trust dialog. Narrow it to the parent your repos live under,\n'
+        printf '# or comment it out to answer that dialog by hand. Roots outside it\n'
+        printf '# are left untouched.\n'
+        printf 'root_prefix = "%s"\n' "$HOME"
+    } >> "$CONFIG/settings.toml"
+    say "folder trust declared for everything under $HOME ($CONFIG/settings.toml, [trust] root_prefix)"
+fi
+
+}
+
 # scripts/tests/installer-state.sh sources this file to exercise the
 # functions above in isolation. Nothing else sets this, `curl | bash`
 # included.
