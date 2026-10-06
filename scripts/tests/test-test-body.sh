@@ -3,6 +3,7 @@
 # real libtest fixture and scratch-owned body witnesses. No comm tool, daemon, peer host or full
 # candidate gate is run.
 # The proof binds its shell scratch root to a validated absolute directory before installing cleanup; behavior controls observe the driver and cleanup paths under relative TMPDIR.
+# Child output is decoded as strict UTF-8; unreadable output fails its named case.
 set -u
 [ "$#" -eq 2 ] || { echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2; }
 case ${1:-} in --portable|--all) mode=${1#--} ;; *) echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2 ;; esac
@@ -57,9 +58,9 @@ for name in ('HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONF
     env[name] = str(root / 'home')
 (root / 'home').mkdir()
 helper = repo / 'scripts/tests/lib-test-body.sh'
-twohost = (repo / 'comm/tests/test-inbox-lock-twohost.sh').read_text()
-e2e = (repo / 'comm/tests/test-comm-e2e-readers.sh').read_text()
-gate = (repo / 'scripts/tests/rc-gate.sh').read_text()
+twohost = (repo / 'comm/tests/test-inbox-lock-twohost.sh').read_text(encoding='utf-8', errors='strict')
+e2e = (repo / 'comm/tests/test-comm-e2e-readers.sh').read_text(encoding='utf-8', errors='strict')
+gate = (repo / 'scripts/tests/rc-gate.sh').read_text(encoding='utf-8', errors='strict')
 failures = []
 serial = 0
 q = lambda v: shlex.quote(str(v))
@@ -74,8 +75,11 @@ def fresh(label):
 
 def run(argv, p, extra=None):
     actual = dict(env); actual.update(extra or {})
-    return subprocess.run(argv, cwd=p, env=actual, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, timeout=45)
+    try:
+        return subprocess.run(argv, cwd=p, env=actual, text=True, encoding='utf-8', errors='strict',
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
+    except UnicodeError as error:
+        raise AssertionError(f'child output is not UTF-8 ({argv[0]}): {type(error).__name__}: {error}')
 
 def shell(body, p, extra=None):
     return run([native_bash, '-c', body], p, extra)
@@ -86,7 +90,9 @@ def check(ok, detail):
 def case(name, body):
     try:
         body(); print(f'PASS case {name}', flush=True)
-    except (AssertionError, subprocess.TimeoutExpired) as error:
+    except (AssertionError, subprocess.TimeoutExpired, UnicodeError) as error:
+        if isinstance(error, UnicodeError):
+            error = f'{type(error).__name__}: {error}'
         failures.append(name); print(f'FAIL case {name}: {error}', flush=True)
 
 def unexpected_arguments():
@@ -98,7 +104,7 @@ def unexpected_arguments():
 
 def bootstrap_run(p, setup, arguments=None):
     # Load the actual bootstrap; replace only its driver and removal execution ports.
-    text = (repo / 'scripts/tests/test-test-body.sh').read_text()
+    text = (repo / 'scripts/tests/test-test-body.sh').read_text(encoding='utf-8', errors='strict')
     bootstrap = text[:text.index('python3 - "$mode"')]
     record = p / 'ports'; record.mkdir()
     tmp = p / ('relative temp spaces' if setup == 'relative' else 'absolute temp spaces')
@@ -128,7 +134,7 @@ def bootstrap_paths():
     errors = []
     for setup in ('relative', 'absolute'):
         p = fresh('bootstrap ' + setup); r = bootstrap_run(p, setup)
-        observed = [(p / 'ports' / port).read_text().strip() for port in ('driver', 'cleanup')]
+        observed = [(p / 'ports' / port).read_text(encoding='utf-8', errors='strict').strip() for port in ('driver', 'cleanup')]
         created = list((p / ('relative temp spaces' if setup == 'relative' else 'absolute temp spaces')).iterdir())
         absolute = all(os.path.isabs(value) for value in observed)
         same = len(created) == 1 and all((p / value).resolve() == created[0].resolve() for value in observed)
@@ -197,7 +203,7 @@ def checker_controls():
     for name,want in [('ordinary',0),('absent',101)]:
         r=shell(f'source {q(helper)}; test_body_run {name} {q(log)} -- {q(fixture)} {name} --exact '+ ' '.join(pretty),p)
         check(r.returncode==want,'runner '+r.stdout)
-    check('test ordinary ... ok' not in log.read_text(),'old log survived truncation')
+    check('test ordinary ... ok' not in log.read_text(encoding='utf-8', errors='strict'),'old log survived truncation')
     check(shell(f'source {q(helper)}; test_body_check ordinary 17 {q(log)}',p).returncode==17,'raw nonzero lost')
     check(shell(f'source {q(helper)}; test_body_check ordinary 0 absent-file',p).returncode==2,'unreadable API')
 case('checker_controls',checker_controls)
@@ -248,7 +254,7 @@ def cargo_parity():
         p=fresh('cargo parity'); (p/'go').touch(); a=adapter(p)
         r=run([native_bash,'-c','exec \"$@\"','_',str(a),'test','-p','sot-log','--test','test_body_fixture',name,'--']+args[1:]+pretty,p)
         direct_names=re.findall(r'^test (.*?) \.\.\. (?:ok|FAILED|ignored)',r.stdout,re.M)
-        cargo_log=(records/key/'cargo.log').read_text()
+        cargo_log=(records/key/'cargo.log').read_text(encoding='utf-8', errors='strict')
         cargo_names=re.findall(r'^test (.*?) \.\.\. (?:ok|FAILED|ignored)',cargo_log,re.M)
         direct_witnesses={x.name for x in p.glob('witness-*')}
         cargo_witnesses={x.name for x in (records/key).glob('witness-*')}
@@ -307,7 +313,7 @@ def async_results():
         r=shell(setup+leaf+'\nprintf "owner FAIL=%s\\n" "$FAIL"; [ "$FAIL" -eq '+('1' if failing else '0')+' ]',p)
         observe(f'async failing={failing} peer-last={reverse}',r,p)
         print(r.stdout, end='',flush=True)
-        payload=(p/'a1.rust').read_text(); print('Rust writer output: '+payload.strip(),flush=True)
+        payload=(p/'a1.rust').read_text(encoding='utf-8', errors='strict'); print('Rust writer output: '+payload.strip(),flush=True)
         print('Rust writer witnesses: '+str(sorted(x.name for x in (p/'inbox').glob('witness-*'))),flush=True)
         if r.returncode!=0: errors.append(f'earlier writer failure erased; peer-last={reverse}')
         check((p/'inbox/witness-appender').exists() and (p/'inbox/rust.ready').exists() and (p/'inbox/go').exists(),'ready/go/body absent')
@@ -338,7 +344,7 @@ def wake_completion():
     check((p/'witness-wake').exists() and not (p/'witness-nested-wake').exists(),'substring ran extra wake body')
     check(r.returncode==0,r.stdout)
     check((p/'log/ping-here.log').stat().st_size>0,'ping absent')
-    check((p/'log/wake-result-here').read_text().strip()=='0','checked terminal result absent')
+    check((p/'log/wake-result-here').read_text(encoding='utf-8', errors='strict').strip()=='0','checked terminal result absent')
     for broken in ['panic','missing-helper']:
         p=fresh('wake '+broken); (p/'log').mkdir(); e=p/'e2e'; e.mkdir()
         if broken=='panic':
@@ -348,7 +354,7 @@ def wake_completion():
         r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
         print(f'generated wake {broken}: exit {r.returncode}',flush=True)
         check(r.returncode!=0,'broken generated control accepted')
-        if broken=='panic': check((p/'log/wake-result-here').read_text()=='101\n','failed control status lost')
+        if broken=='panic': check((p/'log/wake-result-here').read_text(encoding='utf-8', errors='strict')=='101\n','failed control status lost')
 case('wake_exact_selection',wake_completion)
 
 def wake_decisions():
@@ -380,14 +386,14 @@ if mode=='all':
             row='\t'.join(['one','control',fixture,str(p),name])
             extra={'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':'/usr/bin'}
             r=run([native_bash,str(repo/'scripts/tests/rc-gate.sh'),'--job',row],p,extra)
-            rc=(p/'rust/control.rc').read_text().strip()
+            rc=(p/'rust/control.rc').read_text(encoding='utf-8', errors='strict').strip()
             print(f'--job one {name} panic={panic}: leaf exit {r.returncode}; result {rc}; witnesses {sorted(x.name for x in p.glob("witness-*"))}',flush=True)
             if rc!=str(want): errors.append(f'{name}: selected job recorded {rc} instead of {want}')
         p=fresh('empty bin'); (p/'rust').mkdir(); (p/'steps').mkdir(); a=p/'empty-bin'
         a.write_text('#!/usr/bin/env bash\nexec '+q(fixture)+' absent --exact\n'); a.chmod(0o755)
         run([native_bash,str(repo/'scripts/tests/rc-gate.sh'),'--job','\t'.join(['bin','empty',str(a),str(p)])],p,
             {'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':'/usr/bin'})
-        check((p/'rust/empty.rc').read_text().strip()=='0','empty whole binary rejected')
+        check((p/'rust/empty.rc').read_text(encoding='utf-8', errors='strict').strip()=='0','empty whole binary rejected')
         check(not errors,'; '.join(errors))
     case('one_job_requires_completed_selected_body',gate_job)
 
@@ -404,11 +410,11 @@ if mode=='all':
             prefix=gate[gate.index('envs()'):gate.index('if [ "${1:-}" = --job ]')]
             body=f'source {q(helper)}\nD={q(repo)}; L={q(p)}; BUILD_RC=0; TO=(timeout 30); CE=(env); SPLIT=(comm_wake); JULIA_PKGS=()\n'+prefix+'\nproducer\n'
             r=shell(body,p); jobs=[s.split('\t') for s in r.stdout.splitlines() if s.startswith('one\t')]; emitted=[row[-1] for row in jobs]
-            summary=(p/'summary.txt').read_text(); raw=run([fixture,'--list','--ignored','--format','terse'],p)
+            summary=(p/'summary.txt').read_text(encoding='utf-8', errors='strict'); raw=run([fixture,'--list','--ignored','--format','terse'],p)
             ignored=[s[:-6] for s in raw.stdout.splitlines() if s.endswith(': test')]
-            print(f'producer {listing}: emitted {emitted}; skipped {summary.count("split-skipped")}; step results {[x.read_text().strip() for x in (p/"steps").glob("*.rc")]}',flush=True)
+            print(f'producer {listing}: emitted {emitted}; skipped {summary.count("split-skipped")}; step results {[x.read_text(encoding="utf-8", errors="strict").strip() for x in (p/"steps").glob("*.rc")]}',flush=True)
             if listing in ('missing-fixture','duplicate-fixture'):
-                check((p/'steps/test-test-body.rc').read_text().strip()=='101','fixture artifact error accepted')
+                check((p/'steps/test-test-body.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','fixture artifact error accepted')
                 check(not any(row[0]=='shell' and row[1]=='test-test-body' for row in (line.split('\t') for line in r.stdout.splitlines())),'invalid fixture proof job emitted')
             elif listing=='real':
                 check(not set(emitted).intersection(ignored),'ignored names emitted as ordinary jobs')
@@ -416,11 +422,11 @@ if mode=='all':
                 normal=run([fixture,'--list','--format','terse'],p); ordinary={s[:-6] for s in normal.stdout.splitlines() if s.endswith(': test')}-set(ignored)
                 check(set(emitted)==ordinary and len(emitted)==len(ordinary),'ordinary partition not once each')
             elif listing=='empty': check(bool(emitted),'empty ignored list rejected')
-            else: check((p/'steps/split-comm_wake.rc').read_text().strip()=='101','listing failure has no failed partition result')
+            else: check((p/'steps/split-comm_wake.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','listing failure has no failed partition result')
             if listing not in ('missing-fixture','duplicate-fixture'):
                 proof_jobs=[line.split('\t') for line in r.stdout.splitlines() if line.startswith('shell\ttest-test-body\t')]
                 check(len(proof_jobs)==1 and proof_jobs[0][-2:]==['--all',fixture],'proof fixture argv/discovery lost')
-            check((p/'steps/missing-fe_client_supervisor_word__unresponsive_supervisor_expires_the_health_window.rc').read_text().strip()=='101','missing slow-first request not a result failure')
+            check((p/'steps/missing-fe_client_supervisor_word__unresponsive_supervisor_expires_the_health_window.rc').read_text(encoding='utf-8', errors='strict').strip()=='101','missing slow-first request not a result failure')
     case('split_producer_does_not_schedule_ignored_as_ordinary',producer_controls)
 if failures:
     print('FAIL: selected Rust body proofs ('+mode+'): '+', '.join(failures),flush=True); sys.exit(1)
