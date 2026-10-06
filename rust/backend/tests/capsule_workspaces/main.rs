@@ -88,6 +88,7 @@ mod lane_connect;
 mod phase;
 mod platform;
 mod pty;
+mod session_env;
 #[cfg(target_os = "linux")]
 mod resume;
 mod spawn;
