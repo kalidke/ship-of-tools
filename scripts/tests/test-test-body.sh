@@ -7,13 +7,6 @@ set -u
 [ "$#" -eq 2 ] || { echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2; }
 case ${1:-} in --portable|--all) mode=${1#--} ;; *) echo 'usage: test-test-body.sh --portable|--all ABSOLUTE_FIXTURE' >&2; exit 2 ;; esac
 [ -f "$2" ] || { echo 'compiled fixture required' >&2; exit 2; }
-proof_bash=${BASH:-}
-case "$proof_bash" in /*|[A-Za-z]:[\\/]*) ;; *) echo 'selected-body proof: absolute native Bash required' >&2; exit 2 ;; esac
-if ! [ -f "$proof_bash" ] || ! [ -x "$proof_bash" ] ||
-   ! proof_bash_version=$("$proof_bash" -c 'printf "%s\n" "${BASH_VERSION:-}"') || [ -z "$proof_bash_version" ]; then
-    echo 'selected-body proof: executable native Bash required' >&2
-    exit 2
-fi
 base=${TMPDIR:-/tmp}
 raw_root=$(mktemp -d "$base/iso-sh-proof.XXXXXX") || { echo 'selected-body proof: scratch creation failed' >&2; exit 2; }
 if ! root=$(python3 - "$raw_root" <<'ROOT'
@@ -40,7 +33,7 @@ ROOT
     exit 2
 fi
 trap 'rm -rf -- "${root:?}"' EXIT
-python3 - "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root" "$proof_bash" <<'PY'
+python3 - "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root" <<'PY'
 import json
 import os
 from pathlib import Path
@@ -48,7 +41,7 @@ import re
 import shlex
 import subprocess
 import sys
-mode, fixture, checkout, temp, native_bash = sys.argv[1:]
+mode, fixture, checkout, temp = sys.argv[1:]
 assert os.path.isabs(fixture), 'fixture path must be absolute'
 fixture = str(Path(fixture).resolve())
 repo, root = Path(checkout).resolve(), Path(temp).resolve()
@@ -78,7 +71,7 @@ def run(argv, p, extra=None):
                           stderr=subprocess.STDOUT, timeout=45)
 
 def shell(body, p, extra=None):
-    return run([native_bash, '-c', body], p, extra)
+    return run(['bash', '-c', body], p, extra)
 
 def check(ok, detail):
     if not ok: raise AssertionError(detail)
@@ -117,7 +110,7 @@ def bootstrap_run(p, setup, arguments=None):
     script = p / 'bootstrap.sh'
     script.write_text(ports + bootstrap +
         'proof_driver "$mode" "$2" "$(dirname "${BASH_SOURCE[0]}")/../.." "$root"\n')
-    r = run([native_bash, str(script)] + (arguments or ['--portable', fixture]), p,
+    r = run(['bash', str(script)] + (arguments or ['--portable', fixture]), p,
             {'TMPDIR': tmp.name if setup == 'relative' else tmp.as_posix()})
     (p / 'bootstrap.log').write_text(r.stdout)
     return r
@@ -246,7 +239,7 @@ def cargo_parity():
         ('absent','absent',['absent','--exact'],101),
         ('substring','near',['near'],101)]:
         p=fresh('cargo parity'); (p/'go').touch(); a=adapter(p)
-        r=run([native_bash,'-c','exec \"$@\"','_',str(a),'test','-p','sot-log','--test','test_body_fixture',name,'--']+args[1:]+pretty,p)
+        r=run(['bash','-c','exec \"$@\"','_',str(a),'test','-p','sot-log','--test','test_body_fixture',name,'--']+args[1:]+pretty,p)
         direct_names=re.findall(r'^test (.*?) \.\.\. (?:ok|FAILED|ignored)',r.stdout,re.M)
         cargo_log=(records/key/'cargo.log').read_text()
         cargo_names=re.findall(r'^test (.*?) \.\.\. (?:ok|FAILED|ignored)',cargo_log,re.M)
@@ -333,7 +326,7 @@ def wake_completion():
     (e/'lib-test-body.sh').write_bytes(helper.read_bytes()); a=adapter(p)
     # Bind only the external command word; preserve generated selector and verdict logic.
     code=re.sub(r'\bcargo(?= test)',q(a),wake_script()); (e/'wake.sh').write_text(code)
-    r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
+    r=run(['bash',str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
     observe('generated wake',r,p)
     check((p/'witness-wake').exists() and not (p/'witness-nested-wake').exists(),'substring ran extra wake body')
     check(r.returncode==0,r.stdout)
@@ -345,7 +338,7 @@ def wake_completion():
             (p/'iso-sh-panic-request').touch()
             (e/'lib-test-body.sh').write_bytes(helper.read_bytes())
         a=adapter(p); (e/'wake.sh').write_text(re.sub(r'\bcargo(?= test)',q(a),wake_script()))
-        r=run([native_bash,str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
+        r=run(['bash',str(e/'wake.sh'),str(p),'fixture','here'],p,{'SOT_E2E_MANIFEST':str(p/'unused-manifest')})
         print(f'generated wake {broken}: exit {r.returncode}',flush=True)
         check(r.returncode!=0,'broken generated control accepted')
         if broken=='panic': check((p/'log/wake-result-here').read_text()=='101\n','failed control status lost')
@@ -379,13 +372,13 @@ if mode=='all':
             if panic: (p/'iso-sh-panic-request').touch()
             row='\t'.join(['one','control',fixture,str(p),name])
             extra={'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':'/usr/bin'}
-            r=run([native_bash,str(repo/'scripts/tests/rc-gate.sh'),'--job',row],p,extra)
+            r=run(['bash',str(repo/'scripts/tests/rc-gate.sh'),'--job',row],p,extra)
             rc=(p/'rust/control.rc').read_text().strip()
             print(f'--job one {name} panic={panic}: leaf exit {r.returncode}; result {rc}; witnesses {sorted(x.name for x in p.glob("witness-*"))}',flush=True)
             if rc!=str(want): errors.append(f'{name}: selected job recorded {rc} instead of {want}')
         p=fresh('empty bin'); (p/'rust').mkdir(); (p/'steps').mkdir(); a=p/'empty-bin'
         a.write_text('#!/usr/bin/env bash\nexec '+q(fixture)+' absent --exact\n'); a.chmod(0o755)
-        run([native_bash,str(repo/'scripts/tests/rc-gate.sh'),'--job','\t'.join(['bin','empty',str(a),str(p)])],p,
+        run(['bash',str(repo/'scripts/tests/rc-gate.sh'),'--job','\t'.join(['bin','empty',str(a),str(p)])],p,
             {'RCG_D':str(repo),'RCG_L':str(p),'RCG_CARGO_DIR':'/usr/bin','RCG_JULIA_DIR':'/usr/bin'})
         check((p/'rust/empty.rc').read_text().strip()=='0','empty whole binary rejected')
         check(not errors,'; '.join(errors))
