@@ -70,9 +70,9 @@ impl App {
     }
 
     fn run_with(&mut self, run: impl FnOnce(&mut Self) -> Result<(), winit::error::EventLoopError>) -> Result<(), winit::error::EventLoopError> {
-        let result = run(self);
+        let result = run(self)?;
         self.shutdown_transport();
-        result
+        Ok(result)
     }
 
     fn shutdown_transport(&mut self) {
