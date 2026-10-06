@@ -758,20 +758,34 @@ SD
 cat > "$d/stubs/ps" <<PS
 #!/bin/sh
 case "\$1" in
-    -u) printf '333 /x/bin/sotd --project-root /x --label sot\n222 /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock\n' ;;
+    -u) cat "$d/ps-own" ;;
     -eo) printf '111 /other/bin/sotd --project-root /other --label sot\n333 /x/bin/sotd --project-root /x --label sot\n222 /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock\n' ;;
     -p) echo 5 ;;
 esac
 PS
+# This account's processes as `ps -o pid=,comm=,args=` lists them. Before the daemon on exactly this socket: a process
+# that is not sotd but names the socket, a socket that only begins with this one, one that matches it only as a
+# pattern, and a daemon known by its label alone.
+cat > "$d/ps-own" <<ROWS
+666 less less /x/sotd --socket $d/sot.sock
+444 sotd /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock.old
+777 sotd /x/bin/sotd --project-root /x --label sot --socket $d/sotXsock
+333 sotd /x/bin/sotd --project-root /x --label sot
+222 sotd /x/bin/sotd --project-root /x --label sot --socket $d/sot.sock
+ROWS
 printf '#!/bin/sh\nexit 1\n' > "$d/stubs/systemctl"
 chmod +x "$d/repo/rust/target/release/sotd" "$d/stubs/ps" "$d/stubs/systemctl"
 python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(60)' "$d/sot.sock" &
 RPID=$!
 for _ in {1..100}; do [ -S "$d/sot.sock" ] && break; sleep 0.05; done
 [ -S "$d/sot.sock" ] || { echo 'FAIL restart socket fixture did not bind' >&2; kill "$RPID"; wait "$RPID" || true; exit 1; }
-restart_line="$(PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
+restart_line="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
+# No daemon on this socket: the one whose label is exactly this one, never one whose label only begins with it.
+printf '555 sotd /x/bin/sotd --project-root /x --label sot-dev\n333 sotd /x/bin/sotd --project-root /x --label sot\n' > "$d/ps-own"
+label_line="$(env -u SOT_SOCKET -u SOT_BACKEND_LABEL PATH="$d/stubs:$PATH" bash "$d/repo/scripts/restart-backend.sh" --check)" || true
 kill "$RPID"; wait "$RPID" || true
 starts_with "restart judges this account's daemon on this socket" "running daemon pid 222 " "$restart_line"
+starts_with "restart judges this account's daemon by its exact label" "running daemon pid 333 " "$label_line"
 
 if [ "$fails" -eq 0 ]; then
     printf 'installer-state: all checks passed\n'

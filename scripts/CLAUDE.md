@@ -41,8 +41,8 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
-`scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::while_open`, `julia::resolve_bin`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`,
-`docs/make.jl`, `.github/workflows/CI.yml`.
+`scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::while_open`, `julia::resolve_bin`, `check_remote_fs`,
+`scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`.
 
 ## Folders
 - `scripts/lib/`: the shared Unix launch library.
@@ -71,7 +71,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 ### Launch (Windows)
 - `launch-sot.ps1`: the supervisor: self-update, apply, handover, local daemon, respawn loop; it dot-sources the helper files below.
 - `launch-splash.ps1`: the launch progress window.
-- `sot-local-daemon.ps1`: starts and stops this computer's `sotd`.
+- `sot-local-daemon.ps1`: starts and stops this computer's `sotd`, and names the `sotd.exe` it runs (`-Resolve`).
 - `sot-hosts.ps1`: reads `sotd topology plan` output and runs `topology sync`.
 - `sot-install-layout.ps1`: the pinned-checkout test, the shortcut target, the launcher code id and the first-launch install layout.
 - `sot-freshness.ps1`: the armed update's apply, the dev pull's rebuild and the comm install, run before a window starts.
@@ -108,7 +108,12 @@ launch). A new suite joins a named step of `.github/workflows/rust.yml` in the s
 - A launch script reaches a daemon's socket or pipe only through `sotd stdio-bridge --endpoint` (`sot_socket_open`,
   `restart-backend.sh`, `Test-SotPipeOpen`, `Open-SotLease`, whose lease names its bridge child), which connects only to
   an endpoint this OS account serves (ADR 0049 `## User isolation`); a script that finds this account's daemon in a
-  process list lists only this account's processes (`restart-backend.sh`, `Get-LocalDaemonProcess`).
+  process list lists only this account's processes and compares the daemon's `--socket` or `--label` value whole and
+  literally (`restart-backend.sh`, `Get-LocalDaemonProcess`).
+- This computer's local daemon has one binary on Windows: `sot-local-daemon.ps1`'s resolver chooses it (the complete
+  dev pair, else the complete install pair), and the daemon's start, stop, probes and pipe-name query and the
+  launcher's own query and lease (`-Resolve`) all run that `sotd.exe`. The daemon starts with `SOTD_BIN` set to it, so
+  the comm shell in every session it spawns bridges with it too.
 - The bounds the launcher and the daemon share (`LAUNCH_WAIT` 160 s, `DAEMON_LOCK_WAIT` 150 s, the lease reply wait and
   the handover bound, all in `rust/protocol/src/ops/lease.rs`) are pinned by `launcher_bounds_match_ops` in
   `tests/installer-state.sh`; change both sides together.

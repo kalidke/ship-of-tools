@@ -781,7 +781,7 @@ function Invoke-LocalDaemonEnsure {
         return $false
     }
     Set-LaunchStatus 'Starting local daemon...'
-    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) 6>&1 2>&1
+    $localOut = & $sotLocalDaemon -DevBinDir (Split-Path $backendExe -Parent) -Prefix $prefixDir 6>&1 2>&1
     foreach ($l in @($localOut)) { if ("$l".Trim()) { Write-SupLog "$l" } }
     return ($LASTEXITCODE -eq 0)
 }
@@ -794,15 +794,20 @@ function Invoke-LocalDaemonEnsure {
 # (no more unconditional implicit local, item 1) -- queried the same way
 # sot-local-daemon.ps1 itself queries it (`sotd session-socket-path
 # local`), not re-derived here, so the two can never disagree.
-# The sotd.exe this launch runs for the local daemon and its bridge: the dev build when present, else the install's.
+# The sotd.exe this computer's local daemon runs, as sot-local-daemon.ps1's one resolver chooses it (-Resolve, with
+# the arguments Invoke-LocalDaemonEnsure passes): the complete dev pair, else the complete install pair. The pipe-name
+# query below and the lease's bridge run it, so both are the daemon's own binary. $null when neither pair is complete.
+# Collected whole, not through Select-Object -First, which would stop the script before its exit.
 function Get-SotLocalSotdExe {
-    if (Test-Path $backendExe) { return $backendExe }
-    return (Join-Path $prefixDir 'bin\sotd.exe')
+    if (-not (Test-Path $sotLocalDaemon)) { return $null }
+    $exe = @(& $sotLocalDaemon -Resolve -DevBinDir (Split-Path $backendExe -Parent) -Prefix $prefixDir)
+    if ($exe.Count -eq 1) { return "$($exe[0])" }
+    return $null
 }
 
 function Get-SotLocalPipePath {
     $exe = Get-SotLocalSotdExe
-    if (-not (Test-Path -LiteralPath $exe)) { return $null }
+    if (-not $exe) { return $null }
     $queried = (& $exe session-socket-path local 2>$null | Select-Object -First 1)
     if ($queried) { return $queried.ToString().Trim() }
     return $null

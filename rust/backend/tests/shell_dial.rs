@@ -8,9 +8,9 @@ mod sotd;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::io::Read;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::channel;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const BOUND: Duration = Duration::from_secs(20);
 
@@ -45,19 +45,6 @@ fn shell(home: &std::path::Path, script: &str, endpoint: &str) -> Option<Child> 
     Some(cmd.spawn().expect("start bash"))
 }
 
-fn finish(mut child: Child) -> Output {
-    let deadline = Instant::now() + BOUND;
-    while child.try_wait().expect("poll bash").is_none() {
-        if Instant::now() >= deadline {
-            child.kill().expect("stop the test's bash child");
-            child.wait().expect("reap the test's bash child");
-            panic!("bash did not exit within {BOUND:?}");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    child.wait_with_output().expect("collect bash output")
-}
-
 fn ping(mut child: Child) {
     let mut input = child.stdin.take().expect("bash stdin");
     let output = child.stdout.take().expect("bash stdout");
@@ -71,8 +58,8 @@ fn ping(mut child: Child) {
     let _ = input.write_all(b"ping\n").and_then(|()| input.flush());
     let reply = rx.recv_timeout(BOUND).expect("the shell reply within its bound").expect("read the shell reply");
     drop(input);
-    let out = finish(child);
-    assert!(out.status.success(), "sot_dial failed: {}", String::from_utf8_lossy(&out.stderr));
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert!(status.success(), "sot_dial failed: {stderr}");
     assert_eq!(reply, "pong\n", "the bridge carries the reply");
 }
 
@@ -89,14 +76,13 @@ fn a_shell_request_to_a_socket_outside_a_private_folder_writes_nothing() {
     let script = r#". "$1" && ENDPOINT="$2" SOT_SEND_TIMEOUT=3 sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"version.query","payload":{}}' version.query"#;
     let mut child = shell(home.path(), script, &endpoint).expect("bash on Unix");
     drop(child.stdin.take());
-    let out = finish(child);
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
     let accepted = listener.accept();
     std::fs::remove_file(&path).expect("remove the test's socket");
     assert!(matches!(accepted, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
         "the shell client connected to a socket whose folder is not private to this OS account (ADR 0049 `## User isolation`)");
-    assert!(!out.status.success(), "the shell request must fail");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("is not a private folder of this OS account"),
-        "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!status.success(), "the shell request must fail");
+    assert!(stderr.contains("is not a private folder of this OS account"), "{stderr}");
 }
 
 #[cfg(unix)]
@@ -104,6 +90,7 @@ fn a_shell_request_to_a_socket_outside_a_private_folder_writes_nothing() {
 fn the_shell_dial_reaches_a_socket_in_a_private_folder() {
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
+    use std::time::Instant;
     let home = tempfile::Builder::new().prefix("sotsd-")
         .permissions(std::fs::Permissions::from_mode(0o700)).tempdir_in("/tmp").expect("private scratch home");
     assert!(sot_log::host::state_dir::is_private_dir(home.path()));
@@ -163,7 +150,7 @@ fn the_shell_dial_reaches_only_a_pipe_this_account_serves() {
     echo.join().expect("pipe echo server");
     let mut child = shell(home.path(), r#". "$1" && sot_dial "$2" 5"#, r"pipe:\\.\pipe\epmapper").expect("Git Bash");
     drop(child.stdin.take());
-    let out = finish(child);
-    assert!(!out.status.success(), "another account's pipe is refused");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not connecting"), "{}", String::from_utf8_lossy(&out.stderr));
+    let (status, _, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+    assert!(!status.success(), "another account's pipe is refused");
+    assert!(stderr.contains("not connecting"), "{stderr}");
 }

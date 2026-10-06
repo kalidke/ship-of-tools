@@ -39,6 +39,9 @@ Hermetic suites for the scripts in scripts/, and the local candidate gate. Each 
 - `test-local-daemon-pipe.ps1`: dot-sourced by test-local-daemon.ps1 inside section 5c, in its scope: the session pipe
   under load (cases (iii)-(viii): large requests behind an accepted and a refused hello, the inbound buffer's memory, a
   peer the daemon gives up on, a session that ends on a frame the daemon will not read).
+- `test-local-daemon-binary.ps1`: dot-sourced by test-local-daemon.ps1 right after the fake daemon is compiled, in its
+  scope: the local daemon's one binary, shared by the daemon, `-Stop` and the launcher's query and lease (2c), and the
+  `SOTD_BIN` the daemon hands its sessions (7b).
 - `pipe-request.ps1`: the local-daemon suites' raw pipe client (5c, 5d): a hello and one request into a named pipe,
   the reply whose op matches printed. Test code; it checks no account.
 - `test-local-daemon-support.ps1`: dot-sourced by both local-daemon suites: `Check`, the fixture and pipe helpers, the

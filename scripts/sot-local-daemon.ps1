@@ -26,11 +26,15 @@
 # that file can create workspaces that immediately fail to spawn. Refuse to
 # start rather than run degraded.
 #
-# -Stop is different (codex follow-up): it only needs a resolvable
-# sotd.exe, not the complete pair, to query the pipe name from -- stopping
-# never spawns a capsule, so a missing/moved sot-capsule.exe is irrelevant
-# to it, and the daemon being stopped is presumably already running with
-# its own sotd.exe still resolvable at that same location regardless.
+# One resolver (Resolve-SotdExe, below) chooses the sotd.exe for everything
+# that reaches the local daemon: its start, the pipe-name query, every probe,
+# and, through -Resolve, launch-sot.ps1's own query and lease. -Stop takes
+# the same choice first and only then falls back to a lone sotd.exe, dev
+# first: it needs a binary to query the pipe name from, and stopping never
+# spawns a capsule, so a missing or moved sot-capsule.exe is irrelevant to
+# it. A lone dev sotd.exe beside a complete install pair is never chosen: the
+# daemon runs the install's, and a bridge from another build may not speak
+# the form the probe and the lease use.
 #
 # Pipe naming (ADR 0042 L2b design C): resolved FIRST (the section above),
 # THEN queried from the daemon itself -- `& $daemonExe session-socket-path
@@ -146,6 +150,10 @@
 [CmdletBinding()]
 param(
     [switch]$Stop,
+    # Print the sotd.exe a start runs (Resolve-SotdExe, below) and exit: 0 with its path, 1 with nothing when no
+    # complete pair exists. Starts, stops, probes and logs nothing. launch-sot.ps1 runs its pipe-name query and its
+    # lease's bridge with this binary, so both are always the daemon's own.
+    [switch]$Resolve,
     # Install prefix override (tests). Default: %LOCALAPPDATA%\sot, matching
     # sot-apply.ps1's own default and the install layout (ADR 0030 Sec 4).
     [string]$Prefix,
@@ -254,34 +262,32 @@ function Test-CompletePair {
     (Test-Path (Join-Path $Dir 'sotd.exe')) -and (Test-Path (Join-Path $Dir 'sot-capsule.exe'))
 }
 
-function Find-SotdExe {
-    param([string]$Dir)
-    $exe = Join-Path $Dir 'sotd.exe'
-    if (Test-Path $exe) { return $exe }
+# ---- resolve the binary FIRST: the one resolver (see the header) ----------
+# The complete dev pair, else the complete install pair. Only -Stop then takes
+# a lone sotd.exe, dev first: the daemon it stops is presumably already
+# running, with whatever sotd.exe it started from still resolvable at that
+# same location (a running process pins its own binary as a mapped image), and
+# requiring a sibling sot-capsule.exe would refuse to stop a daemon whose
+# capsule binary was since removed or moved, for no safety benefit.
+function Resolve-SotdExe {
+    param([string]$DevBinDir, [string]$InstallBinDir, [switch]$Stop)
+    foreach ($dir in @($DevBinDir, $InstallBinDir)) {
+        if (Test-CompletePair $dir) { return (Join-Path $dir 'sotd.exe') }
+    }
+    if ($Stop) {
+        foreach ($dir in @($DevBinDir, $InstallBinDir)) {
+            $exe = Join-Path $dir 'sotd.exe'
+            if (Test-Path $exe) { return $exe }
+        }
+    }
     return $null
 }
 
-# ---- resolve the binary FIRST (unchanged dev-then-install preference) ------
-# Codex follow-up: -Stop only needs a resolvable sotd.exe to query the pipe
-# name from -- sot-capsule.exe is a START requirement (a daemon that can't
-# spawn capsule workspaces should never be started fresh), not a stop one.
-# The daemon -Stop is trying to reach is presumably already running, with
-# whatever sotd.exe it started from still resolvable at that same location
-# (a running process pins its own binary as a mapped image) -- requiring
-# the CURRENT resolution to also find a sibling sot-capsule.exe would
-# refuse to stop a daemon whose capsule binary was since removed/moved,
-# for no safety benefit (stopping never spawns a capsule).
 $installBinDir = Join-Path $Prefix 'bin'
-$daemonExe = $null
-if ($Stop) {
-    $daemonExe = Find-SotdExe $DevBinDir
-    if (-not $daemonExe) { $daemonExe = Find-SotdExe $installBinDir }
-} else {
-    if (Test-CompletePair $DevBinDir) {
-        $daemonExe = Join-Path $DevBinDir 'sotd.exe'
-    } elseif (Test-CompletePair $installBinDir) {
-        $daemonExe = Join-Path $installBinDir 'sotd.exe'
-    }
+$daemonExe = Resolve-SotdExe -DevBinDir $DevBinDir -InstallBinDir $installBinDir -Stop:$Stop
+if ($Resolve) {
+    if ($daemonExe) { Write-Output $daemonExe; exit 0 }
+    exit 1
 }
 
 # ---- pipe path: queried from the daemon, not constructed here (design C) ---
@@ -472,6 +478,14 @@ $daemonStderr = Join-Path $logDir "sotd-local.stderr.$logStamp.log"
 # scratch/test daemon must never pass this (field defect).
 $daemonArgLine = '--socket "{0}" --project-root "{1}" --label local --adopt-legacy-registry' -f $PipePath, $ProjectRoot
 Write-LocalDaemonLog "starting: $daemonExe $daemonArgLine"
+# The daemon and every session it spawns get SOTD_BIN = the sotd.exe it runs, so the comm shell in those sessions
+# (comm/lib/comm-lib-client.sh _sot_windows_sotd_exe, which takes SOTD_BIN when it names a file) bridges with the
+# daemon's own binary, not with whatever install is on this box. Forward slashes, as a Git Bash shell reads a path
+# (SOT_COMM_HOME reaches the sessions the same way). $env: is this whole process's environment, and the launcher runs
+# this script in its own process, so the caller's value is put back once the daemon has started (an unset one stays
+# unset).
+$callerSotdBin = $env:SOTD_BIN
+$env:SOTD_BIN = $daemonExe.Replace('\', '/')
 try {
     $proc = Start-Process -FilePath $daemonExe -ArgumentList $daemonArgLine `
         -RedirectStandardOutput $daemonStdout -RedirectStandardError $daemonStderr `
@@ -479,6 +493,8 @@ try {
 } catch {
     Write-LocalDaemonLog "REFUSED: failed to start $daemonExe - $($_.Exception.Message)"
     exit 1
+} finally {
+    $env:SOTD_BIN = $callerSotdBin
 }
 Write-LocalDaemonLog "spawned pid=$($proc.Id), output in $daemonStdout and $daemonStderr"
 

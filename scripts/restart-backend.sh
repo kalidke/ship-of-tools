@@ -40,11 +40,18 @@ if [ -z "$SOCKET" ]; then
 fi
 
 # This account's daemon only (ADR 0049, User isolation: another user's `sotd --label sot` is never judged, killed or
-# reported as this one): its own processes, the one started on exactly this socket before one started by the label.
+# reported as this one). Among this account's processes named `sotd` (the kernel's `comm`, so a program that only
+# mentions sotd in its arguments is not one), the one started with `--socket` and exactly this socket, else the first
+# started with `--label` and exactly this label. Both are literal comparisons of whole arguments: the values reach awk
+# through its environment, never as a pattern or an escape, and a socket or label that only begins with this one is
+# another daemon's.
 find_pid() {
-    ps -u "$(id -u)" -o pid=,args= | awk -v sock="$SOCKET" -v label="$LABEL" '
-        $0 ~ /[s]otd/ && $0 ~ "--socket " sock { print $1; found = 1; exit }
-        $0 ~ /[s]otd/ && $0 ~ "--label " label && first == "" { first = $1 }
+    ps -u "$(id -u)" -o pid=,comm=,args= | FIND_SOCKET="$SOCKET" FIND_LABEL="$LABEL" awk '
+        BEGIN { sock = " --socket " ENVIRON["FIND_SOCKET"] " "; label = " --label " ENVIRON["FIND_LABEL"] " " }
+        $2 != "sotd" { next }
+        { args = $0; sub(/^ *[0-9]+ +[^ ]+ +/, "", args); args = " " args " " }
+        index(args, sock) { print $1; found = 1; exit }
+        index(args, label) && first == "" { first = $1 }
         END { if (!found && first != "") print first }
     '
 }
