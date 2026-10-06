@@ -28,15 +28,14 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - Every ssh started from `SSH_OPTS` turns sharing off (`ControlMaster=no`, `ControlPath=none`, `ControlPersist=no`):
   the bridges `SshRecipe` builds and the daemon's monitor sampler (`argv_has_no_shell_and_the_stated_option_set` pins
   the list).
-- A lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and can be cancelled; refusals come back typed;
-  no ssh child outlives its client.
+- A production lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and cancellable; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and reports termination, reap or deadline failures (`lane_child.rs`).
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 - An ssh endpoint's first supervisor dial starts at most one parked voyage login; the first voyage dial consumes it once, and a spent endpoint starts no further spare (`start_spare`, `take_spare`).
 
 - `DaemonLaneEndpoint::new` fixes the endpoint's route and initializes its private spare state. Callers cannot replace the route or construct an endpoint literal; a shared `LinkGate` changes liveness only. Tests exercise dial sequences and owned-child lifetimes.
 
-- A failed supervisor handshake drops its parked spare before returning; `Endpoint::drop_spare` also drops it after an unproven supervisor hello or failed Status. Dropping the endpoint reaps any remaining parked child.
+- A failed supervisor handshake, unproven supervisor hello or failed Status abandons its parked spare. Spare state changes under its mutex and child teardown runs after that mutex is released; a teardown failure is reported, never counted as a confirmed reap.
 
 - Production lane handshakes use `CONNECT_BOUND`; fixture bounds belong to the endpoint's test configuration under `cfg(any(test, feature = "test-handshake-bound"))` and affect only that endpoint (`with_test_handshake_bound`).
 
@@ -58,8 +57,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `mod.rs`: the hosts.toml parser, search rule, derivations, edits and status table.
 - `endpoint.rs`: this box's own daemon endpoint, the label, the slug and the host-name grammar.
 - `ssh_bridge.rs`: the ssh recipe, its argv and `LinkGate`.
-- `lane_client.rs`: `DaemonLaneEndpoint`, the lane dial over ssh or a socket, and its first-voyage login spare
-- `lane_client_tests.rs`: the lane dial and spare ownership, spawn-count, consumption and child-cleanup behavior against test-owned peers
+- `lane_client.rs`: the immutable daemon route, lane handshake and first-voyage spare state
+- `lane_client_tests.rs`: wire, refusal, handshake and local-transport behavior against test-owned peers
+- `lane_client_ownership_tests.rs`: counted endpoint fixtures and spare consumption, fallback, destruction and retry behavior
+- `lane_child.rs`: the piped lane child, error diagnosis, cancellation and bounded teardown
+- `lane_child_tests.rs`: child teardown bounds, error reporting and observed exit/reaping
 - `relay_units.rs`: the unit text `sotd topology apply` writes for each relayed host.
 - `tests.rs`: the parser, search rule, edit and status-table tests.
 

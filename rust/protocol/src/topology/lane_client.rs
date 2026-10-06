@@ -56,7 +56,10 @@
 //! that process at all — see its own doc for the trust this implies.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+#[path = "lane_child.rs"]
+mod lane_child;
+use lane_child::BridgedClient;
 use std::time::Instant;
 
 use sot_log::identity::challenge::{ChallengeOutcome, PeerAuthOutcome, PeerAuthenticated, StatusFailure};
@@ -149,166 +152,6 @@ impl PeerIdentity for BridgedPeer {
     }
     fn created(&self) -> u64 {
         self.created
-    }
-}
-
-/// The `Ssh` dial's client: a spawned `ssh … sotd stdio-bridge`
-/// child whose stdin/stdout carry the lane bridge's own frames.
-/// `ChildStdout`/`ChildStdin` are converted to `File` through `OwnedFd`
-/// (unix) / `OwnedHandle` (windows) at construction, so `read`/
-/// `write_all` go through `&self`.
-///
-/// A pipe has no `set_read_timeout`, so `cancel()` sets the flag and
-/// **kills the child**; the kill closes the child's stdout, which EOFs a
-/// parked read on both platforms. `Drop` kills and waits, so no ssh child
-/// outlives its client.
-///
-/// No new trust claim: `DaemonLaneEndpoint`'s own doc already states
-/// that it holds no kernel handle on the peer and that every identity
-/// claim traces to the daemon's own observation.
-struct BridgedClient {
-    child: std::sync::Mutex<std::process::Child>,
-    out: std::fs::File,
-    inp: std::fs::File,
-    cancelled: AtomicBool,
-    /// The child's last non-empty stderr line, kept by a drainer thread
-    /// spawned at construction — ssh's own complaint ("Permission
-    /// denied", or `unrecognised argument: --host` from a hub whose
-    /// `sotd` predates C1) is the diagnosis a caller surfaces on
-    /// failure, the same rule `stdio_bridge.rs` already sets for the far
-    /// end.
-    last_stderr: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-}
-
-impl BridgedClient {
-    fn spawn(recipe: &crate::topology::ssh_bridge::SshRecipe, gate: &crate::topology::ssh_bridge::LinkGate) -> Result<Self, TransportError> {
-        #[allow(clippy::disallowed_methods, reason = "the lane dial's ssh, owned by the window's attach client")]
-        let spawned = gate.spawn_sync(recipe);
-        match spawned {
-            Ok(child) => Self::wrap(child).map_err(TransportError::Unreachable),
-            Err(crate::topology::ssh_bridge::SpawnError::LinkDown) => Err(TransportError::LinkDown),
-            Err(crate::topology::ssh_bridge::SpawnError::Io(e)) => Err(TransportError::Unreachable(e)),
-        }
-    }
-
-    /// The shared construction path — real `ssh` child ([`spawn`] above)
-    /// or, in tests, any other piped-stdio child that stands in for one
-    /// (so `cancel()`'s kill→EOF property is exercised without a real
-    /// `ssh` on `PATH`).
-    fn wrap(mut child: std::process::Child) -> std::io::Result<Self> {
-        let stdin = child.stdin.take().expect("spawned with a piped stdin");
-        let stdout = child.stdout.take().expect("spawned with a piped stdout");
-        let stderr = child.stderr.take().expect("spawned with a piped stderr");
-
-        let last_stderr = std::sync::Arc::new(std::sync::Mutex::new(None));
-        {
-            let last_stderr = std::sync::Arc::clone(&last_stderr);
-            std::thread::spawn(move || {
-                use std::io::BufRead;
-                let reader = std::io::BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        if let Ok(mut guard) = last_stderr.lock() {
-                            *guard = Some(line);
-                        }
-                    }
-                }
-            });
-        }
-
-        #[cfg(unix)]
-        let (inp, out) = {
-            use std::os::fd::OwnedFd;
-            (std::fs::File::from(OwnedFd::from(stdin)), std::fs::File::from(OwnedFd::from(stdout)))
-        };
-        #[cfg(windows)]
-        let (inp, out) = {
-            use std::os::windows::io::OwnedHandle;
-            (std::fs::File::from(OwnedHandle::from(stdin)), std::fs::File::from(OwnedHandle::from(stdout)))
-        };
-
-        Ok(Self { child: std::sync::Mutex::new(child), out, inp, cancelled: AtomicBool::new(false), last_stderr })
-    }
-
-    fn exited(&self) -> bool {
-        match self.child.lock() {
-            Ok(mut child) => !matches!(child.try_wait(), Ok(None)),
-            Err(_) => true,
-        }
-    }
-
-    /// A short bounded poll for the child's last stderr line (this is the
-    /// error path only, never the hot path). Stdout and stderr are
-    /// separate pipes with no ordering guarantee between them, so a
-    /// child that writes a diagnosis to stderr and closes stdout in the
-    /// same instant can otherwise be observed here before its line
-    /// lands.
-    fn poll_last_stderr(&self) -> Option<String> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        loop {
-            if let Some(line) = self.last_stderr.lock().ok().and_then(|g| g.clone()) {
-                return Some(line);
-            }
-            if std::time::Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-
-    /// The io error, with the child's last stderr line after it when one was captured: a dead child's own "Permission
-    /// denied" explains the generic "broken pipe" its closed pipe leaves behind, and the error keeps its own words.
-    fn diagnose(&self, source: std::io::Error) -> std::io::Error {
-        match self.poll_last_stderr() {
-            Some(line) => std::io::Error::new(source.kind(), format!("{source}: {line}")),
-            None => source,
-        }
-    }
-}
-
-impl Client for BridgedClient {
-    fn write_all(&self, bytes: &[u8]) -> Result<(), TransportError> {
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(TransportError::Cancelled);
-        }
-        use std::io::Write;
-        (&self.inp).write_all(bytes).map_err(|source| {
-            if self.cancelled.load(Ordering::SeqCst) {
-                TransportError::Cancelled
-            } else {
-                TransportError::Io { op: "lane write", source: self.diagnose(source) }
-            }
-        })
-    }
-
-    fn read(&self, buf: &mut [u8]) -> Result<usize, TransportError> {
-        use std::io::Read;
-        if self.cancelled.load(Ordering::SeqCst) {
-            return Err(TransportError::Cancelled);
-        }
-        (&self.out).read(buf).map_err(|source| {
-            if self.cancelled.load(Ordering::SeqCst) {
-                TransportError::Cancelled
-            } else {
-                TransportError::Io { op: "lane read", source: self.diagnose(source) }
-            }
-        })
-    }
-
-    fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-        }
-    }
-}
-
-impl Drop for BridgedClient {
-    fn drop(&mut self) {
-        self.cancel();
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.wait();
-        }
     }
 }
 
@@ -423,10 +266,13 @@ impl Endpoint for DaemonLaneEndpoint {
     }
 
     fn drop_spare(&self) {
-        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
-        if matches!(*state, VoyageSpare::Parked(_)) {
-            *state = VoyageSpare::Unused;
-        }
+        let abandoned = {
+            let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+            if matches!(*state, VoyageSpare::Parked(_)) {
+                Some(std::mem::replace(&mut *state, VoyageSpare::Unused))
+            } else { None }
+        };
+        drop(abandoned);
     }
 
     /// The host's link gate for an ssh dial; every other dial is local.
@@ -687,8 +533,11 @@ impl DaemonLaneEndpoint {
     }
 
     fn take_spare(&self) -> Option<BridgedClient> {
-        let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
-        match std::mem::replace(&mut *state, VoyageSpare::Spent) {
+        let previous = {
+            let mut state = self.spare.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *state, VoyageSpare::Spent)
+        };
+        match previous {
             VoyageSpare::Parked(client) if !client.exited() => Some(client),
             _ => None,
         }
@@ -765,3 +614,7 @@ fn unwrap_connect_io(e: TransportError) -> std::io::Error {
 #[cfg(test)]
 #[path = "lane_client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "lane_client_ownership_tests.rs"]
+mod ownership_tests;
