@@ -82,7 +82,7 @@ pub(in crate::ui) fn resolve_listed_workspace(
             host: host.clone(),
             workspace_id: row.workspace_id.clone(),
         },
-        row_key: (host.clone(), row.slug.clone()),
+        row_key: (host.clone(), spelling.to_string()),
         view_key: (
             host.clone(),
             ws_key_of(Some(&row.slug), row.is_default.then_some(row.slug.as_str())),
