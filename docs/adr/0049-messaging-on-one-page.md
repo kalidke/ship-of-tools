@@ -115,7 +115,15 @@ frontend, its lease, `sotd stdio-bridge`, the lane client and `sotd topology` sp
 only to an endpoint their own OS account serves, a pipe whose serving process runs as
 this account on Windows and a socket in a folder private to this account on Unix
 (`rust/log/src/identity/connect_own.rs`); a client opens that pipe at identification level, so
-its server cannot act as the account before the check. The Unix check covers the socket's own folder only. The
+its server cannot act as the account before the check. Built by lane M1c: no product script opens a socket or pipe
+itself; a shell or PowerShell script reaches one on this computer only through `sotd stdio-bridge --endpoint`, so the
+same check applies (comm's `sot_dial`, the launch scripts' probes, and the launcher's lease, which names its bridge
+child). `rust/log/tests/isolation_guards.rs` checks this lexically: in tracked shell, PowerShell, batch, Python and Perl
+files it fails, without regard to case, on the dial tools and connector names it lists and on a line running the bridge
+that it does not list, and the test scripts that dial raw are listed by file. A name split by quotes or built at run
+time, a file of another kind and a second dial in a listed test file are outside it. Isolation holds between ordinary
+accounts: root, and on Windows SYSTEM and the Administrators group, can read any account's files and processes and are
+outside it. The Unix check covers the socket's own folder only. The
 daemon's bind check covers more for a derived path (the runtime folder and every folder below it down to the socket's)
 and the same single folder for a custom one; neither covers the folders above: a custom `SOT_SOCKET`, `SOT_RUNTIME_DIR`
 or `XDG_RUNTIME_DIR` under another account's writable, non-sticky folder is not covered. The video, site and site-pool servers, the frontend's page proxy and the one-use redirect listener that opens a page

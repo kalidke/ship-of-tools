@@ -238,13 +238,13 @@ sot_ssh_bridge() {
     fi
 }
 
-# sot_dial ENDPOINT [TIMEOUT_SECS] — stdin to the daemon at ENDPOINT, its replies to stdout (ADR 0049,
-# User isolation): every `unix:` or `pipe:` connection this library opens is `sot_dial`'s. A `unix:` or `pipe:` endpoint is opened by `sotd stdio-bridge
-# --endpoint`, whose connect is `connect_own`: a socket only in a folder private to this OS account, a pipe only when
-# this account serves it, else exit 1 and one stderr line saying why. A bare `pipe:<name>` is written
+# sot_dial ENDPOINT [TIMEOUT_SECS] — stdin to the daemon at ENDPOINT, its replies to stdout (ADR 0049, User isolation):
+# every `unix:` or `pipe:` connection this library opens is `sot_dial`'s. A `unix:` or `pipe:` endpoint is opened by
+# `sotd stdio-bridge --endpoint`, whose connect is `connect_own`: a socket only in a folder private to this OS account,
+# a pipe only when this account serves it, else exit 1 and one stderr line saying why. A bare `pipe:<name>` is written
 # `pipe:\\.\pipe\<name>`. An `ssh:` endpoint is `sot_ssh_bridge`, whose far end is that box's own bridge. The bridge
-# closes the connection when its input ends, so a caller keeps stdin open until it has read what it waits for. The
-# bound is a parameter, as `sot_ssh_bridge`'s is: `timeout` cannot run a function.
+# closes the connection when its input ends, so a caller keeps stdin open until it has read what it waits for. The bound
+# is a parameter, as `sot_ssh_bridge`'s is: `timeout` cannot run a function.
 sot_dial() {
     local ep="$1" secs="${2:-}" bin="" rest name
     case "$ep" in
