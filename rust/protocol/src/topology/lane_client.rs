@@ -93,6 +93,26 @@ pub enum LaneDial {
 /// daemon this client already trusts to control the row is the one
 /// thing standing behind that report; nothing here re-verifies it
 /// independently, by design (decision 3's split).
+///
+/// Select another route by constructing another endpoint:
+///
+/// ```no_run
+/// use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+/// use sot_log::lane::client::Endpoint;
+/// fn dial(route: LaneDial) {
+///     let ep = DaemonLaneEndpoint::new(route, None);
+///     let _ = ep.connect_supervisor_unchallenged("row");
+/// }
+/// ```
+///
+/// The route is fixed at construction:
+///
+/// ```compile_fail,E0616
+/// use sot_protocol::topology::lane_client::{DaemonLaneEndpoint, LaneDial};
+/// fn retarget(mut ep: DaemonLaneEndpoint, route: LaneDial) {
+///     ep.dial = route;
+/// }
+/// ```
 pub struct DaemonLaneEndpoint {
     pub dial: LaneDial,
     pub token: Option<String>,
