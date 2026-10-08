@@ -24,10 +24,10 @@ async fn a_reauth_resumes_only_the_target_rows_own_conversation() {
     let (target, target_slug) =
         seed_row_into(&reg, "target-row", &target_root, "", "target-handle");
     let team = claude_config_dir(home.path(), "team");
-    seed_transcript(&team, "sid-caller", &[&caller_root, &target_root]);
-    seed_transcript(&team, "sid-target", &[&target_root]);
+    seed_transcript(&team, &sid(11), &[&caller_root, &target_root]);
+    seed_transcript(&team, &sid(12), &[&target_root]);
 
-    let (payload, restart) = reauth(&reg, &target, "team", "sid-caller").await;
+    let (payload, restart) = reauth(&reg, &target, "team", &sid(11)).await;
     assert_eq!(payload["code"], "resume_not_this_row", "{payload:?}");
     assert!(
         payload["error"].as_str().unwrap().contains("caller-row"),
@@ -44,7 +44,7 @@ async fn a_reauth_resumes_only_the_target_rows_own_conversation() {
         "nothing was persisted"
     );
 
-    let (payload, restart) = reauth(&reg, &target, "team", "sid-target").await;
+    let (payload, restart) = reauth(&reg, &target, "team", &sid(12)).await;
     assert_eq!(
         payload["code"], ACCEPTED_CODE,
         "the row's own conversation still moves: {payload:?}"
@@ -78,25 +78,25 @@ async fn a_transcript_is_the_rows_by_the_directory_it_started_in() {
     let sibling = project_root(home.path(), "sibling-row");
     let moved_away = home.path().join("proj").join("moved-away"); // never created
     let team = claude_config_dir(home.path(), "team");
-    seed_transcript(&team, "sid-sibling", &[&sibling]);
-    seed_transcript(&team, "sid-nocwd", &[]);
-    seed_transcript(&team, "sid-moved", &[&moved_away]);
+    seed_transcript(&team, &sid(21), &[&sibling]);
+    seed_transcript(&team, &sid(22), &[]);
+    seed_transcript(&team, &sid(23), &[&moved_away]);
     // A path-shaped id: `-a-project-root/../escaped` reaches projects/escaped.jsonl.
     write_transcript(
         &team.join("projects").join("escaped.jsonl"),
         "escaped",
         &[&root],
     );
-    seed_transcript(&team, "sid-own", &[&another_spelling(&root, home.path())]);
+    seed_transcript(&team, &sid(24), &[&another_spelling(&root, home.path())]);
     let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
     for (resume, code) in [
-        ("sid-sibling", "resume_not_this_row"),
-        ("sid-nocwd", "resume_not_this_row"),
-        ("sid-moved", "resume_not_this_row"),
-        ("../escaped", "resume_unreachable"),
+        (sid(21), "resume_not_this_row"),
+        (sid(22), "resume_not_this_row"),
+        (sid(23), "resume_not_this_row"),
+        ("../escaped".to_string(), "resume_unreachable"),
     ] {
-        let (payload, restart) = reauth(&reg, &id, "team", resume).await;
+        let (payload, restart) = reauth(&reg, &id, "team", &resume).await;
         assert_eq!(payload["code"], code, "resume {resume:?}: {payload:?}");
         assert!(restart.is_none(), "resume {resume:?}");
         assert_eq!(
@@ -105,7 +105,7 @@ async fn a_transcript_is_the_rows_by_the_directory_it_started_in() {
             "resume {resume:?}: a refusal changes nothing"
         );
     }
-    let (payload, restart) = reauth(&reg, &id, "team", "sid-own").await;
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(24)).await;
     assert_eq!(
         payload["code"], ACCEPTED_CODE,
         "another spelling of the row's root is its root: {payload:?}"

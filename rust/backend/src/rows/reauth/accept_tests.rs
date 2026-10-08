@@ -77,10 +77,10 @@ async fn the_record_carries_the_new_account_before_the_replacement_is_spawned() 
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
     let root = project_root(home.path(), "reauth-row");
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7", &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(7), &[&root]);
     let (reg, id, slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
-    let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     assert!(payload.get("error").is_none(), "must be accepted: {payload:?}");
     let plan = restart.expect("an accept hands the restart back to the caller");
 
@@ -114,10 +114,10 @@ async fn the_accept_is_answered_before_the_leg_is_touched() {
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
     let root = project_root(home.path(), "reauth-row");
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7", &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(7), &[&root]);
     let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
-    let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     assert_eq!(payload["code"], ACCEPTED_CODE);
     assert_eq!(payload["account"], "team");
     assert_eq!(payload["workspace_id"], id);
@@ -143,7 +143,7 @@ async fn the_accept_frame_is_on_the_wire_before_the_restart_is_handed_the_plan()
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
 
-    let (out, restart) = reauth_out(&reg, &id, "team", "sid-7").await;
+    let (out, restart) = reauth_out(&reg, &id, "team", &sid(7)).await;
     let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut peer = Peer { written: written.clone(), gone: false };
     let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -180,7 +180,7 @@ async fn an_accept_that_cannot_be_written_rolls_the_record_back() {
     let scratch = tempfile::tempdir().unwrap();
     let (reg, id, slug) = accept_fixture(home.path(), scratch.path());
 
-    let (out, restart) = reauth_out(&reg, &id, "team", "sid-7").await;
+    let (out, restart) = reauth_out(&reg, &id, "team", &sid(7)).await;
     assert!(restart.is_some(), "the fixture must reach the accept");
     let mut peer = Peer { written: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())), gone: true };
     let err = write_accept_then(&mut peer, &out, restart, |_plan| {
@@ -208,10 +208,10 @@ async fn switching_to_the_default_account_answers_with_its_name_not_an_empty_str
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
     let root = project_root(home.path(), "reauth-row");
-    seed_transcript(&claude_config_dir(home.path(), ""), "sid-7", &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), ""), &sid(7), &[&root]);
     let (reg, id, _slug) = seed_capsule_row(&root, "team", "row-declared-handle");
 
-    let (payload, restart) = reauth(&reg, &id, "default", "sid-7").await;
+    let (payload, restart) = reauth(&reg, &id, "default", &sid(7)).await;
     assert_eq!(payload["code"], ACCEPTED_CODE);
     assert_eq!(payload["account"], "default", "the reply names the account: {payload:?}");
     assert_eq!(
@@ -235,7 +235,7 @@ async fn a_row_whose_toml_cannot_be_written_is_refused_with_the_accounts_and_the
     pin_home(home.path(), scratch.path());
     seed_claude_binary(home.path());
     let root = project_root(home.path(), "reauth-row");
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid-7", &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(7), &[&root]);
     // A config root that is a FILE: nothing can create the row's toml
     // under it, so `save` fails where every other step has succeeded.
     let blocked = scratch.path().join("not-a-directory");
@@ -244,7 +244,7 @@ async fn a_row_whose_toml_cannot_be_written_is_refused_with_the_accounts_and_the
     std::env::set_var("LOCALAPPDATA", &blocked);
     let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
 
-    let (payload, restart) = reauth(&reg, &id, "team", "sid-7").await;
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(7)).await;
     assert!(restart.is_none(), "a refusal hands back no restart");
     assert_eq!(payload["code"], "persist_failed");
     let names: Vec<String> = payload["accounts"]

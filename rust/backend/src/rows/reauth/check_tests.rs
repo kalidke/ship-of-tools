@@ -94,14 +94,15 @@ fn a_transcript_the_target_account_cannot_see_is_refused() {
     // The conversation exists — under the DEFAULT folder only, which is
     // exactly what an account folder carrying its own REAL `projects`
     // looks like from the target's side.
-    seed_transcript(&claude_config_dir(home.path(), ""), "sid", &[&root]);
-    let r = refusal_of("capsule", "claude", "", "team", "sid", home.path());
+    seed_transcript(&claude_config_dir(home.path(), ""), &sid(1), &[&root]);
+    let r = refusal_of("capsule", "claude", "", "team", &sid(1), home.path());
     assert_eq!(r.code, "resume_unreachable");
-    assert!(r.error.contains("sid.jsonl"), "{}", r.error);
+    let named = format!("{}.jsonl", sid(1));
+    assert!(r.error.contains(&named), "{}", r.error);
     // …and an id that is simply not this conversation's is the same
     // refusal, even with the folder fully shared.
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid", &[&root]);
-    let r = refusal_of("capsule", "claude", "", "team", "stale-id", home.path());
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(1), &[&root]);
+    let r = refusal_of("capsule", "claude", "", "team", &sid(2), home.path());
     assert_eq!(r.code, "resume_unreachable");
 }
 
@@ -109,10 +110,10 @@ fn a_transcript_the_target_account_cannot_see_is_refused() {
 fn a_logged_in_account_on_a_claude_capsule_row_is_accepted() {
     let home = home_with(true, &[("team", true)]);
     let root = project_root(home.path(), "reauth-row");
-    seed_transcript(&claude_config_dir(home.path(), "team"), "sid", &[&root]);
-    seed_transcript(&claude_config_dir(home.path(), ""), "sid", &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), "team"), &sid(1), &[&root]);
+    seed_transcript(&claude_config_dir(home.path(), ""), &sid(1), &[&root]);
     let accounts = crate::agents::accounts::discover_accounts(home.path());
-    assert!(check("capsule", "claude", "", "team", "sid", &root, home.path(), &accounts).is_ok());
+    assert!(check("capsule", "claude", "", "team", &sid(1), &root, home.path(), &accounts).is_ok());
     // …and back to the default login, which is an account like any other.
-    assert!(check("capsule", "claude", "team", "default", "sid", &root, home.path(), &accounts).is_ok());
+    assert!(check("capsule", "claude", "team", "default", &sid(1), &root, home.path(), &accounts).is_ok());
 }

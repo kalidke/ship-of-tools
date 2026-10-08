@@ -91,6 +91,12 @@ pub(super) fn project_root(home: &Path, label: &str) -> PathBuf {
     root
 }
 
+/// A session id in Claude Code's shape (a UUID), the only shape
+/// `workspace.reauth` accepts; `n` tells one fixture's transcript from another's.
+pub(super) fn sid(n: u32) -> String {
+    format!("00000000-0000-4000-8000-{n:012}")
+}
+
 /// One transcript at `path` in the shape Claude Code writes: a first line
 /// that records no `cwd` (a `queue-operation`), then one `user` line per entry
 /// of `cwds`, each recording that working directory. The first of them is
@@ -187,6 +193,6 @@ pub(super) fn accept_fixture(home: &Path, scratch: &Path) -> (Workspaces, String
     pin_home(home, scratch);
     seed_claude_binary(home);
     let root = project_root(home, "reauth-row");
-    seed_transcript(&claude_config_dir(home, "team"), "sid-7", &[&root]);
+    seed_transcript(&claude_config_dir(home, "team"), &sid(7), &[&root]);
     seed_capsule_row(&root, "", "row-declared-handle")
 }
