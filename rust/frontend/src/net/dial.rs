@@ -368,7 +368,17 @@ mod tests {
         // another folder.
         for arg in [
             format!("gpu=unix:{}", beta_relay.display()),
-            "scratch=unix:/tmp/sot-host-beta.sock".to_string(),
+            // The generated name in a folder below the relay folder: on a host whose relay folder is /tmp this
+            // is the one place a fixed /tmp path would itself be the generated path.
+            format!(
+                "scratch=unix:{}",
+                beta_relay
+                    .parent()
+                    .unwrap()
+                    .join("elsewhere")
+                    .join("sot-host-beta.sock")
+                    .display()
+            ),
             "plain=unix:/run/user/1/sot/sessions/other.sock".to_string(),
         ] {
             conns.push(parse_dial_arg(&arg).expect("valid"));

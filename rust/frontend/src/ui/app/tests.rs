@@ -596,6 +596,22 @@ fn fixture_cli() -> crate::cli::Cli {
 
 pub(in crate::ui) fn minimized_window_drains_events_for_ten_minutes() -> Result<()> {
     let _home = FixtureHome::enter()?;
+    // A session with no usable display or GPU fails inside wgpu with a panic; say it is not runnable here.
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info.to_string();
+        if ["Surface::configure", "device is lost", "wgpu"]
+            .iter()
+            .any(|w| message.contains(w))
+        {
+            println!(
+                "window-progress not runnable here: {}",
+                message.lines().next().unwrap_or_default()
+            );
+            let _ = std::io::stdout().flush();
+        }
+        previous(info);
+    }));
     let ledger = Arc::new(Mutex::new(NativeProgressLedger::default()));
     let _observation = observe_native_fan_in(ledger.clone());
     let event_loop = EventLoop::new().map_err(|e| anyhow::anyhow!("not runnable here: {e}"))?;
