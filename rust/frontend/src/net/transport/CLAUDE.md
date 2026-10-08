@@ -5,12 +5,12 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 
 ## Files
 - `event.rs`: `IncomingEvt` and ResultTreeReply; result-tree successes and failures retain the issuing attempt under the connection's dial HostKey.
-- `request.rs`: OutgoingReq, ResultAttemptId and ResultTreeRequest; send_request writes ordinary requests and locally tagged result-tree requests through the existing codec.
-- `mod.rs`: declares the parts and names the transport's interface to the window; holds the per-host connection task
-  (`spawn`, `connect_and_run`, `run_protocol`, `run_session`, `steady_loop`, `spawn_stderr_drain`) and the rest no
-  other file here holds. It re-exports the local result-tree vocabulary and provides a cfg(test) ResultTreeTestDriver that delegates injected writes and replies to the real sender, PendingGuard and response dispatcher.
+- `request.rs`: OutgoingReq, ResultAttemptId and ResultTreeRequest; send_request encodes one request for the steady writer using the existing op-family serializers, ordinary or locally tagged result-tree.
+- `mod.rs`: transport declarations and per-host connect, hello, reconnect and stderr drain (`spawn`, `connect_and_run`, `run_protocol`, `run_session`, `spawn_stderr_drain`). It re-exports the local result-tree vocabulary and provides a cfg(test) ResultTreeTestDriver that delegates injected writes and replies to the real sender, PendingGuard and response dispatcher.
 - `reply.rs`: reply matching: the pending entry per request id (`PendingKind`), `PendingGuard`, and
   `handle_response_frame`, which turns each reply into an `IncomingEvt`. Result-tree pending entries retain the issuing attempt and request step; matching replies and connection-loss failures emit that tag once. Inline tests execute the sender, pending dispatcher and decoder with reordered responses.
+- `steady.rs`: steady_loop and its held read/write futures, encoded-request correlation and orderly outgoing-close drain.
+- `steady_tests.rs`: the steady loop over small in-memory streams: upload and download progress, blocked pings, fairness, partial frames, early replies, failures, close and cancellation.
 - `tests.rs`: the connection task's tests: backoff, the link gate, a tree.root error reply, a closed local connection,
   the stderr drain
 - `golden_tests.rs`: every request kind's wire line and the events its error reply yields, against the golden file
@@ -22,13 +22,13 @@ One task per dialled host: connect, hello, ping, run the request and event loop,
 - `preamble.rs`: the connect preamble after the hello (tree.root, then preview.get of its root)
 
 ## Start here
-`spawn`, then `connect_and_run`, `run_protocol`, `run_session` (the hello and the preamble), `steady_loop` (everything
+`spawn`, then `connect_and_run`, `run_protocol`, `run_session` (the hello and the preamble), `steady.rs` `steady_loop` (everything
 after). A new request or reply goes through `ops/`.
 
 ## Rules
-- In `steady_loop`, read frames only through the one held read future (`read_owned`); `codec::read_frame` is not
-  cancel-safe. The hello and the preamble read plainly, before any request can race them, and so does the drain after
-  the outgoing channel closes.
+- Steady reads and writes each use one held future; a partial frame is never cancelled and restarted. Outgoing close finishes the current write and retains the current read before draining.
+- A request is encoded in memory and its pending entries enter PendingGuard before its first network byte; at most one encoded write is active and reads remain polled during it.
+- The hello and the preamble read plainly, before any request can race them.
 - send_figure_get and send_result_tree register their pending entry before writing; PendingGuard reports their outstanding failures when the connection ends.
 - The link gate goes up at any hello reply (`read_hello`) and down when the session ends, except after a hello refusal
   (`run_protocol`).

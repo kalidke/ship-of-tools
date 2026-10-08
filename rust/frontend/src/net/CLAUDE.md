@@ -9,7 +9,7 @@ through the channel types below.
 - The connection set, from `--dial <host>=<endpoint>` and `--socket` only (`dial::parse_dial_arg`,
   `dial::resolve_connections`).
 - One task per host on the one-worker `sot-transport` runtime that `main.rs` builds (`transport::spawn`, then
-  `connect_and_run`, `run_protocol`, `run_session`, `steady_loop`): connect, hello, a 30 s ping, reconnect with a
+  `connect_and_run`, `run_protocol`, `run_session`, and `steady_loop` in transport/steady.rs): connect, hello, a 30 s ping, reconnect with a
   doubling wait (`next_backoff_ms`: cap 5 s on a pipe, 30 s on ssh), and an ssh host's control child.
 - Request ids and reply matching (`PendingKind`); the typed edges `OutgoingReq` (UI to daemon) and `IncomingEvt`
   (daemon to UI).
@@ -32,6 +32,7 @@ through the channel types below.
   (`StateSaveGate`, `SessionState`'s drop).
 - A pipe host is leased before its data connection (`connect_and_run` calls `Leases::before_data_connection`).
 - The gate goes down when the session ends, except after a hello refusal (`run_protocol`).
+- A blocked steady-state request or ping write never suspends the held reader; reply/event progress and pending cleanup remain on the connection task.
 - Unix parsing classifies generated hub-relay paths once; Relay remains distinct from Pipe through control, lease, page and lane selection.
 
 ## Connections
@@ -60,5 +61,5 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `transport/`: the control transport, one task per host.
 
 ## Start here
-`transport::spawn` for the life of one host's connection (then `connect_and_run`, `run_session`, `steady_loop`);
+`transport::spawn` for the life of one host's connection (then `connect_and_run`, `run_session`, `steady.rs` `steady_loop`);
 `dial::resolve_connections` for which hosts are dialled.
