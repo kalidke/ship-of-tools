@@ -1619,7 +1619,7 @@ use self::preview::pane::{
     resolve_previewed_path, SAMPLE_MARKDOWN,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-window-progress"))]
 mod result_tests {
     use super::*;
 

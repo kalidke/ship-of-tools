@@ -492,6 +492,30 @@ impl ApplicationHandler for NativeDriver {
             );
             return;
         };
+        // The behaviour proofs of the result-routing, badge and account commits need a real State.
+        let state = self.app.state.as_mut().expect("native State");
+        let fixtures: [(&str, fn(&mut State) -> Result<()>); 3] = [
+            (
+                "result_target_uses_host_and_listed_identity",
+                State::result_target_uses_host_and_listed_identity,
+            ),
+            (
+                "passing_a_result_row_keeps_its_badge",
+                State::passing_a_result_row_keeps_its_badge,
+            ),
+            (
+                "first_named_account_is_sent",
+                State::first_named_account_is_sent,
+            ),
+        ];
+        for (name, fixture) in fixtures {
+            let result = fixture(state);
+            println!("state-fixture name={name} ok={}", result.is_ok());
+            if let Err(error) = result {
+                self.fail(event_loop, error.context(name));
+                return;
+            }
+        }
         let state = self.app.state.as_ref().expect("native State");
         let Some(false) = state.window.is_minimized() else {
             self.fail(

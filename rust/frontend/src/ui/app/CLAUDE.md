@@ -9,7 +9,7 @@ hand-over it serves.
 - `exit.rs`: the Ctrl+Q prompt's key table, `request_quit`, `leave` and `finish_exit`, and `redraw_exits`.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
-- `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings.
+- `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings. It first runs the native-only State fixtures of the result-routing, badge and account commits, printing one `state-fixture name=... ok=...` line each.
 
 ## Start here
 `redraw` in frame.rs for the order of one frame; `window_event` in handler.rs for which winit event goes where and for
