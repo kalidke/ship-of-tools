@@ -84,7 +84,10 @@ fn move_into_scope() {
         );
         return;
     }
-    #[allow(clippy::disallowed_methods, reason = "the durable parent replaces itself with systemd-run, which execs the same parent in a scope of its own; no child is started")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the durable parent replaces itself with systemd-run, which execs the same parent in a scope of its own; no child is started"
+    )]
     let error = std::process::Command::new(systemd_run)
         .args([
             "--user",

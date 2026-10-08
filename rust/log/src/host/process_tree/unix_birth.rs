@@ -405,7 +405,11 @@ impl Birth {
     /// The descriptors this birth keeps for its owner (the gate's write end and the two status pipes): a child
     /// forked later by the same process must close them, or it would hold this birth's gate open.
     pub fn owned_fds(&self) -> Vec<RawFd> {
-        self.gate.iter().map(AsRawFd::as_raw_fd).chain([self.ready.as_raw_fd(), self.error.as_raw_fd()]).collect()
+        self.gate
+            .iter()
+            .map(AsRawFd::as_raw_fd)
+            .chain([self.ready.as_raw_fd(), self.error.as_raw_fd()])
+            .collect()
     }
 
     /// Let go of the child without ending it: it keeps running and is reaped by whoever its parent becomes when this

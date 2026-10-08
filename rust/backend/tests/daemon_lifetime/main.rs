@@ -32,16 +32,16 @@ mod routes;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod successor;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
-mod update_fixture;
-#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
-mod updates;
-#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 #[allow(
     dead_code,
     reason = "the shared fixture serves more suites than this one uses"
 )]
 #[path = "../support/mod.rs"]
 mod support;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod update_fixture;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod updates;
 mod workers;
 
 /// The cases that start a daemon take this first: `Env::new` points this process's `SOT_RUNTIME_DIR` at its own folder.

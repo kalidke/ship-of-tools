@@ -39,17 +39,29 @@ impl sot_updater::Spawner for UpdaterSpawner {
     fn output<'a>(
         &'a self,
         command: &'a mut tokio::process::Command,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<std::process::Output>> + Send + 'a>,
+    > {
         Box::pin(async move {
             use tokio::io::AsyncReadExt;
-            command.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+            command
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
             let mut child = self.0.spawn(command)?;
             let mut stdout = child.stdout.take().expect("piped stdout");
             let mut stderr = child.stderr.take().expect("piped stderr");
             let (mut out, mut err) = (Vec::new(), Vec::new());
-            let (status, _, _) =
-                tokio::try_join!(child.wait(), stdout.read_to_end(&mut out), stderr.read_to_end(&mut err))?;
-            Ok(std::process::Output { status, stdout: out, stderr: err })
+            let (status, _, _) = tokio::try_join!(
+                child.wait(),
+                stdout.read_to_end(&mut out),
+                stderr.read_to_end(&mut err)
+            )?;
+            Ok(std::process::Output {
+                status,
+                stdout: out,
+                stderr: err,
+            })
         })
     }
 }
@@ -163,7 +175,13 @@ impl Updater {
         if self.mode == Mode::Off {
             return disabled("disabled: update mode off");
         }
-        sot_updater::check_release(&updater_spawner(), &self.repo, &self.current, &Fetcher::from_env()).await
+        sot_updater::check_release(
+            &updater_spawner(),
+            &self.repo,
+            &self.current,
+            &Fetcher::from_env(),
+        )
+        .await
     }
 }
 
@@ -658,14 +676,19 @@ mod tests {
         /// A command that starts a grandchild, writes its pid to `pid_file` and waits for it.
         fn tree_command(pid_file: &std::path::Path) -> tokio::process::Command {
             let mut command = tokio::process::Command::new("sh");
-            command.args(["-c", "sleep 3180 & echo $! > \"$1\"; wait", "sh"]).arg(pid_file);
+            command
+                .args(["-c", "sleep 3180 & echo $! > \"$1\"; wait", "sh"])
+                .arg(pid_file);
             command
         }
 
         async fn pid_written(file: &std::path::Path) {
             let began = Instant::now();
             while std::fs::read_to_string(file).map_or(true, |t| t.trim().is_empty()) {
-                assert!(began.elapsed() < Duration::from_secs(10), "the updater command never started its child");
+                assert!(
+                    began.elapsed() < Duration::from_secs(10),
+                    "the updater command never started its child"
+                );
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
@@ -675,11 +698,17 @@ mod tests {
             let signal = a_signal();
             let mut command = tokio::process::Command::new("sh");
             command.args(["-c", "echo out; echo err >&2; exit 3"]);
-            let output = UpdaterSpawner(signal).output(&mut command).await.expect("the command ran");
+            let output = UpdaterSpawner(signal)
+                .output(&mut command)
+                .await
+                .expect("the command ran");
             assert_eq!(output.status.code(), Some(3));
             assert_eq!(output.stdout, b"out\n");
             assert_eq!(output.stderr, b"err\n");
-            assert!(signal.held_groups().is_empty(), "a finished command's tree is still held");
+            assert!(
+                signal.held_groups().is_empty(),
+                "a finished command's tree is still held"
+            );
         }
 
         #[tokio::test]
@@ -688,13 +717,21 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("pid");
             let mut command = tree_command(&file);
-            let task = tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
+            let task =
+                tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
             pid_written(&file).await;
             let grandchild = Leftover::of_file(&file);
-            assert_eq!(signal.held_groups().len(), 1, "the running command's tree is not held");
+            assert_eq!(
+                signal.held_groups().len(),
+                1,
+                "the running command's tree is not held"
+            );
             task.abort();
             let _ = task.await;
-            assert!(grandchild.gone(), "the dropped command's grandchild outlived it");
+            assert!(
+                grandchild.gone(),
+                "the dropped command's grandchild outlived it"
+            );
             assert!(signal.held_groups().is_empty());
         }
 
@@ -704,15 +741,24 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("pid");
             let mut command = tree_command(&file);
-            let task = tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
+            let task =
+                tokio::spawn(async move { UpdaterSpawner(signal).output(&mut command).await });
             pid_written(&file).await;
             let grandchild = Leftover::of_file(&file);
             signal.fire().expect("fire");
-            assert!(grandchild.gone(), "the fired signal left the grandchild running");
-            let _ = tokio::time::timeout(Duration::from_secs(10), task).await.expect("the command outlived the fire");
+            assert!(
+                grandchild.gone(),
+                "the fired signal left the grandchild running"
+            );
+            let _ = tokio::time::timeout(Duration::from_secs(10), task)
+                .await
+                .expect("the command outlived the fire");
             let mut late = tokio::process::Command::new("sh");
             late.args(["-c", "exit 0"]);
-            assert!(UpdaterSpawner(signal).output(&mut late).await.is_err(), "a command started after the fire");
+            assert!(
+                UpdaterSpawner(signal).output(&mut late).await.is_err(),
+                "a command started after the fire"
+            );
         }
     }
 
@@ -758,12 +804,24 @@ mod tests {
             exit_for_update(leases, |c| code = Some(c)).await;
             code
         }
-        assert_eq!(exit_code(&leases).await, Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART), "no shutdown under way: the update exits 75");
+        assert_eq!(
+            exit_code(&leases).await,
+            Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART),
+            "no shutdown under way: the update exits 75"
+        );
         let leases = Leases::new(Some("boot".into()), None, None, false);
         leases.begin_close();
-        assert_eq!(exit_code(&leases).await, None, "the update exits 75 during a shutdown");
+        assert_eq!(
+            exit_code(&leases).await,
+            None,
+            "the update exits 75 during a shutdown"
+        );
         leases.finish_shutdown(0, Vec::new()).unwrap();
-        assert_eq!(exit_code(&leases).await, None, "the update exits 75 after the shutdown's final record");
+        assert_eq!(
+            exit_code(&leases).await,
+            None,
+            "the update exits 75 after the shutdown's final record"
+        );
     }
 
     /// An update committed first stands: a close that comes after it does not begin, so the daemon cannot be sent down the
@@ -776,7 +834,9 @@ mod tests {
         assert_eq!(code, Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART));
         leases.begin_close();
         assert!(
-            tokio::time::timeout(Duration::from_millis(200), leases.gone()).await.is_err(),
+            tokio::time::timeout(Duration::from_millis(200), leases.gone())
+                .await
+                .is_err(),
             "a close began after the update was committed"
         );
         assert!(!leases.commit_update(), "a second update committed");
