@@ -305,8 +305,13 @@ async fn an_update_the_daemon_may_not_take_leaves_it_serving() {
         );
         fx.save("capsule_alive", alive(&fx, supervisor));
         drop(conn);
-        close_by_lease(&run.env).await;
-        let closed = run.status_within(Duration::from_secs(60)).await;
+        // A daemon that exited has nothing to close: the assertions below say why.
+        let closed = if fx.saved("still_running") == Some("true") {
+            close_by_lease(&run.env).await;
+            run.status_within(Duration::from_secs(60)).await
+        } else {
+            None
+        };
         let said = run.said();
         let cleanup = fx.cleanup();
         assert!(cleanup.complete(), "{cleanup:?}");
@@ -532,7 +537,7 @@ async fn the_automatic_update_waits_while_a_window_is_attached() {
     open(case.path(), "update-check-go");
     fx.save(
         "deferred",
-        log_says(&run, "armed but clients attached", Duration::from_secs(180)).await,
+        log_says(&run, "armed but clients attached", Duration::from_secs(90)).await,
     );
     tokio::time::sleep(Duration::from_secs(2)).await;
     fx.save(
@@ -547,8 +552,13 @@ async fn the_automatic_update_waits_while_a_window_is_attached() {
     .await;
     fx.save("armed", matches!(armed, Ok(Some(_))));
     drop(_attached);
-    close_by_lease(&run.env).await;
-    let closed = run.status_within(Duration::from_secs(60)).await;
+    // A daemon that exited has nothing to close: the assertions below say why.
+    let closed = if fx.saved("still_running") == Some("true") {
+        close_by_lease(&run.env).await;
+        run.status_within(Duration::from_secs(60)).await
+    } else {
+        None
+    };
     let said = run.said();
     let cleanup = fx.cleanup();
     assert!(cleanup.complete(), "{cleanup:?}");
