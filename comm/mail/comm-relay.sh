@@ -59,7 +59,7 @@ esac
 # there instead.
 # A directed send (HANDLE given) reports it as that send's verdict.
 _endpoint_missing() {  # [HANDLE]
-    local why="no sotd daemon found; \`sotd topology relay-endpoint\` named no endpoint for this box"
+    local why="no sotd daemon found; \`sotd topology relay-endpoint\` gave no endpoint for this box, or no sotd is installed"
     if [ -n "${1:-}" ]; then echo "FAILED -> @$1: $why" >&2; else echo "ERROR: $why" >&2; fi
 }
 _require_endpoint() { [ -n "$ENDPOINT" ] && return 0; _endpoint_missing "${1:-}"; return 1; }
@@ -81,7 +81,6 @@ case "$ENDPOINT" in
         ;;
     unix:*|pipe:*) ;;   # opened by sot_dial (nc_send below)
     "") ;;   # no daemon and a file-first send: nothing to parse
-    *) echo "ERROR: bad endpoint '$ENDPOINT'" >&2; exit 1 ;;
 esac
 
 # Hello: the daemon admits a connection only by its first frame, a hello it

@@ -181,9 +181,9 @@ use std::path::PathBuf;
 ///
 /// NOT a pure function of (uid): it consults `$XDG_RUNTIME_DIR` and
 /// filesystem state, so two same-uid processes with different
-/// environments can disagree — see [`runtime_dir`] for the propagation
-/// seam that makes the *actually used* runtime dir deterministic across
-/// a daemon's whole process tree.
+/// environments can disagree. [`runtime_dir`] is the validated
+/// `SOT_RUNTIME_DIR` override (the capsule lane sockets read it); no
+/// production code sets that variable, so each process resolves its own.
 pub fn runtime_sot_dir() -> PathBuf {
     if let Some(dir) = private_xdg_runtime_dir() {
         return dir.join("sot");

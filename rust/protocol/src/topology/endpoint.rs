@@ -40,9 +40,9 @@ use std::path::PathBuf;
 // `current_uid()` call site in this module (and every downstream
 // `sot_protocol::{runtime_sot_dir, current_uid}` re-export in
 // `rust/backend/src/paths.rs`) keeps compiling unchanged. See
-// `sot_log::host::state_dir` for the doc comments, the tests, and the new
-// `SOT_RUNTIME_DIR` propagation seam (`state_dir::runtime_dir`) this move
-// exists to enable.
+// `sot_log::host::state_dir` for the doc comments, the tests, and the
+// `SOT_RUNTIME_DIR` override (`state_dir::runtime_dir`; nothing in
+// production sets it).
 pub use sot_log::host::state_dir::{current_uid, is_private_dir, runtime_sot_dir};
 
 /// Conventional per-user session endpoint for a backend with the given
