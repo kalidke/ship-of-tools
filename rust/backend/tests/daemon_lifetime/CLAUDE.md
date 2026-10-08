@@ -7,12 +7,14 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 
 ## Files
 - `main.rs`: the module list and how to build the barrier variants the held-process cases need
+- `done.rs`: the done test's parts: its inputs (a case-private copy of Pluto's folder, the trees, the environment), the trees it starts through each product route and the oracle it reads after the daemon is killed (feature `daemon-lifetime-faults`)
 - `durable.rs`: the durable parent's place in a real daemon's process tree: it descends from nothing the daemon started (feature `daemon-lifetime-faults`)
 - `guard.rs`: the Linux lifetime guard on real daemons: it mirrors the daemon's end and forwards signals, a lost guard ends the daemon, the drain outlasts a forking child and ends only its own subtree (these two need Julia), the relay refresh follows the guard, the prologue refuses a second thread (feature `daemon-lifetime-faults`); and `Run`, the guarded daemon the cases start
 - `fixture_owner.rs`: `Fixture`, the outside owner: authority over every process a case starts, saved results, bounded cleanup
 - `observations.rs`: `wait_for`, and `BarrierDir`, the folder a process held at a phase barrier reports to
 - `native/`: the per-OS process authority (an identity opened while alive; death read from it)
 - `native_premises.rs`: the native launcher and the fence claim on real children (gate, owning return, errors, claim lifetime, source group)
+- `routes.rs`: the daemon's real routes the cases drive and what they read back: a ready row, a spinning REPL cell, a tree's identities, the nonce round trip, a process's children and command line
 - `successor.rs`: a successor daemon and a capsule birth held at each of five phases of its way to its first act: the successor starts no second supervisor and reaches the original (feature `daemon-lifetime-faults`; needs the barrier build of `sot-capsule`)
 - `workers.rs`: the product worker factories read where they stand: a Julia `Distributed` worker against the process that started it, and the done test of the guard, `every_descendant_of_a_killed_daemon_ends`: a killed daemon's REPL, Pluto and Quarto trees all end, the capsule stays and a successor adopts it (ignored in a plain run; needs Julia 1.12, Pluto's environment and, for its Quarto half, Quarto 1.7.31)
 - `fixtures/`: the real inputs and process trees of the cases (see its page)

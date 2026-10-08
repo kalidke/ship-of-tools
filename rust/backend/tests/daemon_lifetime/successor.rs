@@ -226,7 +226,7 @@ impl Case {
         self.fx.save("births_in_all", births);
 
         let outcome =
-            crate::guard::nonce_round_trip(conn, &mut next_id, workspace_id, "l2-successor-test")
+            crate::routes::nonce_round_trip(conn, &mut next_id, workspace_id, "l2-successor-test")
                 .await;
         self.fx.save("nonce_round_trip", outcome);
     }

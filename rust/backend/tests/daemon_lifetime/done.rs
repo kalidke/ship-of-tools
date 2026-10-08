@@ -2,9 +2,10 @@
 //! trees it starts in a guarded daemon through each product route, and the oracle it reads after the daemon is killed.
 
 use crate::fixture_owner::Fixture;
-use crate::guard::{
+use crate::guard::Run;
+use crate::routes::{
     adopt_tree, all_ended, call_long, children_of, command_line, julia_bin, nonce_round_trip,
-    ready_row, spin_in_repl, supervisor_in, Run,
+    ready_row, spin_in_repl, supervisor_in,
 };
 use crate::support::{call, connect_and_hello, poll_until, Conn, BOUND};
 use crate::tree::Tree;

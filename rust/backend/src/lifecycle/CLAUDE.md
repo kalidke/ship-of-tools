@@ -135,10 +135,11 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
 - `mod.rs`: declares the six modules and the test module.
 - `shutdown.rs`: the close, its backstop and the row ends.
-- `start_tests.rs`: tests of child creation against the fire, checked termination requests, partial births (an error or an
-  unwind between creation and registration), the Windows suspended start and the macOS group recognition, on real
-  processes. It is in-crate because it reaches `Signal` and `contain`; the daemon-lifetime harness is a separate test
-  binary and cannot.
+- `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
+  or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
+  `contain`; the daemon-lifetime harness is a separate test binary and cannot.
+- `start_tests_windows.rs`: the Windows half: a suspended start cannot be outwaited and job requests are checked.
+- `start_tests_macos.rs`: the macOS half: the recognition of a finished group before the reap, with injected observation faults.
 - `startup.rs`: the start's decision from `held.json` and acting on it.
 
 ## Start here
