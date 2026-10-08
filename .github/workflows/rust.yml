@@ -118,6 +118,54 @@ jobs:
       - name: Prove native window close and the teardown backstop
         run: cargo test -p sot-frontend --test window_close --features test-window-close --locked
 
+  # ADR 0050, the daemon's lifetime, read on real daemons and real children (rust/backend/tests/daemon_lifetime). Linux runs
+  # the whole harness, the cases that need Julia 1.12 (the REPL, Pluto's environment) and Quarto 1.7.31 included; macOS runs
+  # the premises on real children (its guard-free cases are the in-crate lifecycle tests of the `test` job below).
+  daemon-lifetime-linux:
+    name: daemon lifetime harness (Linux)
+    runs-on: ubuntu-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.12'
+      - uses: julia-actions/cache@v3
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: 1.7.31
+      - name: Build the capsule with its phase barriers
+        run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
+      - name: Prove the daemon's lifetime on real daemons
+        run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --include-ignored --test-threads=1
+
+  daemon-lifetime-macos:
+    name: daemon lifetime premises (macOS)
+    runs-on: macos-latest
+    if: "${{ !startsWith(github.event.head_commit.message, 'release: v') }}"
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Build the capsule with its phase barriers
+        run: cargo build -p sot-log --locked --features native-barrier --bin sot-capsule
+      - name: Prove the native launcher and the fence claim on real children
+        run: cargo test -p sot-backend --locked --features daemon-lifetime-faults --test daemon_lifetime -- --test-threads=1
+
   test:
     name: build+test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

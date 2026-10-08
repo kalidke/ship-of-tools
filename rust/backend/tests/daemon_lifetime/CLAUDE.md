@@ -37,8 +37,9 @@ of the backend's tests; the suites span subsystems, so this page names no charte
   parent had open until it execs or ends, so a case that reads a pipe to EOF would wait on another case's child.
 - A role a case re-runs this binary for (`claim_parent_role`, `source_group_role`) enters through
   `sot_log::test_isolated::test_command` and `enter`, and does nothing in an ordinary run.
-- On macOS the authority is not yet established (`native/macos.rs`): every identity request fails with that cause, so a
-  case fails at its first step and never passes by skipping.
+- On macOS an identity is a kqueue `NOTE_EXIT` knote (`native/macos.rs`); the cases that need the Linux guard or `/proc`
+  (`guard`, `outcomes`, `updates`, `done`, `durable`, `routes`, `successor`) are compiled for Linux only, and the macOS leg
+  runs `native_premises` and the in-crate lifecycle tests.
 - A case ends only a pid its own code got back from its own spawn (`Fixture::own`; the launched guard, a gated birth, a
   child it started). A pid a product printed, a fixture process wrote, a peer credential reported, /proc showed or a parent
   link reached is looked at through a pidfd (`Fixture::watch`) and is never signalled: `Identity::kill` refuses it. A case

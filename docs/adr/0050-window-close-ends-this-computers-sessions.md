@@ -280,6 +280,26 @@ missing `sot-capsule` or a state dir that is not private is 1 and no derivable c
 the daemon did, so a launcher sees these codes. Capsules are outside all of this by design (an update restart or a window
 Keep leaves them running).
 
+## Update (0.6.6): tested scope
+
+The daemon's lifetime is read on real daemons, real `sot-capsule` supervisors and real children
+(`rust/backend/tests/daemon_lifetime`), never from source text. On Linux: the guard exits as the daemon did (a close 0,
+the backstop 1, SIGKILL, SIGABRT) and forwards TERM, INT and HUP, also to the group; a lost guard ends the daemon within a
+second; the drain outlasts a forking child and ends only its own subtree; a killed daemon's REPL, Pluto (server, worker
+and tree) and Quarto (engine server, worker and tree) all end while the capsule stays and a successor adopts it; the main
+future's Ok, error and panic are 0, 1 and 101; INT and TERM end a daemon whose runtime is stalled and whose inherited mask
+blocks them (130, 143); a close that outlasts its bound exits 1; `update.apply` against a pointer armed with the real
+updater, and the automatic update through the real stage, prepare and arm, exit 75, end the REPL's tree and leave the
+capsule, and the automatic one waits while a window is attached; a close and an update in either order keep the first one's
+exit; an update the daemon may not take leaves it serving; the updater's discovery and prepare commands end with the
+daemon. The macOS and Windows legs run the native launcher and fence-claim premises and the crate's own lifecycle tests
+(the macOS group recognition, the Windows per-child jobs).
+
+Not tested, and stated as limits: macOS after an abrupt end of the daemon (by decision, above); Windows console events
+(CTRL_C, CTRL_BREAK, CTRL_CLOSE), logoff and shutdown; the interval on Windows between a child's creation and its
+assignment to its job, in which a daemon death leaves one process that never ran; a binary built with `panic=abort`, a
+stack overflow, an allocation failure and the OS's out-of-memory kill; power loss.
+
 ## Update (0.6.6): hub relay locality
 
 A generated hub relay socket is physically local transport to a remote daemon. The window carries that distinction from endpoint parsing to control, page and lane consumers and never acquires a local-window lease through it. Relay unit target/path overrides and local daemon leases retain their existing behavior.

@@ -3,7 +3,7 @@
     not(all(target_os = "linux", feature = "daemon-lifetime-faults")),
     allow(
         dead_code,
-        reason = "the successor case, which uses the barrier folder and the saved results, is built only with the barrier build, on Linux until the macOS authority exists"
+        reason = "the cases that use the barrier folder, the saved results and the daemon runs are built only with the barrier build, on Linux; the macOS leg runs the premises"
     )
 )]
 //! The daemon-lifetime harness: the premises and, from the next commits, the cases of lane L2 (a daemon lifetime and
