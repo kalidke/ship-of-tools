@@ -126,6 +126,8 @@ enum Phase {
     Closing,
     /// After step 5. Leases are still refused until the process exits.
     Finished,
+    /// An update restart is committed: no close begins and no lease is granted; the process exits 75.
+    Updating,
 }
 
 struct State {
@@ -394,11 +396,16 @@ impl Leases {
         }
     }
 
-    /// `f` under the lease lock iff no shutdown has begun, so none begins
-    /// while it runs; `None` once one has.
-    pub(crate) fn while_open<T>(&self, f: impl FnOnce() -> T) -> Option<T> {
-        let st = self.lock();
-        (st.phase == Phase::Open).then(f)
+    /// Commit an update restart iff no shutdown has begun: the phase becomes `Updating` under the lease lock, so no close
+    /// begins afterwards (`close` refuses it) and no lease is granted. The caller exits 75 after this returns, outside the
+    /// lock. False once a shutdown has begun, or an update was already committed: the shutdown's own exit stands.
+    pub(crate) fn commit_update(&self) -> bool {
+        let mut st = self.lock();
+        if st.phase != Phase::Open {
+            return false;
+        }
+        st.phase = Phase::Updating;
+        true
     }
 
     /// Shutdown step 5, the shutdown's report written as the record, its

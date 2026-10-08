@@ -585,11 +585,6 @@ pub(crate) fn process() -> &'static Signal {
     SIGNAL.get_or_init(Signal::new)
 }
 
-/// Attempt and check every contained tree's termination. Permanent; this does not reap or wait for tree death.
-pub(crate) fn fire() -> std::io::Result<()> {
-    process().fire()
-}
-
 /// Resolves once the shutdown has fired; at once if it already has.
 pub(crate) async fn fired() {
     process().fired().await

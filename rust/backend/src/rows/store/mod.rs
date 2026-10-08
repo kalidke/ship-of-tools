@@ -328,7 +328,7 @@ pub fn save(ws: &Workspace) -> Result<PathBuf> {
 pub(crate) fn declared_host() -> String {
     sot_log::host::state_dir::host_name().unwrap_or_else(|e| {
         tracing::error!(error = %e, "cannot start: no declared host (ADR 0046 decision 1)");
-        std::process::exit(1);
+        crate::lifecycle::shutdown::exit(1);
     })
 }
 

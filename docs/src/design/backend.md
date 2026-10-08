@@ -47,7 +47,7 @@ Restart policy differs by process:
 Orphaned `julia` processes are unacceptable, so the whole tree of every process
 the daemon starts, but those ADR 0050 names as outside it, is killed (SIGKILL to its process
 group on Unix, `TerminateJobObject` on Windows) when its owner lets go of it or
-the shutdown fires, whichever comes first (ADR 0050, known limit (p)). The tree is killed before its
+the daemon's controlled end fires the child signal, whichever comes first (ADR 0050, "controlled exits"). The tree is killed before its
 leader is reaped, because the leader's pid is the group's number. There is no
 SIGTERM grace and no `taskkill`. A process that deliberately left, for example a
 Unix descendant that called `setsid` or `setpgid`, is the one exception (ADR 0050,

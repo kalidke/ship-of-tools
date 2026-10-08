@@ -318,7 +318,7 @@ fn main() -> Result<()> {
             }
             // `sotd ancestors [--from <pid>]` (Windows only): comm-lib.sh reads it to count
             // the agents above a comm script. A pure query like the arms around it.
-            "ancestors" => std::process::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
+            "ancestors" => lifecycle::shutdown::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
             "agent-exec" => agents::ops::agent_exec(),
             // The capsule-only birth parent (`rows::spawn::durable`): the daemon starts it over a private channel it
             // holds as standard input. Not a user command, so it is in no usage text.
@@ -335,14 +335,14 @@ fn main() -> Result<()> {
             // printed would land on the byte stream it owns.
             "stdio-bridge" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::stdio_bridge::run(&args));
+                lifecycle::shutdown::exit(topology::stdio_bridge::run(&args));
             }
             // The declared topology (`hosts.toml` v2): what this box
             // derives from it — the launcher's tunnel/dial plan, the relay
             // endpoint, the declared table, a fetch of the hub's copy.
             "topology" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(topology::cli::run(&args));
+                lifecycle::shutdown::exit(topology::cli::run(&args));
             }
             // `sotd status` (topology plan §E): declared + LIVE, fanned out
             // to every reachable daemon concurrently — unlike `topology`
@@ -350,7 +350,7 @@ fn main() -> Result<()> {
             // rather than calling a plain synchronous query.
             "status" => {
                 let args: Vec<String> = std::env::args().skip(2).collect();
-                std::process::exit(runtime()?.block_on(topology::status::run(&args)));
+                lifecycle::shutdown::exit(runtime()?.block_on(topology::status::run(&args)));
             }
             "--version" | "-V" => {
                 println!("{}", sot_protocol::version_line("sotd"));
@@ -368,7 +368,7 @@ fn main() -> Result<()> {
     // mid-request (or fall back to a shared directory).
     if let Err(msg) = rows::store::check_config_dir() {
         eprintln!("sotd: {msg}");
-        std::process::exit(78);
+        lifecycle::shutdown::exit(78);
     }
     // Defect fix (field-proven, Windows; see `sot_log::host::winhandle`'s module
     // doc): harden this process's own inherited stdio before anything is
@@ -414,7 +414,7 @@ fn main() -> Result<()> {
             "sotd: state dir {} is not private ({e}) — refusing to start",
             paths::state_dir().display()
         );
-        std::process::exit(1);
+        lifecycle::shutdown::exit(1);
     }
 
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -448,7 +448,7 @@ fn main() -> Result<()> {
             );
             eprintln!("{msg}");
             tracing::error!("{msg}");
-            std::process::exit(1);
+            lifecycle::shutdown::exit(1);
         }
     }
 
@@ -474,8 +474,15 @@ fn main() -> Result<()> {
         }
         if let Err(e) = lifecycle::daemon_children::guard::install() {
             eprintln!("sotd: {e} -- refusing to start");
-            std::process::exit(1);
+            lifecycle::shutdown::exit(1);
         }
+    }
+
+    // INT and TERM end the daemon the way every other controlled exit does (130, 143), from a thread of their own, so a
+    // stalled runtime or an inherited blocked mask does not hold them. After the guard, which needs one thread.
+    if let Err(error) = lifecycle::signal_exit::install() {
+        eprintln!("sotd: signal watcher installation failed: {error}");
+        lifecycle::shutdown::exit(1);
     }
 
     tracing::info!(
@@ -490,13 +497,66 @@ fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
     topology::relay_units::spawn_refresh_at_start();
 
-    runtime()?.block_on(async move {
-        #[cfg(unix)]
-        if let Err(e) = rows::spawn::durable::connect_parent() {
-            tracing::warn!(error = %e, "durable parent: no answer; capsule rows cannot start until the daemon is restarted");
+    let runtime = runtime()?;
+    complete_main(
+        &runtime,
+        async move {
+            #[cfg(unix)]
+            if let Err(e) = rows::spawn::durable::connect_parent() {
+                tracing::warn!(error = %e, "durable parent: no answer; capsule rows cannot start until the daemon is restarted");
+            }
+            #[cfg(feature = "daemon-lifetime-faults")]
+            return tokio::select! { served = server::run(opts) => served, injected = injected_outcome() => injected };
+            #[cfg(not(feature = "daemon-lifetime-faults"))]
+            server::run(opts).await
+        },
+        |code| lifecycle::shutdown::exit(code),
+    )
+}
+
+/// The serving daemon's main result becomes a status while the runtime still exists, and takes the one terminal path: `Ok`
+/// is 0, an error is printed and is 1, a panic of the main future is 101 (what an unwinding `main` would have given).
+fn complete_main<T>(
+    runtime: &tokio::runtime::Runtime,
+    future: impl std::future::Future<Output = Result<()>>,
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
+    let code =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.block_on(future))) {
+            Ok(Ok(())) => 0,
+            Ok(Err(error)) => {
+                eprintln!("Error: {error:?}");
+                1
+            }
+            Err(_) => 101,
+        };
+    terminate(code)
+}
+
+/// Under the daemon-lifetime fault feature a case ends the main future with a result the product would reach only through a
+/// defect: the file named by `SOT_TEST_MAIN_OUTCOME` holds `ok`, `err`, `panic` or `stall` (every runtime worker blocked) once the case is ready. The control selects
+/// an outcome and performs no cleanup.
+#[cfg(feature = "daemon-lifetime-faults")]
+async fn injected_outcome() -> Result<()> {
+    let Some(path) = std::env::var_os("SOT_TEST_MAIN_OUTCOME") else {
+        return std::future::pending().await;
+    };
+    loop {
+        match std::fs::read_to_string(&path).as_deref().map(str::trim) {
+            Ok("ok") => return Ok(()),
+            Ok("err") => anyhow::bail!("injected main error"),
+            Ok("panic") => panic!("injected main panic"),
+            // Every runtime worker blocked at once: nothing the runtime runs makes progress for two minutes.
+            Ok("stall") => {
+                let workers = std::thread::available_parallelism().map_or(8, |n| n.get()) * 2;
+                for _ in 0..workers {
+                    tokio::spawn(async { std::thread::sleep(std::time::Duration::from_secs(120)) });
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
         }
-        server::run(opts).await
-    })
+    }
 }
 
 #[derive(Debug, Clone)]

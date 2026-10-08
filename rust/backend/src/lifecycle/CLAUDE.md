@@ -12,8 +12,10 @@ computer's sessions end (ADR 0050).
 - The lease ops `fe.lease`, `fe.leaving`, `fe.notice_seen` (`lease::hold`) and the 1 s `lease::ticker`.
 - The start plan Resume, Pending or Cleanup: `startup::begin`, `lease::startup_plan`.
 - The close and its backstop `exit(1)`: `shutdown::run`, `shutdown::end_rows`.
+- The one raw exit of the serving daemon and what every controlled end does first: `shutdown::exit`, `shutdown::terminal`;
+  INT and TERM: `signal_exit::install`.
 - The child signal and the containment: `Signal`, `Signal::spawn`, `Signal::spawn_std`, `Signal::output`,
-  `Contained`, `ContainedStd`, `fire`, `fired`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
+  `Contained`, `ContainedStd`, `Signal::fire`, `fired`, `reset_child_signal`; contain.rs `Tree`, `prepare`, `adopt`,
   `exited`, `exited_pid`.
 - Which process starts stand outside the containment: the process-spawns group of `rust/clippy.toml` and each
   exception's allow.
@@ -37,7 +39,20 @@ computer's sessions end (ADR 0050).
   the listener, then calls `shutdown::run`), ends rows without resuming any (`end_rows`), counts each row not confirmed
   ended, and a backstop thread exits 1 at `bounds::SHUTDOWN_BOUND` (`shutdown::run`, step 0).
 - A close that finishes exits 0 (`bounds::EXIT_REQUESTED_SHUTDOWN`); the update restart exits 75 and only while no
-  shutdown has begun (`Leases::while_open`, called by update.rs).
+  shutdown has begun: update.rs commits it with `Leases::commit_update`, which moves the phase to `Updating` under the
+  lease lock, so no close begins afterwards, and exits outside the lock.
+- Every controlled end of the serving daemon takes one terminal, `shutdown::exit`: it fires the child signal (each
+  contained tree is asked to end), waits at most `FIRE_WAIT` (2 s) for the answer, logs a failed request or a fire still
+  running, and makes the process's one raw exit with the code it was given. The codes: 0 (a finished close, an Ok main
+  result), 1 (an error, a boot refusal, the backstop), 2 (a bad `agent-exec` recipe), 75 (the update restart), 78 (no
+  config directory), 101 (a panic of the main future), 130 and 143 (INT and TERM); a death by an uncatchable signal, an
+  abort or a raw exit elsewhere is the guard's and the OS's, not this terminal's. `main` turns the main future's result into
+  its code while the runtime still exists (`complete_main`). INT and TERM are caught on a thread of their own with a
+  runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, so a stalled main runtime
+  does not hold them; a failed installation refuses the boot (`signal_exit::install`). The wait is bounded because a child
+  creation stalled in the OS holds the registry mutex the fire needs: no exit, the backstop's included, depends on it. A
+  request is not a death: on Linux the guard ends what is left, and on macOS the controlled ends are the only ones that end
+  the daemon's children (ADR 0050).
 - On Linux a process the daemon starts, at any depth, ends within `DRAIN_BOUND` of the daemon's end, however the daemon
   ends, unless a broker started it, the guard itself was killed, or a kernel call is uninterruptible: every serving
   daemon is the child of a guard that is a subreaper and kills its own children until it has none, then exits as the
@@ -115,7 +130,7 @@ computer's sessions end (ADR 0050).
 ## Connections
 Each connection is one row of docs/integration.md, owned by its provider. Provides: `startup::begin`, `lease::ticker`,
 `Leases::gone`, `shutdown::run`, `fe.lease`, `fe.leaving`, `fe.notice_seen`, `rust/frontend/src/lease.rs`,
-`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::while_open`, `Signal::spawn`, `Signal::spawn_std`,
+`Leases::before_data_connection`, `scripts/sot-lease.ps1`, `Leases::commit_update`, `shutdown::exit`, `signal_exit::install`, `Signal::spawn`, `Signal::spawn_std`,
 `Signal::output`, `daemon_children::guard`, `guard_pid`, `Contained`, `ContainedStd`, `ContainedStd::wait_within`, `Signal`, `child_signal::fired`, `child_signal::process`, lease_notice. Uses: `AnonymousJob`, `fe.lease`, `handle_connection`, `lease::hold`, `admit_peer`,
 `reject`, `write_frame_within`, `write_frame_to`, `destroy_capsule_workspace`, `end_default_row_run`, `resume_all`,
 `close_gate_and_settle`, `remove_row_files`, `sot_state_dir`, `sot_config_dir`, `host_name`, `state_dir_hash`,
@@ -133,8 +148,9 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
   macOS the recognition of a finished group.
 - `lease.rs`: the window lease: `Leases`, the grant rule, the lease connection (`hold`), `held.json` and the start plan.
 - `lease_tests.rs`: tests of the grant rule, departures and ticks, held.json, the start plan and the lease connection.
-- `mod.rs`: declares the six modules and the test module.
-- `shutdown.rs`: the close, its backstop and the row ends.
+- `mod.rs`: declares the seven modules and the test module.
+- `shutdown.rs`: the close, its backstop, the row ends and the daemon's one terminal exit.
+- `signal_exit.rs`: the thread that catches INT and TERM and ends the daemon through the terminal as 130 and 143.
 - `start_tests.rs`: tests of child creation against the fire, checked termination requests and partial births (an error
   or an unwind between creation and registration), on real processes. They are in-crate because they reach `Signal` and
   `contain`; the daemon-lifetime harness is a separate test binary and cannot.

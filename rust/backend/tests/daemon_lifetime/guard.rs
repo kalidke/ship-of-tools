@@ -86,7 +86,7 @@ impl Run {
 
     /// Start a daemon and wait until it answers; `own_group` puts the launched process in a process group of its own.
     pub async fn start(tag: &str, extra: &[(&str, &str)], own_group: bool) -> Run {
-        Self::boot(Env::new(tag), extra, own_group).await
+        Self::boot(Env::new(tag), extra, own_group, false).await
     }
 
     /// Start a daemon on `env` and wait until it answers: its launched process, the daemon it reported and its log.
@@ -94,6 +94,7 @@ impl Run {
         env: &Env,
         extra: &[(&str, &str)],
         own_group: bool,
+        masked: bool,
     ) -> (Child, i32, PathBuf) {
         let log = env._tmp.path().join(format!(
             "daemon-{}.log",
@@ -102,6 +103,20 @@ impl Run {
         let mut cmd = Self::command(env, &log, extra);
         if own_group {
             cmd.process_group(0);
+        }
+        if masked {
+            // SAFETY: the closure runs between fork and exec and makes one async-signal-safe mask call over a local set.
+            unsafe {
+                cmd.pre_exec(|| {
+                    let mut set: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut set);
+                    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                        libc::sigaddset(&mut set, signal);
+                    }
+                    libc::sigprocmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+                    Ok(())
+                });
+            }
         }
         let launched = cmd.spawn().expect("spawn sotd");
         let socket = env.socket_path.clone();
@@ -117,8 +132,8 @@ impl Run {
         (launched, daemon, log)
     }
 
-    pub async fn boot(env: Env, extra: &[(&str, &str)], own_group: bool) -> Run {
-        let (launched, daemon, log) = Self::spawn_daemon(&env, extra, own_group).await;
+    pub async fn boot(env: Env, extra: &[(&str, &str)], own_group: bool, masked: bool) -> Run {
+        let (launched, daemon, log) = Self::spawn_daemon(&env, extra, own_group, masked).await;
         let run = Run {
             env,
             log,
@@ -135,7 +150,7 @@ impl Run {
             self.status_within(Duration::from_secs(60)).await.is_some(),
             "the predecessor's launched process has not ended"
         );
-        let (launched, daemon, log) = Self::spawn_daemon(&self.env, extra, false).await;
+        let (launched, daemon, log) = Self::spawn_daemon(&self.env, extra, false, false).await;
         self.launched = Some(launched);
         self.daemon = daemon;
         self.log = log;
@@ -194,7 +209,7 @@ impl Drop for Run {
 }
 
 /// A lease from this process, then the window's close: the daemon shuts down and exits 0.
-async fn close_by_lease(env: &Env) {
+pub async fn close_by_lease(env: &Env) {
     let me = sot_log::identity::challenge::self_identity().expect("this process's identity");
     let lease = FeLeaseReq {
         boot: me.boot,
@@ -307,9 +322,13 @@ async fn the_guard_mirrors_the_daemon_and_forwards_signals() {
             Stimulus::Backstop => {
                 assert_eq!(status.code(), Some(1), "the backstop: {status:?}\n{said}")
             }
-            Stimulus::ToDaemon(sig) | Stimulus::ToGuard(sig) | Stimulus::ToGroup(sig) => {
-                assert_eq!(status.signal(), Some(sig), "{stimulus:?}: the launched process did not end as the daemon did: {status:?}\n{said}")
-            }
+            // INT and TERM are the daemon's own handled signals (130, 143); any other ends it by the signal itself, and the
+            // guard ends the same way.
+            Stimulus::ToDaemon(sig) | Stimulus::ToGuard(sig) | Stimulus::ToGroup(sig) => match sig {
+                libc::SIGTERM => assert_eq!(status.code(), Some(143), "{stimulus:?}: {status:?}\n{said}"),
+                libc::SIGINT => assert_eq!(status.code(), Some(130), "{stimulus:?}: {status:?}\n{said}"),
+                _ => assert_eq!(status.signal(), Some(sig), "{stimulus:?}: the launched process did not end as the daemon did: {status:?}\n{said}"),
+            },
         }
     }
 }
@@ -460,8 +479,20 @@ pub struct Spinning {
 }
 
 pub async fn start_spinning(tag: &str, fx: &mut Fixture, forking: bool) -> Spinning {
+    start_spinning_with(tag, fx, forking, &[]).await
+}
+
+/// [`start_spinning`] with more daemon variables.
+pub async fn start_spinning_with(
+    tag: &str,
+    fx: &mut Fixture,
+    forking: bool,
+    extra: &[(&str, &str)],
+) -> Spinning {
     let julia = julia_bin();
-    let run = Run::start(tag, &[("SOT_JULIA_BIN", julia.as_str())], false).await;
+    let mut vars = vec![("SOT_JULIA_BIN", julia.as_str())];
+    vars.extend_from_slice(extra);
+    let run = Run::start(tag, &vars, false).await;
     run.assert_guarded();
     let (mut conn, mut next_id) = connect_and_hello(&run.env.socket_path).await;
     let (workspace_id, state_dir) = ready_row(&run.env, &mut conn, &mut next_id, "repl").await;

@@ -412,7 +412,7 @@ async fn run_check_once(
                 // Re-check after the grace sleep: a client that attached in
                 // the window must not have its session killed.
                 if clients.count() == 0 {
-                    exit_for_update(leases, |code| std::process::exit(code));
+                    exit_for_update(leases, |code| crate::lifecycle::shutdown::exit(code));
                 } else {
                     tracing::info!(tag = %id.tag, "auto mode: a client attached during the exit window — deferring");
                 }
@@ -589,7 +589,7 @@ pub async fn handle_update_apply(
         tokio::time::sleep(Duration::from_millis(1500)).await;
         exit_for_update(&leases, |code| {
             tracing::info!("update.apply: exiting now");
-            std::process::exit(code)
+            crate::lifecycle::shutdown::exit(code)
         });
     });
 
@@ -605,12 +605,13 @@ pub async fn handle_update_apply(
     )])
 }
 
-/// An update's exit, a restart (75) handed to `exit`, taken only while no
-/// shutdown is under way: the check holds the lease lock through the exit,
-/// so none begins between them. Once one has begun its own exit stands and
-/// the update's is skipped (ruling f).
+/// An update's exit, a restart (75) handed to `exit`, taken only while no shutdown is under way. The commit is made under
+/// the lease lock and the exit after it, outside the lock: a close that comes later cannot begin, and the exit's wait for
+/// the child fire holds no lease. Once a shutdown has begun its own exit stands and the update's is skipped (ruling f).
 fn exit_for_update(leases: &Leases, exit: impl FnOnce(i32)) {
-    if leases.while_open(|| exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)).is_none() {
+    if leases.commit_update() {
+        exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART);
+    } else {
         tracing::info!("update exit skipped: a shutdown is under way, and its own exit stands");
     }
 }
@@ -726,16 +727,6 @@ mod tests {
         assert_eq!(prepare_julia(false), Ok(None));
     }
 
-    /// An update's exit is a restart (75), never a requested shutdown (0),
-    /// which the launchers read as "stay down".
-    #[test]
-    fn update_exit_code_is_restart() {
-        let body = sot_log::test_scan::without_test_modules(include_str!("update.rs"));
-        assert!(!body.contains(&format!("process::exit({})", 0)), "update.rs exits 0, a requested shutdown");
-        assert_eq!(body.matches("process::exit(").count(), body.matches("process::exit(code)").count(), "an update exits only with the code exit_for_update hands it");
-        assert_eq!(body.matches("exit(sot_protocol::ops::lease::EXIT_UPDATE_RESTART)").count(), 1, "the update's one exit is a restart");
-    }
-
     /// Once a shutdown has begun its own exit stands: the update's is
     /// skipped (ruling f).
     #[test]
@@ -747,10 +738,27 @@ mod tests {
             code
         };
         assert_eq!(exit_code(&leases), Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART), "no shutdown under way: the update exits 75");
+        let leases = Leases::new(Some("boot".into()), None, None, false);
         leases.begin_close();
         assert_eq!(exit_code(&leases), None, "the update exits 75 during a shutdown");
         leases.finish_shutdown(0, Vec::new()).unwrap();
         assert_eq!(exit_code(&leases), None, "the update exits 75 after the shutdown's final record");
+    }
+
+    /// An update committed first stands: a close that comes after it does not begin, so the daemon cannot be sent down the
+    /// close's exit 0 instead of the restart.
+    #[tokio::test]
+    async fn a_committed_update_is_not_undone_by_a_later_close() {
+        let leases = Leases::new(Some("boot".into()), None, None, false);
+        let mut code = None;
+        exit_for_update(&leases, |c| code = Some(c));
+        assert_eq!(code, Some(sot_protocol::ops::lease::EXIT_UPDATE_RESTART));
+        leases.begin_close();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), leases.gone()).await.is_err(),
+            "a close began after the update was committed"
+        );
+        assert!(!leases.commit_update(), "a second update committed");
     }
 
     fn topo(text: &str) -> sot_protocol::topology::Topology {

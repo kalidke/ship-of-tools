@@ -26,6 +26,8 @@ mod native;
 mod native_premises;
 mod observations;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
+mod outcomes;
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod routes;
 #[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod successor;

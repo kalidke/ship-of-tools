@@ -155,6 +155,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | window UI thread | thread | fe-ui | `rust/frontend/src/main.rs` `main`; `rust/frontend/src/ui/app/mod.rs` |
 | `sot-transport` runtime (one worker) | thread | fe-net | `rust/frontend/src/main.rs` `main`; `rust/frontend/src/net/hosts.rs` `spawn_transports` |
 | `sot-relaunch-watch` | thread | distribution | `rust/frontend/src/relaunch.rs` `spawn_watcher` |
+| `sot-signal-exit` (INT and TERM, with a runtime of its own) | thread | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install` |
 | `sot-fe-command-watch` | thread | fe-ui | `rust/frontend/src/ui/control/file_channel.rs` |
 | `sot-selfupdate` | thread | distribution | `rust/frontend/src/selfupdate.rs` `spawn_startup_selfcheck` |
 | `sot-term-reader` | thread | fe-ui | `rust/frontend/src/ui/drawer/terminal/pty.rs` `run_reader` |
@@ -250,7 +251,10 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sot flags `--update-status`, `--relaunched` | CLI | distribution | `rust/frontend/src/selfupdate.rs` `print_status`; `rust/frontend/src/cli.rs` `Cli` |
 | sot flag `--token`, `SOT_TOKEN` | CLI | fe-net | `rust/frontend/src/cli.rs` `Cli` |
 | sotd exit 0 (requested shutdown) | exit code | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `REASON`; `rust/protocol/src/ops/lease.rs` `EXIT_REQUESTED_SHUTDOWN` |
-| sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update`; `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
+| the serving daemon's one raw exit, and the child fire that comes first (`FIRE_WAIT`) | process rule | lifecycle | `rust/backend/src/lifecycle/shutdown.rs` `exit`, `terminal` |
+| sotd exit 0, 1 and 101 (the main future's result) | exit code | server | `rust/backend/src/main.rs` `complete_main` |
+| sotd exit 130 and 143 (INT and TERM) | exit code | lifecycle | `rust/backend/src/lifecycle/signal_exit.rs` `install` |
+| sotd exit 75 (update restart) | exit code | distribution | `rust/backend/src/update.rs` `exit_for_update` (committed under the lease by lifecycle's `Leases::commit_update`); `rust/protocol/src/ops/lease.rs` `EXIT_UPDATE_RESTART` |
 | sot exit 75/76 (relaunch, converge) | exit code | distribution | `rust/frontend/src/lease.rs` `exit_intent`, `close_now`; `rust/frontend/src/relaunch.rs` |
 | sot-capsule exit 0/69/70 | exit code | capsule | `rust/log/src/supervisor/mod.rs`; `rust/log/src/bin/sot-capsule.rs` |
 | `SOT_SOCKET`, `SOT_SESSION`, `SOT_WORKSPACE`, `SOT_WORKSPACE_ID`, `SOT_WORKSPACE_ROOT`, `SOT_MANUAL` | env | agents | `rust/backend/src/agents/awareness.rs` `awareness_env` |

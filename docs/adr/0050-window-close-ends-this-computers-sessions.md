@@ -256,11 +256,29 @@ connection is the only handle.
   `UpdaterSpawner` runs every discovery, stage, prepare and prepared-state command through the child signal, so what the
   update pipeline starts is contained like any other daemon child; the window's `WindowSpawner` keeps its explicit
   kill-on-drop policy, which does not contain descendants.
-- (p) Only the requested shutdown fires the child signal. Every other exit leaves the contained trees to end on
-  their own, for example the update restart (exit 75, update.rs `exit_for_update`), the shutdown's backstop (exit 1),
-  an accept-loop failure (`server::run` returning an error) and a termination signal (SIGTERM, SIGINT), which the
-  daemon does not handle. Under the systemd unit its cgroup ends them.
+- (p) Closed (0.6.6): every controlled end of the serving daemon fires the child signal (see "controlled exits"
+  below). What no code can do stays a limit: an uncatchable signal, an abort or an OS kill runs no daemon code at all;
+  on Linux the guard ends the daemon's children then, on Windows the jobs do, and on macOS nothing does.
 - Window: see the release notes.
+
+## Update (0.6.6): controlled exits
+
+Every controlled end of the serving daemon takes one terminal, `lifecycle::shutdown::exit`: it fires the child signal on a
+thread of its own, which asks each contained tree to end and reports each failed request; it waits at most two seconds for
+that answer (a child creation stalled in the OS holds the mutex the fire needs, and no exit, the backstop's included,
+waits on it longer); and it makes the daemon's one raw process exit. A request is not an observed death: on Linux the guard
+ends what is left, and on macOS these controlled ends are the only ones that end the daemon's children.
+
+The main future's result becomes a status while the runtime still exists: Ok is 0, an error is printed and is 1, a panic of
+the future is 101. A finished close exits 0; the shutdown's backstop exits 1; the update restart exits 75, and only while no
+shutdown has begun: the update is committed under the lease lock (`Leases::commit_update`, which moves the lease to
+`Updating`, so no close begins afterwards and none is granted) and the exit, with its wait for the fire, comes after the
+lock is released; a close that began first keeps its own exit. INT and TERM are caught on a thread of their own with a
+runtime of its own, unblocked whatever mask the daemon inherited and checked to be deliverable, and end the daemon as 130
+and 143, however stalled its main runtime is; a failed installation refuses the boot. A bad `agent-exec` recipe is 2, a
+missing `sot-capsule` or a state dir that is not private is 1 and no derivable config directory is 78. The guard exits as
+the daemon did, so a launcher sees these codes. Capsules are outside all of this by design (an update restart or a window
+Keep leaves them running).
 
 ## Update (0.6.6): hub relay locality
 

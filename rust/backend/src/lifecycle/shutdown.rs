@@ -1,11 +1,12 @@
 //! shutdown.rs — ending this computer's sessions without resuming any,
-//! and the signal that takes the daemon's own children down with it.
+//! and the one terminal every controlled daemon exit goes through.
 //!
 //! [`end_rows`] ends every capsule row and the drawer by one deadline,
 //! retrying a refused end once per second; any other row, and what it
 //! could not end, is counted, never guessed. The daemon's own children
-//! end through [`super::child_signal`]: its signal fires once and kills
-//! every contained tree.
+//! receive checked termination requests through [`super::child_signal`]:
+//! [`exit`] fires its signal before the one raw process exit, and does not
+//! wait for any tree to die.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -40,11 +41,12 @@ pub(crate) fn shutdown_bound() -> Duration {
 }
 
 /// The shutdown (1.4), after step 1 stopped the accepting; it never
-/// returns. Step 0 is a backstop thread that exits 1 at the bound, for
-/// the next start to finish. Steps 2 and 3 share the rows deadline,
+/// returns. Step 0 is a backstop thread that exits 1 at the bound through [`exit`], for
+/// the next start to finish; a stalled OS child creation or adoption can delay that exit's
+/// fire. Steps 2 and 3 share the rows deadline,
 /// `decided + bound - SHUTDOWN_TAIL`; the tail is not scaled with an
-/// overridden bound, because steps 4 to 6 take as long either way. Then the daemon's own children, the final
-/// record, the waiting closer's answer, and exit 0.
+/// overridden bound, because steps 4 to 6 take as long either way. Then the final
+/// record, the waiting closer's answer, and exit 0 through [`exit`], which fires the child signal.
 pub(crate) async fn run(
     leases: Arc<Leases>,
     workspaces: Workspaces,
@@ -55,8 +57,8 @@ pub(crate) async fn run(
     let backstop = bound.saturating_sub(decided.elapsed());
     std::thread::spawn(move || {
         std::thread::sleep(backstop);
-        tracing::error!("shutdown still running after {bound:?}: exiting 1; the next start finishes it");
-        std::process::exit(1);
+        tracing::error!("shutdown still running after {bound:?}: exiting 1 after the child fire; the next start finishes it");
+        exit(1);
     });
     leases.begin_close();
     tracing::info!("shutting down: ending this computer's sessions");
@@ -83,10 +85,6 @@ pub(crate) async fn run(
         }
     };
 
-    if let Err(error) = fire() {
-        tracing::error!(%error, "shutdown child fire failed");
-    }
-
     if let Err(e) = leases.finish_shutdown(report.not_ended, report.forget.clone()) {
         tracing::error!("shutdown: the final held record was not written: {e}");
     }
@@ -95,7 +93,56 @@ pub(crate) async fn run(
         let _ = tokio::time::timeout(wait, leases.answered()).await;
     }
     tracing::info!(ended = report.ended.len(), not_ended = report.not_ended, "shutdown complete");
-    std::process::exit(bounds::EXIT_REQUESTED_SHUTDOWN)
+    exit(bounds::EXIT_REQUESTED_SHUTDOWN)
+}
+
+/// How long the exit waits for the fire to answer before it exits anyway.
+const FIRE_WAIT: Duration = Duration::from_secs(2);
+
+/// Fire the child signal and then take the one raw daemon exit. A controlled exit of the serving daemon (the close, the
+/// backstop, an update restart, a handled signal, the main result) comes here, so each contained tree is asked to end
+/// first. Request errors are logged and the chosen code stands; this is no wait for death, and the exit waits no longer
+/// than [`FIRE_WAIT`] for the requests either: a child creation stalled in the OS holds the mutex the fire needs, and the
+/// exit, the backstop's included, does not depend on it.
+pub(crate) fn exit(code: i32) -> ! {
+    terminal(super::child_signal::process(), code, |code| {
+        std::process::exit(code)
+    })
+}
+
+/// The terminal body: fire `signal` on a thread of its own, wait at most [`FIRE_WAIT`] for it, then hand `code` to
+/// `terminate`. A test supplies a private signal and a callback.
+pub(super) fn terminal<T>(
+    signal: &'static super::child_signal::Signal,
+    code: i32,
+    terminate: impl FnOnce(i32) -> T,
+) -> T {
+    let (sent, answered) = std::sync::mpsc::channel();
+    let started = std::thread::Builder::new()
+        .name("sotd-fire".into())
+        .spawn(move || {
+            let _ = sent.send(signal.fire());
+        });
+    let fired = match started {
+        Ok(_) => answered.recv_timeout(FIRE_WAIT).ok(),
+        // No thread to wait on: fire here, as the exit has no other way to ask.
+        Err(error) => {
+            tracing::error!(%error, "terminal child fire: no thread to run it on");
+            Some(signal.fire())
+        }
+    };
+    match fired {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            tracing::error!(%error, "terminal child fire failed");
+            eprintln!("sotd: terminal child fire failed: {error}");
+        }
+        None => {
+            tracing::error!("terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
+            eprintln!("sotd: terminal child fire still running after {FIRE_WAIT:?}: exiting with {code} regardless");
+        }
+    }
+    terminate(code)
 }
 
 /// What [`end_rows`] did. `ended` and `forget` are both ended runs;
@@ -347,12 +394,51 @@ where
     }
 }
 
-use super::child_signal::fire;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::rows::run::end_run::EndRunOutcome as O;
+
+    /// A child creation stalled in the OS holds the registry mutex the fire needs: the terminal hands its code on after the
+    /// wait, and the fire completes when the creation does.
+    #[cfg(unix)]
+    #[test]
+    fn the_terminal_does_not_wait_for_a_stalled_creation() {
+        use crate::lifecycle::child_signal::Signal;
+        use std::sync::{mpsc, Barrier};
+        let signal: &'static Signal = Box::leak(Box::new(Signal::new()));
+        let released = Arc::new(Barrier::new(2));
+        let (entered, arrived) = mpsc::channel();
+        let hook_released = released.clone();
+        *signal.after_create.lock().unwrap() = Some(Box::new(move |_| {
+            entered.send(()).unwrap();
+            hook_released.wait();
+        }));
+        let creation = std::thread::spawn(move || {
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg("600");
+            if let Ok(mut child) = signal.spawn_std(&mut cmd) {
+                let _ = child.kill();
+            }
+        });
+        arrived
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the creation did not stall");
+        let began = std::time::Instant::now();
+        let code = terminal(signal, 7, |code| code);
+        let waited = began.elapsed();
+        released.wait();
+        creation.join().unwrap();
+        assert_eq!(code, 7);
+        assert!(
+            waited < Duration::from_secs(5),
+            "the terminal waited {waited:?} for a stalled creation"
+        );
+        assert!(
+            signal.is_fired(),
+            "the permanent flag was not published before the wait"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn end_with_retry_table() {

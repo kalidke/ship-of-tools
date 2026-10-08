@@ -48,7 +48,7 @@ pub(crate) fn agent_exec() -> ! {
     #[cfg(not(unix))]
     {
         eprintln!("sotd agent-exec is not supported on this platform");
-        std::process::exit(2);
+        crate::lifecycle::shutdown::exit(2);
     }
     #[cfg(unix)]
     {
@@ -58,7 +58,7 @@ pub(crate) fn agent_exec() -> ! {
             Ok(argv) => argv,
             Err(msg) => {
                 eprintln!("sotd agent-exec: {msg}");
-                std::process::exit(2);
+                crate::lifecycle::shutdown::exit(2);
             }
         };
         for var in crate::agents::env::NESTING_ENV_VARS_TO_SCRUB {
@@ -74,6 +74,6 @@ pub(crate) fn agent_exec() -> ! {
         #[allow(clippy::disallowed_methods, reason = "`sotd agent-exec` replaces its own process with the agent; no daemon runs here")]
         let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
         eprintln!("sotd agent-exec: exec {:?} failed: {err}", argv[0]);
-        std::process::exit(2);
+        crate::lifecycle::shutdown::exit(2);
     }
 }

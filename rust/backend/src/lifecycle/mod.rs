@@ -6,6 +6,7 @@ pub(crate) mod contain;
 pub(crate) mod daemon_children;
 pub(crate) mod lease;
 pub(crate) mod shutdown;
+pub(crate) mod signal_exit;
 pub(crate) mod startup;
 
 #[cfg(test)]

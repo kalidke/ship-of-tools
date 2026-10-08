@@ -44,7 +44,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `fe.leaving`, `scripts/sot-lease.ps1`, `launcher_bounds_match_ops`, `scripts/tests/installer-state.sh`,
 `is_release_build`, `rust/backend/src/update.rs`, `rust/frontend/src/selfupdate.rs`, `version_line`, `--version`,
 `sotd topology plan|sync|status`, `sotd session-socket-path`, `launch-sot.sh`, `Get-SotTopologyPlan`,
-`scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::while_open`, `julia::resolve_bin`, `check_remote_fs`,
+`scripts/lib/sot-daemon.sh`, `sotd stdio-bridge`, `Leases::commit_update`, `julia::resolve_bin`, `check_remote_fs`,
 `scripts/install.sh`, `REMOTE_FS_TYPES`, `docs/make.jl`, `.github/workflows/CI.yml`,
 `sotd trust declare <absolute-prefix>`.
 
