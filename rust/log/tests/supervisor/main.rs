@@ -378,7 +378,7 @@ fn writer_lock_path(state_dir: &Path, voyage: &str) -> PathBuf {
 }
 
 /// Each probe takes its lock and drops it before returning: locks conflict between two opens in one process, so
-/// a probe that kept the fence would make the writer probe, or a supervisor lane request, see a live holder.
+/// a probe that kept its lock would make the next probe of that lock read a live holder.
 fn fence_free(state_dir: &Path) -> bool {
     journal::fence::lock_supervisor(state_dir).is_ok()
 }
@@ -441,7 +441,7 @@ fn end_what_outlived(state_dir: &Path) {
 }
 
 /// The body that runs in the child of `a_killed_test_process_leaves_no_capsule_process`: a supervisor and its leg on
-/// the parent's state folder, a `ready` record naming the voyage, then a wait on stdin that only the parent's kill
+/// the parent's state folder, an empty `ready` marker, then a wait on stdin that only the parent's kill
 /// (or its death) ends. It does not make a runtime folder: it uses the parent's, which the parent removes.
 fn killed_child_body(name: &str, dir: &Path) {
     sot_log::test_isolated::enter(name);
@@ -449,9 +449,9 @@ fn killed_child_body(name: &str, dir: &Path) {
     std::fs::create_dir_all(&state_dir).unwrap();
     let _capsule = spawn_supervisor(&state_dir, "--start", SHELL);
     let conn = wait_for_lane(&state_dir_hash(&state_dir), Duration::from_secs(30));
-    let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
+    wait_for_ready(&conn, Duration::from_secs(90));
     let pending = dir.join("ready.tmp");
-    std::fs::write(&pending, &voyage).unwrap();
+    std::fs::write(&pending, b"").unwrap();
     std::fs::rename(&pending, dir.join("ready")).unwrap();
     std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
 }
@@ -489,7 +489,8 @@ fn a_killed_test_process_leaves_no_capsule_process() {
                 Some(exit) => panic!("the test process ended ({exit}) before its capsule was ready:\n{}", child_log()),
                 None => std::fs::read_to_string(&ready).ok(),
             },
-            Duration::from_secs(120),
+            // The child's own bounds (30 s lane, 90 s Ready) plus its start, so its specific failure is the one reported.
+            Duration::from_secs(150),
             "the test process to start its capsule",
         );
         assert!(!fence_free(&state_dir), "precondition: the supervisor holds its fence");
@@ -497,15 +498,14 @@ fn a_killed_test_process_leaves_no_capsule_process() {
         assert!(!writer_free(&writer_lock_path(&state_dir, &voyage)), "precondition: the leg holds the writer lock");
     }));
     let _ = child.kill();
-    let reaped =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sot_log::test_isolated::wait_within(&mut child, Duration::from_secs(5))));
+    let reaped = sot_log::test_isolated::wait_until(&mut child, Instant::now() + Duration::from_secs(5));
     let gone = before_kill.is_ok() && reaped.is_ok() && capsule_gone_within(&state_dir, Duration::from_secs(5));
     end_what_outlived(&state_dir);
 
     if let Err(unwind) = before_kill {
         std::panic::resume_unwind(unwind);
     }
-    let exit = reaped.unwrap_or_else(|unwind| std::panic::resume_unwind(unwind));
+    let exit = reaped.unwrap_or_else(|e| panic!("{e}"));
     assert!(!exit.success(), "the killed test process reported success: {exit}");
     entry.assert_once(child.id());
     assert!(gone, "the capsule outlived its killed test process (the fence or the writer lock was still held 5 s after the kill)");

@@ -12,6 +12,9 @@
 //!   it. No binary that includes this file builds on macOS, so nothing is claimed for it there.
 //! - Windows: the supervise child is put in a kill-on-close job right after it starts, and its legs, which
 //!   inherit the job, end when the test process's last handle to it closes.
+//! "Ends" means signalled: `Drop` returns once the kill is sent, so a leg may still hold its writer lock for a few
+//! milliseconds; a test that restarts on the same state folder waits on `writer.lock`. A leg adopted by a second
+//! guard's supervisor stays in the FIRST guard's group (or job), so it ends when the first guard drops.
 //! Included by each test file with `#[path = "support/capsule_guard.rs"] mod capsule_guard;`.
 
 use std::process::{Child, Command};
@@ -19,7 +22,7 @@ use std::time::{Duration, Instant};
 
 pub struct CapsuleGuard {
     child: Option<Child>,
-    /// Unix: the process-group leader whose exit ends the capsule's group; see the module doc.
+    /// Unix: the process-group leader that SIGKILLs the capsule's group once its lifeline closes; see the module doc.
     #[cfg(unix)]
     watcher: Option<watcher::Watcher>,
     /// Windows: the job the supervisor and everything it starts run in; the
@@ -39,7 +42,7 @@ mod watcher {
     pub struct Watcher {
         pub child: Child,
         /// Held until the guard drops or the test process dies; closing it is the kill order.
-        pub lifeline: Option<PipeWriter>,
+        pub lifeline: PipeWriter,
     }
 
     impl Watcher {
@@ -53,7 +56,7 @@ mod watcher {
                 .stderr(Stdio::null())
                 .spawn()
                 .expect("start the capsule watcher");
-            Watcher { child, lifeline: Some(lifeline) }
+            Watcher { child, lifeline }
         }
     }
 }
@@ -102,8 +105,10 @@ mod job {
 
 impl CapsuleGuard {
     /// Starts `command` (a `sot-capsule` invocation) under the guard. Panics when the capsule cannot be bound to
-    /// the test process's life; the unwind drops the guard, which ends whatever started, so no guard whose capsule
-    /// could outlive its test is ever returned.
+    /// the test process's life; the unwind drops the guard, which ends the supervisor and, through the group or the
+    /// job, any leg already started, so no guard whose capsule could outlive its test is ever returned. Two windows,
+    /// both before any leg exists, are not covered: on Windows between the process start and its assignment to the
+    /// job, on Unix when the watcher is found dead (only the supervisor is then ended).
     pub fn spawn(command: &mut Command) -> Self {
         let mut guard = Self {
             child: None,
@@ -148,11 +153,17 @@ impl CapsuleGuard {
     }
 }
 
-/// Waits for `child` to exit, bounded: a process stuck in uninterruptible sleep must not hang the binary.
-fn reap_within_bound(child: &mut Child) {
+/// Waits for `child` to exit, bounded: a process stuck in uninterruptible sleep must not hang the binary. `None`
+/// when it did not exit in time or could not be waited on.
+fn reap_within_bound(child: &mut Child) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(30);
-    while !matches!(child.try_wait(), Ok(Some(_)) | Err(_)) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Err(_) => return None,
+            Ok(None) if Instant::now() >= deadline => return None,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
     }
 }
 
@@ -161,14 +172,20 @@ impl Drop for CapsuleGuard {
         // Never panic here: a panic during unwinding aborts the process.
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
-            reap_within_bound(&mut c);
+            let _ = reap_within_bound(&mut c);
         }
         #[cfg(unix)]
-        if let Some(mut w) = self.watcher.take() {
+        if let Some(watcher) = self.watcher.take() {
+            use std::os::unix::process::ExitStatusExt;
             // The watcher kills the group, legs included, once the write end closes; reaping it after is what
             // keeps the group id from being reused before that kill.
-            drop(w.lifeline.take());
-            reap_within_bound(&mut w.child);
+            let watcher::Watcher { mut child, lifeline } = watcher;
+            drop(lifeline);
+            // It ends only through its own SIGKILL of the group; any other end means the group was not killed.
+            match reap_within_bound(&mut child) {
+                Some(status) if status.signal() == Some(9) => {}
+                other => eprintln!("CapsuleGuard: the capsule's watcher ended with {other:?}, not by its own SIGKILL; its process group may have survived"),
+            }
         }
     }
 }
