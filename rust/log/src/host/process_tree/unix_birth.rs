@@ -402,6 +402,19 @@ impl Birth {
         self.pid
     }
 
+    /// The descriptors this birth keeps for its owner (the gate's write end and the two status pipes): a child
+    /// forked later by the same process must close them, or it would hold this birth's gate open.
+    pub fn owned_fds(&self) -> Vec<RawFd> {
+        self.gate.iter().map(AsRawFd::as_raw_fd).chain([self.ready.as_raw_fd(), self.error.as_raw_fd()]).collect()
+    }
+
+    /// Let go of the child without ending it: it keeps running and is reaped by whoever its parent becomes when this
+    /// process exits. Returns its pid. A birth that is dropped instead ends its child.
+    pub fn abandon(mut self) -> i32 {
+        self.reaped = true;
+        self.pid
+    }
+
     /// Wait for the child's report that it is set up (or for the step that failed), at most `bound`.
     pub fn ready(&mut self, bound: Duration) -> io::Result<Ready> {
         match read_record(&self.ready, bound)? {

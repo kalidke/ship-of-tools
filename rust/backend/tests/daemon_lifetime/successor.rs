@@ -2,16 +2,18 @@
 //! supervisor fence is taken before a capsule birth is accepted and is carried unbroken to the supervisor's first
 //! act, so a successor that activates the row while the original is held finds the claim, starts no second
 //! supervisor, and later attaches to the original. Real `sotd` and `sot-capsule` on real roots; the original is held
-//! by a phase barrier (`sot_log::test_barrier`) with the fixture's authority over it acknowledged first, the
-//! predecessor is ended by SIGKILL, and nothing the product does is used to clean up.
+//! by a phase barrier (`sot_log::test_barrier`) with the fixture's authority over the held process acknowledged
+//! first, the predecessor is ended by SIGKILL, and nothing the product does is used to clean up.
 //!
-//! Needs the barrier build of the capsule binary (see main.rs). With the ordering of the parent commit the case is
-//! red by design: the original has not yet claimed anything when the successor looks, so the successor starts a
-//! second supervisor that takes the fence, and the original, once released, loses it. The case is `#[ignore]` until
-//! the claim lands in the next commit; `cargo test ... -- --ignored` runs it and shows that red.
+//! The barrier is one of five places on the birth's way to its first act: in the durable parent after the claim and
+//! before the fork (`parent_accepted`), with the supervisor forked and set up (`parent_ready`), before the gate
+//! opens (`parent_release`), in the new supervisor before it adopts the claim (`pre_fence`), and after it adopted
+//! the claim and before it told the parent (`claim_adopted`).
+//!
+//! Needs the barrier build of the capsule binary (see main.rs).
 
 use crate::fixture_owner::Fixture;
-use crate::observations::{BarrierDir, Report};
+use crate::observations::BarrierDir;
 use crate::support::{
     call, connect_and_hello, find_row, poll_until, sot_capsule_exe, Conn, Env, BOUND,
     CAPSULE_EXE_NAME,
@@ -23,24 +25,28 @@ use std::time::{Duration, Instant};
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// How long the successor's activation of the held row is watched for a second birth.
-const ACTIVATION_WINDOW: Duration = Duration::from_secs(20);
+/// How long the successor's activation of the held row is watched for a second birth after it has answered.
+const ACTIVATION_WINDOW: Duration = Duration::from_secs(3);
 
-/// The case's state between its stages: the roots, the barrier folder, the fixture and the held original.
+/// The phases where the held process is the supervisor itself (the original), so one birth has been seen.
+fn original_is_born(phase: &str) -> bool {
+    matches!(phase, "pre_fence" | "claim_adopted")
+}
+
+/// The case's state between its stages: the roots, the barrier folder, the fixture and the held process.
 struct Case {
     env: Env,
     barriers: BarrierDir,
     barrier_dir: String,
     fx: Fixture,
-    workspace_id: String,
-    target: String,
-    original: Report,
-    original_index: usize,
+    phase: &'static str,
+    held_index: usize,
+    create: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Case {
-    /// 1. The predecessor accepts a real capsule row; the original supervisor is held before it claims anything.
-    async fn accept_and_hold() -> Case {
+    /// 1. The predecessor is asked to create a real capsule row; the birth is held at `phase`.
+    async fn accept_and_hold(phase: &'static str) -> Case {
         assert!(
             sot_capsule_exe().is_file(),
             "{CAPSULE_EXE_NAME} not found at {:?}: build it with --features native-barrier into this target first",
@@ -48,56 +54,57 @@ impl Case {
         );
         let env = Env::new("succ");
         let barriers = BarrierDir::new(env._tmp.path());
-        barriers.hold("pre_fence", 1);
+        barriers.hold(phase, 1);
         let barrier_dir = barriers.path().to_string_lossy().into_owned();
-        let mut fx = Fixture::new("successor_activation_with_original_held");
+        let mut fx = Fixture::new(&format!("successor_activation_with_original_held::{phase}"));
         env.spawn_sotd_with_env(&[("SOT_TEST_BARRIER_DIR", &barrier_dir)]);
         let (mut conn, next_id) = connect_and_hello(&env.socket_path).await;
-        let created = call(
-            &mut conn,
-            next_id,
-            op::WORKSPACE_CREATE,
-            serde_json::json!({ "label": "held-row", "project_root": env.workspace_project_root.to_string_lossy(), "runtime": "capsule" }),
-        )
-        .await
-        .payload;
-        assert!(
-            created.get("error").is_none(),
-            "workspace.create failed: {created:?}"
-        );
-        let workspace_id = created["workspace_id"]
-            .as_str()
-            .expect("workspace_id")
-            .to_string();
-        let target = created["session_name"]
-            .as_str()
-            .expect("session_name")
-            .to_string();
-        let original = barriers.reached("pre_fence", 0, BOUND);
-        let original_index = fx
-            .adopt(original.pid, Some(original.created), "original supervisor")
-            .expect("the fixture's authority over the held original, before anything else happens to it");
+        let project = env.workspace_project_root.to_string_lossy().into_owned();
+        // The create does not answer while the birth is held in the parent: it runs in a task the case ends with.
+        let create = tokio::spawn(async move {
+            let _ = call(
+                &mut conn,
+                next_id,
+                op::WORKSPACE_CREATE,
+                serde_json::json!({ "label": "held-row", "project_root": project, "runtime": "capsule" }),
+            )
+            .await;
+        });
+        let began = Instant::now();
+        while !barriers.has_reached(phase, 0) {
+            assert!(
+                began.elapsed() < BOUND,
+                "nothing reached the {phase} barrier within {BOUND:?}; the daemon's log:\n{}",
+                daemon_log(&env)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let held = barriers.reached(phase, 0, BOUND);
+        let held_index = fx
+            .adopt(held.pid, Some(held.created), "held process")
+            .expect(
+                "the fixture's authority over the held process, before anything else happens to it",
+            );
         fx.save(
-            "original_source_domain",
-            format!(
-                "pgid {} sid {} ppid {}",
-                original.pgid, original.sid, original.ppid
-            ),
+            "held_source_domain",
+            format!("pgid {} sid {} ppid {}", held.pgid, held.sid, held.ppid),
         );
         Case {
             env,
             barriers,
             barrier_dir,
             fx,
-            workspace_id,
-            target,
-            original,
-            original_index,
+            phase,
+            held_index,
+            create: Some(create),
         }
     }
 
-    /// 2. The predecessor dies by SIGKILL; the original stays held.
+    /// 2. The predecessor dies by SIGKILL; the held process stays held.
     fn end_predecessor(&mut self) {
+        if let Some(create) = self.create.take() {
+            create.abort();
+        }
         let mut predecessor = self
             .env
             .daemon
@@ -108,24 +115,24 @@ impl Case {
         predecessor.wait().expect("reap the predecessor");
         let alive = !self
             .fx
-            .identity(self.original_index)
+            .identity(self.held_index)
             .exited(Duration::from_millis(300));
-        self.fx
-            .save("original_alive_after_predecessor_death", alive);
+        self.fx.save("held_alive_after_predecessor_death", alive);
+    }
+
+    /// How many supervisors have reached their first act so far.
+    fn births(&self) -> usize {
+        (0..)
+            .take_while(|n| self.barriers.has_reached("pre_fence", *n))
+            .count()
     }
 
     /// 3. The successor boots on the same roots and the held row is activated; what it does about a second
-    /// supervisor, and whether any authority answers while the original is held, is saved. Returns its connection.
-    async fn activate_successor(&mut self) -> (Conn, u64, PathBuf) {
+    /// supervisor, and whether any authority answers while the birth is held, is saved.
+    async fn activate_successor(&mut self) -> (Conn, u64, PathBuf, String) {
         self.env
             .spawn_sotd_with_env(&[("SOT_TEST_BARRIER_DIR", &self.barrier_dir)]);
         let (mut conn, mut next_id) = connect_and_hello(&self.env.socket_path).await;
-        let opened = call(&mut conn, next_id, op::PTY_OPEN, serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": self.target })).await;
-        next_id += 1;
-        self.fx.save(
-            "pty_open_code",
-            opened.payload["code"].as_str().unwrap_or("none"),
-        );
         let listed = call(
             &mut conn,
             next_id,
@@ -135,62 +142,89 @@ impl Case {
         .await
         .payload;
         next_id += 1;
+        let row = listed["workspaces"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["label"] == "held-row"))
+            .unwrap_or_else(|| panic!("the held row was not persisted: {listed:?}"))
+            .clone();
+        let workspace_id = row["workspace_id"]
+            .as_str()
+            .expect("workspace_id")
+            .to_string();
+        let target = row["session_name"]
+            .as_str()
+            .expect("session_name")
+            .to_string();
         let state_dir = PathBuf::from(
-            find_row(&listed, &self.workspace_id)
-                .and_then(|row| row["state_dir"].as_str().map(str::to_owned))
+            find_row(&listed, &workspace_id)
+                .and_then(|r| r["state_dir"].as_str().map(str::to_owned))
                 .expect("the row's state dir"),
         );
-        let deadline = Instant::now() + ACTIVATION_WINDOW;
-        let mut second_birth = None;
-        while Instant::now() < deadline && second_birth.is_none() {
-            if self.barriers.has_reached("pre_fence", 1) {
-                second_birth = Some(self.barriers.reached("pre_fence", 1, BOUND));
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        self.fx.save("second_birth", second_birth.is_some());
-        if let Some(second) = second_birth {
+        let opened = call(
+            &mut conn,
+            next_id,
+            op::PTY_OPEN,
+            serde_json::json!({ "cols": 80, "rows": 24, "user_switch": true, "target": target }),
+        )
+        .await;
+        next_id += 1;
+        self.fx.save(
+            "pty_open_code",
+            opened.payload["code"].as_str().unwrap_or("none"),
+        );
+        tokio::time::sleep(ACTIVATION_WINDOW).await;
+        let births = self.births();
+        self.fx.save("births_while_held", births);
+        // A birth beyond the original is the product's failure; it is adopted so that cleanup can end it.
+        for n in usize::from(original_is_born(self.phase))..births {
+            let second = self.barriers.reached("pre_fence", n, BOUND);
             let _ = self
                 .fx
-                .adopt(second.pid, Some(second.created), "second supervisor");
+                .adopt(second.pid, Some(second.created), "an extra supervisor");
         }
         let answering = status_of(&state_dir).await;
         self.fx
-            .save("authority_answers_while_original_held", answering.is_some());
-        if let Some((pid, created)) = answering {
-            self.fx.save(
-                "answering_authority_is_the_original",
-                pid == self.original.pid && created == self.original.created,
-            );
-        }
-        let alive = !self.fx.identity(self.original_index).exited(Duration::ZERO);
-        self.fx.save("original_alive_during_activation", alive);
-        (conn, next_id, state_dir)
+            .save("authority_answers_while_held", answering.is_some());
+        let alive = !self.fx.identity(self.held_index).exited(Duration::ZERO);
+        self.fx.save("held_alive_during_activation", alive);
+        (conn, next_id, state_dir, workspace_id)
     }
 
-    /// 4. Only now the original is released. It completes its takeover; the successor must reach that same original,
-    /// and a fresh nonce must make the round trip through it.
-    async fn release_and_attach(&mut self, conn: &mut Conn, mut next_id: u64, state_dir: &PathBuf) {
-        self.barriers.open("pre_fence", 0);
+    /// 4. Only now the held process is released. The birth completes; the successor must reach the supervisor the
+    /// first birth forked, and a fresh nonce must make the round trip through it.
+    async fn release_and_attach(
+        &mut self,
+        conn: &mut Conn,
+        mut next_id: u64,
+        state_dir: &PathBuf,
+        workspace_id: &str,
+    ) {
+        self.barriers.open(self.phase, 0);
         let dir = state_dir.clone();
-        let (pid, created) = poll_until(
+        let (pid, created, _) = poll_until(
             || {
                 let dir = dir.clone();
-                async move { status_of(&dir).await }
+                async move { status_of(&dir).await.filter(|status| status.2) }
             },
             BOUND,
-            "an authority to answer once the original is released",
+            "an authority to be ready once the held process is released",
         )
         .await;
+        let original = self.barriers.reached("pre_fence", 0, BOUND);
+        if !original_is_born(self.phase) {
+            // The original was born only now: the fixture takes authority over it for the cleanup.
+            let _ = self.fx.adopt(
+                original.pid,
+                Some(original.created),
+                "the original supervisor",
+            );
+        }
         self.fx.save(
             "authority_after_release_is_the_original",
-            pid == self.original.pid && created == self.original.created,
+            pid == original.pid && created == original.created,
         );
-        let alive = !self
-            .fx
-            .identity(self.original_index)
-            .exited(Duration::from_millis(300));
-        self.fx.save("original_alive_after_release", alive);
+        let births = self.births();
+        self.fx.save("births_in_all", births);
 
         let nonce = format!("l2-nonce-{}", std::process::id());
         let input = call(
@@ -198,7 +232,7 @@ impl Case {
             next_id,
             op::PTY_INPUT,
             serde_json::json!({
-                "workspace_id": self.workspace_id,
+                "workspace_id": workspace_id,
                 "data_b64": base64::engine::general_purpose::STANDARD.encode(format!("echo {nonce}")),
                 "enter": true,
                 "origin": "l2-successor-test",
@@ -214,7 +248,7 @@ impl Case {
                 conn,
                 id,
                 op::PTY_SCREEN,
-                serde_json::json!({ "workspace_id": self.workspace_id }),
+                serde_json::json!({ "workspace_id": workspace_id }),
             )
             .await
             .payload;
@@ -230,7 +264,7 @@ impl Case {
         };
         self.fx.save(
             "nonce_round_trip",
-            format!("{echoed} (input ok: {})", input.payload["ok"]),
+            format!("{echoed} (pty.input answered {})", input.payload),
         );
     }
 
@@ -243,65 +277,109 @@ impl Case {
             "fixture cleanup left survivors: {cleanup:?}"
         );
         let saved = |key: &str| self.fx.saved(key).unwrap_or("not recorded").to_string();
+        let phase = self.phase;
+        let expected_births = usize::from(original_is_born(phase));
         assert_eq!(
-            saved("original_alive_after_predecessor_death"),
+            saved("held_alive_after_predecessor_death"),
             "true",
-            "the original must outlive the predecessor"
+            "{phase}: the held process must outlive the predecessor"
         );
         assert_eq!(
-            saved("second_birth"),
+            saved("births_while_held"),
+            expected_births.to_string(),
+            "{phase}: the successor started a supervisor while the birth was held"
+        );
+        assert_eq!(
+            saved("authority_answers_while_held"),
             "false",
-            "the successor started a second supervisor while the original was held"
+            "{phase}: an authority answered while the birth was held"
         );
         assert_eq!(
-            saved("authority_answers_while_original_held"),
-            "false",
-            "an authority answered while the original was held: {}",
-            saved("answering_authority_is_the_original")
-        );
-        assert_eq!(
-            saved("original_alive_during_activation"),
+            saved("held_alive_during_activation"),
             "true",
-            "the original ended during the successor's activation"
+            "{phase}: the held process ended during the successor's activation"
         );
         assert_eq!(
             saved("authority_after_release_is_the_original"),
             "true",
-            "the authority after the release is not the original"
+            "{phase}: the authority after the release is not the original"
         );
         assert_eq!(
-            saved("original_alive_after_release"),
-            "true",
-            "the original ended after it was released"
+            saved("births_in_all"),
+            "1",
+            "{phase}: more than one supervisor was born"
         );
         assert!(
             saved("nonce_round_trip").starts_with("true"),
-            "the fresh nonce did not come back through the successor: {}",
+            "{phase}: the fresh nonce did not come back through the successor: {}",
             saved("nonce_round_trip")
         );
     }
 }
 
-/// The (pid, start identity) of the authority that answers on `state_dir`'s supervisor lane, if one does.
-async fn status_of(state_dir: &std::path::Path) -> Option<(i32, u64)> {
+/// The tail of the daemon's own log, for a failure message.
+fn daemon_log(env: &Env) -> String {
+    let log = std::fs::read_to_string(env.state_root.join("sot").join("sotd.log"))
+        .unwrap_or_else(|e| format!("(no log: {e})"));
+    log.lines()
+        .rev()
+        .take(40)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The (pid, start identity, ready) of the authority that answers on `state_dir`'s supervisor lane, if one does.
+async fn status_of(state_dir: &std::path::Path) -> Option<(i32, u64, bool)> {
     let dir = state_dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
         sot_log::attach_client::supervisor_client::query_status(&dir)
             .ok()
-            .map(|(report, _)| (report.pid as i32, report.created))
+            .map(|(report, _)| {
+                (
+                    report.pid as i32,
+                    report.created,
+                    report.phase == sot_log::lane::wire::SupervisorPhase::Ready,
+                )
+            })
     })
     .await
     .unwrap()
 }
 
-#[tokio::test]
-#[ignore = "red by design until the claim-before-acceptance ordering lands (R4.2); run with --ignored to see the old-ordering red"]
-async fn successor_activation_with_original_held() {
+async fn run(phase: &'static str) {
     let _serial = SERIAL.lock().await;
-    let mut case = Case::accept_and_hold().await;
+    let mut case = Case::accept_and_hold(phase).await;
     case.end_predecessor();
-    let (mut conn, next_id, state_dir) = case.activate_successor().await;
-    case.release_and_attach(&mut conn, next_id, &state_dir)
+    let (mut conn, next_id, state_dir, workspace_id) = case.activate_successor().await;
+    case.release_and_attach(&mut conn, next_id, &state_dir, &workspace_id)
         .await;
     case.finish().await;
+}
+
+#[tokio::test]
+async fn successor_activation_with_the_birth_accepted_before_the_fork() {
+    run("parent_accepted").await;
+}
+
+#[tokio::test]
+async fn successor_activation_with_the_supervisor_forked_and_gated() {
+    run("parent_ready").await;
+}
+
+#[tokio::test]
+async fn successor_activation_with_the_gate_about_to_open() {
+    run("parent_release").await;
+}
+
+#[tokio::test]
+async fn successor_activation_with_original_held() {
+    run("pre_fence").await;
+}
+
+#[tokio::test]
+async fn successor_activation_with_the_claim_adopted_and_not_yet_acknowledged() {
+    run("claim_adopted").await;
 }

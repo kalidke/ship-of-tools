@@ -1,5 +1,11 @@
 #![cfg(unix)]
-#![cfg_attr(not(target_os = "linux"), allow(dead_code, reason = "the successor case, which uses the barrier folder and the saved results, is Linux only until the macOS authority exists"))]
+#![cfg_attr(
+    not(all(target_os = "linux", feature = "daemon-lifetime-faults")),
+    allow(
+        dead_code,
+        reason = "the successor case, which uses the barrier folder and the saved results, is built only with the barrier build, on Linux until the macOS authority exists"
+    )
+)]
 //! The daemon-lifetime harness: the premises and, from the next commits, the cases of lane L2 (a daemon lifetime and
 //! the children it owns), run on real processes. Nothing here stands in for a daemon, and nothing is proved by
 //! reading source text: a premise is a real launch, a real lock or a real `sotd` and `sot-capsule`, and every death
@@ -13,9 +19,9 @@ mod fixture_owner;
 mod native;
 mod native_premises;
 mod observations;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 mod successor;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "daemon-lifetime-faults"))]
 #[allow(
     dead_code,
     reason = "the shared fixture serves more suites than this one uses"

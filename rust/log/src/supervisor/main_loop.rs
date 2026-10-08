@@ -6,6 +6,37 @@ use super::*;
 // The main authority loop
 // ---------------------------------------------------------------------
 
+/// The fence this authority holds for its whole life.
+enum Fence {
+    Taken(
+        #[allow(dead_code, reason = "held for its Drop")]
+        crate::supervisor::journal::fence::SupervisorLock,
+    ),
+    #[cfg(unix)]
+    Inherited(
+        #[allow(dead_code, reason = "held for its descriptor")] super::birth_claim::BirthClaim,
+    ),
+}
+
+/// Become the authority: adopt the claim this process was born holding and answer the parent that forked it, or, with
+/// none, take the fence now. An adopted claim is the same locked open file description the parent took, so the fence is
+/// never free between the claim and this process's first act (R4: no second descriptor, no second lock).
+fn take_authority(config: &SuperviseConfig) -> crate::Result<Fence> {
+    #[cfg(unix)]
+    if let Some(birth) = config.birth {
+        let claim = super::birth_claim::BirthClaim::adopt(birth.claim_fd, &config.state_dir)?;
+        #[cfg(feature = "native-barrier")]
+        crate::test_barrier::hold("claim_adopted");
+        let (pid, created) = self_pid_and_created().unwrap_or((0, 0));
+        super::birth_claim::acknowledge_takeover(
+            birth.takeover_fd,
+            super::birth_claim::Takeover { pid, created },
+        )?;
+        return Ok(Fence::Inherited(claim));
+    }
+    crate::supervisor::journal::fence::lock_supervisor(&config.state_dir).map(Fence::Taken)
+}
+
 pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     init_process_globals(&config)?;
 
@@ -15,8 +46,8 @@ pub(super) fn supervise_inner(config: SuperviseConfig) -> crate::Result<i32> {
     #[cfg(all(unix, feature = "native-barrier"))]
     crate::test_barrier::hold("pre_fence");
 
-    // ONE AUTHORITY.
-    let _fence = match crate::supervisor::journal::fence::lock_supervisor(&config.state_dir) {
+    // ONE AUTHORITY: the fence this process was born holding, else the one it takes now.
+    let _fence = match take_authority(&config) {
         Ok(f) => f,
         // `Error::State` is the ONE error `lock_supervisor` can return for
         // "already held" (see `EXIT_CONTENDED`'s own doc for why this is

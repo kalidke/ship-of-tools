@@ -11,7 +11,7 @@ of the backend's tests; the suites span subsystems, so this page names no charte
 - `observations.rs`: `wait_for`, and `BarrierDir`, the folder a process held at a phase barrier reports to
 - `native/`: the per-OS process authority (an identity opened while alive; death read from it)
 - `native_premises.rs`: the native launcher and the fence claim on real children (gate, owning return, errors, claim lifetime, source group)
-- `successor.rs`: a successor daemon and a held capsule birth (ignored until the claim-before-acceptance ordering lands)
+- `successor.rs`: a successor daemon and a capsule birth held at each of five phases of its way to its first act: the successor starts no second supervisor and reaches the original (feature `daemon-lifetime-faults`; needs the barrier build of `sot-capsule`)
 - `workers.rs`: the product worker factories read where they stand: a Julia `Distributed` worker against the process that started it (ignored in a plain run; needs Julia)
 
 ## Start here

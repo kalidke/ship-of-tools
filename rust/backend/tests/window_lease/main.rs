@@ -34,7 +34,12 @@ fn state_dir(env: &Env) -> PathBuf {
 /// (the variables `Env::spawn_sotd` sets), owned by the test so its exit
 /// can be awaited.
 fn sotd_on(env: &Env, extra: &[(&str, &str)]) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::from(support::sotd_command());
+    sotd_on_at(env, &support::sotd_program(), extra)
+}
+
+/// [`sotd_on`] for the `sotd` at `program`: a copy of the built one, for a test that stages its own `sot-capsule` beside it.
+fn sotd_on_at(env: &Env, program: &Path, extra: &[(&str, &str)]) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::from(support::sotd_command_at(program));
     cmd.arg("--socket")
         .arg(&env.socket_path)
         .arg("--project-root")
@@ -210,9 +215,14 @@ struct Daemon {
 
 impl Daemon {
     async fn start(env: &Env, extra: &[(&str, &str)]) -> Self {
+        Self::start_at(env, &support::sotd_program(), extra).await
+    }
+
+    /// [`Daemon::start`] with the `sotd` at `program`.
+    async fn start_at(env: &Env, program: &Path, extra: &[(&str, &str)]) -> Self {
         let log = env._tmp.path().join(format!("sotd-{}.log", uuid_ish()));
         let file = std::fs::File::create(&log).expect("create the daemon log");
-        let child = sotd_on(env, extra)
+        let child = sotd_on_at(env, program, extra)
             .env("RUST_LOG", "info")
             .stdout(Stdio::from(file.try_clone().expect("clone the log")))
             .stderr(Stdio::from(file))
@@ -291,10 +301,9 @@ fn stamped(log: &str, needle: &str) -> f64 {
     num(&line[t + 1..t + 3]) * 3600.0 + num(&line[t + 4..t + 6]) * 60.0 + num(line[t + 7..].split('Z').next().unwrap())
 }
 
-/// The "slow row": its supervisor killed by the pid this test read, then
-/// its fence held here, so no end of it can be proven.
+/// The supervisor of the ready row at `state_dir`, killed by the pid this test read from its lane.
 #[cfg(target_os = "linux")]
-async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::SupervisorLock {
+async fn kill_supervisor(state_dir: &Path) {
     let dir = state_dir.to_path_buf();
     let (_status, process) = tokio::task::spawn_blocking(move || sot_log::attach_client::supervisor_client::query_status(&dir))
         .await
@@ -303,6 +312,13 @@ async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::Supe
     // SAFETY: a plain kill of the supervisor this test's daemon spawned.
     unsafe { libc::kill(process.pid() as i32, libc::SIGKILL) };
     drop(process);
+}
+
+/// The "slow row": its supervisor killed by the pid this test read, then
+/// its fence held here, so no end of it can be proven.
+#[cfg(target_os = "linux")]
+async fn slow_row(state_dir: &Path) -> sot_log::supervisor::journal::fence::SupervisorLock {
+    kill_supervisor(state_dir).await;
     let dir = state_dir.to_path_buf();
     poll_until(|| { let dir = dir.clone(); async move { sot_log::supervisor::journal::fence::lock_supervisor(&dir).ok() } }, BOUND, "the row's fence").await
 }

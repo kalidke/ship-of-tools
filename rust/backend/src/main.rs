@@ -309,6 +309,13 @@ async fn main() -> Result<()> {
             // the agents above a comm script. A pure query like the arms around it.
             "ancestors" => std::process::exit(comm::registry::ancestors::run(&std::env::args().skip(2).collect::<Vec<_>>())),
             "agent-exec" => agents::ops::agent_exec(),
+            // The capsule-only birth parent (`rows::spawn::durable`): the daemon starts it over a private channel it
+            // holds as standard input. Not a user command, so it is in no usage text.
+            #[cfg(unix)]
+            "durable-parent" => {
+                apply_umask();
+                std::process::exit(rows::spawn::durable::parent::run());
+            }
             // The last inch of a cross-host dial: connect to THIS box's
             // own endpoint for a label and shuttle stdin/stdout. Sits in
             // this early block for the same reason the queries above do —
@@ -437,6 +444,14 @@ async fn main() -> Result<()> {
 
     // Every session's SOTD_BIN is this start's own path, made absolute once, now (agents::env::own_sotd_bin).
     let _ = agents::env::own_sotd_bin();
+
+    // The capsule-only birth parent, started now from the image this daemon started from: an in-place update replaces
+    // that file later, and a parent started after it would run the replacement. A failure here is not fatal; the
+    // first capsule launch tries again and reports its own.
+    #[cfg(unix)]
+    if let Err(e) = rows::spawn::durable::start_parent() {
+        tracing::warn!(error = %e, "durable parent: not started at boot; the first capsule launch will try again");
+    }
 
     tracing::info!(
         socket = ?opts.socket,

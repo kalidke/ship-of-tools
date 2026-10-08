@@ -108,7 +108,9 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | process `sot` (the window) | process | fe-ui | `rust/frontend/src/main.rs` `main` |
 | starting this computer's daemon (`sot_daemon_ensure`, `sot-local-daemon.ps1`) | process | distribution | `scripts/lib/sot-daemon.sh` `sot_daemon_ensure`; `scripts/sot-local-daemon.ps1` |
 | window supervisor (respawn on 75/76, crash-loop rollback) | process | distribution | `scripts/launch-sot.ps1`; `scripts/lib/sot-daemon.sh` `render_sot_launch` |
-| process `sot-capsule supervise` (spawned by rows) | process | capsule | `rust/log/src/bin/sot-capsule.rs`; `rust/log/src/supervisor/mod.rs` `supervise`; spawn `rust/backend/src/rows/spawn/detach.rs` `spawn_detached_supervisor` |
+| process `sot-capsule supervise` (spawned by rows) | process | capsule | `rust/log/src/bin/sot-capsule.rs`; `rust/log/src/supervisor/mod.rs` `supervise`; spawn `rust/backend/src/rows/spawn/detach.rs` `spawn_detached_supervisor`, forked by the durable parent `rust/backend/src/rows/spawn/durable/accept.rs` `accept` (Windows: created by `spawn_detached`) |
+| process `sotd durable-parent` (the capsule-only birth parent, one per daemon, started at boot and again if lost) | process | rows | `rust/backend/src/rows/spawn/durable/parent.rs` `run`; start `rust/backend/src/rows/spawn/durable/proxy.rs` `Client::start` |
+| a capsule birth's claim on `<sd>/supervisor.lock`, carried from acceptance to the supervisor's first act | disk, lock | capsule | `rust/log/src/supervisor/birth_claim.rs` `BirthClaim`; `rust/log/src/host/lock.rs` `HandoverLock`; adoption `rust/log/src/supervisor/main_loop.rs` `take_authority`; taken by `rust/backend/src/rows/spawn/durable/accept.rs` `accept` |
 | process `sot-capsule run` (leg) | process | capsule | `rust/log/src/supervisor/leg.rs` `build_run_command`; `rust/log/src/capsule/writer_loop/mod.rs` `run` |
 | the agent program (claude, codex): the launch recipe (the leg runs it) | process | agents | `rust/backend/src/agents/argv.rs` `agent_argv`; `rust/log/src/capsule/producer/pty/mod.rs`; `rust/log/src/capsule/producer/conpty/producer.rs` |
 | Julia kernel per workspace | process | sidecars | `rust/backend/src/sidecars/kernel.rs` `Kernel`, `run_one_generation` |
@@ -239,6 +241,7 @@ to route it. A shell, PowerShell or Julia twin of a Rust rule is owned by the ru
 | sotd subcommand `ancestors` | CLI | messaging | `rust/backend/src/comm/registry/ancestors.rs` `run` |
 | sotd subcommand `trust declare` | CLI | agents | `rust/backend/src/agents/trust_declaration.rs` `declare_trust`; routing `rust/backend/src/main.rs` |
 | sotd subcommand `agent-exec` | CLI | agents | `rust/backend/src/agents/ops.rs` `agent_exec` |
+| sotd subcommand `durable-parent` (private; its standard input is the daemon's channel) | CLI | rows | `rust/backend/src/rows/spawn/durable/parent.rs` `run`; routing `rust/backend/src/main.rs` |
 | sot flags `--dial`, `--socket` | CLI | fe-net | `rust/frontend/src/cli.rs` `Cli`; `rust/frontend/src/net/dial.rs` `parse_dial_arg`, `resolve_connections` |
 | sot flags `--capture`, `--ephemeral` | CLI | fe-ui | `rust/frontend/src/cli.rs` `Cli`; `rust/frontend/src/ui/render/capture.rs` |
 | sot flag `--no-lease` | CLI | lifecycle | `rust/frontend/src/lease.rs` `lease_exempt` |

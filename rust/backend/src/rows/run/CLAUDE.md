@@ -12,6 +12,7 @@ paths, and the headless attach client. Part of the daemon's rows subsystem; char
 - `observer.rs`: the per-row lifecycle observer task, `observe` and `observe_with_adoption`
 - `headless.rs`: the daemon's own attach client: `type_into`, `write_and_enter`, `screen_of`, `checkpointed` (the checkpoint wait every attach goes through; it shuts the client down on failure), `HeadlessError`
 - `start.rs`: `spawn_and_watch`, `start_supervisor`, `reset_run` (the run gate) and `settle_after_spawn`
+- `admission.rs`: the pending-authority refusal a start is told when the row's authority fence is already claimed
 - `activation.rs`: `ensure_started` (start on attach), `resume_if_absent`, `resume_locked`, `ActivationIntent`
 - `watchdog.rs`: `install_watchdog`, the exit classes (`LegOutcome`) and the restart budget (`RESTART_BACKOFFS`)
 - `resume.rs`: `resume_all`, the boot resume of every registered row whose pointer exists
@@ -36,4 +37,8 @@ destroy proof. `observer.rs::ensure_running` for how a row's phase is polled; `h
 - Every run start passes the gate (`start::start_supervisor`, `start::reset_run`).
 - Every change to a row's supervisor holds the row's guard (`activation::ensure_started`, `activation::resume_if_absent`,
   `watchdog::install_watchdog`).
+- A start whose row's authority fence is already claimed forks nothing and is told the authority is pending
+  (`admission::PENDING_AUTHORITY`, from `spawn_detached_supervisor`'s `Spawn::Contended`): `ensure_started` waits
+  `ADMISSION_PENDING_PASSES` passes with the row's guard released and then reports the pending refusal, never an
+  attach and never a second supervisor; the watchdog's restart leaves the row for the next attach, as for exit 70.
 - Boot resume spawns nothing for a live authority (`resume::resume_all` through `activation::resume_locked`).

@@ -21,6 +21,7 @@ test fixtures that the suites in `rust/log/tests` launch. Part of capsule; chart
   The other four binaries are never packaged.
 - `sot-capsule run` exits with the agent's code: `cmd_run` maps `ExitStatus::Code(c)` to c and `Signal(n)` to 128+n.
   `supervise` exits with the code `sot_log::supervisor::supervise` returns (0, 69 `EXIT_TERMINAL` or 70
-  `EXIT_CONTENDED`), or 2 on a usage error. These codes are an interface with the daemon.
+  `EXIT_CONTENDED`), or 2 on a usage error. These codes are an interface with the daemon. On Unix `supervise` also takes
+  `--claim-fd <n> --takeover-fd <n>` together, the fence claim the daemon's durable parent forked it holding.
 - The two pty helpers emit identical bytes because both `#[path]`-include `support/helper_common.rs`.
 - The helpers and the fault writer are reached by `rust/log/tests` through `CARGO_BIN_EXE_*` only.

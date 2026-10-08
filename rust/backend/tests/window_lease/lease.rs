@@ -444,24 +444,56 @@ async fn closing_flag_spans_shutdown() {
 async fn shutdown_bound_is_end_to_end() {
     let _serial = SERIAL.lock().await;
     let env = Env::new("endtoend");
-    let mut daemon = Daemon::start(&env, &[("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"), ("SOT_TEST_SPAWN_SETTLE_MS", "5000")]).await;
+    // The daemon runs from a stage of its own, beside a `sot-capsule` that is the real one until a marker exists and
+    // then a process that holds the claim a start gives it and serves nothing (it writes its pid first, for the end).
+    let stage = tempfile::tempdir().expect("a stage folder");
+    for (from, to) in [(support::sotd_program(), stage.path().join("sotd"))] {
+        if std::fs::hard_link(&from, &to).is_err() {
+            sot_log::test_exec::write_executable(&to, std::fs::read(&from).expect("read the binary to stage"));
+        }
+    }
+    let (marker, pid_file) = (stage.path().join("slow-start"), stage.path().join("stub.pid"));
+    sot_log::test_exec::write_executable(
+        &stage.path().join(support::CAPSULE_EXE_NAME),
+        format!(
+            "#!/bin/sh\nif [ -e \"$SOT_L2_STUB_MARKER\" ]; then\n  echo $$ > \"$SOT_L2_STUB_PID\"\n  echo \"stub supervisor: holding the claim\" >&2\n  exec sleep 600\nfi\nexec \"{}\" \"$@\"\n",
+            support::sot_capsule_exe().display()
+        ),
+    );
+    let mut daemon = Daemon::start_at(
+        &env,
+        &stage.path().join("sotd"),
+        &[
+            ("SOT_TEST_SHUTDOWN_BOUND_MS", "19000"),
+            ("SOT_TEST_SPAWN_SETTLE_MS", "5000"),
+            ("SOT_L2_STUB_MARKER", marker.to_str().unwrap()),
+            ("SOT_L2_STUB_PID", pid_file.to_str().unwrap()),
+        ],
+    )
+    .await;
     let (mut conn, mut next_id) = connect_and_hello(&env.socket_path).await;
     let (_id, row_dir) = create_row(&env, &mut conn, &mut next_id, "slow").await;
     drop(conn);
     let (mut w, _) = Window::open(&env.socket_path).await;
-    let _fence = slow_row(&row_dir).await;
-    // The watchdog restarts the killed supervisor 1 s later and holds that run start through its settle, 5 s here;
-    // the new supervisor finds the fence held and logs it. The close lands about 0.3 s into the settle.
+    // From here a start is the stub: the supervisor is killed and the watchdog's restart, 1 s later, claims the fence
+    // and forks a process that never answers. That run start is held through its settle, 5 s here, and the claim
+    // keeps the row from being proven ended. The close lands about 0.3 s into the settle.
+    std::fs::write(&marker, b"").expect("mark the next start slow");
+    kill_supervisor(&row_dir).await;
     let log_path = state_dir(&env).join("sotd.log");
     let until = Instant::now() + BOUND;
-    while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("authority fence already held") {
+    while !std::fs::read_to_string(&log_path).unwrap_or_default().contains("stub supervisor: holding the claim") {
         assert!(Instant::now() < until, "the watchdog never restarted the slow row: {}", daemon.said());
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let stub: i32 = std::fs::read_to_string(&pid_file).expect("the stub wrote its pid").trim().parse().expect("a pid");
     let ack = w.ask("close", EXIT_WITHIN).await;
     // No `ack` is sent, so the closer's notice waits out its own bound; exit 0
     // (the backstop's is 1) proves the whole shutdown fit inside the bound.
     assert_eq!(daemon.exit_within(EXIT_WITHIN).await, Some(0), "{}", daemon.said());
+    // SAFETY: a plain kill of the stub this test's daemon started and whose pid the stub wrote; it is ended here, or it
+    // would sleep out its 600 s.
+    unsafe { libc::kill(stub, libc::SIGKILL) };
     // Steps 2 and 3 share one rows deadline, decided + budget (9 s), which the hold ends before. The refused row, retried
     // 1 s apart, is let go between budget - 1 and budget + 0.4 (timer and log slack). A fresh step-3 deadline lets it go
     // at least held + budget - 1 in: past the upper bound only if held >= 1.4, which the last assert requires.

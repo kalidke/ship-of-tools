@@ -300,9 +300,45 @@ where
     }
 }
 
+/// A descriptor number flag's value, or the usage and exit 2.
+fn fd_flag(value: &str, usage: &str) -> i32 {
+    value.parse().unwrap_or_else(|_| {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    })
+}
+
+/// The claim flags of `supervise`: both or neither (usage and exit 2 otherwise), and Unix only.
+#[cfg(unix)]
+fn birth_from_flags(
+    claim_fd: Option<i32>,
+    takeover_fd: Option<i32>,
+    usage: &str,
+) -> Option<sot_log::supervisor::birth_claim::InheritedBirth> {
+    if claim_fd.is_some() != takeover_fd.is_some() {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    claim_fd.zip(takeover_fd).map(|(claim_fd, takeover_fd)| {
+        sot_log::supervisor::birth_claim::InheritedBirth {
+            claim_fd,
+            takeover_fd,
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn birth_from_flags(claim_fd: Option<i32>, takeover_fd: Option<i32>, usage: &str) -> Option<()> {
+    if claim_fd.is_some() || takeover_fd.is_some() {
+        eprintln!("{usage}");
+        std::process::exit(2);
+    }
+    None
+}
+
 /// `sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
-/// [--rows <n>] [--first-leg-without <token>]... --assume-no-rollback-target
-/// -- <cmd> [args...]` (ADR 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
+/// [--rows <n>] [--first-leg-without <token>]... [--claim-fd <n> --takeover-fd <n>]
+/// --assume-no-rollback-target -- <cmd> [args...]` (ADR 0041 step 6 U2): the authority. `--assume-no-rollback-target` is
 /// mandatory here for the exact reason `run`'s own copy of it is — see
 /// `sot_log::supervisor`'s own module doc. `--first-leg-without` is
 /// repeatable and agent-agnostic: this binary knows nothing about `claude`
@@ -314,7 +350,7 @@ where
 fn cmd_supervise(args: &[String]) {
     let usage = "usage: sot-capsule supervise <state_dir> <--start|--resume> [--cols <n>] \
 [--rows <n>] [--survival <normal|degraded>] [--first-leg-without <token>]... \
---assume-no-rollback-target -- <cmd> [args...]";
+[--claim-fd <n> --takeover-fd <n>] --assume-no-rollback-target -- <cmd> [args...]";
     if args.len() < 3 {
         eprintln!("{usage}");
         std::process::exit(2);
@@ -339,8 +375,19 @@ fn cmd_supervise(args: &[String]) {
     // predates the flag.
     let mut survival = sot_log::lane::wire::Survival::Normal;
     let mut first_leg_without: Vec<String> = Vec::new();
+    // The claim a spawning parent took on the fence for this birth, and the channel to answer it on (Unix).
+    let mut claim_fd: Option<i32> = None;
+    let mut takeover_fd: Option<i32> = None;
     loop {
         match rest.first().map(String::as_str) {
+            Some("--claim-fd") if rest.len() > 1 => {
+                claim_fd = Some(fd_flag(&rest[1], usage));
+                rest = &rest[2..];
+            }
+            Some("--takeover-fd") if rest.len() > 1 => {
+                takeover_fd = Some(fd_flag(&rest[1], usage));
+                rest = &rest[2..];
+            }
             Some("--cols") if rest.len() > 1 => {
                 cols = rest[1].parse().unwrap_or_else(|_| {
                     eprintln!("{usage}");
@@ -382,6 +429,7 @@ fn cmd_supervise(args: &[String]) {
         std::process::exit(2);
     }
     let producer_argv: Vec<String> = rest[1..].to_vec();
+    let birth = birth_from_flags(claim_fd, takeover_fd, usage);
     let config = sot_log::supervisor::SuperviseConfig {
         state_dir,
         mode,
@@ -391,7 +439,11 @@ fn cmd_supervise(args: &[String]) {
         assume_no_rollback_target,
         survival,
         first_leg_without,
+        #[cfg(unix)]
+        birth,
     };
+    #[cfg(not(unix))]
+    let _ = birth;
     std::process::exit(sot_log::supervisor::supervise(config));
 }
 

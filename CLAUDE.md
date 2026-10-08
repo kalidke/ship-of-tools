@@ -81,6 +81,7 @@ root; lanes edit only their own folder's page.
 @rust/backend/src/rows/reauth/CLAUDE.md
 @rust/backend/src/rows/run/CLAUDE.md
 @rust/backend/src/rows/spawn/CLAUDE.md
+@rust/backend/src/rows/spawn/durable/CLAUDE.md
 @rust/backend/src/rows/store/CLAUDE.md
 @rust/backend/src/server/CLAUDE.md
 @rust/backend/src/sidecars/CLAUDE.md
