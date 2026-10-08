@@ -350,7 +350,9 @@ const KILL_WAIT_BOUND: Duration = Duration::from_secs(10);
 /// the same shape (poll, sleep, poll) without that dead weight baked in.
 const ATTEMPT_INTERVAL: Duration = Duration::from_millis(250);
 const FLAP_THRESHOLD: u32 = 3;
-const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
+/// A supervisor-lane connection whose client has sent nothing for this long is closed, unless the authority owes it
+/// the deferred EndRun reply (`authority/lane.rs` `service_lane`). `pub` so a test crossing it names this value.
+pub const LANE_IDLE_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_LANE_INSTANCES: u32 = 8;
 const MAIN_LOOP_POLL: Duration = Duration::from_millis(100);
 /// Bounds

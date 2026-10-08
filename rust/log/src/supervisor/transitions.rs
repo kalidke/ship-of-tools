@@ -589,4 +589,85 @@ mod tests {
         assert!(matches!(ready, Lifecycle::Ready { .. }));
         assert!(f.authority.producer_ran);
     }
+
+    /// One tick of the supervisor lane against `lifecycle`, at `now`.
+    fn tick(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, authority: &mut AuthorityState, lifecycle: &mut Lifecycle, now: Instant) {
+        let mut ctx = LaneCtx { authority, lifecycle };
+        assert!(!service_lane(lane, None, conns, &mut ctx, now), "the accept loop is alive");
+    }
+
+    /// Ticks at `now` until the lane has registered one more connection, and returns its id.
+    fn accept_one(lane: &Lane, conns: &mut HashMap<ConnId, Conn>, f: &mut Fixture, now: Instant) -> ConnId {
+        let before: Vec<ConnId> = conns.keys().copied().collect();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            tick(lane, conns, &mut f.authority, &mut Lifecycle::EndedNoRespawn, now);
+            if let Some(id) = conns.keys().find(|id| !before.contains(id)) {
+                return *id;
+            }
+            assert!(Instant::now() < deadline, "the lane registers the connection");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The idle rule while an end_run is in flight, on a real lane with clock readings chosen by the test: the
+    /// connection owed the deferred reply is not closed as idle while every other silent one is; queuing the reply
+    /// restarts its idle clock, so the next tick leaves it to the client; after that the 5 s rule applies to it again.
+    #[test]
+    fn the_connection_owed_the_end_run_reply_is_not_idle_until_its_reply_and_then_gets_the_whole_deadline() {
+        use crate::lane::client::{Endpoint as _, PlatformEndpoint};
+        let test = "supervisor::transitions::tests::the_connection_owed_the_end_run_reply_is_not_idle_until_its_reply_and_then_gets_the_whole_deadline";
+        if !crate::test_isolated::run_isolated(test) {
+            return;
+        }
+        #[cfg(unix)]
+        let _runtime = {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::Builder::new().prefix("sot-idle-").tempdir_in("/tmp").unwrap();
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::env::set_var("SOT_RUNTIME_DIR", root.path());
+            root
+        };
+        let mut f = fixture();
+        let h = crate::host::state_dir::state_dir_hash(&f.config.state_dir);
+        let lane = Lane::bind_supervisor(&h, MAX_LANE_INSTANCES).expect("bind the supervisor lane");
+        let endpoint = PlatformEndpoint::default();
+        let t0 = Instant::now();
+        let mut conns = HashMap::new();
+        let owed_client = endpoint.connect_supervisor_unchallenged(&h).expect("connect the owed client");
+        let owed = accept_one(&lane, &mut conns, &mut f, t0);
+        let _other_client = endpoint.connect_supervisor_unchallenged(&h).expect("connect another client");
+        let other = accept_one(&lane, &mut conns, &mut f, t0);
+
+        let (tx, rx) = mpsc::channel();
+        let mut lifecycle = Lifecycle::Ending {
+            operation_id: "op".into(),
+            rx,
+            handle: std::thread::spawn(|| {}),
+            started_at: t0,
+            pending_reply: Some(owed),
+            process: exited_leg(),
+        };
+        let replied = t0 + LANE_IDLE_DEADLINE + Duration::from_secs(1);
+        tick(&lane, &mut conns, &mut f.authority, &mut lifecycle, replied);
+        assert!(conns.contains_key(&owed), "the connection owed the reply is not idle");
+        assert!(!conns.contains_key(&other), "every other silent connection is closed at the deadline");
+
+        tx.send(EndingProgress::RecordClosed).unwrap();
+        let Lifecycle::Ending { operation_id, rx, handle, started_at, pending_reply, process } = lifecycle else { unreachable!() };
+        let (mut counter, mut step) = (0, 0);
+        let mut lifecycle = advance_ending(operation_id, rx, handle, started_at, pending_reply, process, &lane, &mut conns, &mut counter, &mut step, &f.capsule_exe, &f.config, &f.lease, &mut f.authority, replied);
+        assert!(matches!(lifecycle, Lifecycle::Ending { pending_reply: None, .. }), "the reply is no longer owed");
+        tick(&lane, &mut conns, &mut f.authority, &mut lifecycle, replied + MAIN_LOOP_POLL);
+        assert!(conns.contains_key(&owed), "the tick after the reply leaves the connection to its client");
+
+        let reply = crate::attach_client::supervisor_client::read_one_frame(&owed_client, Instant::now() + Duration::from_secs(5));
+        assert!(
+            matches!(reply, Ok(DecodedFrame::SupervisorReply(SupervisorReply::Operation(SupervisorOperationState::RecordClosed)))),
+            "the owed client reads record_closed: {reply:?}"
+        );
+
+        tick(&lane, &mut conns, &mut f.authority, &mut lifecycle, replied + LANE_IDLE_DEADLINE);
+        assert!(!conns.contains_key(&owed), "once the reply is out, the idle deadline applies to it again");
+    }
 }

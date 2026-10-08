@@ -64,7 +64,7 @@ fn a_spawned_supervisors_start_ticks_equal_the_created_it_reports() {
 
     let conn = wait_for_lane(&h, Duration::from_secs(30));
     let (reported_pid, reported_created) =
-        match request_for_test(&conn, &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status")
+        match request_for_test(&conn.client(), &SupervisorRequest::Status, Instant::now() + Duration::from_secs(5)).expect("status")
         {
             SupervisorReply::StatusOk { pid, created, .. } => (pid, created),
             other => panic!("expected StatusOk, got {other:?}"),

@@ -72,6 +72,7 @@ fn a_different_build_id_with_the_same_proto_is_proven() {
         matches!(outcome, sot_log::identity::challenge::ChallengeOutcome::Proven(_)),
         "a different build id (same proto) must be Proven -- ADR 0045 decision 7: the gate is proto alone, got {outcome:?}"
     );
+    let conn = Lane::new(&h, conn);
 
     let (voyage, _leg) = wait_for_ready(&conn, Duration::from_secs(90));
     end_run_and_expect_record_closed(&conn, "cleanup-end", "cleanup", voyage);
@@ -110,7 +111,7 @@ fn a_mismatched_lane_proto_is_refused_and_the_connection_closes() {
         matches!(outcome, sot_log::identity::challenge::ChallengeOutcome::Foreign),
         "a wrong lane proto must be classified Foreign (refused{{version_skew}}), got {outcome:?}"
     );
-    expect_connection_closes(conn, Duration::from_secs(5));
+    expect_connection_closes(&conn, Duration::from_secs(5));
 
     // F3: the authority itself must still be alive and serving after the
     // version-skew refusal -- a FRESH connection with the RIGHT proto
@@ -191,8 +192,8 @@ fn a_second_hello_closes_the_connection_but_the_authority_survives() {
         build: sot_log::identity::exchange::SUPERVISOR_LANE_BUILD_ID.to_string(),
     })
     .unwrap();
-    conn.write_all(&second_hello).unwrap();
-    expect_connection_closes(conn, Duration::from_secs(5));
+    conn.client().write_all(&second_hello).unwrap();
+    expect_connection_closes(&conn.client(), Duration::from_secs(5));
 
     // The authority itself must have survived: a FRESH connection still
     // gets a normal, correct answer.
