@@ -376,10 +376,16 @@ fn a_failed_publication_leaves_no_temp_file() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    // SAFETY: plain libc calls in a child process of its own: ignore SIGXFSZ
-    // so an over-limit write returns EFBIG instead of killing the child, then
-    // lower this process's file-size limit.
+    // SAFETY: plain libc calls in a child process of its own. The child's own
+    // output (libtest's lines) goes to /dev/null first: when the run's output
+    // is a regular file, the size limit below would cut that output short too
+    // and fail the child for a reason that is not the publication's. Then
+    // ignore SIGXFSZ so an over-limit write returns EFBIG instead of killing
+    // the child, and lower this process's file-size limit.
     unsafe {
+        let null = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        use std::os::fd::AsRawFd;
+        assert!(libc::dup2(null.as_raw_fd(), 1) >= 0 && libc::dup2(null.as_raw_fd(), 2) >= 0);
         libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
         let limit = libc::rlimit { rlim_cur: 16, rlim_max: 16 };
         assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
