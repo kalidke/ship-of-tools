@@ -19,6 +19,7 @@ impl ApplicationHandler for App {
         };
         match State::new(event_loop, evt_rx, &self.cli, self.conns.clone(), self.leases.clone()) {
             Ok(mut state) => {
+                state.exit_deadline = self.deadline.clone();
                 // Spawn one transport task per host once the window exists,
                 // since each task needs an Arc<Window> to call
                 // request_redraw on incoming frames (ADR 0042 L2a). Every
@@ -414,7 +415,8 @@ fn redraw_requested(state: &mut State, event_loop: &ActiveEventLoop) {
             }
         }
         if redraw_exits(state.should_exit, state.leaving.is_some(), state.capture_path.is_some()) {
-            event_loop.exit();
+            let code = state.leaving.as_ref().map_or(0, |l| l.exit_code);
+            state.finish_exit(event_loop, code);
         }
     }
 }

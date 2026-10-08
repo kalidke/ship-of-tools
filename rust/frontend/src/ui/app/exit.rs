@@ -55,6 +55,95 @@ fn open_quit_prompt(prompt: &mut Option<NavPrompt>) {
     tracing::info!(keep = false, "quit prompt: open");
 }
 
+/// How long final teardown may take after the terminal decision before the process ends itself.
+const BACKSTOP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The window's one process deadline. The first `arm` fixes the code and starts a std thread that ends the
+/// process with it after `BACKSTOP` on the OS clock, whatever the UI thread or the transport runtime is doing.
+#[derive(Clone)]
+pub(in crate::ui) struct ExitDeadline {
+    code: Arc<std::sync::OnceLock<i32>>,
+    #[cfg(test)]
+    inert: bool,
+}
+
+impl ExitDeadline {
+    pub(in crate::ui) fn new() -> Self {
+        Self { code: Arc::new(std::sync::OnceLock::new()), #[cfg(test)] inert: false }
+    }
+
+    /// Records the code and, the first time only, starts the backstop thread.
+    pub(in crate::ui) fn arm(&self, code: i32) {
+        if self.code.set(code).is_err() {
+            return;
+        }
+        #[cfg(test)]
+        if self.inert {
+            return;
+        }
+        let start = std::time::Instant::now();
+        // The thread's event must reach the sink the arming thread logs to.
+        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
+        let spawned = std::thread::Builder::new().name("sot-exit-backstop".into()).spawn(move || {
+            while let Some(left) = BACKSTOP.checked_sub(start.elapsed()) {
+                std::thread::sleep(left);
+            }
+            tracing::dispatcher::with_default(&dispatch, || {
+                tracing::error!(code, "window: final teardown exceeded its bound; exiting");
+            });
+            std::process::exit(code);
+        });
+        if let Err(e) = spawned {
+            // Without the thread the bound cannot hold: end now rather than risk a hang.
+            eprintln!("sot: cannot start the exit backstop ({e}); exiting with {code}");
+            std::process::exit(code);
+        }
+    }
+}
+
+#[cfg(test)]
+impl ExitDeadline {
+    /// Records codes but starts no thread, for tests that return from a loop and keep running.
+    pub(in crate::ui) fn inert() -> Self {
+        Self { code: Arc::new(std::sync::OnceLock::new()), inert: true }
+    }
+}
+
+/// A test holds teardown at the named stage (`SOT_TEST_T1_BARRIER`) so only the backstop can end the process.
+#[cfg(test)]
+pub(in crate::ui) fn barrier(stage: &str) {
+    if std::env::var("SOT_TEST_T1_BARRIER").is_ok_and(|s| s == stage) {
+        println!("barrier entered: {stage}");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+}
+
+/// A terminal close (a second request while leaving): resolve the final code, arm the deadline, then give a leave
+/// already queued (a Close after a Keep) its bounded write before the runtime and its streams go.
+pub(in crate::ui) fn terminal_close(deadline: &ExitDeadline, leases: &crate::lease::Leases,
+    leaving: Option<&mut crate::lease::Leaving>, code: i32) -> i32 {
+    let code = close_now(leaving, code);
+    deadline.arm(code);
+    #[cfg(test)]
+    barrier("delivery");
+    leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
+    code
+}
+
+/// The window's last act: arm the deadline, then end the loop. A nonzero code (a relaunch) ends the process at once.
+pub(in crate::ui) fn end_loop(deadline: &ExitDeadline, code: i32, end: impl FnOnce()) {
+    deadline.arm(code);
+    if code != 0 {
+        #[cfg(windows)]
+        allow_next_foreground();
+        #[cfg(test)]
+        barrier("direct");
+        std::process::exit(code);
+    }
+    end();
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum LeaveEffect { Redraw, Finish(i32) }
 
@@ -88,10 +177,7 @@ impl State {
                 self.window.request_redraw();
             }
             ExitStep::Now { code } => {
-                // A leave already queued (a Close after a Keep) is written
-                // before the runtime and its streams go.
-                self.leases.deliver_queued(crate::lease::LEAVE_WRITE_WAIT);
-                let code = close_now(self.leaving.as_mut(), code);
+                let code = terminal_close(&self.exit_deadline, &self.leases, self.leaving.as_mut(), code);
                 self.finish_exit(event_loop, code);
             }
             ExitStep::Ignore => {}
@@ -113,12 +199,7 @@ impl State {
     }
 
     pub(in crate::ui) fn finish_exit(&mut self, event_loop: &ActiveEventLoop, code: i32) {
-        if code != 0 {
-            #[cfg(windows)]
-            allow_next_foreground();
-            std::process::exit(code);
-        }
-        event_loop.exit();
+        end_loop(&self.exit_deadline, code, || event_loop.exit());
     }
 }
 

@@ -222,6 +222,7 @@ impl State {
             ephemeral: cli.ephemeral || cli.capture.is_some(),
             frame_counter: 0,
             should_exit: false,
+            exit_deadline: ExitDeadline::new(),
             last_key: None,
             battery_label: None,
             last_battery_query: None,

@@ -39,6 +39,8 @@ pub struct App {
     /// separately from key presses, so we keep a running copy and consult
     /// it inside the KeyboardInput arm.
     modifiers: winit::keyboard::ModifiersState,
+    /// Shared with State: the one three-second process backstop.
+    deadline: ExitDeadline,
 }
 
 impl App {
@@ -64,6 +66,7 @@ impl App {
             pending_transports,
             leases,
             modifiers: winit::keyboard::ModifiersState::empty(),
+            deadline: ExitDeadline::new(),
         }
     }
 
@@ -74,6 +77,12 @@ impl App {
 
     fn run_with(&mut self, run: impl FnOnce(&mut Self) -> Result<(), winit::error::EventLoopError>) -> Result<(), winit::error::EventLoopError> {
         let result = run(self);
+        #[cfg(test)]
+        barrier("returned");
+        // A return no terminal decision armed (a startup failure, a loop error) gets the fallback.
+        self.deadline.arm(if result.is_ok() { 0 } else { 1 });
+        #[cfg(test)]
+        barrier("fallback");
         self.shutdown_transport();
         result
     }

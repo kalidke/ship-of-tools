@@ -6,8 +6,8 @@ hand-over it serves.
 
 ## Files
 - `mod.rs`: App, its constructor and run/finalizer boundary, plus FRAME_BUDGET and NAV_FIRE_DEBOUNCE.
-- `exit_process_tests.rs`: isolated bounded-runtime shutdown cases using the actual App finalizer.
-- `exit.rs`: the Ctrl+Q prompt's key table, `request_quit`, `leave` and `finish_exit`, and `redraw_exits`.
+- `exit_process_tests.rs`: bounded runtime and process-exit cases, run through the shared isolation helper.
+- `exit.rs`: quit_prompt_step, request_quit, begin_leave, leave, finish_exit, redraw_exits and the per-App ExitDeadline shared with State.
 - `handler.rs`: `impl ApplicationHandler for App`: `resumed`, `window_event`, `about_to_wait`, `new_events`.
 - `frame.rs`: `State::redraw`, one frame's sequence, its upkeep (`frame_upkeep`) and `ack_presented_lines`.
 - `tests.rs`: the native minimized-window event-progress harness; test-owned inputs, no daemon or user settings. It first runs the native-only State fixtures of the result-routing, badge and account commits, printing one `state-fixture name=... ok=...` line each.
@@ -29,4 +29,7 @@ for any input change; `about_to_wait` for wake-up scheduling and the `[display] 
 - While the quit prompt is open, non-repeat Tab toggles and Enter confirms by logical key identity, every other non-repeat key cancels, and repeats do nothing; input routing consumes the event before modifier-only suppression and later dispatch.
 - A second close resolves close_now's code and makes one bounded deliver_queued attempt before the window finishes; a write timeout is reported and is not a daemon acknowledgement.
 - Every return from run_app, including an error or capture completion, takes the transport runtime once and calls shutdown_timeout(LEAVE_WRITE_WAIT) before App drops. Timed-out blocking work may continue; the yielding-child cleanup proof does not promise cancellation of arbitrary synchronous work.
+- The final window decision arms one three-second std-thread process backstop before a forced queued-write attempt or final event-loop exit; capture and returned-loop failure also enter this finalization. Prompt time and daemon acknowledgement/presentation time precede that deadline.
+- Codes 0, 75 and 76 are preserved, including a Close superseding Handover; the historical immediate nonzero branch retains its foreground handover.
+- Process-exit tests stall between the arm under test and every later arming opportunity: forced delivery stalls before finish_exit, a loop return stalls before fallback arming, nonzero finish_exit stalls before its direct exit, and fallback cases stall after fallback arming. Reversals remove only the production arm and must fail their own exit assertion.
 - Native progress evidence separates producer workload validity from UI queue progress; counters are taken at successful fan-in enqueue and actual State dequeue, and the fixture never drains the queue.

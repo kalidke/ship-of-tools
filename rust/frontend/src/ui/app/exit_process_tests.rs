@@ -20,7 +20,9 @@ fn fixture_app(runtime: Option<tokio::runtime::Runtime>) -> App {
         contrast_mode: "bright".to_string(), relaunched: false,
     };
     let (tx, rx) = std::sync::mpsc::channel();
-    App::new(rx, runtime, cli, tx, vec![], None, crate::lease::Leases::new(true, vec![]))
+    let mut app = App::new(rx, runtime, cli, tx, vec![], None, crate::lease::Leases::new(true, vec![]));
+    app.deadline = ExitDeadline::inert(); // A returning test keeps running past the production bound.
+    app
 }
 
 struct Folder(std::path::PathBuf);
@@ -188,5 +190,122 @@ fn absent_runtime_and_repeated_finalization_preserve_results() {
         app.shutdown_transport();
         assert_eq!(result.is_err(), error);
         assert!(app.rt.is_none());
+    }
+}
+
+const BACKSTOP_BODY: &str = "ui::app::exit_process_tests::backstop_child";
+const SCENARIO: &str = "SOT_TEST_T1_SCENARIO";
+const BARRIER: &str = "SOT_TEST_T1_BARRIER";
+const BACKSTOP_EVENT: &str = "final teardown exceeded its bound";
+
+/// The owned process body: one terminal path with the production three-second deadline, held at its barrier.
+#[test]
+fn backstop_child() {
+    let Ok(scenario) = std::env::var(SCENARIO) else { return; };
+    enter(BACKSTOP_BODY);
+    let _log = sot_log::test_log::install(tracing_subscriber::fmt().with_ansi(false).with_writer(std::io::stdout).finish());
+    let mut app = fixture_app(None);
+    app.deadline = ExitDeadline::new();
+    let deadline = app.deadline.clone();
+    let leases = crate::lease::Leases::new(true, vec![]);
+    match scenario.as_str() {
+        // A second close: the code is resolved and the deadline armed before delivery, which is held.
+        "second-close" => {
+            let code = terminal_close(&deadline, &leases, None, 76);
+            assert_eq!(code, 76);
+        }
+        // Relaunch or converge: the arm precedes the direct process exit, which is held.
+        "direct-75" => end_loop(&deadline, 75, || {}),
+        "direct-76" => end_loop(&deadline, 76, || {}),
+        "direct-exit" => end_loop(&deadline, 76, || {}),
+        // A terminal callback: the loop ends and returns; fallback arming is held back by the barrier.
+        "callback-ok" => {
+            let d = deadline.clone();
+            let _ = app.run_with(move |_| { end_loop(&d, 0, || {}); Ok(()) });
+        }
+        "fallback-ok" => { let _ = app.run_with(|_| Ok(())); }
+        "fallback-err" => { let _ = app.run_with(|_| Err(winit::error::EventLoopError::ExitFailure(23))); }
+        "latch" => {
+            deadline.arm(7);
+            deadline.arm(9);
+            std::thread::sleep(Duration::from_secs(30));
+        }
+        // Nonterminal time never arms: a prompt or an acknowledgement pending past three seconds.
+        "idle" => { std::thread::sleep(Duration::from_millis(3600)); println!("idle: still alive"); }
+        "ordinary" => {
+            let d = deadline.clone();
+            assert!(app.run_with(move |_| { end_loop(&d, 0, || {}); Ok(()) }).is_ok());
+            println!("ordinary: returned");
+        }
+        other => panic!("unknown scenario {other}"),
+    }
+}
+
+/// Runs `scenario` in its own process; returns the exit code, the elapsed time and the child's stdout.
+fn run_scenario(scenario: &str, barrier: Option<&str>, bound: Duration) -> (Option<i32>, Duration, String) {
+    let (mut command, entry) = test_command(BACKSTOP_BODY);
+    command.env(SCENARIO, scenario).stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    match barrier { Some(b) => command.env(BARRIER, b), None => command.env_remove(BARRIER) };
+    let start = Instant::now();
+    let child = command.spawn().expect("start the owned scenario process");
+    let pid = child.id();
+    let drained = sot_log::test_isolated::drain(child);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drained.wait_within(bound)));
+    let (status, out, _err) = outcome.unwrap_or_else(|_| panic!("the owned process survived past its {bound:?} bound in scenario {scenario}"));
+    let elapsed = start.elapsed();
+    entry.assert_once(pid);
+    (status.code(), elapsed, out)
+}
+
+fn assert_backstop(scenario: &str, barrier: &str, code: i32) {
+    let (status, elapsed, out) = run_scenario(scenario, Some(barrier), Duration::from_millis(4500));
+    assert!(out.contains(&format!("barrier entered: {barrier}")), "barrier was never entered in {scenario}: {out}");
+    assert!(out.contains(BACKSTOP_EVENT), "no backstop event in {scenario}: {out}");
+    assert_eq!(status, Some(code), "the backstop must end the process with the decided code in {scenario}");
+    assert!(elapsed >= Duration::from_millis(2900), "backstop fired before three seconds in {scenario}: {elapsed:?}");
+    println!("backstop {scenario}: exit {code} after {elapsed:?}");
+}
+
+#[test]
+fn second_close_arms_before_delivery() {
+    if run_isolated("ui::app::exit_process_tests::second_close_arms_before_delivery") { assert_backstop("second-close", "delivery", 76); }
+}
+#[test]
+fn nonzero_finish_arms_before_the_direct_exit() {
+    if run_isolated("ui::app::exit_process_tests::nonzero_finish_arms_before_the_direct_exit") {
+        assert_backstop("direct-75", "direct", 75);
+        assert_backstop("direct-76", "direct", 76);
+    }
+}
+#[test]
+fn finish_exit_arms_before_the_loop_returns() {
+    if run_isolated("ui::app::exit_process_tests::finish_exit_arms_before_the_loop_returns") { assert_backstop("callback-ok", "returned", 0); }
+}
+#[test]
+fn unarmed_return_arms_the_fallback() {
+    if run_isolated("ui::app::exit_process_tests::unarmed_return_arms_the_fallback") {
+        assert_backstop("fallback-ok", "fallback", 0);
+        assert_backstop("fallback-err", "fallback", 1);
+    }
+}
+#[test]
+fn first_arm_fixes_the_code_and_one_thread() {
+    if run_isolated("ui::app::exit_process_tests::first_arm_fixes_the_code_and_one_thread") {
+        let (status, _, out) = run_scenario("latch", None, Duration::from_millis(4500));
+        assert_eq!(status, Some(7), "a later arm changed the fixed code");
+        assert_eq!(out.matches(BACKSTOP_EVENT).count(), 1, "repeated arms started another backstop: {out}");
+    }
+}
+#[test]
+fn nonterminal_time_and_ordinary_close_do_not_trip_the_backstop() {
+    if run_isolated("ui::app::exit_process_tests::nonterminal_time_and_ordinary_close_do_not_trip_the_backstop") {
+        let (status, _, out) = run_scenario("idle", None, Duration::from_secs(6));
+        assert!(status == Some(0) && out.contains("idle: still alive") && !out.contains(BACKSTOP_EVENT), "idle past three seconds tripped it: {out}");
+        let (status, elapsed, out) = run_scenario("ordinary", None, Duration::from_millis(2500));
+        assert!(status == Some(0) && out.contains("ordinary: returned") && !out.contains(BACKSTOP_EVENT), "ordinary close: {out}");
+        assert!(elapsed < Duration::from_millis(2500), "ordinary close took {elapsed:?}");
+        let (status, _, out) = run_scenario("direct-exit", None, Duration::from_millis(2500));
+        assert!(status == Some(76) && !out.contains(BACKSTOP_EVENT), "an unstalled direct exit keeps its code: {out}");
     }
 }

@@ -330,6 +330,8 @@ struct State {
     /// True after a successful capture; the WindowEvent handler reads this
     /// next event-loop iteration and calls `event_loop.exit()`.
     should_exit: bool,
+    /// The App's one process backstop, shared so the final decision arms it.
+    exit_deadline: ExitDeadline,
     /// Frame-rate cap state. `request_redraw` from event handlers and the
     /// transport task queue `RedrawRequested`; if we'd draw twice within
     /// `FRAME_BUDGET`, the second one sets `dirty` and `about_to_wait`
