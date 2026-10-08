@@ -50,7 +50,7 @@ fn bind_with(tag: &str, before_bind: impl FnOnce(&std::path::Path)) -> (Bound, P
         // macOS's temp_dir() is long enough to overflow sun_path
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let _ = &unique;
-        // `connect_pipe` refuses a socket outside a private folder (ADR 0049, User isolation).
+        // A private folder of the test's own: no other account on a shared host reaches the socket.
         use std::os::unix::fs::DirBuilderExt;
         let dir = PathBuf::from(format!(
             "/tmp/sl-{tag}-{}-{}",

@@ -21,5 +21,5 @@ The twin of the Windows pipe transport by property, not mechanism: a server for 
 - The runtime dir must be private (`ensure_private_runtime_dir`); every later file step is anchored to the verified directory fd (`open_verified_dir_fd`), and the socket's mode is set and verified before `listen` (`create_and_bind_listener`; on Linux `bind` itself goes through the fd, on macOS by path).
 - A socket path is checked against `max_sun_path_bytes` before binding (`socket_path`).
 - A raw connect (`connect_voyage_socket_unchallenged`, `connect_supervisor_socket_unchallenged`) stays `pub(crate)`; `connect_voyage_socket` authenticates the server through `challenge_os::authenticate_server` before returning.
-- A connect uses a fresh socket per attempt and gives up at `CONNECT_BOUND` (`connect_unix_socket_unchallenged`).
+- A connect uses a fresh socket per attempt and retries a busy listener only until `CONNECT_BOUND` has passed; the attempt or 20 ms sleep in progress finishes first (`connect_unix_socket_unchallenged`).
 - A change to one server's accept or teardown is made to the Windows twin, `pipe_win`, too.

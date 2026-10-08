@@ -7,8 +7,8 @@
 disallowed-methods = [
   # Local endpoint dials (ADR 0049, User isolation): a Rust process reaches a local socket or pipe by name only through
   # sot_log::identity::connect_own. A new connector method joins this group. Not expressible here:
-  # std::fs::OpenOptions::open on a pipe path; rust/log/tests/connect_own.rs only checks that net/transport/mod.rs and
-  # topology/dial.rs contain the rule's names, not their order and not any other file's opener.
+  # std::fs::OpenOptions::open on a pipe path; topology/dial.rs's pipe: arm opens one and checks it with own_pipe (its
+  # test a_pipe_another_account_serves_is_refused); any other opener of a pipe path is a question for review.
   { path = "std::os::unix::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "std::os::unix::net::UnixStream::connect_addr", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },
   { path = "tokio::net::UnixStream::connect", reason = "reach a local endpoint through sot_log::identity::connect_own (ADR 0049, User isolation)" },

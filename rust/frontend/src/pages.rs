@@ -527,8 +527,7 @@ mod tests {
         task.abort();
     }
 
-    /// A private folder and socket path for a stand-in relay: `connect_own` speaks only to a socket in a folder this
-    /// account alone can enter.
+    /// A private folder and socket path for a stand-in relay, so no other account on a shared host reaches the socket.
     #[cfg(unix)]
     fn relay_stand_in_path(tag: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;

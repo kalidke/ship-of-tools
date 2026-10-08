@@ -42,8 +42,7 @@ Each connection is one row of docs/integration.md, owned by its provider. Provid
 `sot_host`, `comm/lib/comm-lib-base.sh`, `check_remote_fs`, `scripts/install.sh`, `REMOTE_FS_TYPES`. Uses: none.
 
 ## Folders
-- `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge; its folder is not at this commit, so
-  this is a forward reference).
+- `rust/log/src/host/` (here) and `rust/log/src/identity/` (the peer challenge).
 
 ## Files
 - `mod.rs`: the module list, the shared retry constants, `io_ctx`, `duration_to_wait_ms`

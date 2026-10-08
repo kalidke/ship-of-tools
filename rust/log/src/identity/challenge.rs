@@ -19,9 +19,9 @@
 //!
 //! # Round-1 review: the exchange is a lane seam, not a lane
 //!
-//! Steps 1-3 (identify the peer process, authenticate its identity) are
-//! the SAME procedure for every lane on a given platform, and stay
-//! centralized in that platform's own `challenge()`. Only steps 4-5 (what
+//! Steps 1-3 (check the account the OS recorded for the connection, and
+//! observe the peer's pid) are the SAME procedure for every lane on a given
+//! platform, and stay centralized in that platform's own `challenge()`. Only steps 4-5 (what
 //! bytes to send, what bytes count as "the identity") vary per lane — the
 //! voyage mgmt lane's own `status` request today, the supervisor lane's
 //! own `status_ok {voyage, leg?, phase}` protocol later — so
@@ -181,10 +181,11 @@ pub struct PeerAuthenticated {
 /// here is ever spelled `Proven`.
 #[derive(Debug)]
 pub enum PeerAuthOutcome {
-    /// The peer's identity matches this account's (Windows: token-user
-    /// SID comparison; Linux: `SO_PEERCRED` same-user comparison).
+    /// The account the OS gives for the peer is this one (Windows: the pipe
+    /// server's token-user SID; Linux: `SO_PEERCRED`; macOS: `getpeereid`; on
+    /// Unix the account recorded for the connection, not its current holder's).
     Authenticated(PeerAuthenticated),
-    /// A well-formed WRONG answer: the peer's identity differs. Never
+    /// A well-formed WRONG answer: the peer's account differs. Never
     /// retried as if it might still be legitimate.
     Foreign,
     /// An OS-call failure anywhere in steps 1-3. Never classified as

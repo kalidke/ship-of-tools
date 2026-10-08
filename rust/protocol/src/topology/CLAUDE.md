@@ -29,7 +29,7 @@ Every Rust process names a daemon's endpoint, and starts an ssh login, in one wa
 - Every ssh started from `SSH_OPTS` turns sharing off (`ControlMaster=no`, `ControlPath=none`, `ControlPersist=no`):
   the bridges `SshRecipe` builds and the daemon's monitor sampler (`argv_has_no_shell_and_the_stated_option_set` pins
   the list).
-- A production lane dial's connect and handshake are each bounded (`CONNECT_BOUND`) and cancellable; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and reports termination, reap or deadline failures (`lane_child.rs`).
+- A production lane dial's local connect uses the platform connector's fixed `CONNECT_BOUND` retry budget; an attempt or wait in progress finishes first (Unix's 20 ms sleep, Windows's 200 ms wait). Its handshake has a separate bound and can be cancelled; refusals remain typed. Its child owner bounds teardown to 2 s, confirms reaping on success and reports termination, reap or deadline failures (`lane_child.rs`).
 - A lane dial to a local socket or pipe goes through `sot_log::identity::connect_own::connect_own`, so it speaks only to an endpoint this OS account serves.
 - A malformed hosts.toml is an error naming the line; an unknown key inside `[host.<name>]` is a warning, not fatal.
 - On an SSH route an initial supervisor attempt may park at most one voyage login as an optional optimization; spare spawn failure leaves ordinary voyage fallback available. A local route parks none. The first voyage consumes a usable spare once or uses an ordinary gated dial; a spent endpoint starts no further spare, with pre-voyage abandonment governed by ADR 0045 (`start_spare`, `take_spare`).

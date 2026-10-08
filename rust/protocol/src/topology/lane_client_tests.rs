@@ -7,8 +7,8 @@ use std::io::{Read, Write};
 use std::time::Duration;
 
 /// A fake daemon on a fresh local socket (a pipe on Windows): the one transport the lane client dials besides
-/// ssh, portable, no daemon process needed. On Unix the dial reaches it through `connect_own`, which speaks only to a
-/// socket in a folder private to this account, so the socket sits in a folder made 0700 here, never left to the umask.
+/// ssh, portable, no daemon process needed. On Unix the socket sits in a folder made 0700 here, never left to the
+/// umask, so no other account on a shared host reaches it.
 struct FakeDaemon {
     path: std::path::PathBuf,
     listener: Listener,
@@ -404,6 +404,39 @@ fn a_local_dial_starts_no_ssh_child() {
         peer.join().unwrap();
         assert!(matches!(*ep.spare.lock().unwrap(), VoyageSpare::Unused));
     }
+}
+
+/// ADR 0049, User isolation: a lane dial to a socket whose backlog another OS account has filled returns within
+/// `CONNECT_BOUND` plus 2 s of slack, and its error is not the account refusal, so the backlog was full.
+#[cfg(unix)]
+#[test]
+fn a_full_foreign_backlog_ends_the_lane_dial_within_its_bound() {
+    if !sot_log::test_isolated::run_isolated(
+        "topology::lane_client::tests::a_full_foreign_backlog_ends_the_lane_dial_within_its_bound",
+    ) {
+        return;
+    }
+    let Some(foreign) = sot_log::test_foreign::ForeignListener::start(true) else {
+        return;
+    };
+    let endpoint = DaemonLaneEndpoint::new(LaneDial::Local(foreign.path.clone()), None);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(endpoint.dial("row-1", "supervisor", None).map(|_| ()));
+    });
+    let result = rx
+        .recv_timeout(CONNECT_BOUND + Duration::from_secs(2))
+        .expect("the lane dial did not end within its bound");
+    let err = result.expect_err("connected through a full backlog");
+    assert!(
+        !err.to_string().contains("not connecting"),
+        "the connect went through, so the backlog was not full: {err}"
+    );
+    assert_eq!(
+        foreign.finish(),
+        0,
+        "the lane dial sent another account's listener bytes"
+    );
 }
 
 /// An ssh login stood in for by `sh`: it writes one line to stderr, reads the hello and the request, and answers with

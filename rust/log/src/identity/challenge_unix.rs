@@ -92,7 +92,7 @@ pub struct PeerCredentials {
     pub gid: u32,
 }
 
-fn peer_credentials(fd: RawFd) -> io::Result<PeerCredentials> {
+pub(crate) fn peer_credentials(fd: RawFd) -> io::Result<PeerCredentials> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let rc = unsafe {
@@ -370,8 +370,9 @@ fn authenticate_steps_1_to_3(
     }
 }
 
-/// A retained pidfd to a process this crate has PROVEN is the server
-/// behind one challenged connection: `(pidfd, pid, start-time ticks)`.
+/// A retained pidfd to the process steps 1-5 matched to one connection:
+/// `(pidfd, pid, start-time ticks)`: the listener the kernel recorded, which an
+/// honest server's reply named as itself.
 /// Dropping this closes the pidfd. ONLY the full five-step [`challenge()`]
 /// ever produces one -- see [`PeerAuthenticated`] for the deliberately
 /// weaker, deliberately handle-less steps-1-3-only counterpart. Mirrors
@@ -585,9 +586,10 @@ pub fn challenge(
     })
 }
 
-/// ADR 0041 Lifecycle "The challenge", steps 1-3 ONLY: identify the peer
-/// process behind a live connection and authenticate its same-user
-/// identity. No wire I/O of any kind -- see `challenge_win::
+/// ADR 0041 Lifecycle "The challenge", steps 1-3 ONLY: check that the account
+/// the kernel recorded for a live connection's listener is this one, and pin the
+/// pid it recorded; not the descriptor's current holder (a listener handed on by
+/// `SCM_RIGHTS` keeps its record). No wire I/O of any kind -- see `challenge_win::
 /// authenticate_server`'s own doc for why the shared, lane-agnostic
 /// connect constructor can only ever offer this, never the full proof.
 /// The pidfd IS dropped here (no retained object; `PeerAuthenticated` is

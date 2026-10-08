@@ -191,7 +191,7 @@ fn peer_token(fd: RawFd) -> io::Result<PeerToken> {
 /// cached for the connection (`getpeereid`), the listener's at `listen()`
 /// as a client sees it and the client's at `connect(2)` as a server sees
 /// it. Nothing the peer does later changes it.
-fn peer_euid(fd: RawFd) -> io::Result<u32> {
+pub(crate) fn peer_euid(fd: RawFd) -> io::Result<u32> {
     let (mut euid, mut egid) = (0, 0);
     // SAFETY: `fd` is a live socket owned by the caller for the whole
     // call; both out-pointers are locals.

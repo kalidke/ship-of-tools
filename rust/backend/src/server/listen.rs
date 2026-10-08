@@ -320,9 +320,11 @@ fn dispatch_admitted(
     observe: impl FnOnce(&LocalStream) -> Option<PeerAuthenticated>,
     handle: impl FnOnce(LocalStream, PeerAuthenticated),
 ) -> bool {
+    // Admission one: a connection whose account, as the OS recorded it at the connect, is another's, or that the
+    // OS cannot read, is dropped before a byte is read.
     let Some(peer) = observe(&stream) else {
         tracing::warn!(
-            "refused a connection: its process is not this account's, or could not be read"
+            "refused a connection: the account the OS recorded for it is not this one, or could not be read"
         );
         return false;
     };
@@ -396,8 +398,8 @@ mod tests {
     use interprocess::local_socket::{GenericFilePath, ListenerOptions};
 
     /// ADR 0049 `## User isolation`: a Unix connection is admitted only when its kernel-recorded effective uid is this
-    /// account's; foreign or missing records are refused. On macOS this checks cached connection provenance, without
-    /// establishing the holder's current euid or binding it to the live token's observed process.
+    /// account's; foreign or missing records are refused. On Linux and macOS this is the account recorded at the connect,
+    /// not the holder's current euid; on macOS the pid is the live token's observation.
     #[cfg(unix)]
     #[test]
     fn same_account_table() {

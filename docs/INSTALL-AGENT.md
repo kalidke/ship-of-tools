@@ -411,9 +411,9 @@ For backend roles, prove the daemon answers a hello. Two branches:
 
 Then probe its socket (success = it prints `backend answers: <the release
 version>`). The probe goes through `sotd stdio-bridge`, which connects only
-to a socket in a folder private to this OS account; its input stays open
-for the five seconds the probe waits, because the bridge closes the
-connection when its input ends:
+to a socket this OS account listens on; its input stays open for the five
+seconds the probe waits, because the bridge closes the connection when its
+input ends:
 
 ```bash
 sock="$(~/.local/share/sot/bin/sotd session-socket-path sot)"

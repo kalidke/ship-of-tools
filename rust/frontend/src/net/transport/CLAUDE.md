@@ -32,7 +32,7 @@ after). A new request or reply goes through `ops/`.
 - send_figure_get and send_result_tree register their pending entry before writing; PendingGuard reports their outstanding failures when the connection ends.
 - The link gate goes up at any hello reply (`read_hello`) and down when the session ends, except after a hello refusal
   (`run_protocol`).
-- The local socket or pipe is dialled only through `connect_pipe`, which applies `sot_log::identity::connect_own`'s rule: `own_socket` before the connect on Unix; on Windows `connect_own` itself, which opens the pipe at identification level and checks the serving process before any byte is written, bounded by `CONNECT_BOUND`, run on a blocking thread, its handle adopted as the stream.
+- The local socket or pipe is dialled only through `connect_pipe`, which runs `sot_log::identity::connect_own` on a blocking thread, with the fixed `CONNECT_BOUND` retry budget (an attempt or wait in progress finishes first: Unix's 20 ms sleep, Windows's 200 ms wait), and adopts what it returns as the stream: it checks before any byte is written that this OS account listens on the socket (Unix) or serves the pipe, which it opens at identification level (Windows).
 - Every event is tagged with the dial `HostKey`; the daemon's declared host is display only.
 - ResultTree carries frontend-only canonical workspace, result and attempt identities through the existing request-id pending map; its wire payload remains tree.root or tree.children. Every matched success, backend error, malformed reply or pending connection loss returns the saved tag, never the current view's attempt.
 - A Relay dial uses connect_pipe's account rule and budget but never Leases::before_data_connection; ResolvedDial::Relay retains its exact path.

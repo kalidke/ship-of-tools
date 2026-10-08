@@ -66,41 +66,52 @@ fn ping(mut child: Child) {
     assert_eq!(reply, "pong\n", "the bridge carries the reply");
 }
 
-/// Every shell path that opens a local socket refuses one outside a private folder, and its listener is never connected
-/// to: `sot_oneshot_request`, `sot_dial` with and without its bound, and the launch scripts' `sot_socket_open`
-/// (scripts/lib/sot-daemon.sh, which restart-backend.sh runs too).
+/// ADR 0049 `## User isolation`: every shell path that opens a local socket refuses one another OS account listens on,
+/// and that listener gets no byte: `sot_oneshot_request`, `sot_dial` with and without its bound, and the launch
+/// scripts' `sot_socket_open` (scripts/lib/sot-daemon.sh, which restart-backend.sh runs too). Each path gets a listener
+/// of its own: one listener's backlog of 1 would refuse a third connection for being full, not for its account.
 #[cfg(unix)]
 #[test]
-fn a_shell_request_to_a_socket_outside_a_private_folder_writes_nothing() {
-    use std::os::unix::net::UnixListener;
-    let path = std::path::PathBuf::from(format!("/tmp/sot-shell-dial-{}.sock", std::process::id()));
-    assert!(!sot_log::host::state_dir::is_private_dir(std::path::Path::new("/tmp")));
-    let listener = UnixListener::bind(&path).expect("bind the public-folder listener");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+fn a_shell_request_to_a_socket_another_account_listens_on_writes_nothing() {
+    if !sot_log::test_isolated::run_isolated(
+        "a_shell_request_to_a_socket_another_account_listens_on_writes_nothing",
+    ) {
+        return;
+    }
     let home = tempfile::tempdir().expect("scratch home");
-    let endpoint = format!("unix:{}", path.display());
-    let script = r#". "$1" || exit 1
-ENDPOINT="$2" SOT_SEND_TIMEOUT=3 sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"version.query","payload":{}}' version.query && echo "oneshot reached" || echo "oneshot refused"
-sot_dial "$2" && echo "dial reached" || echo "dial refused"
-sot_dial "$2" 5 && echo "bounded dial reached" || echo "bounded dial refused"
-( . "${1%/comm/lib/comm-lib.sh}/scripts/lib/sot-daemon.sh" && sot_socket_open "$SOTD_BIN" "${2#unix:}" ) && echo "socket open reached" || echo "socket open refused"
-"#;
-    let mut child = shell(home.path(), script, &endpoint).expect("bash on Unix");
-    drop(child.stdin.take());
-    let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
-    let accepted = listener.accept();
-    std::fs::remove_file(&path).expect("remove the test's socket");
-    assert!(matches!(accepted, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
-        "a shell path connected to a socket whose folder is not private to this OS account (ADR 0049 `## User isolation`)");
-    assert!(status.success(), "bash: {stderr}");
-    assert_eq!(
-        stdout, "oneshot refused\ndial refused\nbounded dial refused\nsocket open refused\n",
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("is not a private folder of this OS account"),
-        "{stderr}"
-    );
+    for (path, line) in [
+        (
+            "oneshot",
+            r#"ENDPOINT="$2" SOT_SEND_TIMEOUT=3 sot_oneshot_request '{"v":1,"id":1,"kind":"req","op":"version.query","payload":{}}' version.query"#,
+        ),
+        ("dial", r#"sot_dial "$2""#),
+        ("bounded dial", r#"sot_dial "$2" 5"#),
+        (
+            "socket open",
+            r#"( . "${1%/comm/lib/comm-lib.sh}/scripts/lib/sot-daemon.sh" && sot_socket_open "$SOTD_BIN" "${2#unix:}" )"#,
+        ),
+    ] {
+        let Some(foreign) = sot_log::test_foreign::ForeignListener::start(false) else {
+            return;
+        };
+        let script = format!(". \"$1\" || exit 1\n{line} && echo reached || echo refused\n");
+        let mut child = shell(
+            home.path(),
+            &script,
+            &format!("unix:{}", foreign.path.display()),
+        )
+        .expect("bash on Unix");
+        drop(child.stdin.take());
+        let (status, stdout, stderr) = sot_log::test_isolated::drain(child).wait_within(BOUND);
+        assert_eq!(foreign.finish(), 0, "{path}: the shell client sent another account's listener bytes (ADR 0049 `## User isolation`)");
+        assert!(status.success(), "{path}: bash: {stderr}");
+        assert_eq!(stdout, "refused\n", "{path}: {stderr}");
+        // sot_socket_open discards the bridge's stderr; its socket exists, so only the bridge's refusal prints `refused`.
+        assert!(
+            path == "socket open" || stderr.contains("another OS account listens on this socket"),
+            "{path}: {stderr}"
+        );
+    }
 }
 
 /// This account's socket, in a folder private to it, is reached by every shell path that opens one: `sot_dial` with and
