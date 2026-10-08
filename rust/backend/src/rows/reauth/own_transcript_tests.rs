@@ -146,3 +146,74 @@ async fn a_resume_id_must_be_a_session_uuid() {
     assert_eq!(payload["code"], ACCEPTED_CODE, "{payload:?}");
     drop(restart);
 }
+
+// A refusal says what it found and gives no command to run: the caller is
+// usually the row itself, which just ran the only command there is. A root
+// that cannot be opened is named as such, with the error.
+#[tokio::test]
+async fn a_refusal_names_where_the_transcript_started_and_gives_no_command() {
+    let _g = env_guarded();
+    let home = home_with(true, &[("team", true)]);
+    let scratch = tempfile::tempdir().unwrap();
+    pin_home(home.path(), scratch.path());
+    seed_claude_binary(home.path());
+    let caller_root = project_root(home.path(), "caller-row");
+    let target_root = project_root(home.path(), "target-row");
+    let gone_root = project_root(home.path(), "gone-row");
+    let reg = Workspaces::new();
+    let (target, _) = seed_row_into(&reg, "target-row", &target_root, "", "target-handle");
+    let (gone, _) = seed_row_into(&reg, "gone-row", &gone_root, "", "gone-handle");
+    let team = claude_config_dir(home.path(), "team");
+    seed_transcript(&team, &sid(11), &[&caller_root]);
+    seed_transcript(&team, &sid(13), &[&gone_root]);
+
+    let (payload, _) = reauth(&reg, &target, "team", &sid(11)).await;
+    let error = payload["error"].as_str().unwrap();
+    assert!(
+        error.contains("was started in")
+            && error.contains("caller-row")
+            && error.contains("target-row"),
+        "names both directories: {error}"
+    );
+    assert!(!error.contains("sot-fe"), "no command to run: {error}");
+
+    std::fs::remove_dir(&gone_root).unwrap();
+    let (payload, _) = reauth(&reg, &gone, "team", &sid(13)).await;
+    assert_eq!(payload["code"], "resume_not_this_row", "{payload:?}");
+    let error = payload["error"].as_str().unwrap();
+    assert!(
+        error.contains("gone-row") && error.contains("cannot be opened"),
+        "{error}"
+    );
+}
+
+// A relative start directory says nothing about where the session ran: read
+// against this daemon's own working directory it can reach any folder. It is
+// refused even when, read that way, it reaches this row's root.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_relative_start_directory_is_refused() {
+    let _g = env_guarded();
+    let home = home_with(true, &[("team", true)]);
+    let scratch = tempfile::tempdir().unwrap();
+    pin_home(home.path(), scratch.path());
+    seed_claude_binary(home.path());
+    let root = project_root(home.path(), "reauth-row");
+    let here = std::env::current_dir().unwrap();
+    let up = "../".repeat(here.components().count() - 1);
+    let relative = PathBuf::from(format!("{up}{}", root.strip_prefix("/").unwrap().display()));
+    assert_eq!(
+        sot_log::host::dir_identity(&relative).ok(),
+        sot_log::host::dir_identity(&root).ok(),
+        "read from here, the relative spelling reaches the row's root"
+    );
+    seed_transcript(
+        &claude_config_dir(home.path(), "team"),
+        &sid(41),
+        &[&relative],
+    );
+    let (reg, id, _slug) = seed_capsule_row(&root, "", "row-declared-handle");
+    let (payload, restart) = reauth(&reg, &id, "team", &sid(41)).await;
+    assert_eq!(payload["code"], "resume_not_this_row", "{payload:?}");
+    assert!(restart.is_none(), "a refusal hands back no restart");
+}

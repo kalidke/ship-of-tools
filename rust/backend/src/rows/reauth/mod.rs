@@ -219,7 +219,7 @@ fn is_session_id(id: &str) -> bool {
 /// project folder and appends to it, so an id from another row would restart
 /// this row on that row's conversation, two legs writing one file.
 /// Directories compare by kernel identity, so spelling, case, separators and
-/// symlinks do not matter.
+/// symlinks do not matter; the recorded directory must be absolute.
 fn transcript_refusal(
     home: &Path,
     account: &str,
@@ -255,29 +255,39 @@ fn transcript_refusal(
             ),
         ));
     };
-    let identity = |dir: &Path| sot_log::host::dir_identity(dir).ok();
-    let started = started_in(&transcript);
-    let root_identity = identity(root);
-    if root_identity.is_some() && started.as_deref().and_then(identity) == root_identity {
+    let root_identity = match sot_log::host::dir_identity(root) {
+        Ok(identity) => identity,
+        Err(e) => {
+            let error = format!("this row's root {root:?} cannot be opened: {e}");
+            return Some(("resume_not_this_row", error));
+        }
+    };
+    let Some(started) = started_in(&transcript) else {
+        return Some((
+            "resume_not_this_row",
+            format!(
+                "transcript {resume:?} records no working directory in its first {HEAD_SCAN_BYTES} bytes: a reauth resumes only a conversation started in this row's root {root:?}"
+            ),
+        ));
+    };
+    // Absolute only: a relative directory would be read against this daemon's
+    // own working directory, which says nothing about where the session ran.
+    let same = started.is_absolute()
+        && sot_log::host::dir_identity(&started).is_ok_and(|identity| identity == root_identity);
+    if same {
         return None;
     }
-    let records = started.map_or_else(
-        || format!("no working directory in its first {HEAD_SCAN_BYTES} bytes"),
-        |dir| format!("{dir:?}"),
-    );
     Some((
         "resume_not_this_row",
         format!(
-            "transcript {resume:?} was not started in this row's root {root:?} (it records {records}): a reauth resumes only the row's own conversation, so run `sot-fe reauth <account>` inside the row being moved"
+            "transcript {resume:?} was started in {started:?}, not in this row's root {root:?}: a reauth resumes only a conversation started in the row's own root"
         ),
     ))
 }
 
 /// Every refusal this op owns, decided BEFORE anything is touched, over the
 /// row's own facts (its runtime, agent, account and root) plus the home the
-/// accounts live in — the same reason [`crate::agents::accounts::account_env`]
-/// is pure: the check and the real spawn share ONE rule instead of a copy each
-/// could drift from.
+/// accounts live in.
 ///
 /// `resume` is required with no default: `--continue` resolves "the most
 /// recent conversation" from a per-account `.claude.json` that is never

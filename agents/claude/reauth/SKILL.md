@@ -45,8 +45,9 @@ symlink, or that the id is not this conversation's), and **whether that
 transcript was started in this row's root** (a conversation belongs to the
 row it began in: another row's id is refused, `resume_not_this_row`, and so
 is a conversation this row took over from another directory). It refuses
-with the exact fix command and lists the accounts it can see. Print that
-verbatim.
+with the exact fix command where there is one (`resume_not_this_row` has none:
+no reauth moves a conversation that was not started in this row's root) and
+lists the accounts it can see. Print that verbatim.
 **Never create the account folder to make the refusal go away** — an empty
 folder is a valid account with no login, and the switch would strand the
 conversation behind a login prompt.
